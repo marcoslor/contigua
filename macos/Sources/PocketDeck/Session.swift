@@ -307,6 +307,9 @@ final class Session {
         let endpoint: Endpoint
         var channel: Channel?
         var sendRaw: (@Sendable ([UInt8]) -> Void)?
+        /// NIO's writability and read switch for this channel (D-2, R-11).
+        var isWritable: (@Sendable () -> Bool)?
+        var setReading: (@Sendable (Bool) -> Void)?
         var exporter: (() -> [UInt8]?)?
         var timer: DispatchWorkItem?  // gcd: the session's one timeout timer per attempt
         /// dialing -> ready -> hello/join -> welcomed, or failed (R-14).
@@ -545,7 +548,11 @@ final class Session {
                     guard let self else { return }
                     self.queue.async { self.handlePathError(id, message) }
                 }, onPeerPin: { fingerprint in learned.set(fingerprint) },
-                onPeerCert: { cert in learnedCert.set(cert) })
+                onPeerCert: { cert in learnedCert.set(cert) },
+                onWritableChange: { [weak self] writable in
+                    guard let self, writable else { return }
+                    self.queue.async { self.pathLayer.writable(id) }
+                })
             queue.async { [weak self] in
                 self?.install(id, result: result, target: target)
             }
@@ -568,7 +575,8 @@ final class Session {
 
     /// A provider's TLS handshake completed. Runs on the session queue.
     private func install(_ id: String,
-                         result: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void),
+                         result: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void,
+                                  isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void),
                          target: (host: String, port: Int)) {
         guard !intentionalClose, var attempt = attempts[id],
               attempt.machine.phase == .dialing else {
@@ -577,6 +585,8 @@ final class Session {
         }
         attempt.channel = result.channel
         attempt.exporter = result.exporter
+        attempt.isWritable = result.isWritable
+        attempt.setReading = result.setReading
         attempt.sendRaw = { bytes in
             guard let frame = Frame(encoded: bytes) else { return }
             result.send(frame)
@@ -754,7 +764,9 @@ final class Session {
             return
         }
         let path = PathLayer.Path(id: id, kind: .lan, send: send,
-                                  close: { channel.close() })
+                                  close: { channel.close() },
+                                  isWritable: attempt.isWritable ?? { true },
+                                  setReading: attempt.setReading ?? { _ in })
         pathProvider[id] = attempt.providerIndex
         if pathLayer.pathCount == 0 {
             pathLayer.start(first: path)

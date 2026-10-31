@@ -9,11 +9,14 @@ final class PathLayerTests: XCTestCase {
         let lock = NSLock()
         var writes: [[UInt8]] = []
         var closed = false
+        var writable = true
 
         func send(_ bytes: [UInt8]) { lock.lock(); writes.append(bytes); lock.unlock() }
         func close() { lock.lock(); closed = true; lock.unlock() }
         func all() -> [[UInt8]] { lock.lock(); defer { lock.unlock() }; return writes }
         func clear() { lock.lock(); writes.removeAll(); lock.unlock() }
+        func setWritable(_ value: Bool) { lock.lock(); writable = value; lock.unlock() }
+        func isWritable() -> Bool { lock.lock(); defer { lock.unlock() }; return writable }
     }
 
     private var clock: Int64 = 2_500
@@ -24,7 +27,8 @@ final class PathLayerTests: XCTestCase {
         clock = 2_500
         wire = Wire()
         layer = PathLayer(nowMs: { [unowned self] in self.clock })
-        layer.start(first: PathLayer.Path(id: "aaaa0001", kind: .lan, send: wire.send, close: wire.close))
+        layer.start(first: PathLayer.Path(id: "aaaa0001", kind: .lan, send: wire.send,
+                                          close: wire.close, isWritable: wire.isWritable))
     }
 
     private func json(_ t: String) -> Frame {
@@ -197,5 +201,84 @@ final class PathLayerTests: XCTestCase {
         let events = layer.receive(path: "aaaa0001", frame: Frame(type: 0x30, stream: 0, payload: [0]))
         XCTAssertEqual(1, events.count)
         if case .down(let path) = events[0] { XCTAssertEqual("aaaa0001", path) } else { XCTFail("expected down") }
+    }
+}
+
+// MARK: - D-2: bulk flow control, priority, liveness, demote
+
+extension PathLayerTests {
+    private func bulkFrame(_ byte: UInt8, size: Int = 256 << 10) -> Frame {
+        Frame(type: .dropData, stream: 1, payload: [UInt8](repeating: byte, count: size))
+    }
+
+    /// Bulk is held by the layer while the channel is not writable and goes out
+    /// only when NIO says it can take more (the 256 KiB water mark).
+    func testBulkWaitsForTheChannelToBecomeWritable() throws {
+        wire.setWritable(false)
+        layer.send(bulkFrame(1))
+        XCTAssertTrue(wire.all().isEmpty, "bulk entered a channel that is over its water mark")
+        layer.writable("aaaa0001")
+        XCTAssertTrue(wire.all().isEmpty, "still not writable: no write")
+        wire.setWritable(true)
+        layer.writable("aaaa0001")
+        let sent = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(1, sent.count)
+        XCTAssertEqual(MessageType.dropData.rawValue, try PathCodec.decodeReliable(sent[0]).inner.type)
+    }
+
+    /// A ping and an ACK jump the bulk that is waiting for writability: they
+    /// are bare frames, never queued in the layer (D-2 priority).
+    func testPingAndAckJumpTheBulkHeldOnANonWritablePath() throws {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        wire.setWritable(false)
+        layer.send(bulkFrame(1))
+        XCTAssertTrue(wire.all().isEmpty, "bulk held back")
+        layer.pingAll()
+        let frames = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(1, frames.count, "the ping is not behind the bulk")
+        XCTAssertEqual(MessageType.json.rawValue, frames[0].type)
+        XCTAssertEqual("path.ping", JSONFrame.decode(payload: frames[0].payload)?.t)
+        second.clear()
+        // An inbound reliable frame is answered with a bare ACK at once, ahead
+        // of the held bulk.
+        let inbound = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: json("x")).encoded)!
+        _ = layer.receive(path: "bbbb0002", frame: inbound)
+        let acks = try second.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(1, acks.count)
+        XCTAssertEqual(PathCodec.ackType, acks[0].type)
+    }
+
+    /// A path that keeps delivering frames is alive even when its pong is late:
+    /// a pong can queue behind our own bulk on a slow link (D-2).
+    func testAPathThatKeepsReceivingIsAliveThoughItsPongIsLate() {
+        layer.pingAll()
+        clock += 1_000
+        let inbound = Frame(type: .json, stream: 0, payload: JSONFrame.payload(["t": "noop"]))
+        _ = layer.receive(path: "aaaa0001", frame: inbound)
+        clock += 600                                    // 1.6 s after the ping
+        XCTAssertTrue(layer.lostPings().isEmpty, "a receiving path was reported lost")
+        clock += 1_000                                  // 1.6 s after the last inbound
+        XCTAssertEqual(["aaaa0001"], layer.lostPings())
+    }
+
+    /// An unplanned switch clears the old path's held bulk and replays the
+    /// frames once on the new path; the old path is a standby, not closed.
+    func testHeldBulkMovesToTheNewPathOnAnUnplannedSwitch() throws {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        wire.setWritable(false)
+        layer.send(bulkFrame(1))
+        XCTAssertTrue(wire.all().isEmpty)
+        layer.moveTo("bbbb0002", plannedFrom: nil)
+        layer.replayOnCurrent()
+        XCTAssertTrue(wire.all().isEmpty, "the old path writes nothing more")
+        let writes = second.all()
+        XCTAssertEqual(1, writes.count, "the held bulk is replayed once on the new path")
+        let frame = try XCTUnwrap(Frame(encoded: writes[0]))
+        XCTAssertEqual(MessageType.dropData.rawValue, try PathCodec.decodeReliable(frame).inner.type)
+        XCTAssertFalse(second.closed)
     }
 }

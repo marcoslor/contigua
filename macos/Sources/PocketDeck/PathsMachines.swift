@@ -87,7 +87,11 @@ enum PathTimers {
 
 struct PathSessionMachine {
     private(set) var state: PathSessionState
+    /// Every attached path, standbys included.
     var live: Set<String>
+    /// Demoted by a lost pong only (never a socket error): kept open, still
+    /// pinged, never chosen for a failover, can win back on margin (D-2).
+    var standby: Set<String>
     /// The ranking's opinion of each live path (0…1000); the failover choice.
     var scores: [String: Int]
     /// The class each live path was ranked with.
@@ -95,10 +99,12 @@ struct PathSessionMachine {
 
     init(state: PathSessionState = .orphaned(since: 0),
          live: Set<String> = [],
+         standby: Set<String> = [],
          scores: [String: Int] = [:],
          kinds: [String: PathKind] = [:]) {
         self.state = state
         self.live = live
+        self.standby = standby
         self.scores = scores
         self.kinds = kinds
     }
@@ -112,11 +118,13 @@ struct PathSessionMachine {
     mutating func startLive(path: String) {
         state = .live(current: path)
         live = [path]
+        standby = []
         scores[path] = -1
     }
 
+    /// The best path a failover may take: a standby is only reachable by margin.
     private func bestLive(excluding: String? = nil) -> String? {
-        let candidates = live.filter { $0 != excluding }
+        let candidates = live.filter { $0 != excluding && !standby.contains($0) }
         return candidates.max { (scores[$0] ?? -1) < (scores[$1] ?? -1) }
     }
 
@@ -137,6 +145,7 @@ struct PathSessionMachine {
             case .peerSwitch(let id, _, let arrivedOn):
                 guard live.contains(id) else { return [.ignore] }
                 if id == current { return [] }
+                standby.remove(id)
                 if arrivedOn == current {
                     state = .migrating(from: current, to: id, since: now)
                     return [.startPing(path: id), .ranking(.externalSwitch(id))]
@@ -144,11 +153,13 @@ struct PathSessionMachine {
                 // The old path is already gone: the marker came on the new one.
                 state = .live(current: id)
                 live.remove(current)
+                standby.remove(current)
                 return [.closePath(path: current), .stopPing(path: current),
                         .startPing(path: id), .ranking(.externalSwitch(id))]
             case .currentFailed(let id):
                 guard id == current else { return [] }
                 live.remove(id)
+                standby.remove(id)
                 if let next = bestLive() {
                     state = .migrating(from: id, to: next, since: now)
                     return [.stopPing(path: id), .switchTo(path: next),
@@ -160,21 +171,20 @@ struct PathSessionMachine {
 
             case .pongLost(let id):
                 guard id == current else { return [] }
-                // PATH-7 scopes the 1.5 s rule to two or more paths: with one
-                // there is nothing to switch to and the sample above is all.
+                // PATH-21: with one path there is nothing to switch to, and the
+                // sample is all. D-2: a lost pong demotes the path to a standby
+                // (still open, still pinged) instead of closing a live path; a
+                // socket error above still closes it.
                 guard live.count >= 2 else { return [] }
-                live.remove(id)
-                if let next = bestLive() {
-                    state = .migrating(from: id, to: next, since: now)
-                    return [.stopPing(path: id), .switchTo(path: next),
-                            .replayFromLastAck, .requestKeyframes,
-                            .startPing(path: next), .ranking(.currentFailed(id: id))]
-                }
-                state = .orphaned(since: now)
-                return [.stopPing(path: id), .markReconnecting, .ranking(.currentFailed(id: id))]
+                guard let next = bestLive(excluding: id) else { return [] }
+                state = .live(current: next)
+                standby.insert(id)
+                return [.switchTo(path: next), .replayFromLastAck, .requestKeyframes,
+                        .ranking(.externalSwitch(next))]
 
             case .pathDown(let id):
                 live.remove(id)
+                standby.remove(id)
                 if id == current {
                     if let next = bestLive() {
                         state = .migrating(from: id, to: next, since: now)
@@ -202,10 +212,13 @@ struct PathSessionMachine {
                 guard id == to else { return [.ignore] }
                 state = .live(current: to)
                 live.remove(from)
+                standby.remove(from)
+                standby.remove(to)
                 return [.closePath(path: from), .stopPing(path: from),
                         .ranking(.externalSwitch(to))]
             case .pathDown(let id):
                 live.remove(id)
+                standby.remove(id)
                 if id == to {
                     // The old path is still usable: fall back to it at once.
                     if live.contains(from) {
@@ -224,6 +237,7 @@ struct PathSessionMachine {
                 return []
             case .currentFailed(let id) where id == to:
                 live.remove(id)
+                standby.remove(id)
                 if let next = bestLive(excluding: from) {
                     state = .migrating(from: from, to: next, since: now)
                     return [.switchTo(path: next), .replayFromLastAck,
@@ -239,20 +253,23 @@ struct PathSessionMachine {
             case .currentFailed:
                 return []
             case .pongLost(let id) where id == to:
-                // A migration means a failover already happened: a lost pong
-                // on its target now orphans (the grace), even when the old
-                // path's drain left it the only live path.
-                live.remove(id)
+                // A migration means a failover already happened. A lost pong on
+                // its target demotes the target to a standby: the old path
+                // carries the session again if it can, else another path, else
+                // the grace starts (PATH-21, D-2).
+                standby.insert(id)
+                if live.contains(from), !standby.contains(from) {
+                    state = .live(current: from)
+                    return [.ranking(.externalSwitch(from))]
+                }
                 if let next = bestLive(excluding: from) {
                     state = .migrating(from: from, to: next, since: now)
                     return [.switchTo(path: next), .replayFromLastAck,
                             .requestKeyframes, .startPing(path: next),
                             .ranking(.currentFailed(id: id))]
                 }
-                if live.contains(from) {
-                    state = .live(current: from)
-                    return [.ranking(.externalSwitch(from))]
-                }
+                live.remove(id)
+                standby.remove(id)
                 state = .orphaned(since: now)
                 return [.markReconnecting, .ranking(.currentFailed(id: id))]
             case .pongLost:
@@ -261,6 +278,7 @@ struct PathSessionMachine {
                 // The peer's marker was not read in 2 s: close the old path and
                 // stay Migrating; the new path's own pong timeout decides next.
                 live.remove(from)
+                standby.remove(from)
                 return [.closePath(path: from), .stopPing(path: from)]
             case .close(let reason):
                 state = .ended(reason: reason)
@@ -268,6 +286,7 @@ struct PathSessionMachine {
             case .pathUp(let id, _):
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
+                standby.remove(id)
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
             case .graceExpired:
@@ -279,6 +298,7 @@ struct PathSessionMachine {
             case .pathUp(let id, _):
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
+                standby.remove(id)
                 scores[id] = scores[id] ?? -1
                 state = .live(current: id)
                 return [.switchTo(path: id), .replayFromLastAck,
@@ -286,6 +306,7 @@ struct PathSessionMachine {
                         .ranking(.pathUp(id))]
             case .pathDown(let id):
                 live.remove(id)
+                standby.remove(id)
                 return [.ranking(.pathDown(id))]
             case .graceExpired:
                 guard now - since >= PathTimers.grace else { return [] }
@@ -293,10 +314,12 @@ struct PathSessionMachine {
                 return [.end(reason: "graceExpired")]
             case .currentFailed(let id):
                 live.remove(id)
+                standby.remove(id)
                 return [.ranking(.currentFailed(id: id))]
             case .pongLost(let id):
                 // No path is carrying the session: nothing to fail over from.
                 live.remove(id)
+                standby.remove(id)
                 return []
             case .peerSwitch:
                 return [.ignore]

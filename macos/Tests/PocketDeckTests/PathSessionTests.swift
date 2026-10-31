@@ -87,14 +87,25 @@ final class PathSessionTests: XCTestCase {
                         .ranking(.currentFailed(id: "a"))])
     }
 
-    func testALostPongWithTwoPathsSwitchesAtOnce() {
+    func testALostPongWithTwoPathsDemotesTheCurrentPath() {
         var machine = machine(live: ["a", "b"])
         machine.scores = ["a": 100, "b": 900]
         let actions = machine.handle(.pongLost(id: "a"), now: 4)
-        XCTAssertEqual(machine.state, .migrating(from: "a", to: "b", since: 4))
-        XCTAssertEqual(actions, [.stopPing(path: "a"), .switchTo(path: "b"),
-                                 .replayFromLastAck, .requestKeyframes,
-                                 .startPing(path: "b"), .ranking(.currentFailed(id: "a"))])
+        // D-2: the silent path becomes a standby, it is not closed and it keeps
+        // being pinged; the session moves to the other path at once.
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertEqual(Set(["a", "b"]), machine.live)
+        XCTAssertEqual(Set(["a"]), machine.standby)
+        XCTAssertEqual(actions, [.switchTo(path: "b"), .replayFromLastAck,
+                                 .requestKeyframes, .ranking(.externalSwitch("b"))])
+        // A standby is never chosen for a failover: with no other usable path
+        // the session stays where it is (the ranking may still win it back).
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 5), [])
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        // A socket error on the standby drops it for good.
+        XCTAssertEqual(machine.handle(.pathDown(id: "a"), now: 6), [.ranking(.pathDown("a"))])
+        XCTAssertFalse(machine.live.contains("a"))
+        XCTAssertFalse(machine.standby.contains("a"))
     }
 
     func testALostPongForAStandbyPathIsOnlyASample() {
