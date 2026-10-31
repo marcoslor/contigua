@@ -147,6 +147,32 @@ final class PathLayerTests: XCTestCase {
         }
     }
 
+    /// E-6/RR-6: a `path.switch` marker is a small control frame and never
+    /// waits for credit. At a full replay buffer the old code put it in the
+    /// pending list with its `seq` field frozen at the seq it would have had,
+    /// so when it was finally admitted its field named a frame that was not
+    /// next. The marker is admitted at once and its field is the seq of the
+    /// frame after it.
+    func testAMarkerAtFullCreditBypassesCreditAndCarriesTheRightSeq() throws {
+        let control = { (size: Int) in
+            Frame(type: .touch, stream: 1, payload: [UInt8](repeating: 1, count: size))
+        }
+        for _ in 0..<16 { layer.send(control((1 << 20) - 100)) }
+        layer.send(control(ReplayBuffer.capacity - layer.heldBytes - PathCodec.wrapperBytes - 4))
+        XCTAssertEqual(ReplayBuffer.capacity, layer.heldBytes, "the replay buffer is full")
+        let lastSeq = try XCTUnwrap(wire.all().last.flatMap { Frame(encoded: $0) })
+            .flatMap { try? PathCodec.decodeReliable($0) }?.seq
+        XCTAssertTrue(layer.sendMarker(on: "aaaa0001", to: "aaaa0001"),
+                      "the marker waited for credit")
+        let marker = try XCTUnwrap(wire.all().last.flatMap { Frame(encoded: $0) })
+        let reliable = try PathCodec.decodeReliable(marker)
+        XCTAssertEqual((lastSeq ?? 0) + 1, reliable.seq, "the marker is the next seq")
+        let body = try XCTUnwrap(JSONFrame.decode(payload: reliable.inner.payload))
+        XCTAssertEqual("path.switch", body.t)
+        XCTAssertEqual(Int((lastSeq ?? 0) + 2), body.int("seq"),
+                       "the field names the frame after the marker")
+    }
+
     /// R-6/E-4, the reviewer's scratch case: a key typed while 13 bulk chunks
     /// wait outside the seq space goes out at once, behind only the bulk the
     /// path already has room for. Only bulk queues behind bulk.
