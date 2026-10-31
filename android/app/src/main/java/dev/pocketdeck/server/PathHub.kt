@@ -158,6 +158,7 @@ class PathHub(
     private var ackFrames = 0
     private var lastAckAt = 0L
     private var lastPingAt = 0L
+    private var lastBulkAt = 0L
     private val pingSentAt = HashMap<String, Long>()
     /** D-2: the last time each path delivered any inbound bytes. */
     private val lastInboundAt = HashMap<String, Long>()
@@ -262,6 +263,7 @@ class PathHub(
             val inner = frameOf(bytes)
             val wrapped = PathCodec.encodeReliable(seq, inner)
             replay.append(seq, wrapped, bulk)
+            if (bulk) lastBulkAt = now()
             // Enqueue under the lock so seq order matches the write order; the
             // path's own writer does the socket write outside it (R-2).
             val target = current
@@ -382,6 +384,9 @@ class PathHub(
                 when (result) {
                     is ReorderWindow.Result.Deliver -> {
                         for (f in result.frames) {
+                            if (PathCodec.isBulk(f.inner.type)) {
+                                synchronized(lock) { lastBulkAt = now() }
+                            }
                             // A marker travels reliable, like every JSON frame:
                             // the inner path.switch is the peer's switch, not a
                             // message for the session (PATH-9).
@@ -474,13 +479,17 @@ class PathHub(
     fun ackHandled(path: String) = ackLater(path)
 
     private fun sendAckNow(path: String) {
-        val ack = synchronized(lock) { reorder.ack }
+        val ack = synchronized(lock) {
+            if (closed) return
+            reorder.ack
+        }
         val bytes = PathCodec.encodeAck(ack)
         writeTo(path, bytes, priority = true)
     }
 
     private fun ackLater(path: String) {
         val send = synchronized(lock) {
+            if (closed) return
             ackFrames++
             val due = ackFrames >= ACK_FRAMES || now() - lastAckAt >= ACK_MS
             if (due) {
@@ -506,11 +515,17 @@ class PathHub(
 
     // ---- ping ---------------------------------------------------------
 
-    /** Every path is pinged every 2 s, the standby included (PATH-7). */
-    fun pingAll() {
+    /**
+     * D-1: one path is never pinged (TCP keepalive and the session's 15 s
+     * keepalive cover it). Two or more are pinged every 2 s while the screen
+     * is on or a transfer runs, else every 15 s.
+     */
+    fun pingAll(active: Boolean) {
         val at = now()
         val targets = synchronized(lock) {
-            if (closed || at - lastPingAt < PING_MS) return
+            if (closed || paths.size < 2) return
+            val interval = if (active) ACTIVE_PING_MS else IDLE_PING_MS
+            if (lastPingAt != 0L && at - lastPingAt < interval) return
             lastPingAt = at
             paths.keys.toList()
         }
@@ -518,6 +533,45 @@ class PathHub(
             synchronized(lock) { pingSentAt[id] = at }
             sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at), priority = true)
         }
+    }
+
+    /** D-1: a joined path is pinged at once so its ranking starts. */
+    fun pingPath(id: String) {
+        val at = now()
+        synchronized(lock) {
+            if (closed || !paths.containsKey(id)) return
+            pingSentAt[id] = at
+            lastPingAt = at
+        }
+        sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at))
+    }
+
+    /** D-1: the ticker's next deadline (absolute ms), not a fixed poll. */
+    fun nextDeadline(active: Boolean): Long {
+        val at = now()
+        return synchronized(lock) {
+            if (closed) return Long.MAX_VALUE
+            var next = Long.MAX_VALUE
+            if (paths.size >= 2) {
+                val interval = if (active) ACTIVE_PING_MS else IDLE_PING_MS
+                next = if (lastPingAt == 0L) at else lastPingAt + interval
+            }
+            for (sent in pingSentAt.values) {
+                val due = sent + PONG_TIMEOUT_MS
+                if (due in 0 until next) next = due
+            }
+            for (sent in joinedAwaitingPong.values) {
+                val due = sent + JOINED_PING_DROP_MS
+                if (due in 0 until next) next = due
+            }
+            for (due in draining.values) if (due in 0 until next) next = due
+            next
+        }
+    }
+
+    /** D-1: true while a bulk transfer is moving in either direction. */
+    fun bulkActive(): Boolean = synchronized(lock) {
+        lastBulkAt != 0L && now() - lastBulkAt <= ACTIVE_PING_MS
     }
 
     /** A ping with no pong within 1.5 s is one lost sample (PATH-7). */
@@ -549,7 +603,8 @@ class PathHub(
 
     companion object {
         const val MAX_PATHS = 3
-        const val PING_MS = 2_000L
+        const val ACTIVE_PING_MS = 2_000L
+        const val IDLE_PING_MS = 15_000L
         const val PONG_TIMEOUT_MS = 1_500L
         /** D-2: inbound bytes this recently mean the path is alive despite a pong loss. */
         const val PONG_ALIVE_MS = 1_500L

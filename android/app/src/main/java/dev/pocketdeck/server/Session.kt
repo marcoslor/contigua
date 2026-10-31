@@ -486,6 +486,13 @@ class Session(
     override fun close() = apply(SessionTeardown.Event.Drop)
 
     /**
+     * True from the moment this session starts closing. A reader must not ack
+     * a frame after a refusal/bye was queued: that ACK would land behind the
+     * last frame on the wire.
+     */
+    @Volatile private var closing = false
+
+    /**
      * Runs one step of the teardown machine and its returned actions. The state
      * is the compare-and-set, so a drop racing the reader's own end runs one
      * transition, not two.
@@ -495,6 +502,9 @@ class Session(
             val before = teardown.get()
             val step = SessionTeardown.transition(before, event)
             if (!teardown.compareAndSet(before, step.to)) continue
+            if (step.to == SessionTeardown.State.ENDING || step.to == SessionTeardown.State.DROPPED) {
+                closing = true
+            }
             if (step.to != before) {
                 log(
                     "session teardown: ${SessionTeardown.describe(before)} " +
@@ -720,7 +730,7 @@ class Session(
     }
 
     private fun tickPaths() {
-        hub.pingAll()
+        hub.pingAll(transferRunning())
         // During a switch the phone's sending path is still the old one until
         // the Mac's marker arrives; the path the session is moving to is the
         // current one for the pong rule (PATH-7), or a lost pong on it would
@@ -753,15 +763,39 @@ class Session(
         if (pathTicker != null) return
         pathTicker = Thread({
             while (teardown.get() == SessionTeardown.State.LIVE) {
+                val at = now()
                 try {
-                    Thread.sleep(250)
+                    Thread.sleep(nextTickDelay(at))
                 } catch (e: InterruptedException) {
                     break
                 }
+                if (teardown.get() != SessionTeardown.State.LIVE) break
                 inbound.put(Inbound.Tick)
             }
         }, "pocketdeck-paths").also { it.start() }
     }
+
+    /**
+     * D-1: the ticker wakes for the next timer (ping policy, pong, joined drop,
+     * drain, grace), not on a fixed poll. A session with no timer at all only
+     * needs a keepalive wake.
+     */
+    internal fun nextTickDelay(at: Long): Long {
+        var next = hub.nextDeadline(transferRunning())
+        val state = pathMachine.state
+        if (state is PathSessionState.Orphaned) {
+            val graceAt = (state.since * 1000).toLong() + (PathTimers.GRACE * 1000).toLong()
+            if (graceAt in (at + 1) until next) next = graceAt
+        }
+        if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
+        return (next - at).coerceIn(TICK_MIN_MS, TICK_KEEPALIVE_MS)
+    }
+
+    /** D-1: the screen is on or a transfer runs (a stream, drop, APK, fs bulk). */
+    private fun transferRunning(): Boolean =
+        synchronized(streams) { streams.isNotEmpty() } ||
+            stateTracker.current?.screen == ScreenState.ON ||
+            hub.bulkActive()
 
     private fun startPathReader(
         t: PathHub.Transport,
@@ -799,7 +833,9 @@ class Session(
                     // R-1: the ACK leaves only after every frame the hub
                     // delivered is in the session's hand-off, so a slow handler
                     // pushes back through TCP instead of losing an acked frame.
-                    hub.ackHandled(t.id)
+                    // A closing session never acks: the refusal/bye is the last
+                    // frame the Mac may see.
+                    if (!closing) hub.ackHandled(t.id)
                 }
             } catch (e: Throwable) {
                 if (teardown.get() == SessionTeardown.State.LIVE) {
@@ -828,6 +864,9 @@ class Session(
         hub.expectFirstPong(pathId)
         sendWelcomeOn(pathId)
         startPathReader(t)
+        // D-1: a joined path is pinged at once so its ranking starts (the
+        // welcome is already queued; the ping follows it on the same writer).
+        hub.pingPath(pathId)
         inbound.put(Inbound.Up(pathId, joined = true))
         log("paths: joined $pathId (paths ${hub.pathCount})")
         return AttachResult.ATTACHED
@@ -3269,6 +3308,10 @@ class Session(
         /** How long `window.opened` waits for the task id the launch made. */
         const val TASK_WAIT_MS = 2_000L
         const val TASK_POLL_MS = 50L
+
+        /** D-1: the ticker's floor and its idle keepalive wake. */
+        const val TICK_MIN_MS = 5L
+        const val TICK_KEEPALIVE_MS = 60_000L
 
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64

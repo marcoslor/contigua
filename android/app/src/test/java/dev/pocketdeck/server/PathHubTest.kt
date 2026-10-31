@@ -46,7 +46,7 @@ class PathHubTest {
         val hub = PathHub(now = { clock })
         hub.start(transport("aaaa0001"))
         assertTrue(hub.attach(transport("bbbb0002")))
-        hub.pingAll()
+        hub.pingAll(active = true)
         // A is still delivering a frame 1.5 s after its ping; B is silent.
         clock = 4_000
         hub.receive("aaaa0001", Frame(PathCodec.TYPE_ACK, 0, ByteArray(8)))
