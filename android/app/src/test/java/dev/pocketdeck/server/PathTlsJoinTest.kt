@@ -160,7 +160,7 @@ class PathTlsJoinTest {
                 while (System.currentTimeMillis() < deadline &&
                     phone.logs.none { it.startsWith("paths: live a1b2c3d4 --") }
                 ) {
-                    Thread.sleep(20)
+                    Thread.sleep(20) // real-time: the transition runs on the session's reader thread
                 }
                 assertTrue(
                     "no transition line: ${phone.logs}",

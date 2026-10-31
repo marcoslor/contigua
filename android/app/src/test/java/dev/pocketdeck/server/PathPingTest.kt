@@ -45,17 +45,15 @@ class PathPingTest {
 
     /** The path id of the next ping, or null when none within the timeout. */
     private fun nextPing(reader: FrameReader): String? {
-        return try {
+        try {
             while (true) {
                 val frame = reader.readFrame() ?: return null
                 if (frame.type != Frames.TYPE_JSON) continue
                 val obj = Json.parseObject(String(frame.payload))
                 if (obj["t"] == "path.ping") return obj["path"] as String
             }
-            @Suppress("UNREACHABLE_CODE")
-            null
         } catch (e: SocketTimeoutException) {
-            null
+            return null
         }
     }
 
