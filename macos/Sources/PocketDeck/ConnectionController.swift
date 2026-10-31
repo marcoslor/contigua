@@ -226,6 +226,7 @@ final class ConnectionController {
         let apps = link.phone?.id == deviceId && appsLoaded ? self.apps : appsCache.load(deviceId: deviceId)
         guard !apps.isEmpty else { return }
         spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
                         iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
         dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
                            keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [],
@@ -274,6 +275,8 @@ final class ConnectionController {
     private var dockIconOutstanding: Set<String> = []
     /// Save all bundles being written right now.
     private var shortcutBuilding: Set<String> = []
+    /// Phones whose Spotlight list needs one re-index when their builds finish.
+    private var spotlightRefreshPending: Set<String> = []
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
@@ -787,6 +790,8 @@ final class ConnectionController {
         remembered.forget(id: phone.id)
         appsCache.remove(deviceId: phone.id)
         spotlight.remove(deviceId: phone.id)
+        spotlightRefreshPending.remove(phone.id)
+        SaveAllShortcutsSetting.write(false, for: phone.id, to: profile.defaults)
         dockApps.forget(deviceId: phone.id)
         shortcutGeneration[phone.id, default: 0] += 1
         shortcutWork = shortcutWork.filter { $0.value.deviceId != phone.id }
@@ -874,6 +879,7 @@ final class ConnectionController {
                         launch: true, origins: dockApps.origins(deviceId: phone.id, pkg: app.pkg).union(.dock)) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
+        spotlightShortcutChanged(deviceId: phone.id, pkg: app.pkg)
         dockRevision += 1
     }
 
@@ -889,6 +895,7 @@ final class ConnectionController {
                             origins: dockApps.origins(deviceId: add.deviceId, pkg: add.pkg).union(.dock)) == nil {
                 showTransient("Couldn't add \(add.label) to the Dock.")
             }
+            spotlightShortcutChanged(deviceId: add.deviceId, pkg: add.pkg)
             dockRevision += 1
         }
     }
@@ -915,6 +922,7 @@ final class ConnectionController {
         case .none:
             break
         }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
     }
 
     // MARK: Application shortcuts (docs/design/dock.md §Shortcuts)
@@ -959,6 +967,7 @@ final class ConnectionController {
         case .none:
             break
         }
+        spotlightShortcutChanged(deviceId: id, pkg: app.pkg)
         dockRevision += 1
     }
 
@@ -968,7 +977,40 @@ final class ConnectionController {
                         launch: false, origins: origins) == nil {
             showTransient("Couldn't add \(label) to Applications.")
         }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
         dockRevision += 1
+    }
+
+    // MARK: Spotlight's one entry per app (docs/specs/dock.md DOCK-9)
+
+    /// A shim appeared or went away: an app with one is not a CoreSpotlight item
+    /// too. A new shim takes its item out; a removed one puts the phone's list
+    /// back in (without the apps that still have shims).
+    private func spotlightShortcutChanged(deviceId: String, pkg: String) {
+        if dockApps.hasShim(deviceId: deviceId, pkg: pkg) {
+            spotlight.remove(deviceId: deviceId, pkg: pkg)
+        }
+        // Either way the phone's list is indexed again without the apps that
+        // have a shim; Save all's batch does it once, when the last build lands.
+        spotlightRefreshPending.insert(deviceId)
+        if shortcutBuilding.isEmpty { flushSpotlightRefreshes() }
+    }
+
+    /// Save all off removes many bundles: one re-index when the last is gone.
+    private func flushSpotlightRefreshes() {
+        for deviceId in spotlightRefreshPending.sorted() {
+            spotlightRefreshPending.remove(deviceId)
+            refreshSpotlight(deviceId: deviceId)
+        }
+    }
+
+    private func refreshSpotlight(deviceId: String) {
+        guard let phone = remembered.phone(id: deviceId)?.ref else { return }
+        let list = (link.phone?.id == deviceId && appsLoaded) ? apps : appsCache.load(deviceId: deviceId)
+        guard !list.isEmpty else { return }
+        spotlight.index(apps: list, deviceId: deviceId, phoneName: displayName(for: phone),
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
+                        iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
     }
 
     /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
@@ -1051,6 +1093,7 @@ final class ConnectionController {
                         guard let self else { return }
                         self.shortcutBuilding.remove(key)
                         self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
                         if work.generation != self.shortcutGeneration[work.deviceId, default: 0] {
                             self.queueSaveAll(deviceId: work.deviceId)
                         }
@@ -1069,6 +1112,7 @@ final class ConnectionController {
                         if !ok { self.showTransient("Couldn't save \(work.label) as a shortcut.") }
                         else { Log.app.notice("dock: save all built \(work.pkg, privacy: .public)") }
                         self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
                         // The switch changed while the bundle was being written:
                         // run the current plan again so no shim keeps a reason
                         // that was turned off (docs/design/dock.md §Shortcuts).
@@ -1141,6 +1185,7 @@ final class ConnectionController {
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
                          launch: false, origins: dockApps.origins(deviceId: phone.id, pkg: pkg).union(.dock))
+            spotlightShortcutChanged(deviceId: phone.id, pkg: pkg)
         }
         if let pkg = options.dockRemove {
             removeDockOrigin(deviceId: phone.id, pkg: pkg)
@@ -1291,6 +1336,8 @@ final class ConnectionController {
                         self.dockApps.quit(pid: pid)
                     }
                 }
+                // The bundle exists on disk either way: its Spotlight item goes.
+                self.spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
                 self.recheckOpenWindows()
             }
         }
@@ -2710,12 +2757,15 @@ final class ConnectionController {
             }
         }
         if let ref = link.phone {
-            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
-                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
             dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: displayName(for: ref),
                                keep: dockPkgsOfOpenWindows,
                                saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: ref.id))
             queueSaveAll(deviceId: ref.id)
+            // An app with a shim is listed by Launchpad/Spotlight/Raycast as the
+            // real app, so it is not a CoreSpotlight item too (DOCK-9).
+            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
+                            excluding: dockApps.shimPackages(deviceId: ref.id),
+                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
         }
         runDockHooks()
         runPendingDockAdds()
