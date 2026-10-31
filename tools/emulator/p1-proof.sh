@@ -247,6 +247,69 @@ phone_evidence() {
     printf '[p1-proof] %s: wrote %s (%s lines)\n' "$label" "$log" "$(wc -l < "$log" | tr -d ' ')"
 }
 
+# crash_evidence <label> — boot 7's Shizuku server died one second after it
+# started and its tombstone died with the emulator, so copy the guest's
+# tombstones and memory totals out before the kill. `su 0 cat` needs no adbd
+# restart; `adb root` is the fallback, and both are this emulator only. The
+# newest tombstone is bounded to its first 120 lines.
+CRASH_SAVED=0
+list_tombstones() { emu shell "ls -l /data/tombstones" 2>&1 | tr -d '\r'; }
+newest_tombstone() { # numeric suffix, so tombstone_10 beats tombstone_9
+    awk '/tombstone_[0-9]+$/ {
+             n = substr($NF, 11) + 0
+             if (n >= max) { max = n; name = $NF }
+         } END { print name }'
+}
+tombstone_head() { # tombstones are root-only; the reader names the method
+    [ -n "${newest:-}" ] || return 0
+    if [ "$reader" = "adb root" ]; then
+        emu shell "cat /data/tombstones/$newest 2>/dev/null | head -n 120" 2>/dev/null | tr -d '\r'
+    else
+        emu shell "su 0 cat /data/tombstones/$newest 2>/dev/null | head -n 120" 2>/dev/null | tr -d '\r'
+    fi
+}
+crash_evidence() {
+    local label="$1" log listing newest="" head="" reader="su 0 cat"
+    [ "$CRASH_SAVED" = 1 ] &&
+        { printf '[p1-proof] %s: crash evidence already saved\n' "$label"; return 0; }
+    [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
+    log="$WORK/crash-evidence-$label.log"
+    if ! device_present; then
+        printf '[p1-proof] %s: no device, no crash evidence\n' "$label" > "$log"
+        CRASH_SAVED=1
+        return 0
+    fi
+    listing="$(list_tombstones)"
+    newest="$(printf '%s\n' "$listing" | newest_tombstone)"
+    head="$(tombstone_head)"
+    # A real tombstone starts with a `pid:` line; anything else (denied su) is
+    # not worth saving and sends us to adb root.
+    if ! printf '%s' "$head" | grep -q 'pid:'; then
+        if emu root 2>&1 | grep -qiE 'restarting adbd as root|already running as root'; then
+            wait_for_device 30 || true
+            reader="adb root"
+            listing="$(list_tombstones)"
+            newest="$(printf '%s\n' "$listing" | newest_tombstone)"
+            head="$(tombstone_head)"
+        fi
+    fi
+    printf '%s' "$head" | grep -q 'pid:' || reader="none (no readable tombstone)"
+    {
+        printf '== crash evidence: %s at %s ==\n' "$label" "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf '%s\n' '-- ls -l /data/tombstones --'
+        printf '%s\n' "$listing"
+        printf '%s\n' "-- newest tombstone: ${newest:-none} (read by: $reader) --"
+        printf '%s\n' "${head:-(no tombstone head)}"
+        printf '%s\n' '-- dumpsys meminfo totals --'
+        emu shell "dumpsys meminfo" 2>/dev/null | tr -d '\r' |
+            grep -E 'Total RAM|Free RAM|Used RAM|Lost RAM|ZRAM|^Total PSS' | head -20
+        printf '%s\n' '-- end --'
+    } > "$log" 2>&1
+    printf '[p1-proof] %s: wrote %s (%s lines, tombstone read by %s)\n' \
+        "$label" "$log" "$(wc -l < "$log" | tr -d ' ')" "$reader"
+    CRASH_SAVED=1
+}
+
 stop_app() {
     if [ -n "$APP_PID" ]; then
         kill "$APP_PID" 2>/dev/null
@@ -277,6 +340,7 @@ cleanup() {
     CLEANED=1
     # First: the phone is still up and its buffers still hold the failure.
     phone_evidence cleanup
+    crash_evidence cleanup
     stop_app
     [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null
     stop_proxies
@@ -302,11 +366,15 @@ if ! start_rig; then
         "$ADB" -s "$SERIAL" uninstall dev.pocketdeck >/dev/null 2>&1 || true
         if ! start_rig; then
             tail -40 "$WORK/start.log"
+            grep -q 'shizuku_server is not running' "$WORK/start.log" &&
+                crash_evidence starter-failed
             bad "start.sh --no-build failed after the uninstall"
             exit 1
         fi
     else
         tail -40 "$WORK/start.log"
+        grep -q 'shizuku_server is not running' "$WORK/start.log" &&
+            crash_evidence starter-failed
         bad "start.sh --no-build failed"
         exit 1
     fi

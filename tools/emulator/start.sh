@@ -215,6 +215,35 @@ step "runtime perms: $(emu shell dumpsys package "$PKG" | sed -n '/runtime permi
 # The starter (libshizuku.so) is the documented adb entry point: it kills any
 # old server, finds the manager APK itself and forks app_process as UID 2000.
 # Always run it, so a daemon left over from a previous install cannot survive.
+
+# Boot 7: the starter reached ShizukuService and the server died with a
+# tombstone one second later, while lmkd was killing a dozen processes. On a
+# cold, memory-tight guest the server must not race a kill storm: it snapshots
+# permission state when it starts. Boot completed is not enough - wait until
+# lmkd has logged no kill for 15 s (cap 90 s), and say what the wait saw.
+lmkd_quiet() { # lmkd_quiet <quiet_s> <cap_s> — 0 when no kill for quiet_s
+  local quiet="$1" cap=$(( $(date +%s) + $2 )) now last="" quiet_until=0
+  quiet_until=$(( $(date +%s) + quiet ))
+  while [ "$(date +%s)" -lt "$cap" ]; do
+    now="$(emu logcat -d -b main,system 2>/dev/null |
+      grep -Ei 'lowmemorykiller|lmkd' | tail -1 | tr -d '\r')"
+    if [ "$now" != "$last" ]; then
+      last="$now"
+      quiet_until=$(( $(date +%s) + quiet ))
+      [ -n "$now" ] && step "lmkd: new kill line, quiet window restarts: $(printf '%s' "$now" | cut -c1-140)"
+    fi
+    [ "$(date +%s)" -ge "$quiet_until" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+SETTLE_START="$(date +%s)"
+if lmkd_quiet 15 90; then
+  step "guest settled: lmkd quiet for 15 s (waited $(( $(date +%s) - SETTLE_START ))s)"
+else
+  step "warn: lmkd not quiet after 90 s (waited $(( $(date +%s) - SETTLE_START ))s); starting the server anyway"
+fi
 CODE_PATH="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
   sed -n 's/.*codePath=\(.*\)$/\1/p' | head -1 | tr -d '\r')"
 ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')"
@@ -242,13 +271,30 @@ if [ -n "$ORPHANS" ]; then
   [ -z "$(server_pids)" ] || step "warn: still there:$(server_pids)"
 fi
 
-step "starting the Shizuku server (as the adb shell user)"
-emu shell "$STARTER" >/dev/null 2>&1 || true
-for _ in $(seq 1 30); do
-  emu shell "ps -A | grep -q shizuku_server" 2>/dev/null && break
-  sleep 1
+# Boot 7 lost its only boot to a one-shot race: the starter forked the server
+# and lmkd took it a second later. If the first attempt leaves no
+# shizuku_server, wait 10 s and run the starter once more; a second miss still
+# fails, as before.
+start_shizuku() { # 0 when shizuku_server survives the 30 s wait
+  emu shell "$STARTER" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    emu shell "ps -A | grep -q shizuku_server" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
+ATTEMPT=1
+while :; do
+  step "starting the Shizuku server (as the adb shell user), attempt $ATTEMPT/2"
+  if start_shizuku; then break; fi
+  if [ "$ATTEMPT" -ge 2 ]; then
+    die "shizuku_server is not running after 2 attempts"
+  fi
+  step "attempt $ATTEMPT did not leave a running shizuku_server; waiting 10 s, then one retry"
+  ATTEMPT=$((ATTEMPT + 1))
+  sleep 10
 done
-emu shell "ps -A | grep -q shizuku_server" 2>/dev/null || die "shizuku_server is not running"
 step "shizuku: $(emu shell 'ps -A -o USER,PID,NAME | grep shizuku_server' | tr -s ' ' | tr -d '\r')"
 
 resolve_activity() {
