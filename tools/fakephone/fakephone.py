@@ -4721,6 +4721,10 @@ class FakePhone(object):
                     if join:
                         if join != live.session_id:
                             decision = ("error", "no_session", None)
+                        elif self.args.no_rejoin and live._grace_deadline is not None:
+                            # The phone has no route back either: its own grace
+                            # is running, so a join cannot attach (pathgrace).
+                            decision = ("busy", "busy", "no path")
                         elif msg.get("clientId") != live.client_id:
                             decision = ("busy", "busy", "one session at a time")
                         else:
@@ -4854,6 +4858,9 @@ def build_parser():
     p.add_argument("--drop-path", nargs=3, metavar=("PATH", "AFTER", "SECONDS"),
                    action="append", default=[],
                    help="close a path SECONDS after start (PATH = id, join index, or 'all')")
+    p.add_argument("--no-rejoin", action="store_true",
+                   help="answer a join busy while the session waits for a path "
+                        "(a phone whose route is gone, for the Mac's 30 s grace check)")
     p.add_argument("--ctl-file", metavar="PATH", default=None,
                    help="change a live path at run time: `pong ID on|off|delay [MS]`, "
                         "`slow ID MS`, `drop ID` (ID = path id, join index, or 'all')")
