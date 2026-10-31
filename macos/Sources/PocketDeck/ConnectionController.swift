@@ -2101,12 +2101,15 @@ final class ConnectionController {
                 // The window never opened: it goes away, the notice is what stays.
                 windows.closeFailedHandoff(stream: stream)
                 showTransient("Nothing to move. Your phone is showing its home screen or PocketDeck.")
-            } else if code == "launch_failed" || (stream != 0 && code == "no_stream") {
+            } else if code == "launch_failed" {
                 showTransient(ConnectionFailure.message(for: code) ?? "Something went wrong.")
             } else if stream == 0 && (code == "unavailable" || code == "bad_request") {
                 // `phone.panel` refused: the phone never turned its screen off.
                 windows.failPhonePanelRequest()
             }
+            // `no_stream` is never a launcher notice (WIN-38): WindowManager
+            // handles it by the window's state, and with no window it is only
+            // logged. The gate in Session means it should not arrive at all.
         default:
             break
         }
