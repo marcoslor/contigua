@@ -1,0 +1,316 @@
+package dev.pocketdeck.server
+
+import dev.pocketdeck.proto.FrameReader
+import dev.pocketdeck.proto.Frames
+import dev.pocketdeck.proto.Json
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.Closeable
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.Collections
+
+/**
+ * The real shell server's TLS join (direct-p1 item 7 round 2): the emulator
+ * logged `tls handshake failed: Unable to parse TLS packet header` on the join
+ * paths, which the fake phone can never show. Here [Server] itself accepts real
+ * TLS 1.3 on loopback with the test identities, and the same pair of hellos is
+ * driven once directly and once through a byte relay that only copies bytes,
+ * the way `tools/pdpathfault/pdpathfault.py` does.
+ */
+class PathTlsJoinTest {
+
+    private fun readJson(reader: FrameReader): Map<String, Any?> {
+        val frame = readPathFrame(reader) ?: error("connection closed")
+        return pathJson(frame)
+    }
+
+    /** Reads frames until one carries [key], which is what the path layer added. */
+    private fun gatherUntil(reader: FrameReader, key: String, value: Any?): Map<String, Any?> {
+        while (true) {
+            val message = readJson(reader)
+            if (message[key] == value) return message
+        }
+    }
+
+    private fun hello(path: String, join: String? = null): ByteArray {
+        val fields = mutableMapOf<String, Any?>(
+            "t" to "hello", "v" to 4, "path" to path,
+            "clientId" to "c1", "name" to "MacBook",
+        )
+        if (join != null) fields["join"] = join
+        return Frames.encodeJson(0, Json.encode(fields))
+    }
+
+    @Test
+    fun aPairedHelloGetsWelcomeSession() {
+        harness().use { phone ->
+            phone.client().use { first ->
+                val reader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(reader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+                assertEquals(32, session.length)
+                assertTrue("session id is not hex: $session", session.all { it in "0123456789abcdef" })
+                // The first path is live: the phone answers on it.
+                first.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 11))))
+                first.getOutputStream().flush()
+                assertEquals(11L, gatherUntil(reader, "ts", 11L)["ts"])
+            }
+        }
+    }
+
+    @Test
+    fun aJoinOverASecondTlsConnectionAttachesWithoutSuperseding() {
+        harness().use { phone ->
+            phone.client().use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(firstReader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+                assertEquals(32, session.length)
+
+                phone.client().use { second ->
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(hello("b2c3d4e5", join = session))
+                    second.getOutputStream().flush()
+                    val joined = readJson(secondReader)
+                    assertEquals("welcome", joined["t"])
+                    assertEquals(session, joined["session"])
+
+                    // The first path is still the same session's: the join did
+                    // not supersede it (PATH-3).
+                    first.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 12))))
+                    first.getOutputStream().flush()
+                    assertEquals(12L, gatherUntil(firstReader, "ts", 12L)["ts"])
+
+                    // The phone's path machine logged the attach, not an end.
+                    assertTrue(
+                        "no join line: ${phone.logs}",
+                        phone.logs.any { it == "paths: joined b2c3d4e5" },
+                    )
+                    assertFalse(
+                        "the join superseded the live session: ${phone.logs}",
+                        phone.logs.any { it.contains("superseded") },
+                    )
+                }
+                assertEquals(
+                    "the second TLS connection founded a second session",
+                    1, phone.platform.sessionChanges.count { it.connected },
+                )
+            }
+        }
+    }
+
+    @Test
+    fun aPairedHelloAndAJoinAcrossAByteRelayGetOneSession() {
+        harness().use { phone ->
+            ByteRelay(phone.port).use { relay ->
+                phone.client(relay.port).use { first ->
+                    val firstReader = FrameReader(first.getInputStream())
+                    first.getOutputStream().write(hello("a1b2c3d4"))
+                    first.getOutputStream().flush()
+                    val welcome = readJson(firstReader)
+                    assertEquals("welcome", welcome["t"])
+                    val session = welcome["session"] as String
+
+                    phone.client(relay.port).use { second ->
+                        val secondReader = FrameReader(second.getInputStream())
+                        second.getOutputStream().write(hello("b2c3d4e5", join = session))
+                        second.getOutputStream().flush()
+                        val joined = readJson(secondReader)
+                        assertEquals("welcome", joined["t"])
+                        assertEquals(session, joined["session"])
+
+                        first.getOutputStream().write(
+                            Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 13))),
+                        )
+                        first.getOutputStream().flush()
+                        assertEquals(13L, gatherUntil(firstReader, "ts", 13L)["ts"])
+                        assertTrue(
+                            "no join line through the relay: ${phone.logs}",
+                            phone.logs.any { it == "paths: joined b2c3d4e5" },
+                        )
+                    }
+                }
+                assertEquals(
+                    "the relay produced a second session",
+                    1, phone.platform.sessionChanges.count { it.connected },
+                )
+            }
+        }
+    }
+
+    /**
+     * The emulator's `tls handshake failed: Unable to parse TLS packet header`
+     * is what [Server] logs for *any* connection whose first bytes are not a
+     * TLS record (Conscrypt's wording on Android; the JVM provider names it
+     * differently). It is a per-connection line, not a broken TLS stack: the
+     * same listener must still serve the TLS pair and the join right after it.
+     */
+    @Test
+    fun aNonTlsProbeLogsAHandshakeFailureAndTheNextPairAndJoinStillWork() {
+        harness().use { phone ->
+            Socket("127.0.0.1", phone.port).use { probe ->
+                probe.getOutputStream().write("GET / HTTP/1.0\r\n\r\n".toByteArray())
+                probe.getOutputStream().flush()
+                probe.soTimeout = 3_000
+                runCatching { probe.getInputStream().read() }
+            }
+            val deadline = System.nanoTime() + 3_000_000_000L
+            while (System.nanoTime() < deadline &&
+                !phone.logs.any { it.startsWith("tls handshake failed") }
+            ) {
+                Thread.sleep(20)
+            }
+            assertTrue(
+                "a non-TLS byte on the listener left no handshake line: ${phone.logs}",
+                phone.logs.any { it.startsWith("tls handshake failed") },
+            )
+
+            phone.client().use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(firstReader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+
+                phone.client().use { second ->
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(hello("b2c3d4e5", join = session))
+                    second.getOutputStream().flush()
+                    val joined = readJson(secondReader)
+                    assertEquals("welcome", joined["t"])
+                    assertEquals(session, joined["session"])
+                }
+            }
+        }
+    }
+
+    /** One real [Server] with TLS on loopback and a paired Mac. */
+    private fun harness(): Harness {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (join paranoia)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (join paranoia)")
+        val logs = Collections.synchronizedList(mutableListOf<String>())
+        val server = Server(
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello, logs) },
+            log = { logs.add(it) },
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
+            { listOf(fingerprintHex(macIdentity)) },
+        )
+        return Harness(server.start(), macIdentity, phoneIdentity, platform, logs, server)
+    }
+
+    private class Harness(
+        val port: Int,
+        private val macIdentity: TestTls.Identity,
+        private val phoneIdentity: TestTls.Identity,
+        val platform: FakePlatform,
+        val logs: MutableList<String>,
+        private val server: Server,
+    ) : Closeable {
+        fun client(port: Int = this.port): Socket =
+            TestTls.clientSocket(macIdentity, phoneIdentity.certPem, "127.0.0.1", port)
+
+        override fun close() = server.stop()
+    }
+
+    private fun sessionFor(
+        platform: FakePlatform,
+        socket: Socket,
+        plain: Socket,
+        hello: Map<String, Any?>?,
+        logs: MutableList<String>,
+    ): Session = Session(
+        socket = socket,
+        plainSocket = plain,
+        display = platform,
+        catalog = platform,
+        launcher = platform,
+        injector = platform,
+        power = platform,
+        device = platform,
+        store = platform,
+        callback = platform,
+        now = { 1_000 },
+        log = { logs.add(it) },
+        handshakeTimeoutMs = 3_000,
+        tlsView = TlsV2Fixture.view,
+        gateProvider = { GateSettings(true, true) },
+        preReadHello = hello,
+    )
+
+    private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
+        dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
+    )
+
+    /**
+     * A process-local TCP relay: accepts any number of connections on one
+     * loopback port and copies every byte to the phone listener and back,
+     * unmodified — `pdpathfault --mode pass` in a JVM test.
+     */
+    private class ByteRelay(private val targetPort: Int) : Closeable {
+        private val lock = Any()
+        private val listener = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        private val sockets = mutableListOf<Socket>()
+
+        val port: Int get() = listener.localPort
+
+        init {
+            Thread({
+                while (!listener.isClosed) {
+                    val client = runCatching { listener.accept() }.getOrNull() ?: continue
+                    val upstream = runCatching { Socket("127.0.0.1", targetPort) }.getOrNull()
+                    if (upstream == null) {
+                        runCatching { client.close() }
+                        continue
+                    }
+                    synchronized(lock) {
+                        sockets += client
+                        sockets += upstream
+                    }
+                    pump(client, upstream)
+                    pump(upstream, client)
+                }
+            }, "tls-relay-accept").apply { isDaemon = true }.start()
+        }
+
+        private fun pump(from: Socket, to: Socket) {
+            Thread({
+                val buffer = ByteArray(64 * 1024)
+                try {
+                    val input = from.getInputStream()
+                    val output = to.getOutputStream()
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        output.flush()
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    runCatching { from.close() }
+                    runCatching { to.close() }
+                }
+            }, "tls-relay-pump").apply { isDaemon = true }.start()
+        }
+
+        override fun close() {
+            runCatching { listener.close() }
+            synchronized(lock) {
+                for (socket in sockets) runCatching { socket.close() }
+                sockets.clear()
+            }
+        }
+    }
+}
