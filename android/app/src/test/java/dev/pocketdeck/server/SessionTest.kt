@@ -17,6 +17,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -153,6 +155,14 @@ class SessionTest {
     private fun frameOf(encoded: ByteArray): Frame =
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5), encoded.copyOfRange(9, encoded.size))
 
+    /** Sends a reliable JSON frame with an explicit seq (the reorder vectors). */
+    private fun sendJsonAt(seq: Long, obj: Map<String, Any?>) {
+        val bytes = Frames.encodeJson(0, Json.encode(obj))
+        val out = client.getOutputStream()
+        out.write(PathCodec.encodeReliable(seq, frameOf(bytes)))
+        out.flush()
+    }
+
     /** Best-effort: a peer that answered and closed may reset before the ACK. */
     private fun sendAck(ack: Long) = runCatching {
         val out = client.getOutputStream()
@@ -269,6 +279,7 @@ class SessionTest {
         val error = readUntil("error")
         assertEquals("version", error["code"])
         assertEquals(4L, (error["v"] as Number).toLong())
+        assertEquals(listOf(3), platform.versionRefusals)
         assertEquals(null, reader.readFrame())
     }
 
@@ -1419,6 +1430,80 @@ class SessionTest {
         gates.set(GateSettings(true, false))
         session!!.applyGates()
         assertEquals("pairing_off", readUntil("error")["code"])
+    }
+
+    /**
+     * R-1: the hub has already acked a reliable frame by the time it reaches
+     * the session's inbound queue. A handler that blocks (a 2 s window.open, a
+     * slow drop write) must push back on the reader; a full queue must never
+     * lose a frame the Mac has been told was received.
+     */
+    @Test
+    fun everyAckedReliableFrameIsDeliveredWhileTheHandlerBlocks() {
+        addAndAuthenticate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        platform.onOpen = {
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        assertTrue("the handler never started", entered.await(2, TimeUnit.SECONDS))
+        repeat(300) { i -> send(mapOf("t" to "ping", "ts" to i)) }
+        release.countDown()
+        val seen = mutableListOf<Long>()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (seen.size < 300 && System.currentTimeMillis() < deadline) {
+            val message = readJson()
+            if (message["t"] == "pong") seen.add((message["ts"] as Number).toLong())
+        }
+        assertEquals((0L until 300L).toList(), seen)
+    }
+
+    /**
+     * R-11: a full reorder window whose missing seq is earlier in the same
+     * path's stream must not pause that reader: the gap could never arrive.
+     */
+    @Test
+    fun aFullReorderWindowOnOnePathNeverDeadlocks() {
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        // 2..65 fill the 64-frame window; 66 is the frame that does not fit.
+        for (seq in 2L..66L) sendJsonAt(seq, mapOf("t" to "ping", "ts" to seq))
+        sendJsonAt(1L, mapOf("t" to "ping", "ts" to 1L))
+        sendJsonAt(67L, mapOf("t" to "ping", "ts" to 67L))
+        val seen = mutableListOf<Long>()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (seen.size < 67 && System.currentTimeMillis() < deadline) {
+            val message = readJson()
+            if (message["t"] == "pong") seen.add((message["ts"] as Number).toLong())
+        }
+        assertEquals((1L..67L).toList(), seen)
+    }
+
+    /** R-16: the RELIABLE wrapper's stream is routing only; a mismatch is a
+     * protocol error that ends the session, not one path. */
+    @Test
+    fun aReliableFrameWithAMismatchedOuterStreamEndsTheSession() {
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        val inner = Frame(Frames.TYPE_JSON, 0, Json.encode(mapOf("t" to "ping", "ts" to 1)).toByteArray())
+        val wrapped = PathCodec.encodeReliable(1, inner)
+        client.getOutputStream().write(Frames.encode(PathCodec.TYPE_RELIABLE, 9, wrapped.copyOfRange(9, wrapped.size)))
+        client.getOutputStream().flush()
+        var closed = false
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (reader.readFrame() == null) {
+                    closed = true
+                    break
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                break
+            }
+        }
+        assertTrue("the session stayed open after the protocol error", closed)
     }
 
     private fun closeCurrent() {

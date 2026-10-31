@@ -68,6 +68,40 @@ object PathTimers {
 internal fun pongWatchPath(state: PathSessionState, sending: String?): String? =
     if (state is PathSessionState.Migrating) state.to else sending
 
+/**
+ * D-2: a pong lost on a path that is still delivering bytes is a ranking
+ * sample only. The phone's own pong loss never moves its sending path
+ * (PATH-8, R-10); it only demotes the path's standing.
+ */
+internal fun pongFailure(loss: PathHub.PongLoss, current: String?): PathSessionEvent? =
+    if (!loss.alive && loss.path == current) PathSessionEvent.PongLost(loss.path) else null
+
+/** R-14: the state's closed token for the transition log (PATH-14). */
+internal fun PathSessionState.describe(): String = when (this) {
+    is PathSessionState.Live -> "live $current"
+    is PathSessionState.Migrating -> "migrating $from->$to"
+    is PathSessionState.Orphaned -> "orphaned"
+    is PathSessionState.Ended -> "ended $reason"
+}
+
+/** The event's closed token: an id or reason may follow in the state, never here. */
+internal fun PathSessionEvent.token(): String = when (this) {
+    is PathSessionEvent.PathUp -> "up"
+    is PathSessionEvent.PathDown -> "down"
+    is PathSessionEvent.CurrentFailed -> "failed"
+    is PathSessionEvent.PongLost -> "pong-lost"
+    is PathSessionEvent.PeerSwitch -> "switch"
+    is PathSessionEvent.Close -> "close"
+    PathSessionEvent.GraceExpired -> "grace"
+    PathSessionEvent.DrainExpired -> "drain"
+}
+
+/** AGENTS.md: `paths: <from> --<event>--> <to>`, closed tokens only. */
+internal object PathSessionLog {
+    fun line(before: PathSessionState, event: PathSessionEvent, after: PathSessionState): String =
+        "paths: ${before.describe()} --${event.token()}--> ${after.describe()}"
+}
+
 class PathSessionMachine(
     var state: PathSessionState = PathSessionState.Orphaned(0.0),
     val live: MutableSet<String> = mutableSetOf(),
@@ -134,7 +168,6 @@ class PathSessionMachine(
                     return listOf(
                         PathSessionAction.StopPing(event.id),
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -152,25 +185,13 @@ class PathSessionMachine(
                 // PATH-7 scopes the 1.5 s rule to two or more paths: with one
                 // there is nothing to switch to and the sample above is all.
                 if (live.size < 2) return emptyList()
-                live.remove(event.id)
-                val next = bestLive()
-                if (next != null) {
-                    state = PathSessionState.Migrating(event.id, next, now)
-                    return listOf(
-                        PathSessionAction.StopPing(event.id),
-                        PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
-                        PathSessionAction.RequestKeyframes,
-                        PathSessionAction.StartPing(next),
-                        PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
-                    )
-                }
-                state = PathSessionState.Orphaned(now)
-                return listOf(
-                    PathSessionAction.StopPing(event.id),
-                    PathSessionAction.MarkReconnecting,
-                    PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
-                )
+                // D-2/R-10: demote, never close. The path stays live and pinged
+                // (a standby) and the phone does not move its sending path or
+                // replay: only the Mac's marker does that (PATH-8).
+                val next = live.filter { it != event.id }.maxByOrNull { scores[it] ?: -1 }
+                    ?: return emptyList()
+                state = PathSessionState.Live(next)
+                return listOf(PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)))
             }
             is PathSessionEvent.PathDown -> {
                 live.remove(event.id)
@@ -181,7 +202,6 @@ class PathSessionMachine(
                         return listOf(
                             PathSessionAction.StopPing(event.id),
                             PathSessionAction.SwitchTo(next),
-                            PathSessionAction.ReplayFromLastAck,
                             PathSessionAction.RequestKeyframes,
                             PathSessionAction.StartPing(next),
                             PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -235,7 +255,6 @@ class PathSessionMachine(
                     return listOf(
                         PathSessionAction.StopPing(event.id),
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -255,7 +274,6 @@ class PathSessionMachine(
                     state = PathSessionState.Migrating(s.from, next, now)
                     return listOf(
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -272,25 +290,17 @@ class PathSessionMachine(
                 )
             }
             is PathSessionEvent.PongLost -> {
-                // A migration means a failover already happened: a lost pong
-                // on its target now orphans (the grace), even when the old
-                // path's drain left it the only live path.
                 if (event.id != s.to) return emptyList()
-                live.remove(event.id)
-                val next = bestLive(excluding = s.from)
-                if (next != null) {
-                    state = PathSessionState.Migrating(s.from, next, now)
-                    return listOf(
-                        PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
-                        PathSessionAction.RequestKeyframes,
-                        PathSessionAction.StartPing(next),
-                        PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
-                    )
-                }
+                // D-2: demote the migration's target to a standby when the old
+                // path is usable; never close it and never replay here.
                 if (s.from in live) {
                     state = PathSessionState.Live(s.from)
                     return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(s.from)))
+                }
+                val next = live.filter { it != event.id }.maxByOrNull { scores[it] ?: -1 }
+                if (next != null) {
+                    state = PathSessionState.Live(next)
+                    return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(next)))
                 }
                 state = PathSessionState.Orphaned(now)
                 return listOf(
@@ -333,7 +343,6 @@ class PathSessionMachine(
                 state = PathSessionState.Live(event.id)
                 return listOf(
                     PathSessionAction.SwitchTo(event.id),
-                    PathSessionAction.ReplayFromLastAck,
                     PathSessionAction.RequestKeyframes,
                     PathSessionAction.StartPing(event.id),
                     PathSessionAction.Ranking(PathRankingEvent.PathUp(event.id)),
@@ -368,12 +377,7 @@ class PathSessionMachine(
     }
 
     /** A closed token for the transition log (PATH-14): never an address. */
-    fun describe(): String = when (val s = state) {
-        is PathSessionState.Live -> "live ${s.current}"
-        is PathSessionState.Migrating -> "migrating ${s.from}->${s.to}"
-        is PathSessionState.Orphaned -> "orphaned"
-        is PathSessionState.Ended -> "ended ${s.reason}"
-    }
+    fun describe(): String = state.describe()
 }
 
 enum class PathSwitchKind { PLANNED, UNPLANNED }
