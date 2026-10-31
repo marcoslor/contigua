@@ -269,7 +269,7 @@ tombstone_head() { # tombstones are root-only; the reader names the method
     fi
 }
 crash_evidence() {
-    local label="$1" log listing newest="" head="" reader="su 0 cat"
+    local label="$1" log listing newest="" head="" root_out="" reader="su 0 cat"
     [ "$CRASH_SAVED" = 1 ] &&
         { printf '[p1-proof] %s: crash evidence already saved\n' "$label"; return 0; }
     [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
@@ -282,10 +282,11 @@ crash_evidence() {
     listing="$(list_tombstones)"
     newest="$(printf '%s\n' "$listing" | newest_tombstone)"
     head="$(tombstone_head)"
-    # A real tombstone starts with a `pid:` line; anything else (denied su) is
-    # not worth saving and sends us to adb root.
+    # A real tombstone starts with a `pid:` line; anything else (denied su, or
+    # a tombstone the guest never finished writing) sends us to adb root.
     if ! printf '%s' "$head" | grep -q 'pid:'; then
-        if emu root 2>&1 | grep -qiE 'restarting adbd as root|already running as root'; then
+        root_out="$(emu root 2>&1 | tr -d '\r' | head -1)"
+        if printf '%s' "$root_out" | grep -qiE 'restarting adbd as root|already running as root'; then
             wait_for_device 30 || true
             reader="adb root"
             listing="$(list_tombstones)"
@@ -293,12 +294,15 @@ crash_evidence() {
             head="$(tombstone_head)"
         fi
     fi
-    printf '%s' "$head" | grep -q 'pid:' || reader="none (no readable tombstone)"
+    # Keep the method even when the file has no body (boot 7's tombstone_05 is
+    # 0 bytes): the reader is what the report has to name.
+    printf '%s' "$head" | grep -q 'pid:' || reader="$reader (no tombstone body)"
     {
         printf '== crash evidence: %s at %s ==\n' "$label" "$(date '+%Y-%m-%d %H:%M:%S')"
         printf '%s\n' '-- ls -l /data/tombstones --'
         printf '%s\n' "$listing"
         printf '%s\n' "-- newest tombstone: ${newest:-none} (read by: $reader) --"
+        printf '%s\n' "-- adb root: ${root_out:-not tried} --"
         printf '%s\n' "${head:-(no tombstone head)}"
         printf '%s\n' '-- dumpsys meminfo totals --'
         emu shell "dumpsys meminfo" 2>/dev/null | tr -d '\r' |
