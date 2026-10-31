@@ -58,7 +58,7 @@ class PathSessionTest {
     }
 
     @Test
-    fun aPlannedPeerSwitchMigratesAndDrainsTheOldPath() {
+    fun aPlannedPeerSwitchMigratesAndKeepsTheOldPathAsStandby() {
         val m = machine(live = setOf("a", "b"))
         val actions = m.handle(PathSessionEvent.PeerSwitch("b", 9, "a"), 20.0)
         assertEquals(PathSessionState.Migrating("a", "b", 20.0), m.state)
@@ -70,26 +70,25 @@ class PathSessionTest {
             actions,
         )
         assertEquals(
-            listOf(
-                PathSessionAction.ClosePath("a"),
-                PathSessionAction.StopPing("a"),
-                PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b")),
-            ),
+            listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b"))),
             m.handle(PathSessionEvent.PeerSwitch("b", 3, "b"), 20.1),
         )
         assertEquals(PathSessionState.Live("b"), m.state)
-        assertFalse(m.live.contains("a"))
+        assertEquals("E-3: the old path stays attached as a standby", true, m.live.contains("a"))
     }
 
+    /** E-3/RR-3: the Mac decides a path's life; a marker arriving on the new
+     * path moves our sending path and leaves the old one a standby, never
+     * closed (the Mac's demoted path, its pings and its margin win-back were
+     * dying on a real phone). */
     @Test
-    fun aPeerSwitchArrivingOnTheNewPathIsAlreadyComplete() {
+    fun aPeerSwitchArrivingOnTheNewPathKeepsTheOldPathAsStandby() {
         val m = machine(live = setOf("a", "b"))
         val actions = m.handle(PathSessionEvent.PeerSwitch("b", 9, "b"), 3.0)
         assertEquals(PathSessionState.Live("b"), m.state)
+        assertTrue("the old path stays attached as a standby", m.live.contains("a"))
         assertEquals(
             listOf(
-                PathSessionAction.ClosePath("a"),
-                PathSessionAction.StopPing("a"),
                 PathSessionAction.StartPing("b"),
                 PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b")),
             ),
@@ -289,18 +288,6 @@ class PathSessionTest {
     }
 
     @Test
-    fun theDrainBackstopClosesTheOldPathAndStaysMigrating() {
-        val m = machine(live = setOf("a", "b"))
-        m.handle(PathSessionEvent.PeerSwitch("b", 1, "a"), 0.0)
-        assertEquals(
-            listOf(PathSessionAction.ClosePath("a"), PathSessionAction.StopPing("a")),
-            m.handle(PathSessionEvent.DrainExpired, 2.0),
-        )
-        assertEquals(PathSessionState.Migrating("a", "b", 0.0), m.state)
-        assertFalse(m.live.contains("a"))
-    }
-
-    @Test
     fun theNewPathFailingDuringMigrationFallsBackToTheOldOne() {
         val m = machine(live = setOf("a", "b"))
         m.handle(PathSessionEvent.PeerSwitch("b", 1, "a"), 0.0)
@@ -346,7 +333,6 @@ class PathSessionTest {
             PathSessionEvent.CurrentFailed("a"),
             PathSessionEvent.PeerSwitch("b", 1, "a"),
             PathSessionEvent.GraceExpired,
-            PathSessionEvent.DrainExpired,
             PathSessionEvent.Close("y"),
         )) {
             assertEquals(listOf(PathSessionAction.Ignore), m.handle(event, 99.0))

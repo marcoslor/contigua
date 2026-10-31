@@ -212,8 +212,6 @@ class PathHub(
     private var closed = false
     /** The path that delivered the last in-order frame: where the gap is. */
     private var gapPath: String? = null
-    /** Planned-switch old paths waiting for the peer's marker / the 2 s backstop. */
-    private val draining = HashMap<String, Long>()
 
     val pathCount: Int get() = synchronized(lock) { paths.size }
     val currentPath: String? get() = synchronized(lock) { current }
@@ -268,7 +266,6 @@ class PathHub(
         val t = synchronized(lock) {
             val removed = paths.remove(id) ?: return false
             if (current == id) current = null
-            draining.remove(id)
             pingSentAt.remove(id)
             lastInboundAt.remove(id)
             joinedAwaitingPong.remove(id)
@@ -374,28 +371,14 @@ class PathHub(
         }
     }
 
-    /** Moves the sending path; the old one closes after the peer's marker or 2 s. */
-    fun moveTo(to: String, plannedFrom: String?) {
+    /**
+     * Moves the sending path. E-3: the phone never closes the path it leaves;
+     * it stays attached as a standby and the Mac closes it when it decides to.
+     */
+    fun moveTo(to: String) {
         synchronized(lock) {
             if (!paths.containsKey(to)) return
             current = to
-            if (plannedFrom != null && plannedFrom != to && paths.containsKey(plannedFrom)) {
-                draining[plannedFrom] = now() + DRAIN_BACKSTOP_MS
-            }
-        }
-    }
-
-    fun closeDrained() {
-        val due = synchronized(lock) {
-            val expired = draining.filterValues { now() >= it }.keys.toList()
-            for (id in expired) {
-                draining.remove(id)
-            }
-            expired
-        }
-        for (id in due) {
-            log("path drain backstop: $id")
-            detach(id)
         }
     }
 
@@ -648,7 +631,6 @@ class PathHub(
                 val due = sent + JOINED_PING_DROP_MS
                 if (due in 0 until next) next = due
             }
-            for (due in draining.values) if (due in 0 until next) next = due
             if (ackDueAt != 0L && ackDueAt in 0 until next) next = ackDueAt
             next
         }
@@ -693,7 +675,6 @@ class PathHub(
         const val PONG_TIMEOUT_MS = 1_500L
         /** D-2: inbound bytes this recently mean the path is alive despite a pong loss. */
         const val PONG_ALIVE_MS = 1_500L
-        const val DRAIN_BACKSTOP_MS = 2_000L
         const val JOINED_PING_DROP_MS = 5_000L
         const val ACK_MS = 10L
         const val ACK_FRAMES = 16
