@@ -66,7 +66,7 @@ final class SessionConcurrencyTests: XCTestCase {
                 session.sendJSON(["t": "noop", "n": n])
                 session.touch(TouchEvent(action: .move, nx: 0.5, ny: 0.5), stream: 1)
                 n += 1
-                Thread.sleep(forTimeInterval: 0.001)
+                Thread.sleep(forTimeInterval: 0.001)  // real-time: a person's typing rate, over the connect window
             }
         }
         session.start()
@@ -76,7 +76,7 @@ final class SessionConcurrencyTests: XCTestCase {
             session.key(KeyEvent(action: 0, keycode: UInt32(29 + n % 20)), stream: 1)
             session.sendBytes([1, 2, 3, 4, 5, 6, 7, 8, 9])
             n += 1
-            Thread.sleep(forTimeInterval: 0.001)
+            Thread.sleep(forTimeInterval: 0.001)  // real-time: a person's typing rate, over the connect window
         }
         stopNow()
         XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")

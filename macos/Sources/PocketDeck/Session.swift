@@ -828,6 +828,10 @@ final class Session {
                 Log.session.error("paths: ack above what was sent")
                 phoneErrorCode = "protocol"
                 fail("protocol")
+            case .protocolError(let token):
+                Log.session.error("paths: protocol error (\(token, privacy: .public))")  // log-ok: a closed token
+                phoneErrorCode = "protocol"
+                fail("protocol")
             }
         }
     }

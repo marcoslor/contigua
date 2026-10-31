@@ -567,7 +567,7 @@ final class PathLayer {
             return true
         }
         guard arm else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self] in  // gcd: the 10 ms ack flush timer hops back to the main queue
             self?.flushAck()
         }
     }
