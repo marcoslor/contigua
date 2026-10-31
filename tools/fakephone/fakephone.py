@@ -1700,6 +1700,9 @@ class PathConn(object):
                         self.session._inbound.put(event)
                     elif kind == "ack_above":
                         self.session._inbound.put(("ack_above",))
+                    elif kind == "pong":
+                        self.session.phone.events.path(
+                            "pong", event[1], current=self.session.hub.current_path)
                     elif kind == "backpressure":
                         # The reorder window is full: stop reading this path
                         # instead of dropping the frame (PATH-10).
@@ -2217,6 +2220,7 @@ class Session(object):
         self.phone.sender = self.sender
         self.phone.events.path("up", self.path_id, current=self.path_id, joined=False)
         self._apply_path_flags(self.path_id, 1)
+        self._ping_on_welcome(self.path_id)
         # The tail the v2 welcome did itself, now that reliable frames have a
         # path layer to travel through.
         self.send_state()
@@ -2253,6 +2257,10 @@ class Session(object):
             # Attach before the welcome: a debug.paths reply racing the join
             # must not miss the path the Mac is about to hear about.
             self._path_conns[path_id] = PathConn(self, path_id, transport)
+            # --ping-on-welcome: the phone's ticker runs on its session thread
+            # while the join is attached here, on the acceptor: its ping can be
+            # on the wire ahead of the join's welcome. Model that race.
+            self._ping_on_welcome(path_id)
             self.hub.send_json_on(path_id, {"t": "welcome", "session": self.session_id,
                                             "device": self.device_message()})
             self._path_conns[path_id].start()
@@ -2260,6 +2268,14 @@ class Session(object):
             self._apply_path_flags(path_id, len(self._path_conns))
             dbg("paths: joined %s" % path_id)
             return "attached"
+
+    def _ping_on_welcome(self, path_id):
+        """--ping-on-welcome: the phone's first ping names the path it has just
+        attached. The founder's follows its welcome; a join's can precede it
+        (the ticker's race, modelled above). A pong must come back at once."""
+        if not self.phone.args.ping_on_welcome:
+            return
+        self.hub.ping_now(path_id)
 
     def _log_seq(self, path_id, seq):
         self.phone.events.rel(path_id, seq)
@@ -4822,6 +4838,8 @@ def build_parser():
                    help="how many path listeners to open (ports PORT..PORT+N-1)")
     p.add_argument("--join", metavar="ID", default=None,
                    help="serve only this 32-hex session id (a founder uses it as its id)")
+    p.add_argument("--ping-on-welcome", action="store_true",
+                   help="ping each path the moment its welcome is written (the real server does)")
     p.add_argument("--no-pong", metavar="PATH", action="append", default=[],
                    help="black-hole a path's pings (PATH = id, join index, or 'all')")
     p.add_argument("--slow-pong", nargs=2, metavar=("PATH", "MS"), action="append", default=[],
