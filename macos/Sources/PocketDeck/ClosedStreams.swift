@@ -27,12 +27,20 @@ struct ClosedStreams: Equatable {
     static let closing = "window.close"
 
     private(set) var ids: Set<UInt32> = []
+    /// The streams the Mac has open right now: a mirrored app window runs
+    /// with the phone's screen off, and that counts as activity (RR-9).
+    private(set) var open: Set<UInt32> = []
+
+    /// True while any stream the Mac opened is not closed: D-1's "a stream
+    /// runs" half of the fast-ping rule.
+    var hasOpenStream: Bool { !open.isEmpty }
 
     /// Decide one per-stream message. `type` is its protocol name
     /// (`window.pause`, `hover`, …), `stream` the id it carries.
     mutating func decide(type: String, stream: UInt32) -> Decision {
         if Self.opening.contains(type) {
             ids.remove(stream)
+            open.insert(stream)
             return .send
         }
         if type == Self.closing {
@@ -40,6 +48,7 @@ struct ClosedStreams: Equatable {
             // and answers no_stream. The first one ends it.
             guard !ids.contains(stream) else { return .drop }
             ids.insert(stream)
+            open.remove(stream)
             return .send
         }
         return ids.contains(stream) ? .drop : .send

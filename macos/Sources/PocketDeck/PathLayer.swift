@@ -110,6 +110,8 @@ final class PathLayer {
     /// Attached path ids, for a new dial that must not reuse one (PATH-19).
     var pathIds: [String] { locked { order } }
     var ackValue: UInt64 { locked { reorder.ack } }
+    /// RR-9/PATH-7: a bulk transfer ran within the last [transferWindowMs].
+    var transferActive: Bool { locked { transferActiveLocked(nowMs()) } }
 
     init(nowMs: @escaping () -> Int64 = { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) },
          log: @escaping (String) -> Void = { _ in }) {
@@ -746,8 +748,9 @@ final class PathLayer {
     static let pingIntervalMs: Int64 = 2_000
     /// The slower ping with two paths and no screen or transfer (D-1).
     static let pingIdleIntervalMs: Int64 = 15_000
-    /// How recently a bulk frame must have moved to count as "a transfer runs".
-    static let transferWindowMs: Int64 = 3_000
+    /// How recently a bulk frame must have moved to count as "a transfer runs"
+    /// (PATH-7, the same 2 s on both sides).
+    static let transferWindowMs: Int64 = 2_000
     static let pongTimeoutMs: Int64 = 1_500
     /// A path that delivered anything this recently is alive (D-2).
     static let aliveMs: Int64 = 1_500
