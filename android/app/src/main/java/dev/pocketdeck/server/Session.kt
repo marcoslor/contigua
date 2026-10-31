@@ -721,11 +721,12 @@ class Session(
     private fun followSwitch(item: Inbound.PeerSwitch) {
         val plannedFrom = if (item.arrivedOn != item.path && hub.hasPath(item.arrivedOn)) item.arrivedOn else null
         val from = hub.currentPath
+        // E-3: the old path stays attached as a standby (still read, still
+        // answering pings); the Mac decides when it goes.
+        hub.moveTo(item.path)
         if (plannedFrom != null) {
             hub.sendMarkerOn(plannedFrom, item.path)
-            hub.moveTo(item.path, plannedFrom)
         } else {
-            hub.moveTo(item.path, plannedFrom = null)
             hub.sendMarker(item.path)
         }
         if (from != null && from != item.path) {
@@ -736,8 +737,6 @@ class Session(
         hub.replayOnCurrent()
         // A lost AUDIO_CONFIG costs one frame, not the rest of the audio (§5.6).
         lastAudioConfig?.let { queue.enqueueControl(0, it) }
-        // The marker arrived on the path being left: our own marker is now out,
-        // so the switch is complete and the old path may drain (PATH-9).
         handlePathEvent(PathSessionEvent.PeerSwitch(item.path, item.seq, item.path))
     }
 
@@ -763,7 +762,6 @@ class Session(
                 else PathSessionEvent.PathDown(stale),
             )
         }
-        hub.closeDrained()
         val s = pathMachine.state
         if (s is PathSessionState.Orphaned) {
             handlePathEvent(PathSessionEvent.GraceExpired)
