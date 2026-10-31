@@ -22,6 +22,15 @@
 #
 # Run it as: heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
 # Rehearse it as the same heavy.sh line with --check (no device, no boot).
+#
+# --dry-run (or P1_DRY=1) runs the whole flow with no device, app or proxy:
+# every external step becomes a stub that returns at once and fills the log or
+# state file it would produce from canned evidence ($P1_DRY_EVIDENCE, default
+# /tmp/pd-direct-p1-emu-boot8; hand-written where boot 8 predates a log line).
+# Nothing boots, no adb runs and the ledger/budget are never touched. It prints
+# `DRY reached <phase>` for every phase, exercises every predicate, and exits
+# with the verdict count. An ERR trap prints `DRY shell error line N` for any
+# shell error: zero such lines is the pass condition.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,17 +41,27 @@ MODE=run
 for arg in "$@"; do
     case "$arg" in
         --check) MODE=check ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --dry-run) MODE=dry ;;
+        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
         *) echo "p1-proof.sh: unknown flag $arg" >&2; exit 2 ;;
     esac
 done
+if [ "$MODE" = run ] && [ "${P1_DRY:-0}" = 1 ]; then
+    MODE=dry
+fi
 
 WORK="${PD_PROOF_WORK:-/tmp/pd-direct-p1-emu}"
+# A dry run never shares the real boot's evidence dir: it wipes $WORK.
+if [ "$MODE" = dry ] && [ -z "${PD_PROOF_WORK:-}" ]; then
+    WORK=/tmp/pd-direct-p1-dry
+fi
 PROFILE="pathsemu$$"
 SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
 APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
 FAIL=0
 PHASE=""
+# --dry-run coverage marks (see the dry section below); a no-op otherwise.
+dry_mark() { :; }
 
 # The drop script is generated once and used by both the run and --check, so the
 # rehearsal parses exactly the lines the boot will load. Each wait is <= 60 s:
@@ -58,6 +77,7 @@ EOF
 }
 
 pin_stored() { # 0 when the Mac profile holds a phone pin
+    dry_mark predicate pin_stored
     local pins="$SUPPORT/pins.json"
     [ -s "$pins" ] || return 1
     "$PYTHON" - "$pins" <<'PY'
@@ -77,10 +97,16 @@ PY
 # dial start on a free slot instead of racing one. Returns 1 when the slot did
 # not free.
 wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
+    dry_mark predicate wait_slot_free
     local log="$1" cap="$2" label="$3"
     # A second line: `local` expands $cap before assigning it, and set -u
     # made that fatal at boot 10 (pair PASS, then a dead boot).
     local deadline=$(( $(date +%s) + cap ))
+    if [ "$MODE" = dry ]; then
+        printf '10-31 08:14:47.870 I/PocketDeckSvc( 3679): session slot: live --ended--> free\n' > "$log"
+        printf '[p1-proof] %s: the phone slot is free (dry)\n' "$label"
+        return 0
+    fi
     while [ "$(date +%s)" -lt "$deadline" ]; do
         emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
         if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
@@ -119,6 +145,7 @@ pair_failure_reason() {
 # class: `paired`, `product` or `rig:<reason>`. Only a tap that the Mac then
 # failed is the product's; no prompt, no tap or no pin is the rig's.
 pair_outcome() {
+    dry_mark predicate pair_outcome
     local pin="$1" prompt="$2" log="$3"
     if [ "$pin" = 1 ]; then
         printf 'paired'
@@ -133,6 +160,7 @@ pair_outcome() {
 # pair_with_retry — 0 paired, 1 failed twice, 2 product failure (not retried).
 # pair_once (the device step) sets PAIR_CLASS to paired|rig|product.
 pair_with_retry() {
+    dry_mark predicate pair_with_retry
     local attempt
     for attempt in 1 2; do
         pair_once "$attempt"
@@ -321,11 +349,190 @@ mkdir -p "$WORK"
 # even when the run dies before its result table. `tee` flushes on exit.
 exec > >(tee "$WORK/p1-proof.out") 2>&1
 
-section() { PHASE="$1"; printf '\n== %s ==\n' "$1"; }
+# --- --dry-run: stubs for every external step -------------------------------
+# The boot-10 death proved the rehearsal gap: --check never runs the phases, so
+# a `local` bug in the slot wait cost the boot. Dry mode runs the real flow and
+# replaces only the outside world: adb, the emulator, the Mac app, poc.py,
+# the fault proxies and the unified log. Each stub returns at once and writes
+# what the run reads from canned evidence. The verdicts still come from the
+# predicates, so a broken predicate fails here, not on the device.
+DRY_EVIDENCE="${P1_DRY_EVIDENCE:-/tmp/pd-direct-p1-emu-boot8}"
+
+# mac_app <out file> <app args...> — one launch door for the real app and its
+# dry stub. The caller backgrounds it and keeps the PID to stop it.
+mac_app() {
+    local out="$1"
+    shift
+    if [ "$MODE" = dry ]; then
+        : > "$out"
+        dry_app "$@"
+    else
+        "$APP" "$@" > "$out" 2>&1
+    fi
+}
+
+# poc <args...> — poc.py's device-side calls (the pair prompt, the slot pair
+# and the slot check), or their canned answers.
+poc() {
+    if [ "$MODE" != dry ]; then
+        "$PYTHON" "$HERE/poc.py" "$@"
+        return
+    fi
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            wait-prompt)
+                printf 'wait-prompt: prompt shows code 111111\ntap-allow: tapped at 896,2304 (dialog)\n' ;;
+            pair) printf 'deckctl: pair ok (device=e0e0e0e0e0e0e0e0)\n' ;;
+            check) printf 'welcome: id=e0e0e0e0e0e0e0e0\n' ;;
+        esac
+    done
+}
+
+if [ "$MODE" = dry ]; then
+    # Any shell error is a dry-run failure even where it would not exit the
+    # script (set -u exits; set -e is deliberately off). The line is kept in a
+    # file so a subshell's error is still counted.
+    trap 'printf "%s\n" "$LINENO" >> "$WORK/dry-errors.log"; echo "DRY shell error line $LINENO" >&2' ERR
+    dry_mark() { printf '%s %s\n' "$1" "$2" >> "$WORK/dry-marks.txt"; }
+    dry_now() { python3 -c 'import time; print("%.6f" % time.time())'; }
+
+    # The fixtures: boot 8's real phone logs when the evidence dir is there,
+    # hand-written where a line postdates that boot (the Mac's `paths: attached`
+    # and `paths: sending`, added after it).
+    mkdir -p "$WORK/dry"
+    cat > "$WORK/dry/mac-join.log" <<'EOF'
+2026-10-31 08:14:11.263548-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] tls connected (path 1a8a3f7c); hello v4
+2026-10-31 08:14:13.283628-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] tls connected (path f7fcdb99); hello v4
+2026-10-31 08:14:13.300000-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] paths: attached f7fcdb99 (paths 2)
+EOF
+    : > "$WORK/dry/mac-grace.log"
+    cp "$DRY_EVIDENCE/phone-join.log" "$WORK/dry/phone-join.log" 2>/dev/null ||
+        printf '%s\n' '10-31 08:14:11.522 I/PocketDeckSvc( 3679): session slot: free --adopted--> live' \
+            '10-31 08:14:14.764 I/PocketDeckSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
+            > "$WORK/dry/phone-join.log"
+    # Boot 8 predates the `(paths N)` suffix on the phone's joined line; the
+    # canned log carries the line the current build prints.
+    "$PYTHON" - "$WORK/dry/phone-join.log" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+text = re.sub(r'(paths: joined [0-9a-f]+)(?! \(paths )', r'\1 (paths 2)', text)
+open(path, "w").write(text)
+PY
+    cp "$DRY_EVIDENCE/phone-drop.log" "$WORK/dry/phone-drop.log" 2>/dev/null ||
+        printf '%s\n' '10-31 08:14:27.698 I/PocketDeckSvc( 3679): drop 153630531: streaming 33554432 bytes' \
+            '10-31 08:14:28.281 I/PocketDeckSvc( 3679): drop 153630531: saved /sdcard/Download/PocketDeck/pd-direct-p1.bin' \
+            > "$WORK/dry/phone-drop.log"
+    cp "$DRY_EVIDENCE/phone-grace.log" "$WORK/dry/phone-grace.log" 2>/dev/null ||
+        printf '%s\n' '10-31 08:14:47.923 I/PocketDeckSvc( 3679): paths: joined 1ece914d (paths 2)' \
+            '10-31 08:15:25.185 I/PocketDeckSvc( 3679): paths: ended graceExpired' \
+            '10-31 08:15:25.227 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
+            > "$WORK/dry/phone-grace.log"
+    printf '%s\n' '10-31 08:14:47.870 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
+        > "$WORK/dry/phone-pair.log"
+    printf '%s\n' '-- phone evidence (dry-run: no device) --' \
+        > "$WORK/dry/phone-evidence.log"
+    : > "$WORK/dry-marks.txt"
+
+    # The app stub: it produces the state the launch would (a pin) and the
+    # phase-timed lines the run waits for. The join's drop lines land only
+    # after the run took its log offset, and the grace end is a real 30 s so
+    # the `>= 28 s` verdict is exercised, not skipped.
+    dry_app() {
+        case "$PHASE" in
+            pair)
+                mkdir -p "$SUPPORT"
+                "$PYTHON" - "$SUPPORT/pins.json" <<'PY'
+import json, sys
+json.dump([{"phoneFingerprintHex": "e0" * 32}], open(sys.argv[1], "w"))
+PY
+                ;;
+            join)
+                for _ in $(seq 1 600); do
+                    [ -e "$WORK/dry-drop-live" ] && break
+                    sleep 0.1
+                done
+                {
+                    printf '2026-10-31 08:14:27.719496-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:app] drop: sending 33554432 bytes\n'
+                    printf '2026-10-31 08:14:27.900000-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] paths: sending 1a8a3f7c -> f7fcdb99 (failure)\n'
+                    printf '2026-10-31 08:14:28.317404-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:app] drop: ok: saved\n'
+                } >> "$WORK/mac-join.log"
+                ;;
+            grace)
+                for _ in $(seq 1 600); do
+                    grep -q 'mode blackhole' "$WORK/fault-a.grace.ctl" 2>/dev/null &&
+                        grep -q 'mode blackhole' "$WORK/fault-b.grace.ctl" 2>/dev/null && break
+                    sleep 0.1
+                done
+                sleep 30
+                printf '2026-10-31 08:15:22.451896-0300  localhost PocketDeck[59825]: [dev.pocketdeck.mac:session] paths: orphaned --grace--> ended\n' \
+                    >> "$WORK/mac-grace.log"
+                ;;
+        esac
+    }
+
+    # The guest: every adb answer the flow reads, canned.
+    emu() {
+        case "$1" in
+            devices)
+                printf 'List of devices attached\nemulator-5554\tdevice\n' ;;
+            logcat)
+                case "$*" in
+                    *" -c"*) : ;;
+                    *"-b all"*) cat "$WORK/dry/phone-evidence.log" 2>/dev/null ;;
+                    *)
+                        case "$PHASE" in
+                            join)
+                                if [ -e "$WORK/drop-go" ]; then
+                                    # The phone reports the save only once the
+                                    # Mac has the result, so the drop verdicts
+                                    # cannot read past the app stub.
+                                    if grep -q 'drop: ok' "$WORK/mac-join.log" 2>/dev/null; then
+                                        cat "$WORK/dry/phone-drop.log"
+                                    else
+                                        sed -n '1p' "$WORK/dry/phone-drop.log"
+                                    fi
+                                else
+                                    cat "$WORK/dry/phone-join.log"
+                                fi ;;
+                            grace|version|slot) cat "$WORK/dry/phone-grace.log" ;;
+                            *) cat "$WORK/dry/phone-pair.log" ;;
+                        esac ;;
+                esac ;;
+            shell)
+                case "$*" in
+                    *"stat -c %s"*) printf '12582912\n' ;;
+                    *sha256sum*)
+                        printf '%s  /sdcard/Download/PocketDeck/dry.bin\n' \
+                            "$(shasum -a 256 "$WORK"/pd-direct-p1-*.bin 2>/dev/null | awk '{print $1}')" ;;
+                    *"dumpsys power"*) printf '  mWakefulness=Awake\n' ;;
+                    *"dumpsys display"*) printf '  mScreenState=ON\n' ;;
+                    *"dumpsys activity"*) printf '  ResumedActivity: ActivityRecord{1 u0 dev.pocketdeck/.app.MainActivity t1}\n' ;;
+                    *"pidof"*) printf '1234\n' ;;
+                    *"dumpsys meminfo"*) printf 'Total RAM: 2,532,116K\n' ;;
+                    *) : ;;
+                esac ;;
+            forward|wait-for-device|uninstall) : ;;
+            root) printf 'adbd is already running as root\n' ;;
+            *) : ;;
+        esac
+    }
+fi
+
+section() {
+    PHASE="$1"
+    printf '\n== %s ==\n' "$1"
+    if [ "$MODE" = dry ]; then
+        dry_mark phase "$1"
+        printf 'DRY reached %s\n' "$1"
+    fi
+}
 ok() { printf 'PASS [%s] %s\n' "$PHASE" "$*"; }
 bad() { printf 'FAIL [%s] %s\n' "$PHASE" "$*"; FAIL=$((FAIL + 1)); }
 
 wait_for() { # wait_for <seconds> <command...>
+    dry_mark predicate wait_for
     local deadline=$(( $(date +%s) + $1 ))
     shift
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -336,6 +543,14 @@ wait_for() { # wait_for <seconds> <command...>
 }
 
 stream_log() { # stream_log <pid> <file>
+    if [ "$MODE" = dry ]; then
+        # No unified log in a dry run: the phase's canned Mac log.
+        case "$PHASE" in
+            join) cat "$WORK/dry/mac-join.log" > "$2" ;;
+            *) : > "$2" ;;
+        esac
+        return 0
+    fi
     /usr/bin/log stream --info --style syslog --predicate "processID == $1" \
         > "$2" 2>/dev/null &
     echo $!
@@ -343,6 +558,9 @@ stream_log() { # stream_log <pid> <file>
 
 refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream start
                 # must not hide a line the checks are about
+    if [ "$MODE" = dry ]; then
+        return 0
+    fi
     /usr/bin/log show --last 10m --info --style syslog \
         --predicate "processID == $1 AND subsystem == \"dev.pocketdeck.mac\"" \
         2>/dev/null >> "$2"
@@ -475,15 +693,15 @@ crash_evidence() {
 
 stop_app() {
     if [ -n "$APP_PID" ]; then
-        kill "$APP_PID" 2>/dev/null
+        kill "$APP_PID" 2>/dev/null || true
         for _ in $(seq 1 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.1; done
-        kill -9 "$APP_PID" 2>/dev/null
-        wait "$APP_PID" 2>/dev/null
+        kill -9 "$APP_PID" 2>/dev/null || true
+        wait "$APP_PID" 2>/dev/null || true
         APP_PID=""
     fi
     if [ -n "$LOG_STREAM" ]; then
-        kill "$LOG_STREAM" 2>/dev/null
-        wait "$LOG_STREAM" 2>/dev/null
+        kill "$LOG_STREAM" 2>/dev/null || true
+        wait "$LOG_STREAM" 2>/dev/null || true
         LOG_STREAM=""
     fi
 }
@@ -503,6 +721,17 @@ start_faults() {
     local phase="$1" amode="$2" bmode="$3" delay="${4:-1500}"
     printf 'mode %s\n' "$amode" > "$WORK/fault-a.$phase.ctl"
     printf 'mode %s\n' "$bmode" > "$WORK/fault-b.$phase.ctl"
+    if [ "$MODE" = dry ]; then
+        # The proxies' start lines are the only event the run waits for here;
+        # the drop's byte and mode events are appended by the drop phase.
+        printf '{"ev":"start","ts":%s,"listen":47821}\n' "$(dry_now)" > "$WORK/fault-a.$phase.events"
+        printf '{"ev":"start","ts":%s,"listen":47822}\n' "$(dry_now)" > "$WORK/fault-b.$phase.events"
+        : > "$WORK/fault-a.$phase.log"
+        : > "$WORK/fault-b.$phase.log"
+        PROXY_A_PID=""
+        PROXY_B_PID=""
+        return 0
+    fi
     "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47821 \
         --connect "127.0.0.1:${ADDR##*:}" --mode "$amode" --rate-mbit 16 \
         --ctl-file "$WORK/fault-a.$phase.ctl" --events "$WORK/fault-a.$phase.events" \
@@ -521,14 +750,41 @@ CLEANED=0
 cleanup() {
     # A timeout's TERM must not cost the evidence: traps below exit, and this is
     # idempotent because EXIT runs once more.
-    [ "$CLEANED" = 1 ] && return 0
+    local trap_rc=$?
+    if [ "$CLEANED" = 1 ]; then
+        return 0
+    fi
     CLEANED=1
+    local died=0
+    if [ "$MODE" = dry ] && [ ! -e "$WORK/dry-summary" ]; then
+        died=1
+    fi
+    if [ "$MODE" = dry ]; then
+        dry_mark phase cleanup
+        printf '\nDRY reached cleanup\n'
+        if [ -s "$WORK/dry-errors.log" ]; then
+            printf 'DRY shell errors: %s\n' "$(wc -l < "$WORK/dry-errors.log" | tr -d ' ')"
+        else
+            printf 'DRY shell errors: 0\n'
+        fi
+        # A `local` expansion that fails under set -u can end the shell with
+        # status 0 (exactly boot 10's death), so the marker, not $?, proves
+        # the run reached its summary.
+        if [ "$died" = 1 ]; then
+            printf 'DRY died before its summary (status %s)\n' "$trap_rc"
+        fi
+    fi
     # First: the phone is still up and its buffers still hold the failure.
     phone_evidence cleanup
     crash_evidence cleanup
     stop_app
-    [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null
+    [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null || true
     stop_proxies
+    if [ "$MODE" = dry ]; then
+        rm -rf "$SUPPORT"
+        [ "$died" = 0 ] || exit 1
+        return 0
+    fi
     "$ADB" -s "$SERIAL" forward --remove tcp:47812 >/dev/null 2>&1 || true
     # The only allowed kill: this emulator's own console.
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
@@ -539,7 +795,19 @@ trap 'exit 130' INT
 
 # --- the firmware: one boot ------------------------------------------------
 section boot
-start_rig() { bash "$HERE/start.sh" --no-build > "$WORK/start.log" 2>&1; }
+start_rig() {
+    if [ "$MODE" = dry ]; then
+        # The boot-8 start log has the two lines the run parses.
+        if [ -s "$DRY_EVIDENCE/start.log" ]; then
+            cat "$DRY_EVIDENCE/start.log" > "$WORK/start.log"
+        else
+            printf 'POCKETDECK_ADDR=127.0.0.1:47811\nPOCKETDECK_DEVICE_PORT=34567\n' \
+                > "$WORK/start.log"
+        fi
+        return 0
+    fi
+    bash "$HERE/start.sh" --no-build > "$WORK/start.log" 2>&1
+}
 if ! start_rig; then
     # A failed install does not kill the emulator; if it is up, the retry
     # reuses this same boot. Another worktree's debug build on the AVD has a
@@ -589,12 +857,12 @@ pair_once() {
     # flow.sh's step before a pair: the app must be the resumed activity, or the
     # prompt is a notification in a window poc.py does not read.
     bring_app_forward
-    "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
+    poc --addr "$ADDR" --serial "$SERIAL" \
         wait-prompt --timeout 60 --stale none --evidence "$WORK/pair-$attempt" \
         > "$prompt" 2>&1 &
     TAP_PID=$!
-    "$APP" --profile "$PROFILE" --background --connect "$ADDR" \
-        --open-phone --quit-after 70 > "$WORK/app-pair-$attempt.out" 2>&1 &
+    mac_app "$WORK/app-pair-$attempt.out" --profile "$PROFILE" --background --connect "$ADDR" \
+        --open-phone --quit-after 70 &
     APP_PID=$!
     LOG_STREAM="$(stream_log "$APP_PID" "$log")"
     if ! wait_for 60 pin_stored; then
@@ -664,10 +932,10 @@ NAME="$(basename "$FILE")"
 head -c 33554432 /dev/urandom > "$FILE"
 EXPECT_SHA="$(shasum -a 256 "$FILE" | awk '{print $1}')"
 drop_script "$WORK/drop-script.txt" "$FILE" "$WORK/drop-go"
-"$APP" --profile "$PROFILE" --background \
+mac_app "$WORK/app-join.out" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
     --open com.android.settings --debug-input-script "$WORK/drop-script.txt" \
-    --quit-after 150 > "$WORK/app-join.out" 2>&1 &
+    --quit-after 150 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-join.log")"
 
@@ -751,6 +1019,18 @@ sleep 0.3
 : > "$WORK/drop-go"
 DROP_T0="$(python3 -c 'import time; print("%.6f" % time.time())')"
 DROP_LOG_OFFSET="$(wc -l < "$WORK/mac-join.log" | tr -d ' ')"
+if [ "$MODE" = dry ]; then
+    printf 'DRY reached drop\n'
+    dry_mark phase drop
+    # The app stub appends its drop lines only after the offset above, and the
+    # proxies' byte/mode events need this run's clock (a canned file's own
+    # timestamps would all predate drop-go).
+    : > "$WORK/dry-drop-live"
+    FOUNDER_TS="$(dry_now)"
+    printf '{"ev":"mode","ts":%s,"mode":"throttle"}\n' "$FOUNDER_TS" >> "$WORK/fault-a.join.events"
+    printf '{"ev":"bytes","ts":%s,"dir":0,"n":9437184,"total":9437184}\n' "$FOUNDER_TS" \
+        >> "$WORK/fault-a.join.events"
+fi
 STARTED=0
 PART_AT_BLACKHOLE=""
 for _ in $(seq 1 240); do
@@ -770,6 +1050,13 @@ if [ -n "$PART_AT_BLACKHOLE" ] && [ "$PART_AT_BLACKHOLE" -ge 33554432 ] 2>/dev/n
     bad "the whole file was already on disk before the black-hole: the drop did not use the founder"
 fi
 printf 'mode blackhole\n' > "$WORK/fault-a.join.ctl"
+if [ "$MODE" = dry ]; then
+    BH_TS="$(dry_now)"
+    STANDBY_TS="$(python3 -c "print('%.6f' % (float('$BH_TS') + 0.5))")"
+    printf '{"ev":"mode","ts":%s,"mode":"blackhole"}\n' "$BH_TS" >> "$WORK/fault-a.join.events"
+    printf '{"ev":"bytes","ts":%s,"dir":0,"n":9437184,"total":9437184}\n' "$STANDBY_TS" \
+        >> "$WORK/fault-b.join.events"
+fi
 SAVED=0
 # Two 60 s pieces: a single wait may never be longer than the debug-input cap.
 for _piece in 1 2; do
@@ -908,9 +1195,9 @@ stop_proxies
 section grace
 emu logcat -c >/dev/null 2>&1 || true
 start_faults grace pass pass
-"$APP" --profile "$PROFILE" --background \
+mac_app "$WORK/app-grace.out" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
-    --open-phone --quit-after 70 > "$WORK/app-grace.out" 2>&1 &
+    --open-phone --quit-after 70 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-grace.log")"
 GRACE_JOINED=0
@@ -979,6 +1266,11 @@ section version
 # verdict. A handshake-level collision is retried; the verdict still requires
 # the exact `error version {v:4}` and a close.
 v3_probe() {
+    dry_mark predicate v3_probe
+    if [ "$MODE" = dry ]; then
+        printf 'code=version v=4 closed=True\n'
+        return 0
+    fi
     ROOT="$ROOT" ADDR="$ADDR" "$PYTHON" - "$WORK/v3-identity" <<'PY'
 import os, socket, sys
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "tools", "fakephone"))
@@ -1021,14 +1313,14 @@ fi
 # --- the slot is free: a fresh pairing succeeds ----------------------------
 section slot
 bring_app_forward
-if "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
+if poc --addr "$ADDR" --serial "$SERIAL" \
         --state "$WORK/deckctl-state.json" pair --timeout 60 \
         > "$WORK/deckctl-pair.log" 2>&1; then
     ok "a new Mac paired after the grace: the slot is free ($(grep -o 'device=[0-9a-f]*' "$WORK/deckctl-pair.log" | tail -1))"
 else
     bad "a new Mac could not pair after the grace: $(tail -3 "$WORK/deckctl-pair.log")"
 fi
-if "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
+if poc --addr "$ADDR" --serial "$SERIAL" \
         --state "$WORK/deckctl-state.json" check > "$WORK/deckctl-check.log" 2>&1; then
     ok "the paired probe checks out: $(tail -1 "$WORK/deckctl-check.log")"
 else
@@ -1036,10 +1328,45 @@ else
 fi
 emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log"
 
+# --dry-run's pass condition: every phase and predicate was reached, and no
+# shell error (the ERR trap) fired. The exit code still comes from the
+# verdicts above, never from a shell error.
+if [ "$MODE" = dry ]; then
+    dry_check() { # dry_check <kind> <names...>
+        local kind="$1" name seen="" missing=""
+        shift
+        for name in "$@"; do
+            if grep -qx "$kind $name" "$WORK/dry-marks.txt" 2>/dev/null; then
+                seen="$seen $name"
+            else
+                missing="$missing $name"
+            fi
+        done
+        printf 'DRY coverage %s:%s\n' "$kind" "$seen"
+        [ -z "$missing" ] || bad "the dry run did not reach$missing"
+    }
+    dry_check phase boot pair join drop grace version slot
+    dry_check predicate pin_stored pair_outcome pair_with_retry wait_slot_free wait_for v3_probe
+    if [ -s "$WORK/dry-errors.log" ]; then
+        bad "the dry run hit shell errors: $(wc -l < "$WORK/dry-errors.log" | tr -d ' ')"
+    fi
+fi
+
 printf '\n== result ==\n'
 if [ "$FAIL" -eq 0 ]; then
-    echo "PASS: every direct-p1 emulator proof passed (one boot)"
+    if [ "$MODE" = dry ]; then
+        echo "PASS: the dry run reached every phase and predicate (no device, no boot)"
+    else
+        echo "PASS: every direct-p1 emulator proof passed (one boot)"
+    fi
 else
-    echo "FAIL: $FAIL proof(s) failed (one boot)"
+    if [ "$MODE" = dry ]; then
+        echo "FAIL: $FAIL proof(s) failed (dry run, canned evidence)"
+    else
+        echo "FAIL: $FAIL proof(s) failed (one boot)"
+    fi
+fi
+if [ "$MODE" = dry ]; then
+    : > "$WORK/dry-summary"
 fi
 exit "$FAIL"
