@@ -8249,6 +8249,59 @@ check_shortcuts() {
         && ok "[DOCK-3] its shim stopped" || bad "[DOCK-3] the shim kept running"
 
     stop_app
+    remove_dock_apps
+
+    # --- Save all (docs/design/dock.md §Shortcuts, SET-DEV-25) -------------
+    # 40 fakephone apps, the switch on through the page's own write path: one
+    # shortcut per app, each with its icon, and no window opened along the way.
+    count_shims() { ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' '; }
+    count_icons() { local n=0 app; for app in "$dir"/*.app; do [ -s "$app/Contents/Resources/AppIcon.icns" ] && n=$((n + 1)); done; echo "$n"; }
+    stop_fakephone
+    FAKE_ARGS="--demo-apps 40" start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the save-all app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS save-all phase: shortcutsall on: $CONTROL_REPLY"
+    wait_until 60 eval '[ "$(count_shims)" = "40" ]' || true
+    if [ "$(count_shims)" != "40" ]; then
+        control shortcutstats "$WORK/shortcut-stats.txt" >/dev/null 2>&1
+        say "shortcuts after 60 s: $(tr '\n' ' ' < "$WORK/shortcut-stats.txt" 2>/dev/null)"
+    fi
+    wait_until 180 eval '[ "$(count_shims)" = "40" ]' \
+        && ok "[DOCK-5] Save all made all 40 app shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' ' | cut -c1-80)…)" \
+        || bad "[DOCK-5] Save all made $(count_shims) of 40 shortcuts"
+    [ "$(count_icons)" = "40" ] \
+        && ok "[DOCK-6] every one of the 40 shortcuts carries its .icns" \
+        || bad "[DOCK-6] only $(count_icons) of 40 shortcuts have an .icns"
+    control deckquery "" >/dev/null 2>&1 \
+        && ok "[DOCK-6] the Deck still answers while the shims are written" \
+        || bad "[DOCK-6] the Deck stopped answering during the build"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] Save all opened no window" \
+        || bad "[DOCK-14] Save all opened a window"
+
+    # Two shortcuts the person keeps another way: one manual, one Dock. Turning
+    # the switch off removes only `all`, so exactly those two stay.
+    control shortcut add com.whatsapp || bad "SHORTCUTS save-all phase: shortcut add: $CONTROL_REPLY"
+    control dock add com.android.chrome || bad "SHORTCUTS save-all phase: dock add: $CONTROL_REPLY"
+    wait_until 30 eval '[ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ]' \
+        && ok "[DOCK-2] WhatsApp carries all and manual" \
+        || bad "[DOCK-2] WhatsApp's reasons are '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 30 eval '[ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock all" ]' \
+        && ok "[DOCK-2] Chrome carries all and dock" \
+        || bad "[DOCK-2] Chrome's reasons are '$(origins_of "$dir/Chrome (FakePhone).app")'"
+    control shortcutsall off || bad "SHORTCUTS save-all phase: shortcutsall off: $CONTROL_REPLY"
+    wait_until 120 eval '[ "$(count_shims)" = "2" ]' \
+        && ok "[DOCK-5] Save all off left only the manual and Dock shortcuts (2)" \
+        || bad "[DOCK-5] Save all off left $(count_shims) shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual" ] \
+        && ok "[DOCK-5] the manual shortcut lost only all" \
+        || bad "[DOCK-5] WhatsApp's reasons after off: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    [ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock" ] \
+        && ok "[DOCK-5] the Dock shortcut lost only all" \
+        || bad "[DOCK-5] Chrome's reasons after off: '$(origins_of "$dir/Chrome (FakePhone).app")'"
+
+    stop_app
     stop_fakephone
     remove_dock_apps
     wait_until 5 no_fakephone
@@ -8768,9 +8821,10 @@ check_settings() {
     # --- plain section headings: the phone's name appears once (SET-WIN-06) -
     [ "$(report_value "title.phone")" = "Phone" ] \
         && [ "$(report_value "title.notifications")" = "Notifications" ] \
+        && [ "$(report_value "title.applications")" = "Applications" ] \
         && [ "$(report_value "title.screen")" = "Screen" ] \
         && [ "$(report_value "title.forget")" = "Forget" ] \
-        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Screen, Forget" \
+        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Applications, Screen, Forget" \
         || bad "SET [SET-WIN-06] headings: $(grep '^title\.' "$dump" | tr '\n' '|')"
     if grep '^title\.' "$dump" | grep -qE 'Galaxy|Pixel| — '; then
         bad "SET [SET-WIN-06] a section heading carries the phone's name: $(grep '^title\.' "$dump" | tr '\n' '|')"
