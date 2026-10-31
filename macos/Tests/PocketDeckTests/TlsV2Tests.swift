@@ -275,6 +275,25 @@ final class TlsV2Tests: XCTestCase {
         XCTAssertEqual(session.exporter(), ExporterV2.derive(exporterSecret: phone.capture.only ?? []))
     }
 
+    /// PATH-20: PathStart hands the one plain hello to the first attempt that
+    /// finished TLS. A connect that returns at TCP time would let a provider
+    /// that only accepted a socket (a black-holed path) win the hello and
+    /// strand the session until its 6 s deadline.
+    func testConnectReturnsOnlyAfterTheTlsHandshakeFinished() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-handshake-order")
+        let phone = try loopbackServer(trusting: try cert(mac.identity))
+        defer { phone.channel.close(promise: nil) }
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        let learned = NSLockedBox(value: "")
+        let session = try connector.connect(host: "127.0.0.1", port: phone.port,
+                                            onFrame: { _ in }, onError: { _ in },
+                                            onPeerPin: { learned.set($0) })
+        defer { session.channel.close(promise: nil) }
+        XCTAssertEqual(learned.get(), phone.phoneFingerprint,
+                       "connect must not report a path ready before TLS finished")
+        XCTAssertNotNil(session.exporter(), "a finished handshake has exporter material")
+    }
+
     func testEnforcedReconnectUsesThePinnedPhoneRecord() throws {
         // Same server listener, same phone identity reused; the pairing
         // session learns the pin, the reconnect session verifies against the

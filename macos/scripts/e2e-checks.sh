@@ -137,7 +137,12 @@ check_pathstart() {
     pathfault_nuke
     local listen="$((PORT + 2))" ctl plain_count join_count listener ok_all=0
     FAKE_ARGS="--paths 2" start_fake || return 1
-    ctl="$(pathfault_start "$listen" "$PORT" blackhole)"
+    # The first listener's radio is off until the second founds. `delay`, not
+    # `blackhole`: a radio that is off buffers the client's first bytes; a
+    # blackhole drops them, and a real path cannot finish TLS from bytes it
+    # never sent again. 600 ms is longer than the second listener's handshake
+    # and far inside the 6 s connect budget.
+    ctl="$(pathfault_start "$listen" "$PORT" delay 600)"
     path_pair_once "$((PORT + 1))"
     launch --connect "127.0.0.1:$listen" --connect2 "127.0.0.1:$((PORT + 1))" \
         --open-phone --quit-after 25
