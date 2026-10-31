@@ -216,6 +216,34 @@ PROXY_A_PID=""
 PROXY_B_PID=""
 TAP_PID=""
 
+# phone_evidence <label> — everything the phone can still say, written before the
+# emulator dies. A failure that stops the run early (the boot-4 pair) used to
+# leave no phone log at all: the process, its crash buffer and the lifecycle
+# lines are exactly what tells a dropped session from a dead server.
+phone_evidence() {
+    local label="$1" log="$WORK/phone-evidence-$label.log"
+    [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
+    if ! device_present; then
+        printf '[p1-proof] %s: no device, no phone evidence\n' "$label" >> "$log"
+        return 0
+    fi
+    {
+        printf '== phone evidence: %s at %s ==\n' "$label" "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf '%s\n' '-- pids --'
+        printf 'pidof dev.pocketdeck: %s\n' "$(emu shell "pidof dev.pocketdeck" 2>/dev/null | tr -d '\r')"
+        printf 'pidof dev.pocketdeck:pocketdeck: %s\n' "$(emu shell "pidof dev.pocketdeck:pocketdeck" 2>/dev/null | tr -d '\r')"
+        printf '%s\n' '-- ps --'
+        emu shell "ps -A -o PID,PPID,USER,NAME 2>/dev/null | grep -Ei 'pocketdeck|shizuku'" 2>/dev/null | tr -d '\r'
+        printf '%s\n' '-- captured picks --'
+        emu shell "dumpsys activity activities 2>/dev/null | grep -E 'ResumedActivity|mFocusedApp|topResumedActivity'" 2>/dev/null | tr -d '\r'
+        printf '%s\n' '-- logcat (app, crash, process death, Shizuku) --'
+        ADB_TIMEOUT=60 emu logcat -d -v time -b all 2>/dev/null | grep -E \
+            'PocketDeckSvc|PocketDeckApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|tombstone|am_crash|am_anr|lowmemorykiller|Force finishing|Process dev\.pocketdeck|Killing [0-9]+:dev\.pocketdeck'
+        printf '%s\n' '-- end --'
+    } > "$log" 2>&1
+    printf '[p1-proof] %s: wrote %s (%s lines)\n' "$label" "$log" "$(wc -l < "$log" | tr -d ' ')"
+}
+
 stop_app() {
     if [ -n "$APP_PID" ]; then
         kill "$APP_PID" 2>/dev/null
@@ -238,7 +266,14 @@ stop_proxies() {
     PROXY_A_PID=""; PROXY_B_PID=""
 }
 
+CLEANED=0
 cleanup() {
+    # A timeout's TERM must not cost the evidence: traps below exit, and this is
+    # idempotent because EXIT runs once more.
+    [ "$CLEANED" = 1 ] && return 0
+    CLEANED=1
+    # First: the phone is still up and its buffers still hold the failure.
+    phone_evidence cleanup
     stop_app
     [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null
     stop_proxies
@@ -247,6 +282,8 @@ cleanup() {
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # --- the firmware: one boot ------------------------------------------------
 section boot
@@ -286,20 +323,24 @@ bring_app_forward
 # --- pair the Mac app ------------------------------------------------------
 section pair
 "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
-    wait-prompt --timeout 60 > "$WORK/wait-prompt.log" 2>&1 &
+    wait-prompt --timeout 60 --evidence "$WORK" > "$WORK/wait-prompt.log" 2>&1 &
 TAP_PID=$!
 "$APP" --profile "$PROFILE" --background --connect "$ADDR" \
     --open-phone --quit-after 70 > "$WORK/app-pair.out" 2>&1 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-pair.log")"
-if wait_for 60 grep -q -- '--> live' "$WORK/mac-pair.log"; then
-    ok "the Mac app paired and founded a live session"
+# The welcome stores the pin while the Mac handles it, so a pin in the fresh
+# profile is the real "paired and welcomed" predicate. (`--> live` never existed:
+# that gate could only fail, even when pairing worked.)
+if wait_for 60 pin_stored; then
+    ok "the Mac app paired and stored the phone pin"
 else
     refresh_log "$APP_PID" "$WORK/mac-pair.log"
-    if grep -q -- '--> live' "$WORK/mac-pair.log"; then
-        ok "the Mac app paired and founded a live session"
+    phone_evidence pair-failed
+    if pin_stored; then
+        ok "the Mac app paired and stored the phone pin"
     else
-        bad "the Mac app did not pair/found (tap: $(tail -2 "$WORK/wait-prompt.log" 2>/dev/null))"
+        bad "the Mac app did not pair/store a pin (tap: $(tail -2 "$WORK/wait-prompt.log" 2>/dev/null))"
         tail -5 "$WORK/mac-pair.log"
     fi
 fi
