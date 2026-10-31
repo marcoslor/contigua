@@ -1,6 +1,7 @@
 package dev.pocketdeck.server
 
 import java.io.InputStream
+import java.net.Socket
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -16,6 +17,12 @@ import kotlin.concurrent.withLock
 interface LiveSession {
     /** True once the session is gone: no byte can be served from it again. */
     val isClosed: Boolean
+
+    /** This session's id after `welcome` (PATH-3); null before it. */
+    val pathSessionId: String?
+
+    /** Attaches a joined TLS socket as one more path of this session (PATH-3). */
+    fun attachPath(pathId: String, socket: Socket, plain: Socket): AttachResult
 
     /** Authenticated and open: a share may go out. */
     val isReady: Boolean
@@ -48,6 +55,9 @@ interface LiveSession {
  * that gives up leaves the old session in the slot (`Live`) until its own
  * teardown ends; that teardown frees the slot. A drop always frees it.
  */
+/** What a join asked for (PATH-3/11/13). */
+enum class AttachResult { ATTACHED, NO_SESSION, TOO_MANY, BUSY }
+
 class SessionDropper(
     private val log: (String) -> Unit = {},
     private val closer: Executor = daemonThread(),
@@ -65,6 +75,37 @@ class SessionDropper(
      * slot itself is already `Free`.
      */
     private var drops = 0L
+
+    /**
+     * A join's admission (PATH-3/11): only the live session's own pinned Mac
+     * attaches or hears `no_session`; every other peer is `busy`.
+     */
+    fun attach(
+        peerMac: String?,
+        pinned: Boolean,
+        joinId: String,
+        pathId: String,
+        socket: Socket,
+        plain: Socket,
+    ): AttachResult = lock.withLock {
+        val state = slot
+        if (state is SlotState.Live && state.session.isClosed) step(SlotEvent.Ending)
+        val live = slot as? SlotState.Live
+        val same = pinned && peerMac != null && live?.mac?.equals(peerMac, ignoreCase = true) == true
+        val joinMatches = live != null && live.session.pathSessionId == joinId
+        val event = SlotEvent.Connect(
+            peerMac = peerMac.orEmpty(),
+            samePinnedMac = same,
+            join = true,
+            joinMatches = joinMatches,
+            pinned = pinned,
+        )
+        when (step(event).actions.firstOrNull()) {
+            SlotAction.JOIN -> (slot as SlotState.Live).session.attachPath(pathId, socket, plain)
+            SlotAction.NO_SESSION -> AttachResult.NO_SESSION
+            else -> AttachResult.BUSY
+        }
+    }
 
     /** The live session, if one is neither closed nor already dropped. */
     fun current(): LiveSession? = lock.withLock {
@@ -84,7 +125,7 @@ class SessionDropper(
         when (val admission = lock.withLock { admit(peerMac, pinned, create) }) {
             is Admission.Adopted -> admission.session
             Admission.Busy -> null
-            is Admission.HandOver -> afterTeardown(admission, peerMac, create)
+            is Admission.HandOver -> afterTeardown(admission, peerMac, pinned, create)
         }
 
     /** The session's own run ended: free the slot for the next Mac. */
@@ -135,7 +176,7 @@ class SessionDropper(
         if (state is SlotState.Live && state.session.isClosed) step(SlotEvent.Ending)
         val live = slot as? SlotState.Live
         val same = pinned && peerMac != null && live?.mac?.equals(peerMac, ignoreCase = true) == true
-        return when (step(SlotEvent.Connect(peerMac.orEmpty(), same)).actions.firstOrNull()) {
+        return when (step(SlotEvent.Connect(peerMac.orEmpty(), same, pinned = pinned)).actions.firstOrNull()) {
             SlotAction.ADOPT -> Admission.Adopted(adoptNow(peerMac, create()))
             SlotAction.DROP_OLD -> {
                 log("session superseded")
@@ -153,6 +194,7 @@ class SessionDropper(
     private fun <T : LiveSession> afterTeardown(
         start: Admission.HandOver,
         peerMac: String?,
+        pinned: Boolean,
         create: () -> T,
     ): T? {
         // Never under the lock: a close may block on the peer (PAIR-20).
@@ -179,7 +221,7 @@ class SessionDropper(
             }
             // The app dropped everything while this Mac waited: it gets busy.
             if (drops != start.epoch) return@withLock null
-            if (step(SlotEvent.Connect(peerMac.orEmpty(), samePinnedMac = false)).actions.firstOrNull() != SlotAction.ADOPT) {
+            if (step(SlotEvent.Connect(peerMac.orEmpty(), samePinnedMac = false, pinned = pinned)).actions.firstOrNull() != SlotAction.ADOPT) {
                 log("session supersede abandoned: the slot changed hands")
                 return@withLock null
             }

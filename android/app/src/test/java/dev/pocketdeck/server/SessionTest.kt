@@ -1,10 +1,12 @@
 package dev.pocketdeck.server
 
 import dev.pocketdeck.e2ee.PairingCodeV2
+import dev.pocketdeck.proto.Frame
 import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.HoverPayload
 import dev.pocketdeck.proto.Json
+import dev.pocketdeck.proto.PathCodec
 import dev.pocketdeck.proto.TouchPayload
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -55,8 +57,15 @@ class SessionTest {
         client = Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort)
         client.soTimeout = 5_000
         reader = FrameReader(client.getInputStream())
+        // One seq space per session: a fresh connection starts at 1.
+        outSeq = 1L
+        // The accept must own this test's socket before connect() returns: a
+        // late accept thread would otherwise take the next connection and run
+        // it with this call's (stale) parameters.
+        val accepted = java.util.concurrent.CountDownLatch(1)
         val accept = Thread {
             val s = acceptOwnClient()
+            accepted.countDown()
             val sess = Session(
                 socket = s,
                 display = platform,
@@ -90,6 +99,7 @@ class SessionTest {
         }
         accept.isDaemon = true
         accept.start()
+        check(accepted.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "connect was not accepted" }
     }
 
     /**
@@ -129,21 +139,48 @@ class SessionTest {
     // helpers
     // ------------------------------------------------------------------
 
+    private var outSeq = 1L
+
     private fun send(obj: Map<String, Any?>) {
         val out = client.getOutputStream()
-        out.write(Frames.encodeJson(0, Json.encode(obj)))
+        val bytes = Frames.encodeJson(0, Json.encode(obj))
+        val t = obj["t"] as? String
+        val bare = t == "hello" || t == "pair.request" || t == "pair.nonce" || t == "pair.ok"
+        out.write(if (bare) bytes else PathCodec.encodeReliable(outSeq++, frameOf(bytes)))
+        out.flush()
+    }
+
+    private fun frameOf(encoded: ByteArray): Frame =
+        Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5), encoded.copyOfRange(9, encoded.size))
+
+    /** Best-effort: a peer that answered and closed may reset before the ACK. */
+    private fun sendAck(ack: Long) = runCatching {
+        val out = client.getOutputStream()
+        out.write(PathCodec.encodeAck(ack))
         out.flush()
     }
 
     private fun sendFrame(type: Int, stream: Int, payload: ByteArray) {
         val out = client.getOutputStream()
-        out.write(Frames.encode(type, stream, payload))
+        val frame = Frame(type, stream, payload)
+        out.write(if (PathCodec.isReliable(type)) PathCodec.encodeReliable(outSeq++, frame)
+                  else Frames.encode(type, stream, payload))
         out.flush()
     }
 
     private fun readJson(): Map<String, Any?> {
-        val frame = reader.readFrame() ?: error("connection closed")
-        return Json.parseObject(String(frame.payload))
+        while (true) {
+            val frame = reader.readFrame() ?: error("connection closed")
+            when (frame.type) {
+                PathCodec.TYPE_ACK -> continue
+                PathCodec.TYPE_RELIABLE -> {
+                    val inner = PathCodec.decodeReliable(frame)
+                    sendAck(inner.seq + 1)
+                    return Json.parseObject(String(inner.inner.payload))
+                }
+                else -> return Json.parseObject(String(frame.payload))
+            }
+        }
     }
 
     private fun readUntil(t: String): Map<String, Any?> {
@@ -160,7 +197,9 @@ class SessionTest {
      * paired and answers `not_paired`.
      */
     private fun hello(clientId: String, name: String, pairing: Boolean = false) {
-        val fields = mutableMapOf<String, Any?>("t" to "hello", "v" to 3, "clientId" to clientId, "name" to name)
+        val fields = mutableMapOf<String, Any?>(
+            "t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to clientId, "name" to name,
+        )
         if (pairing) fields["pair"] = true
         send(fields)
     }
@@ -219,6 +258,35 @@ class SessionTest {
         send(mapOf("t" to "hello", "v" to 1, "clientId" to "cX", "name" to "Old"))
         val error = readUntil("error")
         assertEquals("version", error["code"])
+        assertEquals(null, reader.readFrame())
+    }
+
+    /** PATH-1: a v3 Mac (or one that sends no v) is refused with this phone's
+     *  own version and closed before any `welcome` or session state exists. */
+    @Test
+    fun aV3MacIsRefusedWithThisPhonesVersion() {
+        send(mapOf("t" to "hello", "v" to 3, "path" to "a1b2c3d4", "clientId" to "cV3", "name" to "OldMac"))
+        val error = readUntil("error")
+        assertEquals("version", error["code"])
+        assertEquals(4L, (error["v"] as Number).toLong())
+        assertEquals(null, reader.readFrame())
+    }
+
+    @Test
+    fun aHelloWithNoVersionIsRefusedLikeAV3Mac() {
+        send(mapOf("t" to "hello", "path" to "a1b2c3d4", "clientId" to "cNone", "name" to "OldMac"))
+        val error = readUntil("error")
+        assertEquals("version", error["code"])
+        assertEquals(4L, (error["v"] as Number).toLong())
+        assertEquals(null, reader.readFrame())
+    }
+
+    @Test
+    fun aFutureMacIsRefusedWithThisPhonesVersion() {
+        send(mapOf("t" to "hello", "v" to 5, "path" to "a1b2c3d4", "clientId" to "cV5", "name" to "NewMac"))
+        val error = readUntil("error")
+        assertEquals("version", error["code"])
+        assertEquals(4L, (error["v"] as Number).toLong())
         assertEquals(null, reader.readFrame())
     }
 
@@ -843,6 +911,10 @@ class SessionTest {
         readUntil("state")
         assertEquals(1, platform.stateSubscriberCount)
         client.close()
+        // PATH-6: the session waits 30 s for a join, so the subscription lives
+        // until the session itself ends (a person's close here).
+        await { platform.stateSubscriberCount == 1 }
+        session?.close()
         await { platform.stateSubscriberCount == 0 }
     }
 
@@ -976,7 +1048,7 @@ class SessionTest {
 
     @Test
     fun serverWithoutSessionIsNoSession() {
-        val server = Server({ _, _ -> error("no sessions here") })
+        val server = Server({ _, _, _ -> error("no sessions here") })
         assertEquals(ShareStatus.NO_SESSION, server.shareText("hi"))
         assertEquals(ShareStatus.NO_SESSION, server.shareFile("a.png", "image/png", java.io.ByteArrayInputStream(ByteArray(1))))
     }
@@ -992,7 +1064,8 @@ class SessionTest {
         val id = (begin["id"] as Number).toInt()
         var got = ByteArray(0)
         while (true) {
-            val frame = reader.readFrame() ?: error("closed")
+            val raw = readPathFrame(reader) ?: error("closed")
+            val frame = if (raw.type == PathCodec.TYPE_RELIABLE) PathCodec.decodeReliable(raw).inner else raw
             if (frame.type == Frames.TYPE_SHARE_DATA) {
                 assertEquals(id, frame.stream)
                 got += frame.payload

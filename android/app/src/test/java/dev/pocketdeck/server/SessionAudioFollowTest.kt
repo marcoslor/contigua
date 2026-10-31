@@ -106,7 +106,7 @@ class SessionAudioFollowTest {
 
     private fun readJson(): Map<String, Any?> {
         val frame = FrameReader(client.getInputStream()).readFrame() ?: error("connection closed")
-        return Json.parseObject(String(frame.payload))
+        return pathJson(frame)
     }
 
     private fun readUntil(t: String): Map<String, Any?> {
@@ -128,7 +128,7 @@ class SessionAudioFollowTest {
 
     private fun authenticate() {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))
+        send(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))
         readUntil("welcome")
     }
 

@@ -16,8 +16,8 @@ import java.net.Socket
 class ServerTest {
 
     private fun readJson(reader: FrameReader): Map<String, Any?> {
-        val frame = reader.readFrame() ?: error("connection closed")
-        return Json.parseObject(String(frame.payload))
+        val frame = readPathFrame(reader) ?: error("connection closed")
+        return pathJson(frame)
     }
 
     private fun gather(sink: MutableList<Map<String, Any?>>, reader: FrameReader): Map<String, Any?> {
@@ -37,7 +37,7 @@ class ServerTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (test)")
 
         val server = Server(
-            { socket, plain ->
+            { socket, plain, hello ->
                 Session(
                     socket = socket,
                     plainSocket = plain,
@@ -52,6 +52,7 @@ class ServerTest {
                     now = { 1_000 },
                     log = {},
                     handshakeTimeoutMs = 3_000,
+                    preReadHello = hello,
                     tlsView = TlsV2Fixture.view,
                     gateProvider = { GateSettings(true, true) },
                 )
@@ -66,7 +67,7 @@ class ServerTest {
             client(port, macIdentity, phoneIdentity).use { first ->
                 val firstReader = FrameReader(first.getInputStream())
                 val out = first.getOutputStream()
-                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
                 out.flush()
                 val welcome = readJson(firstReader)
                 assertEquals("welcome", welcome["t"])
@@ -74,7 +75,7 @@ class ServerTest {
                 client(port, macIdentity, phoneIdentity).use { second ->
                     val secondReader = FrameReader(second.getInputStream())
                     val secondOut = second.getOutputStream()
-                    secondOut.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c2", "name" to "Other"))))
+                    secondOut.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c2", "name" to "Other"))))
                     secondOut.flush()
                     val error = readJson(secondReader)
                     assertEquals("error", error["t"])
@@ -100,7 +101,7 @@ class ServerTest {
     fun plainTextClientIsRefusedWithoutAWelcome() {
         val platform = FakePlatform()
         val phoneIdentity = TestTls.generate("PocketDeck Phone (plaintext test)")
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -108,9 +109,9 @@ class ServerTest {
             plain.tcpNoDelay = true
             plain.soTimeout = 3_000
             val out = plain.getOutputStream()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Plaintext"))))
+            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "Plaintext"))))
             out.flush()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Plaintext"))))
+            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "Plaintext"))))
             out.flush()
             // The server answers a plaintext client with a TLS alert and a
             // hangup; whatever comes back never contains a framed `welcome`
@@ -141,7 +142,7 @@ class ServerTest {
         val phoneIdentity = TestTls.generate("PocketDeck Phone (empty test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (empty test)")
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -174,14 +175,14 @@ class ServerTest {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
         val phoneIdentity = TestTls.generate("PocketDeck Phone (drop test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (drop test)")
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
             client(port, macIdentity, phoneIdentity).use { first ->
                 val reader = FrameReader(first.getInputStream())
                 val out = first.getOutputStream()
-                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
                 out.flush()
                 assertEquals("welcome", readJson(reader)["t"])
 
@@ -195,7 +196,7 @@ class ServerTest {
             client(port, macIdentity, phoneIdentity).use { again ->
                 val reader = FrameReader(again.getInputStream())
                 val out = again.getOutputStream()
-                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
                 out.flush()
                 assertEquals("welcome", readJson(reader)["t"])
             }
@@ -217,14 +218,14 @@ class ServerTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (forget test)")
         var cert = phoneIdentity.certPem
         var key = phoneIdentity.keyP8
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
             { cert }, { key }, { GateSettings(true, true) })
         val port = server.start()
         try {
             client(port, macIdentity, phoneIdentity).use { first ->
                 val reader = FrameReader(first.getInputStream())
                 first.getOutputStream().write(
-                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))),
                 )
                 first.getOutputStream().flush()
                 assertEquals("welcome", readJson(reader)["t"])
@@ -257,7 +258,7 @@ class ServerTest {
         val dropper = SessionDropper(log = {})
         dropper.adopt(null, false) { session }
         val server = Server(
-            { _, _ -> error("this test accepts no socket") },
+            { _, _, _ -> error("this test accepts no socket") },
             log = {},
             { "" },
             { "" },
@@ -293,7 +294,7 @@ class ServerTest {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
         val phoneIdentity = TestTls.generate("PocketDeck Phone (silent test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (silent test)")
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -332,7 +333,7 @@ class ServerTest {
             dev.pocketdeck.e2ee.KeyPin.fingerprint(
                 pinnedMac.cert.publicKey as java.security.interfaces.ECPublicKey))
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(false, true) },
             { listOf(pin) })
         val port = server.start()
@@ -343,7 +344,7 @@ class ServerTest {
                 ssl.startHandshake()
                 val out = ssl.getOutputStream()
                 out.write(Frames.encodeJson(0, Json.encode(mapOf(
-                    "t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Mac"))))
+                    "t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "Mac"))))
                 out.flush()
                 val error = readJson(FrameReader(ssl.getInputStream()))
                 assertEquals("error", error["t"])
@@ -375,7 +376,7 @@ class ServerTest {
         val macA = TestTls.generate("PocketDeck Mac (A)")
         val macB = TestTls.generate("PocketDeck Mac (B)")
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
             { listOf(fingerprintHex(macA)) })
         val port = server.start()
@@ -383,7 +384,7 @@ class ServerTest {
             client(port, macA, phoneIdentity).use { first ->
                 val firstReader = FrameReader(first.getInputStream())
                 first.getOutputStream().write(
-                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))),
                 )
                 first.getOutputStream().flush()
                 assertEquals("welcome", readJson(firstReader)["t"])
@@ -392,7 +393,7 @@ class ServerTest {
                 client(port, macB, phoneIdentity).use { other ->
                     val reader = FrameReader(other.getInputStream())
                     other.getOutputStream().write(
-                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))),
                     )
                     other.getOutputStream().flush()
                     val error = readJson(reader)
@@ -404,7 +405,7 @@ class ServerTest {
                 client(port, macA, phoneIdentity).use { again ->
                     val reader = FrameReader(again.getInputStream())
                     again.getOutputStream().write(
-                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))),
                     )
                     again.getOutputStream().flush()
                     assertEquals("welcome", readJson(reader)["t"])
@@ -418,11 +419,163 @@ class ServerTest {
         }
     }
 
+    /**
+     * PATH-3: a hello carrying the live session's id, from the live Mac, is a
+     * join — one more path, no drop, no second session, and both paths serve.
+     */
+    @Test
+    fun aJoinAttachesWithoutSuperseding() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (join test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (join test)")
+        val pin = fingerprintHex(macIdentity)
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
+            { listOf(pin) })
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
+                first.getOutputStream().flush()
+                val welcome = readJson(firstReader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+                assertEquals(32, session.length)
+
+                client(port, macIdentity, phoneIdentity).use { second ->
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                        "t" to "hello", "v" to 4, "path" to "b2c3d4e5", "join" to session,
+                        "clientId" to "c1", "name" to "MacBook"))))
+                    second.getOutputStream().flush()
+                    val joined = readJson(secondReader)
+                    assertEquals("welcome", joined["t"])
+                    assertEquals(session, joined["session"])
+
+                    // PATH-13: a session has at most three paths; the fourth
+                    // join is refused with its own code. The third stays open
+                    // so the cap is what refuses the fourth.
+                    val third = client(port, macIdentity, phoneIdentity)
+                    val thirdReader = FrameReader(third.getInputStream())
+                    third.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                        "t" to "hello", "v" to 4, "path" to "c3d4e5f6", "join" to session,
+                        "clientId" to "c1", "name" to "MacBook"))))
+                    third.getOutputStream().flush()
+                    assertEquals("welcome", readJson(thirdReader)["t"])
+                    client(port, macIdentity, phoneIdentity).use { fourth ->
+                        val fourthReader = FrameReader(fourth.getInputStream())
+                        fourth.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                            "t" to "hello", "v" to 4, "path" to "d4e5f6a7", "join" to session,
+                            "clientId" to "c1", "name" to "MacBook"))))
+                        fourth.getOutputStream().flush()
+                        val error = readJson(fourthReader)
+                        assertEquals("error", error["t"])
+                        assertEquals("too_many_paths", error["code"])
+                    }
+                    third.close()
+
+                    // PATH-3: the first path was not superseded by the join.
+                    first.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 6))))
+                    first.getOutputStream().flush()
+                    assertEquals(6L, gather(mutableListOf(), firstReader)["ts"])
+                    // PATH-8: the Mac's marker moves the phone's sending path;
+                    // the next reply goes out on the joined path.
+                    second.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                        "t" to "path.switch", "path" to "b2c3d4e5", "seq" to 1))))
+                    second.getOutputStream().flush()
+                    second.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 5))))
+                    second.getOutputStream().flush()
+                    // The replay may resend the first pong (it was never acked);
+                    // wait for this ping's own answer.
+                    var pong = gather(mutableListOf(), secondReader)
+                    while ((pong["ts"] as Number).toLong() != 5L) pong = gather(mutableListOf(), secondReader)
+                    assertEquals(5L, pong["ts"])
+                }
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    /**
+     * PATH-1: the phone's own version check runs before any session state
+     * exists: a v3 hello gets `error version` with this phone's v and a close,
+     * never a `welcome`.
+     */
+    @Test
+    fun aV3HelloIsRefusedBeforeAnySessionExists() {
+        val platform = FakePlatform()
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (version test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (version test)")
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { old ->
+                val reader = FrameReader(old.getInputStream())
+                old.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 3, "path" to "a1b2c3d4", "clientId" to "c3", "name" to "OldMac"))))
+                old.getOutputStream().flush()
+                val error = readJson(reader)
+                assertEquals("error", error["t"])
+                assertEquals("version", error["code"])
+                assertEquals(4L, (error["v"] as Number).toLong())
+                assertNull(reader.readFrame())
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    /** PATH-3: a join for an id the phone does not serve answers `no_session`. */
+    @Test
+    fun aJoinForAnUnknownSessionIsRefused() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (stale join)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (stale join)")
+        val pin = fingerprintHex(macIdentity)
+        val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
+            { listOf(pin) })
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
+                first.getOutputStream().flush()
+                assertEquals("welcome", readJson(firstReader)["t"])
+
+                client(port, macIdentity, phoneIdentity).use { second ->
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                        "t" to "hello", "v" to 4, "path" to "c3d4e5f6", "join" to "1".repeat(32),
+                        "clientId" to "c1", "name" to "MacBook"))))
+                    second.getOutputStream().flush()
+                    val error = readJson(secondReader)
+                    assertEquals("error", error["t"])
+                    assertEquals("no_session", error["code"])
+                }
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
         dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
     )
 
-    private fun sessionFor(platform: FakePlatform, socket: Socket, plain: Socket): Session = Session(
+    private fun sessionFor(
+        platform: FakePlatform,
+        socket: Socket,
+        plain: Socket,
+        hello: Map<String, Any?>?,
+    ): Session = Session(
         socket = socket,
         plainSocket = plain,
         display = platform,
@@ -438,6 +591,7 @@ class ServerTest {
         handshakeTimeoutMs = 3_000,
         tlsView = TlsV2Fixture.view,
         gateProvider = { GateSettings(true, true) },
+        preReadHello = hello,
     )
 
     private fun client(port: Int, macIdentity: TestTls.Identity, phoneIdentity: TestTls.Identity): Socket =

@@ -146,7 +146,7 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
-        val factory = SessionFactory { socket, plain ->
+        val factory = SessionFactory { socket, plain, hello ->
             Session(
                 socket = socket,
                 plainSocket = plain,
@@ -206,6 +206,7 @@ class DeckService(private val appContext: Context?) :
                 ringerMode = ringerControl,
                 volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
+                preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing

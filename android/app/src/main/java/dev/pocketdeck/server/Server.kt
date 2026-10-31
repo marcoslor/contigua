@@ -1,8 +1,10 @@
 package dev.pocketdeck.server
 
 import dev.pocketdeck.proto.Crypto
+import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
+import dev.pocketdeck.proto.PathVersion
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -20,7 +22,7 @@ fun interface SessionFactory {
      * [socket] is the TLS session socket; [plain] is the accepted TCP socket
      * under it, which a drop shuts down first (docs/specs/pairing.md PAIR-20).
      */
-    fun create(socket: Socket, plain: Socket): Session
+    fun create(socket: Socket, plain: Socket, hello: Map<String, Any?>?): Session
 }
 
 /**
@@ -200,7 +202,64 @@ class Server(
             val keepalive = TcpKeepalive.apply(rawSocket)
             log(if (keepalive == 0) "keepalive on" else "keepalive failed errno=$keepalive")
             val peerMac = peerMacHex(socket)
-            val session = sessions.adopt(peerMac, isPinned(peerMac)) { factory.create(socket, rawSocket) }
+            val pinned = isPinned(peerMac)
+            // The hello decides a join (PATH-3): TLS is the only authentication,
+            // and the slot is the only record of who owns the phone. The frame
+            // reader reads exactly one frame, so the session's reader sees the
+            // next byte untouched. The accept timeout bounds a silent peer.
+            runCatching { socket.soTimeout = ACCEPT_TIMEOUT_MS }
+            val first = try {
+                FrameReader(socket.getInputStream()).readFrame()
+            } catch (e: Throwable) {
+                reject(socket, "protocol", "unreadable hello")
+                return
+            }
+            if (first == null) {
+                runCatching { socket.close() }
+                return
+            }
+            val hello = if (first.type == Frames.TYPE_JSON) {
+                runCatching { Json.parseObject(String(first.payload)) }.getOrNull()
+            } else null
+            if (hello == null || hello["t"] != "hello") {
+                reject(socket, "protocol", "expected hello")
+                return
+            }
+            val v = Json.int(hello["v"])
+            if (PathVersion.refused(v)) {
+                log("version: ${PathVersion.phoneSentence(v)}")
+                reject(socket, "version", "this phone speaks protocol ${PathVersion.CURRENT}",
+                    mapOf("v" to PathVersion.CURRENT))
+                return
+            }
+            val pathId = Json.str(hello["path"])
+            if (pathId == null || !isHex(pathId, 8)) {
+                reject(socket, "protocol", "bad path id")
+                return
+            }
+            val join = Json.str(hello["join"])
+            if (join != null) {
+                if (!isHex(join, 32)) {
+                    reject(socket, "protocol", "bad session id")
+                    return
+                }
+                when (sessions.attach(peerMac, pinned, join, pathId, socket, rawSocket)) {
+                    AttachResult.ATTACHED -> return
+                    AttachResult.NO_SESSION -> {
+                        reject(socket, "no_session", "no such session")
+                        return
+                    }
+                    AttachResult.TOO_MANY -> {
+                        reject(socket, "too_many_paths", "at most three paths")
+                        return
+                    }
+                    AttachResult.BUSY -> {
+                        rejectBusy(socket)
+                        return
+                    }
+                }
+            }
+            val session = sessions.adopt(peerMac, pinned) { factory.create(socket, rawSocket, hello) }
             if (session == null) {
                 rejectBusy(socket)
                 return
@@ -245,8 +304,9 @@ class Server(
             runCatching { ssl.close() }
             return null
         }
-        // The session sets its own read timeout in run(); hand it over clean.
-        runCatching { ssl.soTimeout = 0 }
+        // The first frame is the hello: keep the accept timeout until it is
+        // read, then the session sets its own (PATH-3, review H-1).
+        runCatching { ssl.soTimeout = ACCEPT_TIMEOUT_MS }
         return ssl
     }
 
@@ -312,13 +372,19 @@ class Server(
     private fun isPinned(hex: String?): Boolean =
         hex != null && pinnedPeerFpsProvider().any { it.length == 64 && it.equals(hex, ignoreCase = true) }
 
-    private fun reject(socket: Socket, code: String, message: String) {
+    private fun reject(socket: Socket, code: String, message: String, extra: Map<String, Any?> = emptyMap()) {
         try {
+            val fields = linkedMapOf<String, Any?>("t" to "error", "code" to code, "message" to message)
+            fields.putAll(extra)
             val out = socket.getOutputStream()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "error", "code" to code, "message" to message))))
+            out.write(Frames.encodeJson(0, Json.encode(fields)))
             out.flush()
         } catch (_: Throwable) {
         }
         runCatching { socket.close() }
     }
+
+    /** 8 or 32 lowercase hex, as the contract names ids. */
+    private fun isHex(text: String, length: Int): Boolean =
+        text.length == length && text.all { it in '0'..'9' || it in 'a'..'f' }
 }
