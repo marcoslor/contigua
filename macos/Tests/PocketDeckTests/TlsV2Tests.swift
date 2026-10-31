@@ -491,6 +491,39 @@ final class TlsV2Tests: XCTestCase {
         return what()
     }
 
+    /// R-12: a peer that accepts TCP and then goes silent must not block the
+    /// dial forever. The handshake deadline closes the channel and the dial
+    /// fails inside it.
+    func testASilentPeerIsAbandonedAtTheHandshakeDeadline() throws {
+        let silent = try ServerBootstrap(group: group)
+            .childChannelInitializer { ch in ch.eventLoop.makeSucceededFuture(()) }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? silent.close().wait() }
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-silent-peer")
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        let port = try XCTUnwrap(silent.localAddress?.port)
+        let done = DispatchSemaphore(value: 0)
+        let box = NSLockedBox<(failed: Bool, elapsed: TimeInterval)>(value: (false, 9))
+        DispatchQueue.global().async {
+            let start = Date()
+            var failed = false
+            do {
+                _ = try connector.connect(host: "127.0.0.1", port: port,
+                                          onFrame: { _ in }, onError: { _ in },
+                                          handshakeTimeout: .milliseconds(300))
+            } catch {
+                failed = true
+            }
+            box.set((failed, Date().timeIntervalSince(start)))
+            done.signal()
+        }
+        XCTAssertEqual(.success, done.wait(timeout: .now() + 2),
+                       "the TLS dial blocked past its handshake deadline")
+        let result = box.get()
+        XCTAssertTrue(result.failed, "a silent peer was reported as a live path")
+        XCTAssertLessThan(result.elapsed, 1.5)
+    }
+
     private func waitForSignal(_ semaphore: DispatchSemaphore, seconds: Int) -> Bool {
         semaphore.wait(timeout: .now() + Double(seconds)) == .success
     }

@@ -553,13 +553,14 @@ final class TlsConnectorV2: @unchecked Sendable {
                     ch.pipeline.addHandler(FrameDeliveryHandler(onFrame: onFrame, onError: onError)).map { _ in ch }
                 }
                 .wait()
-            handshakeDeadline.cancel()
             do {
                 try handshake.futureResult.wait()
             } catch {
+                handshakeDeadline.cancel()
                 channel.close(promise: nil)
                 throw error
             }
+            handshakeDeadline.cancel()
             return (channel, { capture.only.flatMap { ExporterV2.derive(exporterSecret: $0) } }, { frame in
                 var buffer = channel.allocator.buffer(capacity: frame.encoded.count)
                 buffer.writeBytes(frame.encoded)
