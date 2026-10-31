@@ -117,6 +117,46 @@ final class SessionPathsTests: XCTestCase {
         session.close()
     }
 
+    /// RR-2/E-2, the reviewer's scratch case: a session attached to the window
+    /// manager before `start()` sends while it is dialing; a stream window that
+    /// closes during "reconnecting" sends `window.close`. That send must not
+    /// spend a seq: the first seq on the wire after the welcome is 1, or the
+    /// phone sits on a seq-1 hole for the whole session (its reorder window
+    /// holds every frame, then raises a protocol error).
+    func testAFrameSentBeforeTheWelcomeSpendsNoSeq() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let brain = FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "phone-1")
+        brain.autoAllow = true
+        server.brain = brain
+        let lock = NSLock()
+        var seqs: [UInt64] = []
+        var keySeqs: [UInt64] = []
+        server.onRawFrame = { _, frame in
+            guard frame.type == PathCodec.reliableType,
+                  let reliable = try? PathCodec.decodeReliable(frame) else { return }
+            lock.lock(); seqs.append(reliable.seq); lock.unlock()
+            if reliable.inner.type == MessageType.key.rawValue {
+                lock.lock(); keySeqs.append(reliable.seq); lock.unlock()
+            }
+        }
+        let session = makeSession(port: server.port)
+        session.closeWindow(stream: 1)
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        session.key(KeyEvent(action: 0, keycode: 29), stream: 2)
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return !keySeqs.isEmpty
+        }, "the key never reached the phone")
+        lock.lock()
+        let all = seqs
+        let keys = keySeqs
+        lock.unlock()
+        XCTAssertEqual([1], keys, "the key after the welcome is the first seq (all seqs \(all))")
+        XCTAssertEqual(all.count, Int(all.last ?? 0), "the seqs on the wire start at 1 with no hole")
+        session.close()
+    }
+
     /// Boot 6: the phone pings as soon as it welcomes, before the Mac has
     /// answered anything else. The ping must get a pong whether it shares the
     /// welcome's write (one TLS read) or follows it (two).

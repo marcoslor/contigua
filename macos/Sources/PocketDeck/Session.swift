@@ -1677,16 +1677,27 @@ final class Session {
 
     func sendBytes(_ bytes: [UInt8]) {
         guard let frame = Frame(encoded: bytes) else { return }
-        // Before welcome there is no seq space: handshake and pairing frames
-        // travel bare on the one path that holds the plain hello (PATH-2).
+        sendReliable(frame)
+    }
+
+    /// One frame above the path layer. Before founding there is no seq space:
+    /// handshake and pairing frames travel bare on the one path that holds the
+    /// plain hello (PATH-2), and any other send is dropped with `sent(false)`
+    /// (E-2) — admitting it would spend a seq that never reaches a path, and the
+    /// phone would hold every later frame at the seq-1 gap (RR-2). After
+    /// founding every frame is a path-layer frame: with no attached path it is
+    /// held for replay, never written bare to a dead attempt (PATH-6, R-4).
+    private func sendReliable(_ frame: Frame, completion: (@Sendable (Bool) -> Void)? = nil) {
         if let preWelcome = preWelcomeSender.get() {
-            preWelcome(bytes)
+            preWelcome(frame.encoded)
+            completion?(true)
             return
         }
-        // After welcome every frame is a path-layer frame: with no attached
-        // path it is held for replay, never written bare to a dead attempt
-        // (PATH-6, R-4).
-        pathLayer.send(frame)
+        guard founded.get() else {
+            completion?(false)
+            return
+        }
+        pathLayer.send(frame, completion: completion)
     }
 
     func sendJSON(_ object: [String: Any]) {
@@ -1872,7 +1883,9 @@ final class Session {
         // The replay buffer holds the frame; the completion means "accepted for
         // delivery", so a producer waits on credit without blocking the UI,
         // and an orphaned session keeps the frame for the join (PATH-6, R-4).
-        pathLayer.send(Frame(type: kind, stream: id, payload: bytes), completion: sent)
+        // Before founding it is dropped with `sent(false)` (E-2): a FileDrop
+        // then fails the transfer instead of waiting for a seq that is gone.
+        sendReliable(Frame(type: kind, stream: id, payload: bytes), completion: sent)
     }
     func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
     func touch(_ event: TouchEvent, stream: UInt32) {
