@@ -603,7 +603,7 @@ PY
 check_pathgrace() {
     clean
     local ends
-    FAKE_ARGS="--paths 2 --drop-path all after 5" start_fake || return 1
+    FAKE_ARGS="--paths 2 --drop-path all after 5 --no-rejoin" start_fake || return 1
     path_pair_once "$PORT"
     launch --connect "127.0.0.1:$PORT" --connect2 "127.0.0.1:$((PORT + 1))" \
         --open-phone --quit-after 55
