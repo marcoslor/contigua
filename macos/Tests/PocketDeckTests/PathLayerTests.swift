@@ -137,7 +137,38 @@ final class PathLayerTests: XCTestCase {
         }
     }
 
-    func testAFrameThatDoesNotFitHoldsEveryLaterFrameInOrder() throws {
+    /// R-6, the reviewer's scratch case: a key typed while 13 bulk chunks wait
+    /// for credit goes out at once. Only bulk queues behind bulk.
+    func testAKeyGoesOutAtOnceWhilePendingBulkWaitsForCredit() throws {
+        let size = (1 << 20) - 100
+        let bulk = { (byte: UInt8) in
+            Frame(type: .dropData, stream: 1,
+                  payload: [UInt8](repeating: byte, count: size))
+        }
+        for byte in UInt8(1)...UInt8(13) { layer.send(bulk(byte)) }
+        // Twelve admittable chunks hold 12,581,928 B of the 12 MiB bulk budget;
+        // the 13th waits for an ack.
+        XCTAssertEqual(12, wire.all().count, "twelve bulk chunks fit the credit")
+        layer.send(json("key"))
+        let sent = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(13, sent.count, "the KEY must go out while bulk waits for credit")
+        let last = try PathCodec.decodeReliable(sent[12])
+        XCTAssertEqual("key", JSONFrame.decode(payload: last.inner.payload)?.t)
+        XCTAssertEqual(13, last.seq)
+        // The seqs on the wire are 1...13: control did not jump a gap, it was
+        // admitted after the twelve.
+        XCTAssertEqual(Array(1...UInt64(13)), try sent.map { try PathCodec.decodeReliable($0).seq })
+        // The waiting chunk keeps its order once an ack frees room.
+        _ = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(13))
+        let all = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(14, all.count, "the waiting chunk fits after the ack")
+        XCTAssertEqual(Array(1...UInt64(14)), try all.map { try PathCodec.decodeReliable($0).seq })
+        let payloads = try all.dropFirst(11).map { try PathCodec.decodeReliable($0).inner.payload.first ?? 0 }
+        XCTAssertEqual([12, 0x7b, 13], payloads)
+    }
+
+    /// Bulk still queues behind bulk, in order, and waits for credit.
+    func testBulkBehindPendingBulkKeepsItsOrderAndWaitsForTheAck() throws {
         let size = (8 << 20) - 1_000
         let bulk = { (byte: UInt8) in
             Frame(type: .dropData, stream: 1,
@@ -146,20 +177,14 @@ final class PathLayerTests: XCTestCase {
         layer.send(bulk(1))
         layer.send(bulk(2))         // does not fit the 12 MiB bulk budget
         layer.send(bulk(3))         // still queued behind the second
-        layer.send(json("key"))     // and the JSON behind both
         XCTAssertEqual(1, wire.all().count, "only the first frame was admitted")
         _ = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(2))
         XCTAssertEqual(2, wire.all().count, "one more bulk frame fits")
         _ = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(3))
-        let sent = wire.all()
-        XCTAssertEqual(4, sent.count)
-        let types = try sent.map { try XCTUnwrap(Frame(encoded: $0)) }
-            .map { try PathCodec.decodeReliable($0).inner.type }
-        XCTAssertEqual([MessageType.dropData.rawValue, MessageType.dropData.rawValue,
-                        MessageType.dropData.rawValue, MessageType.json.rawValue], types)
-        let payloads = try sent.map { try XCTUnwrap(Frame(encoded: $0)) }
-            .map { try PathCodec.decodeReliable($0).inner.payload.first ?? 0 }
-        XCTAssertEqual([1, 2, 3, 123], payloads)
+        let sent = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(3, sent.count)
+        let payloads = try sent.map { try PathCodec.decodeReliable($0).inner.payload.first ?? 0 }
+        XCTAssertEqual([1, 2, 3], payloads)
     }
 
     func testAnAckAboveWhatWasSentIsAProtocolError() {
