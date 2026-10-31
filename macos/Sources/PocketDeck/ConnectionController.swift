@@ -226,9 +226,11 @@ final class ConnectionController {
         let apps = link.phone?.id == deviceId && appsLoaded ? self.apps : appsCache.load(deviceId: deviceId)
         guard !apps.isEmpty else { return }
         spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
                         iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
         dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
-                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [])
+                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [],
+                           saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: deviceId))
         dockRevision += 1
     }
 
@@ -261,6 +263,20 @@ final class ConnectionController {
     /// "Add to Dock" presses waiting for the Dock's 1296 px reply, keyed by
     /// `{deviceId}/{pkg}`.
     private var pendingDockAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private var pendingApplicationAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
+    /// Save all work waiting for the Dock's icon or the one build slot, keyed
+    /// by `{deviceId}/{pkg}`.
+    private var shortcutWork: [String: ShortcutWork] = [:]
+    /// A switch change bumps this; a step queued before it is dropped.
+    private var shortcutGeneration: [String: Int] = [:]
+    /// Dock-size icon requests in flight. Save all keeps at most four, so a
+    /// phone with 230 apps is not asked for 230 icons at once.
+    private var dockIconOutstanding: Set<String> = []
+    /// Save all bundles being written right now.
+    private var shortcutBuilding: Set<String> = []
+    /// Phones whose Spotlight list needs one re-index when their builds finish.
+    private var spotlightRefreshPending: Set<String> = []
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
@@ -789,7 +805,12 @@ final class ConnectionController {
         remembered.forget(id: phone.id)
         appsCache.remove(deviceId: phone.id)
         spotlight.remove(deviceId: phone.id)
+        spotlightRefreshPending.remove(phone.id)
+        SaveAllShortcutsSetting.write(false, for: phone.id, to: profile.defaults)
         dockApps.forget(deviceId: phone.id)
+        shortcutGeneration[phone.id, default: 0] += 1
+        shortcutWork = shortcutWork.filter { $0.value.deviceId != phone.id }
+        shortcutBuilding = shortcutBuilding.filter { !$0.hasPrefix("\(phone.id)/") }
         dockRevision += 1
         rememberedPhones = remembered.all
         if link.phone?.id == phone.id {
@@ -850,10 +871,12 @@ final class ConnectionController {
 
     // MARK: Dock apps (docs/design/dock.md)
 
+    /// Whether the app's shim carries the Dock reason (Add to Dock): Save all
+    /// and Add to Applications never make a tile's menu say Remove from Dock.
     func isInDock(_ app: AppInfo) -> Bool {
         _ = dockRevision
         guard let id = link.phone?.id else { return false }
-        return dockApps.hasShim(deviceId: id, pkg: app.pkg)
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.dock)
     }
 
     var canAddToDock: Bool { dockApps.isAvailable && link.phone != nil }
@@ -868,9 +891,10 @@ final class ConnectionController {
             return
         }
         if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
-                        launch: true, pinned: true) == nil {
+                        launch: true, origins: dockApps.origins(deviceId: phone.id, pkg: app.pkg).union(.dock)) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
+        spotlightShortcutChanged(deviceId: phone.id, pkg: app.pkg)
         dockRevision += 1
     }
 
@@ -882,17 +906,252 @@ final class ConnectionController {
                   dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
             pendingDockAdds[key] = nil
             if dockApps.add(deviceId: add.deviceId, pkg: add.pkg, label: add.label,
-                            phoneName: displayName(for: phone), launch: true, pinned: true) == nil {
+                            phoneName: displayName(for: phone), launch: true,
+                            origins: dockApps.origins(deviceId: add.deviceId, pkg: add.pkg).union(.dock)) == nil {
                 showTransient("Couldn't add \(add.label) to the Dock.")
             }
+            spotlightShortcutChanged(deviceId: add.deviceId, pkg: add.pkg)
             dockRevision += 1
         }
     }
 
     func removeFromDock(_ app: AppInfo) {
         guard let id = link.phone?.id else { return }
-        dockApps.remove(deviceId: id, pkg: app.pkg)
+        removeDockOrigin(deviceId: id, pkg: app.pkg)
         dockRevision += 1
+    }
+
+    private func removeDockOrigin(deviceId: String, pkg: String) {
+        let decision = DockOrigins.applying(.remove(.dock), to: dockApps.origins(deviceId: deviceId, pkg: pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: deviceId, pkg: pkg)
+        case .write:
+            // Another reason keeps the shortcut: only the Dock identity goes.
+            let label = apps.first { $0.pkg == pkg }?.label ?? pkg
+            if let phone = link.phone, phone.id == deviceId {
+                dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+            dockApps.quitIfUnbound(deviceId: deviceId, pkg: pkg)
+        case .none:
+            break
+        }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
+    }
+
+    // MARK: Application shortcuts (docs/design/dock.md §Shortcuts)
+
+    /// Whether the app's shim carries the reason "Add to Applications".
+    func hasManualShortcut(_ app: AppInfo) -> Bool {
+        _ = dockRevision
+        guard let id = link.phone?.id else { return false }
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.manual)
+    }
+
+    var canAddToApplications: Bool { dockApps.isAvailable && link.phone != nil }
+
+    /// This build carries the shim executable, so shortcuts can be made at all.
+    var canMakeShortcuts: Bool { dockApps.isAvailable }
+
+    /// "Add to Applications": adds `manual` and builds the shortcut, launching
+    /// nothing — it is a Launchpad/Spotlight/launcher entry, not a window.
+    func addToApplications(_ app: AppInfo) {
+        guard let phone = link.phone, dockApps.isAvailable else { return }
+        guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
+            pendingApplicationAdds["\(phone.id)/\(app.pkg)"] = (phone.id, app.pkg, app.label)
+            requestDockIcon(app.pkg)
+            return
+        }
+        installShortcut(deviceId: phone.id, pkg: app.pkg, label: app.label, phone: phone)
+    }
+
+    /// "Remove from Applications": removes only `manual`; a shim Save all or the
+    /// Dock still asks for stays.
+    func removeFromApplications(_ app: AppInfo) {
+        guard let id = link.phone?.id else { return }
+        let decision = DockOrigins.applying(.remove(.manual), to: dockApps.origins(deviceId: id, pkg: app.pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: id, pkg: app.pkg)
+        case .write:
+            if let phone = link.phone, phone.id == id {
+                dockApps.add(deviceId: id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+        case .none:
+            break
+        }
+        spotlightShortcutChanged(deviceId: id, pkg: app.pkg)
+        dockRevision += 1
+    }
+
+    private func installShortcut(deviceId: String, pkg: String, label: String, phone: PhoneRef) {
+        let origins = dockApps.origins(deviceId: deviceId, pkg: pkg).union(.manual)
+        if dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                        launch: false, origins: origins) == nil {
+            showTransient("Couldn't add \(label) to Applications.")
+        }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
+        dockRevision += 1
+    }
+
+    // MARK: Spotlight's one entry per app (docs/specs/dock.md DOCK-9)
+
+    /// A shim appeared or went away: an app with one is not a CoreSpotlight item
+    /// too. A new shim takes its item out (cheap); a removed one puts the phone's
+    /// list back in, without the apps that still have shims.
+    private func spotlightShortcutChanged(deviceId: String, pkg: String) {
+        if dockApps.hasShim(deviceId: deviceId, pkg: pkg) {
+            spotlight.remove(deviceId: deviceId, pkg: pkg)
+        } else {
+            spotlightRefreshPending.insert(deviceId)
+        }
+        if shortcutBuilding.isEmpty { flushSpotlightRefreshes() }
+    }
+
+    /// Save all's batch ends: one exclusion pass for the whole batch, since each
+    /// new shim already took its own item out.
+    private func spotlightBatchFinished(deviceId: String) {
+        spotlightRefreshPending.insert(deviceId)
+        flushSpotlightRefreshes()
+    }
+
+    /// Save all off removes many bundles: one re-index when the last is gone.
+    private func flushSpotlightRefreshes() {
+        for deviceId in spotlightRefreshPending.sorted() {
+            spotlightRefreshPending.remove(deviceId)
+            refreshSpotlight(deviceId: deviceId)
+        }
+    }
+
+    private func refreshSpotlight(deviceId: String) {
+        guard let phone = remembered.phone(id: deviceId)?.ref else { return }
+        let list = (link.phone?.id == deviceId && appsLoaded) ? apps : appsCache.load(deviceId: deviceId)
+        guard !list.isEmpty else { return }
+        spotlight.index(apps: list, deviceId: deviceId, phoneName: displayName(for: phone),
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
+                        iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
+    }
+
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private func runPendingApplicationAdds() {
+        guard let phone = link.phone, !pendingApplicationAdds.isEmpty else { return }
+        for key in pendingApplicationAdds.keys.sorted() {
+            guard let add = pendingApplicationAdds[key], add.deviceId == phone.id,
+                  dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
+            pendingApplicationAdds[key] = nil
+            installShortcut(deviceId: add.deviceId, pkg: add.pkg, label: add.label, phone: phone)
+        }
+    }
+
+    // MARK: Save all (docs/design/dock.md §Shortcuts)
+
+    /// One app's Save all work (a write or a remove), with the switch revision
+    /// it was planned under.
+    private struct ShortcutWork {
+        var deviceId: String
+        var pkg: String
+        var label: String
+        var origins: DockOriginSet
+        var action: DockShimAction
+        var generation: Int
+    }
+
+    /// The phone page's "Save all apps as shortcuts": per phone, off by default.
+    func saveAllShortcuts(deviceId: String) -> Bool {
+        SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: deviceId)
+    }
+
+    /// The switch changed: store it and apply it. On adds `all` to every app of
+    /// the phone; off removes only `all`, so a shim the Dock or the person keeps
+    /// stays (rewritten).
+    func setSaveAllShortcuts(_ on: Bool, for deviceId: String) {
+        guard !deviceId.isEmpty else { return }
+        SaveAllShortcutsSetting.write(on, for: deviceId, to: profile.defaults)
+        shortcutGeneration[deviceId, default: 0] += 1
+        shortcutWork = shortcutWork.filter { $0.value.deviceId != deviceId }
+        queueSaveAll(deviceId: deviceId)
+    }
+
+    /// Plans the phone's apps against the shims on disk and queues what changed.
+    /// On an offline phone the cached list is used; its icons wait for the
+    /// connection, so the bundles keep what they have.
+    private func queueSaveAll(deviceId: String) {
+        let on = saveAllShortcuts(deviceId: deviceId)
+        let list = (link.phone?.id == deviceId && appsLoaded) ? apps : appsCache.load(deviceId: deviceId)
+        if on, list.isEmpty { return }
+        let generation = shortcutGeneration[deviceId, default: 0]
+        for step in DockSaveAll.plan(apps: list, records: dockApps.records(), deviceId: deviceId, on: on) {
+            shortcutWork["\(deviceId)/\(step.pkg)"] = ShortcutWork(
+                deviceId: deviceId, pkg: step.pkg, label: step.label, origins: step.origins,
+                action: step.action, generation: generation)
+        }
+        pumpShortcutWork()
+    }
+
+    /// One build at a time, each when its icon has answered; at most four icon
+    /// requests in flight (docs/design/dock.md §Shortcuts). The file work is on
+    /// DockApps' queue, so the Deck never waits for 230 bundles.
+    private func pumpShortcutWork() {
+        guard !shortcutWork.isEmpty, let phone = link.phone else { return }
+        for key in shortcutWork.keys.sorted() {
+            guard let work = shortcutWork[key], !shortcutBuilding.contains(key) else { continue }
+            guard work.deviceId == phone.id,
+                  work.generation == shortcutGeneration[work.deviceId, default: 0] else {
+                // Another phone's work waits for its connection; a superseded
+                // switch change drops its own.
+                if work.generation != shortcutGeneration[work.deviceId, default: 0] {
+                    shortcutWork[key] = nil
+                }
+                continue
+            }
+            if work.action == .remove {
+                shortcutWork[key] = nil
+                shortcutBuilding.insert(key)
+                dockApps.removeInBackground(deviceId: work.deviceId, pkg: work.pkg) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.shortcutBuilding.remove(key)
+                        self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
+                        if work.generation != self.shortcutGeneration[work.deviceId, default: 0] {
+                            self.queueSaveAll(deviceId: work.deviceId)
+                        }
+                        self.pumpShortcutWork()
+                        // The last removal already put the phone's list back;
+                        // this covers a pending removal left by an add batch.
+                        if self.shortcutBuilding.isEmpty { self.flushSpotlightRefreshes() }
+                    }
+                }
+            } else if dockIconReady(pkg: work.pkg, deviceId: work.deviceId) {
+                shortcutWork[key] = nil
+                shortcutBuilding.insert(key)
+                let name = displayName(for: phone)
+                dockApps.addInBackground(deviceId: work.deviceId, pkg: work.pkg, label: work.label,
+                                         phoneName: name, origins: work.origins) { [weak self] ok in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.shortcutBuilding.remove(key)
+                        if !ok { self.showTransient("Couldn't save \(work.label) as a shortcut.") }
+                        else { Log.app.notice("dock: save all built \(work.pkg, privacy: .public)") }
+                        self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
+                        // The switch changed while the bundle was being written:
+                        // run the current plan again so no shim keeps a reason
+                        // that was turned off (docs/design/dock.md §Shortcuts).
+                        if work.generation != self.shortcutGeneration[work.deviceId, default: 0] {
+                            self.queueSaveAll(deviceId: work.deviceId)
+                        }
+                        self.pumpShortcutWork()
+                        if self.shortcutBuilding.isEmpty { self.spotlightBatchFinished(deviceId: work.deviceId) }
+                    }
+                }
+            } else if !dockIconAsked.contains(work.pkg), dockIconOutstanding.count < 4 {
+                Log.app.debug("dock: save all asks for \(work.pkg, privacy: .public) (\(self.dockIconOutstanding.count, privacy: .public) out)")
+                requestDockIcon(work.pkg)
+            }
+        }
     }
 
     /// A Dock app was launched, clicked or ⌘-Tabbed to: its window opens or comes forward.
@@ -950,9 +1209,12 @@ final class ConnectionController {
             }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
-                         launch: false, pinned: true)
+                         launch: false, origins: dockApps.origins(deviceId: phone.id, pkg: pkg).union(.dock))
+            spotlightShortcutChanged(deviceId: phone.id, pkg: pkg)
         }
-        if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
+        if let pkg = options.dockRemove {
+            removeDockOrigin(deviceId: phone.id, pkg: pkg)
+        }
         // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
         // Rename, driven as a hook so the check runs the real code path.
         if let name = options.setNickname { setNickname(name, for: phone.id) }
@@ -1097,13 +1359,16 @@ final class ConnectionController {
             return
         case .launchExisting:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
-                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, bind: stream, launched: launched)
+                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, label: label,
+                                       phoneName: self.displayName(for: phone),
+                                       bind: stream, launched: launched)
             }
         case .createAndLaunch:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
                     DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
-                                 profile: self.profile, hostPath: Bundle.main.bundleURL.path),
+                                 profile: self.profile, hostPath: Bundle.main.bundleURL.path,
+                                 origins: self.dockApps.origins(deviceId: phone.id, pkg: pkg).union(.window)),
                     bind: stream, launched: launched)
             }
         }
@@ -1162,6 +1427,8 @@ final class ConnectionController {
             if let pid { dockApps.quit(pid: pid) }
             Log.app.notice("dock auto: launch in flight at quit for stream \(stream, privacy: .public) → quit")
         }
+        // The bundle exists on disk after any landing: its Spotlight item goes.
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
         if !isShuttingDown { recheckOpenWindows() }
     }
 
@@ -1177,6 +1444,13 @@ final class ConnectionController {
 
     private func appLabel(_ pkg: String) -> String? {
         windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
+    }
+
+    /// One app of the phone in use, by package: the live list, else the cache.
+    private func appInfo(_ pkg: String) -> AppInfo? {
+        if let app = apps.first(where: { $0.pkg == pkg }) ?? windows.appsByPkg[pkg] { return app }
+        guard let id = link.phone?.id else { return nil }
+        return appsCache.load(deviceId: id).first { $0.pkg == pkg }
     }
 
     private func iconState(pkg: String, deviceId: String) -> DockFollow.IconState {
@@ -1196,7 +1470,10 @@ final class ConnectionController {
 
     /// Asks for the Dock's 1296 px icon once per connection.
     private func requestDockIcon(_ pkg: String) {
-        if dockIconAsked.insert(pkg).inserted { requestIcon(pkg, px: IconSizeClass.dock.layerPx) }
+        if dockIconAsked.insert(pkg).inserted {
+            dockIconOutstanding.insert(pkg)
+            requestIcon(pkg, px: IconSizeClass.dock.layerPx)
+        }
     }
 
     /// Asks the phone for one icon at `px`, remembering the size so the reply
@@ -2123,6 +2400,12 @@ final class ConnectionController {
             // The size class the reply fills: what was asked for this package,
             // oldest request first (a reply does not echo `px`).
             let askedPx = iconRequests[pkg]?.isEmpty == false ? iconRequests[pkg]!.removeFirst() : nil
+            if let askedPx, IconSizeClass.forRequest(askedPx) == .dock {
+                dockIconOutstanding.remove(pkg)
+                Log.app.debug("dock: icon answered for \(pkg, privacy: .public) (\(self.dockIconOutstanding.count, privacy: .public) still out)")
+            } else if askedPx == nil {
+                Log.app.debug("dock: icon answered with no request for \(pkg, privacy: .public)")
+            }
             if let image = NSImage(data: png) {
                 icons[pkg] = image
                 windows.setIcon(image, pkg: pkg)
@@ -2142,6 +2425,8 @@ final class ConnectionController {
             }
             runDockHooks()
             runPendingDockAdds()
+            runPendingApplicationAdds()
+            pumpShortcutWork()
             recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):
@@ -2452,6 +2737,7 @@ final class ConnectionController {
         layerRefresh.reset()
         iconRequests = [:]
         dockIconAsked = []
+        dockIconOutstanding = []
         let hadWindows = !windows.openStreams.isEmpty
         windows.phone = info
         // Every window title carries the display name from here on.
@@ -2561,13 +2847,19 @@ final class ConnectionController {
             }
         }
         if let ref = link.phone {
-            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
-                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
             dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: displayName(for: ref),
-                               keep: dockPkgsOfOpenWindows)
+                               keep: dockPkgsOfOpenWindows,
+                               saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: ref.id))
+            queueSaveAll(deviceId: ref.id)
+            // An app with a shim is listed by Launchpad/Spotlight/a launcher as the
+            // real app, so it is not a CoreSpotlight item too (DOCK-9).
+            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
+                            excluding: dockApps.shimPackages(deviceId: ref.id),
+                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
         }
         runDockHooks()
         runPendingDockAdds()
+        runPendingApplicationAdds()
         recheckOpenWindows()
         // An open-app intent needs the live list (a fresh profile has no cache).
         runPendingDebugIntents(immediateOnly: false)
@@ -2644,6 +2936,12 @@ final class ConnectionController {
         // @AppStorage does, then calls the same handler its onChange does.
         debugInput?.dockApps = { [weak self] on in
             MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
+        }
+        debugInput?.shortcutsAll = { [weak self] on in
+            MainActor.assumeIsolated {
+                guard let self, let phone = self.link.phone else { return }
+                self.setSaveAllShortcuts(on, for: phone.id)
+            }
         }
         // The panel's debug host and driver: the same SwiftUI content the menu
         // bar shows, and clicks at the controls' own frames.
@@ -2842,6 +3140,53 @@ final class ConnectionController {
             let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "deckmenu":
+            // The cell's own context menu, through a secondary click at its
+            // drawn place (for the quiet screenshots; setup, not a check).
+            guard !arguments.isEmpty else { return "deckmenu needs an app label" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            return DeckCellClick.menu(label: arguments.joined(separator: " "), in: deck)
+        case "shortcut", "dock":
+            // The tile's menu actions (docs/specs/dock.md DOCK-3/4): a context
+            // menu cannot be clicked in a quiet run, so the check runs the same
+            // controller action the item runs, by package. Setup for the e2e.
+            guard arguments.count >= 2, ["add", "remove"].contains(arguments[0]) else {
+                return "\(command) needs add|remove PKG"
+            }
+            guard let app = appInfo(arguments[1]) else { return "no app \(arguments[1])" }
+            if command == "dock" {
+                arguments[0] == "add" ? addToDock(app) : removeFromDock(app)
+            } else {
+                arguments[0] == "add" ? addToApplications(app) : removeFromApplications(app)
+            }
+            return nil
+        case "shortcutsall":
+            // The phone page's Save all switch, through the same write-then-
+            // apply path its binding runs (setup for the e2e).
+            guard let raw = arguments.first, ["on", "off"].contains(raw) else {
+                return "shortcutsall needs on|off"
+            }
+            guard let phone = link.phone else { return "no phone" }
+            setSaveAllShortcuts(raw == "on", for: phone.id)
+            return nil
+        case "shortcutstats":
+            // Save all's own counters (the e2e's diagnosis when a build stalls):
+            // counts and package names, never a label.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "shortcutstats needs an absolute PATH"
+            }
+            let text = """
+            pending=\(shortcutWork.count)
+            building=\(shortcutBuilding.count)
+            asked=\(dockIconAsked.count)
+            outstanding=\(dockIconOutstanding.count)
+            pending_keys=\(shortcutWork.keys.sorted().joined(separator: ","))
+            building_keys=\(shortcutBuilding.sorted().joined(separator: ","))
+            asked_keys=\(dockIconAsked.sorted().joined(separator: ","))
+            outstanding_keys=\(dockIconOutstanding.sorted().joined(separator: ","))
+            """
+            do { try text.write(toFile: path, atomically: true, encoding: .utf8) } catch { return "cannot write \(path)" }
+            return nil
         case "coverclick":
             // A click on the opening cover's own button (Cancel or Close), at
             // its place in the window, through the window's event handling.

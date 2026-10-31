@@ -27,9 +27,14 @@ enum DockMessage {
     static let plistHostPath = "PDHostPath"
     /// A random per-bundle token, written when the bundle is built.
     static let plistToken = "PDToken"
-    /// True on shims the person added by hand ("Add to Dock"); the automatic
-    /// ones write false. Turning "Show phone apps in the Dock" off stops only
-    /// the unpinned ones.
+    /// Why the bundle exists (docs/design/dock.md §Shortcuts): an array of
+    /// `dock`, `manual`, `all`, `window`. Written by every current build.
+    static let plistOrigins = "PDOrigins"
+    /// The app's label as the phone sent it, so a rebuild that only changes the
+    /// origins keeps the name without the phone part.
+    static let plistLabel = "PDLabel"
+    /// The pre-origins marker ("Add to Dock" = true): read only to migrate a
+    /// bundle written before PDOrigins existed.
     static let plistPinned = "PDPinned"
     /// The renderer version the shim's icon was made with (docs/design/dock.md
     /// §Icons): a bundle with an older or missing one is rebuilt.
