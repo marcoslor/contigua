@@ -256,7 +256,10 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 - Keep-awake pokes the VD's display group (on stream open, throttled input,
   a ≤ 1/10 s timer while streams are visible) holding a PARTIAL wake lock only
   while ≥ 1 stream is unpaused; the panel is never forced on, the keyguard is
-  never dismissed.
+  never dismissed. The episode start's take-over (the group wake, then the
+  panel-off under it on a shared-group build) runs right after the VD exists
+  and *before* the activity launch: a VD created while the group sleeps starts
+  OFF, and Android does not launch onto it until it is awake.
 - A power press with app streams up is watched from the first second: on the
   not-interactive edge the streaming group is woken at once and the panel
   powered off under it (the same take-over an episode start uses), and the Mac

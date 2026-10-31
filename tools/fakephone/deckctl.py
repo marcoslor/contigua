@@ -291,6 +291,9 @@ class Client(object):
         self.hello_v = 4
         hello = {"t": "hello", "v": 4, "clientId": client_id, "name": name,
                  "path": self.path_id}
+        # A user-driven pairing says so in its hello (PROTOCOL "Session
+        # handshake" step 2): without it the phone answers an unknown Mac
+        # `not_paired` at once, before any pair.request can be sent.
         if pair:
             hello["pair"] = True
         self.send_json(hello)

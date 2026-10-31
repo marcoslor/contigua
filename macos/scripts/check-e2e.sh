@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -7805,6 +7805,19 @@ dock_dir() { echo "$WORK/dock-apps"; }
 
 dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
 
+# dock_shim_ready — the first built bundle is complete: icon written and signed
+# (the directory appears while the build is still writing into it).
+dock_shim_ready() {
+    local shim
+    shim="$(ls -d "$(dock_dir)"/*.app 2>/dev/null | head -1)"
+    [ -n "$shim" ] && [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && codesign --verify --strict "$shim" 2>/dev/null
+}
+
+# window_close_count — window.close messages the fakephone has received (the
+# app sends one when a person closes a stream window).
+window_close_count() { awk '/"ev":"rx"/ && /"t":"window.close"/ {n++} END {print n+0}' "$WORK/events.jsonl"; }
+
 # Dock apps made from the profile folder are the automatic ones (a check that
 # opens app windows without --dock-dir). Every run cleans its own.
 profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
@@ -7856,6 +7869,35 @@ sys.exit(1)
 PY
 }
 
+# stream_after_close <stream> — what the fakephone received for that stream
+# after the Mac's window.close for it, as the message types in arrival order
+# ("none" when nothing). The phone forgets a stream at its close, so anything
+# the Mac still sends for it comes back `error no_stream` (WIN-38).
+stream_after_close() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+stream = int(sys.argv[2])
+closed = False
+late = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "window.close" and msg.get("stream") == stream:
+        closed = True
+        continue
+    if not closed:
+        continue
+    if event.get("ev") == "rx" and msg.get("stream") == stream:
+        late.append(str(msg.get("t")))
+    elif event.get("ev") == "input" and event.get("stream") == stream:
+        late.append("input:" + str(event.get("kind")))
+print(",".join(late) if late else "none")
+PY
+}
+
 # window_open_count <pkg> — how many window.open the fakephone received for the
 # package (the raise rule: one, however many times the entry point is used).
 window_open_count() {
@@ -7901,6 +7943,7 @@ check_dock() {
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$shim/Contents/Info.plist" 2>/dev/null)"
     [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "dev.pocketdeck.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
         && ok "DOCK created $(basename "$shim") ($id)" || bad "DOCK unexpected bundle $(basename "$shim") ($id)"
+    wait_until 15 dock_shim_ready
     [ -s "$shim/Contents/Resources/AppIcon.icns" ] && codesign --verify --strict "$shim" 2>/dev/null \
         && ok "DOCK has AppIcon.icns from the phone's icon and is signed" || bad "DOCK no icon or bad signature"
     wait_until 10 registered_in_ls "$id" && ok "DOCK registered with LaunchServices" || bad "DOCK not registered with LaunchServices"
@@ -7943,8 +7986,11 @@ check_dock() {
 
     # Automatic identity (default on): a window the app opens itself builds and
     # launches its shim, and the shim exits when the window closes.
+    local auto_opens auto_closes
+    auto_opens="$(window_open_count "$pkg")"
+    auto_closes="$(window_close_count)"
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:20 --quit-after 60
-    wait_until 30 window_rx window.open "$pkg" \
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$auto_opens" ]' \
         && ok "DOCK auto: window.open arrived for $pkg" || bad "DOCK auto: no window.open for $pkg"
     wait_until 30 shim_made \
         && ok "DOCK auto: the window's Dock app was created ($(ls "$dir" | head -1))" \
@@ -7952,12 +7998,86 @@ check_dock() {
     wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: the shim runs for the window (pid $(dock_shim_pids | tr '\n' ' '))" \
         || bad "DOCK auto: the shim is not running"
+    # The close timer counts from the app becoming ready, so wait for the close
+    # itself before judging the shim: a loaded Mac can run that timer seconds
+    # late, and the exit has to be measured from the close.
+    wait_until 30 eval '[ "$(window_close_count)" -gt "$auto_closes" ]' \
+        && ok "DOCK auto: the window closed" || bad "DOCK auto: the window never closed"
     wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: closing the window made the shim exit" || bad "DOCK auto: the shim outlives the window"
     stop_app
     wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
     remove_dock_apps
+
+    # The race, made deterministic (reviewer 10-30): a window that closes before
+    # its identity finishes launching. The pending work is dropped, so no shim is
+    # ever built for a stream that is gone (docs/design/dock.md §Lifecycle).
+    local race_opens race_closes
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-launch-delay 6 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg" \
+        || { bad "DOCK auto race: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed before its identity launched" \
+        || bad "DOCK auto race: the window never closed"
+    sleep 8
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: no shim was built for the closed stream" \
+        || bad "DOCK auto race: a shim was built for a window that was gone"
+    [ "$(window_open_count "$pkg")" = "$((race_opens + 1))" ] \
+        && ok "DOCK auto race: no window came back with it" \
+        || bad "DOCK auto race: a late launch brought its window back"
+    stop_app
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app leaves no shim behind" || bad "DOCK auto race: a shim survived the app"
+    remove_dock_apps
+
+    # The same race with the launch already in flight: the pid that lands after
+    # its window closed is quit at once and logged, never bound.
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-bind-delay 7 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (late launch)" \
+        || { bad "DOCK auto race: no window.open for $pkg (late launch)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed while the launch was in flight" \
+        || bad "DOCK auto race: the window never closed (late launch)"
+    sleep 9
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: a launch landing after its window closed is quit, not bound" \
+        || bad "DOCK auto race: a shim outlived the window it was launched for"
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null \
+        | grep -q "dock auto: late launch for closed stream 1" \
+        && ok "DOCK auto race: the late launch was logged as a decision" \
+        || bad "DOCK auto race: no 'late launch for closed stream' line"
+    stop_app
+    remove_dock_apps
+
+    # A launch still in flight when the app quits: the shim it started is stopped
+    # with the app, so the second assertion holds for a launch at quit too.
+    race_opens="$(window_open_count "$pkg")"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --dock-bind-delay 20 --quit-after 6
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (quit)" \
+        || { bad "DOCK auto race: no window.open for $pkg (quit)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: the shim runs while its launch callback has not landed" \
+        || bad "DOCK auto race: the shim never started"
+    wait_until 15 eval '[ -z "$(e2e_app_pids)" ]' \
+        || { bad "DOCK auto race: the app did not quit"; stop_app; stop_fakephone; return 1; }
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app stops a shim it launched but never bound" \
+        || bad "DOCK auto race: a shim it launched but never bound survived the app"
+    remove_dock_apps
+
 
     # Turning the setting off while an automatic identity runs: the shim stops,
     # the window stays (the identity was only the Dock tile), and nothing
@@ -8090,6 +8210,45 @@ check_dock() {
         && ok "DOCK icon: an old-version shim was rebuilt" \
         || bad "DOCK icon: the old-version shim was not rebuilt"
 
+    # A flat-only app's shim carries the same renderer (docs/design/dock.md
+    # §Icons), drawn from the Dock's own 864 px flat: the rounded square covers
+    # its tile and the disc keeps its white plate.
+    local cover_app="$dir/Camera (FakePhone).app" plate_app="$dir/Gallery (FakePhone).app" flat_edge
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.camera2" --quit-after 90
+    # The phone answers one session at a time; a busy one is retried with a
+    # backoff, so this can take a while on a loaded host. Wait for the icon
+    # itself, not the bundle's folder: the bundle exists a moment before its
+    # .icns is written, and stopping the app in that gap leaves it iconless.
+    wait_until 60 eval '[ -f "$cover_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the covering flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.gallery3d" --quit-after 90
+    wait_until 60 eval '[ -f "$plate_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the plating flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    if [ -f "$cover_app/Contents/Resources/AppIcon.icns" ] \
+        && [ -f "$plate_app/Contents/Resources/AppIcon.icns" ]; then
+        sips -s format png "$cover_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-cover.png" >/dev/null 2>&1
+        sips -s format png "$plate_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-plate.png" >/dev/null 2>&1
+        flat_edge="$(icon_pixel "$WORK/shim-cover.png" 120 512)"
+        near "$flat_edge" 0 128 96 8 \
+            && ok "DOCK icon: a flat square covers its tile ($flat_edge)" \
+            || bad "DOCK icon: the flat square did not cover ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 120 512)"
+        near "$flat_edge" 255 255 255 4 \
+            && ok "DOCK icon: a flat disc keeps its white plate ($flat_edge)" \
+            || bad "DOCK icon: the flat disc's plate is not white ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 512 512)"
+        near "$flat_edge" 200 60 60 8 \
+            && ok "DOCK icon: the disc's own colour is inside the plate ($flat_edge)" \
+            || bad "DOCK icon: the disc is not drawn ($flat_edge)"
+    else
+        bad "DOCK icon: a flat app's shim has no AppIcon.icns"
+    fi
+    remove_dock_apps
+
     # A visible run (the VM) records what the person sees: the Dock with a
     # phone app's shim next to the native icons, and the Deck grid.
     if [ "$VISIBLE" = "1" ]; then
@@ -8106,6 +8265,195 @@ check_dock() {
     remove_dock_apps
 
     stop_fakephone
+    wait_until 5 no_fakephone
+}
+
+# --- Application shortcuts (docs/specs/dock.md) ---------------------------
+
+# origins_of <bundle> — the shim's PDOrigins as one spaced string ("dock manual").
+origins_of() {
+    python3 - "$1/Contents/Info.plist" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as handle:
+        print(" ".join(plistlib.load(handle).get("PDOrigins", [])))
+except Exception:
+    print("")
+PY
+}
+
+# check_shortcuts — DOCK-3 and DOCK-4: the Deck tile's menu actions (through the
+# debug control route the Dock checks use, because a context menu cannot be
+# clicked in a quiet run). Add to Applications creates the shim in the run's
+# folder with the manual reason and opens no window; Add to Dock adds its reason
+# and launches; Remove from Applications takes only manual; Remove from Dock App
+# removes the bundle. Save all, reconcile, forget and Spotlight follow below.
+check_shortcuts() {
+    clean
+    local dir="$WORK/dock-apps" pkg="com.whatsapp" shim label="WhatsApp (FakePhone).app"
+    remove_dock_apps
+    mkdir -p "$dir" "$WORK-control"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 300
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the app list never arrived"; stop_app; stop_fakephone; return 1; }
+    shim="$dir/$label"
+
+    # Add to Applications: the action the tile's item runs.
+    control shortcut add "$pkg" || bad "SHORTCUTS shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$shim" ]' \
+        || { bad "SHORTCUTS no shortcut bundle in $dir ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"; stop_app; stop_fakephone; return 1; }
+    [ "$(origins_of "$shim")" = "manual" ] \
+        && ok "[DOCK-4] Add to Applications creates the shortcut with the manual reason" \
+        || bad "[DOCK-4] the shortcut's reasons are '$(origins_of "$shim")'"
+    [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && ok "[DOCK-4] the shortcut carries the app's own icon" \
+        || bad "[DOCK-4] the shortcut has no AppIcon.icns"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] adding a shortcut launched nothing" \
+        || bad "[DOCK-14] adding a shortcut opened a window"
+
+    # Add to Dock on the same app: both reasons, and the Dock identity runs.
+    control dock add "$pkg" || bad "SHORTCUTS dock add: $CONTROL_REPLY"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "[DOCK-3] Add to Dock launched the app's window" \
+        || bad "[DOCK-3] Add to Dock opened no window"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock manual" ]' \
+        && ok "[DOCK-3] Add to Dock kept the shortcut's manual reason" \
+        || bad "[DOCK-3] the reasons after Add to Dock are '$(origins_of "$shim")'"
+
+    # Remove from Applications: only manual goes; the Dock shim and its window stay.
+    control shortcut remove "$pkg" || bad "SHORTCUTS shortcut remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock" ]' \
+        && ok "[DOCK-4] Remove from Applications removes only manual" \
+        || bad "[DOCK-4] the reasons after Remove from Applications are '$(origins_of "$shim")'"
+    [ -d "$shim" ] && ok "[DOCK-4] the Dock's shim stays" || bad "[DOCK-4] the Dock's shim was deleted"
+    [ -n "$(dock_shim_pids)" ] && ok "[DOCK-4] its running identity stays" \
+        || bad "[DOCK-4] Remove from Applications stopped the Dock identity"
+
+    # Remove from Dock App: the bundle goes and the shim stops.
+    control dock remove "$pkg" || bad "SHORTCUTS dock remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ ! -d "$shim" ]' \
+        && ok "[DOCK-3] Remove from Dock App removes the bundle" \
+        || bad "[DOCK-3] the bundle is still there after Remove from Dock App"
+    wait_until 10 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-3] its shim stopped" || bad "[DOCK-3] the shim kept running"
+
+    stop_app
+    remove_dock_apps
+
+    # --- Save all (docs/design/dock.md §Shortcuts, SET-DEV-25) -------------
+    # 40 fakephone apps, the switch on through the page's own write path: one
+    # shortcut per app, each with its icon, and no window opened along the way.
+    count_shims() { ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' '; }
+    count_icons() { local n=0 app; for app in "$dir"/*.app; do [ -s "$app/Contents/Resources/AppIcon.icns" ] && n=$((n + 1)); done; echo "$n"; }
+    stop_fakephone
+    FAKE_ARGS="--demo-apps 40" start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the save-all app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS save-all phase: shortcutsall on: $CONTROL_REPLY"
+    wait_until 60 eval '[ "$(count_shims)" = "40" ]' || true
+    if [ "$(count_shims)" != "40" ]; then
+        control shortcutstats "$WORK/shortcut-stats.txt" >/dev/null 2>&1
+        say "shortcuts after 60 s: $(tr '\n' ' ' < "$WORK/shortcut-stats.txt" 2>/dev/null)"
+    fi
+    wait_until 180 eval '[ "$(count_shims)" = "40" ]' \
+        && ok "[DOCK-5] Save all made all 40 app shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' ' | cut -c1-80)…)" \
+        || bad "[DOCK-5] Save all made $(count_shims) of 40 shortcuts"
+    [ "$(count_icons)" = "40" ] \
+        && ok "[DOCK-6] every one of the 40 shortcuts carries its .icns" \
+        || bad "[DOCK-6] only $(count_icons) of 40 shortcuts have an .icns"
+    control deckquery "" >/dev/null 2>&1 \
+        && ok "[DOCK-6] the Deck still answers while the shims are written" \
+        || bad "[DOCK-6] the Deck stopped answering during the build"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] Save all opened no window" \
+        || bad "[DOCK-14] Save all opened a window"
+
+    # Two shortcuts the person keeps another way: one manual, one Dock. Turning
+    # the switch off removes only `all`, so exactly those two stay.
+    control shortcut add com.whatsapp || bad "SHORTCUTS save-all phase: shortcut add: $CONTROL_REPLY"
+    control dock add com.android.chrome || bad "SHORTCUTS save-all phase: dock add: $CONTROL_REPLY"
+    wait_until 30 eval '[ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ]' \
+        && ok "[DOCK-2] WhatsApp carries all and manual" \
+        || bad "[DOCK-2] WhatsApp's reasons are '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 30 eval '[ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock all" ]' \
+        && ok "[DOCK-2] Chrome carries all and dock" \
+        || bad "[DOCK-2] Chrome's reasons are '$(origins_of "$dir/Chrome (FakePhone).app")'"
+    control shortcutsall off || bad "SHORTCUTS save-all phase: shortcutsall off: $CONTROL_REPLY"
+    wait_until 120 eval '[ "$(count_shims)" = "2" ]' \
+        && ok "[DOCK-5] Save all off left only the manual and Dock shortcuts (2)" \
+        || bad "[DOCK-5] Save all off left $(count_shims) shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual" ] \
+        && ok "[DOCK-5] the manual shortcut lost only all" \
+        || bad "[DOCK-5] WhatsApp's reasons after off: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    [ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock" ] \
+        && ok "[DOCK-5] the Dock shortcut lost only all" \
+        || bad "[DOCK-5] Chrome's reasons after off: '$(origins_of "$dir/Chrome (FakePhone).app")'"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+
+    # --- Reconcile on an app list, and Spotlight (DOCK-7, DOCK-9) ----------
+    # The phone drops WhatsApp (installed before the list arrives) and adds
+    # Notes between two app lists: the uninstalled app's shim goes even with
+    # Save all and manual on it, the new app gains Save all's reason, and the
+    # index holds no item for an app that has a shim.
+    FAKE_ARGS="--demo-apps 20 --drop-after 60 --apps-revise --apps-drop com.whatsapp --apps-add com.example.notes=Notes" \
+        start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the reconcile app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcut add com.whatsapp || bad "SHORTCUTS reconcile: shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$dir/WhatsApp (FakePhone).app" ]' \
+        || { bad "SHORTCUTS reconcile: no WhatsApp shim before the change"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS reconcile: shortcutsall on: $CONTROL_REPLY"
+    wait_until 180 eval '[ "$(count_shims)" = "20" ]' \
+        && ok "[DOCK-7] Save all made the 20 shortcuts before the app list changed" \
+        || bad "[DOCK-7] only $(count_shims) of 20 shortcuts before the change"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ] \
+        && ok "[DOCK-7] the app that will be uninstalled carries manual and all" \
+        || bad "[DOCK-7] WhatsApp's reasons before the change: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 120 eval '[ ! -d "$dir/WhatsApp (FakePhone).app" ]' \
+        && ok "[DOCK-7] the uninstalled app's shim went, manual and all included" \
+        || bad "[DOCK-7] the uninstalled app still has its shim"
+    wait_until 120 eval '[ "$(origins_of "$dir/Notes (FakePhone).app")" = "all" ]' \
+        && ok "[DOCK-7] the new app gained Save all's reason" \
+        || bad "[DOCK-7] the new app's shim is '$(origins_of "$dir/Notes (FakePhone).app")'"
+    [ "$(count_shims)" = "20" ] \
+        && ok "[DOCK-7] the list is 20 again (19 kept, one added)" \
+        || bad "[DOCK-7] the folder holds $(count_shims) shims, wanted 20"
+    # Every app has a shim, so nothing of that phone is a CoreSpotlight item.
+    local dev spot
+    dev="$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$dir/Notes (FakePhone).app/Contents/Info.plist" 2>/dev/null)"
+    [ -n "$dev" ] || bad "[DOCK-8] no device id in the shim"
+    sleep 2
+    spot="$(/usr/bin/log show --last 5m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        | grep -o "spotlight: indexing [0-9]* apps for $dev" | tail -1)"
+    [ "$spot" = "spotlight: indexing 0 apps for $dev" ] \
+        && ok "[DOCK-9] no app with a shortcut is also a CoreSpotlight item (last index: $spot)" \
+        || bad "[DOCK-9] the last Spotlight index was '${spot:-none}', wanted no items"
+
+    # --- Forget removes every shim (DOCK-8) --------------------------------
+    control settings-open >/dev/null 2>&1 || bad "[DOCK-8] settings-open: $CONTROL_REPLY"
+    wait_until 25 windows_at_least 2 \
+        || { bad "[DOCK-8] the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    control settings-select "phone:$dev" >/dev/null 2>&1
+    sleep 1
+    control settings-forget "$dev" >/dev/null 2>&1 || bad "[DOCK-8] settings-forget: $CONTROL_REPLY"
+    sleep 1
+    control key tab >/dev/null 2>&1
+    control key space >/dev/null 2>&1
+    wait_until 30 eval '[ "$(count_shims)" = "0" ]' \
+        && ok "[DOCK-8] forgetting the phone removed every shim, whatever its reasons" \
+        || bad "[DOCK-8] $(count_shims) shims survived the forget ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
     wait_until 5 no_fakephone
 }
 
@@ -8327,6 +8675,40 @@ check_windows() {
     else
         skip_visible "MIRROR-2 the refused cover's shot"
     fi
+    stop_app
+    stop_fakephone
+
+    # --- WIN-38: a Mac close is quiet -------------------------------------
+    # The person closes a live app window with ⌘W while the pointer is over the
+    # picture (a hover is live and a hover move is waiting in the mapper's 16 ms
+    # throttle) and AppKit reports the key window occluded as it goes. Both used
+    # to reach the phone after `window.close`; it answers `error no_stream` and
+    # the launcher showed "That window is no longer open on the phone".
+    clean
+    rm -f "$WORK/banner.txt"
+    start_fake || return 1
+    printf 'wait 3\nhover 0.5 0.5\nhover 0.4 0.5\nkey cmd+w\nwait 10\n' > "$WORK/close-input.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.whatsapp \
+        --debug-input-script "$WORK/close-input.txt" \
+        --debug-banner "$WORK/banner.txt" --quit-after 30
+    wait_until 25 window_rx window.open "com.whatsapp" \
+        || bad "WIN-38 the app window never opened"
+    wait_until 20 events_have '"ev":"video","stream":1,' \
+        || bad "WIN-38 the stream never sent video"
+    wait_until 15 window_rx window.close \
+        || bad "WIN-38 the person's close sent no window.close"
+    wait_until 10 eval '! windows | awk "\$4 == 900" | grep -q .' \
+        && ok "[WIN-12] closing the app window closed it" \
+        || bad "[WIN-12] the app window stayed after its close"
+    # The phone's answer to a late message takes a round trip: give it 3 s.
+    sleep 3
+    late="$(stream_after_close 1)"
+    [ "$late" = "none" ] \
+        && ok "[WIN-38] the Mac sent nothing for the closed stream after its window.close" \
+        || bad "[WIN-38] the Mac sent $late for stream 1 after its window.close"
+    ! grep -qF "That window is no longer open on the phone" "$WORK/banner.txt" 2>/dev/null \
+        && ok "[WIN-38] the launcher said nothing about the closed window" \
+        || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
     stop_app
     stop_fakephone
 }
@@ -8589,9 +8971,10 @@ check_settings() {
     # --- plain section headings: the phone's name appears once (SET-WIN-06) -
     [ "$(report_value "title.phone")" = "Phone" ] \
         && [ "$(report_value "title.notifications")" = "Notifications" ] \
+        && [ "$(report_value "title.applications")" = "Applications" ] \
         && [ "$(report_value "title.screen")" = "Screen" ] \
         && [ "$(report_value "title.forget")" = "Forget" ] \
-        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Screen, Forget" \
+        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Applications, Screen, Forget" \
         || bad "SET [SET-WIN-06] headings: $(grep '^title\.' "$dump" | tr '\n' '|')"
     if grep '^title\.' "$dump" | grep -qE 'Galaxy|Pixel| — '; then
         bad "SET [SET-WIN-06] a section heading carries the phone's name: $(grep '^title\.' "$dump" | tr '\n' '|')"
@@ -10507,9 +10890,10 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # log say both kinds arrived).
 # The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
 # steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
-# Quiet, the positions are forced (deckrailapproach) and the same shots are
-# what proves rail-glyph.py before the boot; visible, the real pointer walks in
-# from 96 pt left of the rail to on it, dark and then light.
+# Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
+# shots are what proves rail-glyph.py before the boot; visible, the real pointer
+# comes onto the rail at M, sideways there, down to Z and #, and out again,
+# dark and then light.
 check_deckrail() {
     clean
     # The host proof of the on-screen move: start from a stored frame whose rail
@@ -10680,17 +11064,22 @@ PY
         bad "DECKRAIL gate B: effective Reduce Motion is on (--debug-motion full did not reach the app)"
     fi
     if [ "$onscreen" = 1 ]; then
-        # Gate C: the forced position at the rail matches the pure layout, with
-        # the real pointer parked off the window (a visible run).
+        # Gate C: the forced enter at M gives the pure layout (equal gaps, the
+        # slot under the pointer at the centre, M's tag), with the real pointer
+        # parked off the window (a visible run).
         if [ "$VISIBLE" = 1 ]; then cg_input moveat --x 5 --y 5; sleep 0.5; fi
-        control deckrailapproach M 0 || bad "DECKRAIL gate C: deckrailapproach M 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter M || bad "DECKRAIL gate C: deckrailenter M: $CONTROL_REPLY"
         sleep 0.4
         if control deckrailslots "$WORK/rail-gate.json" \
-            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null; then
-            ok "DECKRAIL gate C: the forced M 0 gives the pure layout"
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" centre >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" tag:M >/dev/null; then
+            ok "DECKRAIL gate C: the forced enter at M gives the pure layout"
         else
             onscreen=0
-            bad "DECKRAIL gate C: the forced M 0 does not match the pure layout"
+            bad "DECKRAIL gate C: the forced enter at M does not match the pure layout"
         fi
         # Gate D: the forced M shot is 2.2x the rest shot's M (+/-15%).
         shot_rail rail-forced-m.png
@@ -10706,60 +11095,188 @@ PY
             onscreen=0
             bad "DECKRAIL gate D: the forced M shot is not 2.2x the rest (forced '$forced', rest '$rest_peak')"
         fi
-        control deckrailhoverout
+        control deckrailleave
+        sleep 0.3
+    fi
+    # M's, Z's and #'s drawn centres at rest: where a visible run puts the
+    # pointer, and the rows a move names in a quiet one.
+    local zcentre hcentre
+    if control deckrailslots "$railshots/rest.json"; then
+        read -r zcentre hcentre < <(python3 - "$railshots/rest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+by_index = {s["first"]: s for s in d["slots"]}
+def centre(index):
+    s = by_index[index]
+    return (s["glyphTop"] + s["glyphBottom"]) / 2
+print(centre(25), centre(26))
+PY
+)
+    else
+        bad "DECKRAIL deckrailslots (rest, centres): $CONTROL_REPLY"
     fi
     if [ "$onscreen" = 1 ]; then
-        # The sweep: the real pointer walks in from 96 pt left of the rail (the
-        # quiet run forces the same positions).
-        if [ "$VISIBLE" = 1 ]; then
-            for dx in 96 64 40 24 12 0; do
-                px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
-                py="$(python3 -c "print(round($sy + $mcentre))")"
-                cg_input moveat --x "$px" --y "$py"
+        # The enter set, in order: enter at M, sideways at M (visible only: the
+        # scale never depends on x), down to Z and #, out to the left. Each step
+        # reads the drawn slots, so the frozen ends are checked on the way.
+        # Enter at M: the real pointer moves onto the rail, or the quiet run
+        # forces the same event; then the drawn state must say M. A shot is a
+        # record, never the proof.
+        deckrail_enter_m() {
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" \
+                    --y "$(python3 -c "print(round($sy + $mcentre))")"
                 sleep 0.8
-                shot_rail "rail-dx$dx.png"
+            else
+                control deckrailenter M || bad "DECKRAIL deckrailenter M: $CONTROL_REPLY"
+                sleep 0.5
+            fi
+        }
+        deckrail_check_m() {
+            local file="$1" label="$2"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] $label: the drawn M is under the pointer" \
+                    || bad "[DECK-7] $label: the drawn M is not under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:M \
+                    && ok "[DECK-7] $label: the tag names M" \
+                    || bad "[DECK-7] $label: the tag does not name M"
+            else
+                bad "DECKRAIL deckrailslots ($label): $CONTROL_REPLY"
+            fi
+        }
+        if [ "$VISIBLE" = 1 ]; then
+            # From outside the arc's room, straight onto the rail at M.
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.5
+        fi
+        deckrail_enter_m
+        deckrail_check_m "$WORK/rail-enter.json" "the enter at M"
+        if control deckrailslots "$WORK/rail-enter.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" gaps \
+                && ok "[DECK-7] on the enter the gaps are equal and the rest gap's" \
+                || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        else
+            bad "DECKRAIL deckrailslots (enter): $CONTROL_REPLY"
+        fi
+        shot_rail rail-enter-m.png
+        if [ "$VISIBLE" = 1 ]; then
+            # Sideways inside the column at M: leading x, then trailing x.
+            local side px
+            for side in leading trailing; do
+                if [ "$side" = leading ]; then
+                    px="$(python3 -c "print(round($sx + 3))")"
+                else
+                    px="$(python3 -c "print(round($sx + 23))")"
+                fi
+                cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
+                sleep 0.6
+                shot_rail "rail-side-$side.png"
+                control deckrailslots "$WORK/rail-side-$side.json" \
+                    || bad "DECKRAIL deckrailslots (side $side): $CONTROL_REPLY"
             done
-            if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-                sleep 2
-                shot_rail rail-dx0-light.png
-                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
-                sleep 1
+            if control deckrailslots "$WORK/rail-side-trailing.json" \
+                && python3 - "$WORK/rail-enter.json" "$WORK/rail-side-trailing.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+b = json.load(open(sys.argv[2]))
+def m(d):
+    return [s for s in d["slots"] if s["first"] == 12][0]["scale"]
+print("M %.3f on the enter, %.3f at the column's trailing x" % (m(a), m(b)))
+sys.exit(0 if abs(m(b) / m(a) - 1) <= 0.05 else 1)
+PY
+            then
+                ok "[DECK-7] sideways at M the scale does not change (+/-5%)"
+            else
+                bad "[DECK-7] moving sideways at M changed the scale"
             fi
         else
-            for dx in 96 64 40 24 12 0; do
-                control deckrailapproach M "$dx"  >/dev/null || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
-                sleep 0.6
-                shot_rail "rail-dx$dx.png"
-            done
-            control deckrailhoverout
+            skip_visible "DECK-7 sideways at M (the scale never depends on x)"
         fi
-        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
-            ok "DECKRAIL the letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
+        # Down the rail to Z, then #: A's top and #'s bottom do not move.
+        local target
+        for target in Z '#'; do
+            if [ "$target" = Z ]; then
+                py="$(python3 -c "print(round($sy + $zcentre))")"
+                shot="rail-down-z.png"
+                file="$WORK/rail-z.json"
+            else
+                py="$(python3 -c "print(round($sy + $hcentre))")"
+                shot="rail-down-hash.png"
+                file="$WORK/rail-hash.json"
+            fi
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" --y "$py"
+                sleep 0.6
+            else
+                control deckrailmove "$target" || bad "DECKRAIL deckrailmove $target: $CONTROL_REPLY"
+                sleep 0.6
+            fi
+            shot_rail "$shot"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-enter.json" \
+                    && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                    || bad "[DECK-7] moving to $target moved the frozen ends"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                    || bad "[DECK-7] the move to $target does not put it under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                    && ok "[DECK-7] the move to $target names it" \
+                    || bad "[DECK-7] the move to $target does not name it"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                    && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                    || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+            else
+                bad "DECKRAIL deckrailslots ($target): $CONTROL_REPLY"
+            fi
+        done
+        # The light appearance, proved not posed: switch it, let the cross-fade
+        # settle, then enter at M and require the drawn state before the shot.
+        if [ "$VISIBLE" = 1 ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+            sleep 2
+            control deckrailleave
+            sleep 0.3
+            deckrail_enter_m
+            deckrail_check_m "$WORK/rail-light.json" "the light enter at M"
+            shot_rail rail-enter-m-light.png
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+            sleep 1
+        fi
+        # Out to the left, past the arc's room: back at rest within 0.3 s.
+        if [ "$VISIBLE" = 1 ]; then
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.3
         else
-            bad "DECKRAIL the letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+            control deckrailleave
+            sleep 0.3
+        fi
+        if control deckrailslots "$WORK/rail-away.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+                && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+                || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+        else
+            bad "DECKRAIL deckrailslots (away): $CONTROL_REPLY"
+        fi
+        shot_rail rail-away.png
+        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+            ok "DECKRAIL the letter sizes and A's top match the pure layout ($(grep -m1 '^A.s top' "$WORK/rail-glyph.txt"))"
+        else
+            bad "DECKRAIL the letter sizes or A's top are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
         fi
         sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
     else
-        bad "DECKRAIL a gate failed; the real-pointer sweep is skipped"
+        bad "DECKRAIL a gate failed; the real-pointer steps are skipped"
     fi
-    # At the rail: the S2 slots, the tag, A and # inside the clip.
-    control deckrailhoverout
-    sleep 0.3
-    control deckrailapproach M 0 || bad "DECKRAIL deckrailapproach M 0: $CONTROL_REPLY"
-    if control deckrailslots "$WORK/rail-m.json"; then
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
-            && ok "[DECK-7] the gaps around M are the pure layout's and the slots fill the rail" \
-            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
-            && ok "[DECK-7] the tag names M when the pointer is on the rail" \
-            || bad "[DECK-7] the tag at the rail does not name M"
-    else
-        bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
-    fi
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
     local edge
     for edge in A '#'; do
-        control deckrailapproach "$edge" 0 || bad "DECKRAIL deckrailapproach $edge 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECKRAIL deckrailenter $edge: $CONTROL_REPLY"
         if control deckrailslots "$WORK/rail-edge.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
                 && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
@@ -10768,6 +11285,8 @@ PY
             bad "DECKRAIL deckrailslots ($edge): $CONTROL_REPLY"
         fi
     done
+    control deckrailleave
+    sleep 0.3
 
     # The pointer never re-evaluates the grid's body: twenty moves, one runloop
     # turn each, against an idle window of the same wall time.
@@ -10788,60 +11307,82 @@ PY
         bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
     fi
 
-    # A real click on N's drawn centre (visible), or the rail's own pick.
-    control deckrailhoverout
+    # A real click on N's drawn centre (visible), or the rail's own pick. The
+    # screen points come from the rail's own geometry (deckrailpoint), the hook
+    # the T click uses: the frozen span moves the letters, so the rail's own
+    # resolution of a letter to its row is what a person's pointer follows.
+    control deckrailleave
     sleep 0.3
-    if control deckrailslots "$WORK/rail-n.json"; then
-        ncentre="$(python3 - "$WORK/rail-n.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-n = [s for s in d["slots"] if s["first"] == 13][0]
-print((n["glyphTop"] + n["glyphBottom"]) / 2)
-PY
-)"
-        if [ "$VISIBLE" = 1 ]; then
-            px="$(python3 -c "print(round($sx + 13))")"
-            py="$(python3 -c "print(round($sy + $mcentre))")"
-            cg_input moveat --x "$px" --y "$py"
-            sleep 0.5
-            control deckrailslots "$WORK/rail-n.json"
+    if [ "$VISIBLE" = 1 ]; then
+        local mx my
+        if control deckrailpoint M "$WORK/m.pt" && read -r mx my < "$WORK/m.pt"; then
+            cg_input moveat --x "$mx" --y "$my"
+            sleep 0.6
+            control deckrailslots "$WORK/rail-n.json" \
+                || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
                 && ok "[DECK-7] the real pointer on M's drawn centre shows M's tag" \
                 || bad "[DECK-7] the real pointer on M did not show M's tag"
-            py="$(python3 -c "print(round($sy + $ncentre))")"
+        else
+            bad "DECKRAIL deckrailpoint M: $CONTROL_REPLY"
+        fi
+        if control deckrailpoint N "$WORK/n.pt" && read -r px py < "$WORK/n.pt"; then
             cg_input moveat --x "$px" --y "$py"
-            sleep 0.5
-            control deckrailslots "$WORK/rail-n.json"
-            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
-                && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
-                || bad "[DECK-7] the real pointer on N did not show N's tag"
+            sleep 0.6
+        else
+            bad "DECKRAIL deckrailpoint N: $CONTROL_REPLY"
+        fi
+    else
+        control deckrailenter M || bad "DECKRAIL deckrailenter M (N click): $CONTROL_REPLY"
+        sleep 0.4
+        control deckrailslots "$WORK/rail-n.json" \
+            || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+            && ok "[DECK-7] the enter at M names M" \
+            || bad "[DECK-7] the enter at M does not name M"
+        control deckrailmove N || bad "DECKRAIL deckrailmove N: $CONTROL_REPLY"
+        sleep 0.5
+    fi
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the pointer on N shows N's tag" \
+            || bad "[DECK-7] the pointer on N did not show N's tag"
+        if [ "$VISIBLE" = 1 ]; then
             cg_input clickat --x "$px" --y "$py"
-            sleep 1
         else
             control deck-rail N
-            sleep 1
         fi
+        sleep 1
         python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
             && ok "[DECK-7] the click on N landed on N's section" \
             || bad "[DECK-7] the click on N did not land on N"
-        # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
-        if [ "$VISIBLE" = 1 ]; then
-            px="$(python3 -c "print(round($sx + 13 - 200))")"
-            cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
-            sleep 0.3
-            shot_rail rail-away.png
-            sleep 1
-            shot_rail rail-away-settled.png
-            cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-                && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-                || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
-        fi
     else
         bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
     fi
+    # A person who clicks a letter and then moves the pointer away gets the
+    # rail back at rest. The real pointer only: a forced leave would prove
+    # nothing about the click.
+    if [ "$VISIBLE" = 1 ]; then
+        cg_input moveat --x "$(python3 -c "print(round($sx + 13 - 200))")" \
+            --y "$(python3 -c "print(round($sy + $mcentre))")"
+        sleep 0.3
+        if control deckrailslots "$WORK/rail-post-click.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-post-click.json" rest \
+                && ok "[DECK-7] after a click and a move out the rail is at rest within 0.3 s" \
+                || bad "[DECK-7] after a click and a move out the rail is not at rest"
+        else
+            bad "DECKRAIL deckrailslots (post-click): $CONTROL_REPLY"
+        fi
+    else
+        skip_visible "DECK-7 the rail after a click and a move out (the real pointer)"
+    fi
 
     # The rail's overlay fills the container; a last-column cell inside it but
-    # off the rail still opens its app.
+    # off the rail still opens its app. The pointer leaves the rail first: the
+    # click is about the rest overlay, and the magnified hit area is the arc's
+    # room, which reaches a few points into the cell's trailing edge.
+    control deckrailleave
+    sleep 0.3
     control deckquery "" || bad "DECKRAIL deckquery: $CONTROL_REPLY"
     control deck-rail A || bad "DECKRAIL deck-rail A: $CONTROL_REPLY"
     sleep 1
@@ -10870,7 +11411,7 @@ check_deck() {
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -10889,6 +11430,39 @@ check_deck() {
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
+    # A flat-only reply is drawn by its own shape (docs/design/dock.md §Icons):
+    # fakephone's green rounded square covers its tile and its red disc keeps a
+    # white plate. The grid dump carries the colour just inside the body's
+    # leading edge, where a cover shows the icon and a plate shows the plate.
+    wait_until 20 grep -q 'CameraLauncher","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the grid reported what its tiles drew" || bad "[DECK-2] no ink in the grid dump"
+    wait_until 20 grep -q 'GalleryActivity","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the plating app's tile was drawn" || bad "[DECK-2] the plating app never drew"
+    python3 - "$WORK/deck-grid.jsonl" <<'PY' \
+        && ok "[DECK-2] a flat square covers its tile and a flat disc keeps its plate" \
+        || bad "[DECK-2] the flat replies did not draw as a cover and a plate"
+import json, sys
+
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+# The biggest dump is the whole grid (its last one, when every icon has
+# landed); later lines are search results.
+grids = [line for line in lines if "items" in line]
+whole = max(line["count"] for line in grids)
+grid = [line for line in grids if line["count"] == whole][-1]
+ink = {}
+for item in grid["items"]:
+    if "ink" in item:
+        ink[item["id"].split("/")[0]] = tuple(int(v) for v in item["ink"].split(","))
+
+cover = ink.get("com.android.camera2")
+plate = ink.get("com.android.gallery3d")
+if cover is None or any(abs(a - b) > 6 for a, b in zip(cover, (0, 128, 96))):
+    print("the covering flat icon's edge is", cover)
+    sys.exit(1)
+if plate is None or any(v < 248 for v in plate):
+    print("the plating flat icon's edge is", plate)
+    sys.exit(1)
+PY
     # The cells the grid drew (--debug-deck-grid): both entries of the repeated
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
@@ -10948,8 +11522,8 @@ check_deck() {
     control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
     # The A–Z rail (R1): rest, the letter under the pointer magnified, and the
-    # accent after a jump. A quiet run cannot move the pointer, so deckrailhover
-    # forces the letter the shot needs; the real pointer is proved in the VM.
+    # accent after a jump. A quiet run cannot move the pointer, so deckrailenter
+    # enters at the letter the shot needs; the real pointer is proved in the VM.
     local railshots="$WORK/deck-rail-shots"
     mkdir -p "$railshots"
     shot_rail() {
@@ -10960,84 +11534,18 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py dx nx ny mcentre ncentre ax ay wx wy sx sy scale
+    local px py wx wy sx sy scale
+    # The rail's magnification for the shot. A quiet run forces the enter; the
+    # real pointer's enter, sideways move, sweep to Z and #, leave and click are
+    # deckrail's, in the VM.
     if [ "$VISIBLE" = 1 ]; then
-        # The real pointer's positions come from the rail's geometry: its
-        # top-left on screen and the drawn slots' centres (no row arithmetic).
-        if control deckrailanchor "$WORK/deck-rail-shots/anchor.pt" \
-            && read -r wx wy sx sy scale < "$WORK/deck-rail-shots/anchor.pt"; then
-            mcentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre M //p')"
-            ncentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre N //p')"
-            if [ -z "$mcentre" ] || [ -z "$ncentre" ]; then
-                bad "DECK the rest shot gave no M or N band"
-            else
-                for dx in 96 64 40 24 12 0; do
-                    px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
-                    py="$(python3 -c "print(round($sy + $mcentre))")"
-                    cg_input moveat --x "$px" --y "$py"
-                    sleep 0.8
-                    shot_rail "rail-dx$dx.png"
-                done
-                # The person's other appearance: dark, then light (in the VM).
-                if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-                    sleep 2
-                    shot_rail rail-dx0-light.png
-                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
-                    sleep 1
-                fi
-                if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 760 600 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
-                    ok "[DECK-7] the real pointer's letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
-                else
-                    bad "[DECK-7] the real pointer's letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
-                fi
-                sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -12
-                # A real click on N's drawn centre: the rail's own pick lands
-                # the grid on N's section and the tag names N.
-                nx="$(sed -n 's/^N centre \([0-9.]*\) pt.*/\1/p' "$WORK/rail-glyph.txt")"
-                if [ -n "$nx" ]; then
-                    px="$(python3 -c "print(round($ax + 760 - 31))")"
-                    py="$(python3 -c "print(round($ay + $nx))")"
-                    cg_input moveat --x "$px" --y "$py"
-                    sleep 0.5
-                    if control deckrailslots "$WORK/rail-n.json"; then
-                        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
-                            && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
-                            || bad "[DECK-7] the real pointer on N did not show N's tag"
-                    else
-                        bad "DECK deckrailslots (N): $CONTROL_REPLY"
-                    fi
-                    cg_input clickat --x "$px" --y "$py"
-                    sleep 1
-                    if python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N; then
-                        ok "[DECK-7] the real click on N's drawn centre landed on N's section"
-                    else
-                        bad "[DECK-7] the real click on N did not land on N"
-                    fi
-                else
-                    bad "DECK the glyph bands gave no N centre for the click"
-                fi
-                # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
-                px="$(python3 -c "print(round($ax + 760 - 44 - 200))")"
-                py="$(python3 -c "print(round($ay + $mcentre))")"
-                cg_input moveat --x "$px" --y "$py"
-                sleep 0.3
-                shot_rail rail-away.png
-                sleep 1
-                shot_rail rail-away-settled.png
-                cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-                    && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-                    || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
-            fi
-        else
-            bad "DECK deckrailanchor: $CONTROL_REPLY"
-        fi
+        skip_visible "DECK the real pointer's rail enter and moves (VM: deckrail)"
     else
-        control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
-            || bad "[DECK-7] deckrailhover M: $CONTROL_REPLY"
+        control deckrailenter M && ok "[DECK-7] forced the rail's enter at M for the shot" \
+            || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
         sleep 1
         shot_rail rail-hover-m.png
-        control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave: $CONTROL_REPLY"
     fi
 
     # A letter click scrolls to that letter's first app. A quiet run cannot
@@ -11117,58 +11625,117 @@ PY
     # the real letter under the pointer and its tag.
     if control deck-size 760 450 >/dev/null; then
         sleep 1
-        control deckrailhover T && ok "[DECK-7] the short rail's hover on T is forced" \
-            || bad "[DECK-7] deckrailhover T (short): $CONTROL_REPLY"
+        control deckrailenter T && ok "[DECK-7] the short rail's enter at T is forced" \
+            || bad "[DECK-7] deckrailenter T (short): $CONTROL_REPLY"
         sleep 1
         shot_rail rail-short.png
-        control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave (short): $CONTROL_REPLY"
     else
         bad "DECK deck-size 760 450: $CONTROL_REPLY"
     fi
     control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
 
-    # DECK-7, the approach zone and the S2 spacing. The rail is tracked on the
-    # grid's container, so a letter begins to grow over the last icon column and
-    # reaches full size at the rail; there its slots open proportionally, with
-    # the rest pitch giving way so the magnified rail still fits the clip.
-    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail spacing): $CONTROL_REPLY"
+    # DECK-7: the rail's magnification. A quiet run cannot move the pointer, so
+    # the enter and the moves are forced; the real pointer is proved in the VM.
+    # On enter the span is computed at that y and frozen: A's top and #'s bottom
+    # must not move while the pointer sweeps to # and Z, the gaps stay equal and
+    # the rest gap's, and the drawn letter under the pointer is the one the tag
+    # names and a click picks.
+    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail): $CONTROL_REPLY"
     sleep 1
-    control deckrailhoverout
+    control deckrailleave
     sleep 0.5
-    shot_rail rail-rest-spacing.png
-    control deckrailapproach M 40 && ok "[DECK-7] the pointer 40 pt left of the rail" \
-        || bad "[DECK-7] deckrailapproach M 40: $CONTROL_REPLY"
-    sleep 1
-    shot_rail rail-approach.png
-    cmp -s "$railshots/rail-rest-spacing.png" "$railshots/rail-approach.png" \
-        && bad "[DECK-7] the approach shot is identical to rest" \
-        || ok "[DECK-7] the approach shot differs from rest (the letter grows before the rail)"
-    if control deckrailslots "$WORK/rail-approach.json"; then
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-approach.json" tag:none \
-            && ok "[DECK-7] the approach zone shows no tag" \
-            || bad "[DECK-7] the approach zone shows a tag"
+    shot_rail rail-rest.png
+    if control deckrailanchor "$railshots/anchor.pt" \
+        && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
+        ok "[DECK-7] the rail is at window ($wx,$wy) at scale $scale"
     else
-        bad "DECK deckrailslots (approach): $CONTROL_REPLY"
+        bad "DECK deckrailanchor (rail): $CONTROL_REPLY"
     fi
-
-    # At the rail the slots are proportional to the scales, the rail's height is
-    # fixed (its gaps around M are the pure function's 17.7 pt), and the rest
-    # pitch leaves room for the overshoot: with the pointer on the first and the
-    # last letter every slot is inside the clip.
-    control deckrailapproach M 0 || bad "[DECK-7] deckrailapproach M 0: $CONTROL_REPLY"
+    control deckrailenter M && ok "[DECK-7] the pointer enters the rail at M" \
+        || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
+    sleep 0.6
+    shot_rail rail-enter-m.png
     if control deckrailslots "$WORK/rail-m.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
-            && ok "[DECK-7] at the rail the gaps around M are 17.7 pt and the slots fill the rail" \
-            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
+            && ok "[DECK-7] on the enter every gap is equal and the rest gap's" \
+            || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" centre \
+            && ok "[DECK-7] the enter at M puts the drawn M under the pointer" \
+            || bad "[DECK-7] the enter at M does not put M under the pointer"
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
             && ok "[DECK-7] the tag names M when the pointer is on the rail" \
             || bad "[DECK-7] the tag at the rail does not name M"
     else
         bad "DECK deckrailslots (M): $CONTROL_REPLY"
     fi
+    local target shot file
+    for target in '#' Z; do
+        if [ "$target" = '#' ]; then
+            shot="rail-down-hash.png"; file="$WORK/rail-hash.json"
+        else
+            shot="rail-down-z.png"; file="$WORK/rail-z.json"
+        fi
+        control deckrailmove "$target" || bad "[DECK-7] deckrailmove $target: $CONTROL_REPLY"
+        sleep 0.6
+        shot_rail "$shot"
+        if control deckrailslots "$file"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-m.json" \
+                && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                || bad "[DECK-7] moving to $target moved the frozen ends"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                || bad "[DECK-7] the move to $target does not put it under the pointer"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                && ok "[DECK-7] the tag names $target" \
+                || bad "[DECK-7] the tag does not name $target"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+        else
+            bad "DECK deckrailslots ($target): $CONTROL_REPLY"
+        fi
+    done
+    # The click picks the letter under the pointer: move to N and pick, and the
+    # grid lands in N's section with the tag naming N.
+    control deckrailmove N || bad "[DECK-7] deckrailmove N: $CONTROL_REPLY"
+    sleep 0.5
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the tag names N with the pointer on N" \
+            || bad "[DECK-7] the tag with the pointer on N does not name N"
+    else
+        bad "DECK deckrailslots (N): $CONTROL_REPLY"
+    fi
+    control deck-rail N || bad "DECK deck-rail N: $CONTROL_REPLY"
+    sleep 1
+    python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
+        && ok "[DECK-7] the click on N landed on N's section" \
+        || bad "[DECK-7] the click on N did not land on N"
+    # Leaving: the rail is at rest within 0.3 s.
+    control deckrailleave
+    sleep 0.3
+    if control deckrailslots "$WORK/rail-away.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+            && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+            || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+    else
+        bad "DECK deckrailslots (away): $CONTROL_REPLY"
+    fi
+    shot_rail rail-away.png
+    if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+        ok "[DECK-7] the shots match the layout: $(grep -m1 '^A.s top' "$WORK/rail-glyph.txt")"
+    else
+        bad "[DECK-7] the shots do not match the layout: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+    fi
+    sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
     local edge
     for edge in A '#'; do
-        control deckrailapproach "$edge" 0 || bad "DECK deckrailapproach $edge 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECK deckrailenter $edge: $CONTROL_REPLY"
         if control deckrailslots "$WORK/rail-edge.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
                 && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
@@ -11177,11 +11744,13 @@ PY
             bad "DECK deckrailslots ($edge): $CONTROL_REPLY"
         fi
     done
+    control deckrailleave
+    sleep 0.3
 
-    # DECK-7: the pointer never re-evaluates the grid's body. Twenty pointer
-    # events in one command, against an idle window of the same length (the
-    # quiet run flushes the window's own transaction about twice a second, so
-    # the bound is the idle count plus one).
+    # DECK-7: the pointer never re-evaluates the grid's body. Twenty moves, one
+    # runloop turn each, against an idle window of the same length (the quiet
+    # run flushes the window's own transaction about twice a second, so the
+    # bound is the idle count plus one).
     local t0 dur moves idle
     control deckbodyreset
     t0="$(python3 -c 'import time;print(time.time())')"
@@ -11198,8 +11767,31 @@ PY
     else
         bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
     fi
-    control deckrailhoverout
+    control deckrailleave
 
+    # DECK-7: the letter a rail click lands on stays lit, not the letter of the
+    # row it shares. The fake phone's --rail-letters fixtures put I mid-row
+    # with J beside it and X beside Y in the last screenful (whose row cannot
+    # come to the top). A scroll by other means hands the accent back to the
+    # top row's letter; the jump's own animated scroll must not.
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top: $CONTROL_REPLY"
+    sleep 0.5
+    local railletter railjson railstart
+    railjson="$WORK/deck-grid.jsonl"
+    for railletter in I X; do
+        control deck-rail "$railletter" >/dev/null || bad "DECK deck-rail $railletter: $CONTROL_REPLY"
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-accent.py" pick "$railjson" "$railletter" \
+            && ok "[DECK-7] the rail's $railletter click keeps $railletter lit, not its row's letter" \
+            || bad "[DECK-7] the rail's $railletter click lit another letter"
+        railstart="$(wc -l < "$railjson" | tr -d ' ')"
+        control deck-scroll -120 >/dev/null || bad "DECK deck-scroll after $railletter: $CONTROL_REPLY"
+        sleep 0.5
+        python3 "$MACOS/scripts/deck-rail-accent.py" top "$railjson" "$railstart" \
+            && ok "[DECK-7] a scroll after the $railletter pick hands the accent back to the top row" \
+            || bad "[DECK-7] after a scroll the accent is not the top row's letter"
+    done
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
@@ -11706,13 +12298,54 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device
+    local shots="$WORK/menubar-shots" result device vcx vcy
+    local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
         local id
         id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    # shot_item NAME CENTRE_X CENTRE_Y "DISPLAY x y w h": a 300×30 pt menu bar
+    # crop around the item, kept inside that display. The person's own items are
+    # the neighbours: tight, and the crops stay in $WORK, never committed.
+    shot_item() {
+        local name="$1" cx="$2" cy="$3" x y w=300 h=30 sx sy sw sh
+        read -r sx sy sw sh <<< "$4"
+        x=$(( cx - w / 2 )); y=$(( cy - h / 2 ))
+        [ "$x" -lt $(( sx + 4 )) ] && x=$(( sx + 4 ))
+        [ $(( x + w )) -gt $(( sx + sw - 4 )) ] && x=$(( sx + sw - 4 - w ))
+        [ "$y" -lt "$sy" ] && y="$sy"
+        [ $(( y + h )) -gt $(( sy + sh )) ] && y=$(( sy + sh - h ))
+        screencapture -x -R "${x},${y},${w},${h}" "$shots/$name" >/dev/null 2>&1 \
+            && say "shot: $shots/$name rect=${x},${y},${w},${h}" \
+            || bad "MENUBAR-SHOTS no $name"
+    }
+    # display_of main|ID — that display's "x y w h" in Quartz points.
+    display_of() {
+        "$MENUBARBIN" displays | awk -v want="$1" \
+            '$1 == want || (want == "main" && $NF == "main=1") { print $2, $3, $4, $5; exit }'
+    }
+    # item_shots [PREFIX] — the item's crop on the active display and on the
+    # run's own display, an inactive one: there every item is drawn dimmed,
+    # ours included. The frame line says where the item is in each crop.
+    item_shots() {
+        local fx fy fw fh icx icy
+        read -r fx fy fw fh <<< "$("$MENUBARBIN" frame "$APP_PID")" \
+            || { bad "MENUBAR-SHOTS no AX frame for the status item"; return 1; }
+        say "MENUBAR-SHOTS item frame=${fx},${fy},${fw}x${fh}"
+        icx=$(( fx + fw / 2 )); icy=$(( fy + fh / 2 ))
+        read -r mainx mainy mainw mainh <<< "$(display_of main)"
+        [ -n "$mainw" ] || { bad "MENUBAR-SHOTS no main display"; return 1; }
+        shot_item "${1:-menubar-item}-main.png" "$icx" "$icy" "$mainx $mainy $mainw $mainh"
+        [ -n "${VDISPLAY_ID:-}" ] || return 0
+        read -r vx vy vw vh <<< "$(display_of "$VDISPLAY_ID")"
+        [ -n "$vw" ] || { bad "MENUBAR-SHOTS no run display $VDISPLAY_ID"; return 1; }
+        # The same distance from the display's right edge, on its menu bar.
+        vcx=$(( vx + vw - (mainx + mainw - icx) ))
+        vcy=$(( vy + icy - mainy ))
+        shot_item "${1:-menubar-item}-inactive.png" "$vcx" "$vcy" "$vx $vy $vw $vh"
     }
 
     FAKE_ARGS="--media" start_fake || return 1
@@ -11726,6 +12359,19 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
+    # [PANEL-25] the item is a real status item: AppKit's, sized to its own
+    # template image with no foreign view over the button. A fixed length and a
+    # hosting view pinned over the button were the person's padding, the
+    # off-centre glyph and the icon that stayed bright on the inactive display.
+    control menubaricon || true
+    result="$CONTROL_REPLY"
+    case "$result" in
+        "length=variable image=template subviews=0 state=online dot=0")
+            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        *)
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+    esac
+    item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
         || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
@@ -11871,6 +12517,59 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+
+    # The agent dot (PANEL-1/PANEL-25): the same item with an automation client
+    # connected. A socket client is what the count follows; the probe says the
+    # dot is in the drawing and the crop shows the glyph with it.
+    FAKE_ARGS="--media" start_fake || return 1
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 90 --debug-control "$WORK-control"
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-SHOTS the dot session never started"; stop_app; stop_fakephone; return 1; }
+    local sock="$HOME/Library/Application Support/PocketDeck-$PROFILE/mcp.sock" agent_pid dot=0
+    if ! wait_until 20 test -S "$sock"; then
+        bad "MENUBAR-SHOTS no automation socket for the dot"
+    else
+        python3 - "$sock" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.1)
+time.sleep(60)
+PY
+        agent_pid=$!
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
+            || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # The crop is taken while the client is still connected: the dot is in
+        # the drawing, not a second view over the button.
+        item_shots menubar-item-dot
+        kill "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+        # And it leaves with the client: the image follows the count both ways.
+        dot=0
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=0"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the dot leaves when the client disconnects" \
+            || bad "[PANEL-1] the dot stayed after the client left ($CONTROL_REPLY)"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
     shoot_panel_states
 }
 

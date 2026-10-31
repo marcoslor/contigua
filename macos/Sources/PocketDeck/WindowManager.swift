@@ -606,6 +606,33 @@ final class WindowManager {
         }
     }
 
+    /// What the phone's `error no_stream` meant for the windows (WIN-38).
+    enum NoStreamOutcome: Equatable {
+        /// Nothing is open on that stream: the expected case after a close,
+        /// and only the log says so.
+        case noWindow
+        /// The window is still opening: the cover refuses it (WIN-11).
+        case refusedOpening
+        /// A live window whose stream the phone lost: it closes as if the
+        /// phone had sent `window.closed` (WIN-12).
+        case closedWindow
+    }
+
+    /// The phone answered `no_stream` for a stream: it has forgotten it. A
+    /// window still opening wears the cover's refusal; a live one closes
+    /// without echoing a close back to a phone that no longer has it; no
+    /// window means nothing visible at all — never a launcher notice.
+    @discardableResult
+    func phoneAnsweredNoStream(_ stream: UInt32) -> NoStreamOutcome {
+        guard let controller = controller(for: stream) else { return .noWindow }
+        if controller.isOpening {
+            controller.refuseOpening("no_stream")
+            return .refusedOpening
+        }
+        controller.closeFromRemote()
+        return .closedWindow
+    }
+
     func handle(_ event: SessionEvent) {
         switch event {
         case .windowTitle(let stream, let label, let pkg):
@@ -632,9 +659,22 @@ final class WindowManager {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
             }
         case .phoneError(let code, _, let stream):
-            // A phone that refuses an open answers it itself: that window's
-            // cover says why and offers Close only (MIRROR-2, WIN-11).
-            controller(for: stream)?.refuseOpening(code)
+            if code == "no_stream" {
+                // The phone has forgotten the stream (WIN-38). What to do
+                // depends on the window, never on a launcher notice.
+                switch phoneAnsweredNoStream(stream) {
+                case .noWindow:
+                    Log.session.notice("no_stream for stream \(stream, privacy: .public): no window")
+                case .refusedOpening:
+                    Log.app.info("no_stream for stream \(stream, privacy: .public): opening refused")
+                case .closedWindow:
+                    Log.app.info("phone lost stream \(stream, privacy: .public): window closed")
+                }
+            } else {
+                // A phone that refuses an open answers it itself: that
+                // window's cover says why and offers Close only (MIRROR-2, WIN-11).
+                controller(for: stream)?.refuseOpening(code)
+            }
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:
