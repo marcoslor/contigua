@@ -542,6 +542,13 @@ final class WindowManager {
         for controller in allControllers() { controller.sendOpen() }
     }
 
+    /// PATH-5: after a switch every open video stream asks for one keyframe
+    /// (and a fresh config where the phone needs one), so the picture is live
+    /// again within stale_picture_ms.
+    func requestKeyframes(from session: Session) {
+        for controller in allControllers() { session.requestKeyframe(stream: controller.stream) }
+    }
+
     /// Apply labels to app windows once `apps` arrives (they may open before it).
     func applyLabels() {
         for controller in allControllers() {

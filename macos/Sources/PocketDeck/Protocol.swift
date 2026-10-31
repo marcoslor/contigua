@@ -47,6 +47,15 @@ struct Frame: Equatable {
 
     var messageType: MessageType? { MessageType(rawValue: type) }
 
+    /// The inverse of [encoded] for the path layer, which sends encoded bytes.
+    init?(encoded bytes: [UInt8]) {
+        guard bytes.count >= 9 else { return nil }
+        self.type = bytes[4]
+        self.stream = UInt32(bytes[5]) << 24 | UInt32(bytes[6]) << 16
+            | UInt32(bytes[7]) << 8 | UInt32(bytes[8])
+        self.payload = Array(bytes[9...])
+    }
+
     /// len counts type + stream + payload, i.e. everything after the prefix.
     var encoded: [UInt8] {
         var out = [UInt8]()

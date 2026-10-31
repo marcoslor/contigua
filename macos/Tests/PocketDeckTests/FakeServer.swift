@@ -32,6 +32,9 @@ final class FakeServer {
 
         static func == (lhs: Connection, rhs: Connection) -> Bool { lhs.id == rhs.id }
 
+        /// PATH-3: the welcome names this fake session; a join echoes it.
+        let sessionId = PathIds.sessionId()
+
         /// The connection's exporter, nil before the handshake completed.
         func exporter() -> [UInt8]? {
             guard let secret = capture.only else { return nil }
@@ -67,6 +70,8 @@ final class FakeServer {
     private var stopped = false
 
     var onFrame: ((Connection, Frame) -> Void)?
+    /// Every frame as it arrived, before the reliable unwrap (path tests).
+    var onRawFrame: ((Connection, Frame) -> Void)?
     var onClosed: ((Connection) -> Void)?
 
     /// The scripted phone brain; when set, frames go to it first and only
@@ -165,6 +170,25 @@ final class FakeServer {
     }
 
     private func onConnectionFrame(_ connection: Connection, _ frame: Frame) {
+        onRawFrame?(connection, frame)
+        // A protocol-4 Mac wraps reliable frames and pings each path bare.
+        if frame.type == PathCodec.reliableType {
+            guard let reliable = try? PathCodec.decodeReliable(frame) else { return }
+            connection.send(PathCodec.encodeAck(reliable.seq + 1))
+            dispatch(connection, reliable.inner)
+            return
+        }
+        if frame.type == PathCodec.ackType { return }
+        dispatch(connection, frame)
+    }
+
+    private func dispatch(_ connection: Connection, _ frame: Frame) {
+        if frame.type == MessageType.json.rawValue,
+           let message = JSONFrame.decode(payload: frame.payload), message.t == "path.ping" {
+            connection.sendJSON(["t": "path.pong", "path": message.string("path") ?? "",
+                                 "ts": message.int("ts") ?? 0])
+            return
+        }
         if let brain, brain.handle(connection: connection, frame: frame) { return }
         onFrame?(connection, frame)
     }
@@ -252,7 +276,7 @@ final class FakeV2PhoneBrain {
                 return true
             }
             if self.welcomeOnHello {
-                connection.sendJSON(["t": "welcome", "device": [
+                connection.sendJSON(["t": "welcome", "session": connection.sessionId, "device": [
                     "id": self.deviceId, "name": self.name, "model": "Pixel", "sdk": 36,
                     "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
                 return true
@@ -264,7 +288,7 @@ final class FakeV2PhoneBrain {
                 // kept for the test), then the phone acks and welcomes.
                 if self.allow ?? self.autoAllow {
                     connection.sendJSON(["t": "pair.ok"])
-                    connection.sendJSON(["t": "welcome", "device": [
+                    connection.sendJSON(["t": "welcome", "session": connection.sessionId, "device": [
                         "id": self.deviceId, "name": self.name, "model": "Pixel", "sdk": 36,
                         "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
                 }
@@ -323,7 +347,7 @@ final class FakeV2PhoneBrain {
             "phoneFP": phoneFingerprintHex,
             "macFP": connection.macFingerprintHex,
         ])
-        connection.sendJSON(["t": "welcome", "device": [
+        connection.sendJSON(["t": "welcome", "session": connection.sessionId, "device": [
             "id": deviceId, "name": name, "model": "Pixel", "sdk": 36,
             "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
     }

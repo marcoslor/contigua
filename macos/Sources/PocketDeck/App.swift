@@ -8,6 +8,8 @@ import SwiftUI
 
 struct LaunchOptions {
     var connect: (host: String, port: UInt16)?
+    /// `--connect2`: the test-only second LAN provider (PATH-20's e2e).
+    var connect2: (host: String, port: UInt16)?
     var openPackages: [String] = []
     var openPhone = false
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
@@ -111,6 +113,7 @@ struct LaunchOptions {
     /// (sec L-6: `--debug-control` alone can drive a live session).
     static let testHooks: [String: Bool] = [
         "--connect": true,
+        "--connect2": true,
         "--open": true,
         "--open-phone": false,
         "--resize-stream": true,
@@ -179,6 +182,11 @@ struct LaunchOptions {
                 if let value = next(), let colon = value.lastIndex(of: ":"),
                    let port = UInt16(value[value.index(after: colon)...]) {
                     options.connect = (String(value[..<colon]), port)
+                }
+            case "--connect2":
+                if let value = next(), let colon = value.lastIndex(of: ":"),
+                   let port = UInt16(value[value.index(after: colon)...]) {
+                    options.connect2 = (String(value[..<colon]), port)
                 }
             case "--open":
                 if let value = next() {

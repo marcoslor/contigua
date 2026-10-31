@@ -75,6 +75,13 @@ struct PathSessionMachine {
         return nil
     }
 
+    /// The first path founds the session: no switch marker, no replay (PATH-3).
+    mutating func startLive(path: String) {
+        state = .live(current: path)
+        live = [path]
+        scores[path] = -1
+    }
+
     private func bestLive(excluding: String? = nil) -> String? {
         let candidates = live.filter { $0 != excluding }
         return candidates.max { (scores[$0] ?? -1) < (scores[$1] ?? -1) }
