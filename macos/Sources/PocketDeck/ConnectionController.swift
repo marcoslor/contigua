@@ -228,7 +228,8 @@ final class ConnectionController {
         spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
                         iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
         dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
-                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [])
+                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [],
+                           saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: deviceId))
         dockRevision += 1
     }
 
@@ -853,7 +854,7 @@ final class ConnectionController {
             return
         }
         if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
-                        launch: true, pinned: true) == nil {
+                        launch: true, origins: dockApps.origins(deviceId: phone.id, pkg: app.pkg).union(.dock)) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
         dockRevision += 1
@@ -867,7 +868,8 @@ final class ConnectionController {
                   dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
             pendingDockAdds[key] = nil
             if dockApps.add(deviceId: add.deviceId, pkg: add.pkg, label: add.label,
-                            phoneName: displayName(for: phone), launch: true, pinned: true) == nil {
+                            phoneName: displayName(for: phone), launch: true,
+                            origins: dockApps.origins(deviceId: add.deviceId, pkg: add.pkg).union(.dock)) == nil {
                 showTransient("Couldn't add \(add.label) to the Dock.")
             }
             dockRevision += 1
@@ -935,7 +937,7 @@ final class ConnectionController {
             }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
-                         launch: false, pinned: true)
+                         launch: false, origins: dockApps.origins(deviceId: phone.id, pkg: pkg).union(.dock))
         }
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
         // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
@@ -1050,13 +1052,16 @@ final class ConnectionController {
             return
         case .launchExisting:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
-                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, bind: stream, launched: launched)
+                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, label: label,
+                                       phoneName: self.displayName(for: phone),
+                                       bind: stream, launched: launched)
             }
         case .createAndLaunch:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
                     DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
-                                 profile: profile, hostPath: Bundle.main.bundleURL.path),
+                                 profile: self.profile, hostPath: Bundle.main.bundleURL.path,
+                                 origins: self.dockApps.origins(deviceId: phone.id, pkg: pkg).union(.window)),
                     bind: stream, launched: launched)
             }
         }
