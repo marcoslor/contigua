@@ -148,7 +148,7 @@ class PathTlsJoinTest {
                     // The phone's path machine logged the attach, not an end.
                     assertTrue(
                         "no join line: ${phone.logs}",
-                        phone.logs.any { it == "paths: joined b2c3d4e5" },
+                        phone.logs.any { it == "paths: joined b2c3d4e5 (paths 2)" },
                     )
                     assertFalse(
                         "the join superseded the live session: ${phone.logs}",
@@ -190,7 +190,7 @@ class PathTlsJoinTest {
                         assertEquals(13L, gatherUntil(firstReader, "ts", 13L)["ts"])
                         assertTrue(
                             "no join line through the relay: ${phone.logs}",
-                            phone.logs.any { it == "paths: joined b2c3d4e5" },
+                            phone.logs.any { it == "paths: joined b2c3d4e5 (paths 2)" },
                         )
                     }
                 }

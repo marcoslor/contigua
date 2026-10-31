@@ -653,6 +653,9 @@ final class Session {
             pathMachine.startLive(path: id)
         } else {
             pathLayer.attach(path, joined: true)
+            // Item 7's join predicate: a Mac-side fact that two paths are live
+            // on one session, not a state-token transition.
+            Log.session.notice("paths: attached \(id, privacy: .public) (paths \(self.pathLayer.pathCount))")  // log-ok: a path id and a count
             handlePath(.pathUp(id: id, joined: true))
         }
         pathRanking.register(id: id, kind: attempt.kind)
@@ -733,7 +736,7 @@ final class Session {
             case .closePath(let path):
                 pathLayer.detach(path)
             case .switchTo(let path):
-                switchTo(path)
+                switchTo(path, why: event.token)
             case .replayFromLastAck:
                 pathLayer.replayOnCurrent()
             case .requestKeyframes:
@@ -752,9 +755,13 @@ final class Session {
 
     /// A failure or an orphan's join: the marker is the first frame on the new
     /// path, then the replay (PATH-9).
-    private func switchTo(_ path: String) {
+    private func switchTo(_ path: String, why: String) {
         guard pathLayer.hasPath(path) else { return }
+        let from = pathLayer.currentPath
         pathLayer.moveTo(path, plannedFrom: nil)
+        if let from, from != path {
+            Log.session.notice("paths: sending \(from, privacy: .public) -> \(path, privacy: .public) (\(why, privacy: .public))")  // log-ok: path ids and a closed event token
+        }
         _ = pathLayer.sendMarker(on: path, to: path)
         emit(.pathsSwitched)
     }
@@ -767,6 +774,7 @@ final class Session {
         }
         guard pathLayer.sendMarker(on: old, to: path) else { return }
         pathLayer.moveTo(path, plannedFrom: old)
+        Log.session.notice("paths: sending \(old, privacy: .public) -> \(path, privacy: .public) (planned)")  // log-ok: path ids and a closed reason
         pathLayer.replayOnCurrent()
         handlePath(.peerSwitch(id: path, seq: 0, arrivedOn: old))
     }
