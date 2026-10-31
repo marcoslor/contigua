@@ -325,6 +325,40 @@ PY
     stop_app
     stop_fakephone
     pathfault_stop_all
+
+    # R-12: a provider that accepts TCP and then goes silent (a black hole) must
+    # be abandoned at the dial deadline, closing its channel, while the live
+    # provider founds the session. Before the deadline the thread and the fd
+    # leaked for the life of the app.
+    clean
+    pathfault_nuke
+    FAKE_ARGS="--paths 1" start_fake || return 1
+    path_pair_once "$PORT"
+    pathfault_start "$((PORT + 2))" "$PORT" blackhole
+    launch --connect "127.0.0.1:$((PORT + 2))" --connect2 "127.0.0.1:$PORT" \
+        --open-phone --quit-after 22
+    wait_until 15 events_have '"ev":"video"' \
+        && ok "[PATH-20] PATHSTART the session founds on the live provider beside a black hole" \
+        || bad "[PATH-20] PATHSTART the black-holed provider blocked the session"
+    if wait_until 12 python3 - "$WORK/fault-$((PORT + 2)).events" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") in ("eof", "close"):
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+        ok "[PATH-20] PATHSTART the silent dial closed its channel at the dial deadline"
+    else
+        bad "[PATH-20] PATHSTART the silent dial kept its channel open (no EOF at the proxy)"
+    fi
+    stop_app
+    stop_fakephone
+    pathfault_stop_all
 }
 
 check_pathversion() {
