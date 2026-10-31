@@ -142,8 +142,14 @@ class PathHub(
         /** An ACK above anything sent: a protocol error that ends the session. */
         data object AckAboveSent : Event
 
-        /** The reorder window is full: stop reading this path, then retry. */
-        data object Backpressure : Event
+        /** A RELIABLE frame whose wrapper contradicts it: end the session (§5.3). */
+        data object ProtocolError : Event
+
+        /**
+         * The reorder window is full. [stop] is false when the gap is on this
+         * same path's stream: pausing that reader could never fill it (R-11).
+         */
+        data class Backpressure(val path: String, val stop: Boolean) : Event
     }
 
     /** One ping went unanswered; [alive] is true while the path keeps delivering. */
@@ -165,6 +171,8 @@ class PathHub(
     /** A joined path that never answers a ping is dropped at 5 s (PATH-13). */
     private val joinedAwaitingPong = HashMap<String, Long>()
     private var closed = false
+    /** The path that delivered the last in-order frame: where the gap is. */
+    private var gapPath: String? = null
     /** Planned-switch old paths waiting for the peer's marker / the 2 s backstop. */
     private val draining = HashMap<String, Long>()
 
@@ -383,6 +391,7 @@ class PathHub(
                 val result = synchronized(lock) { reorder.receive(inner) }
                 when (result) {
                     is ReorderWindow.Result.Deliver -> {
+                        synchronized(lock) { gapPath = path }
                         for (f in result.frames) {
                             if (PathCodec.isBulk(f.inner.type)) {
                                 synchronized(lock) { lastBulkAt = now() }
@@ -410,7 +419,10 @@ class PathHub(
                     }
                     ReorderWindow.Result.Duplicate -> sendAckNow(path)
                     ReorderWindow.Result.Buffered -> Unit
-                    ReorderWindow.Result.Full -> events.add(Event.Backpressure)
+                    ReorderWindow.Result.Full -> {
+                        val gap = synchronized(lock) { gapPath }
+                        events.add(Event.Backpressure(path, stop = gap != null && gap != path))
+                    }
                 }
             }
             else -> {
@@ -499,6 +511,11 @@ class PathHub(
             } else false
         }
         if (send) sendAckNow(path)
+    }
+
+    /** True when the reorder window can take one more frame (R-11 retry gate). */
+    fun canBuffer(): Boolean = synchronized(lock) {
+        reorder.bufferedCount < ReorderWindow.MAX_FRAMES && reorder.bufferedBytes < ReorderWindow.MAX_BYTES
     }
 
     /** Blocks the reader of [path] while the reorder window is full (PATH-10). */

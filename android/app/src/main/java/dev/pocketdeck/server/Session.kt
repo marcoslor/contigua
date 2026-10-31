@@ -12,6 +12,7 @@ import dev.pocketdeck.proto.Json
 import dev.pocketdeck.proto.PathCodec
 import dev.pocketdeck.proto.PathIds
 import dev.pocketdeck.proto.PathKind
+import dev.pocketdeck.proto.ReorderWindow
 import dev.pocketdeck.proto.VideoConfigPayload
 import dev.pocketdeck.proto.VideoFramePayload
 import dev.pocketdeck.proto.AudioConfigPayload
@@ -317,6 +318,7 @@ class Session(
         class PingLost(val path: String) : Inbound
         data object Tick : Inbound
         data object AckAboveSent : Inbound
+        data object ProtocolError : Inbound
     }
 
     /** The v2 pairing room; read by the reader thread. The work queue is the
@@ -676,6 +678,10 @@ class Session(
                 log("paths: ack above what was sent")
                 apply(SessionTeardown.Event.Stop)
             }
+            Inbound.ProtocolError -> {
+                log("paths: protocol error")
+                apply(SessionTeardown.Event.Stop)
+            }
         }
     }
 
@@ -805,16 +811,33 @@ class Session(
         if (pathReaders.any { it.name == "pocketdeck-path-${t.id}" }) return
         val thread = Thread({
             var pending: Frame? = first
+            // R-11: frames ahead of a gap that this same path must fill wait
+            // here, never dropped and never behind a paused reader.
+            val held = ArrayDeque<Frame>()
             try {
                 while (teardown.get() == SessionTeardown.State.LIVE && !t.closed) {
-                    val frame = pending ?: (reader.readFrame() ?: break)
+                    val frame = when {
+                        pending != null -> pending!!.also { pending = null }
+                        held.isNotEmpty() && hub.canBuffer() -> held.removeFirst()
+                        else -> reader.readFrame() ?: break
+                    }
                     val events = hub.receive(t.id, frame)
-                    if (events.any { it is PathHub.Event.Backpressure }) {
-                        pending = frame
-                        hub.awaitReorderSpace(t.id)
+                    val pressure = events.filterIsInstance<PathHub.Event.Backpressure>().firstOrNull()
+                    if (pressure != null) {
+                        if (pressure.stop) {
+                            pending = frame
+                            hub.awaitReorderSpace(t.id)
+                        } else {
+                            // The gap is earlier in this same path's stream:
+                            // pausing the reader would never fill it (PATH-10).
+                            held.addLast(frame)
+                            if (held.size > ReorderWindow.MAX_FRAMES) {
+                                inbound.put(Inbound.ProtocolError)
+                                return@Thread
+                            }
+                        }
                         continue
                     }
-                    pending = null
                     for (event in events) {
                         when (event) {
                             is PathHub.Event.Deliver -> inbound.put(Inbound.Deliver(event.frame))
@@ -827,7 +850,11 @@ class Session(
                             is PathHub.Event.PeerSwitch ->
                                 inbound.put(Inbound.PeerSwitch(event.path, event.seq, event.arrivedOn))
                             PathHub.Event.AckAboveSent -> inbound.put(Inbound.AckAboveSent)
-                            PathHub.Event.Backpressure -> Unit
+                            PathHub.Event.ProtocolError -> {
+                                inbound.put(Inbound.ProtocolError)
+                                return@Thread
+                            }
+                            is PathHub.Event.Backpressure -> Unit
                         }
                     }
                     // R-1: the ACK leaves only after every frame the hub
