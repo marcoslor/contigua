@@ -665,6 +665,21 @@ final class ConnectionController {
     }
 
     func shutdown() {
+        isShuttingDown = true
+        // A launch that has not started yet will never be seen: drop it now, so
+        // no shim is built for a window that is going away with the app.
+        for (stream, pending) in dockPendingLaunches where !pending.started {
+            dockPendingLaunches[stream] = nil
+            dockEstablishing.remove(pending.key)
+        }
+        // One already in flight may still hand us a pid; a launched shim that no
+        // window owns is stopped with the app (docs/design/dock.md §Lifecycle).
+        dockApps.quitUnboundLaunches()
+        let deadline = Date().addingTimeInterval(3)
+        while !dockPendingLaunches.isEmpty, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        dockApps.quitUnboundLaunches()
         mcp.stop()
         windows.beginShutdown()
         stopQR()
@@ -951,6 +966,24 @@ final class ConnectionController {
     /// one app identity is built at most once per moment.
     private var dockEstablishing: Set<String> = []
 
+    /// An automatic launch that has not finished yet, for one window. The window
+    /// can close before the build starts or before the shim is up; then the work
+    /// is dropped or the pid is quit, never bound (docs/design/dock.md §Lifecycle).
+    private struct DockPendingLaunch {
+        var deviceId: String
+        var pkg: String
+        var started = false
+        var windowClosed = false
+        var key: String { "\(deviceId)/\(pkg)" }
+    }
+
+    /// Stream → its automatic launch while the build, launch or bind is pending.
+    private var dockPendingLaunches: [UInt32: DockPendingLaunch] = [:]
+
+    /// True from the start of shutdown: a launch that completes then is stopped
+    /// instead of bound, and no window is reconsidered.
+    private var isShuttingDown = false
+
     /// Settings → General "Show phone apps in the Dock": on unless it is off.
     var showAppsInDock: Bool { DockAutoSetting.isEnabled(in: profile.defaults) }
 
@@ -1013,12 +1046,26 @@ final class ConnectionController {
     /// A window closed: its shim exits — unless another window of the same app
     /// is still open, which the identity moves to instead (docs/design/dock.md).
     private func dockFollowWindowClosed(_ stream: UInt32) {
+        // Its identity may still be building or launching: mark the pending work
+        // for the stream gone. A build that has not started is dropped; one that
+        // has started still quits the pid it gets (dockLaunchFinished).
+        if var pending = dockPendingLaunches[stream] {
+            pending.windowClosed = true
+            dockPendingLaunches[stream] = pending
+            if !pending.started {
+                dockPendingLaunches[stream] = nil
+                dockEstablishing.remove(pending.key)
+            }
+        }
         if let (pid, pkg) = dockApps.binding(stream: stream),
            let next = windows.openAppWindows.first(where: { $0.pkg == pkg && $0.stream != stream })?.stream {
             dockApps.rebind(pid: pid, to: next)
             return
         }
         dockApps.streamClosed(stream)
+        // A dropped launch frees the app's in-flight key: another window of the
+        // same app may have been waiting for it.
+        recheckOpenWindows()
     }
 
     /// An open app window has no Dock identity bound to it: decide what happens.
@@ -1065,10 +1112,13 @@ final class ConnectionController {
     /// Runs the launch and clears the in-flight key and binds the pid when it is up.
     private func bindWhenDockCleared(deviceId: String, pkg: String, stream: UInt32,
                                      work: @escaping (_ launched: @escaping (Int?) -> Void) -> Void) {
-        let key = "\(deviceId)/\(pkg)"
-        dockEstablishing.insert(key)
+        dockEstablishing.insert("\(deviceId)/\(pkg)")
+        dockPendingLaunches[stream] = DockPendingLaunch(deviceId: deviceId, pkg: pkg)
         let start = { [weak self] in
-            guard let self else { return }
+            guard let self, var pending = self.dockPendingLaunches[stream],
+                  !pending.windowClosed else { return }
+            pending.started = true
+            self.dockPendingLaunches[stream] = pending
             work { pid in
                 MainActor.assumeIsolated {
                     self.dockLaunchFinished(stream: stream, deviceId: deviceId, pkg: pkg, pid: pid)
@@ -1078,7 +1128,7 @@ final class ConnectionController {
         // e2e: hold the build and launch back, so it lands after a window that
         // closes in the meantime (the load-dependent race, made deterministic).
         if let delay = options.dockLaunchDelay, delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { start() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { start() }  // gcd: e2e hold of the launch
         } else {
             start()
         }
@@ -1088,25 +1138,37 @@ final class ConnectionController {
     /// must quit at once: nothing would ever close that shim again, and it would
     /// outlive its window and the app (docs/design/dock.md §Lifecycle).
     private func dockLaunchFinished(stream: UInt32, deviceId: String, pkg: String, pid: Int?) {
+        dockPendingLaunches[stream] = nil
         dockEstablishing.remove("\(deviceId)/\(pkg)")
         let landing = DockLaunch.landing(
             pid: pid,
             windowOpen: windows.openAppWindows.contains { $0.stream == stream },
-            settingOn: showAppsInDock, pinned: dockApps.isPinned(deviceId: deviceId, pkg: pkg))
+            settingOn: showAppsInDock, pinned: dockApps.isPinned(deviceId: deviceId, pkg: pkg),
+            quitting: isShuttingDown)
         switch landing {
         case .nothing:
             break
         case .bind:
-            if let pid { dockApps.bind(pid: pid, stream: stream, pkg: pkg) }
-        case .quitWindowClosed, .quitSettingOff, .quitShuttingDown:
+            if let pid {
+                dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                Log.app.notice("dock auto: bound shim \(pid, privacy: .public) to stream \(stream, privacy: .public)")
+            }
+        case .quitWindowClosed:
             if let pid { dockApps.quit(pid: pid) }
+            Log.app.notice("dock auto: late launch for closed stream \(stream, privacy: .public) → quit")
+        case .quitSettingOff:
+            if let pid { dockApps.quit(pid: pid) }
+        case .quitShuttingDown:
+            if let pid { dockApps.quit(pid: pid) }
+            Log.app.notice("dock auto: launch in flight at quit for stream \(stream, privacy: .public) → quit")
         }
-        recheckOpenWindows()
+        if !isShuttingDown { recheckOpenWindows() }
     }
 
     /// The automatic path reconsiders every open app window: after the app list,
     /// the icons and the setting (a window may have waited for one of them).
     private func recheckOpenWindows() {
+        guard !isShuttingDown else { return }
         for window in windows.openAppWindows {
             guard let pkg = window.pkg else { continue }
             establishDockFollow(pkg: pkg, stream: window.stream)
