@@ -53,6 +53,8 @@ class Server(
      * [ShellTls]; the JVM harness substitutes Conscrypt to match Android.
      */
     private val tlsContextBuilder: ((String, String) -> SSLContext?)? = null,
+    /** R-8/D-4: the app shows the version sentence; null = the hello had no v. */
+    private val onVersionRefused: (Int?) -> Unit = {},
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -237,6 +239,7 @@ class Server(
             val v = Json.int(hello["v"])
             if (PathVersion.refused(v)) {
                 log("version: ${PathVersion.phoneSentence(v)}")
+                runCatching { onVersionRefused(v) }
                 reject(socket, "version", "this phone speaks protocol ${PathVersion.CURRENT}",
                     mapOf("v" to PathVersion.CURRENT))
                 return

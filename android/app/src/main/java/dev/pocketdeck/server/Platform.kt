@@ -523,6 +523,13 @@ interface DeckCallback {
     fun onPairingEnded(requestId: String)
     fun onPaired(clientId: String, name: String, keyHex: String)
     fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int)
+
+    /**
+     * R-8/D-4: a Mac's `hello` named another protocol version; `macV` is that
+     * version (null when absent). The app shows the sentence naming which side
+     * to update until a session succeeds.
+     */
+    fun onVersionRefused(macV: Int?) {}
 }
 
 /**

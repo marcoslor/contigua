@@ -165,6 +165,7 @@ class DeckViewModel(
                 DeckState.connectedClientId,
             ),
             pending = DeckState.pending?.let { PendingPairingUi(it.requestId, it.macName, it.code) },
+            versionSentence = DeckState.versionSentence,
             notificationsGranted = notificationsGranted,
             batteryRequested = Prefs.isBatteryRequested(ctx),
             wifiName = wifiName(ctx),
@@ -181,6 +182,7 @@ class DeckViewModel(
                     allowConnections = allowConnections,
                     notifyNoAccess = DeckState.notifyNoAccess,
                     pairNotifyMissing = DeckState.pending != null && !notificationsGranted,
+                    versionSentence = DeckState.versionSentence,
                 ),
             ),
         )
@@ -314,6 +316,9 @@ class DeckViewModel(
             // The runtime permission is requested by the screen (an Activity
             // owns the launcher); this branch is the screen's fallback.
             AttentionKind.PAIR_NOTIFY -> refresh()
+
+            // R-8/D-4: the card names the other app to update; nothing to do here.
+            AttentionKind.VERSION -> refresh()
 
             AttentionKind.RETRY -> {
                 DeckForegroundService.start(ctx)
