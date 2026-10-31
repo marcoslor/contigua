@@ -60,6 +60,14 @@ class PathSessionMachine(
     val currentPath: String?
         get() = (state as? PathSessionState.Live)?.current
 
+    /** The first path founds the session: no switch marker, no replay (PATH-3). */
+    fun startLive(path: String) {
+        state = PathSessionState.Live(path)
+        live.clear()
+        live.add(path)
+        scores[path] = -1
+    }
+
     private fun bestLive(excluding: String? = null): String? =
         live.filter { it != excluding }.maxByOrNull { scores[it] ?: -1 }
 

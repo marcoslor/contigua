@@ -24,6 +24,11 @@ internal class FakeLiveSession(
 
     override val isReady: Boolean get() = !closed
 
+    override val pathSessionId: String? get() = null
+
+    override fun attachPath(pathId: String, socket: java.net.Socket, plain: java.net.Socket): AttachResult =
+        AttachResult.NO_SESSION
+
     override fun close() {
         closeStarted.countDown()
         gate.await(10, TimeUnit.SECONDS)

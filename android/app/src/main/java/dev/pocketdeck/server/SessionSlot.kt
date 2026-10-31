@@ -30,8 +30,16 @@ sealed interface SlotState<out S> {
 
 /** What happened to the slot. `Connect` is one accepted, TLS-terminated Mac. */
 sealed interface SlotEvent {
-    /** [samePinnedMac]: this Mac's certificate is the live session's and the phone pins it. */
-    data class Connect(val peerMac: String, val samePinnedMac: Boolean) : SlotEvent
+    /** [samePinnedMac]: this Mac's certificate is the live session's and the phone pins it.
+     *  [join]: the hello carried `join`; [joinMatches]: it named the live session's id. */
+    data class Connect(
+        val peerMac: String,
+        val samePinnedMac: Boolean,
+        val join: Boolean = false,
+        val joinMatches: Boolean = false,
+        /** The peer's certificate is one this phone pins (PATH-11). */
+        val pinned: Boolean = samePinnedMac,
+    ) : SlotEvent
 
     /** The live session can serve nothing more and is draining. */
     data object Ending : SlotEvent
@@ -60,6 +68,12 @@ enum class SlotAction {
     /** Wait for the old teardown, bounded, before adopting. */
     AWAIT_TEARDOWN,
 
+    /** Attach the connecting socket as one more path of the live session (PATH-3). */
+    JOIN,
+
+    /** Answer `no_session`: the live Mac's join named a session this phone does not serve. */
+    NO_SESSION,
+
     /** Answer `busy`: someone else's session still owns the phone. */
     BUSY,
 
@@ -75,14 +89,32 @@ object SessionSlot {
     fun <S> transition(state: SlotState<S>, event: SlotEvent): SlotStep<S> = when (state) {
         SlotState.Free -> when (event) {
             // The session does not exist when this decision is made: the caller
-            // builds it and reports it through [SessionSlot.adopt].
-            is SlotEvent.Connect -> SlotStep(SlotState.Free, listOf(SlotAction.ADOPT))
+            // builds it and reports it through [SessionSlot.adopt]. A join has
+            // nothing to attach to (PATH-3).
+            is SlotEvent.Connect ->
+                when {
+                    // A join with nothing to attach to: only a Mac this phone
+                    // pins learns that the session is gone (PATH-11).
+                    event.join && event.pinned -> SlotStep(SlotState.Free, listOf(SlotAction.NO_SESSION))
+                    event.join -> SlotStep(SlotState.Free, listOf(SlotAction.BUSY))
+                    else -> SlotStep(SlotState.Free, listOf(SlotAction.ADOPT))
+                }
             SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow,
             SlotEvent.Ended, SlotEvent.Cancelled -> SlotStep(SlotState.Free, emptyList())
         }
         is SlotState.Live -> when (event) {
             is SlotEvent.Connect ->
-                if (event.samePinnedMac) {
+                if (event.join) {
+                    when {
+                        // A joined path never supersedes: the session stays (PATH-3).
+                        event.samePinnedMac && event.joinMatches ->
+                            SlotStep(state, listOf(SlotAction.JOIN))
+                        // Only the live session's own pinned Mac learns that id is gone.
+                        event.samePinnedMac ->
+                            SlotStep(state, listOf(SlotAction.NO_SESSION))
+                        else -> SlotStep(state, listOf(SlotAction.BUSY))
+                    }
+                } else if (event.samePinnedMac) {
                     SlotStep(
                         SlotState.Handing(old = state.session, oldMac = state.mac, newMac = event.peerMac),
                         listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN),
@@ -95,13 +127,19 @@ object SessionSlot {
             SlotEvent.TeardownDone, SlotEvent.TeardownSlow -> SlotStep(state, emptyList())
         }
         is SlotState.Draining -> when (event) {
-            // The slot is free in a moment: whoever is connecting waits for the
-            // teardown instead of hearing busy and backing off.
+            // The session is over: a join finds nothing to attach to (PATH-3).
             is SlotEvent.Connect ->
-                SlotStep(
-                    SlotState.Handing(old = state.session, oldMac = state.mac, newMac = event.peerMac),
-                    listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN),
-                )
+                if (event.join) {
+                    if (event.samePinnedMac) SlotStep(state, listOf(SlotAction.NO_SESSION))
+                    else SlotStep(state, listOf(SlotAction.BUSY))
+                } else {
+                    // The slot is free in a moment: whoever is connecting waits
+                    // for the teardown instead of hearing busy and backing off.
+                    SlotStep(
+                        SlotState.Handing(old = state.session, oldMac = state.mac, newMac = event.peerMac),
+                        listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN),
+                    )
+                }
             SlotEvent.Ended, SlotEvent.Cancelled -> SlotStep(SlotState.Free, emptyList())
             SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow ->
                 SlotStep(state, emptyList())
@@ -136,7 +174,12 @@ object SessionSlot {
     }
 
     fun describe(event: SlotEvent): String = when (event) {
-        is SlotEvent.Connect -> if (event.samePinnedMac) "connect(same mac)" else "connect(other mac)"
+        is SlotEvent.Connect -> when {
+            event.join && event.joinMatches -> "join(own session)"
+            event.join -> "join(other session)"
+            event.samePinnedMac -> "connect(same mac)"
+            else -> "connect(other mac)"
+        }
         SlotEvent.Ending -> "ending"
         SlotEvent.TeardownDone -> "teardown done"
         SlotEvent.TeardownSlow -> "teardown slow"

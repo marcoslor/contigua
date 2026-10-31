@@ -60,7 +60,7 @@ object C4Harness {
         }
 
         val server = Server(
-            { socket, plain ->
+            { socket, plain, hello ->
                 Session(
                     socket = socket,
                     plainSocket = plain,
@@ -74,6 +74,7 @@ object C4Harness {
                     callback = platform,
                     now = { System.nanoTime() / 1_000_000 },
                     log = { System.err.println("harness: $it") },
+                    preReadHello = hello,
                     gateProvider = { GateSettings(true, true) },
                 )
             },

@@ -141,6 +141,43 @@ class SessionSlotTest {
     }
 
     @Test
+    fun aJoinWithNothingToAttachToOnlyTellsThePinnedMac() {
+        // PATH-3/11: only a certificate this phone pins learns `no_session`;
+        // every stranger still gets today's `busy`.
+        val pinned = SlotEvent.Connect("aa", samePinnedMac = false, join = true, pinned = true)
+        assertEquals(SlotStep(free, listOf(SlotAction.NO_SESSION)), SessionSlot.transition(free, pinned))
+        val stranger = SlotEvent.Connect("bb", samePinnedMac = false, join = true, pinned = false)
+        assertEquals(SlotStep(free, listOf(SlotAction.BUSY)), SessionSlot.transition(free, stranger))
+    }
+
+    @Test
+    fun aJoinForTheLiveSessionAttachesWithoutSupersedingIt() {
+        // PATH-3: the same Mac, the live session's id: one more path, no drop.
+        val join = SlotEvent.Connect("aa", samePinnedMac = true, join = true, joinMatches = true, pinned = true)
+        assertEquals(SlotStep(live, listOf(SlotAction.JOIN)), SessionSlot.transition(live, join))
+    }
+
+    @Test
+    fun aJoinForAnotherSessionIdIsNoSessionOnlyForTheLiveMac() {
+        val stale = SlotEvent.Connect("aa", samePinnedMac = true, join = true, joinMatches = false, pinned = true)
+        assertEquals(SlotStep(live, listOf(SlotAction.NO_SESSION)), SessionSlot.transition(live, stale))
+        val stranger = SlotEvent.Connect("bb", samePinnedMac = false, join = true, joinMatches = false, pinned = true)
+        assertEquals(SlotStep(live, listOf(SlotAction.BUSY)), SessionSlot.transition(live, stranger))
+    }
+
+    @Test
+    fun aJoinDuringATeardownFindsNoSession() {
+        // PATH-3: a draining session is over; its own Mac hears no_session.
+        val join = SlotEvent.Connect("aa", samePinnedMac = true, join = true, joinMatches = true, pinned = true)
+        assertEquals(SlotStep(draining, listOf(SlotAction.NO_SESSION)), SessionSlot.transition(draining, join))
+        val stranger = SlotEvent.Connect("bb", samePinnedMac = false, join = true, pinned = false)
+        assertEquals(SlotStep(draining, listOf(SlotAction.BUSY)), SessionSlot.transition(draining, stranger))
+        // One hand-over at a time, and a join never starts another.
+        val handingJoin = SlotEvent.Connect("aa", samePinnedMac = true, join = true, joinMatches = true, pinned = true)
+        assertEquals(SlotStep(handing, listOf(SlotAction.BUSY)), SessionSlot.transition(handing, handingJoin))
+    }
+
+    @Test
     fun everyDescriptionIsAClosedToken() {
         assertEquals(
             setOf("free", "live", "draining", "handing"),
@@ -148,12 +185,16 @@ class SessionSlotTest {
         )
         assertEquals(
             setOf(
-                "connect(same mac)", "connect(other mac)", "ending", "teardown done",
-                "teardown slow", "ended", "cancelled",
+                "connect(same mac)", "connect(other mac)", "join(own session)",
+                "join(other session)", "ending", "teardown done", "teardown slow", "ended",
+                "cancelled",
             ),
             listOf(
-                SlotEvent.Connect("aa", true), SlotEvent.Connect("bb", false), SlotEvent.Ending,
-                SlotEvent.TeardownDone, SlotEvent.TeardownSlow, SlotEvent.Ended, SlotEvent.Cancelled,
+                SlotEvent.Connect("aa", true), SlotEvent.Connect("bb", false),
+                SlotEvent.Connect("aa", true, join = true, joinMatches = true),
+                SlotEvent.Connect("aa", true, join = true, joinMatches = false),
+                SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow, SlotEvent.Ended,
+                SlotEvent.Cancelled,
             ).map(SessionSlot::describe).toSet(),
         )
     }
