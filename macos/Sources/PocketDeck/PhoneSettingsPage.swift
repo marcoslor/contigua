@@ -14,6 +14,7 @@ import SwiftUI
 enum PhonePageSection: String, CaseIterable {
     case phone = "Phone"
     case notifications = "Notifications"
+    case applications = "Applications"
     case screen = "Screen"
     case forget = "Forget"
 }
@@ -82,6 +83,22 @@ struct PhoneSettingsPage: View {
             Text(PhonePageSection.notifications.rawValue)
         } footer: {
             Text("Notifications and Now Playing come from this phone only while it is paired and connected. Nothing is shared until you turn it on here.")
+        }
+
+        Section {
+            Toggle(isOn: Binding(
+                get: { controller.saveAllShortcuts(deviceId: phone.id) },
+                set: { controller.setSaveAllShortcuts($0, for: phone.id) },
+            )) {
+                Text("Save all apps as shortcuts")
+            }
+            .disabled(!controller.canMakeShortcuts)
+            .help("Give every app on this phone its own Mac app in Applications, so Launchpad, Spotlight and other launchers list it.")
+            Text("Every app on this phone gets its own app in Applications, named for the phone. Turning it off removes only the shortcuts this switch made; ones you added yourself or in the Dock stay. A phone that is offline keeps its shortcuts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text(PhonePageSection.applications.rawValue)
         }
 
         Section {
@@ -382,9 +399,11 @@ struct PhoneSettingsPage: View {
         lines.append("header.model=\(phone.model)")
         lines.append("title.phone=\(PhonePageSection.phone.rawValue)")
         lines.append("title.notifications=\(PhonePageSection.notifications.rawValue)")
+        lines.append("title.applications=\(PhonePageSection.applications.rawValue)")
         lines.append("title.screen=\(PhonePageSection.screen.rawValue)")
         lines.append("title.forget=\(PhonePageSection.forget.rawValue)")
         lines.append("share=\(shareOn ? 1 : 0)")
+        lines.append("saveAllShortcuts=\(controller.saveAllShortcuts(deviceId: phone.id) ? 1 : 0)")
         let missingAccess = controller.notifyAccessMissing(deviceId: phone.id)
         lines.append("accessHint=\(DevicesTabModel.accessHint(noAccess: missingAccess) ?? "")")
         let denied = DevicesTabModel.notificationsDeniedHint(denied: controller.notifyAuthorization == .denied)

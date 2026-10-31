@@ -7,6 +7,122 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 
+// MARK: - Why a shim exists (docs/design/dock.md §Shortcuts)
+
+/// The reasons one app's shim exists. The bundle stays while the set is
+/// non-empty, and removing one origin removes only that origin — so Save all,
+/// the Dock item and Add to Applications cannot silently delete each other's
+/// shim (docs/design/dock.md §Shortcuts).
+enum DockOrigin: String, CaseIterable, Equatable {
+    /// "Add to Dock" (today's pinned identity).
+    case dock
+    /// "Add to Applications": the person asked for this one app's shortcut.
+    case manual
+    /// The phone's "Save all apps as shortcuts" switch.
+    case all
+    /// The automatic identity of an open app window (today's unpinned shim).
+    case window
+}
+
+struct DockOriginSet: OptionSet, Equatable {
+    let rawValue: Int
+
+    static let dock = DockOriginSet(rawValue: 1 << 0)
+    static let manual = DockOriginSet(rawValue: 1 << 1)
+    static let all = DockOriginSet(rawValue: 1 << 2)
+    static let window = DockOriginSet(rawValue: 1 << 3)
+
+    /// Every origin, in the order the plist writes them.
+    static let every: [DockOrigin] = [.dock, .manual, .all, .window]
+
+    init(rawValue: Int) { self.rawValue = rawValue }
+
+    init(_ origin: DockOrigin) {
+        switch origin {
+        case .dock: self = .dock
+        case .manual: self = .manual
+        case .all: self = .all
+        case .window: self = .window
+        }
+    }
+
+    /// Reads PDOrigins. A bundle from before the set existed migrates its
+    /// `pinned` marker: pinned (or missing, which the old default was) = dock,
+    /// unpinned = window.
+    static func migrated(names: [String]?, pinned: Bool) -> DockOriginSet {
+        guard let names else { return pinned ? .dock : .window }
+        return parse(names)
+    }
+
+    static func parse(_ names: [String]) -> DockOriginSet {
+        names.reduce(into: DockOriginSet()) { set, name in
+            guard let origin = DockOrigin(rawValue: name) else { return }
+            set.insert(DockOriginSet(origin))
+        }
+    }
+
+    /// The stored form, in a stable order.
+    var names: [String] {
+        Self.every.filter { contains(DockOriginSet($0)) }.map(\.rawValue)
+    }
+}
+
+/// What one event does to one app's shim. Actions are returned, never performed,
+/// so every transition is a pure, exhaustive function (AGENTS.md, CONV-PD-08).
+enum DockShimEvent: Equatable {
+    case add(DockOrigin)
+    case remove(DockOrigin)
+    /// An app list from the phone says whether the app is installed and whether
+    /// the phone's Save all switch is on.
+    case reconcile(saveAll: Bool, installed: Bool)
+    case forget
+}
+
+enum DockShimAction: Equatable {
+    /// Create the bundle, or rewrite it with the new origins.
+    case write
+    case remove
+    case none
+}
+
+struct DockShimDecision: Equatable {
+    var origins: DockOriginSet
+    var action: DockShimAction
+}
+
+enum DockOrigins {
+    /// The one transition function: every event in every state.
+    static func applying(_ event: DockShimEvent, to origins: DockOriginSet) -> DockShimDecision {
+        switch event {
+        case .add(let origin):
+            var next = origins
+            next.insert(DockOriginSet(origin))
+            return DockShimDecision(origins: next, action: next == origins ? .none : .write)
+
+        case .remove(let origin):
+            var next = origins
+            next.remove(DockOriginSet(origin))
+            guard next != origins else { return DockShimDecision(origins: origins, action: .none) }
+            return DockShimDecision(origins: next, action: next.isEmpty ? .remove : .write)
+
+        case .reconcile(let saveAll, let installed):
+            var next = origins
+            if installed {
+                if saveAll { next.insert(.all) } else { next.remove(.all) }
+            } else {
+                // An uninstalled app keeps only what the person or an open
+                // window still asks for.
+                next.subtract([.all, .manual])
+            }
+            guard next != origins else { return DockShimDecision(origins: origins, action: .none) }
+            return DockShimDecision(origins: next, action: next.isEmpty ? .remove : .write)
+
+        case .forget:
+            return DockShimDecision(origins: [], action: origins.isEmpty ? .none : .remove)
+        }
+    }
+}
+
 // MARK: - Automatic Dock identity (docs/design/dock.md §Lifecycle)
 
 /// The decision for one open app window whose Dock identity is not bound yet:
@@ -57,12 +173,62 @@ enum DockAutoSetting {
     }
 }
 
+/// The phone page's "Save all apps as shortcuts", per phone id in the profile's
+/// defaults like the other per-phone choices (docs/design/dock.md §Shortcuts).
+/// Off by default: a shortcut for every app is a lot of files, so the person
+/// asks for it.
+enum SaveAllShortcutsSetting {
+    static let key = "saveAllAppsAsShortcuts"
+
+    static func read(from defaults: UserDefaults, deviceId: String) -> Bool {
+        guard !deviceId.isEmpty else { return false }
+        return (defaults.dictionary(forKey: key) as? [String: Bool])?[deviceId] ?? false
+    }
+
+    static func write(_ on: Bool, for deviceId: String, to defaults: UserDefaults) {
+        guard !deviceId.isEmpty else { return }
+        var all = (defaults.dictionary(forKey: key) as? [String: Bool]) ?? [:]
+        if on { all[deviceId] = true } else { all.removeValue(forKey: deviceId) }
+        if all.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(all, forKey: key) }
+    }
+}
+
 /// The running identities "Show phone apps in the Dock" stops when it turns
 /// off: every shim the person did not add by hand. Pinned ones follow the
 /// existing rule and keep running (docs/design/dock.md §Lifecycle).
 enum DockQuit {
     static func plan(records: [DockShimRecord]) -> [DockShimRecord] {
         records.filter { !$0.pinned }
+    }
+}
+
+/// What to do with an automatic shim once its launch finishes: bind it to the
+/// window it was started for, or stop it. A launch can finish after that window
+/// closed; binding it then leaves a Dock icon nothing will ever close again
+/// (docs/design/dock.md §Lifecycle).
+enum DockLaunchLanding: Equatable {
+    /// No shim was started (the build or the launch failed).
+    case nothing
+    /// The window is still open: the pid is its identity now.
+    case bind
+    /// The window closed meanwhile: the shim must quit and must never be bound.
+    case quitWindowClosed
+    /// The setting turned off while it launched and it was not added by hand.
+    case quitSettingOff
+    /// PocketDeck is quitting: an unbound automatic launch is stopped.
+    case quitShuttingDown
+}
+
+enum DockLaunch {
+    static func landing(pid: Int?, windowOpen: Bool, settingOn: Bool, pinned: Bool,
+                        quitting: Bool = false) -> DockLaunchLanding {
+        guard pid != nil else { return .nothing }
+        // PocketDeck quitting: an automatic launch that has not been bound yet
+        // has no window to follow, so it is stopped with the app.
+        if quitting { return .quitShuttingDown }
+        // The window closed while the bundle was built or the shim launched.
+        if !windowOpen { return .quitWindowClosed }
+        return settingOn || pinned ? .bind : .quitSettingOff
     }
 }
 
@@ -77,9 +243,10 @@ struct DockShimSpec: Equatable {
     var hostPath: String
     /// Background mode's shims are agents (LSUIElement): no Dock tile, no ⌘-Tab entry.
     var agent = BackgroundMode.isOn
-    /// True for the "Add to Dock" path: the person added this identity by hand,
-    /// so the Show-phone-apps setting never stops it.
-    var pinned = false
+    /// Why this bundle exists (docs/design/dock.md §Shortcuts): Add to Dock,
+    /// Add to Applications, Save all, or an open window. The plist carries the
+    /// whole set, so a rebuild for one origin keeps the others.
+    var origins: DockOriginSet = .window
     /// The per-bundle token the shim carries in its Info.plist and echoes in
     /// every message (sec L-8). A new bundle gets a fresh one.
     var token = DockToken.make()
@@ -135,7 +302,8 @@ struct DockShimSpec: Equatable {
             DockMessage.plistPackage: pkg,
             DockMessage.plistProfile: profile.name,
             DockMessage.plistHostPath: hostPath,
-            DockMessage.plistPinned: pinned,
+            DockMessage.plistLabel: label,
+            DockMessage.plistOrigins: origins.names,
             DockMessage.plistToken: token,
             DockMessage.plistIconVersion: iconVersion,
             DockMessage.plistIconLayers: iconLayers,
@@ -150,10 +318,11 @@ struct DockShimRecord: Equatable {
     var pkg: String
     var profile: String
     var name: String
-    /// Added by hand ("Add to Dock"); absent in bundles from before the
-    /// automatic path existed, which were all added by hand, so it defaults
-    /// to true there. Automatic ones write false.
-    var pinned = true
+    /// Why the bundle exists (docs/design/dock.md §Shortcuts). A bundle from
+    /// before the set existed migrates its `pinned` marker (dock or window).
+    var origins: DockOriginSet
+    /// The app's raw label (PDLabel); empty in bundles from before it existed.
+    var label = ""
     /// The bundle's token (sec L-8); empty in bundles written before it existed,
     /// which the next refresh rebuilds.
     var token = ""
@@ -161,6 +330,10 @@ struct DockShimRecord: Equatable {
     var iconVersion = 0
     /// Whether that icon was drawn from the phone's adaptive layers.
     var iconLayers = false
+
+    /// Added by hand to the Dock ("Add to Dock"): the Show-phone-apps setting
+    /// never stops these.
+    var pinned: Bool { origins.contains(.dock) }
 }
 
 enum DockShimBuilder {
@@ -244,7 +417,9 @@ enum DockShimBuilder {
             else { return nil }
             return DockShimRecord(url: url, deviceId: deviceId, pkg: pkg, profile: owner,
                                   name: plist["CFBundleName"] as? String ?? "",
-                                  pinned: plist[DockMessage.plistPinned] as? Bool ?? true,
+                                  origins: DockOriginSet.migrated(names: plist[DockMessage.plistOrigins] as? [String],
+                                                                 pinned: plist[DockMessage.plistPinned] as? Bool ?? true),
+                                  label: plist[DockMessage.plistLabel] as? String ?? "",
                                   token: plist[DockMessage.plistToken] as? String ?? "",
                                   iconVersion: plist[DockMessage.plistIconVersion] as? Int ?? 0,
                                   iconLayers: plist[DockMessage.plistIconLayers] as? Bool ?? false)
@@ -254,25 +429,76 @@ enum DockShimBuilder {
 
 enum DockCleanup: Equatable {
     case remove(URL)
-    /// The name shown no longer matches (phone renamed, app relabelled): rebuild with this label.
-    case rebuild(DockShimRecord, label: String)
+    /// The name shown no longer matches, or the origins changed (an app list
+    /// without the app, Save all on/off): rebuild with this label and set.
+    case rebuild(DockShimRecord, label: String, origins: DockOriginSet)
 
-    /// What to do with one phone's shims once its app list arrives.
-    static func plan(records: [DockShimRecord], deviceId: String, apps: [AppInfo], phoneName: String) -> [DockCleanup] {
+    /// What to do with one phone's shims once its app list arrives
+    /// (docs/design/dock.md §Shortcuts): an uninstalled app loses `all` and
+    /// `manual`; a renamed app or phone is rebuilt; Save all adds or removes
+    /// `all`; the rest stay untouched.
+    static func plan(records: [DockShimRecord], deviceId: String, apps: [AppInfo], phoneName: String,
+                     saveAll: Bool = false) -> [DockCleanup] {
         let labels = Dictionary(apps.map { ($0.pkg, $0.label) }, uniquingKeysWith: { first, _ in first })
         return records.filter { $0.deviceId == deviceId }.compactMap { record in
-            guard let label = labels[record.pkg] else { return .remove(record.url) }
-            // A bundle from before tokens existed is rebuilt once, by the
-            // refresh the host already does on every apps list (sec L-8).
-            if record.token.isEmpty { return .rebuild(record, label: label) }
-            let wanted = SpotlightIndexer.title(label: label, phoneName: phoneName)
-            return record.name == wanted ? nil : .rebuild(record, label: label)
+            let installed = labels[record.pkg] != nil
+            let decision = DockOrigins.applying(.reconcile(saveAll: saveAll, installed: installed),
+                                                to: record.origins)
+            switch decision.action {
+            case .remove:
+                return .remove(record.url)
+            case .write:
+                let label = labels[record.pkg] ?? record.label
+                return .rebuild(record, label: label, origins: decision.origins)
+            case .none:
+                // A shim kept by the Dock or a window after its app left the
+                // phone keeps its name until the app comes back.
+                guard installed, let label = labels[record.pkg] else { return nil }
+                // A bundle from before tokens existed is rebuilt once, by the
+                // refresh the host already does on every apps list (sec L-8).
+                if record.token.isEmpty { return .rebuild(record, label: label, origins: record.origins) }
+                let wanted = SpotlightIndexer.title(label: label, phoneName: phoneName)
+                return record.name == wanted ? nil : .rebuild(record, label: label, origins: record.origins)
+            }
         }
     }
 
-    /// The phone was forgotten: all of its shims go.
+    /// The phone was forgotten: all of its shims go, whatever their origins.
     static func planForget(records: [DockShimRecord], deviceId: String) -> [DockCleanup] {
         records.filter { $0.deviceId == deviceId }.map { .remove($0.url) }
+    }
+}
+
+/// One app's Save all work: the origins the shim should end with, and whether
+/// to write or remove it. Built from the same transitions as everything else,
+/// so Save all cannot invent a second rule (docs/design/dock.md §Shortcuts).
+struct DockSaveAllStep: Equatable {
+    var pkg: String
+    var label: String
+    var origins: DockOriginSet
+    var action: DockShimAction
+}
+
+enum DockSaveAll {
+    /// On: every app of the phone gains `all`. Off: every shim of the phone
+    /// loses only `all`; one kept by another origin stays (rewritten), the rest
+    /// are removed. `apps` may be the cached list for an offline phone.
+    static func plan(apps: [AppInfo], records: [DockShimRecord], deviceId: String, on: Bool) -> [DockSaveAllStep] {
+        let mine = records.filter { $0.deviceId == deviceId }
+        if !on {
+            return mine.compactMap { record in
+                let decision = DockOrigins.applying(.reconcile(saveAll: false, installed: true), to: record.origins)
+                guard decision.action != .none else { return nil }
+                return DockSaveAllStep(pkg: record.pkg, label: record.label, origins: decision.origins,
+                                       action: decision.action)
+            }
+        }
+        let byPkg = Dictionary(mine.map { ($0.pkg, $0) }, uniquingKeysWith: { first, _ in first })
+        return apps.map { app in
+            let origins = byPkg[app.pkg]?.origins ?? []
+            let decision = DockOrigins.applying(.reconcile(saveAll: true, installed: true), to: origins)
+            return DockSaveAllStep(pkg: app.pkg, label: app.label, origins: decision.origins, action: decision.action)
+        }.filter { $0.action != .none }
     }
 }
 
@@ -294,6 +520,10 @@ final class DockApps: NSObject {
 
     /// Shim pid → the window (stream, pkg) it stands for.
     private(set) var bindings: [Int: Binding] = [:]
+    /// Automatic shims this app launched that no window is bound to yet: a quit
+    /// can land between the launch and the bind (docs/design/dock.md §Lifecycle).
+    private var unboundLaunches: Set<Int> = []
+    private let launchLock = NSLock()
     /// Shim pid → a watch on its exit. NSWorkspace does not report every app's
     /// end (agent shims in background mode), and a killed shim never posts its
     /// quit message; whichever notices first closes the window, once.
@@ -302,6 +532,9 @@ final class DockApps: NSObject {
     /// The file system and LaunchServices work of the automatic path runs here:
     /// creating a shim for the first time must never slow the window it stands for.
     private let workQueue = DispatchQueue(label: "dev.pocketdeck.dock", qos: .utility)
+    /// e2e race hook: hold the automatic launch's pid callback back, the way a
+    /// slow launch would. Zero outside the harness.
+    private let bindDelay: TimeInterval
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -325,9 +558,10 @@ final class DockApps: NSObject {
         return url
     }
 
-    init(folder: URL, profile: Profile) {
+    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0) {
         self.folder = folder
         self.profile = profile
+        self.bindDelay = bindDelay
         super.init()
     }
 
@@ -344,6 +578,17 @@ final class DockApps: NSObject {
     }
 
     func records() -> [DockShimRecord] { DockShimBuilder.records(in: folder, profile: profile) }
+
+    /// Every package of this phone that has a shortcut bundle: those are not
+    /// indexed into CoreSpotlight a second time (docs/design/dock.md §Shortcuts).
+    func shimPackages(deviceId: String) -> Set<String> {
+        Set(records().filter { $0.deviceId == deviceId }.map(\.pkg))
+    }
+
+    /// Why this app's shim exists right now (empty when it has none).
+    func origins(deviceId: String, pkg: String) -> DockOriginSet {
+        records().first { $0.deviceId == deviceId && $0.pkg == pkg }?.origins ?? []
+    }
 
     func hasShim(deviceId: String, pkg: String) -> Bool {
         records().contains { $0.deviceId == deviceId && $0.pkg == pkg }
@@ -402,6 +647,9 @@ final class DockApps: NSObject {
     /// Ask a shim to quit without treating it as the person quitting it: its
     /// binding goes first, so its window is not closed with it.
     func quit(pid: Int) {
+        launchLock.lock()
+        unboundLaunches.remove(pid)
+        launchLock.unlock()
         exitWatches.removeValue(forKey: pid)?.cancel()
         bindings.removeValue(forKey: pid)
         NSRunningApplication(processIdentifier: pid_t(pid))?.terminate()
@@ -413,36 +661,62 @@ final class DockApps: NSObject {
     func buildAndLaunch(_ spec: DockShimSpec, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
         workQueue.async { [self] in
             guard let binary = Self.shimBinary, let url = make(spec, shellBinary: binary) else {
-                DispatchQueue.main.async { launched(nil) }
+                DispatchQueue.main.async { launched(nil) }  // gcd: one main hop from the work queue
                 return
             }
-            open(url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(url, arguments: DockApps.automaticArguments, delayedLaunch: true, automatic: true) { pid in
+                DispatchQueue.main.async { launched(pid) }  // gcd: one main hop from the work queue
+            }
         }
     }
 
-    /// The shim was built before (kept from "Add to Dock") but is idle: launch the
-    /// existing bundle for `stream`'s window and bind them.
-    func relaunch(deviceId: String, pkg: String, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
+    /// The shim was built before (kept from "Add to Dock" or a shortcut) but is
+    /// idle: launch the existing bundle for `stream`'s window and bind them. The
+    /// bundle records the window as one more reason it exists, so Save all can
+    /// be turned off without deleting the identity of an open window.
+    func relaunch(deviceId: String, pkg: String, label: String, phoneName: String,
+                  bind stream: UInt32, launched: @escaping (Int?) -> Void) {
         workQueue.async { [self] in
             guard let record = records().first(where: { $0.deviceId == deviceId && $0.pkg == pkg }) else {
-                DispatchQueue.main.async { launched(nil) }
+                DispatchQueue.main.async { launched(nil) }  // gcd: one main hop from the work queue
                 return
             }
-            open(record.url) { pid in DispatchQueue.main.async { launched(pid) } }
+            var url = record.url
+            let origins = record.origins.union(.window)
+            if origins != record.origins,
+               let rebuilt = add(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
+                                 launch: false, origins: origins) {
+                url = rebuilt
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                DispatchQueue.main.async { launched(nil) }  // gcd: one main hop from the work queue
+                return
+            }
+            open(url, arguments: DockApps.automaticArguments, delayedLaunch: true, automatic: true) { pid in
+                DispatchQueue.main.async { launched(pid) }  // gcd: one main hop from the work queue
+            }
         }
     }
+
+    /// Automatic launches stand for a window that is already open, so their
+    /// shim must not ask the host to open one: the host binds it or stops it.
+    /// A manual launch (Dock click, Launchpad) keeps its open request.
+    static let automaticArguments = ["--no-open"]
 
     /// The synchronous bundle build and registration, shared by the "Add to Dock"
     /// path and the automatic one. Runs on the caller's thread.
     private func make(_ spec: DockShimSpec, shellBinary: URL) -> URL? {
         do {
-            // The icon: the Dock's own 1296 px layers when the phone answered
-            // that request, else the Deck's layers upscaled, else the flat icon
-            // on the plate. One 1024 px render feeds every .icns size.
+            // The icon: the Dock's own 1296 px reply when the phone answered
+            // that request, else the Deck's layers upscaled. The flat follows
+            // the same rule: its 864 px copy in the Dock's slot, not the Deck's
+            // 288 px one (docs/design/dock.md §Icons). One 1024 px render feeds
+            // every .icns size.
             let dockLayers = IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId,
                                                             sizeClass: .dock)
             let layers = dockLayers ?? IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId)
-            let flat = IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId)
+            let flat = IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId, sizeClass: .dock)
+                ?? IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId)
             let icon = PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: 1024)
             var withIcon = spec
             withIcon.iconLayers = layers != nil
@@ -460,28 +734,81 @@ final class DockApps: NSObject {
         }
     }
 
-    private func open(_ url: URL, launched: @escaping (Int?) -> Void) {
+    private func open(_ url: URL, arguments: [String] = [], delayedLaunch: Bool = false,
+                      automatic: Bool = false, launched: @escaping (Int?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = !BackgroundMode.isOn
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
-            launched(app.map { Int($0.processIdentifier) })
+        configuration.arguments = arguments
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, _ in
+            let pid = app.map { Int($0.processIdentifier) }
+            // Recorded before the callback is (possibly) held back: a quit must
+            // still find a shim whose launch has not been bound yet.
+            if automatic, let pid = pid { self?.noteUnboundLaunch(pid) }
+            let deliver = { launched(pid) }
+            guard delayedLaunch, let delay = self?.bindDelay, delay > 0 else {
+                DispatchQueue.main.async(execute: deliver)  // gcd: one main hop from the open callback
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: deliver)  // gcd: e2e hold of that hop
         }
+    }
+
+    private func noteUnboundLaunch(_ pid: Int) {
+        launchLock.lock()
+        unboundLaunches.insert(pid)
+        launchLock.unlock()
+    }
+
+    /// Stops every automatic shim a launch handed us that no window owns. The
+    /// app's quit path calls this after it has waited for in-flight launches.
+    func quitUnboundLaunches() {
+        launchLock.lock()
+        let pids = unboundLaunches
+        unboundLaunches.removeAll()
+        launchLock.unlock()
+        for pid in pids { quit(pid: pid) }
     }
 
     @discardableResult
     func add(deviceId: String, pkg: String, label: String, phoneName: String, launch: Bool,
-             pinned: Bool) -> URL? {
+             origins: DockOriginSet) -> URL? {
         guard let binary = Self.shimBinary else {
             Log.app.error("dock: no shim executable in this build")
             return nil
         }
+        // A rebuild for a name or an origin change keeps the bundle's token and
+        // its running identity: the person's window stays open and the shim's
+        // messages still match (sec L-8); a brand-new bundle gets a fresh one.
+        let existing = records().first { $0.deviceId == deviceId && $0.pkg == pkg }
         // A rename leaves the old bundle under its old file name.
-        for record in records() where record.deviceId == deviceId && record.pkg == pkg { remove(record.url) }
-        let spec = DockShimSpec(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
-                                profile: profile, hostPath: Bundle.main.bundleURL.path, pinned: pinned)
+        for record in records() where record.deviceId == deviceId && record.pkg == pkg {
+            remove(record.url, terminating: false)
+        }
+        var spec = DockShimSpec(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
+                                profile: profile, hostPath: Bundle.main.bundleURL.path, origins: origins)
+        if let token = existing?.token, !token.isEmpty { spec.token = token }
         guard let url = make(spec, shellBinary: binary) else { return nil }
         if launch { open(url) { _ in } }
         return url
+    }
+
+    /// Save all may build ~230 bundles: the file work stays off the main
+    /// thread, one app at a time, and `done` reports on main.
+    func addInBackground(deviceId: String, pkg: String, label: String, phoneName: String,
+                         origins: DockOriginSet, done: @escaping (Bool) -> Void) {
+        workQueue.async { [self] in // gcd: the file work runs on DockApps' serial utility queue
+            let url = add(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
+                          launch: false, origins: origins)
+            DispatchQueue.main.async { done(url != nil) } // gcd: the caller reads main-actor state
+        }
+    }
+
+    /// Save all off removes bundles off the main thread too.
+    func removeInBackground(deviceId: String, pkg: String, done: @escaping () -> Void) {
+        workQueue.async { [self] in // gcd: the file work runs on DockApps' serial utility queue
+            remove(deviceId: deviceId, pkg: pkg)
+            DispatchQueue.main.async { done() } // gcd: the caller reads main-actor state
+        }
     }
 
     func remove(deviceId: String, pkg: String) {
@@ -489,10 +816,14 @@ final class DockApps: NSObject {
     }
 
     /// Unregister first: LaunchServices keeps a deleted bundle's entry otherwise.
-    func remove(_ url: URL) {
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "")
-        where app.bundleURL?.standardizedFileURL == url.standardizedFileURL {
-            app.terminate()
+    /// `terminating` false rebuilds the bundle in place (an origin or a name
+    /// changed) without closing the window its running shim stands for.
+    func remove(_ url: URL, terminating: Bool = true) {
+        if terminating {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "")
+            where app.bundleURL?.standardizedFileURL == url.standardizedFileURL {
+                app.terminate()
+            }
         }
         Self.run(Self.lsregister, ["-u", url.path])
         try? FileManager.default.removeItem(at: url)
@@ -501,10 +832,13 @@ final class DockApps: NSObject {
 
     /// Decisions for a phone's shims. `keep`: packages of open windows — a shim
     /// is neither removed nor rebuilt while it stands for one (its label and
-    /// clean-up follow when the window is gone).
-    func reconcile(deviceId: String, apps: [AppInfo], phoneName: String, keep: Set<String> = []) {
+    /// clean-up follow when the window is gone). `saveAll` is the phone's
+    /// switch, so the same refresh also adds or drops `all`.
+    func reconcile(deviceId: String, apps: [AppInfo], phoneName: String, keep: Set<String> = [],
+                   saveAll: Bool = false) {
         let mine = records().filter { $0.deviceId == deviceId && !keep.contains($0.pkg) }
-        for decision in DockCleanup.plan(records: mine, deviceId: deviceId, apps: apps, phoneName: phoneName) {
+        for decision in DockCleanup.plan(records: mine, deviceId: deviceId, apps: apps,
+                                         phoneName: phoneName, saveAll: saveAll) {
             apply(decision, phoneName: phoneName)
         }
     }
@@ -519,10 +853,21 @@ final class DockApps: NSObject {
         switch decision {
         case .remove(let url):
             remove(url)
-        case .rebuild(let record, let label):
+        case .rebuild(let record, let label, let origins):
             add(deviceId: record.deviceId, pkg: record.pkg, label: label, phoneName: phoneName, launch: false,
-                pinned: record.pinned)
+                origins: origins)
         }
+    }
+
+    /// The person removed the Dock origin: a shim another origin keeps stays on
+    /// disk, but a running one that is not standing for a window stops, as
+    /// removing the whole bundle used to.
+    func quitIfUnbound(deviceId: String, pkg: String) {
+        guard let record = records().first(where: { $0.deviceId == deviceId && $0.pkg == pkg }),
+              let app = runningApp(of: record.url) else { return }
+        let pid = Int(app.processIdentifier)
+        guard bindings[pid] == nil else { return }
+        quit(pid: pid)
     }
 
     private func bundleId(of url: URL) -> String? { Bundle(url: url)?.bundleIdentifier }
@@ -531,6 +876,9 @@ final class DockApps: NSObject {
 
     /// The shim is up and its pid now stands for the window of `stream`.
     func bind(pid: Int, stream: UInt32, pkg: String) {
+        launchLock.lock()
+        unboundLaunches.remove(pid)
+        launchLock.unlock()
         bindings[pid] = Binding(stream: stream, pkg: pkg)
         watchExit(of: pid)
         post(DockMessage.opened, pid: pid)
@@ -564,7 +912,13 @@ final class DockApps: NSObject {
 
     /// A window closed: its shim exits.
     func streamClosed(_ stream: UInt32) {
-        for (pid, bound) in bindings where bound.stream == stream {
+        let pids = bindings.filter { $0.value.stream == stream }.map(\.key)
+        if pids.isEmpty {
+            Log.app.notice("dock: stream \(stream, privacy: .public) closed; no shim bound")
+        } else {
+            Log.app.notice("dock: stream \(stream, privacy: .public) closed; stopping \(pids.count, privacy: .public) shim(s)")
+        }
+        for (pid, binding) in bindings where binding.stream == stream {
             bindings.removeValue(forKey: pid)
             exitWatches.removeValue(forKey: pid)?.cancel()
             post(DockMessage.closed, pid: pid)

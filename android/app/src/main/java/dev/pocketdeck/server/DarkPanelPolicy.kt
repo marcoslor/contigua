@@ -81,7 +81,14 @@ internal enum class PanelYieldReason(val wire: String) {
  */
 internal class DarkPanelPolicy(private val forced: Boolean) {
 
-    private enum class Phase { INIT, DARK, USER }
+    /**
+     * [WAKE] is the take-over of an episode that starts while the group sleeps:
+     * the group wake is on the wire and the panel-off is still owed. The launch
+     * must not wait for the panel-off (it sleeps through the transitional
+     * re-applies), so the wake is the session thread's [episodeStarted] action
+     * and the first [step] is the panel-off.
+     */
+    private enum class Phase { INIT, WAKE, DARK, USER }
 
     private var phase = Phase.INIT
 
@@ -118,6 +125,39 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     }
 
     /**
+     * The episode's first display exists and its activity is about to be
+     * launched. A virtual display created while the panel's group sleeps starts
+     * OFF, and the platform does not start an activity on it until the group is
+     * awake: in the 10-30 report the launch sat 11 s before its transition and
+     * the first frame came 23 s after the Mac's open. So the take-over starts
+     * here, on the session thread, and not in the keep-alive step after the
+     * launch: wake the group now, and leave the panel-off owed to the first
+     * [step] (it is the part that sleeps through the re-applies).
+     *
+     * A panel that is already on belongs to the person and is never taken; a
+     * mirror must not wake the phone (its panel is the picture).
+     *
+     * @return the wake to perform at once, or null when the first [step] owns
+     * the decision (a lit panel, a mirror, or a policy that is not at INIT).
+     */
+    fun episodeStarted(panelOn: Boolean, strategy: PanelStrategy): PanelPlan? {
+        watchStrategy = strategy
+        if (phase != Phase.INIT) return null
+        if (strategy == PanelStrategy.PANEL_ALONE) return null
+        if (strategy == PanelStrategy.GROUP_ONLY) {
+            // The display's own group: waking it never touches the panel, and
+            // the first step's wake is a harmless repeat.
+            return PanelPlan(wake = true, panelOff = false, transitional = false)
+        }
+        if (panelOn) {
+            phase = Phase.USER
+            return null
+        }
+        phase = Phase.WAKE
+        return PanelPlan(wake = true, panelOff = false, transitional = true)
+    }
+
+    /**
      * One step. [panelOn] is whether the panel (display 0) is currently in
      * `Display.STATE_ON`; [strategy] comes from [strategy] and the caller's own
      * display-group reading.
@@ -151,6 +191,13 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
                     transitional = true
                 }
             }
+            Phase.WAKE -> {
+                // The episode start woke the group before the launch; the panel
+                // is owed its off, and the wake must not be repeated (a shared
+                // group wake is a full phone wake).
+                phase = Phase.DARK
+                return PanelPlan(wake = false, panelOff = true, transitional = true)
+            }
             // A steady phase is the watch's to change, never a tick's.
             Phase.DARK, Phase.USER -> {}
         }
@@ -166,7 +213,9 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      * the panel back now.
      */
     fun personUsed(reason: PanelYieldReason): Boolean {
-        if (phase != Phase.DARK) return false
+        // WAKE is ours too: the episode start's wake lit the panel, so the
+        // person's first touch or press takes it back from there.
+        if (phase != Phase.DARK && phase != Phase.WAKE) return false
         phase = Phase.USER
         return true
     }
@@ -187,7 +236,10 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      */
     fun interactiveOff(nowMs: Long, streamsUp: Boolean): PowerWatchAction {
         if (nowMs < ownUntilMs) return PowerWatchAction.NONE
-        if (phase == Phase.DARK) {
+        // WAKE is ours too: the episode start's wake lit the panel, so a press
+        // from here on is the person taking the phone (the settle above already
+        // masks our own wake's edge).
+        if (phase == Phase.DARK || phase == Phase.WAKE) {
             return if (personUsed(PanelYieldReason.POWER)) PowerWatchAction.HAND_BACK else PowerWatchAction.NONE
         }
         if (!streamsUp || watchStrategy != PanelStrategy.PANEL_DARK) return PowerWatchAction.NONE
@@ -216,7 +268,8 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      */
     fun streamsPaused(nowMs: Long): Boolean {
         pausedAtMs = nowMs
-        if (phase == Phase.DARK) return false
+        // A take-over in flight (WAKE) has already lit the panel: keep it.
+        if (phase == Phase.DARK || phase == Phase.WAKE) return false
         phase = Phase.INIT
         return true
     }
@@ -240,7 +293,9 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      * phone back to sleep.
      */
     fun streamsStopped(): Boolean {
-        val owned = phase == Phase.DARK
+        // WAKE lit the panel itself: a close before the panel-off landed must
+        // still hand it back, or a failed launch leaves the screen lit.
+        val owned = phase == Phase.DARK || phase == Phase.WAKE
         phase = Phase.INIT
         pausedAtMs = null
         return owned

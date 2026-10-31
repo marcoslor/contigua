@@ -32,6 +32,27 @@ enum DeckCellClick {
         return nil
     }
 
+    /// Opens the cell's own context menu with a secondary click at the cell's
+    /// drawn place, through the window's event handling (a quiet shot cannot
+    /// use the pointer). The menu tracks the run loop, so the click is queued
+    /// and the caller returns at once; the caller closes the app afterwards.
+    @MainActor
+    static func menu(label: String, in window: NSWindow) -> String? {
+        guard let cell = findCell(label: label), let frame = screenFrame(of: cell) else {
+            return "no Deck cell labelled \(label)"
+        }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        let screenPoint = NSPoint(x: frame.midX, y: top - frame.midY)
+        let point = window.convertPoint(fromScreen: screenPoint)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { // gcd: a context menu tracks the run loop, so the click is one turn later
+            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+                guard let event = mouse(type, at: point, in: window) else { return }
+                window.sendEvent(event)
+            }
+        }
+        return nil
+    }
+
     private static func mouse(_ type: NSEvent.EventType, at point: NSPoint,
                               in window: NSWindow) -> NSEvent? {
         NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],

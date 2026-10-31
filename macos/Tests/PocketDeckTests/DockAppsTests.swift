@@ -71,11 +71,14 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(plist["PDPackage"] as? String, "com.whatsapp")
         XCTAssertEqual(plist["PDProfile"] as? String, "e2e")
         XCTAssertEqual(plist["PDHostPath"] as? String, "/tmp/PocketDeck.app")
-        XCTAssertEqual(plist["PDPinned"] as? Bool, false, "an automatic shim is not pinned")
+        XCTAssertEqual(plist["PDLabel"] as? String, "Tom & \"Jerry\" <1>",
+                       "the raw label survives a rebuild that only changes the origins")
+        XCTAssertEqual(plist["PDOrigins"] as? [String], ["window"], "an automatic shim exists for its window")
+        XCTAssertNil(plist["PDPinned"], "the origin set replaces the old marker")
         XCTAssertNil(plist["LSUIElement"], "the shim must show in the Dock and ⌘-Tab")
-        var manual = spec()
-        manual.pinned = true
-        XCTAssertEqual(manual.infoPlist["PDPinned"] as? Bool, true)
+        var dock = spec()
+        dock.origins = [.dock, .manual]
+        XCTAssertEqual(dock.infoPlist["PDOrigins"] as? [String], ["dock", "manual"])
     }
 
     func testBackgroundModeShimsAreAgents() {
@@ -90,7 +93,7 @@ final class DockAppsTests: XCTestCase {
     func testBuildWritesAReadableBundleWithEscapedNames() throws {
         let label = "Tom & \"Jerry\" <1>"
         var pinned = spec(label: label)
-        pinned.pinned = true
+        pinned.origins = [.dock]
         let url = try DockShimBuilder.build(pinned, in: folder, shimBinary: try binary(), icon: cgImage())
         let bundle = try XCTUnwrap(Bundle(url: url))
         XCTAssertEqual(bundle.bundleIdentifier, "dev.pocketdeck.dock.e2e.a1b2c3d4e5f60718.com-whatsapp")
@@ -99,6 +102,8 @@ final class DockAppsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Resources/AppIcon.icns").path))
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pkg), ["com.whatsapp"])
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pinned), [true])
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDOrigins") as? [String], ["dock"])
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDLabel") as? String, label)
         XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDIconVersion") as? Int, PhoneAppIcon.version)
         XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDIconLayers") as? Bool, false,
                        "a default spec has no layers")
@@ -126,11 +131,56 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(widths.max(), 1024, "the largest representation is the render, not a 96 px upscale")
     }
 
+    /// A flat-only app's shim carries the shared renderer's output, not the
+    /// phone's flat PNG (docs/design/dock.md §Icons): the render is shaped to
+    /// the macOS squircle, so an opaque full-bleed flat's canvas corner is
+    /// transparent in the `.icns` and the body is the flat's own colour.
+    func testAFlatOnlyShimsIconComesFromTheRenderer() throws {
+        let flat = flatPNG(red: 0, green: 128, blue: 96)
+        let icon = try XCTUnwrap(PhoneAppIcon.render(fg: nil, bg: nil, flat: flat, px: 1024),
+                                 "a flat-only app renders without layers")
+        let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), icon: icon)
+        let data = try Data(contentsOf: url.appendingPathComponent("Contents/Resources/AppIcon.icns"))
+        let image = try XCTUnwrap(NSImage(data: data))
+        let rep = try XCTUnwrap(image.representations.first { $0.pixelsWide == 1024 } as? NSBitmapImageRep)
+        let cg = try XCTUnwrap(rep.cgImage)
+        XCTAssertEqual(pixel(cg, x: 2, y: 2).a, 0, "the renderer's squircle, not the bare square")
+        let centre = pixel(cg, x: 512, y: 512)
+        XCTAssertEqual(centre.r, 0)
+        XCTAssertEqual(centre.g, 128)
+        XCTAssertEqual(centre.b, 96)
+        XCTAssertEqual(centre.a, 255)
+    }
+
+    private func flatPNG(size: Int = 96, red: UInt8, green: UInt8, blue: UInt8) -> Data {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(colorSpace: space, components: [CGFloat(red) / 255, CGFloat(green) / 255,
+                                                                    CGFloat(blue) / 255, 1])!)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        return NSBitmapImageRep(cgImage: context.makeImage()!).representation(using: .png, properties: [:])!
+    }
+
+    private func pixel(_ cg: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                                          bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            context.interpolationQuality = .none
+            context.draw(cg, in: CGRect(x: -x, y: -(cg.height - 1 - y),
+                                        width: cg.width, height: cg.height))
+        }
+        return (bytes[0], bytes[1], bytes[2], bytes[3])
+    }
+
     // MARK: Cleanup decisions
 
-    private func record(_ pkg: String, device: String = "d1", name: String, pinned: Bool = false) -> DockShimRecord {
+    private func record(_ pkg: String, device: String = "d1", name: String, origins: DockOriginSet = .window,
+                        label: String = "") -> DockShimRecord {
         DockShimRecord(url: URL(fileURLWithPath: "/x/\(pkg)-\(device).app"), deviceId: device, pkg: pkg,
-                       profile: "e2e", name: name, pinned: pinned,
+                       profile: "e2e", name: name, origins: origins, label: label,
                        token: String(repeating: "a", count: 32))
     }
 
@@ -139,18 +189,20 @@ final class DockAppsTests: XCTestCase {
     }
 
     func testUninstalledAppsAreRemovedRenamedOnesRebuilt() {
-        let records = [record("a", name: "A (Pixel)"), record("b", name: "B (Pixel)"),
+        let records = [record("a", name: "A (Pixel)"), record("b", name: "B (Pixel)", origins: .all),
                        record("c", name: "C (Pixel)"), record("a", device: "d2", name: "A (Other)")]
         let plan = DockCleanup.plan(records: records, deviceId: "d1",
                                     apps: [app("a", "A"), app("c", "Cee")], phoneName: "Pixel")
-        XCTAssertEqual(plan, [.remove(records[1].url), .rebuild(records[2], label: "Cee")])
+        XCTAssertEqual(plan, [.remove(records[1].url),
+                              .rebuild(records[2], label: "Cee", origins: .window)])
     }
 
     func testPhoneRenameRebuildsEveryShimOfThatPhone() {
         let records = [record("a", name: "A (Pixel)"), record("b", name: "B (Pixel)")]
         let plan = DockCleanup.plan(records: records, deviceId: "d1", apps: [app("a", "A"), app("b", "B")],
                                     phoneName: "Work phone")
-        XCTAssertEqual(plan, [.rebuild(records[0], label: "A"), .rebuild(records[1], label: "B")])
+        XCTAssertEqual(plan, [.rebuild(records[0], label: "A", origins: .window),
+                              .rebuild(records[1], label: "B", origins: .window)])
     }
 
     func testNothingToDoWhenUpToDate() {
@@ -163,7 +215,51 @@ final class DockAppsTests: XCTestCase {
         legacy.token = ""
         XCTAssertEqual(DockCleanup.plan(records: [legacy], deviceId: "d1",
                                         apps: [app("a", "A")], phoneName: "Pixel"),
-                       [.rebuild(legacy, label: "A")])
+                       [.rebuild(legacy, label: "A", origins: .window)])
+    }
+
+    /// An app list without the app drops Save all's and the manual reason but
+    /// keeps a shim the Dock or an open window holds (docs/design/dock.md
+    /// §Shortcuts).
+    func testAnUninstalledAppKeepsOnlyTheDockAndWindowReasons() {
+        let records = [record("a", name: "A (P)", origins: [.all, .manual, .window]),
+                       record("b", name: "B (P)", origins: [.all, .manual]),
+                       record("c", name: "C (P)", origins: [.dock])]
+        let plan = DockCleanup.plan(records: records, deviceId: "d1", apps: [app("c", "C")],
+                                    phoneName: "P", saveAll: true)
+        XCTAssertEqual(plan, [.rebuild(records[0], label: "", origins: .window),
+                              .remove(records[1].url),
+                              .rebuild(records[2], label: "C", origins: [.dock, .all])])
+        XCTAssertEqual(DockCleanup.plan(records: [records[1]], deviceId: "d1", apps: [],
+                                        phoneName: "P"), [.remove(records[1].url)])
+    }
+
+    /// Save all adds `all` to every shim on a refresh and removes only `all`
+    /// when the switch is off.
+    func testSaveAllAddsAllOnARefreshAndRemovesOnlyAll() {
+        let dock = record("a", name: "A (P)", origins: [.dock])
+        let window = record("b", name: "B (P)", origins: [.window])
+        let on = DockCleanup.plan(records: [dock, window], deviceId: "d1", apps: [app("a", "A"), app("b", "B")],
+                                  phoneName: "P", saveAll: true)
+        XCTAssertEqual(on, [.rebuild(dock, label: "A", origins: [.dock, .all]),
+                            .rebuild(window, label: "B", origins: [.window, .all])])
+        var kept = dock
+        kept.origins.insert(.all)
+        let off = DockCleanup.plan(records: [kept], deviceId: "d1", apps: [app("a", "A")],
+                                   phoneName: "P", saveAll: false)
+        XCTAssertEqual(off, [.rebuild(kept, label: "A", origins: .dock)])
+    }
+
+    func testSaveAllPlanIsOnEveryAppOffOnlyAll() {
+        let records = [record("a", name: "A (P)", origins: [.dock]),
+                       record("b", name: "B (P)", origins: [.all])]
+        let apps = [app("a", "A"), app("b", "B"), app("c", "C")]
+        XCTAssertEqual(DockSaveAll.plan(apps: apps, records: records, deviceId: "d1", on: true),
+                       [DockSaveAllStep(pkg: "a", label: "A", origins: [.dock, .all], action: .write),
+                        DockSaveAllStep(pkg: "c", label: "C", origins: .all, action: .write)])
+        XCTAssertEqual(DockSaveAll.plan(apps: apps, records: records, deviceId: "d1", on: false),
+                       [DockSaveAllStep(pkg: "b", label: "", origins: [], action: .remove)],
+                       "off takes only `all`; a dock-only shim is not rewritten")
     }
 
     // MARK: Message tokens (sec L-8)
@@ -196,24 +292,103 @@ final class DockAppsTests: XCTestCase {
 
     // MARK: The setting's off state (docs/design/dock.md §Lifecycle)
 
-    func testTurningTheSettingOffStopsOnlyUnpinnedShims() {
-        let records = [record("a", name: "A (P)"), record("b", name: "B (P)", pinned: true),
+    func testTurningTheSettingOffStopsOnlyShimsOfWindows() {
+        let records = [record("a", name: "A (P)"), record("b", name: "B (P)", origins: .dock),
                        record("c", device: "d2", name: "C (Q)")]
         XCTAssertEqual(DockQuit.plan(records: records).map(\.pkg), ["a", "c"],
                        "shims added by hand are not stopped by the setting")
     }
 
-    func testLegacyShimsWithoutTheMarkerCountAsPinned() throws {
-        // Bundles from before automatic identities: all added by hand, so a
-        // missing PDPinned key must not make the setting stop them.
+    func testLegacyShimsMigratePinnedToDockAndUnpinnedToWindow() throws {
+        // Bundles from before origins: a missing PDPinned meant a hand-added
+        // Dock app (true was the old default); false was an automatic identity.
         let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), icon: nil)
         let plistURL = url.appendingPathComponent("Contents/Info.plist")
         var plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: try Data(contentsOf: plistURL),
                                                                         format: nil) as? [String: Any])
+        plist.removeValue(forKey: "PDOrigins")
         plist.removeValue(forKey: "PDPinned")
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
-        let records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
-        XCTAssertEqual(records.map(\.pinned), [true])
+        var records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
+        XCTAssertEqual(records.map(\.origins), [.dock])
+
+        plist["PDPinned"] = false
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
+        records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
+        XCTAssertEqual(records.map(\.origins), [.window])
+        XCTAssertEqual(DockQuit.plan(records: records).count, 1,
+                       "a migrated automatic identity still stops with the setting")
+    }
+
+    // MARK: The origin machine (docs/design/dock.md §Shortcuts)
+
+    /// Every event against every starting set that matters: empty, each single
+    /// origin, and the combinations that remove one while others stay.
+    func testEveryOriginTransition() {
+        typealias Case = (DockOriginSet, DockShimEvent, DockOriginSet, DockShimAction)
+        let cases: [Case] = [
+            // Add.
+            ([], .add(.dock), .dock, .write),
+            ([], .add(.manual), .manual, .write),
+            ([], .add(.all), .all, .write),
+            ([], .add(.window), .window, .write),
+            ([.window], .add(.dock), [.dock, .window], .write),
+            ([.dock, .manual], .add(.all), [.dock, .manual, .all], .write),
+            ([.dock], .add(.dock), .dock, .none),
+            ([.all, .window], .add(.manual), [.manual, .all, .window], .write),
+            // Remove.
+            ([.dock], .remove(.dock), [], .remove),
+            ([.all], .remove(.all), [], .remove),
+            ([.dock, .manual], .remove(.dock), .manual, .write),
+            ([.dock, .all], .remove(.all), .dock, .write),
+            ([.window], .remove(.dock), .window, .none),
+            ([], .remove(.manual), [], .none),
+            // Reconcile: installed.
+            ([.all], .reconcile(saveAll: true, installed: true), .all, .none),
+            ([], .reconcile(saveAll: true, installed: true), .all, .write),
+            ([.window], .reconcile(saveAll: true, installed: true), [.window, .all], .write),
+            ([.dock, .all], .reconcile(saveAll: false, installed: true), .dock, .write),
+            ([.all], .reconcile(saveAll: false, installed: true), [], .remove),
+            ([.manual], .reconcile(saveAll: false, installed: true), .manual, .none),
+            // Reconcile: gone.
+            ([.all, .manual], .reconcile(saveAll: true, installed: false), [], .remove),
+            ([.all, .window], .reconcile(saveAll: true, installed: false), .window, .write),
+            ([.manual, .dock], .reconcile(saveAll: false, installed: false), .dock, .write),
+            ([.dock], .reconcile(saveAll: true, installed: false), .dock, .none),
+            // Forget.
+            ([.dock, .manual, .all, .window], .forget, [], .remove),
+            ([], .forget, [], .none),
+        ]
+        for (start, event, wanted, action) in cases {
+            let decision = DockOrigins.applying(event, to: start)
+            XCTAssertEqual(decision.origins, wanted, "origins after \(event) from \(start.names)")
+            XCTAssertEqual(decision.action, action, "action after \(event) from \(start.names)")
+        }
+    }
+
+    func testOriginSetRoundTripsAndKeepsItsOrder() {
+        let set: DockOriginSet = [.window, .dock, .all]
+        XCTAssertEqual(set.names, ["dock", "all", "window"])
+        XCTAssertEqual(DockOriginSet.parse(set.names), set)
+        XCTAssertEqual(DockOriginSet.parse(["nonsense", "manual"]), .manual)
+        XCTAssertEqual(DockOriginSet.parse([]), [])
+        XCTAssertEqual(DockOriginSet.migrated(names: nil, pinned: true), .dock)
+        XCTAssertEqual(DockOriginSet.migrated(names: nil, pinned: false), .window)
+        XCTAssertEqual(DockOriginSet.migrated(names: ["manual"], pinned: true), .manual,
+                       "the stored set wins over the old marker")
+    }
+
+    func testSaveAllSettingIsPerPhoneAndOffByDefault() {
+        let suite = "savealltests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(SaveAllShortcutsSetting.read(from: defaults, deviceId: "d1"))
+        SaveAllShortcutsSetting.write(true, for: "d1", to: defaults)
+        XCTAssertTrue(SaveAllShortcutsSetting.read(from: defaults, deviceId: "d1"))
+        XCTAssertFalse(SaveAllShortcutsSetting.read(from: defaults, deviceId: "d2"))
+        SaveAllShortcutsSetting.write(false, for: "d1", to: defaults)
+        XCTAssertFalse(SaveAllShortcutsSetting.read(from: defaults, deviceId: "d1"))
+        XCTAssertNil(defaults.object(forKey: SaveAllShortcutsSetting.key), "off leaves no empty dictionary")
     }
 
     func testTestProfilesNeverUseApplicationsFolder() {
@@ -279,6 +454,35 @@ final class DockAppsTests: XCTestCase {
 
     func testARunningIdentityIsNotDoubled() {
         XCTAssertEqual(decide(shimExists: true, shimRunning: true, shimHasIcon: true, icon: .cached), .skip)
+    }
+
+    // MARK: A launch that lands after its window closed
+
+    func testALaunchForAClosedWindowIsQuitNeverBound() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: false, settingOn: true, pinned: false),
+                       .quitWindowClosed, "a shim bound to a dead stream would never be closed again")
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: false, settingOn: true, pinned: true),
+                       .quitWindowClosed, "a hand-added bundle launched for a window still follows that window")
+    }
+
+    func testALaunchForAnOpenWindowIsBound() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: false), .bind)
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: false, pinned: false),
+                       .quitSettingOff, "the setting turned off while the bundle was built")
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: false, pinned: true), .bind,
+                       "a hand-added identity follows the existing setting rule")
+    }
+
+    func testALaunchWithNoShimDoesNothing() {
+        XCTAssertEqual(DockLaunch.landing(pid: nil, windowOpen: true, settingOn: true, pinned: false), .nothing)
+        XCTAssertEqual(DockLaunch.landing(pid: nil, windowOpen: false, settingOn: true, pinned: false), .nothing)
+    }
+
+    func testAnUnboundLaunchIsQuitWhenTheAppQuits() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: false, quitting: true),
+                       .quitShuttingDown)
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: true, quitting: true),
+                       .quitShuttingDown, "a launch in flight at quit is stopped whether or not it is pinned")
     }
 
     // MARK: Bindings

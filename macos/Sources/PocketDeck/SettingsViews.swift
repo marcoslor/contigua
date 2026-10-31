@@ -223,25 +223,12 @@ struct AutomationSettings: View {
     }
 }
 
-/// Settings → General "Glass app icons": the Deck grid's Liquid Glass tiles
-/// (docs/design/mac-redesign.md). On unless turned off.
-enum GlassIconsSetting {
-    static let key = "deck.glassIcons"
-
-    static func isEnabled(in defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? true
-    }
-
-    static var isEnabled: Bool { isEnabled(in: Profile.active.defaults) }
-}
-
 struct GeneralSettings: View {
     @Environment(ConnectionController.self) private var controller
     @AppStorage("showMenuBar", store: Profile.active.defaults) private var showMenuBar = true
     @AppStorage(ClipboardSync.enabledKey, store: Profile.active.defaults) private var shareClipboard = false
     @AppStorage(WindowDensity.key, store: Profile.active.defaults) private var density = 1.0
     @AppStorage(DockAutoSetting.key, store: Profile.active.defaults) private var showAppsInDock = true
-    @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
     @AppStorage(RevealDelay.key, store: Profile.active.defaults) private var revealDelay: RevealDelay = .short
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -271,7 +258,6 @@ struct GeneralSettings: View {
             .fixedSize(horizontal: false, vertical: true)
             Toggle("Show phone apps in the Dock", isOn: $showAppsInDock)
                 .onChange(of: showAppsInDock) { _, _ in controller.showAppsInDockChanged() }
-            Toggle("Glass app icons", isOn: $glassIconsOn)
             Picker("Default window density", selection: $density) {
                 ForEach(WindowDensity.options, id: \.value) { Text($0.label).tag($0.value) }
             }

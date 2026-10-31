@@ -641,8 +641,9 @@ internal class WindowStream(
         // The emulator's stand-in for One UI: AOSP honours OWN_DISPLAY_GROUP, so
         // a power press there never touches our VDs and the press gap cannot be
         // measured. With this property the VD joins display 0's group instead,
-        // which is the shape the field phone has.
-        if (Hidden.systemProperty(VD_PANEL_GROUP) == "1") {
+        // which is the shape the field phone has. Debug builds only: a release
+        // APK must not take a test knob that changes its display grouping.
+        if (dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(VD_PANEL_GROUP) == "1") {
             f = (f or FLAG_DEVICE_DISPLAY_GROUP) and FLAG_OWN_DISPLAY_GROUP.inv()
         }
         return f

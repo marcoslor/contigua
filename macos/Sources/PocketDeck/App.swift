@@ -68,6 +68,12 @@ struct LaunchOptions {
     /// the phone's app list arrives (e2e).
     var dockAdd: String?
     var dockRemove: String?
+    /// `--dock-launch-delay SECONDS`: hold the automatic identity's build and
+    /// launch back so it lands after the window closes (e2e race).
+    var dockLaunchDelay: TimeInterval?
+    /// `--dock-bind-delay SECONDS`: hold the automatic launch's pid callback
+    /// back, as a slow launch would (e2e race).
+    var dockBindDelay: TimeInterval?
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
     /// through the same code the Settings ▸ Phones ▸ Rename dialog calls (e2e).
     var setNickname: String?
@@ -142,6 +148,8 @@ struct LaunchOptions {
         "--dock-dir": true,
         "--dock-add": true,
         "--dock-remove": true,
+        "--dock-launch-delay": true,
+        "--dock-bind-delay": true,
         "--set-nickname": true,
         "--continue-on-mac": false,
         "--background": false,
@@ -254,6 +262,10 @@ struct LaunchOptions {
                 options.dockAdd = next()
             case "--dock-remove":
                 options.dockRemove = next()
+            case "--dock-launch-delay":
+                if let value = next() { options.dockLaunchDelay = Double(value) }
+            case "--dock-bind-delay":
+                if let value = next() { options.dockBindDelay = Double(value) }
             case "--set-nickname":
                 options.setNickname = next()
             case "--continue-on-mac":
