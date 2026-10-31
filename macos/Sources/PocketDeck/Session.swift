@@ -655,8 +655,10 @@ final class Session {
         ]
         if let join { hello["join"] = join }
         if pairingAttempt, join == nil { hello["pair"] = true }
-        attempt.machine.handle(.sentHello(join: join))
-        attempts[id] = attempt
+        // Through the one recorder, so `ready --hello--> hello` is logged like
+        // every other attempt transition (R-14): the machine call here was
+        // silent.
+        attemptEvent(id, .sentHello(join: join))
         send(Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(hello)).encoded)
         if join == nil {
             preWelcomeSender.set(send)
