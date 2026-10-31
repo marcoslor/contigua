@@ -401,6 +401,21 @@ extension PathLayerTests {
 }
 
 extension PathLayerTests {
+    /// E-1: a lossy frame is written without credit, so a path that cannot
+    /// take more must not queue an unbounded pile of them. At most 128 KiB
+    /// waits in the channel; past it the frame is dropped (lossy by design)
+    /// and writing resumes when the channel drains.
+    func testLossyFramesAreCappedWhileTheChannelIsNotWritable() {
+        wire.setWritable(false)
+        let hover = Frame(type: .hover, stream: 1, payload: [UInt8](repeating: 0, count: 8 << 10))
+        for _ in 0..<20 { layer.send(hover) }
+        XCTAssertEqual(16, wire.all().count, "more than 128 KiB of lossy frames queued on a stalled path")
+        wire.setWritable(true)
+        layer.writable("aaaa0001")
+        for _ in 0..<4 { layer.send(hover) }
+        XCTAssertEqual(20, wire.all().count, "the cap was not reset when the channel drained")
+    }
+
     /// RR-14: one pump per path, so two senders' frames reach the channel in
     /// seq order. The first write parks inside the channel; a second sender
     /// must not take the next frame and write it ahead of the parked one.
