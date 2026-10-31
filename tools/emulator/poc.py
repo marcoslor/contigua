@@ -322,7 +322,11 @@ def cmd_wait_prompt(args):
     phone announces) and this helper in another. flow.sh pairs through `pair`.
     """
     adb = Adb(args.adb, args.serial)
-    code = read_new_code(adb, args.timeout, args.interval)
+    # A fresh boot has no earlier prompt: `--stale none` keeps a code that
+    # appears while the first UI dump is being taken from being mistaken for a
+    # leftover one (boot 9 ignored the only prompt for the full 60 s that way).
+    stale = "" if args.stale == "none" else None
+    code = read_new_code(adb, args.timeout, args.interval, stale=stale)
     if code is None:
         raise PocError("no new pairing code within %.0fs" % args.timeout)
     print("wait-prompt: prompt shows code %s" % code)
@@ -380,7 +384,7 @@ def cmd_verify(args):
 
 
 # --- CLI -------------------------------------------------------------------
-def main(argv=None):
+def build_parser():
     p = argparse.ArgumentParser(
         description="Emulator-rig helper for PocketDeck (pairing + frame checks).")
     p.add_argument("--addr", default=os.environ.get("POCKETDECK_ADDR", "127.0.0.1:47811"),
@@ -408,6 +412,9 @@ def main(argv=None):
     sp.add_argument("--tap-timeout", type=float, default=25.0)
     sp.add_argument("--evidence", metavar="DIR",
                     help="write the phone's logcat/pid/UI state before and after the tap")
+    sp.add_argument("--stale", choices=("auto", "none"), default="auto",
+                    help="`none` when no earlier prompt can exist (a fresh boot): "
+                         "a code that appears while the first dump is taken is new, not stale")
     sp.set_defaults(func=cmd_wait_prompt)
 
     sp = sub.add_parser("verify-phases", help="check the PNGs deckctl multi wrote")
@@ -417,6 +424,11 @@ def main(argv=None):
                     help="fail a frame darker than this (black/keyguard guard)")
     sp.set_defaults(func=cmd_verify)
 
+    return p
+
+
+def main(argv=None):
+    p = build_parser()
     args = p.parse_args(argv)
     try:
         return args.func(args)

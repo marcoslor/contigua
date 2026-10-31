@@ -99,6 +99,11 @@ if [ "$MODE" = check ]; then
     else
         cfail "pdpathfault close check: $(printf '%s' "$close_out" | tail -2 | tr '\n' ' ')"
     fi
+    if poc_out="$("$PYTHON" "$HERE/test_poc_wait.py" 2>&1)"; then
+        printf 'P1-PROOF CHECK: wait-prompt accepts a fresh-boot code\n'
+    else
+        cfail "wait-prompt stale check: $(printf '%s' "$poc_out" | tail -2 | tr '\n' ' ')"
+    fi
     # Item 7's join predicate reads these two lines; a bundle without them can
     # only fail the join after a full boot.
     if [ -x "$APP" ]; then
@@ -443,7 +448,7 @@ bring_app_forward
 # --- pair the Mac app ------------------------------------------------------
 section pair
 "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
-    wait-prompt --timeout 60 --evidence "$WORK" > "$WORK/wait-prompt.log" 2>&1 &
+    wait-prompt --timeout 60 --stale none --evidence "$WORK" > "$WORK/wait-prompt.log" 2>&1 &
 TAP_PID=$!
 "$APP" --profile "$PROFILE" --background --connect "$ADDR" \
     --open-phone --quit-after 70 > "$WORK/app-pair.out" 2>&1 &
@@ -474,7 +479,7 @@ if pin_stored; then
     ok "the Mac stored the phone pin before the join"
 else
     bad "no pin in $SUPPORT/pins.json after pairing; the join cannot run"
-    printf '\n== result ==\nFAIL: $FAIL proof(s) failed (one boot, stopped after pair)\n'
+    printf '\n== result ==\nFAIL: %s proof(s) failed (one boot, stopped after pair)\n' "$FAIL"
     exit 1
 fi
 # The phone's own grace keeps the pair session for 30 s after the Mac app
