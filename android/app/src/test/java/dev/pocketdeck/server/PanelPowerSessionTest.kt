@@ -234,11 +234,13 @@ class PanelPowerSessionTest {
         send(mapOf("t" to "phone.panel", "off" to true))
         assertEquals("off", readUntil("state")["panel"])
         assertEquals(listOf(true), platform.mirrorPanelOffs.toList())
-        assertTrue(logs.any { it == "phone.panel off" })
+        // The hold reports the state from inside the call, before the session
+        // writes its own line; wait for the line instead of racing it.
+        awaitTrue { logs.any { it == "phone.panel off" } }
 
         send(mapOf("t" to "phone.panel", "off" to false))
         assertEquals("on", readUntil("state")["panel"])
-        assertTrue(logs.any { it == "phone.panel on" })
+        awaitTrue { logs.any { it == "phone.panel on" } }
     }
 
     @Test
