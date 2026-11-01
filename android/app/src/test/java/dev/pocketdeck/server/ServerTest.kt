@@ -628,6 +628,47 @@ class ServerTest {
         }
     }
 
+    /**
+     * RRR-2/E-1: only the founder's socket was sized 128 KiB (in Session), so a
+     * joined path kept the kernel's autotuned MiBs: after a failover the
+     * delta-drop rule fired seconds late and video sat in the kernel. Every
+     * path socket is sized at the one place a connection is served.
+     */
+    @Test
+    fun aJoinedPathSocketCarriesTheSendBufferCap() {
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (send buffer)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (send buffer)")
+        val pin = fingerprintHex(macIdentity)
+        val sessionId = "1".repeat(32)
+        val live = FakeLiveSession(sessionId = sessionId).apply { attachResult = AttachResult.ATTACHED }
+        val dropper = SessionDropper()
+        dropper.adopt(pin, true) { live }
+        val server = Server(
+            { _, _, _ -> error("a join must not found a session") }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
+            { listOf(pin) }, sessions = dropper,
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { join ->
+                join.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 4, "path" to "b2c3d4e5", "join" to sessionId,
+                    "clientId" to "c1", "name" to "MacBook"))))
+                join.getOutputStream().flush()
+                val deadline = System.currentTimeMillis() + 3_000
+                while (live.attachedPlain == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            }
+            val plain = live.attachedPlain ?: error("the join never reached the session")
+            val size = plain.sendBufferSize
+            // Linux reports twice what was set; a socket that was never sized
+            // reports the small autotuning seed instead.
+            assertTrue("the joined path's send buffer is $size bytes", size >= Session.SEND_BUFFER_BYTES)
+            assertTrue("the joined path's send buffer is $size bytes", size <= 2 * Session.SEND_BUFFER_BYTES)
+        } finally {
+            server.stop()
+        }
+    }
+
     private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
         dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
     )
