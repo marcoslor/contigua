@@ -112,6 +112,30 @@ class DarkPanelPolicyTest {
     }
 
     @Test
+    fun `no step after the take-over issues a group wake while the panel is owed off`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)!!
+        assertTrue(
+            "the take-over is the one wake of the episode",
+            DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver),
+        )
+        // The platform's display controller reports the panel on again after
+        // the wake; every following step still owes the panel off and must not
+        // ask for another group wake (the 11-01 step 2 line was a plan, not a
+        // physical flash: SurfaceFlinger stayed OFF).
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        repeat(3) {
+            val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+            assertTrue("the panel-off stays owed", plan.panelOff)
+            assertFalse(
+                "a shared-group step beside a dark panel never wakes the group",
+                DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, plan),
+            )
+        }
+    }
+
+    @Test
     fun `an episode on a lit panel is never taken over`() {
         val p = policy(forced = true)
         p.streamsStarted()
