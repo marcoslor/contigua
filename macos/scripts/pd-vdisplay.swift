@@ -48,14 +48,13 @@ guard let profile = argument("--profile") else {
 let vendorID: UInt32 = 0x5044
 let productID: UInt32 = 0xE2E0
 
-/// The run's screen: 1280x800 at 1x (VirtualDisplay.swift's pointSize). Small on
-/// purpose — the display's pixels are what WindowServer composites and what
-/// colorsync re-profiles every time a display appears or goes away, and the
-/// phone's video is scaled into the window anyway. 1x because nothing in the app
-/// or the checks needs Retina pixels here.
+/// The run's screen: 2240x1260 at 1x — wide and tall enough for the Deck's
+/// wide-window check (a 1960x1100 window; DECK-4/DECK-24), the size the visual
+/// prototype round used. 1x because nothing in the app or the checks needs
+/// Retina pixels here.
 enum Screen {
-    static let width: UInt = 1280
-    static let height: UInt = 800
+    static let width: UInt = 2240
+    static let height: UInt = 1260
     static let scale: UInt = 1
 }
 
