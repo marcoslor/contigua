@@ -7,19 +7,24 @@ package dev.pocketdeck.server
  * Some vendor encoders stop honouring `KEY_REPEAT_PREVIOUS_FRAME_AFTER` on a
  * still screen: the field phone's codec left its running state after ~15 s of
  * stillness and sent nothing, so the Mac's WIN-17 called a healthy window "Not
- * responding" at 1.5 s. After [IDLE_MS] without an output buffer this machine
- * asks the encoder for a sync frame through the existing
- * `PARAMETER_KEY_REQUEST_SYNC_FRAME` call, and asks again once a second while
- * the silence lasts, so a still screen keeps producing frames.
+ * responding" at 1.5 s. A sync-frame request cannot fix that: the encoder
+ * applies it to its next input frame and a static surface submits none.
+ *
+ * So after [IDLE_MS] without an encoder output buffer this machine tells the
+ * Mac the stream is alive with `{"t":"window.still","stream":N}`, and says it
+ * again once a second while the silence lasts. The message goes out from the
+ * stream's own drain loop, so it proves that loop and the session are alive; it
+ * is based on encoder output, never on sent frames, so a backlogged socket
+ * produces none.
  *
  * A paused or covered stream sends nothing on purpose (the Mac's occlusion rule
  * sends `window.pause`), so it is idle here; a closed one stops for good. A
- * genuinely stuck encoder produces nothing even for a sync request, and the
- * Mac's rule then fires as it should.
+ * stuck encoder or a stuck drain loop produces neither frames nor `still`, and
+ * the Mac's rule then fires as it should.
  *
  * One machine: [IdleFrameWatchdogState] plus the pure
  * [idleFrameWatchdogTransition]. Timestamps come from the caller (the drain
- * thread's clock), so a JVM test can drive a fake codec without MediaCodec.
+ * thread's clock), so a JVM test can drive a fake drain without MediaCodec.
  */
 internal enum class IdleFrameWatchdogState {
     /** Nothing to watch: before the first attach, or paused/covered. */
@@ -28,10 +33,10 @@ internal enum class IdleFrameWatchdogState {
     /** Live, and a frame arrived less than [IDLE_MS] ago. */
     Armed,
 
-    /** Live, a sync frame was asked for, and nothing has arrived since. */
-    Requested,
+    /** Live and silent: the stream is telling the Mac it is still there. */
+    Still,
 
-    /** The stream closed: nothing is ever asked for again. */
+    /** The stream closed: nothing is ever sent again. */
     Closed,
     ;
 
@@ -53,7 +58,7 @@ internal sealed interface IdleFrameWatchdogEvent {
         override val wire: String get() = "frame"
     }
 
-    /** The drain loop's poll. The only event that can ask for a frame. */
+    /** The drain loop's poll. The only event that can send a `still`. */
     data class Tick(val nowMs: Long) : IdleFrameWatchdogEvent {
         override val wire: String get() = "tick"
     }
@@ -73,18 +78,16 @@ internal sealed interface IdleFrameWatchdogEvent {
 }
 
 internal sealed interface IdleFrameWatchdogAction {
-    /** `setParameters(PARAMETER_KEY_REQUEST_SYNC_FRAME)`. */
-    data object RequestSyncFrame : IdleFrameWatchdogAction
+    /** Send `{"t":"window.still","stream":N}` on the session. */
+    data object SendStill : IdleFrameWatchdogAction
 }
 
 internal data class IdleFrameWatchdogModel(
     val state: IdleFrameWatchdogState = IdleFrameWatchdogState.Idle,
-    /** When the silence has lasted long enough to ask (or ask again). */
+    /** When the silence has lasted long enough to send a `still` again. */
     val dueMs: Long = 0L,
-    /** Sync frames asked for while the encoder stayed silent. */
-    val requests: Int = 0,
-    /** Keyframes that answered a request: the idle-screen cost, a fact. */
-    val idleFrames: Int = 0,
+    /** `still` messages sent while the encoder stayed silent. */
+    val stills: Int = 0,
 )
 
 internal data class IdleFrameWatchdogTransition(
@@ -92,14 +95,13 @@ internal data class IdleFrameWatchdogTransition(
     val actions: List<IdleFrameWatchdogAction>,
 )
 
-/** How long a live stream may stay silent before it asks for a frame. */
+/** How long a live stream may stay silent before it says it is still. */
 internal const val IDLE_MS = 1_000L
 
 /**
  * The one pure rule. Every state accepts every event, including the ones it
- * ignores, and nothing here touches the encoder: the caller performs the
- * actions. A frame in [IdleFrameWatchdogState.Requested] is counted as an idle
- * keyframe, which is how the emulator proof reads the cost of a still screen.
+ * ignores, and nothing here touches the session: the caller performs the
+ * actions.
  */
 internal fun idleFrameWatchdogTransition(
     model: IdleFrameWatchdogModel,
@@ -107,22 +109,18 @@ internal fun idleFrameWatchdogTransition(
 ): IdleFrameWatchdogTransition {
     fun ignored() = IdleFrameWatchdogTransition(model, emptyList())
 
-    fun arm(nowMs: Long, idleFrame: Boolean = false) = IdleFrameWatchdogTransition(
-        model.copy(
-            state = IdleFrameWatchdogState.Armed,
-            dueMs = nowMs + IDLE_MS,
-            idleFrames = model.idleFrames + if (idleFrame) 1 else 0,
-        ),
+    fun arm(nowMs: Long) = IdleFrameWatchdogTransition(
+        model.copy(state = IdleFrameWatchdogState.Armed, dueMs = nowMs + IDLE_MS),
         emptyList(),
     )
 
-    fun request(nowMs: Long) = IdleFrameWatchdogTransition(
+    fun sayStill(nowMs: Long) = IdleFrameWatchdogTransition(
         model.copy(
-            state = IdleFrameWatchdogState.Requested,
+            state = IdleFrameWatchdogState.Still,
             dueMs = nowMs + IDLE_MS,
-            requests = model.requests + 1,
+            stills = model.stills + 1,
         ),
-        listOf(IdleFrameWatchdogAction.RequestSyncFrame),
+        listOf(IdleFrameWatchdogAction.SendStill),
     )
 
     return when (model.state) {
@@ -137,17 +135,17 @@ internal fun idleFrameWatchdogTransition(
         IdleFrameWatchdogState.Armed -> when (event) {
             is IdleFrameWatchdogEvent.Frame -> arm(event.nowMs)
             is IdleFrameWatchdogEvent.Tick ->
-                if (event.nowMs >= model.dueMs) request(event.nowMs) else ignored()
+                if (event.nowMs >= model.dueMs) sayStill(event.nowMs) else ignored()
             IdleFrameWatchdogEvent.Pause -> IdleFrameWatchdogTransition(model.copy(state = IdleFrameWatchdogState.Idle), emptyList())
             is IdleFrameWatchdogEvent.Resume -> arm(event.nowMs)
             IdleFrameWatchdogEvent.Close -> IdleFrameWatchdogTransition(model.copy(state = IdleFrameWatchdogState.Closed), emptyList())
             is IdleFrameWatchdogEvent.Live -> ignored()
         }
 
-        IdleFrameWatchdogState.Requested -> when (event) {
-            is IdleFrameWatchdogEvent.Frame -> arm(event.nowMs, idleFrame = event.keyframe)
+        IdleFrameWatchdogState.Still -> when (event) {
+            is IdleFrameWatchdogEvent.Frame -> arm(event.nowMs)
             is IdleFrameWatchdogEvent.Tick ->
-                if (event.nowMs >= model.dueMs) request(event.nowMs) else ignored()
+                if (event.nowMs >= model.dueMs) sayStill(event.nowMs) else ignored()
             IdleFrameWatchdogEvent.Pause -> IdleFrameWatchdogTransition(model.copy(state = IdleFrameWatchdogState.Idle), emptyList())
             is IdleFrameWatchdogEvent.Resume -> arm(event.nowMs)
             IdleFrameWatchdogEvent.Close -> IdleFrameWatchdogTransition(model.copy(state = IdleFrameWatchdogState.Closed), emptyList())
