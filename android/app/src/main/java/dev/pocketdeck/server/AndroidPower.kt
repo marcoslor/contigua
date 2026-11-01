@@ -451,7 +451,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
         if (plan != lastPlan || panelOn != lastPanelOn) {
-            log("power: panel ${DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))} -> $plan")
+            // While our override is live the platform's own state is not the
+            // panel's: the display controller still believes the group is on
+            // (that is what the wake did), while SurfaceFlinger shows OFF. Say
+            // which one this line is, so a field log does not read as a flash.
+            val shown = if (darkEpisode) "held off" else DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))
+            log("power: panel $shown -> $plan")
             lastPlan = plan
             lastPanelOn = panelOn
         }
