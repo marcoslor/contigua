@@ -6,6 +6,10 @@ import Foundation
 enum DockMessage {
     /// Shim → host: open or focus this app's window. userInfo: deviceId, pkg, pid.
     static let open = Notification.Name("dev.pocketdeck.dock.open")
+    /// Shim → host (automatic path): the shim is listening and its window is
+    /// already open. userInfo: deviceId, pkg, pid, token. The host answers a
+    /// bound pid with `opened`; an unbound one is answered by its own bind.
+    static let ready = Notification.Name("dev.pocketdeck.dock.ready")
     /// Host → shim: the request arrived. userInfo: pid.
     static let opened = Notification.Name("dev.pocketdeck.dock.opened")
     /// Host → shim: the window is gone; the shim exits. userInfo: pid.
@@ -27,6 +31,10 @@ enum DockMessage {
     static let plistHostPath = "PDHostPath"
     /// A random per-bundle token, written when the bundle is built.
     static let plistToken = "PDToken"
+    /// e2e only: hold the shim's observer registration back that many seconds,
+    /// the way a slow launch does. Written only when the host is given
+    /// `--dock-debug-listen-delay` in a build with the test hooks.
+    static let plistListenDelay = "PDListenDelay"
     /// Why the bundle exists (docs/design/dock.md §Shortcuts): an array of
     /// `dock`, `manual`, `all`, `window`. Written by every current build.
     static let plistOrigins = "PDOrigins"

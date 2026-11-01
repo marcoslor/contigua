@@ -8039,6 +8039,61 @@ check_dock() {
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
     remove_dock_apps
 
+    # A slow shim registers its observers after the host bound it
+    # (--dock-debug-listen-delay, written into the bundle as PDListenDelay). The
+    # bind's one `opened` is gone by then, so the shim must say it is listening
+    # and be answered (docs/design/dock.md §Launch → window). While that answer
+    # was lost, the shim quit at 30 s and closed the window with it.
+    local ack_opens ack_closes ack_windows ack_started ack_pid ack_dump ack_ms
+    ack_opens="$(window_open_count "$pkg")"
+    ack_closes="$(window_close_count)"
+    ack_started="$(date +%s)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --dock-debug-listen-delay 2 --quit-after 60
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$ack_opens" ]' \
+        && ok "[DOCK-17] dock ack: window.open arrived for $pkg" \
+        || { bad "[DOCK-17] dock ack: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 30 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-17] dock ack: the late-listening shim runs" \
+        || { bad "[DOCK-17] dock ack: the shim never ran"; stop_app; stop_fakephone; return 1; }
+    ack_pid="$(dock_shim_pids | head -1)"
+    ack_windows="$(windows | wc -l | tr -d ' ')"
+    while [ $(( $(date +%s) - ack_started )) -lt 40 ]; do sleep 1; done
+    if [ -n "$ack_pid" ] && kill -0 "$ack_pid" 2>/dev/null; then
+        ok "[DOCK-17] dock ack: the shim is alive 40 s after launch (pid $ack_pid)"
+    else
+        bad "[DOCK-17] dock ack: the shim quit before 40 s (pid ${ack_pid:-none}; launched at $ack_started, checked at $(date +%s))"
+    fi
+    [ "$(window_close_count)" = "$ack_closes" ] \
+        && ok "[DOCK-17] dock ack: the window is still open at 40 s" \
+        || bad "[DOCK-17] dock ack: the window closed at $(date +%s) (launched at $ack_started, $(( $(window_close_count) - ack_closes )) window.close sent)"
+    [ "$(windows | wc -l | tr -d ' ')" -ge "$ack_windows" ] \
+        && ok "[DOCK-17] dock ack: the app still has its window" \
+        || bad "[DOCK-17] dock ack: a window disappeared ($ack_windows -> $(windows | wc -l | tr -d ' '))"
+    # Read the whole dump first: under pipefail, grep -q closing the pipe early fails the pipeline.
+    ack_dump="$(log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null)"
+    if [ -n "$ack_pid" ] && grep -qF "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump"; then
+        bad "[DOCK-17] dock ack: the host closed the shim's stream (shim $ack_pid quit)"
+        grep -F "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump" | tail -1 | sed 's/^/  /'
+    else
+        ok "[DOCK-17] dock ack: no 'shim quit; closing stream' for it"
+    fi
+    # The handshake lands at once: the shim logs how long after listening it was bound.
+    ack_dump="$(log show --last 3m --info --predicate 'process == "PocketDeckShim"' 2>/dev/null)"
+    ack_ms="$(grep -oE "dock shim $ack_pid bound, [0-9]+ ms after listening" <<< "$ack_dump" \
+        | head -1 | grep -oE '[0-9]+ ms' | tr -dc '0-9')"
+    if [ -n "$ack_ms" ] && [ "$ack_ms" -le 1500 ]; then
+        ok "[DOCK-17] dock ack: bound $ack_ms ms after listening"
+    else
+        bad "[DOCK-17] dock ack: no bind within 1.5 s of listening (${ack_ms:-no log line})"
+    fi
+    stop_app
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-17] dock ack: quitting the app leaves no shim behind" \
+        || bad "[DOCK-17] dock ack: a shim survived the app"
+    remove_dock_apps
+
     # The race, made deterministic (reviewer 10-30): a window that closes before
     # its identity finishes launching. The pending work is dropped, so no shim is
     # ever built for a stream that is gone (docs/design/dock.md §Lifecycle).
