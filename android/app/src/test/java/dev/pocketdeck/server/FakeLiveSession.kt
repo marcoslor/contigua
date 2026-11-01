@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
  */
 internal class FakeLiveSession(
     private val gate: CountDownLatch = CountDownLatch(0),
+    private val sessionId: String? = null,
 ) : LiveSession {
     val closeStarted = CountDownLatch(1)
 
@@ -24,10 +25,18 @@ internal class FakeLiveSession(
 
     override val isReady: Boolean get() = !closed
 
-    override val pathSessionId: String? get() = null
+    override val pathSessionId: String? get() = sessionId
 
-    override fun attachPath(pathId: String, socket: java.net.Socket, plain: java.net.Socket): AttachResult =
-        AttachResult.NO_SESSION
+    /** What a join gets; [attachedPlain] records the socket it arrived on. */
+    var attachResult: AttachResult = AttachResult.NO_SESSION
+
+    @Volatile
+    var attachedPlain: java.net.Socket? = null
+
+    override fun attachPath(pathId: String, socket: java.net.Socket, plain: java.net.Socket): AttachResult {
+        attachedPlain = plain
+        return attachResult
+    }
 
     override fun close() {
         closeStarted.countDown()

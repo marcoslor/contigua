@@ -574,14 +574,9 @@ class Session(
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
         try {
             socket.tcpNoDelay = true
-            // The protocol promises at most ~250 ms of queued video per stream.
-            // Without a bound the kernel (and any forwarder on the path) happily
-            // buffers megabytes, the send queue never fills and the drop rule
-            // never fires; 128 KB is still far above a LAN's bandwidth-delay
-            // product, so throughput is unaffected.
-            runCatching { socket.sendBufferSize = SEND_BUFFER_BYTES }
-            // The handshake reads only the hello: after welcome the path layer's
-            // reader owns every byte (docs/design/paths.md §3).
+            // E-1/RRR-2: the send buffer is sized once, in Server.serve, for
+            // the founder and every join (the raw socket under this one), so
+            // the protocol's ~250 ms of queued video holds on every path.
             socket.soTimeout = handshakeTimeoutMs
             // A provisional name so a refusal before the hello still reaches the
             // peer; the hello's own `path` renames it (PATH-1).

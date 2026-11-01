@@ -212,6 +212,15 @@ class Server(
             // failure never fails the session.
             val keepalive = TcpKeepalive.apply(rawSocket)
             log(if (keepalive == 0) "keepalive on" else "keepalive failed errno=$keepalive")
+            // E-1/RRR-2: every path socket — the founder's and every join's —
+            // gets the same send buffer. Without it a joined path keeps the
+            // kernel's autotuned MiBs, so the lossy cap fires seconds late and
+            // video sits ahead of window.content after a failover.
+            val sendBuffer = runCatching {
+                rawSocket.sendBufferSize = Session.SEND_BUFFER_BYTES
+                rawSocket.sendBufferSize
+            }.getOrDefault(0)
+            log("send buffer $sendBuffer bytes")
             val peerMac = peerMacHex(socket)
             val pinned = isPinned(peerMac)
             // The hello decides a join (PATH-3): TLS is the only authentication,
