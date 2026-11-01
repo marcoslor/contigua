@@ -656,7 +656,7 @@ class ServerTest {
                     "clientId" to "c1", "name" to "MacBook"))))
                 join.getOutputStream().flush()
                 val deadline = System.currentTimeMillis() + 3_000
-                while (live.attachedPlain == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+                while (live.attachedPlain == null && System.currentTimeMillis() < deadline) Thread.sleep(5) // real-time: the join is attached on the server's handshake thread
             }
             val plain = live.attachedPlain ?: error("the join never reached the session")
             val size = plain.sendBufferSize
