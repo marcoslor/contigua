@@ -386,7 +386,10 @@ cover it); with two or more, every path — the standby included — is pinged e
 2 s while the phone's screen is on or a transfer runs, and every 15 s otherwise.
 RTT p50/p95 and loss over the last 30 s; the score is a pure function of those
 numbers plus the provider's throughput class; only the Mac decides. A path that
-keeps receiving frames is alive even when a pong is late (D-2).
+keeps receiving frames is alive even when a pong is late (D-2). A pong that
+arrives within **1 s** of that path carrying bulk in either direction is a
+liveness signal only: it queued behind that bulk, so it measures the queue, not
+the link, and is never a ranking sample (E-8).
 
 ### 7.1 The score
 
@@ -467,7 +470,7 @@ State carries the current path, each path's 30 s window, and the live set.
 | `Steady(cur)` | `CurrentFailed(cur)` | `Steady(best live)` + `Switch(best)`; `Idle` + `SessionOrphan` when none is live |
 | `Steady(cur)` | `PathDown(cur)` | as `CurrentFailed` |
 | `Steady(cur)` | `PathDown(other)` | stay |
-| `Challenging(cur, b, since)` | `Tick`, still `score(b) ≥ score(cur) + 100` and `now − since ≥ 5 s` | `Steady(b)` + `Switch(b)` |
+| `Challenging(cur, b, since)` | `Tick`, still `score(b) ≥ score(cur) + 100` and `now − since ≥ 5 s` | `Steady(b)` + `Switch(b)`, unless a planned switch ran less than **30 s** ago: then stay `Challenging` (E-8's hold) |
 | `Challenging(cur, b, since)` | `Tick`, the gap fell below 100, or `b` left, or `cur` changed | `Steady(cur)` (the 5 s starts over next time) |
 | `Challenging(cur, b, since)` | `CurrentFailed(cur)` | `Steady(best live)` + `Switch(best)` at once (no hysteresis on a failure) |
 | `Challenging` | `PathDown(b)` | `Steady(cur)` |
@@ -488,6 +491,7 @@ one that sends `path.switch`.
 | rejoin dial | reconnect backoff **1, 2, 4, 8, 15 s**, inside the 30 s grace | Mac | D3 |
 | sample window | **30 s** (≤ 15 samples) | both | D5 |
 | switch hysteresis | **5 s** at the margin | Mac acts; both compute | D5 |
+| planned-switch hold | **30 s** per session between planned (margin) switches; failovers and demotes are never held | Mac acts; the ranking holds | E-8 |
 | orphan grace | **30 s** with no path before the session ends | both | D4 |
 
 Implementation constants (named so they are not mistaken for decisions): ACK
