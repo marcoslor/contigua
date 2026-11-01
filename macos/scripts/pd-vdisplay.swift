@@ -48,13 +48,13 @@ guard let profile = argument("--profile") else {
 let vendorID: UInt32 = 0x5044
 let productID: UInt32 = 0xE2E0
 
-/// The run's screen: 2240x1260 at 1x — wide and tall enough for the Deck's
-/// wide-window check (a 1960x1100 window; DECK-4/DECK-24), the size the visual
-/// prototype round used. 1x because nothing in the app or the checks needs
-/// Retina pixels here.
+/// The run's screen: 2240x1170 at 1x — wide and tall enough for the Deck's
+/// wide-window check (a 1960x1100 content window; DECK-4/DECK-24), the size the
+/// visual prototype round drew. 1x because nothing in the app or the checks
+/// needs Retina pixels here.
 enum Screen {
     static let width: UInt = 2240
-    static let height: UInt = 1260
+    static let height: UInt = 1170
     static let scale: UInt = 1
 }
 
