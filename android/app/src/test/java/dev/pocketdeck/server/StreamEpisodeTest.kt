@@ -118,4 +118,12 @@ class StreamEpisodeTest {
         assertEquals(emptyList<EpisodeAction>(), opened(m, emptySet()))
         assertEquals(EpisodePhase.IDLE, m.state.phase)
     }
+
+    @Test
+    fun `a first set that is already covered is not an episode start`() {
+        val m = machine()
+        val actions = opened(m, setOf(a), allPaused = true)
+        assertFalse("a covered set must not take the phone over", actions.contains(EpisodeAction.Start))
+        assertEquals(EpisodePhase.PAUSED, m.state.phase)
+    }
 }
