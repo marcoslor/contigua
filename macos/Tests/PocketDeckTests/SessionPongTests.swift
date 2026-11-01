@@ -71,7 +71,7 @@ extension SessionPongTests {
     /// bulk transfer in the last 2 s. A streamed app window with the screen off
     /// still has to keep the 2 s path ping: the session's failure detection
     /// must not fall to the 15 s idle interval.
-    func testAnOpenStreamWithTheScreenOffKeepsTheFastPing() throws {
+    func testAnOpenStreamWithTheScreenOffKeepsTheFastPingUntilThePhoneClosesIt() throws {
         server = try FakeServer(phoneIdentity: phoneIdentity,
                                 trustingClientPem: macIdentity.identity.certPem)
         let brain = FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "phone-1")
@@ -146,6 +146,15 @@ extension SessionPongTests {
         let after = { () -> Int in lock.lock(); defer { lock.unlock() }; return pings }()
         XCTAssertGreaterThan(after - before, 0,
                              "an open stream with the screen off sent no 2 s path.ping")
+        // RRR-5: the phone ended the stream. It is no longer activity, so the
+        // fast ping stops (the Mac's open set used to keep it for the session).
+        current?.sendJSON(["t": "window.closed", "stream": 1, "reason": "app_exit"])
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 2.5))  // the ping already in flight
+        let closedAt = { () -> Int in lock.lock(); defer { lock.unlock() }; return pings }()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 4))
+        let later = { () -> Int in lock.lock(); defer { lock.unlock() }; return pings }()
+        XCTAssertEqual(later, closedAt,
+                       "a stream the phone closed still kept the 2 s path.ping")
         session.closeAndWait()
     }
 }
