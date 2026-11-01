@@ -184,7 +184,7 @@ class PathHubWriteTest {
             val switchedAt = System.nanoTime()
             hub.followSwitch("bbbb0002", "bbbb0002")
             val deadline = switchedAt + 200_000_000L
-            while (System.nanoTime() < deadline && !hasVideoFrame(standby)) Thread.sleep(2)
+            while (System.nanoTime() < deadline && !hasVideoFrame(standby)) Thread.sleep(2) // real-time: the next frame is written on the new path's writer thread
             assertTrue(
                 "no video frame reached the new path within 200 ms (sent ${sent.get()})",
                 hasVideoFrame(standby),
@@ -210,7 +210,7 @@ class PathHubWriteTest {
             } else if (System.currentTimeMillis() - since >= 100) {
                 return now
             }
-            Thread.sleep(5)
+            Thread.sleep(5) // real-time: sampling a counter the writer thread moves
         }
         return -1
     }
