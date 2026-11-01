@@ -2,16 +2,23 @@
 # Two app windows on a locked, screen-off phone: covering one and closing the
 # other must not end the episode or turn the remaining display off (CTRL-14),
 # no keep-alive step may light the panel (CTRL-15), and the take-over's lit
-# window stays short. ONE boot (docs/specs/controls.md, docs/PROTOCOL.md
-# "Phone screen").
+# window stays short (CTRL-16). ONE boot (docs/specs/controls.md,
+# docs/PROTOCOL.md "Phone screen").
 #
 #   bash tools/emulator/locked-multi.sh            the run (heavy.sh owns the
 #                                                 lock and the boot budget)
 #   bash tools/emulator/locked-multi.sh --no-boot  the same checks on a rig that
 #                                                 is already up and paired
+#   bash tools/emulator/locked-multi.sh --before <apk> --after <apk>
+#                                                 one boot, two phases: BEFORE
+#                                                 (the unfixed build) must fail
+#                                                 the episode rules, AFTER must
+#                                                 pass; both results are logged
 #   bash tools/emulator/locked-multi.sh --check    a dry run: syntax, the driver,
 #                                                 the parser's fixtures, the
-#                                                 serial and the budget — no device
+#                                                 APKs, the serial and the
+#                                                 budget, and the boot sequence
+#   bash tools/emulator/locked-multi.sh --dry-run  the same as --check
 #
 # Run it as `bash tools/emulator/locked-multi.sh` (the exec bit is not relied on).
 #
@@ -26,19 +33,35 @@
 #       at most 350 ms (the field log: 639 ms);
 #   (d) the phone is still locked afterwards (WIN-20).
 # The evidence is the dumps and the app's own lines, never pixels. Results go to
-# .agent/locked-multi/locked-multi.log. It never touches a phone but $SERIAL.
+# .agent/locked-multi/locked-multi*.log. It never touches a phone but $SERIAL.
 set -u
 
 MODE=run
 BOOT=1
-for arg in "$@"; do
-  case "$arg" in
-    --check) MODE=check ;;
+BEFORE_APK=""
+AFTER_APK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check|--dry-run) MODE=check ;;
     --no-boot) BOOT=0 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
-    *) echo "locked-multi.sh: unknown flag $arg" >&2; exit 2 ;;
+    --before)
+      [ $# -ge 2 ] || { echo "locked-multi.sh: --before needs an APK" >&2; exit 2; }
+      BEFORE_APK="$2"; shift ;;
+    --after)
+      [ $# -ge 2 ] || { echo "locked-multi.sh: --after needs an APK" >&2; exit 2; }
+      AFTER_APK="$2"; shift ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    *) echo "locked-multi.sh: unknown flag $1" >&2; exit 2 ;;
   esac
+  shift
 done
+AB=0
+if [ -n "$BEFORE_APK" ] || [ -n "$AFTER_APK" ]; then
+  [ -n "$BEFORE_APK" ] && [ -n "$AFTER_APK" ] ||
+    { echo "locked-multi.sh: --before and --after go together" >&2; exit 2; }
+  [ "$BOOT" -eq 1 ] || { echo "locked-multi.sh: --before/--after own the boot (no --no-boot)" >&2; exit 2; }
+  AB=1
+fi
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
@@ -53,26 +76,107 @@ mkdir -p "$POCKETDECK_AGENT_DIR"
 . tools/emulator/lib.sh
 
 OUT="$POCKETDECK_AGENT_DIR"
-RESULT="$OUT/locked-multi.log"
-PD_INSTALL_LOG="$OUT/install-failure.log"
-export PD_INSTALL_LOG
-SESSION="$OUT/locked-multi-session.log"
-LOGCAT="$OUT/locked-multi-logcat.txt"
-DRIVER="$REPO_ROOT/tools/emulator/locked-multi.py"
-READER="$REPO_ROOT/tools/emulator/locked-multi-read.py"
 APK="${POCKETDECK_APK:-$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
 STATE="$CACHE_DIR/deckctl-state-locked-multi.json"
 LIMIT_MS=350
-FAILED=0
-pass() { echo "PASS locked-multi: $*"; }
-fail() { echo "FAIL locked-multi: $*"; FAILED=1; }
+
+# --- the boot and service helpers -------------------------------------------
+SHIZUKU_PKG=moe.shizuku.privileged.api
+shizuku_pid() {
+  emu shell "ps -A -o PID,NAME 2>/dev/null | grep -w shizuku_server" 2>/dev/null |
+    awk '{print $1}' | tr -d '\r' | tr '\n' ' '
+}
+
+# The starter is the rig's documented adb entry point; it kills any old server
+# and forks app_process as the adb shell user. A cold boot's first fork can die
+# (boot 1: start.sh's own start found no server), so try it again.
+start_shizuku() {
+  local code_path abi starter i
+  [ -n "$(shizuku_pid)" ] && return 0
+  code_path="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
+    sed -n 's/.*codePath=//p' | head -1 | tr -d '\r')"
+  if [ -z "$code_path" ] && [ -s "$CACHE_DIR/shizuku.apk" ]; then
+    step "installing the cached Shizuku manager"
+    emu install -r -g "$CACHE_DIR/shizuku.apk" >/dev/null 2>&1 || true
+    code_path="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
+      sed -n 's/.*codePath=//p' | head -1 | tr -d '\r')"
+  fi
+  abi="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')"
+  case "$abi" in
+    arm64-v8a) abi=arm64 ;;
+    armeabi-v7a) abi=arm ;;
+  esac
+  starter="$code_path/lib/$abi/libshizuku.so"
+  emu shell "test -x $starter" 2>/dev/null || { echo "locked-multi: no Shizuku starter at $starter" >&2; return 1; }
+  for i in 1 2 3; do
+    step "starting the Shizuku server (try $i)"
+    emu shell "$starter" >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+      [ -n "$(shizuku_pid)" ] && return 0
+      sleep 1
+    done
+    sleep 2
+  done
+  return 1
+}
+
+# The shell service binds only while Shizuku's server runs: start it, then let
+# restart_server relaunch the app and wait for the port.
+ensure_service() {
+  local i
+  start_shizuku || true
+  for i in 1 2 3; do
+    if restart_server; then return 0; fi
+    start_shizuku || true
+    sleep 3
+  done
+  return 1
+}
+
+set_props() {
+  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
+  emu shell setprop debug.pocketdeck.vd_panel_group 1 >/dev/null 2>&1 || true
+  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ] \
+    || [ "$(emu shell getprop debug.pocketdeck.vd_panel_group | tr -d '\r')" != "1" ]; then
+    echo "locked-multi: the debug properties did not stick" >&2
+    return 1
+  fi
+}
+
+# Installs one APK and restarts the shell service *after* the properties are
+# set, then proves the running server built the forced policy.
+prepare_apk() { # prepare_apk <apk>
+  local apk="$1" init
+  step "installing $(basename "$apk")"
+  emu_long install -r -d -g "$apk" >/dev/null 2>&1 ||
+    { echo "locked-multi: $apk would not install (unverified)" >&2; return 1; }
+  # Clear the log before the restart so the forced init line below is this
+  # server's, never a previous one's.
+  emu logcat -c >/dev/null 2>&1 || true
+  emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+  sleep 1
+  set_props || return 1
+  ensure_service || { echo "locked-multi: the shell service did not come back" >&2; return 1; }
+  init="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+    grep 'power: panel power control' | tail -1 | tr -d '\r')"
+  case "$init" in
+    *"forcing the panel-dark path"*) echo "locked-multi: init: $init" ;;
+    *)
+      echo "locked-multi: the server did not start forced (init: ${init:-none})" >&2
+      return 1
+      ;;
+  esac
+  ensure_forward >/dev/null
+}
 
 # --- rehearsal --------------------------------------------------------------
 if [ "$MODE" = check ]; then
   rc=0
   bash -n "$0" || { echo "CHECK FAIL: bash -n $0"; rc=1; }
-  "$PYTHON" -m py_compile "$DRIVER" "$READER" || { echo "CHECK FAIL: py_compile"; rc=1; }
-  "$PYTHON" "$READER" --self-test || { echo "CHECK FAIL: reader self-test"; rc=1; }
+  "$PYTHON" -m py_compile "$REPO_ROOT/tools/emulator/locked-multi.py" \
+    "$REPO_ROOT/tools/emulator/locked-multi-read.py" || { echo "CHECK FAIL: py_compile"; rc=1; }
+  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --self-test ||
+    { echo "CHECK FAIL: reader self-test"; rc=1; }
   "$PYTHON" - <<PY || { echo "CHECK FAIL: deckctl import"; rc=1; }
 import sys
 sys.path.insert(0, "$REPO_ROOT/tools/fakephone")
@@ -81,11 +185,21 @@ assert hasattr(deckctl, "open_session") and hasattr(deckctl, "StreamRecorder")
 assert hasattr(proto, "pack_touch")
 print("CHECK OK: deckctl + proto symbols")
 PY
-  [ -s "$APK" ] || { echo "CHECK FAIL: no debug APK at $APK (run K1 assembleDebug)"; rc=1; }
+  if [ "$AB" -eq 1 ]; then
+    for apk in "$BEFORE_APK" "$AFTER_APK"; do
+      [ -s "$apk" ] || { echo "CHECK FAIL: no APK at $apk"; rc=1; }
+    done
+  else
+    [ -s "$APK" ] || { echo "CHECK FAIL: no debug APK at $APK (run K1 assembleDebug)"; rc=1; }
+  fi
   [ -x "$ADB" ] || { echo "CHECK FAIL: no adb at $ADB"; rc=1; }
   [ -x "$EMULATOR" ] || { echo "CHECK FAIL: no emulator at $EMULATOR"; rc=1; }
   PD_PREFLIGHT_DRY_RUN=1 bash "$EMU_DIR/preflight.sh" || { echo "CHECK FAIL: preflight"; rc=1; }
-  echo "--- budget: $(cat "$HOME/dev/pocketdeck/.agent/budgets/locked-multi" 2>/dev/null | tr '\n' ' ') ---"
+  echo "--- the boot sequence ---"
+  echo "start.sh --no-build; set force_panel_off + vd_panel_group; install the APK;"
+  echo "pkill the shell service; ensure Shizuku; restart_server; prove the forced init;"
+  echo "(pair with the rig PIN on a boot); lock.sh; run the driver; read the dumps + logcat."
+  echo "--- budget: $(tr '\n' ' ' < "$HOME/dev/pocketdeck/.agent/budgets/locked-multi" 2>/dev/null) ---"
   echo "--- boots already in the ledger for locked-multi: $(ledger_boots /tmp/pocketdeck-boots.ledger locked-multi) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
@@ -110,52 +224,22 @@ trap 'kill_emulator' EXIT
 
 if [ "$BOOT" -eq 1 ]; then
   echo "locked-multi: booting $SERIAL (one boot budget)"
-  if ! bash tools/emulator/start.sh --no-build; then
-    echo "locked-multi: start.sh failed; restarting the shell service"
-    if ! restart_server; then
-      echo "locked-multi: the shell service never came up (unverified)"
-      { echo "failed: 1 (start)"; cat "$PD_INSTALL_LOG" 2>/dev/null; } > "$RESULT"
-      exit 1
-    fi
-  fi
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  emu shell setprop debug.pocketdeck.vd_panel_group 1 >/dev/null 2>&1 || true
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ] \
-    || [ "$(emu shell getprop debug.pocketdeck.vd_panel_group | tr -d '\r')" != "1" ]; then
-    fail "the debug properties did not stick"
-  fi
+  # start.sh can die before its own property step (boot 1: the Shizuku server's
+  # first fork did not survive). Its failure is not fatal here: the properties,
+  # the service restart and the pairing below are the ones this check needs.
+  bash tools/emulator/start.sh --no-build || \
+    echo "locked-multi: start.sh did not finish; recovering with its pieces"
+  set_props || { echo "locked-multi: the forced-panel property is not set"; exit 1; }
+  start_shizuku || true
 else
   device_present || { echo "locked-multi: $SERIAL is not up (--no-boot needs a booted, paired rig)"; exit 1; }
 fi
 
-# The APK must be this tree's build: a previous boot's install survives in the
-# AVD's userdata, and start.sh skips an installed package (a stale server would
-# answer with the old code and prove nothing).
-if [ ! -s "$APK" ]; then
-  echo "locked-multi: no debug APK at $APK (run K1 assembleDebug)"; exit 1
+if [ "$AB" -eq 1 ]; then
+  prepare_apk "$BEFORE_APK" || { echo "locked-multi: the BEFORE APK never came up (unverified)"; exit 1; }
+else
+  prepare_apk "$APK" || { echo "locked-multi: the APK never came up (unverified)"; exit 1; }
 fi
-step "installing this tree's APK"
-if ! emu_long install -r -d -g "$APK" >/dev/null 2>&1; then
-  echo "locked-multi: the APK would not install (unverified)"
-  { echo "failed: 1 (install)"; } > "$RESULT"
-  exit 1
-fi
-# A reinstall leaves the Shizuku shell service alive on the old build; kill it
-# and restart so the running server is the one just installed.
-emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
-sleep 1
-restart_server || { echo "locked-multi: the shell service did not come back (unverified)"; exit 1; }
-INIT_LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
-  grep 'power: panel power control' | tail -1 | tr -d '\r')"
-case "$INIT_LINE" in
-  *"forcing the panel-dark path"*) echo "locked-multi: init: $INIT_LINE" ;;
-  *)
-    echo "locked-multi: the server did not start forced (init: ${INIT_LINE:-none})"
-    { echo "failed: 1 (not-forced)"; echo "init: ${INIT_LINE:-none}"; } > "$RESULT"
-    exit 1
-    ;;
-esac
-ensure_forward >/dev/null || { echo "locked-multi: no server port after restart"; exit 1; }
 
 if [ "$BOOT" -eq 1 ]; then
   bash "$EMU_DIR/unlock.sh" >/dev/null 2>&1 || true
@@ -168,127 +252,159 @@ if [ "$BOOT" -eq 1 ]; then
   echo "locked-multi: up and paired"
 fi
 
-# --- locked, screen off -----------------------------------------------------
-echo "locked-multi: locking the emulator (PIN + screen off)"
-bash "$EMU_DIR/lock.sh" || { fail "could not lock the emulator"; }
-emu shell dumpsys window > "$OUT/window-before.txt" 2>/dev/null || true
-if ! grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$OUT/window-before.txt"; then
-  fail "the keyguard is not showing before the run"
-fi
-WAKE_STATE="$(emu shell dumpsys power 2>/dev/null | grep -m1 'mWakefulness=' | tr -d '\r' | sed 's/.*mWakefulness=//')"
-case "$WAKE_STATE" in
-  Asleep|Dozing) ;;
-  *) fail "the screen is not off before the run (mWakefulness=${WAKE_STATE:-none})" ;;
-esac
+# --- one phase: lock, run, read ---------------------------------------------
+run_phase() { # run_phase <label> <apk> <dir> <result> <session> <logcat>
+  local label="$1" apk="$2" dir="$3" result="$4" session="$5" logcat="$6"
+  local display1 display2 state_one state_two state_two2 state_after facts
+  local released sleeps panel_on panel_off lit on_again locks sink tap_started
+  local guard_after=false wake_state driver_rc phase_failed=0
+  mkdir -p "$dir"
+  step "$label: preparing $(basename "$apk")"
+  prepare_apk "$apk" || { echo "failed: 1 (service)" > "$result"; return 1; }
 
-emu logcat -c >/dev/null 2>&1 || true
-"$PYTHON" "$DRIVER" --host 127.0.0.1 --port "$PORT" --state "$STATE" \
-  --adb "$ADB" --serial "$SERIAL" --out "$OUT" > "$SESSION" 2>&1
-DRIVER_RC=$?
-emu logcat -d > "$LOGCAT" 2>/dev/null || true
-emu shell dumpsys window > "$OUT/window-after.txt" 2>/dev/null || true
+  echo "locked-multi: $label: locking the emulator (PIN + screen off)"
+  bash "$EMU_DIR/lock.sh" || { echo "failed: 1 (lock)" > "$result"; return 1; }
+  emu shell dumpsys window > "$dir/window-before.txt" 2>/dev/null || true
+  grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-before.txt" ||
+    echo "locked-multi: $label: the keyguard is not showing before the run" >&2
+  wake_state="$(emu shell dumpsys power 2>/dev/null | grep -m1 'mWakefulness=' | tr -d '\r' | sed 's/.*mWakefulness=//')"
+  case "$wake_state" in
+    Asleep|Dozing) ;;
+    *) echo "locked-multi: $label: the screen is not off (mWakefulness=${wake_state:-none})" >&2 ;;
+  esac
 
-DISPLAY1="$(sed -n 's/^display1=//p' "$SESSION" | tail -1)"
-DISPLAY2="$(sed -n 's/^display2=//p' "$SESSION" | tail -1)"
-if [ "$DRIVER_RC" -ne 0 ]; then
-  fail "the driver did not finish (rc=$DRIVER_RC): $(tail -2 "$SESSION" | tr '\n' ' ')"
-fi
-if [ -z "$DISPLAY1" ] || [ -z "$DISPLAY2" ]; then
-  fail "the driver did not report both displays: $(tail -3 "$SESSION" | tr '\n' ' ')"
-  { echo "failed: 1 (driver)"; cat "$SESSION"; } > "$RESULT"
-  cat "$RESULT"
-  exit 1
-fi
+  emu logcat -c >/dev/null 2>&1 || true
+  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi.py" --host 127.0.0.1 --port "$PORT" \
+    --state "$STATE" --adb "$ADB" --serial "$SERIAL" --out "$dir" > "$session" 2>&1
+  driver_rc=$?
+  emu logcat -d > "$logcat" 2>/dev/null || true
+  emu shell dumpsys window > "$dir/window-after.txt" 2>/dev/null || true
 
-STATE_ONE="$(  "$PYTHON" "$READER" --state "$OUT/display-one.txt"   "$DISPLAY1")"
-STATE_TWO="$(  "$PYTHON" "$READER" --state "$OUT/display-two.txt"   "$DISPLAY1")"
-STATE_TWO2="$( "$PYTHON" "$READER" --state "$OUT/display-two.txt"   "$DISPLAY2")"
-STATE_AFTER="$( "$PYTHON" "$READER" --state "$OUT/display-after.txt" "$DISPLAY1")"
-FACTS="$("$PYTHON" "$READER" --facts "$LOGCAT" "$DISPLAY1" "$DISPLAY2")"
-fact() { printf '%s\n' "$FACTS" | sed -n "s/^$1=//p" | tail -1; }
-RELEASED="$(fact released_while_open)"
-SLEEPS="$(fact sleeps_while_open)"
-PANEL_ON="$(fact panel_on_after_takeover)"
-PANEL_OFF="$(fact panel_off_writes)"
-LIT_MS="$(fact lit_ms)"
-ON_AGAIN="$(fact on_again_after_off)"
-LOCKS="$(fact keepalive_locks1_after_resume)"
-SINK="$(fact sink_lines)"
-TAP_STARTED="$(fact tap_started)"
-GUARD_AFTER=false
-grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$OUT/window-after.txt" && GUARD_AFTER=true
-
-if [ "$STATE_ONE" = "ON" ] && [ "$STATE_TWO" = "ON" ] && [ "$STATE_TWO2" = "ON" ] && [ "$STATE_AFTER" = "ON" ]; then
-  pass "both displays were ON, and the remaining one stayed ON after its sibling closed and resumed (display $DISPLAY1: $STATE_ONE -> $STATE_TWO -> $STATE_AFTER)"
-else
-  fail "the remaining display left ON (display $DISPLAY1: $STATE_ONE -> $STATE_TWO -> $STATE_AFTER; display $DISPLAY2: $STATE_TWO2)"
-fi
-if [ "${RELEASED:-1}" = "0" ]; then
-  pass "the covered window's display wake was never released while it was open"
-else
-  fail "the covered window's display wake was released ${RELEASED:-?} time(s) while it was open"
-fi
-if [ "${SLEEPS:-1}" = "0" ]; then
-  pass "the phone never went back to sleep while a window was open"
-else
-  fail "the phone went back to sleep ${SLEEPS:-?} time(s) while a window was open"
-fi
-if [ "${PANEL_ON:-1}" = "0" ]; then
-  pass "no keep-alive step reported the panel on after the take-over (the override holds it)"
-else
-  fail "${PANEL_ON:-?} panel-on plan line(s) after the take-over while the panel was owed off"
-fi
-if [ "${LIT_MS:--1}" -ge 0 ] && [ "${LIT_MS:--1}" -le "$LIMIT_MS" ]; then
-  pass "the take-over's physical ON window was ${LIT_MS} ms (limit ${LIMIT_MS} ms; the field log was 639 ms)"
-else
-  fail "the take-over's physical ON window was ${LIT_MS:-none} ms (limit ${LIMIT_MS} ms)"
-fi
-if [ "${ON_AGAIN:-1}" = "0" ]; then
-  pass "SurfaceFlinger's physical display never went ON again after its first off"
-else
-  fail "SurfaceFlinger's physical display went ON again ${ON_AGAIN:-?} time(s) after its first off"
-fi
-if [ "${LOCKS:-0}" -ge 1 ]; then
-  pass "the keep-alive ran with one display lock after the resume (the episode is alive)"
-else
-  fail "no keep-alive step with a display lock after the resume"
-fi
-if [ "${PANEL_OFF:-0}" -ge 1 ]; then
-  pass "the panel was powered off under the streams (${PANEL_OFF} write(s))"
-else
-  fail "the panel was never powered off"
-fi
-if [ "$GUARD_AFTER" = "true" ]; then
-  pass "the phone is still locked after the run (keyguard showing)"
-else
-  fail "the keyguard is not showing after the run"
-fi
-if [ "${SINK:-0}" -gt 0 ]; then
-  if [ "${TAP_STARTED:-0}" = "1" ]; then
-    pass "a gesture with a NO_INPUT_CHANNEL sink line still opened an app screen (${SINK} sink line(s))"
-  else
-    fail "${SINK} sink line(s) and the tap never reached the app"
+  display1="$(sed -n 's/^display1=//p' "$session" | tail -1)"
+  display2="$(sed -n 's/^display2=//p' "$session" | tail -1)"
+  if [ "$driver_rc" -ne 0 ] || [ -z "$display1" ] || [ -z "$display2" ]; then
+    echo "locked-multi: $label: the driver did not finish (rc=$driver_rc): $(tail -2 "$session" | tr '\n' ' ')" >&2
+    { echo "failed: 1 (driver)"; cat "$session"; } > "$result"
+    return 1
   fi
-else
-  echo "note locked-multi: no NO_INPUT_CHANNEL line in this run (the sink is a transition artifact; see notes.md)"
+
+  state_one="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-one.txt"   "$display1")"
+  state_two="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display1")"
+  state_two2="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display2")"
+  state_after="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-after.txt" "$display1")"
+  facts="$("$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --facts "$logcat" "$display1" "$display2")"
+  fact() { printf '%s\n' "$facts" | sed -n "s/^$1=//p" | tail -1; }
+  released="$(fact released_while_open)"
+  sleeps="$(fact sleeps_while_open)"
+  panel_on="$(fact panel_on_after_takeover)"
+  panel_off="$(fact panel_off_writes)"
+  lit="$(fact lit_ms)"
+  on_again="$(fact on_again_after_off)"
+  locks="$(fact keepalive_locks1_after_resume)"
+  sink="$(fact sink_lines)"
+  tap_started="$(fact tap_started)"
+  grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-after.txt" && guard_after=true
+
+  echo "--- $label ---"
+  if [ "$state_one" = "ON" ] && [ "$state_two" = "ON" ] && [ "$state_two2" = "ON" ] && [ "$state_after" = "ON" ]; then
+    echo "PASS [$label] both displays were ON, and the remaining one stayed ON after its sibling closed and resumed (display $display1: $state_one -> $state_two -> $state_after; display $display2 while both open: $state_two2)"
+  else
+    echo "FAIL [$label] the remaining display left ON (display $display1: $state_one -> $state_two -> $state_after; display $display2: $state_two2)"; phase_failed=1
+  fi
+  if [ "${released:-1}" = "0" ]; then
+    echo "PASS [$label] the covered window's display wake was never released while it was open"
+  else
+    echo "FAIL [$label] the covered window's display wake was released ${released:-?} time(s) while it was open"; phase_failed=1
+  fi
+  if [ "${sleeps:-1}" = "0" ]; then
+    echo "PASS [$label] the phone never went back to sleep while a window was open"
+  else
+    echo "FAIL [$label] the phone went back to sleep ${sleeps:-?} time(s) while a window was open"; phase_failed=1
+  fi
+  if [ "${panel_on:-1}" = "0" ]; then
+    echo "PASS [$label] no keep-alive step reported the panel on after the take-over (the override holds it)"
+  else
+    echo "FAIL [$label] ${panel_on:-?} panel-on plan line(s) after the take-over while the panel was owed off"; phase_failed=1
+  fi
+  if [ "${lit:--1}" -ge 0 ] && [ "${lit:--1}" -le "$LIMIT_MS" ]; then
+    echo "PASS [$label] the take-over's physical ON window was ${lit} ms (limit ${LIMIT_MS} ms; the field log was 639 ms)"
+  else
+    echo "FAIL [$label] the take-over's physical ON window was ${lit:-none} ms (limit ${LIMIT_MS} ms)"; phase_failed=1
+  fi
+  if [ "${on_again:-1}" = "0" ]; then
+    echo "PASS [$label] SurfaceFlinger's physical display never went ON again after its first off"
+  else
+    echo "FAIL [$label] SurfaceFlinger's physical display went ON again ${on_again:-?} time(s) after its first off"; phase_failed=1
+  fi
+  if [ "${locks:-0}" -ge 1 ]; then
+    echo "PASS [$label] the keep-alive ran with one display lock after the resume (the episode is alive)"
+  else
+    echo "FAIL [$label] no keep-alive step with a display lock after the resume"; phase_failed=1
+  fi
+  if [ "${panel_off:-0}" -ge 1 ]; then
+    echo "PASS [$label] the panel was powered off under the streams (${panel_off} write(s))"
+  else
+    echo "FAIL [$label] the panel was never powered off"; phase_failed=1
+  fi
+  if [ "$guard_after" = "true" ]; then
+    echo "PASS [$label] the phone is still locked after the run (keyguard showing)"
+  else
+    echo "FAIL [$label] the keyguard is not showing after the run"; phase_failed=1
+  fi
+  if [ "${sink:-0}" -gt 0 ]; then
+    if [ "${tap_started:-0}" = "1" ]; then
+      echo "PASS [$label] a gesture with a NO_INPUT_CHANNEL sink line still opened an app screen (${sink} sink line(s))"
+    else
+      echo "FAIL [$label] ${sink} sink line(s) and the tap never reached the app"; phase_failed=1
+    fi
+  else
+    echo "note [$label]: no NO_INPUT_CHANNEL line in this run (the sink is a transition artifact; see notes.md)"
+  fi
+
+  {
+    echo "display1: $display1 states one=$state_one two=$state_two after=$state_after"
+    echo "display2: $display2 state two=$state_two2"
+    echo "wake: released_while_open=$released sleeps_while_open=$sleeps keepalive_locks1=$locks"
+    echo "panel: on_after_takeover=$panel_on off_writes=$panel_off lit_ms=$lit limit_ms=$LIMIT_MS on_again=$on_again"
+    echo "input: sink_lines=$sink tap_started=$tap_started"
+    echo "before: keyguard=true wakefulness=$wake_state"
+    echo "after: keyguard=$guard_after"
+    echo "session: $(tr '\n' ' ' < "$session")"
+    echo "failed: $phase_failed"
+  } > "$result"
+  return "$phase_failed"
+}
+
+if [ "$AB" -eq 1 ]; then
+  BEFORE_RESULT="$OUT/locked-multi-before.log"
+  AFTER_RESULT="$OUT/locked-multi-after.log"
+  run_phase "BEFORE" "$BEFORE_APK" "$OUT/before" "$BEFORE_RESULT" \
+    "$OUT/locked-multi-before-session.log" "$OUT/locked-multi-before-logcat.txt"
+  BEFORE_FAILED=$?
+  run_phase "AFTER" "$AFTER_APK" "$OUT/after" "$AFTER_RESULT" \
+    "$OUT/locked-multi-after-session.log" "$OUT/locked-multi-after-logcat.txt"
+  AFTER_FAILED=$?
+  echo "===== BEFORE ====="; cat "$BEFORE_RESULT"
+  echo "===== AFTER ====="; cat "$AFTER_RESULT"
+  if [ "$BEFORE_FAILED" -eq 0 ]; then
+    echo "locked-multi: BEFORE passed; the unfixed APK did not reproduce the field shape"
+    exit 1
+  fi
+  if [ "$AFTER_FAILED" -ne 0 ]; then
+    echo "locked-multi: AFTER failed; see $AFTER_RESULT"
+    exit 1
+  fi
+  echo "locked-multi: BEFORE failed as the field did, AFTER passed"
+  exit 0
 fi
 
-{
-  echo "display1: $DISPLAY1 states one=$STATE_ONE two=$STATE_TWO after=$STATE_AFTER"
-  echo "display2: $DISPLAY2 state two=$STATE_TWO2"
-  echo "wake: released_while_open=$RELEASED sleeps_while_open=$SLEEPS keepalive_locks1=$LOCKS"
-  echo "panel: on_after_takeover=$PANEL_ON off_writes=$PANEL_OFF lit_ms=$LIT_MS limit_ms=$LIMIT_MS on_again=$ON_AGAIN"
-  echo "input: sink_lines=$SINK tap_started=$TAP_STARTED"
-  echo "before: keyguard=true wakefulness=$WAKE_STATE"
-  echo "after: keyguard=$GUARD_AFTER"
-  echo "session: $(tr '\n' ' ' < "$SESSION")"
-  echo "failed: $FAILED"
-} > "$RESULT"
-cat "$RESULT"
-
-if [ "$FAILED" -ne 0 ]; then
-  echo "locked-multi: logcat evidence ($LOGCAT):"
-  grep -E 'power:|keepalive|stream [12]|episode|display wake lock|pocketdeck-|InputDispatcher|START u0|LockedMulti' "$LOGCAT" |
-    tail -50 | sed 's/^/  /'
+run_phase "run" "$APK" "$OUT" "$OUT/locked-multi.log" \
+  "$OUT/locked-multi-session.log" "$OUT/locked-multi-logcat.txt"
+RC=$?
+cat "$OUT/locked-multi.log"
+if [ "$RC" -ne 0 ]; then
+  echo "locked-multi: logcat evidence ($OUT/locked-multi-logcat.txt):"
+  grep -E 'power:|keepalive|stream [12]|episode|display wake lock|pocketdeck-|InputDispatcher|START u0|LockedMulti' \
+    "$OUT/locked-multi-logcat.txt" | tail -50 | sed 's/^/  /'
 fi
-exit "$FAILED"
+exit "$RC"
