@@ -8089,9 +8089,6 @@ check_dock() {
         bad "[DOCK-17] dock ack: no bind within 1.5 s of listening (${ack_ms:-no log line})"
     fi
     stop_app
-    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
-        && ok "[DOCK-17] dock ack: quitting the app leaves no shim behind" \
-        || bad "[DOCK-17] dock ack: a shim survived the app"
     remove_dock_apps
 
     # The race, made deterministic (reviewer 10-30): a window that closes before

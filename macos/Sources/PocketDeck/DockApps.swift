@@ -596,6 +596,8 @@ final class DockApps: NSObject {
     func start() {
         center.addObserver(self, selector: #selector(openRequested(_:)), name: DockMessage.open,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(readyRequested(_:)), name: DockMessage.ready,
+                           object: profile.name, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(quitRequested(_:)), name: DockMessage.quit,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(appTerminated(_:)),
@@ -980,6 +982,28 @@ final class DockApps: NSObject {
         }
         Log.app.notice("dock: open \(pkg, privacy: .public) on \(deviceId, privacy: .public) for shim \(pid, privacy: .public)")
         MainActor.assumeIsolated { onOpen?(deviceId, pkg, pid) }
+    }
+
+    /// The automatic path's handshake (docs/design/dock.md §Launch → window): a
+    /// shim whose observers started after the bind says it is listening. A
+    /// bound pid gets `opened`; an unbound one is answered by its own bind.
+    @objc private func readyRequested(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let deviceId = info[DockMessage.deviceIdKey] as? String,
+              let pkg = info[DockMessage.pkgKey] as? String,
+              let pid = info[DockMessage.pidKey] as? Int else { return }
+        let decision = DockReady.decide(
+            bound: bindings[pid] != nil,
+            tokenMatches: DockToken.matches(message: info[DockMessage.tokenKey] as? String,
+                                            stored: shimToken(deviceId: deviceId, pkg: pkg)))
+        switch decision {
+        case .answer:
+            post(DockMessage.opened, pid: pid)
+        case .ignoreUnbound:
+            return
+        case .ignoreToken:
+            Log.app.notice("dock: ignored ready for \(pkg, privacy: .public) on \(deviceId, privacy: .public): no matching shim token")
+        }
     }
 
     @objc private func quitRequested(_ notification: Notification) {
