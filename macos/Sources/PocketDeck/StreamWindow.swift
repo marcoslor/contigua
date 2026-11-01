@@ -1083,6 +1083,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
+            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " haze=\(chrome.hazeVisible ? 1 : 0)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
