@@ -310,6 +310,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
         chrome.openingCover.show(display, icon: openingIcon)
+        // The cover's ground takes the bar's haze with it (WIN-40).
+        chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
         // it, from the first moment to a refusal (WIN-22, item M9).
         updateFrozen()
@@ -323,6 +325,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         openingPhase = nil
         showOpeningPhase()
         Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        // The extension view builds its backdrop once the stream it mirrors has
+        // a frame: turn its radius up now that it exists (WIN-40). This is also
+        // where a macOS without the filter gets its one fact line.
+        chrome.reapplyBarBlur(reportMissing: true)
         updateFrozen()
         tickFrameWatchdog()
         run(actions)
