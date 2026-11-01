@@ -1,12 +1,13 @@
 // `--debug-stream-zoom FILE`: a live stream window's double-click zoom,
-// measured (e2e `zoom`, NFR `stream_zoom_frame_p95_ms`). `NSWindow.zoom(nil)`
-// is the path the title bar's double-click and the green button take on an app
-// window. AppKit runs that animation in the window server and delivers one
-// `windowDidResize` per step; those notifications are the animation's frames
-// here, because a display link or timer is starved for the animation's whole
-// life (measured on the e2e host: the link stalls for the ~350 ms the zoom
-// runs). A scripted live drag drives the same notifications one per display
-// frame, so the two ways of changing a window's shape are measured the same.
+// measured (e2e `zoom`, NFR `stream_zoom_frame_p95_ms`).
+// `performZoom(_:)` is the action the bar's double-click and the green light
+// send on an app window. The animation's frames are its `windowDidResize`
+// steps: AppKit's own zoom delivers one per step, and a display link or timer
+// is starved for that animation's whole life (measured on the e2e host: the
+// link stalls for its ~350 ms). The app-driven zoom drives the same
+// notifications from its display link. A scripted live drag drives them one
+// per display frame, so the ways of changing a window's shape are measured the
+// same.
 //
 // Each animation step also carries the picture as drawn: the video view's
 // bounds, the drawn picture's rect and its placement (fit, fill, stretch) and
@@ -143,11 +144,29 @@ final class StreamZoomProbe {
             MainActor.assumeIsolated { self?.noteStep() }
         }
         // A person zooms a settled window: give the first picture's resize (if
-        // the open itself asked for one) its debounce before measuring.
+        // the open itself asked for one) its debounce, then wait for the
+        // stream to be flowing before measuring.
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard let self else { return }
-            self.run(.zoom)
+            self.waitUntilStreaming { self.run(.zoom) }
+        }
+    }
+
+    /// Every shape change makes the phone start its encoder again. A phase
+    /// that started during that warm-up would measure the phone, not the
+    /// window: wait until frames are really arriving, with a bound.
+    private func waitUntilStreaming(then start: @escaping () -> Void) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let first = self.controller?.videoView.framesDrained ?? 0
+            let deadline = Date(timeIntervalSinceNow: 3)
+            while Date() < deadline {
+                let now = self.controller?.videoView.framesDrained ?? 0
+                if now - first >= 14 { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            start()
         }
     }
 
@@ -181,7 +200,10 @@ final class StreamZoomProbe {
         framesAtStart = controller?.videoView.framesDrained ?? 0
         switch phase {
         case .zoom, .unzoom:
-            window?.zoom(nil)
+            // The bar's double-click and the green light both send this action
+            // (`StreamChrome.mouseDown`, AppKit's zoom button), not `zoom`
+            // directly.
+            window?.performZoom(nil)
         case .drag:
             startDrag()
         }
@@ -189,10 +211,14 @@ final class StreamZoomProbe {
 
     private func advance(_ phase: Phase) {
         finish(phase)
-        if let next = phase.next {
-            run(next)
-        } else {
+        guard let next = phase.next else {
             write()
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard let self else { return }
+            self.waitUntilStreaming { self.run(next) }
         }
     }
 
@@ -262,6 +288,10 @@ final class StreamZoomProbe {
         if firstStepUptime == 0 { firstStepUptime = now }
         stepWindows.append(window.frame.size)
         let view = controller.videoView
+        // A did-resize can arrive before AppKit's layout pass; the picture
+        // that will be drawn is the one after it (the chrome state forces the
+        // same pass before it measures).
+        view.layoutSubtreeIfNeeded()
         let rect = view.videoRect()
         let bounds = view.bounds.size
         stepDrawn.append(rect.size)
@@ -338,8 +368,8 @@ final class StreamZoomProbe {
                                    "windowEnd": sizePair(stepWindows.last ?? .zero)]
         report[phase.rawValue] = info
         let steps = stepWindows.count
-        let resizes = phaseConfigs.count
-        Log.app.notice("stream zoom \(phase.rawValue, privacy: .public): p50=\(Int(percentile(sorted, 0.5)), privacy: .public) ms p95=\(Int(percentile(sorted, 0.95)), privacy: .public) ms steps=\(steps, privacy: .public) resizes=\(resizes, privacy: .public)")
+        let configCount = phaseConfigs.count
+        Log.app.notice("stream zoom \(phase.rawValue, privacy: .public): p50=\(Int(percentile(sorted, 0.5)), privacy: .public) ms p95=\(Int(percentile(sorted, 0.95)), privacy: .public) ms steps=\(steps, privacy: .public) configs=\(configCount, privacy: .public)")
     }
 
     private func transitions(in sizes: [CGSize]) -> Int {
