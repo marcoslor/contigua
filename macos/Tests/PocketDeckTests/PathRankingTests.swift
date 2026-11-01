@@ -83,6 +83,29 @@ final class PathRankingTests: XCTestCase {
         XCTAssertEqual(ranking.state, .steady(current: "fast"))
     }
 
+    /// E-8/RRR-4: a planned (margin) switch happens at most once per 30 s, so
+    /// the path a planned switch drained and the Mac re-dialed cannot win
+    /// straight back and start a handshake loop during a transfer.
+    func testASecondMarginWinInsideThirtySecondsIsHeld() {
+        var ranking = PathRanking()
+        feed(&ranking, "a", rtt: 1000, at: 0)
+        _ = ranking.handle(.pathUp("a"), now: 0)
+        feed(&ranking, "b", rtt: 1, at: 0)
+        _ = ranking.handle(.tick(now: 10), now: 10)
+        XCTAssertEqual(ranking.handle(.tick(now: 15), now: 15), [.switchTo("b")])
+        // The re-dialed path now looks better; the margin is there again.
+        for _ in 0..<4 {
+            ranking.addSample(id: "b", rttMs: 1000, at: 20)
+            ranking.addSample(id: "a", rttMs: 1, at: 20)
+        }
+        XCTAssertEqual(ranking.handle(.tick(now: 21), now: 21), [])
+        XCTAssertEqual(ranking.state, .challenging(current: "b", challenger: "a", since: 21))
+        XCTAssertEqual(ranking.handle(.tick(now: 26), now: 26), [], "the 5 s hysteresis passed, the hold did not")
+        XCTAssertEqual(ranking.handle(.tick(now: 44), now: 44), [], "still inside the 30 s hold")
+        // 30 s after the first planned switch the same margin may switch.
+        XCTAssertEqual(ranking.handle(.tick(now: 45), now: 45), [.switchTo("a")])
+    }
+
     func testTheChallengeRestartsWhenTheChallengerLeaves() {
         var ranking = PathRanking()
         feed(&ranking, "slow", rtt: 1000, at: 0)

@@ -103,7 +103,7 @@ final class PathLayerTests: XCTestCase {
         ]))
         var rtt: Double?
         for event in layer.receive(path: "aaaa0001", frame: pong) {
-            if case .pong(_, let measured) = event { rtt = measured }
+            if case .pong(_, let measured, _) = event { rtt = measured }
         }
         XCTAssertEqual(25.0, rtt ?? -1)
     }
@@ -643,6 +643,68 @@ extension PathLayerTests {
         let events = layer.receive(path: "aaaa0001", frame: mismatched)
         XCTAssertEqual(1, events.count)
         if case .protocolError = events[0] {} else { XCTFail("expected protocolError, got \(events)") }
+    }
+
+    /// E-8/RRR-4: a pong on a path that carried bulk within the last second is
+    /// a liveness signal only; the queue inflated its RTT, it says nothing
+    /// about the link. Bulk counted in either direction.
+    func testAPongWithinASecondOfBulkIsNotARankingSample() throws {
+        func sampleAfterBulk(on path: String) -> Bool? {
+            let pong = Frame(type: .json, stream: 0, payload: JSONFrame.payload([
+                "t": "path.pong", "path": path, "ts": NSNumber(value: clock),
+            ]))
+            var ranked: Bool?
+            for event in layer.receive(path: path, frame: pong) {
+                if case .pong(_, _, let rankingSample) = event { ranked = rankingSample }
+            }
+            return ranked
+        }
+
+        // Outbound bulk on the current path.
+        layer.send(bulkFrame(1, size: 32 << 10))
+        XCTAssertEqual(false, sampleAfterBulk(on: "aaaa0001"))
+        // One second of quiet: the next pong is a real measurement again.
+        clock += PathLayer.bulkSampleQuietMs + 1
+        XCTAssertEqual(true, sampleAfterBulk(on: "aaaa0001"))
+
+        // Inbound bulk counts the same way.
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: { _ in }, close: {}), joined: true)
+        let inbound = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: bulkFrame(2, size: 1 << 10)).encoded)!
+        _ = layer.receive(path: "bbbb0002", frame: inbound)
+        XCTAssertEqual(false, sampleAfterBulk(on: "bbbb0002"))
+    }
+
+    /// E-8/RRR-4: a current path whose RTT is inflated by its own bulk never
+    /// starts a margin challenge against an idle twin, so a 32 MiB transfer
+    /// makes no planned switch.
+    func testABulkCarryingPathNeverStartsAMarginChallenge() {
+        let twin = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: twin.send,
+                                    close: twin.close, isWritable: twin.isWritable), joined: true)
+        var ranking = PathRanking()
+        ranking.register(id: "aaaa0001", kind: .lan)
+        ranking.register(id: "bbbb0002", kind: .lan)
+        _ = ranking.handle(.pathUp("aaaa0001"), now: 0)
+        _ = ranking.handle(.externalSwitch("aaaa0001"), now: 0)
+        for _ in 0..<10 {
+            clock += 2_000
+            let now = Double(clock) / 1000.0
+            // The current path keeps carrying bulk; its pong reflects the queue.
+            layer.send(bulkFrame(1, size: 32 << 10))
+            for (path, delay) in [("aaaa0001", Int64(500)), ("bbbb0002", Int64(1))] {
+                let pong = Frame(type: .json, stream: 0, payload: JSONFrame.payload([
+                    "t": "path.pong", "path": path, "ts": NSNumber(value: clock - delay),
+                ]))
+                for event in layer.receive(path: path, frame: pong) {
+                    if case .pong(let id, let rtt, let rankingSample) = event, rankingSample {
+                        ranking.addSample(id: id, rttMs: rtt, at: now)
+                    }
+                }
+            }
+            XCTAssertEqual([], ranking.handle(.tick(now: now), now: now),
+                           "a bulk path's pong started a margin switch")
+        }
+        XCTAssertEqual(ranking.state, .steady(current: "aaaa0001"))
     }
 }
 
