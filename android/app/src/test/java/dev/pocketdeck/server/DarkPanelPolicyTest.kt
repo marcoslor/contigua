@@ -87,7 +87,9 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertNotNull("the take-over must not wait for the launch", takeOver)
-        assertEquals(PanelPlan(wake = true, panelOff = false, transitional = true), takeOver)
+        // The panel-off is armed before the wake and owed again to the first
+        // step: the platform answers the wake with its own ON either way.
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), takeOver)
         assertTrue(
             "the shared group is woken now",
             DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver!!),

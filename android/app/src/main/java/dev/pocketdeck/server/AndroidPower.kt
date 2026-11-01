@@ -296,12 +296,34 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             val now = SystemClock.uptimeMillis()
             policy.ownWake(now)
             if (strategy == PanelStrategy.PANEL_DARK) wakeOwner.dispatch(WakeEvent.OurWake(now))
+            // Arm the override before the wake: the first panel-off write is
+            // already on its way when the platform's display controller answers
+            // the wake, which is what keeps the lit window short (notes.md).
+            if (plan.panelOff) armPanelOff()
             for (id in ids) {
                 userActivity(id)
                 wakeDisplay(id)
             }
             keepLit = true
             log("power: episode take-over: display ${ids.joinToString(",")} woken before the launch; panel off owed")
+        }
+    }
+
+    /**
+     * The take-over's panel-off, before the wake. One write, no re-applies: the
+     * first keep-alive step owns those and must not delay the launch.
+     */
+    private fun armPanelOff() {
+        darkEpisode = true
+        keepLit = true
+        startPowerWatch()
+        watchdog.ensure()
+        watchdog.markPanelForced()
+        overrideLive = true
+        val applied = synchronized(panelWrites) { darkEpisode && panel.panelOff() }
+        if (!applied && !loggedNoPanelControl) {
+            loggedNoPanelControl = true
+            log("panel off unavailable: the locked phone will show its lock screen while streaming")
         }
     }
 
@@ -1032,8 +1054,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         /** Timer path: shorter than any screen-off timeout, so a streaming group stays on. */
         const val KEEPALIVE_INTERVAL_MS = DarkPanelPolicy.TIMER_INTERVAL_MS
 
-        /** Re-applies after a transitional wake, so a fresh lock screen cannot stay. */
-        val REAPPLY_DELAYS_MS = longArrayOf(500, 1_500)
+        /**
+         * Re-applies after a transitional wake, so a fresh lock screen cannot
+         * stay. The first two are early on purpose: the platform's display
+         * controller answers our wake with its own ON write a few tens of ms
+         * after our first off, and the next one here must beat it (the 11-01
+         * field log: 639 ms lit with a 500 ms first re-apply).
+         */
+        val REAPPLY_DELAYS_MS = longArrayOf(100, 250, 500, 1_500)
 
         const val FORCE_PANEL_OFF = "debug.pocketdeck.force_panel_off"
         const val FORCE_TIMER = "debug.pocketdeck.force_timer_keepalive"
