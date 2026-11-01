@@ -123,7 +123,7 @@ class PanelPowerSessionTest {
         while (System.currentTimeMillis() < deadline) {
             val calls = platform.streamCalls.toList()
             if (calls.size > count) return calls[count]
-            Thread.sleep(10)
+            Thread.sleep(10) // real-time: the session answers on its own thread
         }
         error("no power call after #$count; calls: ${platform.streamCalls.toList()}; logs: $logs")
     }
