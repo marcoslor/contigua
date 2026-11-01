@@ -232,6 +232,23 @@ enum DockLaunch {
     }
 }
 
+/// The host's answer to a shim's `ready` (docs/design/dock.md §Launch → window).
+/// Only a pid bound to a window gets `opened`; a pid the bind has not reached
+/// yet gets nothing, because its bind posts `opened` itself. The token is
+/// checked exactly as on `open` (sec L-8).
+enum DockReadyDecision: Equatable {
+    case answer
+    case ignoreUnbound
+    case ignoreToken
+}
+
+enum DockReady {
+    static func decide(bound: Bool, tokenMatches: Bool) -> DockReadyDecision {
+        guard tokenMatches else { return .ignoreToken }
+        return bound ? .answer : .ignoreUnbound
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
