@@ -19,12 +19,12 @@ enum RailArc {
 
     /// How far left a magnified letter may reach at `width` before it comes
     /// within `minimumClearance` of the last icon column's cell. The letters
-    /// are centred, so the rest position is `centredLead` inside the rail.
+    /// are centred, so the rest position is `centredLead` inside the rail, and
+    /// the rail always stands one gap right of the grid's right edge.
     static func room(width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
-        let metrics = DeckGridSize(zoom: zoom)
-        let cellRight = metrics.originX(forWidth: width) + metrics.span(forWidth: width)
-        let railLeading = width - DeckRail.trailingSpace
-        return max(0, railLeading - cellRight + centredLead - minimumClearance)
+        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+        let cellRight = block.originX + block.span
+        return max(0, block.railLeading - cellRight + centredLead - minimumClearance)
     }
 
     /// How far left the rail's hit area may grow while it is magnified: the
@@ -60,10 +60,9 @@ enum RailArc {
     /// The clear space between the last icon column's cell and the widest drawn
     /// letter at `width` and `zoom`.
     static func clearance(width: CGFloat, zoom: CGFloat = 1, reduceMotion: Bool) -> CGFloat {
-        let metrics = DeckGridSize(zoom: zoom)
-        let cellRight = metrics.originX(forWidth: width) + metrics.span(forWidth: width)
-        let railLeading = width - DeckRail.trailingSpace
-        let widestLead = railLeading + centredLead
+        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+        let cellRight = block.originX + block.span
+        let widestLead = block.railLeading + centredLead
             - reach(scale: RailFisheye.maxScale, reduceMotion: reduceMotion,
                     room: room(width: width, zoom: zoom))
         return widestLead - cellRight

@@ -3333,6 +3333,13 @@ final class ConnectionController {
                 return "panelringer needs HOST and MODE (normal, vibrate, silent)"
             }
             return PanelProbe.ringer(host: arguments[0], mode: mode) ? nil : "panelringer failed"
+        case "deckzoomwindow":
+            // The Deck's standard zoom (DECK-24): the same AppKit path the
+            // green button and a title-bar double-click take, so
+            // windowWillUseStandardFrame answers it.
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            window.zoom(nil)
+            return nil
         case "deck-size":
             // Resize the Deck for the grid checks: the block is centred and
             // capped at a wide size and drops columns as the window narrows.

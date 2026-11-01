@@ -86,7 +86,6 @@ enum FallbackIcon {
 struct FallbackAppIcon: View {
     let label: String
     let pkg: String
-    var side: CGFloat = GlassIcon.tileSide
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -100,7 +99,7 @@ struct FallbackAppIcon: View {
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             }
-            .frame(width: side, height: side)
+            .aspectRatio(1, contentMode: .fit)
     }
 }
 
@@ -116,17 +115,13 @@ struct AppIconView: View {
     private(set) var isMissing: Bool
     /// The pointer is over the cell: the tile responds to it.
     private(set) var hovering = false
-    /// The tile's side in points (the grid's 64 pt at 100 %, scaled by zoom).
-    private(set) var side = GlassIcon.tileSide
 
     init(app: AppInfo, rendered: NSImage? = nil,
-         isMissing: Bool = false, hovering: Bool = false,
-         side: CGFloat = GlassIcon.tileSide) {
+         isMissing: Bool = false, hovering: Bool = false) {
         self.app = app
         self.rendered = rendered
         self.isMissing = isMissing
         self.hovering = hovering
-        self.side = side
     }
 
     var body: some View {
@@ -138,9 +133,11 @@ struct AppIconView: View {
             case .placeholder:
                 RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
             case .fallback:
-                FallbackAppIcon(label: app.label, pkg: app.pkg, side: side)
+                FallbackAppIcon(label: app.label, pkg: app.pkg)
             }
         }
-        .frame(width: side, height: side)
+        // The cell's layout proposes the icon's square (64 pt at 100 %, scaled
+        // by the zoom and the width factor), so the tile never holds a size.
+        .aspectRatio(1, contentMode: .fit)
     }
 }

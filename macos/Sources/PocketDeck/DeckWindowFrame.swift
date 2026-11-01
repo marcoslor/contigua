@@ -43,6 +43,9 @@ struct DeckWindowFrame: NSViewRepresentable {
         private var notices: [NSObjectProtocol] = []
         private var saveTask: Task<Void, Never>?
         private var placed = false
+        /// The standard zoom's answer; strong, because NSWindow.delegate does
+        /// not hold it.
+        private var zoomDelegate: DeckZoomDelegate?
 
         func attach(to window: NSWindow?) {
             guard let window, self.window !== window else { return }
@@ -61,12 +64,31 @@ struct DeckWindowFrame: NSViewRepresentable {
                 MainActor.assumeIsolated { self?.saveNow() }
             })
             placeIfNeeded(window)
+            installZoomDelegate(on: window)
+        }
+
+        /// DECK-24: the green button and a title-bar double-click land on the
+        /// Deck's intrinsic width. SwiftUI's delegate keeps every other
+        /// question through the proxy.
+        private func installZoomDelegate(on window: NSWindow) {
+            guard zoomDelegate == nil else { return }
+            let proxy = DeckZoomDelegate()
+            proxy.target = window.delegate
+            proxy.preferredWidth = {
+                DeckWide.preferredWidth(zoom: DeckZoom.stored(in: Profile.active.defaults))
+            }
+            window.delegate = proxy
+            zoomDelegate = proxy
         }
 
         func detach() {
             saveNow()
             for notice in notices { NotificationCenter.default.removeObserver(notice) }
             notices = []
+            if let proxy = zoomDelegate, let window, window.delegate === proxy {
+                window.delegate = proxy.target
+            }
+            zoomDelegate = nil
             window = nil
             placed = false
         }

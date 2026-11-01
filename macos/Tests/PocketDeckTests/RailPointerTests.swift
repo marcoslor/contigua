@@ -244,13 +244,11 @@ final class RailPointerTests: XCTestCase {
         XCTAssertEqual(y, 6 * pitch + pitch / 4, accuracy: 0.001)
     }
 
-    /// The leave edge and the hit area follow the Deck's zoom: the last column
-    /// moves with it, so the room is the zoomed one, never the 100 % one. Where
-    /// the zoomed column leaves space beside the rail, the hit area keeps the
-    /// 4 pt clearance; where it reaches under the rail (a wide zoom in a narrow
-    /// window, a layout question of its own), the rail grows no hit area at all.
+    /// The rail stands one gap right of the grid at every width and zoom, so
+    /// the hit area's room is that gap's clearance at every step, never a
+    /// function of where the last column happens to fall.
     @MainActor
-    func testTheRoomFollowsTheDeckZoom() {
+    func testTheRoomIsTheRailsGapAtEveryZoom() {
         let pointer = RailPointerModel()
         for width in [CGFloat(640), 760, 1000] {
             pointer.noteContainerSize(CGSize(width: width, height: 625))
@@ -258,16 +256,10 @@ final class RailPointerTests: XCTestCase {
                 pointer.noteZoom(zoom)
                 XCTAssertEqual(pointer.room, RailArc.hitRoom(width: width, zoom: zoom), accuracy: 0.001)
                 XCTAssertEqual(pointer.arcRoom, RailArc.room(width: width, zoom: zoom), accuracy: 0.001)
-                let metrics = DeckGridSize(zoom: zoom)
-                let cellRight = metrics.originX(forWidth: width) + metrics.span(forWidth: width)
-                let railLeading = width - DeckRail.trailingSpace
-                if cellRight + RailArc.minimumClearance <= railLeading {
-                    XCTAssertGreaterThanOrEqual(railLeading - pointer.room,
-                                                cellRight + RailArc.minimumClearance - 0.001,
-                                                "\(width) pt at \(zoom)x: the hit area reaches into the last column")
-                } else {
-                    XCTAssertEqual(pointer.room, 0, "\(width) pt at \(zoom)x: no room, no growth")
-                }
+                let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+                XCTAssertGreaterThanOrEqual(block.railLeading - pointer.room,
+                                            block.originX + block.span + RailArc.minimumClearance - 0.001,
+                                            "\(width) pt at \(zoom)x: the hit area reaches into the last column")
             }
         }
     }
