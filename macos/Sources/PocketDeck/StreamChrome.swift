@@ -75,6 +75,11 @@ final class StreamChromeView: NSView {
     /// The cover an app (or the phone) window shows until its first frame
     /// (OpeningCover): above the stream and the sleeping cover, below the chrome.
     let openingCover = OpeningCoverView(frame: .zero)
+    /// The disconnection screen (StallOverlay, WIN-39): the last frame under one
+    /// acrylic that reaches over the framed bar, so the bar's mirror is never
+    /// the bright stream while it is up. Above the covers, below the bar's
+    /// controls and the traffic lights.
+    let stallOverlay = StallOverlayView(frame: .zero)
     /// Live Text (docs/design/livetext.md): its button rides the bar next to
     /// the kind's actions (or inside the pill), and its status pill says the
     /// window is frozen while the mode is on.
@@ -131,6 +136,8 @@ final class StreamChromeView: NSView {
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
         openingCover.layer?.zPosition = 1.6
+        addSubview(stallOverlay)
+        stallOverlay.layer?.zPosition = 1.7
         addSubview(pillView)
         addSubview(actions)
         addSubview(liveTextCapsule)
@@ -240,6 +247,10 @@ final class StreamChromeView: NSView {
         touchDots.frame = video.frame
         phoneOverlay.frame = video.frame
         openingCover.frame = video.frame
+        // The overlay is one sheet from the window's top edge: it covers the
+        // bar too, and its words stay centred in the body below it.
+        stallOverlay.frame = bounds
+        stallOverlay.topInset = bar
         CATransaction.commit()
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its
@@ -374,6 +385,17 @@ final class StreamChromeView: NSView {
     /// True while the phone's panel-off pill is up (the chrome state reports it).
     var showsPanelStatus: Bool { !panelStatus.isHidden }
 
+    /// The overlay covers the bar's mirror (WIN-39): it spans the bar's band and
+    /// sits above the extension view, so the bar shows the same acrylic as the
+    /// body instead of the bright stream. False once the overlay is down.
+    var barMirrorCovered: Bool {
+        guard barHeight > 0, !stallOverlay.isHidden else { return false }
+        let band = NSRect(x: 0, y: video.frame.maxY, width: bounds.width,
+                          height: bounds.height - video.frame.maxY)
+        return stallOverlay.frame.contains(band)
+            && (stallOverlay.layer?.zPosition ?? 0) > (ext.layer?.zPosition ?? 0)
+    }
+
     private func layoutPanelStatus(bar: Bool) {
         guard !panelStatus.isHidden else { return }
         let size = panelStatus.preferredSize
@@ -414,7 +436,14 @@ final class StreamChromeView: NSView {
         guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
         // The bar's mirrored band is the window's own: a click on it is a drag
         // (and counts), while the kind's actions keep their clicks.
-        return hit === ext ? self : hit
+        if hit === ext { return self }
+        // The disconnection overlay is the bar's ground while it is up: its band
+        // still drags the window, and its body takes the click (the stream is
+        // frozen, WIN-39).
+        if hit === stallOverlay, convert(point, from: superview).y >= video.frame.maxY {
+            return self
+        }
+        return hit
     }
 
     override func mouseDown(with event: NSEvent) {
