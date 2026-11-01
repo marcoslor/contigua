@@ -8551,6 +8551,9 @@ check_windows() {
     wait_until 20 chrome_has "cover_phase=opening cover_buttons=none" \
         && ok "[WIN-11] L1 opening: the cover is up with no buttons ($(chrome_state | grep -o 'loading=[^ ]* .*cover_buttons=[^ ]*'))" \
         || bad "[WIN-11] L1 opening: $(chrome_state)"
+    chrome_has "haze=0" \
+        && ok "[WIN-40] the opening cover's ground takes the bar's haze away" \
+        || bad "[WIN-40] the opening cover left the haze up: $(chrome_state)"
     # The shot first: the opening state lasts 5 s, and the accessibility walk
     # is slower than the rest of that window. Two seconds in, the phone's app
     # list and icon have usually arrived (a Deck click already has them).
@@ -8709,6 +8712,23 @@ check_windows() {
     ! grep -qF "That window is no longer open on the phone" "$WORK/banner.txt" 2>/dev/null \
         && ok "[WIN-38] the launcher said nothing about the closed window" \
         || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
+    stop_app
+    stop_fakephone
+
+    # --- WIN-40: the bar's system blur and its haze ----------------------
+    # Live, the mirror's variableBlur carries the picked 15 pt radius and the
+    # haze is up over the bar band; the opening cover's ground takes the haze
+    # away (the L1 opening phase above).
+    clean
+    rm -f "$WORK/chrome.txt"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
+    wait_until 20 events_have '"ev":"video"' \
+        || bad "WIN-40 the stream never sent video"
+    wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
+        && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+        || bad "[WIN-40] the live bar: $(chrome_state)"
     stop_app
     stop_fakephone
 }
