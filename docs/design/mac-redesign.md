@@ -237,10 +237,10 @@ second group is **This Mac**: **General**, **Input**, **Automation**. The detail
 - **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
   from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New
   windows become key but do not hide the Deck (they open on the Deck's screen, offset right of it when it fits).
-- **Link-down state:** the layer keeps its last frame; a **status pill** (`NSGlassEffectView`, cornerRadius 18, 36 pt
-  high, SwiftUI content "Reconnecting…" `.caption` + small `ProgressView`; "Phone offline" after 15 s) fades in at the
-  bottom center after 1 s of link loss and out when the link returns. Input is dropped while down (no queueing).
-  Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
+- **Link-down state:** the layer keeps its last frame; the **disconnection overlay** (DESIGN.md "Disconnection
+  overlay": one acrylic over the whole window, the window's icon, "Reconnecting…" and "Waiting for <phone>…") comes up
+  1 s after the loss and reads "Phone offline" at 15 s; a reconnect takes it away. Input is dropped while down (no
+  queueing). Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
 - Unchanged: `VideoLayerView`, `AVSampleBufferDisplayLayer`, `InputMapper`, `DebugInput`, gestures, resize debounce,
   pause/resume, density, edge swipe.
 
