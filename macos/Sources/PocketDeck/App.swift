@@ -49,6 +49,9 @@ struct LaunchOptions {
     var debugDeckGrid: String?
     /// `--debug-deck-zoom FILE`: the Deck's double-click zoom, measured (e2e `deck`).
     var debugDeckZoom: String?
+    /// `--debug-stream-zoom FILE`: a live stream window's double-click zoom,
+    /// measured against a scripted drag (e2e `zoom`).
+    var debugStreamZoom: String?
     var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
@@ -236,6 +239,8 @@ struct LaunchOptions {
                 options.debugDeckGrid = next()
             case "--debug-deck-zoom":
                 options.debugDeckZoom = next()
+            case "--debug-stream-zoom":
+                options.debugStreamZoom = next()
             case "--audio-stats":
                 options.audioStatsFile = next()
             case "--profile":
@@ -448,6 +453,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LiveTextWarmer.start()
         if let path = environment.options.debugDeckZoom {
             DeckZoomProbe.start(path: path)
+        }
+        if let path = environment.options.debugStreamZoom {
+            StreamZoomProbe.start(path: path)
         }
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
