@@ -61,22 +61,12 @@ class PathHub(
             get() = synchronized(writeLock) { priorityBytes + normalBytes + writingBytes }
 
         /**
-         * Queues bytes for this path; never blocks on the socket. E-1: a lossy
-         * frame (video, audio, hover) waits here while the path already holds a
-         * cap's worth, as the writer waited on the kernel buffer before R-2.
-         * Priority lanes (ping, pong, ACK, marker) never wait on this.
+         * Queues bytes for this path; never blocks on the socket. A lossy frame
+         * waits in [PathHub.send] before it gets here (E-1), where a switch can
+         * release it; the writer's own queue never waits on the caller.
          */
-        fun send(bytes: ByteArray, priorityLane: Boolean = false, lossy: Boolean = false) {
+        fun send(bytes: ByteArray, priorityLane: Boolean = false) {
             synchronized(writeLock) {
-                if (lossy && !priorityLane) {
-                    // One frame larger than the cap is admitted when the path is
-                    // empty: waiting could never make room for it.
-                    while (!closed && priorityBytes + normalBytes + writingBytes > 0 &&
-                        priorityBytes + normalBytes + writingBytes + bytes.size > LOSSY_QUEUE_CAP_BYTES
-                    ) {
-                        writeLock.wait(100)
-                    }
-                }
                 if (closed) return
                 if (priorityLane) {
                     priority.addLast(bytes)
@@ -255,7 +245,10 @@ class PathHub(
         if (paths.size >= MAX_PATHS || paths.containsKey(path.id)) return false
         path.onFailure = { failPath(path.id, it) }
         paths[path.id] = path
-        if (current == null) current = path.id
+        if (current == null) {
+            current = path.id
+            lock.notifyAll()
+        }
         true
     }
 
@@ -268,6 +261,8 @@ class PathHub(
             pingSentAt.remove(id)
             lastInboundAt.remove(id)
             joinedAwaitingPong.remove(id)
+            // RRR-1: a lossy writer waiting on this path is released (dropped).
+            lock.notifyAll()
             removed
         }
         // Closing can wait on a peer's read; never under the hub lock (R-2).
@@ -282,6 +277,8 @@ class PathHub(
             val copy = paths.values.toList()
             paths.clear()
             current = null
+            // A lossy writer waiting on the old current path ends now.
+            lock.notifyAll()
             copy
         }
         // One shared deadline: teardown stays bounded however many paths exist.
@@ -293,8 +290,7 @@ class PathHub(
     fun send(bytes: ByteArray) {
         val type = bytes[4].toInt() and 0xFF
         if (!PathCodec.isReliable(type)) {
-            val target = synchronized(lock) { current }
-            if (target != null) writeTo(target, bytes, lossy = true)
+            sendLossy(bytes)
             return
         }
         val bulk = PathCodec.isBulk(type)
@@ -314,6 +310,33 @@ class PathHub(
             // path's own writer does the socket write outside it (R-2).
             val target = current
             if (target != null) paths[target]?.send(wrapped)
+        }
+    }
+
+    /**
+     * E-1/RRR-1: a lossy frame (video, audio, hover) waits while its path
+     * already holds a cap's worth, as the writer waited on the kernel buffer
+     * before R-2. It gives up the moment that path is no longer the current one:
+     * E-3 keeps a black-holed path attached as a standby, so a wait left inside
+     * its transport would park the session's only writer until the kernel's
+     * 40 s give-up. A lossy frame may be dropped; the next one goes where the
+     * session moved.
+     */
+    private fun sendLossy(bytes: ByteArray) {
+        synchronized(lock) {
+            val waited = current?.let { paths[it] } ?: return
+            while (!closed) {
+                val t = current?.let { paths[it] } ?: return
+                if (t !== waited) return
+                val queued = t.queuedBytes
+                // One frame larger than the cap is admitted when the path is
+                // empty: waiting could never make room for it.
+                if (queued == 0 || queued + bytes.size <= LOSSY_QUEUE_CAP_BYTES) {
+                    t.send(bytes)
+                    return
+                }
+                lock.wait(100)
+            }
         }
     }
 
@@ -406,6 +429,9 @@ class PathHub(
         synchronized(lock) {
             if (!paths.containsKey(to)) return
             current = to
+            // RRR-1: a lossy writer waiting on the old path wakes and drops its
+            // frame instead of parking the session's only writer on a standby.
+            lock.notifyAll()
         }
     }
 
@@ -532,9 +558,9 @@ class PathHub(
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5),
               encoded.copyOfRange(9, encoded.size))
 
-    private fun writeTo(path: String, bytes: ByteArray, priority: Boolean = false, lossy: Boolean = false) {
+    private fun writeTo(path: String, bytes: ByteArray, priority: Boolean = false) {
         val t = synchronized(lock) { paths[path] } ?: return
-        t.send(bytes, priority, lossy)
+        t.send(bytes, priority)
     }
 
     private fun failPath(path: String, why: Throwable) {
