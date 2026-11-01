@@ -239,7 +239,11 @@ class Server(
             val v = Json.int(hello["v"])
             if (PathVersion.refused(v)) {
                 log("version: ${PathVersion.phoneSentence(v)}")
-                runCatching { onVersionRefused(v) }
+                // RR-13: only a Mac the phone pins, and only while no live
+                // session owns the slot, may put the sentence on the card. A
+                // stray peer, or another Mac's old app, must not replace a
+                // connected session's card.
+                if (pinned && sessions.current() == null) runCatching { onVersionRefused(v) }
                 reject(socket, "version", "this phone speaks protocol ${PathVersion.CURRENT}",
                     mapOf("v" to PathVersion.CURRENT))
                 return
