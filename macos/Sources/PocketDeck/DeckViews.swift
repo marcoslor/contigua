@@ -1677,28 +1677,10 @@ struct DeckCellLayout: Layout {
 
 /// The cell's hover and selection corner: 16 pt in the 108 pt cell, so it grows
 /// with the cell the layout draws (the same circular corner the tile has always
-/// used). Every cell at a size draws the same path, so it is built once per
-/// size, not once per cell per frame.
+/// used).
 struct DeckCellShape: Shape {
     func path(in rect: CGRect) -> Path {
-        DeckCellPathCache.shared.path(in: rect)
-    }
-}
-
-private final class DeckCellPathCache {
-    nonisolated(unsafe) static let shared = DeckCellPathCache()
-    private var size: CGSize = .zero
-    private var path = Path()
-
-    /// Called during layout and rendering on the main thread, one cell at a
-    /// time; the cache holds one size's path.
-    func path(in rect: CGRect) -> Path {
-        if rect.size != size {
-            size = rect.size
-            path = Path(roundedRect: CGRect(origin: .zero, size: rect.size),
-                        cornerRadius: rect.height * (16 / 108), style: .circular)
-        }
-        return path.offsetBy(dx: rect.minX, dy: rect.minY)
+        Path(roundedRect: rect, cornerRadius: rect.height * (16 / 108), style: .circular)
     }
 }
 
