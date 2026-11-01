@@ -197,6 +197,15 @@ phase_after() {
 
   launch_mac after --open com.android.settings
   wait_state 'loading=0' 90 || { fail "the after window never showed a frame"; stop_app; return; }
+  # Prove the new build is the server (10-28: the shell service can survive an
+  # install): its heartbeat logs a transition even when the encoder stays
+  # silent. Without this line the old build may still be serving.
+  local proved=""
+  for _ in $(seq 1 150); do
+    emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep -q 'heartbeat: ' && { proved=yes; break; }
+    sleep 0.1
+  done
+  [ -n "$proved" ] || { fail "no 'heartbeat:' line: the old server may still be serving"; stop_app; return; }
   sleep 3   # let the launch's own animation settle; then the screen is still
   local start elapsed frames requests
   start="$(now)"
