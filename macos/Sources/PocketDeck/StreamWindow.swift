@@ -1250,8 +1250,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let state = "\(from) --\(event)--> \(PictureState.label(picture.state))"
         Log.video.notice("picture: \(state, privacy: .public)")
         for action in actions { run(action) }
+        // `updateFrozen` writes the chrome state, so the transition lands there
+        // once.
         updateFrozen()
-        writeChromeState()
     }
 
     /// The overlay came or went (WIN-39).
