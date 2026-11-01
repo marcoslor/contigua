@@ -355,27 +355,32 @@ internal class WindowStream(
     }
 
     /**
-     * Feeds the picture's heartbeat and performs its one action. [codec] is the
-     * drain's own encoder, so a request goes to the codec that is producing.
+     * Feeds the picture's heartbeat and performs its one action. Runs on the
+     * drain thread: a `still` therefore proves that loop and the session alive.
      */
-    private fun heartbeat(event: IdleFrameWatchdogEvent, codec: MediaCodec? = null) {
+    private fun heartbeat(event: IdleFrameWatchdogEvent) {
         synchronized(heartbeatLock) {
             val before = heartbeatModel
             val step = idleFrameWatchdogTransition(heartbeatModel, event)
             heartbeatModel = step.model
             for (action in step.actions) {
                 when (action) {
-                    IdleFrameWatchdogAction.RequestSyncFrame -> codec?.let { requestSyncFrame(it) }
+                    IdleFrameWatchdogAction.SendStill -> {
+                        sink.onStill(stream)
+                        log("stream $stream heartbeat: still ${step.model.stills}")
+                    }
                 }
             }
             if (step.model.state != before.state) {
                 log("stream $stream heartbeat: ${before.state.wire} --${event.wire}--> ${step.model.state.wire}")
             }
-            if (event is IdleFrameWatchdogEvent.Frame && event.keyframe &&
-                before.state == IdleFrameWatchdogState.Requested
-            ) {
-                log("stream $stream heartbeat: idle keyframes=${step.model.idleFrames}")
-            }
+        }
+    }
+
+    /** The per-stream still count, a fact only (`window.still` messages sent). */
+    private fun logStillCount() {
+        synchronized(heartbeatLock) {
+            log("stream $stream heartbeat: stills=${heartbeatModel.stills}")
         }
     }
 
@@ -412,6 +417,7 @@ internal class WindowStream(
     fun close() {
         released = true
         heartbeat(IdleFrameWatchdogEvent.Close)
+        logStillCount()
         rotationThread?.interrupt()
         rotationThread = null
         detachEncoder()
@@ -803,7 +809,7 @@ internal class WindowStream(
     }
 
     private fun startDrain(codec: MediaCodec) {
-        heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()), codec)
+        heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
         drainThread = Thread({ drain(codec) }, "pocketdeck-drain-$stream").also { it.start() }
     }
 
@@ -833,7 +839,9 @@ internal class WindowStream(
                 break
             }
             val now = SystemClock.elapsedRealtime()
-            heartbeat(IdleFrameWatchdogEvent.Tick(now), codec)
+            // Poll only when no picture buffer was ready: the machine is about
+            // encoder output, not the loop's cadence.
+            if (idx < 0 && encoder === codec) heartbeat(IdleFrameWatchdogEvent.Tick(now))
             guard.poll(now)?.let { nudgeRedraw(codec, it) }
             // Bitrate recovery rides on the drain loop: no extra timer, and it
             // only grows the bitrate when the stream is alive anyway.
@@ -858,7 +866,7 @@ internal class WindowStream(
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
                     } else {
-                        heartbeat(IdleFrameWatchdogEvent.Frame(now, key), codec)
+                        heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
                         if (dropForFps(info.presentationTimeUs)) {
                             // Above the fps cap: never queued, so the socket sees less.
                         } else {

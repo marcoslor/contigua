@@ -2393,6 +2393,15 @@ class Session(
         gate.frame(stream, ptsUs, key, Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload))
     }
 
+    /**
+     * `window.still` (PHONE-21): the stream is live but its encoder has produced
+     * nothing for a second. The Mac counts it as a picture heartbeat, never as a
+     * first frame.
+     */
+    override fun onStill(stream: Int) {
+        sendJson(mapOf("t" to "window.still", "stream" to stream))
+    }
+
     // ------------------------------------------------------------------
     // audio sink (device-wide, stream 0)
     // ------------------------------------------------------------------
