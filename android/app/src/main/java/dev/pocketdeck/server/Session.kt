@@ -491,9 +491,14 @@ class Session(
     /**
      * True from the moment this session starts closing. A reader must not ack
      * a frame after a refusal/bye was queued: that ACK would land behind the
-     * last frame on the wire.
+     * last frame on the wire. Derived from the teardown machine, not a parallel
+     * flag (AGENTS.md).
      */
-    @Volatile private var closing = false
+    private val closing: Boolean
+        get() = when (teardown.get()) {
+            SessionTeardown.State.ENDING, SessionTeardown.State.DROPPED -> true
+            SessionTeardown.State.LIVE, SessionTeardown.State.FINISHED -> false
+        }
 
     /**
      * Runs one step of the teardown machine and its returned actions. The state
@@ -505,9 +510,6 @@ class Session(
             val before = teardown.get()
             val step = SessionTeardown.transition(before, event)
             if (!teardown.compareAndSet(before, step.to)) continue
-            if (step.to == SessionTeardown.State.ENDING || step.to == SessionTeardown.State.DROPPED) {
-                closing = true
-            }
             if (step.to != before) {
                 log(
                     "session teardown: ${SessionTeardown.describe(before)} " +
@@ -721,23 +723,17 @@ class Session(
     private fun followSwitch(item: Inbound.PeerSwitch) {
         val plannedFrom = if (item.arrivedOn != item.path && hub.hasPath(item.arrivedOn)) item.arrivedOn else null
         val from = hub.currentPath
-        if (plannedFrom != null) {
-            hub.sendMarkerOn(plannedFrom, item.path)
-            hub.moveTo(item.path, plannedFrom)
-        } else {
-            hub.moveTo(item.path, plannedFrom = null)
-            hub.sendMarker(item.path)
-        }
+        // E-3: the old path stays attached as a standby (still read, still
+        // answering pings); the Mac decides when it goes. E-6: the replay goes
+        // out before the marker, which never waits for credit.
+        hub.followSwitch(item.path, plannedFrom ?: item.path)
         if (from != null && from != item.path) {
             // The sending path moved on the Mac's marker: from, to and whether
             // the Mac planned it (path.switch on the old path) or fled a fault.
             log("paths: sending $from -> ${item.path} (${if (plannedFrom != null) "planned" else "failure"})")
         }
-        hub.replayOnCurrent()
         // A lost AUDIO_CONFIG costs one frame, not the rest of the audio (§5.6).
         lastAudioConfig?.let { queue.enqueueControl(0, it) }
-        // The marker arrived on the path being left: our own marker is now out,
-        // so the switch is complete and the old path may drain (PATH-9).
         handlePathEvent(PathSessionEvent.PeerSwitch(item.path, item.seq, item.path))
     }
 
@@ -763,7 +759,6 @@ class Session(
                 else PathSessionEvent.PathDown(stale),
             )
         }
-        hub.closeDrained()
         val s = pathMachine.state
         if (s is PathSessionState.Orphaned) {
             handlePathEvent(PathSessionEvent.GraceExpired)
@@ -834,16 +829,20 @@ class Session(
         val thread = Thread({
             var pending: Frame? = first
             // R-11: frames ahead of a gap that this same path must fill wait
-            // here, never dropped and never behind a paused reader.
+            // here, never dropped and never behind a paused reader. RR-10:
+            // bounded by bytes (one window, PATH-15), not by a frame count.
             val held = ArrayDeque<Frame>()
+            var heldBytes = 0
             try {
                 while (teardown.get() == SessionTeardown.State.LIVE && !t.closed) {
                     val frame = when {
                         pending != null -> pending!!.also { pending = null }
-                        held.isNotEmpty() && hub.canBuffer() -> held.removeFirst()
+                        held.isNotEmpty() && hub.canBuffer() ->
+                            held.removeFirst().also { heldBytes -= it.payload.size }
                         else -> reader.readFrame() ?: break
                     }
-                    val events = hub.receive(t.id, frame)
+                    val read = hub.receive(t.id, frame)
+                    val events = read.events
                     val pressure = events.filterIsInstance<PathHub.Event.Backpressure>().firstOrNull()
                     if (pressure != null) {
                         if (pressure.stop) {
@@ -853,7 +852,10 @@ class Session(
                             // The gap is earlier in this same path's stream:
                             // pausing the reader would never fill it (PATH-10).
                             held.addLast(frame)
-                            if (held.size > ReorderWindow.MAX_FRAMES) {
+                            heldBytes += frame.payload.size
+                            if (held.size > ReorderWindow.MAX_FRAMES ||
+                                heldBytes > ReorderWindow.MAX_BYTES
+                            ) {
                                 inbound.put(Inbound.ProtocolError)
                                 return@Thread
                             }
@@ -882,9 +884,11 @@ class Session(
                     // R-1: the ACK leaves only after every frame the hub
                     // delivered is in the session's hand-off, so a slow handler
                     // pushes back through TCP instead of losing an acked frame.
+                    // RR-8: only a delivered RELIABLE frame earns one; the
+                    // Mac's ACKs, pings and lossy input would be pure airtime.
                     // A closing session never acks: the refusal/bye is the last
                     // frame the Mac may see.
-                    if (!closing) hub.ackHandled(t.id)
+                    if (!closing && read.deliveredReliable) hub.ackHandled(t.id)
                 }
             } catch (e: Throwable) {
                 if (teardown.get() == SessionTeardown.State.LIVE) {

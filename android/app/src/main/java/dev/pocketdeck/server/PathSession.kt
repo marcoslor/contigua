@@ -32,9 +32,6 @@ sealed interface PathSessionEvent {
     data class PeerSwitch(val id: String, val seq: Long, val arrivedOn: String) : PathSessionEvent
     data class Close(val reason: String) : PathSessionEvent
     data object GraceExpired : PathSessionEvent
-
-    /** The 2 s drain backstop for a planned switch passed. */
-    data object DrainExpired : PathSessionEvent
 }
 
 sealed interface PathSessionAction {
@@ -53,7 +50,6 @@ sealed interface PathSessionAction {
 /** The timers the owner fires; the machine holds no clock of its own. */
 object PathTimers {
     const val GRACE = 30.0
-    const val DRAIN_BACKSTOP = 2.0
     const val PING_INTERVAL = 2.0
     const val PONG_TIMEOUT = 1.5
     const val JOINED_PING_DROP = 5.0
@@ -93,7 +89,6 @@ internal fun PathSessionEvent.token(): String = when (this) {
     is PathSessionEvent.PeerSwitch -> "switch"
     is PathSessionEvent.Close -> "close"
     PathSessionEvent.GraceExpired -> "grace"
-    PathSessionEvent.DrainExpired -> "drain"
 }
 
 /** AGENTS.md: `paths: <from> --<event>--> <to>`, closed tokens only. */
@@ -150,11 +145,11 @@ class PathSessionMachine(
                         PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(event.id)),
                     )
                 }
+                // E-3: the Mac decides a path's life. The old path stays
+                // attached as a standby (read, answering pings) and is never
+                // closed here; only a socket error or the Mac closes it.
                 state = PathSessionState.Live(event.id)
-                live.remove(s.current)
                 return listOf(
-                    PathSessionAction.ClosePath(s.current),
-                    PathSessionAction.StopPing(s.current),
                     PathSessionAction.StartPing(event.id),
                     PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(event.id)),
                 )
@@ -220,7 +215,7 @@ class PathSessionMachine(
                 state = PathSessionState.Ended(event.reason)
                 return listOf(PathSessionAction.End(event.reason))
             }
-            PathSessionEvent.GraceExpired, PathSessionEvent.DrainExpired -> return emptyList()
+            PathSessionEvent.GraceExpired -> return emptyList()
         }
         return emptyList()
     }
@@ -233,13 +228,9 @@ class PathSessionMachine(
         when (event) {
             is PathSessionEvent.PeerSwitch -> {
                 if (event.id != s.to) return listOf(PathSessionAction.Ignore)
+                // E-3: the path being left stays a standby, never closed here.
                 state = PathSessionState.Live(s.to)
-                live.remove(s.from)
-                return listOf(
-                    PathSessionAction.ClosePath(s.from),
-                    PathSessionAction.StopPing(s.from),
-                    PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(s.to)),
-                )
+                return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(s.to)))
             }
             is PathSessionEvent.PathDown -> {
                 live.remove(event.id)
@@ -308,10 +299,7 @@ class PathSessionMachine(
                     PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
                 )
             }
-            PathSessionEvent.DrainExpired -> {
-                live.remove(s.from)
-                return listOf(PathSessionAction.ClosePath(s.from), PathSessionAction.StopPing(s.from))
-            }
+            PathSessionEvent.GraceExpired -> return emptyList()
             is PathSessionEvent.Close -> {
                 state = PathSessionState.Ended(event.reason)
                 return listOf(PathSessionAction.End(event.reason))
@@ -325,7 +313,6 @@ class PathSessionMachine(
                     PathSessionAction.Ranking(PathRankingEvent.PathUp(event.id)),
                 )
             }
-            PathSessionEvent.GraceExpired -> return emptyList()
         }
         return emptyList()
     }
@@ -371,7 +358,6 @@ class PathSessionMachine(
                 state = PathSessionState.Ended(event.reason)
                 return listOf(PathSessionAction.End(event.reason))
             }
-            PathSessionEvent.DrainExpired -> return emptyList()
         }
         return emptyList()
     }
@@ -386,7 +372,6 @@ sealed interface PathSwitchStep {
     data class Marker(val path: String, val seq: Long) : PathSwitchStep
     data object ReplayFromLastAck : PathSwitchStep
     data class RequestKeyframe(val stream: Int) : PathSwitchStep
-    data class ClosePath(val path: String) : PathSwitchStep
 }
 
 object PathSwitch {
@@ -399,8 +384,7 @@ object PathSwitch {
     ): List<PathSwitchStep> {
         val marker = if (kind == PathSwitchKind.PLANNED) from else to
         return listOf(PathSwitchStep.Marker(marker, nextSeq), PathSwitchStep.ReplayFromLastAck) +
-            streams.map { PathSwitchStep.RequestKeyframe(it) } +
-            PathSwitchStep.ClosePath(from)
+            streams.map { PathSwitchStep.RequestKeyframe(it) }
     }
 
     fun accepts(marker: String, live: Set<String>): Boolean = marker in live

@@ -8,8 +8,9 @@ import org.junit.Test
 /** docs/design/paths.md §5.4, PATH-5/9: the marker's order and the keyframes. */
 class PathSwitchTest {
 
+    /** E-3: the Mac closes a path it leaves; the phone keeps it a standby. */
     @Test
-    fun aPlannedSwitchSendsTheMarkerLastOnTheOldPath() {
+    fun aPlannedSwitchSendsTheMarkerOnTheOldPathAndNeverClosesIt() {
         val plan = PathSwitch.plan(PathSwitchKind.PLANNED, "aaa", "bbb", 42, listOf(1, 2))
         assertEquals(
             listOf(
@@ -17,7 +18,6 @@ class PathSwitchTest {
                 PathSwitchStep.ReplayFromLastAck,
                 PathSwitchStep.RequestKeyframe(1),
                 PathSwitchStep.RequestKeyframe(2),
-                PathSwitchStep.ClosePath("aaa"),
             ),
             plan,
         )
