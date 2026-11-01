@@ -39,7 +39,7 @@ func argument(_ name: String) -> String? {
 }
 
 guard let profile = argument("--profile") else {
-    FileHandle.standardError.write(Data("usage: pd-vdisplay --profile NAME\n".utf8))
+    FileHandle.standardError.write(Data("usage: pd-vdisplay --profile NAME [--size WxH]\n".utf8))
     exit(2)
 }
 
@@ -48,14 +48,30 @@ guard let profile = argument("--profile") else {
 let vendorID: UInt32 = 0x5044
 let productID: UInt32 = 0xE2E0
 
-/// The run's screen: 2240x1170 at 1x — wide and tall enough for the Deck's
-/// wide-window check (a 1960x1100 content window; DECK-4/DECK-24), the size the
-/// visual prototype round drew. 1x because nothing in the app or the checks
-/// needs Retina pixels here.
-enum Screen {
-    static let width: UInt = 2240
-    static let height: UInt = 1170
-    static let scale: UInt = 1
+/// The run's screen, 1280x800 at 1x by default. Small on purpose — the display's
+/// pixels are what WindowServer composites and what colorsync re-profiles every
+/// time a display appears or goes away, and the phone's video is scaled into the
+/// window anyway. `--size WxH` gives the one check whose window is bigger than
+/// the default screen (the Deck's 1960x1100; DECK-4/DECK-24) a display it fits
+/// on. 1x because nothing in the app or the checks needs Retina pixels here.
+struct Screen {
+    var width: UInt = 1280
+    var height: UInt = 800
+    let scale: UInt = 1
+}
+
+func screen() -> Screen {
+    var screen = Screen()
+    guard let raw = argument("--size") else { return screen }
+    let parts = raw.split(separator: "x").map(String.init)
+    guard parts.count == 2, let width = UInt(parts[0]), let height = UInt(parts[1]),
+          width >= 640, height >= 480 else {
+        FileHandle.standardError.write(Data("pd-vdisplay: --size needs WxH, at least 640x480\n".utf8))
+        exit(2)
+    }
+    screen.width = width
+    screen.height = height
+    return screen
 }
 
 /// FNV-1a of the profile name, the app's function (VirtualDisplaySerialTests):
@@ -161,13 +177,20 @@ func hold(_ id: CGDirectDisplayID) -> Never {
 }
 
 // A leftover display of this identity is not adopted: it is not this process's
-// to hold, and it is a run that did not end cleanly.
-if let leftover = existingDisplay() {
-    fail("a display of this identity (id=\(leftover)) is already online")
+// to hold, and it is a run that did not end cleanly. One whose helper exited a
+// moment ago can still be online while WindowServer lets go of it (the check
+// swaps the run's display for the deck check's wide one), so this waits a few
+// seconds before calling it a leftover.
+var leftoverWait = 0
+while let leftover = existingDisplay() {
+    if leftoverWait >= 20 { fail("a display of this identity (id=\(leftover)) is already online") }
+    Thread.sleep(forTimeInterval: 0.25)
+    leftoverWait += 1
 }
 
-let size = (width: Screen.width, height: Screen.height)
-let scale = Screen.scale
+let wanted = screen()
+let size = (width: wanted.width, height: wanted.height)
+let scale = wanted.scale
 guard let descriptor = make("CGVirtualDisplayDescriptor"),
       let settings = make("CGVirtualDisplaySettings"),
       let mode = modeClass(width: size.width, height: size.height),

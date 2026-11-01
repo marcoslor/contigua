@@ -393,6 +393,32 @@ build_vdisplay() {
     fi
 }
 
+# vdisplay_size_for <check> — the display a check draws on. Only the deck
+# check's wide steps draw a window bigger than the default screen (the person's
+# 1960x1100 Deck; DECK-4/DECK-24) and AppKit shrinks a window to the screen, so
+# only that check gets a display that big. Everything else — deckrail's gate A
+# included — keeps the run's 1280x800, the size the checks' screen arithmetic is
+# written against.
+vdisplay_size_for() {
+    case "$1" in
+        deck) echo "2240x1170" ;;
+        *) echo "1280x800" ;;
+    esac
+}
+
+# ensure_vdisplay <check> — the display this check draws on, created or swapped
+# at the check boundary. A swap stops this run's app first: a window left on a
+# display that goes away jumps to the person's screen.
+ensure_vdisplay() {
+    local want
+    want="$(vdisplay_size_for "$1")"
+    [ "$want" = "${VDISPLAY_SIZE:-}" ] && return 0
+    kill_e2e_app
+    sleep 1
+    stop_vdisplay
+    start_vdisplay "$want"
+}
+
 # start_vdisplay — starts the helper and reads the one line it prints
 # ("id=… w=… h=… scale=…"): the id is the display the run's app should use, the
 # size and scale are what the display-dependent expectations below are read
@@ -404,18 +430,20 @@ build_vdisplay() {
 # "FAIL vdisplay: …" (and exits non-zero) when it cannot create one or finds one
 # of its identity already online; the run stops there, "all" included.
 start_vdisplay() {
+    local size="${1:-1280x800}"
     # A visible run is on the person's own screens: the app looks for no display
     # of its own there and makes none, so this run makes none either. Those
     # screens are Retina at 2x — the scale the numbers these checks have always
     # been written against.
     if [ "$VISIBLE" = "1" ]; then
         VDISPLAY_ID=""
+        VDISPLAY_SIZE="$size"
         RUN_SCALE=2
         return 0
     fi
     VDISPLAY_FILE="$WORK-vdisplay.txt"
     rm -f "$VDISPLAY_FILE"
-    "$VDISPLAYBIN" --profile "$PROFILE" > "$VDISPLAY_FILE" 2>&1 &
+    "$VDISPLAYBIN" --profile "$PROFILE" --size "$size" > "$VDISPLAY_FILE" 2>&1 &
     VDISPLAY_PID=$!
     start_watchdog vdisplay "$VDISPLAY_PID"
     local tries=40
@@ -425,6 +453,7 @@ start_vdisplay() {
         tries=$((tries - 1))
     done
     VDISPLAY_ID="$(sed -n 's/^id=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
+    VDISPLAY_SIZE="$(sed -n 's/^id=[0-9]* w=\([0-9]*\) h=\([0-9]*\).*/\1x\2/p' "$VDISPLAY_FILE" | head -1)"
     RUN_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
     if [ -z "$VDISPLAY_ID" ]; then
         say "FAIL vdisplay: no virtual display for the run ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
@@ -432,7 +461,7 @@ start_vdisplay() {
         stop_vdisplay
         return 1
     fi
-    say "run display: virtual display $VDISPLAY_ID, scale ${RUN_SCALE:-1} (held for the whole run)"
+    say "run display: virtual display $VDISPLAY_ID, ${VDISPLAY_SIZE:-$size} at scale ${RUN_SCALE:-1} (held for the check)"
     return 0
 }
 
@@ -13391,11 +13420,12 @@ build_vdisplay || exit 1
 build_load || exit 1
 init_watchdog
 start_load
-start_vdisplay || exit 1
+start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" || exit 1
 start_watch
 for check in "${CHECKS[@]}"; do
     # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
     [ -n "${PD_E2E_MARKS:-}" ] && echo "$(date +%s) $check" >> "$PD_E2E_MARKS"
+    ensure_vdisplay "$check" || exit 1
     "check_${check//-/_}"
 done
 [ "$which_check" = "all" ] && check_orphans
