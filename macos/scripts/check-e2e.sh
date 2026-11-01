@@ -11815,6 +11815,51 @@ PY
     done
     control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
+    # DECK-4 on the person's wide window: over 1000 pt the whole grid grows
+    # with the width (clamp(width/1000, 1, 1.5), 1.5x from 1500 pt) and the
+    # block reserves the rail's 44 pt, so the letter column never sits over
+    # the last cell. The window may be wider than the run's display: the
+    # layout follows the width it is given, not what the screen can show.
+    if control deck-size 1960 1100 >/dev/null; then
+        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1960 8 20)"; then
+            ok "[DECK-4] at 1960 pt the tiles grow with the width and the rail keeps its room ($geometry)"
+        else
+            bad "[DECK-4] at 1960 pt the block is not the wide one ($geometry)"
+        fi
+    else
+        bad "DECK deck-size 1960: $CONTROL_REPLY"
+    fi
+    # DECK-24: the green button's zoom (NSWindow.zoom, the same path a
+    # title-bar double-click takes) lands on the Deck's intrinsic width — the
+    # 880 pt grid plus 60 pt a side at 100 %, plus the rail — and the screen's
+    # visible height, not the whole screen.
+    local zx zy zw zh vw vh want
+    want=$(( 1000 + 44 ))
+    if control deckzoomwindow; then
+        sleep 2
+        if control deck-frame "$WORK/deck-zoom-frame.txt" \
+            && read -r zx zy zw zh < "$WORK/deck-zoom-frame.txt" \
+            && control deck-screen "$WORK/deck-screen.txt" \
+            && read -r vw vh < "$WORK/deck-screen.txt"; then
+            if [ "$zw" -ge $(( want - 2 )) ] && [ "$zw" -le $(( want + 2 )) ] \
+                && [ "$zh" -ge $(( vh - 2 )) ] && [ "$zh" -le $(( vh + 2 )) ]; then
+                ok "[DECK-24] the standard zoom took the Deck to ${zw}x${zh} (its ${want} pt intrinsic width, the screen's ${vh} pt visible height)"
+            else
+                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not ${want}x${vh}"
+            fi
+            if [ "$zw" -lt "$vw" ]; then
+                ok "[DECK-24] the standard zoom stops short of the ${vw} pt screen width"
+            else
+                bad "[DECK-24] the standard zoom stretched to the ${vw} pt screen width"
+            fi
+        else
+            bad "DECK deckzoomwindow's frame: $CONTROL_REPLY"
+        fi
+    else
+        bad "DECK deckzoomwindow: $CONTROL_REPLY"
+    fi
+    control deck-size 760 600 || bad "DECK deck-size 760 600 (wide checks): $CONTROL_REPLY"
+
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
     # through the application's own dispatch (menu equivalents, local monitors,
@@ -11972,6 +12017,67 @@ PY
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
         && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
         || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
+
+    # The visual record for DECK-4/DECK-24 (the reviewer looks before the
+    # person does): the Deck at the sizes the brief names, from the run's own
+    # display, light and dark. The 125 % row sets the grid's zoom the way ⌘+
+    # does, and the last row is the standard zoom's own frame.
+    local shotdir="$WORK/deck-wide" shotlook deck_id
+    mkdir -p "$shotdir"
+    # The popover from DECK-20 would sit over the grid, and a reconnecting link
+    # dims the whole content: the record is the connected Deck alone.
+    control deckpanelclose
+    sleep 0.5
+    deck_linked() {
+        [ "$(grep -o '"state":"[a-z_]*"' "$WORK/events.jsonl" 2>/dev/null | tail -1)" = '"state":"auth_ok"' ]
+    }
+    deck_shot() {
+        wait_until 15 deck_linked
+        deck_id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$deck_id" "$shotdir/$1.png" >/dev/null 2>&1 \
+            && say "shot: $shotdir/$1.png" \
+            || bad "DECK no Deck window for the shot $1"
+    }
+    deck_size() {  # deck_size WIDTH HEIGHT SHOT_NAME
+        control deck-size "$1" "$2" >/dev/null || bad "DECK deck-size $1 $2 ($3): $CONTROL_REPLY"
+        sleep 1.5
+        deck_shot "$3"
+    }
+    deck_row() {
+        shotlook="$1"
+        control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
+        deck_size 1960 1100 "wide-1960x1100-$shotlook"
+        deck_size 1440 900 "wide-1440x900-$shotlook"
+        control deckzoom 1.25 >/dev/null || bad "DECK deckzoom 1.25: $CONTROL_REPLY"
+        deck_size 1000 625 "wide-1000x625-125-$shotlook"
+        control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
+        control deck-size 1960 1100 >/dev/null || bad "DECK deck-size 1960 1100 (zoom): $CONTROL_REPLY"
+        sleep 1
+        control deckzoomwindow >/dev/null || bad "DECK deckzoomwindow (shot): $CONTROL_REPLY"
+        sleep 2
+        deck_shot "wide-after-zoom-$shotlook"
+    }
+    deck_row light
+    # The dark row is a second launch with the app's own appearance override
+    # (the person's system setting is never touched). The shared app is killed
+    # by its own pid first: stop_app only resets it, and a second instance
+    # would wait for the phone's one session.
+    kill_e2e_app
+    SHARED_PID=""
+    local lists_before
+    lists_before="$(count_events '"t":"apps.list"')"
+    apps_asked() { [ "$(count_events '"t":"apps.list"')" -gt "$lists_before" ]; }
+    launch_shared --connect "127.0.0.1:$PORT" --appearance dark
+    if wait_until 30 apps_asked; then
+        ok "DECK the dark Deck came up and asked for its apps"
+    else
+        bad "DECK the dark Deck never asked for its apps"
+    fi
+    sleep 3
+    deck_row dark
+    control deckzoom 1 >/dev/null
+    kill_e2e_app
+    SHARED_PID=""
 
     # DECK-19/CONV-MAC-12: does the Deck remember its frame across a launch?
     # Resize it, quit the way ⌘Q does, relaunch and read the frame again.

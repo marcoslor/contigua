@@ -115,16 +115,31 @@ struct AppIconView: View {
     private(set) var isMissing: Bool
     /// The pointer is over the cell: the tile responds to it.
     private(set) var hovering = false
+    /// The tile's side at the person's zoom, before the width factor: the size
+    /// the icon is laid out and drawn at (the grid's 64 pt at 100 %).
+    private(set) var baseSide = GlassIcon.tileSide
 
     init(app: AppInfo, rendered: NSImage? = nil,
-         isMissing: Bool = false, hovering: Bool = false) {
+         isMissing: Bool = false, hovering: Bool = false,
+         baseSide: CGFloat = GlassIcon.tileSide) {
         self.app = app
         self.rendered = rendered
         self.isMissing = isMissing
         self.hovering = hovering
+        self.baseSide = baseSide
     }
 
     var body: some View {
+        content
+            .frame(width: baseSide, height: baseSide)
+            // The cell's layout gives the icon the width factor's square; a
+            // transform scales the drawn icon to it, so a live resize moves one
+            // layer instead of re-rendering the image every frame (DECK-5).
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .modifier(DeckIconScale(base: baseSide))
+    }
+
+    private var content: some View {
         Group {
             switch GlassIcon.variant(rendered: rendered, isMissing: isMissing) {
             case .rendered(let rendered):
@@ -136,8 +151,18 @@ struct AppIconView: View {
                 FallbackAppIcon(label: app.label, pkg: app.pkg)
             }
         }
-        // The cell's layout proposes the icon's square (64 pt at 100 %, scaled
-        // by the zoom and the width factor), so the tile never holds a size.
-        .aspectRatio(1, contentMode: .fit)
+    }
+}
+
+/// Scales the icon drawn at its base side to the square the grid gives it.
+/// A projection, not a new frame: the image keeps its rendered layer.
+private struct DeckIconScale: GeometryEffect {
+    var base: CGFloat
+    var animatableData: EmptyAnimatableData = .init()
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        guard base > 0, size.width > 0 else { return ProjectionTransform(.identity) }
+        let scale = size.width / base
+        return ProjectionTransform(CGAffineTransform(scaleX: scale, y: scale))
     }
 }

@@ -338,6 +338,14 @@ final class ConnectionController {
         deckPanelRequest += 1
     }
 
+    /// The popover's close request (`deckpanelclose`): a quiet run cannot
+    /// dismiss it with a click, and a shot of the Deck must not carry it.
+    private(set) var deckPanelCloseRequest = 0
+
+    func closeDeckPanel() {
+        deckPanelCloseRequest += 1
+    }
+
     /// A rail letter the e2e asked to click (`deck-rail`), with a token so the
     /// same letter can be picked twice. AppGrid reads it and scrolls exactly as
     /// the rail's own click does.
@@ -3271,6 +3279,11 @@ final class ConnectionController {
             // setup for the switch inside).
             PanelProbe.openDeckPopover(controller: self)
             return nil
+        case "deckpanelclose":
+            // Closing it again: a quiet run cannot click outside the popover,
+            // and the Deck's own shots must not carry it.
+            closeDeckPanel()
+            return nil
         case "panelhover":
             guard arguments.count == 2 else { return "panelhover needs HOST and an item ID" }
             return PanelProbe.hover(host: arguments[0], id: arguments[1]) ? nil : "panelhover failed"
@@ -3333,6 +3346,14 @@ final class ConnectionController {
                 return "panelringer needs HOST and MODE (normal, vibrate, silent)"
             }
             return PanelProbe.ringer(host: arguments[0], mode: mode) ? nil : "panelringer failed"
+        case "deckzoom":
+            // The Deck's zoom step, for a run that wants 125 %: the same store
+            // ⌘+ / ⌘− write, which the grid follows.
+            guard let raw = arguments.first, let value = Double(raw) else {
+                return "deckzoom needs a value"
+            }
+            Profile.active.defaults.set(value, forKey: DeckZoom.key)
+            return nil
         case "deckzoomwindow":
             // The Deck's standard zoom (DECK-24): the same AppKit path the
             // green button and a title-bar double-click take, so
@@ -3358,6 +3379,18 @@ final class ConnectionController {
                 + " \(Int(frame.width.rounded())) \(Int(frame.height.rounded()))\n"
             return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
                 ? "deck-frame failed" : nil
+        case "deck-screen":
+            // The visible frame of the screen the Deck window is on, "W H" in
+            // points: the standard zoom takes that height, and the key window
+            // is not the Deck in a quiet run (DECK-24).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deck-screen needs PATH"
+            }
+            guard let screen = DeckWindow.window?.screen ?? NSScreen.main else { return "no screen" }
+            let visible = screen.visibleFrame
+            let line = "\(Int(visible.width.rounded())) \(Int(visible.height.rounded()))\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deck-screen failed" : nil
         case "deck-move":
             // The Deck's origin in screen points: setup for the frame check
             // (a quiet run cannot drag the window), DECK-19.
