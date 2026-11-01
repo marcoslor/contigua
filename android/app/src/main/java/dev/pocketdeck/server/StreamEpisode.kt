@@ -107,10 +107,16 @@ internal class StreamEpisode(private val log: (String) -> Unit) {
                 }
             }
             return when (state.phase) {
-                EpisodePhase.IDLE -> EpisodeState(
-                    phase = if (event.allPaused) EpisodePhase.PAUSED else EpisodePhase.LIVE,
-                    displays = displays,
-                ) to (listOf(EpisodeAction.Start) + hold(state.displays, displays))
+                EpisodePhase.IDLE -> if (event.allPaused) {
+                    // Every window was covered before the episode began: there
+                    // is nothing to take the phone over for, and no wake to
+                    // undo a person's screen. The pause grace owns it from here.
+                    EpisodeState(EpisodePhase.PAUSED, displays) to
+                        (hold(state.displays, displays) + EpisodeAction.Pause)
+                } else {
+                    EpisodeState(EpisodePhase.LIVE, displays) to
+                        (listOf(EpisodeAction.Start) + hold(state.displays, displays))
+                }
                 EpisodePhase.LIVE -> if (event.allPaused) {
                     EpisodeState(EpisodePhase.PAUSED, displays) to
                         (change(state.displays, displays) + EpisodeAction.Pause)
