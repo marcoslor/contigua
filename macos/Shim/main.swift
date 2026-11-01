@@ -31,6 +31,20 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !deviceId.isEmpty, !pkg.isEmpty else { NSApp.terminate(nil); return }
+        // e2e: a slow launch registers its observers late, after the host has
+        // already bound the pid and posted its one `opened` (the lost-answer
+        // race). Only a bundle built with --dock-debug-listen-delay has the key.
+        let delay = (Bundle.main.infoDictionary?[DockMessage.plistListenDelay] as? Double) ?? 0
+        if delay > 0 {
+            Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.startListening() }
+            }
+        } else {
+            startListening()
+        }
+    }
+
+    private func startListening() {
         center.addObserver(self, selector: #selector(opened(_:)), name: DockMessage.opened,
                            object: profile, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,

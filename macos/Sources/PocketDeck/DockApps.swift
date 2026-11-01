@@ -282,6 +282,10 @@ struct DockShimSpec: Equatable {
         return mapped.isEmpty ? "x" : mapped
     }
 
+    /// e2e only: seconds the shim waits before it starts listening
+    /// (`--dock-debug-listen-delay`). No bundle outside the harness writes it.
+    var listenDelay: TimeInterval?
+
     var infoPlist: [String: Any] {
         [
             "CFBundleDevelopmentRegion": "en",
@@ -308,6 +312,7 @@ struct DockShimSpec: Equatable {
             DockMessage.plistIconVersion: iconVersion,
             DockMessage.plistIconLayers: iconLayers,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
+            .merging(listenDelay.map { [DockMessage.plistListenDelay: $0] } ?? [:]) { current, _ in current }
     }
 }
 
@@ -535,6 +540,9 @@ final class DockApps: NSObject {
     /// e2e race hook: hold the automatic launch's pid callback back, the way a
     /// slow launch would. Zero outside the harness.
     private let bindDelay: TimeInterval
+    /// e2e hook: the seconds a newly built shim waits before it listens
+    /// (`--dock-debug-listen-delay`). Nil outside the harness.
+    private let listenDelay: TimeInterval?
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -558,10 +566,11 @@ final class DockApps: NSObject {
         return url
     }
 
-    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0) {
+    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0, listenDelay: TimeInterval? = nil) {
         self.folder = folder
         self.profile = profile
         self.bindDelay = bindDelay
+        self.listenDelay = listenDelay
         super.init()
     }
 
@@ -720,6 +729,7 @@ final class DockApps: NSObject {
             let icon = PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: 1024)
             var withIcon = spec
             withIcon.iconLayers = layers != nil
+            withIcon.listenDelay = listenDelay
             let url = try DockShimBuilder.build(withIcon, in: folder, shimBinary: shellBinary, icon: icon)
             Self.run("/usr/bin/codesign", ["--force", "--sign", "-", url.path])
             LSRegisterURL(url as CFURL, true)

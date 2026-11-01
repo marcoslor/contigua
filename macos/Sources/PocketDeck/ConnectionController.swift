@@ -507,7 +507,8 @@ final class ConnectionController {
         focusValues = focusStore.load()
         dndIntent = ControlIntentRecorder(store: ControlIntentStore(defaults: profile.defaults, control: .dnd))
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
-                            profile: profile, bindDelay: options.dockBindDelay ?? 0)
+                            profile: profile, bindDelay: options.dockBindDelay ?? 0,
+                            listenDelay: options.dockDebugListenDelay)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
                                                  knownDeviceId: nil, clientId: ""),
                                 defaults: profile.defaults)
