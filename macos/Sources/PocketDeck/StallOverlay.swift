@@ -186,6 +186,10 @@ struct StallOverlayDisplay: Equatable {
 /// colour-bar frame; the secondary line must keep WCAG AA 4.5:1 against it.
 struct StallOverlayStyle: Equatable {
     let name: String
+    /// The black sheet over the blur. S1/S3's 0.38 in dark; the light material
+    /// is bright, so light mode dims deeper or no ink can reach 4.5:1 behind
+    /// the line (the prototype's 0.38 sheet measured 3.6:1 with pure white).
+    let dimAlpha: CGFloat
     let ground: NSColor
     let title: NSColor
     let secondary: NSColor
@@ -193,17 +197,19 @@ struct StallOverlayStyle: Equatable {
 
     static let dark = StallOverlayStyle(
         name: "dark",
-        ground: NSColor(srgbRed: 0x3F / 255, green: 0x3B / 255, blue: 0x38 / 255, alpha: 1),
+        dimAlpha: 0.38,
+        ground: NSColor(srgbRed: 0x40 / 255, green: 0x41 / 255, blue: 0x42 / 255, alpha: 1),
         title: NSColor(white: 0.94, alpha: 1),
         secondary: NSColor(white: 0.74, alpha: 1),
         iconTint: NSColor(white: 0.92, alpha: 1))
 
-    /// The light acrylic is the pick's pale sheet. White is the only ink that
-    /// clears 4.5:1 on it, so the title and the secondary line share it and the
-    /// hierarchy is size and weight (the prototype's grey line measured ~3:1).
+    /// The light acrylic takes white ink: on the deeper sheet it is the only
+    /// ink with the margin AA wants, so the title and the secondary line share
+    /// it and the hierarchy is size and weight.
     static let light = StallOverlayStyle(
         name: "light",
-        ground: NSColor(srgbRed: 0x73 / 255, green: 0x6F / 255, blue: 0x6B / 255, alpha: 1),
+        dimAlpha: 0.50,
+        ground: NSColor(srgbRed: 0x63 / 255, green: 0x62 / 255, blue: 0x61 / 255, alpha: 1),
         title: NSColor(white: 1, alpha: 1),
         secondary: NSColor(white: 1, alpha: 1),
         iconTint: NSColor(white: 0.92, alpha: 1))
@@ -277,7 +283,6 @@ final class StallOverlayView: NSView {
         addSubview(blur)
         // A dim over the blur so white text keeps its contrast over any frame.
         dim.wantsLayer = true
-        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.38).cgColor
         dim.autoresizingMask = [.width, .height]
         addSubview(dim)
 
@@ -301,6 +306,10 @@ final class StallOverlayView: NSView {
         addSubview(secondaryLabel)
 
         applyAppearanceStyle()
+        // The measured ratio is a design constant: the field log keeps it
+        // beside the shots the reviewer checks it against.
+        let contrast = style.secondaryContrast
+        Log.video.info("stall overlay: secondary contrast \(contrast)")  // log-ok: a design constant, no person's data
         isHidden = true
     }
 
@@ -329,6 +338,7 @@ final class StallOverlayView: NSView {
     /// The acrylic is one sheet in either appearance; the ink follows it.
     func applyAppearanceStyle() {
         style = StallOverlayStyle.style(for: effectiveAppearance)
+        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.dimAlpha).cgColor
         titleLabel.textColor = style.title
         secondaryLabel.textColor = style.secondary
         iconView.contentTintColor = style.iconTint
