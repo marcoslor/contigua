@@ -137,8 +137,10 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      * A panel that is already on belongs to the person and is never taken; a
      * mirror must not wake the phone (its panel is the picture).
      *
-     * @return the wake to perform at once, or null when the first [step] owns
-     * the decision (a lit panel, a mirror, or a policy that is not at INIT).
+     * @return the take-over to perform at once, or null when the first [step]
+     * owns the decision (a lit panel, a mirror, or a policy that is not at INIT).
+     * The plan carries the panel-off: the caller arms it before the wake, and
+     * the first [step] re-applies it once the platform has settled.
      */
     fun episodeStarted(panelOn: Boolean, strategy: PanelStrategy): PanelPlan? {
         watchStrategy = strategy
@@ -154,7 +156,10 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
             return null
         }
         phase = Phase.WAKE
-        return PanelPlan(wake = true, panelOff = false, transitional = true)
+        // The panel-off is armed before the wake and owed again to the first
+        // step: the platform's display controller answers the wake with its own
+        // ON, so the re-applies (not the order alone) keep the lit window short.
+        return PanelPlan(wake = true, panelOff = true, transitional = true)
     }
 
     /**
