@@ -111,6 +111,9 @@ enum SessionEvent {
     /// did (resized, density only, same, or refused).
     case windowResizeAck(stream: UInt32, width: Int, height: Int, dpi: Int, outcome: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
+    /// `window.still`: the stream is live but its encoder produced no output
+    /// (PHONE-21). A picture heartbeat, never a first frame.
+    case windowStill(stream: UInt32)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
                     volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
@@ -892,6 +895,8 @@ final class Session {
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
                               label: message.string("label") ?? "",
                               pkg: message.string("pkg") ?? ""))
+        case "window.still":
+            emit(.windowStill(stream: UInt32(message.int("stream") ?? 0)))
         case "state":
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,

@@ -84,9 +84,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The picture watchdog (FrameWatchdog): frames counted from the session
-    /// queue, the decision on the main thread.
+    /// queue, the decision on the main thread. `window.still` messages are a
+    /// second heartbeat for encoders that drop the repeat on a still screen.
     @ObservationIgnored let frameClock = FrameClock()
     private var watchdog = FrameWatchdog()
+    /// `window.still` messages seen for this stream: a count, never content.
+    private(set) var stills = 0
     private var stallTimer: Timer?
     /// The local key monitor that gives the bar its keys before AppKit's own
     /// Tab handling (see `handleBarKey`).
@@ -791,6 +794,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         settleTimer?.invalidate()
         settleTimer = nil
         if !closingFromRemote { sendClose() }
+        let count = stills
+        Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
         manager.remove(stream: stream)
     }
 
@@ -1074,7 +1079,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
             + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
             + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
-            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
+            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0) stills=\(stills)"
             + " stall_icon=\(overlay.hasIcon ? 1 : 0)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
@@ -1205,6 +1210,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// silence has lasted long enough to call the picture stalled.
     private func tickFrameWatchdog() {
         tickFrameWatchdog(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// `window.still` from the phone (PHONE-21): the stream is live and its
+    /// encoder has produced nothing for a second. It counts as a heartbeat and
+    /// ends a shown stall; it is not a frame, so the opening cover stays up.
+    func noteStill() {
+        noteStill(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives it without waiting.
+    func noteStill(at now: TimeInterval) {
+        stills += 1
+        if watchdog.still(at: now) { setStalled(false) }
+        writeChromeState()
     }
 
     /// The tick with the clock passed in, so a test can drive the window's

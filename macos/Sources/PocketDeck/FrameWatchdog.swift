@@ -5,10 +5,12 @@
 // not a stall. The phone's encoder repeats its last frame at least every 500 ms
 // while a stream is open (WindowStream.configure,
 // KEY_REPEAT_PREVIOUS_FRAME_AFTER), which gives every live stream a steady
-// heartbeat even on an unchanging screen. 1.5 s of silence (three missed beats)
-// is a stalled picture: the window says "Not responding" and blocks input until
-// a frame arrives. One missed second is left alone: Wi-Fi drops that much now
-// and then, and a flashing pill on a healthy stream is worse than a late one.
+// heartbeat even on an unchanging screen. A vendor encoder that drops the
+// repeat sends `window.still` once a second instead (PHONE-21); a still is a
+// heartbeat too. 1.5 s of silence (three missed beats) is a stalled picture:
+// the window says "Not responding" and blocks input until a frame arrives. One
+// missed second is left alone: Wi-Fi drops that much now and then, and a
+// flashing pill on a healthy stream is worse than a late one.
 //
 // Pure: the window feeds it the clock, so a fake clock pins the rule.
 
@@ -45,6 +47,20 @@ struct FrameWatchdog: Equatable {
     @discardableResult
     mutating func frame(at now: TimeInterval) -> Bool {
         // An older timestamp than the last one is a stale read, not a frame.
+        guard now > (lastFrame ?? -.greatestFiniteMagnitude) else { return false }
+        lastFrame = now
+        guard stalled else { return false }
+        stalled = false
+        return true
+    }
+
+    /// `window.still`: the stream is live and its encoder produced no output
+    /// for a second (a vendor encoder that drops the 500 ms repeat on a still
+    /// screen). It is a heartbeat: it resets the deadline and ends a shown
+    /// stall, and it is deliberately not a frame — the opening cover and its
+    /// first-frame rule keep their own evidence. True when it ended a stall.
+    @discardableResult
+    mutating func still(at now: TimeInterval) -> Bool {
         guard now > (lastFrame ?? -.greatestFiniteMagnitude) else { return false }
         lastFrame = now
         guard stalled else { return false }
