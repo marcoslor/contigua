@@ -40,7 +40,9 @@ final class PathLayer {
         /// One reliable frame, already deduped, in order.
         case deliver(Frame)
         /// A `path.pong` for the ping we sent; `rttMs` uses our own clock.
-        case pong(path: String, rttMs: Double)
+        /// [rankingSample] is false on a path that carried bulk within the last
+        /// second: that pong measures the queue, not the link (E-8).
+        case pong(path: String, rttMs: Double, rankingSample: Bool)
         /// The phone moved its sending path; `seq` is its next reliable seq.
         case peerSwitch(path: String, seq: UInt64, arrivedOn: String)
         /// A ping this side answered (told for logging only).
@@ -73,7 +75,12 @@ final class PathLayer {
     private var pending: [Pending] = []
     /// Admitted reliable frames per path, in seq order, fed to the channel only
     /// while it is writable (D-2). The replay buffer still owns them.
-    private var outbox: [String: [[UInt8]]] = [:]
+    private struct OutboxFrame {
+        let bytes: [UInt8]
+        /// Bulk's RTT samples are the queue, not the link (E-8).
+        let bulk: Bool
+    }
+    private var outbox: [String: [OutboxFrame]] = [:]
     /// Bytes in each outbox: bulk enters the seq space only while its path's
     /// outbox is under [bulkAdmitBytes] (E-4), so a key is never behind a
     /// whole file's credit.
@@ -99,6 +106,9 @@ final class PathLayer {
     private var lastAckAt: Int64 = 0
     /// The last bulk frame admitted or delivered (D-1's transfer window).
     private var lastBulkAt: Int64 = 0
+    /// The last bulk frame that path carried in either direction (E-8): its
+    /// pong is a liveness signal, never a ranking sample, for one second.
+    private var lastBulkOn: [String: Int64] = [:]
     private var lastPingAt: Int64 = 0
     private var pingSentAt: [String: Int64] = [:]
     private var joinedAwaitingPong: [String: Int64] = [:]
@@ -185,6 +195,7 @@ final class PathLayer {
             joinedAwaitingPong.removeValue(forKey: id)
             outbox.removeValue(forKey: id)
             outboxBytes.removeValue(forKey: id)
+            lastBulkOn.removeValue(forKey: id)
             lastInboundAt.removeValue(forKey: id)
             overflow.removeValue(forKey: id)
             overflowBytes.removeValue(forKey: id)
@@ -211,6 +222,7 @@ final class PathLayer {
             pending.removeAll()
             outbox.removeAll()
             outboxBytes.removeAll()
+            lastBulkOn.removeAll()
             lastInboundAt.removeAll()
             overflow.removeAll()
             overflowBytes.removeAll()
@@ -323,7 +335,7 @@ final class PathLayer {
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
             if bulk { lastBulkAt = nowMs() }
             if let id = current, paths[id] != nil {
-                outbox[id, default: []].append(wrapped)
+                outbox[id, default: []].append(OutboxFrame(bytes: wrapped, bulk: bulk))
                 outboxBytes[id, default: 0] += wrapped.count
                 queuedOn = id
             }
@@ -348,7 +360,7 @@ final class PathLayer {
         while true {
             var flushed: [Flushed] = []
             var stop = false
-            let next: (Path, [UInt8])? = locked {
+            let next: (Path, OutboxFrame)? = locked {
                 guard let path = paths[id], path.isWritable() else {
                     stop = true
                     return nil
@@ -358,7 +370,7 @@ final class PathLayer {
                     // space may enter it now, while there is room (E-4).
                     flushed = admitPendingLocked()
                     for item in flushed {
-                        outbox[id, default: []].append(item.bytes)
+                        outbox[id, default: []].append(OutboxFrame(bytes: item.bytes, bulk: item.bulk))
                         outboxBytes[id, default: 0] += item.bytes.count
                     }
                 }
@@ -367,11 +379,12 @@ final class PathLayer {
                     return nil
                 }
                 outbox[id]?.removeFirst()
-                outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.count)
+                outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.bytes.count)
+                if first.bulk { lastBulkOn[id] = nowMs() }
                 return (path, first)
             }
             for item in flushed { item.completion?(true) }
-            guard let (path, bytes) = next else {
+            guard let (path, item) = next else {
                 if !stop { return }
                 // Give up the claim and look again under the same lock: a
                 // frame appended just before the claim is dropped is picked up
@@ -386,7 +399,7 @@ final class PathLayer {
                 if again { continue }
                 return
             }
-            path.send(bytes)
+            path.send(item.bytes)
         }
     }
 
@@ -414,7 +427,7 @@ final class PathLayer {
             guard let wrapped = try? PathCodec.encodeReliable(seq: seq, inner: frame).encoded else { return }
             try? replay.append(seq: seq, frame: wrapped, bulk: false, force: true)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
-            outbox[on, default: []].append(wrapped)
+            outbox[on, default: []].append(OutboxFrame(bytes: wrapped, bulk: false))
             outboxBytes[on, default: 0] += wrapped.count
             sent = true
         }
@@ -427,9 +440,9 @@ final class PathLayer {
     func replayOnCurrent() {
         let id: String? = locked {
             guard !closed, let id = current, paths[id] != nil else { return nil }
-            let frames = replay.unacked.map(\.frame)
+            let frames = replay.unacked.map { OutboxFrame(bytes: $0.frame, bulk: $0.bulk) }
             outbox[id] = frames
-            outboxBytes[id] = frames.reduce(0) { $0 + $1.count }
+            outboxBytes[id] = frames.reduce(0) { $0 + $1.bytes.count }
             return id
         }
         if let id { pump(id) }
@@ -451,7 +464,7 @@ final class PathLayer {
                 flush = admitPendingLocked()
                 if let id = current, paths[id] != nil {
                     for item in flush {
-                        outbox[id, default: []].append(item.bytes)
+                        outbox[id, default: []].append(OutboxFrame(bytes: item.bytes, bulk: item.bulk))
                         outboxBytes[id, default: 0] += item.bytes.count
                     }
                     target = id
@@ -482,7 +495,10 @@ final class PathLayer {
             for pid in fed.pause { locked { paths[pid] }?.setReading(false) }
             for pid in fed.resume { locked { paths[pid] }?.setReading(true) }
             if fed.delivered.contains(where: { PathCodec.isBulk($0.frame.inner.type) }) {
-                locked { lastBulkAt = nowMs() }
+                locked {
+                    lastBulkAt = nowMs()
+                    lastBulkOn[id] = nowMs()
+                }
             }
             for item in fed.delivered {
                 // A marker travels reliable, like every JSON frame: the
@@ -522,12 +538,18 @@ final class PathLayer {
                 let pingPath = message.string("path") ?? id
                 let ts = Int64(message.int("ts") ?? 0)
                 if hasPath(pingPath) {
-                    let rtt = Double(max(0, nowMs() - ts))
-                    locked {
+                    let at = nowMs()
+                    let rtt = Double(max(0, at - ts))
+                    // E-8: a pong on a path that carried bulk in the last
+                    // second queued behind it; it proves the path alive and
+                    // says nothing about the link, so it never ranks.
+                    let rankingSample: Bool = locked {
                         pingSentAt.removeValue(forKey: pingPath)
                         joinedAwaitingPong.removeValue(forKey: pingPath)
+                        guard let last = lastBulkOn[pingPath] else { return true }
+                        return at - last > Self.bulkSampleQuietMs
                     }
-                    events.append(.pong(path: pingPath, rttMs: rtt))
+                    events.append(.pong(path: pingPath, rttMs: rtt, rankingSample: rankingSample))
                 }
             case "path.switch":
                 if let target = message.string("path"), hasPath(target),
@@ -547,6 +569,7 @@ final class PathLayer {
 
     private struct Flushed {
         let bytes: [UInt8]
+        let bulk: Bool
         let completion: (@Sendable (Bool) -> Void)?
     }
 
@@ -680,7 +703,7 @@ final class PathLayer {
             let seq = replay.nextSeq
             try? replay.append(seq: seq, frame: wrapped, bulk: item.bulk)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
-            out.append(Flushed(bytes: wrapped, completion: item.completion))
+            out.append(Flushed(bytes: wrapped, bulk: item.bulk, completion: item.completion))
             pending.removeFirst()
         }
         return out
@@ -826,6 +849,9 @@ final class PathLayer {
     /// How recently a bulk frame must have moved to count as "a transfer runs"
     /// (PATH-7, the same 2 s on both sides).
     static let transferWindowMs: Int64 = 2_000
+    /// E-8: a pong this soon after the path carried bulk is a queue delay, not
+    /// a link measurement; it is a liveness signal only.
+    static let bulkSampleQuietMs: Int64 = 1_000
     static let pongTimeoutMs: Int64 = 1_500
     /// A path that delivered anything this recently is alive (D-2).
     static let aliveMs: Int64 = 1_500

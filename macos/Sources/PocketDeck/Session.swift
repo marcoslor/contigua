@@ -831,7 +831,11 @@ final class Session {
             switch event {
             case .deliver(let inner):
                 handleFrame(inner)
-            case .pong(let path, let rtt):
+            case .pong(let path, let rtt, let rankingSample):
+                // E-8/RRR-4: a pong on a path that carried bulk within the
+                // last second measures the queue, not the link. It proved the
+                // path alive above; it never enters the score.
+                guard rankingSample else { break }
                 let now = uptime
                 pathRanking.addSample(id: path, rttMs: rtt, at: now)
                 pathMachine.scores[path] = pathRanking.score(id: path, now: now) ?? -1

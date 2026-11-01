@@ -384,10 +384,15 @@ struct PathRanking {
     static let margin = 100
     static let hysteresis: TimeInterval = 5
     static let minPongs = 2
+    /// E-8/RRR-4: a planned (margin) switch is held to one per session per
+    /// this many seconds. Unplanned failovers and demotes are never held.
+    static let plannedHold: TimeInterval = 30
 
     private(set) var state: PathRankingState = .idle
     private(set) var stats: [String: PathStats] = [:]
     private(set) var kinds: [String: PathKind] = [:]
+    /// The last planned switch this session made (nil = none yet).
+    private(set) var lastPlannedSwitchAt: TimeInterval?
 
     mutating func register(id: String, kind: PathKind = .lan) {
         kinds[id] = kind
@@ -519,6 +524,14 @@ struct PathRanking {
                     return []
                 }
                 guard tickNow - since >= Self.hysteresis else { return [] }
+                // E-8/RRR-4: a planned switch drains and closes the old path,
+                // which E-5 re-dials at once; without the hold the fresh idle
+                // path wins straight back and the pair churns a handshake every
+                // 10–25 s. The margin must still hold when the hold expires.
+                if let last = lastPlannedSwitchAt, tickNow - last < Self.plannedHold {
+                    return []
+                }
+                lastPlannedSwitchAt = tickNow
                 state = .steady(current: challenger)
                 return [.switchTo(challenger)]
             case .idle, .steady:

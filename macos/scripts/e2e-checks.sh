@@ -807,6 +807,14 @@ PY2
     grep -q "paths: path down" <<<"$path_lines" \
         && bad "[PATH-23] PATHBULK a path died during the transfer" \
         || ok "[PATH-23] PATHBULK both paths stayed open"
+    # E-8/RRR-4: a planned switch drains its old path, and E-5 re-dials it at
+    # once; without the 30 s hold the fresh idle path won back every 8–25 s and
+    # the pair churned a handshake during the whole transfer.
+    local planned
+    planned="$(printf '%s\n' "$path_lines" | grep -c -- ' (planned)' || true)"
+    [ "${planned:-0}" -le 1 ] \
+        && ok "[PATH-7] PATHBULK ${planned:-0} planned switch during the 32 MiB drop (at most one per 30 s)" \
+        || bad "[PATH-7] PATHBULK $planned planned switches during the 32 MiB drop: $(printf '%s\n' "$path_lines" | grep -- ' (planned)' | tail -3)"
     # The check is vacuous unless the throttle actually carried the file.
     bytes_ok="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
 import json, sys
