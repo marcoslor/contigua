@@ -44,6 +44,9 @@ internal class WindowStream(
         /** Bounded wait for a drain thread before its codec is stopped and released. */
         const val DRAIN_JOIN_MS = 250L
 
+        /** How often the drain's freeze hook reads its debug property. */
+        const val FREEZE_CHECK_MS = 500L
+
         /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
         const val KEY_MAX_FPS = "max-fps-to-encoder"
 
@@ -115,6 +118,15 @@ internal class WindowStream(
     @Volatile private var lastCsd: ByteArray? = null
 
     private val guard = RedrawGuard()
+
+    /**
+     * The picture's heartbeat: a live stream may not stay silent for a second
+     * (PHONE-21). The drain thread feeds it the encoder's clock and performs
+     * the one action it returns. Its own lock, never `this`: a resize can hold
+     * the stream's monitor for the whole encoder rebuild.
+     */
+    private var heartbeatModel = IdleFrameWatchdogModel()
+    private val heartbeatLock = Any()
 
     /** What the display already shows, so a repeat asks for nothing. */
     private val ledger = ResizeLedger()
@@ -306,6 +318,7 @@ internal class WindowStream(
     fun pause() {
         if (paused) return
         paused = true
+        heartbeat(IdleFrameWatchdogEvent.Pause)
         if (persistent == null || encoder == null) detachEncoder()
     }
 
@@ -313,6 +326,7 @@ internal class WindowStream(
     fun resume() {
         if (!paused || released) return
         paused = false
+        heartbeat(IdleFrameWatchdogEvent.Resume(SystemClock.elapsedRealtime()))
         if (persistent != null && encoder != null) {
             lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture) }
             requestKeyframe()
@@ -328,10 +342,40 @@ internal class WindowStream(
 
     fun requestKeyframe() {
         val codec = encoder ?: return
+        requestSyncFrame(codec)
+    }
+
+    /** `setParameters(PARAMETER_KEY_REQUEST_SYNC_FRAME)` on a known encoder. */
+    private fun requestSyncFrame(codec: MediaCodec) {
         runCatching {
             val params = Bundle()
             params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
             codec.setParameters(params)
+        }
+    }
+
+    /**
+     * Feeds the picture's heartbeat and performs its one action. [codec] is the
+     * drain's own encoder, so a request goes to the codec that is producing.
+     */
+    private fun heartbeat(event: IdleFrameWatchdogEvent, codec: MediaCodec? = null) {
+        synchronized(heartbeatLock) {
+            val before = heartbeatModel
+            val step = idleFrameWatchdogTransition(heartbeatModel, event)
+            heartbeatModel = step.model
+            for (action in step.actions) {
+                when (action) {
+                    IdleFrameWatchdogAction.RequestSyncFrame -> codec?.let { requestSyncFrame(it) }
+                }
+            }
+            if (step.model.state != before.state) {
+                log("stream $stream heartbeat: ${before.state.wire} --${event.wire}--> ${step.model.state.wire}")
+            }
+            if (event is IdleFrameWatchdogEvent.Frame && event.keyframe &&
+                before.state == IdleFrameWatchdogState.Requested
+            ) {
+                log("stream $stream heartbeat: idle keyframes=${step.model.idleFrames}")
+            }
         }
     }
 
@@ -367,6 +411,7 @@ internal class WindowStream(
     @Synchronized
     fun close() {
         released = true
+        heartbeat(IdleFrameWatchdogEvent.Close)
         rotationThread?.interrupt()
         rotationThread = null
         detachEncoder()
@@ -758,22 +803,41 @@ internal class WindowStream(
     }
 
     private fun startDrain(codec: MediaCodec) {
+        heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()), codec)
         drainThread = Thread({ drain(codec) }, "pocketdeck-drain-$stream").also { it.start() }
     }
 
     private fun drain(codec: MediaCodec) {
         val info = MediaCodec.BufferInfo()
+        var nextFreezeCheckMs = 0L
+        var frozen = false
         while (!released && encoder === codec) {
+            val polled = SystemClock.elapsedRealtime()
+            if (!frozen && polled >= nextFreezeCheckMs) {
+                nextFreezeCheckMs = polled + FREEZE_CHECK_MS
+                frozen = StreamDebug.freezeDrain()
+                if (frozen) log("stream $stream: ${StreamDebug.FREEZE_DRAIN}=1, drain frozen (a stuck encoder)")
+            }
+            if (frozen) {
+                try {
+                    Thread.sleep(FREEZE_CHECK_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                continue
+            }
             val idx = try {
                 codec.dequeueOutputBuffer(info, 10_000)
             } catch (e: Throwable) {
                 log("stream $stream drain ended: ${e.javaClass.simpleName}")
                 break
             }
-            guard.poll(SystemClock.elapsedRealtime())?.let { nudgeRedraw(codec, it) }
+            val now = SystemClock.elapsedRealtime()
+            heartbeat(IdleFrameWatchdogEvent.Tick(now), codec)
+            guard.poll(now)?.let { nudgeRedraw(codec, it) }
             // Bitrate recovery rides on the drain loop: no extra timer, and it
             // only grows the bitrate when the stream is alive anyway.
-            quality.maybeRecover(SystemClock.elapsedRealtime())?.let { bps ->
+            quality.maybeRecover(now)?.let { bps ->
                 log("stream $stream quality: bitrate recovered to ${mbps(bps)} (+10%)")
                 applyBitrate()
             }
@@ -788,21 +852,24 @@ internal class WindowStream(
             try {
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                     if (encoder !== codec) {
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
-                    } else if (dropForFps(info.presentationTimeUs)) {
-                        // Above the fps cap: never queued, so the socket sees less.
                     } else {
-                        buf.position(info.offset)
-                        buf.limit(info.offset + info.size)
-                        val data = ByteArray(info.size)
-                        buf.get(data)
-                        val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                        sink.onFrame(stream, info.presentationTimeUs, key, data)
-                        guard.onFrame(SystemClock.elapsedRealtime())?.let {
-                            log("stream $stream first frame ${it}ms after the encoder attached (nudges=${guard.nudgeCount})")
+                        heartbeat(IdleFrameWatchdogEvent.Frame(now, key), codec)
+                        if (dropForFps(info.presentationTimeUs)) {
+                            // Above the fps cap: never queued, so the socket sees less.
+                        } else {
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            val data = ByteArray(info.size)
+                            buf.get(data)
+                            sink.onFrame(stream, info.presentationTimeUs, key, data)
+                            guard.onFrame(SystemClock.elapsedRealtime())?.let {
+                                log("stream $stream first frame ${it}ms after the encoder attached (nudges=${guard.nudgeCount})")
+                            }
                         }
                     }
                 }
