@@ -128,8 +128,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
     learns its package (link/handoff).
   - `DebugInput windowstyle framed|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|immersive lights=shown|hidden pill=shown|hidden clicks=N`
     (N = clicks the bar's or the pill's background received) there for the e2e check.
-- **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
-  fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
+- **Disconnection overlay (stall and link down):** the whole window — the 28 pt bar included — as one sheet: the last frame under one acrylic
+  (`NSVisualEffectView` `.hudWindow` with a black dim, 0.38 in dark and 0.50 in light so white ink keeps 4.5:1), with the window's icon (96 pt, corner 22),
+  the title "Not responding" / "Reconnecting…" / "Phone offline" (15 pt semibold) and "Waiting for <phone>…" (12.5 pt) centred in the body. No buttons; the
+  traffic lights and the bar's controls ride above it, and every other click is the overlay's (the stream is frozen). It comes with the picture's state: 1.5 s
+  of silence, or 1 s after the link drops ("Phone offline" at 15 s); a frame or the reconnect takes it away and the bar's mirror is live again.
 
 ### Trackpad input (stream windows)
 The phone is a touch screen, the Mac has a pointer and a trackpad. Everything reaches it as the touches, scroll and key frames of docs/PROTOCOL.md; the aim is that the trackpad feels like
@@ -254,7 +257,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed · one cell per launch target: a package with two launcher activities is two cells, each keyed by its activity, and a cell with no label falls back to the package's last part (a repeated key draws nothing).
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
+**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · the **disconnection overlay** above over the whole window while the picture is stalled or the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
