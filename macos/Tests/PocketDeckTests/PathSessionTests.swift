@@ -216,6 +216,19 @@ final class PathSessionTests: XCTestCase {
         machine.handle(.currentFailed(id: "a"), now: 1)
         XCTAssertEqual(machine.description, "orphaned")
     }
+
+    /// RRR-10: a fresh machine is unfounded — not an orphan whose `since`
+    /// doubles as a "never attached" sentinel (which relied on uptime never
+    /// being 0). Only a real orphan starts the 30 s grace.
+    func testAFreshMachineIsUnfoundedNotAnOrphan() {
+        XCTAssertNotEqual("orphaned", PathSessionMachine().description,
+                          "a fresh machine must not look like an orphan")
+        XCTAssertEqual(.unfounded, PathSessionMachine().state)
+        // And it is not on the orphan's 30 s clock: a grace event does nothing.
+        var fresh = PathSessionMachine()
+        XCTAssertEqual([], fresh.handle(.graceExpired, now: 100))
+        XCTAssertEqual(.unfounded, fresh.state)
+    }
 }
 
 extension PathSessionTests {

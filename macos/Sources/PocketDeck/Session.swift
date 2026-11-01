@@ -348,7 +348,7 @@ final class Session {
     /// a rejoin, not the founder (it replays instead of starting). Derived from
     /// the machine, never a flag beside it (RR-14).
     private var everAttached: Bool {
-        if case .orphaned(since: 0) = pathMachine.state { return false }
+        if case .unfounded = pathMachine.state { return false }
         return true
     }
     /// Pre-welcome sends travel bare on the one attempt holding the plain

@@ -7,6 +7,10 @@ import Foundation
 // MARK: - Session (PATH-3, PATH-6, PATH-9, PATH-13, PATH-16)
 
 enum PathSessionState: Equatable {
+    /// No path has founded the session yet (RRR-10): explicit, never a sentinel
+    /// value of another state, so nothing can mistake "not founded" for an
+    /// orphan and start its 30 s grace.
+    case unfounded
     case live(current: String)
     case migrating(from: String, to: String, since: TimeInterval)
     case orphaned(since: TimeInterval)
@@ -18,6 +22,7 @@ extension PathSessionState {
     /// path id or anything from the wire.
     var token: String {
         switch self {
+        case .unfounded: return "unfounded"
         case .live: return "live"
         case .migrating: return "migrating"
         case .orphaned: return "orphaned"
@@ -97,7 +102,7 @@ struct PathSessionMachine {
     /// The class each live path was ranked with.
     var kinds: [String: PathKind]
 
-    init(state: PathSessionState = .orphaned(since: 0),
+    init(state: PathSessionState = .unfounded,
          live: Set<String> = [],
          standby: Set<String> = [],
          scores: [String: Int] = [:],
@@ -133,6 +138,27 @@ struct PathSessionMachine {
         switch state {
         case .ended:
             return [.ignore]
+
+        case .unfounded:
+            switch event {
+            case .pathUp(let id, _):
+                // The founder normally starts through `startLive`; a first
+                // path arriving as an event still founds with no marker and no
+                // replay (PATH-3).
+                state = .live(current: id)
+                live.insert(id)
+                scores[id] = scores[id] ?? -1
+                return [.startPing(path: id), .ranking(.pathUp(id))]
+            case .close(let reason):
+                state = .ended(reason: reason)
+                return [.end(reason: reason)]
+            case .pathDown(let id), .currentFailed(let id), .pongLost(let id):
+                live.remove(id)
+                standby.remove(id)
+                return []
+            case .peerSwitch, .graceExpired, .drainExpired:
+                return []
+            }
 
         case .live(let current):
             switch event {
@@ -335,6 +361,7 @@ struct PathSessionMachine {
     /// A closed token for the transition log (PATH-14): never an address.
     var description: String {
         switch state {
+        case .unfounded: return "unfounded"
         case .live(let current): return "live \(current)"
         case .migrating(let from, let to, _): return "migrating \(from)->\(to)"
         case .orphaned: return "orphaned"
