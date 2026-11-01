@@ -310,6 +310,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
         chrome.openingCover.show(display, icon: openingIcon)
+        // The cover's ground takes the bar's haze with it (WIN-40).
+        chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
         // it, from the first moment to a refusal (WIN-22, item M9).
         updateFrozen()
@@ -323,6 +325,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         openingPhase = nil
         showOpeningPhase()
         Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        // The extension view builds its backdrop once the stream it mirrors has
+        // a frame: turn its radius up now that it exists (WIN-40). This is also
+        // where a macOS without the filter gets its one fact line.
+        chrome.reapplyBarBlur(reportMissing: true)
         updateFrozen()
         tickFrameWatchdog()
         run(actions)
@@ -1077,6 +1083,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
+            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " haze=\(chrome.hazeVisible ? 1 : 0)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"

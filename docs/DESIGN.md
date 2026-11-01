@@ -114,9 +114,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   container (every child paints square so the bar's seam stays straight); 16 pt continuous corners on the window; the virtual display is sized from the stream
   rect only, never the style.
   - **Framed bar.** An `NSBackgroundExtensionView` has the video view as its `contentView` and fills the whole window, so the band above the video is the
-    stream's own top 28 pt mirrored there — live, with the system's progressive blur (strongest at the window's top edge, sharp at the seam), no CPU
-    readback and no second decode. Nothing is drawn over the mirror: no material, tint, alpha ramp or scrim, so the bar keeps the stream's colours in light
-    and dark apps; the traffic lights ride it as standard controls.
+    stream's own top 28 pt mirrored there — live, with the system's progressive blur raised from its 5 pt radius to 15 (strongest at the window's top edge,
+    sharp at the seam), no CPU readback and no second decode. A white haze fades over the bar band alone, α 0.14 in dark and 0.30 in light at the window's
+    top edge to clear at the seam; it is hidden while the opening cover or the disconnection overlay is up and in Immersive or full screen. Nothing else is
+    drawn over the mirror: no material, tint or scrim, so the bar keeps the stream's colours in light and dark apps; the traffic lights ride it as standard
+    controls. A macOS whose backdrop has no such filter keeps the system's own radius and still gets the haze.
   - **Immersive.** A 72×32 pt hot zone at the stream's top-left. A click there before the dwell reaches the app as an ordinary touch (no added delay) and
     restarts the rest; a rest (moved < 3 pt) fades the pill in over 0.12 s — `NSGlassEffectView` in its clear style, corner 8, so it blurs the stream
     without a grey fill — with the window's traffic lights on its slots (8 pt in, 23 pt apart) and the kind's actions after them (app windows: none).
