@@ -1623,12 +1623,15 @@ final class Session {
             // server restarted, or its grace ended first) ends the orphan at
             // once, so the controller's reconnect starts exactly one new
             // session instead of dialing a dead id for the whole grace.
-            // `busy` means the same for this Mac's join right now.
+            // RRR-9: for a join, `busy` means that same thing (the session is
+            // ending), never "another Mac is connected": it fails as
+            // `no_session` so the person reads the right sentence.
             if message.int("stream") == nil, let attemptId = lastFramePath,
                attempts[attemptId]?.machine.phase.joinSession != nil,
                code == "no_session" || code == "busy" {
-                phoneErrorCode = code
-                fail(code)
+                let refusal = code == "busy" ? "no_session" : code
+                phoneErrorCode = refusal
+                fail(refusal)
                 return
             }
             if message.int("stream") == nil { phoneErrorCode = code }

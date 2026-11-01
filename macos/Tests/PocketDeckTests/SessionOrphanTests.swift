@@ -165,6 +165,57 @@ final class SessionOrphanTests: XCTestCase {
         session.closeAndWait()
     }
 
+    /// RRR-9: a rejoin refused `busy` means the phone's session is ending, not
+    /// that another Mac is connected. It must fail as `no_session`, so the
+    /// person reads "No session", not the wrong "Another Mac is connected".
+    func testARejoinRefusedBusyIsReportedAsNoSession() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var founder: FakeServer.Connection?
+        var foundingSession: String?
+        var joinHellos = 0
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello" else { return }
+            if let join = message.string("join") {
+                lock.lock(); joinHellos += 1; let count = joinHellos; lock.unlock()
+                if count == 1 {
+                    connection.sendJSON(Self.welcomeJSON(session: join))
+                } else {
+                    connection.sendJSON(["t": "error", "code": "busy"])
+                }
+                return
+            }
+            let session = PathIds.sessionId()
+            lock.lock(); foundingSession = session; founder = connection; lock.unlock()
+            connection.sendJSON(Self.welcomeJSON(session: session))
+        }
+        let record = PinnedPhoneV2(deviceId: "phone-1",
+                                   phoneFingerprintHex: server.phoneFingerprintHex,
+                                   certPem: phoneIdentity.certPem)
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, endpoints: [endpoint, endpoint],
+                              knownDeviceId: "phone-1", clientId: "test-client",
+                              identity: macIdentity.identity, pinnedPhone: record,
+                              connectTimeout: 4)
+        session.pairingPolicy = .never
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return foundingSession != nil
+        })
+        lock.lock(); let founderConnection = founder; lock.unlock()
+        founderConnection?.close()
+        let failed = waitFor(timeout: 6) {
+            if case .failed(let reason) = session.state { return reason == "no_session" }
+            return false
+        }
+        XCTAssertTrue(failed, "a busy rejoin did not end the orphan as no_session: \(session.state)")
+        session.closeAndWait()
+    }
+
     /// The founder welcomes; the held attempt joins; the founder's socket then
     /// dies (the only path is gone). A key and a drop chunk sent while orphaned
     /// must be held and replayed on the joining path, and the drop must not be
