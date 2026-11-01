@@ -80,8 +80,9 @@ disabled, never hidden.
    The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
    mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
    touch. Settings → Input → **Hover over Android apps** turns it off.
-   New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
-   ("Reconnecting…") sits over the last frame; the window stays open.
+   New windows cascade (never on top of the Deck) and remember their frame. While the connection is down the window shows
+   its disconnection screen — the last frame under one acrylic, the app's icon, "Reconnecting…" and "Waiting for <phone>…",
+   then "Phone offline" after 15 s — and stays open.
    While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).

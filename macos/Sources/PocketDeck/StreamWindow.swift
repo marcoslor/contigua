@@ -91,11 +91,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The local key monitor that gives the bar its keys before AppKit's own
     /// Tab handling (see `handleBarKey`).
     private var barKeyMonitor: Any?
-    private(set) var isStalled = false
+    /// The picture's state (WIN-39): live, stalled, or the link's two down
+    /// steps. One machine, whose presentation is the disconnection overlay.
+    private(set) var picture = PictureState()
+    var isStalled: Bool { picture.isStalled }
     /// The link is down: the bar's phone-side controls are dimmed, with the
     /// reason, so a click cannot vanish into a dead session (M3, item 8).
     private(set) var phoneControlsOffline = false
-    private var linkIsDown = false
+    private var linkIsDown: Bool { picture.isLinkDown }
 
     /// The watchdog's rule: a live session, the window on screen, and a picture
     /// that is wanted (not paused, not Live Text, no cover). While it is false
@@ -307,6 +310,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
         chrome.openingCover.show(display, icon: openingIcon)
+        // The cover's ground takes the bar's haze with it (WIN-40).
+        chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
         // it, from the first moment to a refusal (WIN-22, item M9).
         updateFrozen()
@@ -320,6 +325,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         openingPhase = nil
         showOpeningPhase()
         Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        // The extension view builds its backdrop once the stream it mirrors has
+        // a frame: turn its radius up now that it exists (WIN-40). This is also
+        // where a macOS without the filter gets its one fact line.
+        chrome.reapplyBarBlur(reportMissing: true)
         updateFrozen()
         tickFrameWatchdog()
         run(actions)
@@ -1040,13 +1049,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let titleUp = window?.titleVisibility == .visible
         let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
         let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
-        // The "Not responding" pill is the visible part of a stall: it must be
-        // in the view tree, saying so, and fading in (the state's `stall=` is
-        // only the flag). The e2e asserts this, so a window that stops the
-        // picture without telling the person fails the check.
-        let stallPill = pill.map {
-            $0.superview != nil && $0.text == "Not responding" && $0.fadeTarget == 1
-        } ?? false
+        // The disconnection overlay is the visible part of a stall or a
+        // dropped link: it must be in the view tree, with its icon and its
+        // lines (the state's `stall=` is only the flag). The e2e asserts this,
+        // so a window that stops the picture without telling the person fails.
+        let overlay = chrome.stallOverlay
         // The picture's drawn rect in window points, top-left origin: the band
         // check reads the screenshot inside it.
         let picture = videoView.convert(videoView.videoRect(), to: nil)
@@ -1067,7 +1074,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
             + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
             + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
-            + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
+            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
+            + " stall_icon=\(overlay.hasIcon ? 1 : 0)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
             + " cover_phase=\(openingCoverPhase)"
@@ -1075,6 +1083,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
+            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " haze=\(chrome.hazeVisible ? 1 : 0)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
@@ -1210,6 +1220,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             setStalled(false)
         }
         if watchdog.tick(at: now, expecting: expecting) { setStalled(true) }
+        tickPicture(at: now)
+    }
+
+    /// The link's clock: the same 0.25 s tick moves "Reconnecting…" and "Phone
+    /// offline", so a test drives them without waiting (WIN-16).
+    func tickPicture(at now: TimeInterval) {
+        applyPicture(.tick(now), at: now)
     }
 
     /// The phone reported `power.locked` (its own power press with our streams
@@ -1227,73 +1244,59 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         writeChromeState()
     }
 
-    /// The picture stopped (or came back): the same kind of pill as the
-    /// reconnecting one, "Not responding", and `stall=1` in the chrome state.
-    /// A stall is a frozen mode: input and the phone-side actions stop too.
+    /// The picture stopped (or came back): the machine's stall event. A stall
+    /// is a frozen mode: input and the phone-side actions stop too.
     private func setStalled(_ stalled: Bool) {
-        guard stalled != isStalled else { return }
-        isStalled = stalled
-        if stalled {
-            let pill = self.pill ?? GlassPillView(text: "Not responding", showsProgress: false)
-            if self.pill == nil {
-                self.pill = pill
-                videoView.addSubview(pill)
-                pill.alphaValue = 0
-            }
-            pill.setText("Not responding", showsProgress: false)
-            layoutPill()
-            pill.fade(to: 1)
+        applyPicture(.stall(stalled), at: now())
+    }
+
+    /// One transition of the picture's machine: log the path, run its actions
+    /// and let the frozen state and the chrome state follow.
+    private func applyPicture(_ event: PictureState.Event, at time: TimeInterval) {
+        let from = PictureState.label(picture.state)
+        guard let actions = picture.handle(event, at: time) else { return }
+        let state = "\(from) --\(event)--> \(PictureState.label(picture.state))"
+        Log.video.notice("picture: \(state, privacy: .public)")
+        for action in actions { run(action) }
+        // `updateFrozen` writes the chrome state, so the transition lands there
+        // once.
+        updateFrozen()
+    }
+
+    /// The overlay came or went (WIN-39).
+    private func run(_ action: PictureState.Action) {
+        switch action {
+        case .present(let kind):
+            let display = StallOverlayDisplay(kind: kind, phone: manager.phoneName)
+            chrome.stallOverlay.show(display, icon: openingIcon)
+            chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
-        } else {
-            pill?.fade(to: 0)
+        case .dismiss:
+            chrome.stallOverlay.hide()
+            chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=0")
         }
-        updateFrozen()
     }
 
     // MARK: Link state
 
-    private var pill: GlassPillView?
-    private var pillShowWork: DispatchWorkItem?
-    private var pillOfflineWork: DispatchWorkItem?
-
-    /// The link dropped or came back: a pill over the last frame says so after
-    /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
+    /// The link dropped or came back: the overlay says so after 1 s (a blip
+    /// shows nothing), and "Phone offline" 15 s after the drop.
     func setLinkDown(_ down: Bool) {
-        linkIsDown = down
+        setLinkDown(down, at: now())
+    }
+
+    /// The clock-explicit half, so a test drives the two steps without waiting.
+    func setLinkDown(_ down: Bool, at time: TimeInterval) {
         phoneControlsOffline = down
         chrome.setOffline(down)
         if down {
             liveText.exit(.disconnect)
-            setStalled(false)
+            applyPicture(.linkDown, at: time)
+        } else {
+            applyPicture(.linkUp, at: time)
         }
         writeChromeState()
-        pillShowWork?.cancel()
-        pillOfflineWork?.cancel()
-        guard down else {
-            pill?.fade(to: 0)
-            return
-        }
-        let show = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let pill = self.pill ?? GlassPillView(text: "Reconnecting…", showsProgress: true)
-            if self.pill == nil {
-                self.pill = pill
-                self.videoView.addSubview(pill)
-                pill.alphaValue = 0
-            }
-            pill.setText("Reconnecting…", showsProgress: true)
-            self.layoutPill()
-            pill.fade(to: 1)
-        }
-        let offline = DispatchWorkItem { [weak self] in
-            self?.pill?.setText("Phone offline", showsProgress: false)
-            self?.layoutPill()
-        }
-        pillShowWork = show
-        pillOfflineWork = offline
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: show)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: offline)
     }
 
     // MARK: File-drop pill (docs/design/dragdrop.md)
@@ -1327,13 +1330,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                                 y: videoView.bounds.height - size.height - 24,
                                 width: size.width, height: size.height)
         dropPill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-    }
-
-    private func layoutPill() {
-        guard let pill else { return }
-        let size = pill.fittingSize
-        pill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2, y: 24, width: size.width, height: size.height)
-        pill.autoresizingMask = [.minXMargin, .maxXMargin, .maxYMargin]
     }
 
     // MARK: Density

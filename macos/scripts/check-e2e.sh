@@ -8551,6 +8551,9 @@ check_windows() {
     wait_until 20 chrome_has "cover_phase=opening cover_buttons=none" \
         && ok "[WIN-11] L1 opening: the cover is up with no buttons ($(chrome_state | grep -o 'loading=[^ ]* .*cover_buttons=[^ ]*'))" \
         || bad "[WIN-11] L1 opening: $(chrome_state)"
+    chrome_has "haze=0" \
+        && ok "[WIN-40] the opening cover's ground takes the bar's haze away" \
+        || bad "[WIN-40] the opening cover left the haze up: $(chrome_state)"
     # The shot first: the opening state lasts 5 s, and the accessibility walk
     # is slower than the rest of that window. Two seconds in, the phone's app
     # list and icon have usually arrived (a Deck click already has them).
@@ -8709,6 +8712,23 @@ check_windows() {
     ! grep -qF "That window is no longer open on the phone" "$WORK/banner.txt" 2>/dev/null \
         && ok "[WIN-38] the launcher said nothing about the closed window" \
         || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
+    stop_app
+    stop_fakephone
+
+    # --- WIN-40: the bar's system blur and its haze ----------------------
+    # Live, the mirror's variableBlur carries the picked 15 pt radius and the
+    # haze is up over the bar band; the opening cover's ground takes the haze
+    # away (the L1 opening phase above).
+    clean
+    rm -f "$WORK/chrome.txt"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
+    wait_until 20 events_have '"ev":"video"' \
+        || bad "WIN-40 the stream never sent video"
+    wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
+        && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+        || bad "[WIN-40] the live bar: $(chrome_state)"
     stop_app
     stop_fakephone
 }
@@ -13103,9 +13123,10 @@ PY
 
     # Frozen picture: the phone stops sending frames with the session still up.
     # The window must say so within stale_picture_ms, and say it visibly: the
-    # "Not responding" pill in the view tree (stall_pill=1), not just the
-    # `stall=` flag. Both window styles, and the pill goes when frames resume.
-    # One window per launch so the chrome state file is that window's.
+    # disconnection overlay in the view tree with the app's icon
+    # (stall_overlay=1 stall_icon=1), not just the `stall=` flag (WIN-39). Both
+    # window styles, and the overlay goes when frames resume. One window per
+    # launch so the chrome state file is that window's.
     local kind stall_ms stale_ms
     stale_ms="$(nfr_limit stale_picture_ms)"
     for kind in immersive framed; do
@@ -13124,17 +13145,17 @@ PY
         else
             bad "NFR no stale picture ($kind): the window kept the last frame as live for ${stale_ms} ms (state: $(chrome_state))"
         fi
-        if wait_until 3 chrome_has "stall_pill=1" && chrome_has "style=$kind"; then
-            ok "NFR stall is visible ($kind): the \"Not responding\" pill is in the window (state: $(chrome_state))"
+        if wait_until 3 chrome_has "stall_overlay=1 stall_icon=1" && chrome_has "style=$kind"; then
+            ok "NFR stall is visible ($kind): the \"Not responding\" overlay with its icon is in the window (state: $(chrome_state))"
         else
-            bad "NFR stall is visible ($kind): the chrome has no \"Not responding\" pill (state: $(chrome_state))"
+            bad "NFR stall is visible ($kind): the chrome has no \"Not responding\" overlay with its icon (state: $(chrome_state))"
         fi
         say "NFR stall ($kind): frames stopped, state $(chrome_state)"
         wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames ($kind)"
-        if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
-            ok "NFR stall is visible ($kind): frames resumed and the pill went away (state: $(chrome_state))"
+        if wait_until 10 chrome_has "stall=0 stall_overlay=0"; then
+            ok "NFR stall is visible ($kind): frames resumed and the overlay went away (state: $(chrome_state))"
         else
-            bad "NFR stall is visible ($kind): the pill stayed after frames resumed (state: $(chrome_state))"
+            bad "NFR stall is visible ($kind): the overlay stayed after frames resumed (state: $(chrome_state))"
         fi
         stop_app
         stop_fakephone
@@ -13155,8 +13176,8 @@ PY
     local locked_ms
     locked_ms="$(first_event_ms ev power_locked)"
     sleep 1
-    if chrome_has "stall=0 stall_pill=0"; then
-        ok "NFR power press: the window held the last frame, no \"Not responding\" pill (state: $(chrome_state))"
+    if chrome_has "stall=0 stall_overlay=0"; then
+        ok "NFR power press: the window held the last frame, no \"Not responding\" overlay (state: $(chrome_state))"
     else
         bad "NFR power press: the window called the phone's own press a stall (state: $(chrome_state))"
     fi
@@ -13169,7 +13190,7 @@ PY
     # the steps above cannot close the window before the re-stall.
     while [ "$(now_ms)" -lt $(( locked_ms + 1700 )) ]; do sleep 0.1; done
     say "NFR power press: $(( $(now_ms) - locked_ms )) ms after the press, waiting for a real stall"
-    if wait_ms 2500 chrome_has "stall=1 stall_pill=1"; then
+    if wait_ms 2500 chrome_has "stall=1 stall_overlay=1"; then
         ok "NFR power press: a real stall after the grace still says \"Not responding\" (state: $(chrome_state))"
     else
         bad "NFR power press: no stall after the grace with the frames still stopped (state: $(chrome_state))"
@@ -13200,7 +13221,7 @@ PY
     wait_until 30 eval '[ -n "$(first_event_after_ms ev stall "$occlude_ms")" ]' \
         || bad "NFR the fake never stalled while the window was covered (occlusion)"
     sleep 3
-    if chrome_has "stall=0 stall_pill=0"; then
+    if chrome_has "stall=0 stall_overlay=0"; then
         ok "NFR occlusion: a covered window did not call the stopped picture a stall"
     else
         bad "NFR occlusion: the covered window said the picture stopped (state: $(chrome_state))"
@@ -13214,14 +13235,14 @@ PY
     else
         bad "NFR occlusion: the covered time counted as silence (state: $(chrome_state))"
     fi
-    # ...and 1.5 s of real silence after that is a stall, with the pill.
-    if wait_ms "$stale_ms" chrome_has "stall=1 stall_pill=1"; then
+    # ...and 1.5 s of real silence after that is a stall, with the overlay.
+    if wait_ms "$stale_ms" chrome_has "stall=1 stall_overlay=1"; then
         ok "NFR occlusion: real silence after uncovering still stalls"
     else
         bad "NFR occlusion: a real silence after uncovering was not reported (state: $(chrome_state))"
     fi
     wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames (occlusion)"
-    if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
+    if wait_until 10 chrome_has "stall=0 stall_overlay=0"; then
         ok "NFR occlusion: frames resumed and the stall went away"
     else
         bad "NFR occlusion: the stall stayed after frames resumed (state: $(chrome_state))"

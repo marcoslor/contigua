@@ -3,14 +3,15 @@
 // video view is its contentView and it fills the rest of its frame — here the
 // bar band — with a replica of the content's top edge, so nothing is read back
 // off the CPU and nothing is decoded twice. The replica carries the system's
-// progressive blur (strongest at the window's top edge, sharp at the seam) and
-// nothing else: no material, tint or scrim lies over it, so the bar shows the
-// stream's own colours in light and dark apps instead of a grey band. The
-// traffic lights ride the bar's line as standard controls. Immersive: no
-// chrome at rest; the window is exactly the stream, and the traffic lights live
-// on a dwell pill that fades in at the stream's top-left corner when the
-// pointer rests there (DwellChrome, DwellPill in WindowStyle.swift). Full
-// screen has no bar in either style.
+// progressive blur (strongest at the window's top edge, sharp at the seam)
+// turned up to 15 pt (BarBlur.swift), and a light white haze over the bar band
+// only, clear at its seam; nothing else lies over it: no material, tint or
+// scrim, so the bar shows the stream's own colours in light and dark apps
+// instead of a grey band. The traffic lights ride the bar's line as standard
+// controls. Immersive: no chrome at rest; the window is exactly the stream, and
+// the traffic lights live on a dwell pill that fades in at the stream's
+// top-left corner when the pointer rests there (DwellChrome, DwellPill in
+// WindowStyle.swift). Full screen has no bar in either style.
 
 import AppKit
 import SwiftUI
@@ -60,6 +61,14 @@ final class StreamChromeView: NSView {
     /// The immersive dwell pill; only a background: the buttons above it are
     /// the chrome's own subviews so they can move between bar and pill frames.
     private let pillView = DwellPillView()
+    /// The haze over the bar band only: white at the window's top edge, clear
+    /// at the seam (WIN-40). Above the mirror, below the bar's controls.
+    private let hazeLayer = CAGradientLayer()
+    /// Re-applies the system blur radius when the hosting view builds or
+    /// rebuilds its backdrop (WIN-40).
+    private let barBlur: BarBlurTuner
+    /// The window events that can come with a rebuilt backdrop; tokens only.
+    private var windowObservers: [NSObjectProtocol] = []
     /// The Show Touches dots: a layer of this view, not of the video. The
     /// extension view mirrors its contentView (the video), so a dot there
     /// would be reflected into the framed bar; this layer is a sibling above
@@ -75,6 +84,11 @@ final class StreamChromeView: NSView {
     /// The cover an app (or the phone) window shows until its first frame
     /// (OpeningCover): above the stream and the sleeping cover, below the chrome.
     let openingCover = OpeningCoverView(frame: .zero)
+    /// The disconnection screen (StallOverlay, WIN-39): the last frame under one
+    /// acrylic that reaches over the framed bar, so the bar's mirror is never
+    /// the bright stream while it is up. Above the covers, below the bar's
+    /// controls and the traffic lights.
+    let stallOverlay = StallOverlayView(frame: .zero)
     /// Live Text (docs/design/livetext.md): its button rides the bar next to
     /// the kind's actions (or inside the pill), and its status pill says the
     /// window is frozen while the mode is on.
@@ -106,9 +120,10 @@ final class StreamChromeView: NSView {
     var onLiveTextToggle: (() -> Void)?
     var liveTextDragProvider: (() -> URL?)?
 
-    init(video: VideoLayerView, style: WindowStyle) {
+    init(video: VideoLayerView, style: WindowStyle, barBlur: BarBlurTuner = BarBlurTuner()) {
         self.video = video
         self.style = style
+        self.barBlur = barBlur
         super.init(frame: NSRect(origin: .zero, size: style.windowSize(stream: video.frame.size)))
         wantsLayer = true
         ext.automaticallyPlacesContentView = false
@@ -127,10 +142,19 @@ final class StreamChromeView: NSView {
         touchDots.zPosition = 1
         touchDots.masksToBounds = true
         layer?.addSublayer(touchDots)
+        // The haze sits over the mirror (0) and under the dots and the controls
+        // (1/2); its own frame keeps it inside the 28 pt band. The first colour
+        // is at the window's top edge (layer y 1), the clear one at the seam.
+        hazeLayer.startPoint = CGPoint(x: 0.5, y: 1)
+        hazeLayer.endPoint = CGPoint(x: 0.5, y: 0)
+        hazeLayer.zPosition = 0.55
+        layer?.addSublayer(hazeLayer)
         addSubview(phoneOverlay)
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
         openingCover.layer?.zPosition = 1.6
+        addSubview(stallOverlay)
+        stallOverlay.layer?.zPosition = 1.7
         addSubview(pillView)
         addSubview(actions)
         addSubview(liveTextCapsule)
@@ -240,6 +264,10 @@ final class StreamChromeView: NSView {
         touchDots.frame = video.frame
         phoneOverlay.frame = video.frame
         openingCover.frame = video.frame
+        // The overlay is one sheet from the window's top edge: it covers the
+        // bar too, and its words stay centred in the body below it.
+        stallOverlay.frame = bounds
+        stallOverlay.topInset = bar
         CATransaction.commit()
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its
@@ -259,7 +287,40 @@ final class StreamChromeView: NSView {
             pillFrame = newPillFrame()
             if showsPill { pillView.frame = pillFrame.map { $0 } ?? .zero }
         }
+        updateBarHaze()
+        reapplyBarBlur()
     }
+
+    /// Frames and shows the bar's haze from the current state: the 28 pt band
+    /// above the stream and nothing below its seam. Hidden while the opening
+    /// cover's ground or the stall overlay owns the bar, and in immersive or
+    /// full screen (both have no bar).
+    func updateBarHaze() {
+        let bar = barHeight
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let top = NSColor(white: 1, alpha: dark ? 0.14 : 0.30).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        hazeLayer.colors = [top, NSColor(white: 1, alpha: 0).cgColor]
+        hazeLayer.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
+        hazeLayer.isHidden = !(bar > 0 && openingCover.isHidden && !stallOverlay.isShowing)
+        CATransaction.commit()
+    }
+
+    /// Re-applies the system blur radius after an event that can bring a new
+    /// backdrop: a layout, the first frame, an appearance, backing-scale, key
+    /// or occlusion change. Observation only; nothing runs per frame.
+    func reapplyBarBlur(reportMissing: Bool = false) {
+        guard window != nil else { return }
+        barBlur.apply(in: ext.layer, reportMissing: reportMissing)
+    }
+
+    /// The system blur's radius right now, 0 when the fallback is in force
+    /// (WIN-40; the e2e reads it).
+    var barBlurRadius: CGFloat { BarBlur.systemRadius(in: ext.layer) ?? 0 }
+
+    /// True while the haze is drawn (WIN-40; the e2e reads it).
+    var hazeVisible: Bool { !hazeLayer.isHidden }
 
     /// The kind's actions over the framed bar or, while the pill shows, inside
     /// it. Positions only: show/hide is the style's and the dwell's business
@@ -374,6 +435,17 @@ final class StreamChromeView: NSView {
     /// True while the phone's panel-off pill is up (the chrome state reports it).
     var showsPanelStatus: Bool { !panelStatus.isHidden }
 
+    /// The overlay covers the bar's mirror (WIN-39): it spans the bar's band and
+    /// sits above the extension view, so the bar shows the same acrylic as the
+    /// body instead of the bright stream. False once the overlay is down.
+    var barMirrorCovered: Bool {
+        guard barHeight > 0, !stallOverlay.isHidden else { return false }
+        let band = NSRect(x: 0, y: video.frame.maxY, width: bounds.width,
+                          height: bounds.height - video.frame.maxY)
+        return stallOverlay.frame.contains(band)
+            && (stallOverlay.layer?.zPosition ?? 0) > (ext.layer?.zPosition ?? 0)
+    }
+
     private func layoutPanelStatus(bar: Bool) {
         guard !panelStatus.isHidden else { return }
         let size = panelStatus.preferredSize
@@ -397,11 +469,43 @@ final class StreamChromeView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyMaterial()
+        // The alphas follow the appearance, and macOS may rebuild the backdrop
+        // it applies to.
+        updateBarHaze()
+        reapplyBarBlur()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        reapplyBarBlur()
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         applyMaterial()
+        updateBarHaze()
+        reapplyBarBlur()
+        observeWindow()
+    }
+
+    deinit {
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    /// Re-apply the radius when the window becomes or stops being key and when
+    /// its occlusion changes: those are the events after which the hosting
+    /// view has been seen to rebuild its backdrop.
+    private func observeWindow() {
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didChangeOcclusionStateNotification] {
+            windowObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.reapplyBarBlur() }
+                })
+        }
     }
 
     private func applyMaterial() {
@@ -414,7 +518,14 @@ final class StreamChromeView: NSView {
         guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
         // The bar's mirrored band is the window's own: a click on it is a drag
         // (and counts), while the kind's actions keep their clicks.
-        return hit === ext ? self : hit
+        if hit === ext { return self }
+        // The disconnection overlay is the bar's ground while it is up: its band
+        // still drags the window, and its body takes the click (the stream is
+        // frozen, WIN-39).
+        if hit === stallOverlay, convert(point, from: superview).y >= video.frame.maxY {
+            return self
+        }
+        return hit
     }
 
     override func mouseDown(with event: NSEvent) {
