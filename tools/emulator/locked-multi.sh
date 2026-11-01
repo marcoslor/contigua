@@ -14,6 +14,8 @@
 #                                                 (the unfixed build) must fail
 #                                                 the episode rules, AFTER must
 #                                                 pass; both results are logged
+#   bash tools/emulator/locked-multi.sh --judge <label> <dir> <session> <logcat>
+#                                                 re-read one captured phase
 #   bash tools/emulator/locked-multi.sh --check    a dry run: syntax, the driver,
 #                                                 the parser's fixtures, the
 #                                                 APKs, the serial and the
@@ -38,6 +40,11 @@ set -u
 
 MODE=run
 BOOT=1
+JUDGE=0
+JUDGE_LABEL=""
+JUDGE_DIR=""
+JUDGE_SESSION=""
+JUDGE_LOGCAT=""
 BEFORE_APK=""
 AFTER_APK=""
 while [ $# -gt 0 ]; do
@@ -50,6 +57,9 @@ while [ $# -gt 0 ]; do
     --after)
       [ $# -ge 2 ] || { echo "locked-multi.sh: --after needs an APK" >&2; exit 2; }
       AFTER_APK="$2"; shift ;;
+    --judge)
+      [ $# -ge 5 ] || { echo "locked-multi.sh: --judge needs <label> <dir> <session> <logcat>" >&2; exit 2; }
+      JUDGE=1; JUDGE_LABEL="$2"; JUDGE_DIR="$3"; JUDGE_SESSION="$4"; JUDGE_LOGCAT="$5"; shift 4 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "locked-multi.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -209,6 +219,163 @@ PY
   exit "$rc"
 fi
 
+judge_phase() { # judge_phase <label> <dir> <result> <session> <logcat> [wake_state]
+  local label="$1" dir="$2" result="$3" session="$4" logcat="$5" wake_state="${6:-n/a}"
+  local display1 display2 state_one state_two state_two2 state_after facts
+  local released sleeps panel_on panel_off lit on_again locks sink tap_started vd_at_close live_after
+  local guard_after=false phase_failed=0
+  display1="$(sed -n 's/^display1=//p' "$session" | tail -1)"
+  display2="$(sed -n 's/^display2=//p' "$session" | tail -1)"
+  if [ -z "$display2" ]; then
+    # A run from before the driver printed one value per line.
+    display2="$(sed -n 's/.*[[:space:]]display2=//p' "$session" | tail -1)"
+    display1="${display1%% *}"
+  fi
+  if [ -z "$display1" ] || [ -z "$display2" ]; then
+    echo "locked-multi: $label: no display ids in $session" >&2
+    { echo "failed: 1 (no displays)"; cat "$session"; } > "$result"
+    return 1
+  fi
+
+  state_one="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-one.txt"   "$display1")"
+  state_two="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display1")"
+  state_two2="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display2")"
+  state_after="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-after.txt" "$display1")"
+  facts="$("$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --facts "$logcat" "$display1" "$display2")"
+  fact() { printf '%s\n' "$facts" | sed -n "s/^$1=//p" | tail -1; }
+  released="$(fact released_while_open)"
+  sleeps="$(fact sleeps_while_open)"
+  panel_on="$(fact panel_on_after_takeover)"
+  panel_off="$(fact panel_off_writes)"
+  lit="$(fact lit_ms)"
+  on_again="$(fact on_again_after_off)"
+  locks="$(fact keepalive_locks1_after_resume)"
+  vd_at_close="$(fact vd1_at_close)"
+  live_after="$(fact episode_live_after_close)"
+  sink="$(fact sink_lines)"
+  tap_started="$(fact tap_started)"
+  [ -f "$dir/window-after.txt" ] &&
+    grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-after.txt" && guard_after=true
+
+  echo "--- $label ---"
+  # The state the reviewer asks for is the one right at the sibling's close:
+  # the VD log's last change before it (the dump is taken 3 s later, when an app
+  # that shared its task with the closed window may already have exited).
+  if [ "$vd_at_close" = "ON" ] && { [ "$state_after" = "ON" ] || [ "${live_after:-0}" = "1" ]; }; then
+    echo "PASS [$label] the other display was ON when its sibling closed and stayed in the episode (display $display1: at close $vd_at_close, dump after $state_after, episode live after close ${live_after:-?}; display $display2 while both open: $state_two2)"
+  else
+    echo "FAIL [$label] the other display left the episode (display $display1: at close $vd_at_close, dumped $state_one/$state_two/$state_after, episode live after close ${live_after:-?}; display $display2: $state_two2)"; phase_failed=1
+  fi
+  if [ "${released:-1}" = "0" ]; then
+    echo "PASS [$label] the covered window's display wake was never released while it was open"
+  else
+    echo "FAIL [$label] the covered window's display wake was released ${released:-?} time(s) while it was open"; phase_failed=1
+  fi
+  if [ "${sleeps:-1}" = "0" ]; then
+    echo "PASS [$label] the phone never went back to sleep while a window was open"
+  else
+    echo "FAIL [$label] the phone went back to sleep ${sleeps:-?} time(s) while a window was open"; phase_failed=1
+  fi
+  if [ "${panel_on:-1}" = "0" ]; then
+    echo "PASS [$label] no keep-alive step reported the panel on after the take-over (the override holds it)"
+  else
+    echo "FAIL [$label] ${panel_on:-?} panel-on plan line(s) after the take-over while the panel was owed off"; phase_failed=1
+  fi
+  if [ "${lit:--1}" -ge 0 ] && [ "${lit:--1}" -le "$LIMIT_MS" ]; then
+    echo "PASS [$label] the take-over's physical ON window was ${lit} ms (limit ${LIMIT_MS} ms; the field log was 639 ms)"
+  else
+    echo "FAIL [$label] the take-over's physical ON window was ${lit:-none} ms (limit ${LIMIT_MS} ms)"; phase_failed=1
+  fi
+  if [ "${on_again:-1}" = "0" ]; then
+    echo "PASS [$label] SurfaceFlinger's physical display never went ON again after its first off"
+  else
+    echo "FAIL [$label] SurfaceFlinger's physical display went ON again ${on_again:-?} time(s) after its first off"; phase_failed=1
+  fi
+  if [ "${live_after:-0}" = "1" ]; then
+    echo "PASS [$label] the episode was still live after the sibling close (the resume did not start a new one)"
+  else
+    echo "FAIL [$label] the episode ended at the sibling close"; phase_failed=1
+  fi
+  if [ "${panel_off:-0}" -ge 1 ]; then
+    echo "PASS [$label] the panel was powered off under the streams (${panel_off} write(s))"
+  else
+    echo "FAIL [$label] the panel was never powered off"; phase_failed=1
+  fi
+  if [ "$guard_after" = "true" ]; then
+    echo "PASS [$label] the phone is still locked after the run (keyguard showing)"
+  else
+    echo "FAIL [$label] the keyguard is not showing after the run"; phase_failed=1
+  fi
+  if [ "${sink:-0}" -gt 0 ]; then
+    if [ "${tap_started:-0}" = "1" ]; then
+      echo "PASS [$label] a gesture with a NO_INPUT_CHANNEL sink line still opened an app screen (${sink} sink line(s))"
+    else
+      echo "FAIL [$label] ${sink} sink line(s) and the tap never reached the app"; phase_failed=1
+    fi
+  else
+    echo "note [$label]: no NO_INPUT_CHANNEL line in this run (the sink is a transition artifact; see notes.md)"
+  fi
+
+  {
+    echo "display1: $display1 states one=$state_one two=$state_two after=$state_after"
+    echo "display2: $display2 state two=$state_two2"
+    echo "wake: released_while_open=$released sleeps_while_open=$sleeps keepalive_locks1=$locks"
+    echo "display: vd_at_close=$vd_at_close episode_live_after_close=$live_after"
+    echo "panel: on_after_takeover=$panel_on off_writes=$panel_off lit_ms=$lit limit_ms=$LIMIT_MS on_again=$on_again"
+    echo "input: sink_lines=$sink tap_started=$tap_started"
+    echo "before: wakefulness=$wake_state"
+    echo "after: keyguard=$guard_after"
+    echo "session: $(tr '\n' ' ' < "$session")"
+    echo "failed: $phase_failed"
+  } > "$result"
+  return "$phase_failed"
+}
+
+run_phase() { # run_phase <label> <apk> <dir> <result> <session> <logcat>
+  local label="$1" apk="$2" dir="$3" result="$4" session="$5" logcat="$6"
+  local wake_state driver_rc
+  mkdir -p "$dir"
+  step "$label: preparing $(basename "$apk")"
+  prepare_apk "$apk" || { echo "failed: 1 (service)" > "$result"; return 1; }
+
+  echo "locked-multi: $label: locking the emulator (PIN + screen off)"
+  bash "$EMU_DIR/lock.sh" || { echo "failed: 1 (lock)" > "$result"; return 1; }
+  emu shell dumpsys window > "$dir/window-before.txt" 2>/dev/null || true
+  grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-before.txt" ||
+    echo "locked-multi: $label: the keyguard is not showing before the run" >&2
+  wake_state="$(emu shell dumpsys power 2>/dev/null | grep -m1 'mWakefulness=' | tr -d '\r' | sed 's/.*mWakefulness=//')"
+  case "$wake_state" in
+    Asleep|Dozing) ;;
+    *) echo "locked-multi: $label: the screen is not off (mWakefulness=${wake_state:-none})" >&2 ;;
+  esac
+
+  emu logcat -c >/dev/null 2>&1 || true
+  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi.py" --host 127.0.0.1 --port "$PORT" \
+    --state "$STATE" --adb "$ADB" --serial "$SERIAL" --out "$dir" > "$session" 2>&1
+  driver_rc=$?
+  emu logcat -d > "$logcat" 2>/dev/null || true
+  emu shell dumpsys window > "$dir/window-after.txt" 2>/dev/null || true
+  if [ "$driver_rc" -ne 0 ]; then
+    echo "locked-multi: $label: the driver did not finish (rc=$driver_rc): $(tail -2 "$session" | tr '\n' ' ')" >&2
+    { echo "failed: 1 (driver)"; cat "$session"; } > "$result"
+    return 1
+  fi
+  judge_phase "$label" "$dir" "$result" "$session" "$logcat" "${wake_state:-n/a}"
+}
+
+# --- judge one captured phase, no device ------------------------------------
+if [ "$JUDGE" -eq 1 ]; then
+  for f in "$JUDGE_DIR/display-one.txt" "$JUDGE_DIR/display-two.txt" "$JUDGE_DIR/display-after.txt" \
+           "$JUDGE_SESSION" "$JUDGE_LOGCAT"; do
+    [ -s "$f" ] || { echo "locked-multi: judge: missing $f" >&2; exit 2; }
+  done
+  judge_phase "$JUDGE_LABEL" "$JUDGE_DIR" "$OUT/locked-multi-${JUDGE_LABEL}.log" \
+    "$JUDGE_SESSION" "$JUDGE_LOGCAT" "n/a"
+  RC=$?
+  cat "$OUT/locked-multi-${JUDGE_LABEL}.log"
+  exit "$RC"
+fi
+
 # --- the run (ONE boot) -----------------------------------------------------
 if [ "$BOOT" -eq 1 ] && device_present; then
   echo "locked-multi: $SERIAL already running: refusing to touch it"
@@ -253,128 +420,6 @@ if [ "$BOOT" -eq 1 ]; then
 fi
 
 # --- one phase: lock, run, read ---------------------------------------------
-run_phase() { # run_phase <label> <apk> <dir> <result> <session> <logcat>
-  local label="$1" apk="$2" dir="$3" result="$4" session="$5" logcat="$6"
-  local display1 display2 state_one state_two state_two2 state_after facts
-  local released sleeps panel_on panel_off lit on_again locks sink tap_started
-  local guard_after=false wake_state driver_rc phase_failed=0
-  mkdir -p "$dir"
-  step "$label: preparing $(basename "$apk")"
-  prepare_apk "$apk" || { echo "failed: 1 (service)" > "$result"; return 1; }
-
-  echo "locked-multi: $label: locking the emulator (PIN + screen off)"
-  bash "$EMU_DIR/lock.sh" || { echo "failed: 1 (lock)" > "$result"; return 1; }
-  emu shell dumpsys window > "$dir/window-before.txt" 2>/dev/null || true
-  grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-before.txt" ||
-    echo "locked-multi: $label: the keyguard is not showing before the run" >&2
-  wake_state="$(emu shell dumpsys power 2>/dev/null | grep -m1 'mWakefulness=' | tr -d '\r' | sed 's/.*mWakefulness=//')"
-  case "$wake_state" in
-    Asleep|Dozing) ;;
-    *) echo "locked-multi: $label: the screen is not off (mWakefulness=${wake_state:-none})" >&2 ;;
-  esac
-
-  emu logcat -c >/dev/null 2>&1 || true
-  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi.py" --host 127.0.0.1 --port "$PORT" \
-    --state "$STATE" --adb "$ADB" --serial "$SERIAL" --out "$dir" > "$session" 2>&1
-  driver_rc=$?
-  emu logcat -d > "$logcat" 2>/dev/null || true
-  emu shell dumpsys window > "$dir/window-after.txt" 2>/dev/null || true
-
-  display1="$(sed -n 's/^display1=//p' "$session" | tail -1)"
-  display2="$(sed -n 's/^display2=//p' "$session" | tail -1)"
-  if [ "$driver_rc" -ne 0 ] || [ -z "$display1" ] || [ -z "$display2" ]; then
-    echo "locked-multi: $label: the driver did not finish (rc=$driver_rc): $(tail -2 "$session" | tr '\n' ' ')" >&2
-    { echo "failed: 1 (driver)"; cat "$session"; } > "$result"
-    return 1
-  fi
-
-  state_one="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-one.txt"   "$display1")"
-  state_two="$(  "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display1")"
-  state_two2="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-two.txt"   "$display2")"
-  state_after="$( "$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --state "$dir/display-after.txt" "$display1")"
-  facts="$("$PYTHON" "$REPO_ROOT/tools/emulator/locked-multi-read.py" --facts "$logcat" "$display1" "$display2")"
-  fact() { printf '%s\n' "$facts" | sed -n "s/^$1=//p" | tail -1; }
-  released="$(fact released_while_open)"
-  sleeps="$(fact sleeps_while_open)"
-  panel_on="$(fact panel_on_after_takeover)"
-  panel_off="$(fact panel_off_writes)"
-  lit="$(fact lit_ms)"
-  on_again="$(fact on_again_after_off)"
-  locks="$(fact keepalive_locks1_after_resume)"
-  sink="$(fact sink_lines)"
-  tap_started="$(fact tap_started)"
-  grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$dir/window-after.txt" && guard_after=true
-
-  echo "--- $label ---"
-  if [ "$state_one" = "ON" ] && [ "$state_two" = "ON" ] && [ "$state_two2" = "ON" ] && [ "$state_after" = "ON" ]; then
-    echo "PASS [$label] both displays were ON, and the remaining one stayed ON after its sibling closed and resumed (display $display1: $state_one -> $state_two -> $state_after; display $display2 while both open: $state_two2)"
-  else
-    echo "FAIL [$label] the remaining display left ON (display $display1: $state_one -> $state_two -> $state_after; display $display2: $state_two2)"; phase_failed=1
-  fi
-  if [ "${released:-1}" = "0" ]; then
-    echo "PASS [$label] the covered window's display wake was never released while it was open"
-  else
-    echo "FAIL [$label] the covered window's display wake was released ${released:-?} time(s) while it was open"; phase_failed=1
-  fi
-  if [ "${sleeps:-1}" = "0" ]; then
-    echo "PASS [$label] the phone never went back to sleep while a window was open"
-  else
-    echo "FAIL [$label] the phone went back to sleep ${sleeps:-?} time(s) while a window was open"; phase_failed=1
-  fi
-  if [ "${panel_on:-1}" = "0" ]; then
-    echo "PASS [$label] no keep-alive step reported the panel on after the take-over (the override holds it)"
-  else
-    echo "FAIL [$label] ${panel_on:-?} panel-on plan line(s) after the take-over while the panel was owed off"; phase_failed=1
-  fi
-  if [ "${lit:--1}" -ge 0 ] && [ "${lit:--1}" -le "$LIMIT_MS" ]; then
-    echo "PASS [$label] the take-over's physical ON window was ${lit} ms (limit ${LIMIT_MS} ms; the field log was 639 ms)"
-  else
-    echo "FAIL [$label] the take-over's physical ON window was ${lit:-none} ms (limit ${LIMIT_MS} ms)"; phase_failed=1
-  fi
-  if [ "${on_again:-1}" = "0" ]; then
-    echo "PASS [$label] SurfaceFlinger's physical display never went ON again after its first off"
-  else
-    echo "FAIL [$label] SurfaceFlinger's physical display went ON again ${on_again:-?} time(s) after its first off"; phase_failed=1
-  fi
-  if [ "${locks:-0}" -ge 1 ]; then
-    echo "PASS [$label] the keep-alive ran with one display lock after the resume (the episode is alive)"
-  else
-    echo "FAIL [$label] no keep-alive step with a display lock after the resume"; phase_failed=1
-  fi
-  if [ "${panel_off:-0}" -ge 1 ]; then
-    echo "PASS [$label] the panel was powered off under the streams (${panel_off} write(s))"
-  else
-    echo "FAIL [$label] the panel was never powered off"; phase_failed=1
-  fi
-  if [ "$guard_after" = "true" ]; then
-    echo "PASS [$label] the phone is still locked after the run (keyguard showing)"
-  else
-    echo "FAIL [$label] the keyguard is not showing after the run"; phase_failed=1
-  fi
-  if [ "${sink:-0}" -gt 0 ]; then
-    if [ "${tap_started:-0}" = "1" ]; then
-      echo "PASS [$label] a gesture with a NO_INPUT_CHANNEL sink line still opened an app screen (${sink} sink line(s))"
-    else
-      echo "FAIL [$label] ${sink} sink line(s) and the tap never reached the app"; phase_failed=1
-    fi
-  else
-    echo "note [$label]: no NO_INPUT_CHANNEL line in this run (the sink is a transition artifact; see notes.md)"
-  fi
-
-  {
-    echo "display1: $display1 states one=$state_one two=$state_two after=$state_after"
-    echo "display2: $display2 state two=$state_two2"
-    echo "wake: released_while_open=$released sleeps_while_open=$sleeps keepalive_locks1=$locks"
-    echo "panel: on_after_takeover=$panel_on off_writes=$panel_off lit_ms=$lit limit_ms=$LIMIT_MS on_again=$on_again"
-    echo "input: sink_lines=$sink tap_started=$tap_started"
-    echo "before: keyguard=true wakefulness=$wake_state"
-    echo "after: keyguard=$guard_after"
-    echo "session: $(tr '\n' ' ' < "$session")"
-    echo "failed: $phase_failed"
-  } > "$result"
-  return "$phase_failed"
-}
-
 if [ "$AB" -eq 1 ]; then
   BEFORE_RESULT="$OUT/locked-multi-before.log"
   AFTER_RESULT="$OUT/locked-multi-after.log"

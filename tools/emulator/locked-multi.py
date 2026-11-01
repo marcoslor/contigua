@@ -58,7 +58,8 @@ def main(argv=None):
     parser.add_argument("--adb", required=True)
     parser.add_argument("--serial", default="emulator-5554")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--pkg", default="com.android.settings")
+    parser.add_argument("--pkg1", default="com.android.settings")
+    parser.add_argument("--pkg2", default="acr.browser.lightning")
     parser.add_argument("--w", type=int, default=640)
     parser.add_argument("--h", type=int, default=480)
     parser.add_argument("--dpi", type=int, default=160)
@@ -72,7 +73,7 @@ def main(argv=None):
     try:
         # 1. one window on the locked phone
         client.send_json({"t": "window.open", "stream": 1, "w": args.w, "h": args.h,
-                          "dpi": args.dpi, "pkg": args.pkg})
+                          "dpi": args.dpi, "pkg": args.pkg1})
         size1 = rec.wait_for_size(1, 25.0)
         time.sleep(args.settle)
         d1 = rec.opened.get(1, {}).get("displayId")
@@ -85,8 +86,10 @@ def main(argv=None):
         client.send_json({"t": "window.pause", "stream": 1})
         time.sleep(0.4)
         mark(args.adb, args.serial, "one-paused")
+        # A different package: two windows of one package can share a task, and
+        # closing the second then ends the first's app (seen on the first run).
         client.send_json({"t": "window.open", "stream": 2, "w": args.w, "h": args.h,
-                          "dpi": args.dpi, "pkg": args.pkg})
+                          "dpi": args.dpi, "pkg": args.pkg2})
         size2 = rec.wait_for_size(2, 25.0)
         time.sleep(args.settle)
         d2 = rec.opened.get(2, {}).get("displayId")
@@ -106,13 +109,16 @@ def main(argv=None):
         # 3. window 2 closes; the Mac resumes the covered window 1
         frames_before = rec.total_frames.get(1, 0)
         client.send_json({"t": "window.close", "stream": 2})
+        mark(args.adb, args.serial, "two-close")
         time.sleep(0.4)
         client.send_json({"t": "window.resume", "stream": 1})
+        mark(args.adb, args.serial, "one-resume")
         time.sleep(3.0)
         mark(args.adb, args.serial, "settled")
         phone.dump("after")
         frames_after = rec.total_frames.get(1, 0)
-        print("display1=%s display2=%s" % (d1, d2))
+        print("display1=%s" % d1)
+        print("display2=%s" % d2)
         print("frames1_before_resume=%d frames1_after_resume=%d" % (frames_before, frames_after))
         print("frames2_total=%d" % rec.total_frames.get(2, 0))
 
