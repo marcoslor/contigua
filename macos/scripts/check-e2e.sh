@@ -12021,8 +12021,11 @@ PY
     # The visual record for DECK-4/DECK-24 (the reviewer looks before the
     # person does): the Deck at the sizes the brief names, from the run's own
     # display, light and dark. The 125 % row sets the grid's zoom the way ⌘+
-    # does, and the last row is the standard zoom's own frame.
-    local shotdir="$WORK/deck-wide" shotlook deck_id
+    # does, and the last row is the standard zoom's own frame. Each appearance
+    # is the app's own override (the person's system setting is never touched),
+    # and each is a fresh launch: the shared app follows the system's
+    # appearance otherwise.
+    local shotdir="$WORK/deck-wide" shotlook deck_id lists_before
     mkdir -p "$shotdir"
     # The popover from DECK-20 would sit over the grid, and a reconnecting link
     # dims the whole content: the record is the connected Deck alone.
@@ -12057,23 +12060,26 @@ PY
         sleep 2
         deck_shot "wide-after-zoom-$shotlook"
     }
-    deck_row light
-    # The dark row is a second launch with the app's own appearance override
-    # (the person's system setting is never touched). The shared app is killed
-    # by its own pid first: stop_app only resets it, and a second instance
-    # would wait for the phone's one session.
-    kill_e2e_app
-    SHARED_PID=""
-    local lists_before
-    lists_before="$(count_events '"t":"apps.list"')"
     apps_asked() { [ "$(count_events '"t":"apps.list"')" -gt "$lists_before" ]; }
-    launch_shared --connect "127.0.0.1:$PORT" --appearance dark
-    if wait_until 30 apps_asked; then
-        ok "DECK the dark Deck came up and asked for its apps"
-    else
-        bad "DECK the dark Deck never asked for its apps"
-    fi
-    sleep 3
+    # deck_appearance light|dark: a fresh shared app in that appearance. It is
+    # killed by its own pid first: stop_app only resets it, and a second
+    # instance would wait for the phone's one session.
+    deck_appearance() {
+        kill_e2e_app
+        SHARED_PID=""
+        lists_before="$(count_events '"t":"apps.list"')"
+        launch_shared --connect "127.0.0.1:$PORT" --appearance "$1"
+        if wait_until 30 apps_asked; then
+            ok "DECK the $1 Deck came up and asked for its apps"
+        else
+            bad "DECK the $1 Deck never asked for its apps"
+        fi
+        sleep 3
+        control deckpanelclose >/dev/null
+    }
+    deck_appearance light
+    deck_row light
+    deck_appearance dark
     deck_row dark
     control deckzoom 1 >/dev/null
     kill_e2e_app
