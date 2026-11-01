@@ -39,8 +39,9 @@ struct ClosedStreams: Equatable {
     /// (`window.pause`, `hover`, …), `stream` the id it carries.
     mutating func decide(type: String, stream: UInt32) -> Decision {
         if Self.opening.contains(type) {
+            // RRR-5: only an accepted send [opened] makes it open, so a
+            // `window.open` dropped before founding (E-2) never counts.
             ids.remove(stream)
-            open.insert(stream)
             return .send
         }
         if type == Self.closing {
@@ -52,6 +53,19 @@ struct ClosedStreams: Equatable {
             return .send
         }
         return ids.contains(stream) ? .drop : .send
+    }
+
+    /// The opener's send was accepted: the stream is open (RRR-5).
+    mutating func opened(_ stream: UInt32) {
+        open.insert(stream)
+    }
+
+    /// The phone ended the stream (`window.closed`, or `error no_stream` for
+    /// it): it stops counting as activity (D-1's active test), and a late
+    /// message for it is dropped as before.
+    mutating func forget(_ stream: UInt32) {
+        open.remove(stream)
+        ids.insert(stream)
     }
 
     /// The one log line for a dropped message: the type and the id only.

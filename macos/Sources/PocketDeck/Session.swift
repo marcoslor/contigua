@@ -1446,7 +1446,12 @@ final class Session {
                                   dpi: message.int("dpi") ?? 0,
                                   outcome: message.string("outcome") ?? ""))
         case "window.closed":
-            emit(.windowClosed(stream: UInt32(message.int("stream") ?? 0),
+            let closed = UInt32(message.int("stream") ?? 0)
+            // RRR-5: the phone ended it, so it is no longer an open stream
+            // (D-1's active test); a Mac close skips sendClose, so this is the
+            // only place the id is forgotten.
+            forgetStream(closed)
+            emit(.windowClosed(stream: closed,
                                reason: message.string("reason") ?? ""))
         case "window.title":
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
@@ -1627,6 +1632,12 @@ final class Session {
                 return
             }
             if message.int("stream") == nil { phoneErrorCode = code }
+            // RRR-5: the phone has forgotten this stream (a window it closed
+            // itself); it must not keep the fast ping alive either.
+            if code == "no_stream", let raw = message.int("stream"),
+               let stream = UInt32(exactly: raw) {
+                forgetStream(stream)
+            }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
             // A terminal reply before `welcome` ends the attempt now: the phone's
@@ -1725,9 +1736,10 @@ final class Session {
         }
     }
 
-    func sendBytes(_ bytes: [UInt8]) {
-        guard let frame = Frame(encoded: bytes) else { return }
-        sendReliable(frame)
+    @discardableResult
+    func sendBytes(_ bytes: [UInt8]) -> Bool {
+        guard let frame = Frame(encoded: bytes) else { return false }
+        return sendReliable(frame)
     }
 
     /// One frame above the path layer. Before founding there is no seq space:
@@ -1737,25 +1749,37 @@ final class Session {
     /// phone would hold every later frame at the seq-1 gap (RR-2). After
     /// founding every frame is a path-layer frame: with no attached path it is
     /// held for replay, never written bare to a dead attempt (PATH-6, R-4).
-    private func sendReliable(_ frame: Frame, completion: (@Sendable (Bool) -> Void)? = nil) {
+    @discardableResult
+    private func sendReliable(_ frame: Frame, completion: (@Sendable (Bool) -> Void)? = nil) -> Bool {
         if let preWelcome = preWelcomeSender.get() {
             preWelcome(frame.encoded)
             completion?(true)
-            return
+            return true
         }
         guard pathSessionId.get() != nil else {
             completion?(false)
-            return
+            return false
         }
         pathLayer.send(frame, completion: completion)
+        return true
     }
 
     func sendJSON(_ object: [String: Any]) {
+        // RRR-5: an opened stream counts as activity only once its send is
+        // accepted; a `window.open` dropped before founding (E-2) is not open.
+        var opening: UInt32?
         if let type = object["t"] as? String,
            let value = object["stream"] as? Int,
-           let stream = UInt32(exactly: value),
-           !sendAllowed(type: type, stream: stream) { return }
-        sendBytes(JSONFrame.encode(object))
+           let stream = UInt32(exactly: value) {
+            guard sendAllowed(type: type, stream: stream) else { return }
+            if ClosedStreams.opening.contains(type) { opening = stream }
+        }
+        let accepted = sendBytes(JSONFrame.encode(object))
+        if let opening, accepted {
+            closedStreamsLock.lock()
+            closedStreams.opened(opening)
+            closedStreamsLock.unlock()
+        }
     }
 
     /// The one gate for a closed stream (WIN-38): false when the message must
@@ -1769,6 +1793,13 @@ final class Session {
         guard decision == .drop else { return true }
         Log.session.notice("\(ClosedStreams.lateLog(type: type, stream: stream), privacy: .public)")
         return false
+    }
+
+    /// RRR-5: the phone ended this stream; it stops counting as activity.
+    private func forgetStream(_ stream: UInt32) {
+        closedStreamsLock.lock()
+        closedStreams.forget(stream)
+        closedStreamsLock.unlock()
     }
 
     func requestApps() { sendJSON(["t": "apps.list"]) }
