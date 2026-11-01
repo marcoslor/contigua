@@ -117,6 +117,17 @@ class PanelPowerSessionTest {
         error("no power call matched; calls: ${platform.streamCalls.toList()}; logs: $logs")
     }
 
+    /** The next power call after [count] calls were already recorded. */
+    private fun callAfter(count: Int): Triple<List<Int>, Boolean, Boolean> {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            val calls = platform.streamCalls.toList()
+            if (calls.size > count) return calls[count]
+            Thread.sleep(10)
+        }
+        error("no power call after #$count; calls: ${platform.streamCalls.toList()}; logs: $logs")
+    }
+
     private fun awaitTrue(what: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline) {
@@ -136,10 +147,41 @@ class PanelPowerSessionTest {
         awaitPowerCall { (ids, allPaused, _) -> ids.isNotEmpty() && !allPaused }
 
         send(mapOf("t" to "window.pause", "stream" to 1))
-        awaitPowerCall { (ids, allPaused, _) -> ids.isEmpty() && allPaused }
+        awaitPowerCall { (ids, allPaused, _) -> ids.isNotEmpty() && allPaused }
 
         send(mapOf("t" to "window.resume", "stream" to 1))
         awaitPowerCall { (ids, allPaused, _) -> ids.isNotEmpty() && !allPaused }
+    }
+
+    @Test
+    fun `a covered window keeps its display while its sibling closes`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 1000, "h" to 700, "dpi" to 160,
+                   "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        val first = lastPowerCall().first.single()
+
+        send(mapOf("t" to "window.open", "stream" to 2, "w" to 1000, "h" to 700, "dpi" to 160,
+                   "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        awaitPowerCall { (ids, _, _) -> ids.size == 2 && ids.contains(first) }
+
+        // The Mac covers window 1 when window 2 takes the focus: the phone keeps
+        // window 1's display in the episode, paused or not (the 11-01 field log
+        // released it and ended the episode while stream 6 was still open).
+        val beforePause = platform.streamCalls.size
+        send(mapOf("t" to "window.pause", "stream" to 1))
+        val paused = callAfter(beforePause)
+        assertTrue("a covered window's display must stay in the episode: $paused", paused.first.contains(first))
+        assertFalse("a sibling is still live", paused.second)
+
+        val beforeClose = platform.streamCalls.size
+        send(mapOf("t" to "window.close", "stream" to 2))
+        readUntil("window.closed")
+        val after = callAfter(beforeClose)
+        assertEquals("the open window keeps the episode", listOf(first), after.first)
+        assertTrue("the remaining window is paused, not closed", after.second)
     }
 
     @Test

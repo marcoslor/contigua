@@ -344,7 +344,11 @@ interface Power {
     /** Input is flowing; poke the display's own group (throttled internally). */
     fun onInput(displayId: Int)
 
-    /** The set of displays whose streams are currently unpaused. */
+    /**
+     * The set of displays whose app streams are open, covered windows included.
+     * A pause is not a close: the episode keeps every open stream's display and
+     * ends only when the last one closes (or the all-paused grace expires).
+     */
     fun setActiveStreams(
         displayIds: List<Int>,
         allPaused: Boolean = false,

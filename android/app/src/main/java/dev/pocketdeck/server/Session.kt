@@ -1326,7 +1326,7 @@ class Session(
         if (!state.paused) {
             state.paused = true
             display.pause(state.stream)
-            updatePower(paused = true)
+            updatePower()
         }
     }
 
@@ -2759,21 +2759,21 @@ class Session(
     private fun windowCount(): Int = synchronized(streams) { streams.size }
 
     /**
-     * Tells the power policy what the session holds now. [paused] marks a
-     * `window.pause` as the cause of an empty set: every stream covered at once
-     * keeps the panel state for a grace period instead of handing the phone
-     * back and taking it again on the next unpause. A close or the session end
-     * passes false and hands back at once.
+     * Tells the power policy what the session holds now. [ids] is every open app
+     * stream's display, covered windows included: a pause is not a close, and a
+     * window the Mac covers must not take its display (or the episode) with it.
+     * [allPaused] says every one of them is covered, which starts the grace.
      */
-    private fun updatePower(paused: Boolean = false) {
+    private fun updatePower() {
         val ids: List<Int>
         val allPaused: Boolean
         val mirroring: Boolean
         var phoneOpen = false
         synchronized(streams) {
             val open = streams.values.toList()
-            ids = open.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
-            allPaused = paused && open.isNotEmpty() && open.all { it.paused }
+            val apps = open.filter { it.content != WindowContent.Phone }
+            ids = apps.map { it.displayId }
+            allPaused = apps.isNotEmpty() && apps.all { it.paused }
             mirroring = open.any { it.content == WindowContent.Phone && !it.paused }
             phoneOpen = open.any { it.content == WindowContent.Phone }
         }

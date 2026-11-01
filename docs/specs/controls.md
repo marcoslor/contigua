@@ -44,6 +44,7 @@ PocketDeck left it.
 | CTRL-11 | WHILE PocketDeck holds the phone's panel dark, WHEN the person unlocks it, touches display 0, presses a panel key or presses the power key, THE phone SHALL give the panel back at once (power mode NORMAL, display 0 lit, the keyguard untouched) and SHALL log `panel_yield reason=unlock\|touch\|key\|power`; after that it SHALL NOT darken the panel again while the person uses the phone, and only the phone going idle by itself (its own screen timeout or a lock) or the streams stopping SHALL end the dark episode. | K1 `DarkPanelPolicyTest`, `PersonInputTest`, `WakeOwnershipTest`; emulator `panel-yield` |
 | CTRL-12 | WHILE PocketDeck holds the phone's panel dark, WHEN the person presses the power key, THE phone SHALL treat it as one hand back and nothing else: no relight of the streaming group and no panel-off after it, so one press gives the screen back. | K1 `DarkPanelPolicyTest` (`a press while dark is not also a relight`) |
 | CTRL-13 | THE phone SHALL open the panel's input devices (`/dev/input`) only WHILE it holds the panel dark and SHALL close them when the hold ends; it SHALL reduce each event to one of TOUCH, KEY or POWER and SHALL NOT store, log or send an event's code, position, count or timing beyond the one `panel_yield reason=…` line. | K1 `PersonInputTest` (the reduction to a closed set); review of `AndroidPower.startPanelInput`/`stopPanelInput` (opened only while `panelOff`) and `PersonUse.panelInput` |
+| CTRL-14 | WHILE two or more app streams are open THE phone SHALL keep every open stream's display in the episode and its display wake held, covered windows included; opening or closing one stream SHALL NOT change another stream's wake, its `PanelPlan.wake` or the episode's ownership, and the episode (its partial wake lock and `ourswoke`) SHALL end only when the last app stream closes or the all-paused grace expires. | K1 `StreamEpisodeTest` (every transition, including a closed sibling and a covered one), `PanelPowerSessionTest` (a covered window's display stays in the set); emulator `locked-multi` (two windows on a locked phone: close one, the other's display stays ON) |
 
 ## States and events
 
@@ -114,6 +115,13 @@ decided twice.
 A pause keeps the phase for `PAUSE_GRACE_MS`, the mirror (`PANEL_ALONE`) never
 takes the panel, and a stale panel-off write is refused once the person has it
 back. A dark episode logs one `panel_yield reason=<token>` line.
+
+The episode itself holds the set of open app displays (`server/StreamEpisode.kt`):
+a window the Mac covers stays in the set and keeps its display wake, so a
+sibling's open or close never changes its plan, and only the last close (or the
+all-paused grace) releases the partial wake and puts the phone back to sleep.
+While our override holds the panel dark the platform's display controller can
+still report the group on; the `power: panel` line says `held off` for that.
 
 ## Phone count and connection
 
