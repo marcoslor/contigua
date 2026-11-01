@@ -153,6 +153,86 @@ class PathHubWriteTest {
     }
 
     /**
+     * RRR-1/E-1 x E-3: a black-holed path stays attached as a standby, so the
+     * lossy wait inside it used to park the session's only writer until the
+     * kernel's 40 s give-up: video, state, fs replies and input all stopped
+     * while the Mac still saw a healthy session. The wait drops its frame and
+     * the next one goes to the path the session moved to.
+     */
+    @Test
+    fun aSwitchReleasesTheLossyWriterParkedOnTheOldPath() {
+        val parked = ParkingStream()
+        val standby = CollectingStream()
+        hub.start(transport("aaaa0001", parked))
+        val frame = Frames.encode(Frames.TYPE_VIDEO_FRAME, 0, ByteArray(8 * 1024))
+        // The first frame parks inside the socket write; the rest fill the cap.
+        hub.send(frame)
+        assertTrue("the write never started", parked.entered.await(2, TimeUnit.SECONDS))
+        val sent = java.util.concurrent.atomic.AtomicInteger()
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val writer = Thread {
+            while (!stop.get()) {
+                hub.send(frame)
+                sent.incrementAndGet()
+            }
+        }.apply { isDaemon = true }
+        writer.start()
+        try {
+            val stalled = awaitStall(sent)
+            assertTrue("the lossy writer never waited (sent ${sent.get()})", stalled > 0)
+            assertTrue(hub.attach(transport("bbbb0002", standby)))
+            val switchedAt = System.nanoTime()
+            hub.followSwitch("bbbb0002", "bbbb0002")
+            val deadline = switchedAt + 200_000_000L
+            while (System.nanoTime() < deadline && !hasVideoFrame(standby)) Thread.sleep(2)
+            assertTrue(
+                "no video frame reached the new path within 200 ms (sent ${sent.get()})",
+                hasVideoFrame(standby),
+            )
+        } finally {
+            stop.set(true)
+            parked.release()
+            hub.closeAll()
+            writer.join(1_000)
+        }
+    }
+
+    /** Waits until [sent] stops moving; the count it stopped at, or -1. */
+    private fun awaitStall(sent: java.util.concurrent.atomic.AtomicInteger, ms: Long = 1_500): Int {
+        val deadline = System.currentTimeMillis() + ms
+        var last = -1
+        var since = System.currentTimeMillis()
+        while (System.currentTimeMillis() < deadline) {
+            val now = sent.get()
+            if (now != last) {
+                last = now
+                since = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - since >= 100) {
+                return now
+            }
+            Thread.sleep(5)
+        }
+        return -1
+    }
+
+    /** True when [stream] holds at least one complete bare video frame. */
+    private fun hasVideoFrame(stream: CollectingStream): Boolean {
+        val bytes = synchronized(stream.bytes) { stream.bytes.toByteArray() }
+        val reader = dev.pocketdeck.proto.FrameReader(ByteArrayInputStream(bytes))
+        var found = false
+        try {
+            while (!found) {
+                val frame = reader.readFrame() ?: break
+                found = frame.type == Frames.TYPE_VIDEO_FRAME
+            }
+        } catch (e: Throwable) {
+            // A partial tail: the bytes are read while the writer is appending.
+            return false
+        }
+        return found
+    }
+
+    /**
      * RR-4/E-4: the phone's bulk (fs reads to the Mac, APK) used to take a seq
      * as soon as the replay had credit, so 12 MiB of it could sit ahead of a
      * key or a window frame. Bulk now waits outside the seq space until the
