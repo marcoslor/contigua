@@ -87,7 +87,9 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertNotNull("the take-over must not wait for the launch", takeOver)
-        assertEquals(PanelPlan(wake = true, panelOff = false, transitional = true), takeOver)
+        // The panel-off is armed before the wake and owed again to the first
+        // step: the platform answers the wake with its own ON either way.
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), takeOver)
         assertTrue(
             "the shared group is woken now",
             DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver!!),
@@ -109,6 +111,30 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK))
+    }
+
+    @Test
+    fun `no step after the take-over issues a group wake while the panel is owed off`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)!!
+        assertTrue(
+            "the take-over is the one wake of the episode",
+            DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver),
+        )
+        // The platform's display controller reports the panel on again after
+        // the wake; every following step still owes the panel off and must not
+        // ask for another group wake (the 11-01 step 2 line was a plan, not a
+        // physical flash: SurfaceFlinger stayed OFF).
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        repeat(3) {
+            val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+            assertTrue("the panel-off stays owed", plan.panelOff)
+            assertFalse(
+                "a shared-group step beside a dark panel never wakes the group",
+                DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, plan),
+            )
+        }
     }
 
     @Test
