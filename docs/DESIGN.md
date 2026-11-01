@@ -61,8 +61,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
 - **Grid (D):** `DeckGridLayout` places cells from the width of the pass that draws them. At 100 %: 96×108 cells,
   64×64 icons `.clipShape(.rect(cornerRadius: 13, style: .continuous))` inside a 16 pt hover corner, 8 pt icon-label
-  gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred and capped at 880 pt
-  (5 columns at 640, 8 at 1000+). Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
+  gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred, capped at 880 pt and
+  reserves the rail's 44 pt on its trailing side (5 columns at 640, 8 at 1000+). A window over 1000 pt scales cells,
+  icons, gaps, inset and cap by clamp(width/1000, 1, 1.5), so the tiles grow with it; a title-bar double-click or the
+  green button takes the intrinsic width (the 880 pt grid plus 60 pt a side at the person's zoom, plus the rail).
+  Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
   (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
   from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
