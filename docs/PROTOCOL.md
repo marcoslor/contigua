@@ -93,11 +93,17 @@ display id on every injected event.
   refused resize) does not hold the window: the Mac counts the request settled
   when the ack or CONFIG arrives, or when the resize stall limit passes
   (`density_burst_stall_ms`, NFR.md).
-- The display content being static is not silence: the encoder repeats its
-  last frame at least every 500 ms (`KEY_REPEAT_PREVIOUS_FRAME_AFTER`) while a
-  stream is open, so a live stream is never quiet for long. That heartbeat is
-  what lets the Mac tell a static picture from a stalled encoder (it says "Not
-  responding" after 1.5 s without frames).
+- The display content being static is not silence. Two mechanisms say so, and
+  neither changes the picture: repeat-previous where the encoder honours it —
+  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` repeats the last frame at least every
+  500 ms while a stream is open — and `window.still` where it does not. After
+  1000 ms without an encoder output buffer a live stream sends
+  `{"t":"window.still","stream":N}` from its own drain loop, and sends it
+  again once a second while the silence lasts; a backlogged socket produces no
+  `still`, so backpressure cannot hide a real stall. A live stream is
+  therefore never quiet for long, which lets the Mac tell a static picture
+  from a stalled encoder (it says "Not responding" after 1.5 s without frames
+  or a `still`).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops non-key frames for that stream until the
   next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).
@@ -303,6 +309,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
+| `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's top app; every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
@@ -911,7 +918,9 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 ## Versioning
 
 `v` = **3** in `hello` is the protocol version (3 added `window.content`, which every
-VIDEO_CONFIG now needs). The mDNS TXT `v` is the
+VIDEO_CONFIG now needs). Additive messages do not bump it: `window.still` is a
+phone→Mac JSON message an older Mac ignores as an unknown `t`, and an older
+phone never sends it. The mDNS TXT `v` is the
 discovery record's own generation (`1`), a Mac ignores records with another
 value. A phone that can't serve the Mac's protocol version replies
 `{"t":"error","code":"version"}` and closes; there is no v1 negotiation and
