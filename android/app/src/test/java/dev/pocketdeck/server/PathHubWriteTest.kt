@@ -305,6 +305,45 @@ class PathHubWriteTest {
         assertEquals("the join ping is not second", "path.ping", pathJson(frames[1])["t"])
     }
 
+    /**
+     * RRR-3/E-4: the phone's bulk gate watched only its path's queued bytes, so
+     * the whole 12 MiB credit could sit unacknowledged (in the kernel, ahead of
+     * window.content). Bulk now also waits while more than 1 MiB of it is
+     * unacked, exactly as the Mac's gate does.
+     */
+    @Test
+    fun bulkStopsAtTheOneMiBUnackedWindow() {
+        hub.start(transport("aaaa0001", CollectingStream()))
+        val frame = Frames.encode(Frames.TYPE_FS_DATA, 0, ByteArray(64 * 1024))
+        val sent = java.util.concurrent.atomic.AtomicInteger()
+        val done = CountDownLatch(1)
+        val producer = Thread {
+            repeat(32) {
+                hub.send(frame)
+                sent.incrementAndGet()
+            }
+            done.countDown()
+        }.apply { isDaemon = true }
+        producer.start()
+        try {
+            // No ACK: one window is in flight, the rest waits outside the seq space.
+            assertFalse("all 32 chunks were admitted with no ACK", done.await(500, TimeUnit.MILLISECONDS))
+            val admitted = sent.get()
+            assertTrue("admitted $admitted chunks, over the 1 MiB window", admitted in 1..16)
+            // Each ACK releases the next window; the producer finishes.
+            var rounds = 0
+            while (!done.await(50, TimeUnit.MILLISECONDS) && rounds++ < 20) {
+                val payload = ByteArray(8)
+                PathCodec.putLong(payload, 0, sent.get() + 1L)
+                hub.receive("aaaa0001", Frame(PathCodec.TYPE_ACK, 0, payload))
+            }
+            assertTrue("the producer never finished", done.await(1, TimeUnit.SECONDS))
+            assertEquals(32, sent.get())
+        } finally {
+            producer.join(1_000)
+        }
+    }
+
     @Test
     fun aParkedWriteOnOnePathLeavesTheHubUsable() {        val other = CollectingStream()
         hub.start(transport("aaaa0001", parking))

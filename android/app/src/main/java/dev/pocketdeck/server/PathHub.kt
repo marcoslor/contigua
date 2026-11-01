@@ -294,12 +294,16 @@ class PathHub(
             return
         }
         val bulk = PathCodec.isBulk(type)
-        // E-4: bulk enters the seq space only while its path has room, so a key
-        // or a window frame is at most the watermark plus a chunk behind.
-        if (bulk) awaitPathRoom()
         // The replay buffer holds the frame as sent: the wrapper adds 13 bytes.
-        awaitCredit(bytes.size + PathCodec.WRAPPER_BYTES, bulk)
+        val admitted = bytes.size + PathCodec.WRAPPER_BYTES
         synchronized(lock) {
+            // E-4/RRR-3: a frame takes its seq only while its path and the
+            // unacknowledged bulk window have room. The check and the seq are
+            // in one lock section, so two bulk producers cannot both pass it
+            // before either has spent the room.
+            while (!closed && !hasSendRoom(admitted, bulk)) {
+                lock.wait(if (bulk) 10 else 100)
+            }
             if (closed) return
             val seq = replay.nextSeq
             val inner = frameOf(bytes)
@@ -311,6 +315,20 @@ class PathHub(
             val target = current
             if (target != null) paths[target]?.send(wrapped)
         }
+    }
+
+    /**
+     * E-4/RRR-3: true when a frame of [bytes] may take a seq now. Every frame
+     * needs replay credit; bulk also needs its sending path under the 256 KiB
+     * watermark and its unacknowledged bytes inside the 1 MiB window (one
+     * frame is admitted when the window is empty). The caller holds [lock].
+     */
+    private fun hasSendRoom(bytes: Int, bulk: Boolean): Boolean {
+        if (!replay.canAdmit(bytes, bulk)) return false
+        if (!bulk) return true
+        val t = current?.let { paths[it] } ?: return true
+        if (t.queuedBytes >= BULK_QUEUE_WATERMARK_BYTES) return false
+        return replay.bulkBytes == 0 || replay.bulkBytes + bytes <= BULK_WINDOW_BYTES
     }
 
     /**
@@ -347,31 +365,6 @@ class PathHub(
 
     fun sendJSONOn(path: String, obj: Map<String, Any?>, priority: Boolean = false) {
         writeTo(path, Frames.encodeJson(0, Json.encode(obj)), priority)
-    }
-
-    /** Waits (writer thread) until the replay buffer can take the frame. */
-    private fun awaitCredit(bytes: Int, bulk: Boolean) {
-        synchronized(lock) {
-            while (!closed && !replay.canAdmit(bytes, bulk)) {
-                lock.wait(100)
-            }
-        }
-    }
-
-    /**
-     * E-4/RR-4: a bulk producer waits here, outside the seq space, while the
-     * sending path still holds its watermark. The path's writer notifies only
-     * its own lock, so this polls at a fraction of the smallest useful chunk's
-     * time on the slowest path (256 KiB at 16 Mbit is 128 ms).
-     */
-    private fun awaitPathRoom() {
-        synchronized(lock) {
-            while (!closed) {
-                val t = current?.let { paths[it] } ?: return
-                if (t.queuedBytes < BULK_QUEUE_WATERMARK_BYTES) return
-                lock.wait(10)
-            }
-        }
     }
 
     fun canAdmit(bytes: Int, bulk: Boolean): Boolean = synchronized(lock) { replay.canAdmit(bytes, bulk) }
@@ -747,5 +740,12 @@ class PathHub(
 
         /** E-4/RR-4: bulk takes a seq only while the sending path is under this. */
         const val BULK_QUEUE_WATERMARK_BYTES = 256 * 1024
+
+        /**
+         * E-4/RRR-3: unacknowledged bulk may fill this window (the Mac's
+         * `bulkWindowBytes`), so the kernel never holds a whole credit of it
+         * ahead of a window frame or a key.
+         */
+        const val BULK_WINDOW_BYTES = 1 shl 20
     }
 }
