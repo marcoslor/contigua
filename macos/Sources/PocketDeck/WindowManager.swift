@@ -644,6 +644,10 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
+        case .windowStill(let stream):
+            // A heartbeat for that stream's picture rule only: another stream's
+            // still says nothing about this window.
+            controller(for: stream)?.noteStill()
         case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private))")
             controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
