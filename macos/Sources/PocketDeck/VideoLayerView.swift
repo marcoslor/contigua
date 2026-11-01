@@ -34,6 +34,16 @@ final class VideoLayerView: NSView {
     private var resizeFillUntil: TimeInterval?
     private var resizeTimeout: DispatchWorkItem?
 
+    /// The pending-fill rule's two flags, for the zoom probe
+    /// (`--debug-stream-zoom`): whether the fill is armed and whether it still
+    /// applies at this size.
+    var resizeFillState: (armed: Bool, pending: Bool) { (resizeFillUntil != nil, resizeIsPending) }
+
+    /// Frames handed to the display layer, for the zoom probe: the picture's
+    /// liveness across a window animation (an animation that holds the main
+    /// run loop stops these).
+    private(set) var framesDrained = 0
+
     /// A phone that never answers must not leave a cropped picture up forever.
     static let resizeFillTimeout: TimeInterval = 2
 
@@ -463,6 +473,7 @@ final class VideoLayerView: NSView {
                     renderer.flush()
                 }
                 renderer.enqueue(sample)
+                framesDrained += 1
                 if renderer.status == .failed {
                     Log.video.error("display layer failed; flush + keyframe")
                     renderer.flush()
