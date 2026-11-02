@@ -350,11 +350,14 @@ hello/join → welcomed, or failed/closed) and logs
 | `Live(cur)` | `PongLost(cur)`, no other usable path, two or more attached (every other is a standby) | `Orphaned(now)`; mark the UI "reconnecting"; `cur` stays a **standby** — kept open, still pinged, closed by its socket error or the session's end (PATH-21/E-9) |
 | `Live(cur)` | `Close(why)` | `Ended(why)` |
 | `Migrating(from, to)` | `PeerSwitch(to, seq)` | `Live(to)`; the switch is complete |
+| `Migrating(from, to)` | `PeerSwitch(p, seq)` for any attached `p` | `Live(p)`; the Mac alone decides (PATH-8/E-10) |
 | `Migrating(from, to)` | `PathDown(to)` | `Orphaned(now)` if nothing else is up, else back to `Live(from)` when `from` is still usable, else `Migrating` to the next ranked path |
 | `Migrating(from, to)` | `PongLost(to)` | `Live(from)` when `from` is usable (`to` becomes a standby); else the next usable path; else `Orphaned(now)` with `to` kept as a standby (PATH-21/D-2/E-9) |
 | `Migrating(from, to)` | `drain 2 s` (planned switch, the peer's marker was not read) | close `from`; stay `Migrating` until the peer's marker or the new path's own pong timeout decides |
+| `Migrating` | `grace 30 s` without the peer's marker | `Ended(graceExpired)`; the slot is freed (PATH-21/E-10) |
 | `Migrating` | `Close(why)` | `Ended(why)` |
 | `Orphaned(since)` | `PathUp(p, joined)` | `Live(p)`; send `path.switch{p, N}` on `p` as the first frame, replay from the last ack, `window.keyframe` per stream |
+| `Orphaned(since)` | `PeerSwitch(p, seq)` for an attached `p` | `Live(p)`; the grace ends (PATH-8/E-10) |
 | `Orphaned(since)` | `PathDown(any)` | stay `Orphaned` |
 | `Orphaned(since)` | `grace 30 s` | `Ended(graceExpired)`; the replay buffer is discarded and the Mac's UI says the phone is unreachable |
 | `Orphaned` | `Close(why)` | `Ended(why)` |
@@ -366,6 +369,12 @@ does not have (logged once), an `Ack` for a seq above what was sent or a
 errors, session ends), a `PathUp` while `Ended`, a second `PathUp` for a path id
 already live (the second socket is closed), a `Pong` from a path that is not
 live.
+
+Every path that leaves the layer reaches the session machine as `PathDown` in
+every state — a socket error (the writer's failure included), EOF, the Mac's
+close, or the phone's own `ClosePath` — so the machine's live set never names a
+path that is gone. `CurrentFailed` is the pong rule's failure signal, never the
+detach route (E-10).
 
 While `Orphaned` (and whenever the path count is below what the ready providers
 can give) the Mac re-dials them with `hello{join}` on the reconnect backoff

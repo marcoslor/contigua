@@ -80,6 +80,17 @@ internal fun PathSessionState.describe(): String = when (this) {
     is PathSessionState.Ended -> "ended $reason"
 }
 
+/**
+ * E-10/PATH-21: the session's 30 s deadline. A migration waits for the Mac's
+ * marker; without one it is bounded exactly like the orphan's grace, so the
+ * phone cannot hold its slot forever on a switch that never completes.
+ */
+internal fun PathSessionState.graceDeadline(): Double? = when (this) {
+    is PathSessionState.Migrating -> since + PathTimers.GRACE
+    is PathSessionState.Orphaned -> since + PathTimers.GRACE
+    is PathSessionState.Live, is PathSessionState.Ended -> null
+}
+
 /** The event's closed token: an id or reason may follow in the state, never here. */
 internal fun PathSessionEvent.token(): String = when (this) {
     is PathSessionEvent.PathUp -> "up"
@@ -227,10 +238,12 @@ class PathSessionMachine(
     ): List<PathSessionAction> {
         when (event) {
             is PathSessionEvent.PeerSwitch -> {
-                if (event.id != s.to) return listOf(PathSessionAction.Ignore)
-                // E-3: the path being left stays a standby, never closed here.
-                state = PathSessionState.Live(s.to)
-                return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(s.to)))
+                // E-10/PATH-8: the Mac alone decides. A marker naming any
+                // attached path completes the migration there, not only the
+                // target this side picked before the Mac rejoined.
+                if (event.id !in live) return listOf(PathSessionAction.Ignore)
+                state = PathSessionState.Live(event.id)
+                return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(event.id)))
             }
             is PathSessionEvent.PathDown -> {
                 live.remove(event.id)
@@ -299,7 +312,11 @@ class PathSessionMachine(
                     PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
                 )
             }
-            PathSessionEvent.GraceExpired -> return emptyList()
+            PathSessionEvent.GraceExpired -> {
+                if (now - s.since < PathTimers.GRACE) return emptyList()
+                state = PathSessionState.Ended("graceExpired")
+                return listOf(PathSessionAction.End("graceExpired"))
+            }
             is PathSessionEvent.Close -> {
                 state = PathSessionState.Ended(event.reason)
                 return listOf(PathSessionAction.End(event.reason))
@@ -353,7 +370,13 @@ class PathSessionMachine(
                 live.remove(event.id)
                 return emptyList()
             }
-            is PathSessionEvent.PeerSwitch -> return listOf(PathSessionAction.Ignore)
+            is PathSessionEvent.PeerSwitch -> {
+                // E-10/PATH-8: a marker from the Mac ends the grace and moves
+                // the sending path, as a join does (the hub already replayed).
+                if (event.id !in live) return listOf(PathSessionAction.Ignore)
+                state = PathSessionState.Live(event.id)
+                return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(event.id)))
+            }
             is PathSessionEvent.Close -> {
                 state = PathSessionState.Ended(event.reason)
                 return listOf(PathSessionAction.End(event.reason))
