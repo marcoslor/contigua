@@ -2157,6 +2157,12 @@ class Session(object):
         self._thread.start()
 
     def close(self):
+        # The path readers own the sockets after the handshake, so closing the
+        # founding socket no longer makes the session's own loop return. Wake
+        # it here: shutdown() joins this thread and its teardown writes the
+        # `closed` event the e2e's disconnected phase waits for.
+        self._ending = True
+        self._inbound.put(("stop",))
         for sock in (getattr(self, "sock", None),):
             if sock is None:
                 continue
