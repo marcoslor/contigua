@@ -6,7 +6,7 @@
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
             deck deckrail windows zoom render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files files-bridge files-write files-watch intents mcp focus controls
-            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk
+            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
             dnd-edge panel-edge
             files-domain nfr menubar-shots)
 
@@ -1057,6 +1057,203 @@ PY
     grep -qF "session failed" "$WORK/app.log" \
         && bad "[PATH-6] PATHREJOIN the session ended instead of rejoining" \
         || ok "[PATH-6] PATHREJOIN no session failed"
+    stop_app
+    stop_fakephone
+    pathfault_stop_all
+}
+
+# pathblip (PATH-24, E-11): one path and one live window. The radio dies for
+# 8 s and comes back only for NEW connections, exactly as a socket stuck in
+# TCP's retransmission backoff behaves: the old connection stays silent, so
+# the Mac cannot wait for it. The probe join dialed during the silence must
+# welcome after the lift, the session must switch to it at once, and the first
+# frame over the new path must arrive within blip_recovery_ms. No probe while
+# the path was healthy, one session, no Reconnecting.
+check_pathblip() {
+    clean
+    pathfault_nuke
+    local ctl session founder t_fault t_lift conns_before delta blip_ms chrome_pid=""
+    blip_ms="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["blip_recovery_ms"]))' "$MACOS/scripts/nfr-limits.json")"
+    FAKE_ARGS="--paths 1" start_fake || return 1
+    path_pair_once "$PORT"
+    pathfault_start "$((PORT + 3))" "$PORT"
+    ctl="$PATHFAULT_CTL"
+    launch --connect "127.0.0.1:$((PORT + 3))" --open com.android.settings \
+        --debug-frame-log "$WORK/frames.tsv" --debug-chrome-state "$WORK/chrome.txt" \
+        --quit-after 80
+    # The chrome file is overwritten on every change; sample it so a flash of
+    # Reconnecting cannot hide between two reads.
+    : > "$WORK/blip-stop"
+    (
+        while [ ! -e "$WORK/blip-stop" ]; do
+            [ -s "$WORK/chrome.txt" ] && cat "$WORK/chrome.txt" 2>/dev/null
+            sleep 0.1
+        done
+    ) > "$WORK/chrome-ticks.txt" &
+    chrome_pid=$!
+    wait_until 20 events_have '"kind":"up"' \
+        && ok "[PATH-24] PATHBLIP the session is live on its only path" \
+        || bad "[PATH-24] PATHBLIP no path attached"
+    session="$(path_welcome_session)"
+    [ -n "$session" ] \
+        && ok "[PATH-3] PATHBLIP the phone minted the session" \
+        || bad "[PATH-3] PATHBLIP no welcome reached the phone"
+    wait_until 20 events_have '"ev":"video"' \
+        && ok "[PATH-24] PATHBLIP the app window shows a live picture" \
+        || bad "[PATH-24] PATHBLIP no app-window video"
+    # Healthy: the stream moves, so nothing is silent and nothing probes.
+    sleep 4
+    founder="$(awk '$1 >= 0 { p = $3 } END { print p }' "$WORK/frames.tsv")"
+    [ -n "$founder" ] || bad "[PATH-24] PATHBLIP the frame log names no path"
+    conns_before="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "conn":
+        count += 1
+print(count)
+PY
+)"
+    [ "${conns_before:-0}" -eq 1 ] \
+        && ok "[PATH-24] PATHBLIP no probe was dialed while the path was healthy (one connection)" \
+        || bad "[PATH-24] PATHBLIP $conns_before connections before the fault"
+    t_fault="$(path_now)"
+    pathfault_mode "$ctl" blackhole
+    # E-11: 2 s of silence starts one probe. The proxy accepts its TCP
+    # connection at once even though the TLS hello is dropped, so the second
+    # connection before the lift is the dial's own evidence. A rejoin after the
+    # old path died would come later (and must not count).
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_fault') + 3.5 else 1)"; do
+        sleep 0.1
+    done
+    conns_before="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "conn":
+        count += 1
+print(count)
+PY
+)"
+    [ "${conns_before:-0}" -ge 2 ] \
+        && ok "[PATH-24] PATHBLIP the Mac dialed one probe join during the silence" \
+        || bad "[PATH-24] PATHBLIP no probe join was dialed during the silence ($conns_before connection(s))"
+    # Hold the radio off for 8 s from the fault, then lift it for new
+    # connections only: the old socket stays in its backoff.
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_fault') + 8.0 else 1)"; do
+        sleep 0.1
+    done
+    t_lift="$(path_now)"
+    pathfault_mode "$ctl" pass-new
+    wait_until 8 path_join_hello_since "$session" "$t_lift" \
+        && ok "[PATH-24] PATHBLIP the probe joined the same session through the lifted proxy" \
+        || bad "[PATH-22] PATHBLIP no join named the session after the lift: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
+    if wait_until 10 python3 - "$WORK/frames.tsv" "$t_lift" "$founder" <<'PY'
+import sys
+lift, founder = float(sys.argv[2]), sys.argv[3]
+for line in open(sys.argv[1]):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 3:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if ts >= lift and parts[2] != founder:
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+        ok "[PATH-24] PATHBLIP a frame arrived over the new path after the lift"
+    else
+        bad "[PATH-24] PATHBLIP no frame arrived over the new path: $(tail -3 "$WORK/frames.tsv" 2>/dev/null | tr '\n' ' ')"
+    fi
+    delta="$(python3 - "$WORK/frames.tsv" "$t_lift" "$founder" <<'PY'
+import sys
+lift, founder = float(sys.argv[2]), sys.argv[3]
+first = None
+for line in open(sys.argv[1]):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 3:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if ts >= lift and parts[2] != founder:
+        first = ts
+        break
+print("none" if first is None else "%.0f" % ((first - lift) * 1000.0))
+PY
+)"
+    if [ "$delta" = "none" ]; then
+        bad "[PATH-24] PATHBLIP the recovery time could not be measured"
+    elif python3 -c "import sys; sys.exit(0 if float('$delta') <= $blip_ms else 1)"; then
+        ok "[PATH-24] PATHBLIP the first frame over the new path arrived ${delta} ms after the lift (blip_recovery_ms ${blip_ms})"
+    else
+        bad "[PATH-24] PATHBLIP the first frame over the new path took ${delta} ms (blip_recovery_ms ${blip_ms})"
+    fi
+    # The switch was E-11's unplanned failover: the old path was still the
+    # attached, live path when the probe welcomed. After that it is a standby,
+    # demoted by its lost pong or closed by its own socket error (E-11), so a
+    # later `path down` is not a failure of this rule.
+    path_log > "$WORK/path-lines.log"
+    if python3 - "$WORK/path-lines.log" <<'PY'
+import sys
+lines = open(sys.argv[1], errors="replace").read().splitlines()
+switch = None
+for index, line in enumerate(lines):
+    if "live --probe--> live" in line:
+        switch = index
+        break
+if switch is None:
+    sys.exit(1)
+for line in lines[:switch]:
+    if "paths: path down" in line:
+        sys.exit(1)
+sys.exit(0)
+PY
+    then
+        ok "[PATH-24] PATHBLIP the Mac switched to the probe while the old path was still live"
+    else
+        bad "[PATH-24] PATHBLIP no probe switch transition: $(grep 'paths:' "$WORK/path-lines.log" | tail -3 | tr '\n' ' ')"
+    fi
+    grep -q 'bar_offline=1' "$WORK/chrome-ticks.txt" \
+        && bad "[PATH-24] PATHBLIP the window said Reconnecting during the blip" \
+        || ok "[PATH-17] PATHBLIP the window never said Reconnecting"
+    grep -qF "session failed" "$WORK/app.log" \
+        && bad "[PATH-6] PATHBLIP the session ended instead of moving to the probe" \
+        || ok "[PATH-6] PATHBLIP the session stayed live"
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+plain = joins = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "hello":
+        if event.get("plain"):
+            plain += 1
+        elif event.get("join"):
+            joins += 1
+print("plain=%d joins=%d" % (plain, joins))
+sys.exit(0 if plain == 1 and joins >= 1 else 1)
+PY
+    [ $? -eq 0 ] \
+        && ok "[PATH-3] PATHBLIP one session: one plain hello and the probe's join" \
+        || bad "[PATH-3] PATHBLIP the hello accounting is wrong"
+    : > "$WORK/blip-stop"
+    [ -n "$chrome_pid" ] && kill "$chrome_pid" 2>/dev/null || true
+    wait "$chrome_pid" 2>/dev/null || true
     stop_app
     stop_fakephone
     pathfault_stop_all

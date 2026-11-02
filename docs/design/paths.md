@@ -389,6 +389,51 @@ today's ending: the phone restores every power state it touched and frees the
 slot; the Mac emits one failure with a reason and retries on the existing
 backoff.
 
+## 6.1 The single-path silence probe (PATH-24/E-11)
+
+A one-path session has no ranking to fail over (`D1`) and PATH-21 forbids
+failing that path on a lost pong. If the radio dies while the socket stays
+open, the old connection can sit in TCP's retransmission backoff for seconds
+after the network is back: the picture is dead, but nothing dials.
+
+While exactly one path is attached, a stream is open and neither paused nor
+covered, and that path has delivered **no inbound frame for 2.0 s** (frames,
+`window.still`, JSON or anything else), the Mac dials one **probe join**: one
+PATH-20 provider, `hello{join}` with the session id, the same dial a rejoin
+makes. It never fails, closes or marks the old path Reconnecting; the
+picture's WIN-17 overlay stays the only signal. With no open and unpaused
+stream there is no trigger.
+
+The probe is its own machine (one enum, one pure transition):
+
+| State | Event | Result |
+|---|---|---|
+| `idle` | `tick`, one path + live stream + 2.0 s silence | `inFlight`, dial one join |
+| `idle` | `tick` any other way | stay `idle` |
+| `inFlight` | `tick` with the trigger still holding | stay `inFlight` (never a second dial) |
+| `inFlight` | `tick` with frames back | `idle`, cancel the dial |
+| `inFlight` | `failed` | `waiting(nextAt = now + 1 s)` |
+| `waiting` | `tick` before `nextAt` | stay `waiting` |
+| `waiting` | `tick` at `nextAt`, trigger holds | `inFlight`, dial |
+| `waiting` | `tick` with the trigger gone | `idle` |
+| `inFlight` / `waiting` | `inbound` / `stop` | `idle`, cancel a dial in flight |
+| any | `welcomed` | `idle` (the session owns the switch) |
+
+The retries back off 1 s, 2 s, 4 s and cap at 4 s, while the trigger holds;
+the machine never has more than one dial in flight, and stops when inbound
+frames arrive on any path, the stream closes or the session ends.
+
+When the probe welcomes, the session has two paths, so PATH-7's pings start.
+If the old path is **still silent** the session switches to the probe at once
+— an unplanned failover: `path.switch` on the new path, the replay, then a
+keyframe per stream — and the old path becomes a **standby**, never failed or
+closed by the probe. Otherwise the two-path ping rule decides. The phone needs
+nothing new (PATH-11, E-10).
+
+The NFR is `blip_recovery_ms` (3000 ms): from the network being back to the
+first frame or still over the new path, on the host e2e (`pathblip`) and the
+emulator (`probe-join`).
+
 ## 7. The ranking
 
 D1: one path is never pinged (PATH-18's 15 s session ping and TCP keepalive
