@@ -132,6 +132,44 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(machine.state, .orphaned(since: 4))
         XCTAssertTrue(actions.contains(.markReconnecting))
         XCTAssertFalse(actions.contains(.switchTo(path: "b")))
+        // E-9: the same rule as Live's no-candidate branch — the failing path
+        // stays attached as a standby (still pinged), never removed from the
+        // sets without a close, and never leaked.
+        XCTAssertEqual(Set(["b"]), machine.live)
+        XCTAssertEqual(Set(["b"]), machine.standby)
+    }
+
+    /// E-9 (boot 13): B carries the session, A was already demoted to a
+    /// standby, and B's pong also stops. No non-standby path is left, so the
+    /// session starts the 30 s grace as when no path is left; the failing path
+    /// stays attached as a standby.
+    func testALostPongWithOnlyStandbysLeftOrphansAndKeepsTheFailingPath() {
+        var machine = PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                                         standby: ["a"], scores: ["a": 300, "b": 700])
+        let actions = machine.handle(.pongLost(id: "b"), now: 10)
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(actions, [.markReconnecting, .ranking(.currentFailed(id: "b"))])
+        XCTAssertEqual(Set(["a", "b"]), machine.live)
+        XCTAssertEqual(Set(["a", "b"]), machine.standby)
+        // Within the grace a join founds the session again: unplanned-switch
+        // semantics, so the held frames replay onto it (PATH-6/9).
+        let up = machine.handle(.pathUp(id: "c", joined: true), now: 20)
+        XCTAssertEqual(machine.state, .live(current: "c"))
+        XCTAssertEqual(up, [.switchTo(path: "c"), .replayFromLastAck,
+                            .requestKeyframes, .startPing(path: "c"),
+                            .ranking(.pathUp("c"))])
+    }
+
+    /// E-9: the grace with the failed paths still attached ends the session at
+    /// 30 s exactly as with none, and the owner's end closes every socket with
+    /// it (no standby outlives the session).
+    func testTheGraceWithAttachedStandbysStillEndsAtThirtySeconds() {
+        var machine = PathSessionMachine(state: .orphaned(since: 100),
+                                         live: ["a", "b"], standby: ["a", "b"])
+        XCTAssertEqual(machine.handle(.graceExpired, now: 129.9), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 100))
+        XCTAssertEqual(machine.handle(.graceExpired, now: 130), [.end(reason: "graceExpired")])
+        XCTAssertEqual(machine.state, .ended(reason: "graceExpired"))
     }
 
     func testAPathDownForAnotherPathKeepsTheSessionLive() {
