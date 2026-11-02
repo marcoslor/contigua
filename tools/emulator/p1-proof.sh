@@ -804,37 +804,55 @@ stop_proxies() {
     PROXY_A_PID=""; PROXY_B_PID=""
 }
 
-# start_faults <phase> <a-mode> <b-mode> [delay-ms] — one fresh proxy pair per
-# phase, each with its own never-overwritten events/log. Boot 8 reused the join
-# proxies for the grace, which truncated the join's events before the reviewer
-# could see the founder throttled and black-holed.
-start_faults() {
-    local phase="$1" amode="$2" bmode="$3" delay="${4:-1500}"
-    printf 'mode %s\n' "$amode" > "$WORK/fault-a.$phase.ctl"
-    printf 'mode %s\n' "$bmode" > "$WORK/fault-b.$phase.ctl"
+# start_fault a|b <phase> <mode> [delay-ms] — one proxy of a fresh pair per
+# phase, each with its own never-overwritten events/log. A phase that needs A
+# to found the session starts A alone, launches the Mac, and starts B once A's
+# welcome is in the Mac log: two dials racing at launch let the delayed B found
+# (boot 12: the drop then ran on the standby and the founder check named the
+# wrong path).
+start_fault() {
+    local side="$1" phase="$2" mode="$3" delay="${4:-0}" listen conn
+    if [ "$side" = a ]; then
+        listen=47821
+        conn="127.0.0.1:${ADDR##*:}"
+    else
+        listen=47822
+        conn=127.0.0.1:47812
+    fi
+    printf 'mode %s\n' "$mode" > "$WORK/fault-$side.$phase.ctl"
     if [ "$MODE" = dry ]; then
         # The proxies' start lines are the only event the run waits for here;
         # the drop's byte and mode events are appended by the drop phase.
-        printf '{"ev":"start","ts":%s,"listen":47821}\n' "$(dry_now)" > "$WORK/fault-a.$phase.events"
-        printf '{"ev":"start","ts":%s,"listen":47822}\n' "$(dry_now)" > "$WORK/fault-b.$phase.events"
-        : > "$WORK/fault-a.$phase.log"
-        : > "$WORK/fault-b.$phase.log"
-        PROXY_A_PID=""
-        PROXY_B_PID=""
+        printf '{"ev":"start","ts":%s,"listen":%s}\n' "$(dry_now)" "$listen" \
+            > "$WORK/fault-$side.$phase.events"
+        : > "$WORK/fault-$side.$phase.log"
+        if [ "$side" = a ]; then PROXY_A_PID=""; else PROXY_B_PID=""; fi
         return 0
     fi
-    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47821 \
-        --connect "127.0.0.1:${ADDR##*:}" --mode "$amode" --rate-mbit 16 \
-        --ctl-file "$WORK/fault-a.$phase.ctl" --events "$WORK/fault-a.$phase.events" \
-        > "$WORK/fault-a.$phase.log" 2>&1 &
-    PROXY_A_PID=$!
-    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47822 \
-        --connect 127.0.0.1:47812 --mode "$bmode" --delay-ms "$delay" --rate-mbit 16 \
-        --ctl-file "$WORK/fault-b.$phase.ctl" --events "$WORK/fault-b.$phase.events" \
-        > "$WORK/fault-b.$phase.log" 2>&1 &
-    PROXY_B_PID=$!
-    wait_for 10 grep -q '"ev":"start"' "$WORK/fault-a.$phase.events" || bad "fault A ($phase) did not listen"
-    wait_for 10 grep -q '"ev":"start"' "$WORK/fault-b.$phase.events" || bad "fault B ($phase) did not listen"
+    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen "$listen" \
+        --connect "$conn" --mode "$mode" --delay-ms "$delay" --rate-mbit 16 \
+        --ctl-file "$WORK/fault-$side.$phase.ctl" \
+        --events "$WORK/fault-$side.$phase.events" \
+        > "$WORK/fault-$side.$phase.log" 2>&1 &
+    if [ "$side" = a ]; then PROXY_A_PID=$!; else PROXY_B_PID=$!; fi
+    wait_for 10 grep -q '"ev":"start"' "$WORK/fault-$side.$phase.events" ||
+        bad "fault $side ($phase) did not listen"
+}
+
+# start_faults <phase> <a-mode> <b-mode> [delay-ms] — both at once, for the
+# phases that do not need a named founder.
+start_faults() {
+    start_fault a "$1" "$2" 0
+    start_fault b "$1" "$3" "${4:-1500}"
+}
+
+# start_second_path <phase> <mode> [delay-ms] <mac log> — start B after A's
+# welcome is in the log, so the first path is A by construction.
+start_second_path() {
+    local phase="$1" mode="$2" delay="$3" log="$4"
+    wait_for 25 grep -q 'hello --welcome--> welcomed' "$log" ||
+        printf '[p1-proof] %s: A was not welcomed before B started\n' "$phase"
+    start_fault b "$phase" "$mode" "$delay"
 }
 
 CLEANED=0
@@ -1017,8 +1035,11 @@ fi
 ok "the Mac stored the phone pin before the join"
 # The phone's own grace keeps the pair session for 30 s after the Mac app
 # quits; wait it out so the join dials a free slot (boot 8 raced it and the
-# supersede muddied the first dial).
+# supersede muddied the first dial). A 3 s settle keeps the phone's handshake
+# pool quiet: boot 12's first join attempt hit "handshake slots busy", failed,
+# and its redial let the delayed B found the session.
 wait_slot_free "$WORK/phone-pair-end.log" 40 pair || true
+sleep 3
 
 # --- two providers, one session: the join ----------------------------------
 section join
@@ -1029,8 +1050,9 @@ emu shell "rm -f /sdcard/Download/PocketDeck/.part-*" >/dev/null 2>&1 || true
 # share one forward's socket path (path A kept failing parse on the phone).
 emu forward --remove tcp:47812 >/dev/null 2>&1 || true
 emu forward tcp:47812 "tcp:$DEVPORT" >/dev/null || bad "second adb forward failed"
-# A: fast (it must found), B: 1.5 s in the way (it must hold, then join).
-start_faults join pass delay 1500
+# A: the only proxy up, so A founds the session. B: 1.5 s in the way, started
+# once A's welcome is in the Mac log, so the founder is A by construction.
+start_fault a join pass 0
 
 FILE="$WORK/pd-direct-p1-$(date +%s).bin"
 NAME="$(basename "$FILE")"
@@ -1043,6 +1065,7 @@ mac_app "$WORK/app-join.out" --profile "$PROFILE" --background \
     --quit-after 150 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-join.log")"
+start_second_path join delay 1500 "$WORK/mac-join.log"
 
 JOINED=0
 for _ in $(seq 1 160); do
@@ -1307,6 +1330,7 @@ printf '[p1-proof] drop timings: Mac `drop: sending` %s, Mac `drop: ok` %s; phon
 stop_app
 wait_slot_free "$WORK/phone-join-end.log" 40 join || true
 stop_proxies
+sleep 3
 
 # --- the mirror across a black-holed path (RRR-1/RRR-2) -------------------
 # No fake phone can see these two: the session writer parked on a dead standby,
@@ -1386,7 +1410,8 @@ PY
     FAIL=$((FAIL + $(grep -c '^FAIL ' "$WORK/mirror-blackhole.txt" || true)))
     [ "$MIRROR_RC" -eq 0 ] || bad "the canned mirror timeline did not pass (rc=$MIRROR_RC)"
 else
-    start_faults mirror pass delay 1500
+    emu logcat -c >/dev/null 2>&1 || true
+    start_fault a mirror pass 0
     # Settings behind the mirror: a scrollable screen the swipe loop moves.
     emu shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
     sleep 2
@@ -1407,6 +1432,10 @@ else
         --quit-after 260 &
     APP_PID=$!
     LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-mirror.log")"
+    # B is a normal path too: a delayed standby would add its delay to the
+    # keyframe after the failover and would lose the ranking to a black-holed A
+    # (boot 12: the Mac switched back to the dead path at t0+8.3 s).
+    start_second_path mirror pass 0 "$WORK/mac-mirror.log"
     MIRROR_JOINED=0
     for _ in $(seq 1 160); do
         emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
@@ -1491,6 +1520,7 @@ PY
     stop_app
     wait_slot_free "$WORK/phone-mirror-end.log" 40 mirror || true
     stop_proxies
+    sleep 3
 fi
 
 # --- 30 s grace ------------------------------------------------------------
