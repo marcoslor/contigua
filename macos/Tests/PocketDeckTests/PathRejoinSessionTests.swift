@@ -41,10 +41,10 @@ final class PathRejoinSessionTests: XCTestCase {
 
     /// Runs a one-path session to `ready`, records the uptime of every join
     /// hello, and hands each join connection to `onJoin` (close it = a fast
-    /// failure, say nothing = the dial's own timeout). Returning the session
-    /// and the founder keeps each test's script visible.
+    /// failure, say nothing = the dial's own timeout). `joinTimes` reads the
+    /// recorded dials.
     private func startAndOrphan(onJoin: @escaping (FakeServer.Connection) -> Void)
-        throws -> (Session, NSLock, () -> [TimeInterval]) {
+        throws -> (Session, () -> [TimeInterval]) {
         server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
         let lock = NSLock()
         var joinHellos: [TimeInterval] = []
@@ -78,13 +78,13 @@ final class PathRejoinSessionTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return joinHellos
         }
-        return (session, lock, times)
+        return (session, times)
     }
 
     /// E-11c: while orphaned a rejoin that fails is dialed again on the next
     /// tick, not after the reconnect backoff's 1 s first step.
     func testAFailedRejoinIsDialedAgainAtOnce() throws {
-        let (session, _, joinTimes) = try startAndOrphan { connection in
+        let (session, joinTimes) = try startAndOrphan { connection in
             connection.close()
         }
         defer { session.closeAndWait() }
@@ -103,7 +103,7 @@ final class PathRejoinSessionTests: XCTestCase {
     /// general one (6 s here). Today the second dial comes after 6 s + the 1 s
     /// backoff step.
     func testAnOrphanedRejoinsConnectTimeoutIsTwoSeconds() throws {
-        let (session, _, joinTimes) = try startAndOrphan { _ in
+        let (session, joinTimes) = try startAndOrphan { _ in
             // The phone is unreachable through this path: the dial must give
             // up on its own.
         }
