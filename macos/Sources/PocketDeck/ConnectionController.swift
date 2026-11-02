@@ -159,12 +159,20 @@ final class ConnectionController {
         guard pathsDown, case .online(let phone) = machine.link else { return machine.link }
         return .reconnecting(phone)
     }
-    /// The live session has no usable path (PATH-17). The panel shows
-    /// Reconnecting at once and Offline after the same 15 s the windows use,
+    /// The live session's path outage (PATH-17), one state rather than flags
+    /// kept in step: none, or down since a moment and, after the windows' 15 s,
+    /// offline. The panel shows Reconnecting at once and Offline after that,
     /// while the session keeps its own 30 s grace underneath (PATH-6).
-    private(set) var pathsDown = false
-    private(set) var pathsOffline = false
-    private var pathsDownSince: Date?
+    enum PathOutage: Equatable {
+        case none
+        case down(since: Date, offline: Bool)
+    }
+    private(set) var pathOutage = PathOutage.none
+    var pathsDown: Bool { pathOutage != .none }
+    var pathsOffline: Bool {
+        if case .down(_, let offline) = pathOutage { return offline }
+        return false
+    }
     private(set) var transientBanner: Banner?
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
@@ -745,9 +753,9 @@ final class ConnectionController {
 
     private func tick() {
         send(.tick)
-        if pathsDown, let since = pathsDownSince {
-            let offline = Date().timeIntervalSince(since) >= LinkMachine.offlineAfter
-            if offline != pathsOffline { pathsOffline = offline }
+        if case .down(let since, let offline) = pathOutage {
+            let now = Date().timeIntervalSince(since) >= LinkMachine.offlineAfter
+            if now != offline { pathOutage = .down(since: since, offline: now) }
         }
         if let qr, !qr.expired, !qr.succeeded, qr.payload.isExpired() { expireQR() }
     }
@@ -757,19 +765,15 @@ final class ConnectionController {
     /// dropped link so a path outage is never shown as Connected (PANEL-12).
     private func setPathsDown(_ down: Bool) {
         if down {
-            guard pathsDownSince == nil else { return }
-            pathsDown = true
-            pathsOffline = false
-            pathsDownSince = Date()
+            guard pathOutage == .none else { return }
+            pathOutage = .down(since: Date(), offline: false)
         } else {
             clearPathOutage()
         }
     }
 
     private func clearPathOutage() {
-        pathsDown = false
-        pathsOffline = false
-        pathsDownSince = nil
+        pathOutage = .none
     }
 
     private func observeSystem() {
