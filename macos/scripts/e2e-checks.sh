@@ -977,6 +977,113 @@ PY
     path_stream_stop
     stop_fakephone
     pathfault_stop_all
+
+    # (c) E-11c: no route for 15 s (both sockets cut, every rejoin refused),
+    # then the route is lifted. The rejoin must be dialed back to back inside
+    # the grace, so the same session is back and the picture resumes within
+    # 3.0 s of the lift — not after a backoff step. The proxies' conn events
+    # count every dial, including the refused ones, and their gaps.
+    clean
+    pathfault_nuke
+    local t_black dials video_dt
+    FAKE_ARGS="--paths 2" start_fake || return 1
+    pathfault_start "$((PORT + 3))" "$PORT"
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))"
+    path_pair_once "$PORT"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open-phone --debug-chrome-state "$WORK/chrome-grace3.txt" --quit-after 75
+    path_stream_start
+    wait_until 20 path_upto 2 \
+        || bad "[PATH-6] PATHGRACE(c) the second path never joined"
+    wait_until 15 events_have '"ev":"video"' \
+        && ok "[PATH-6] PATHGRACE(c) the two-path session is live before the faults" \
+        || bad "[PATH-6] PATHGRACE(c) no mirror video before the faults"
+    founder=""
+    for _ in $(seq 1 80); do
+        founder="$(path_hello_listener)"
+        [ -n "$founder" ] && break
+        sleep 0.25
+    done
+    ctl_a="$(path_ctl_for_listener "$founder")"
+    ctl_b="$(path_ctl_other "$founder")"
+    session="$(path_welcome_session)"
+    # No route for 15 s: both sockets are cut and every rejoin is refused, the
+    # pathrestart case (a phone with no server). A silent black hole would make
+    # each dial hang for the 6 s general timeout, which could land the old 8 s
+    # step anywhere; a refusal fails now and shows the backoff itself.
+    pathfault_mode "$ctl_a" rst
+    pathfault_mode "$ctl_b" rst
+    t_black="$(path_now)"
+    orphan_seen=0
+    for _ in $(seq 1 45); do
+        if grep -qE -- '--(pong-lost|failed)--> orphaned' "$WORK/app-stream.log" 2>/dev/null; then
+            orphan_seen=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$orphan_seen" = 1 ]; then
+        ok "[PATH-21] PATHGRACE(c) the Mac went orphaned when both paths were cut"
+    else
+        bad "[PATH-21] PATHGRACE(c) no orphan after both paths were cut: $(tail -2 "$WORK/app-stream.log" 2>/dev/null)"
+    fi
+    # Fifteen seconds with no route: the session must stay inside the grace.
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_black') + 15.0 else 1)"; do
+        sleep 0.2
+    done
+    grep -q -- '--grace--> ended' "$WORK/app-stream.log" 2>/dev/null \
+        && bad "[PATH-6] PATHGRACE(c) the session ended inside the 15 s black-out" \
+        || ok "[PATH-6] PATHGRACE(c) still orphaned after 15 s with no route, inside the grace"
+    t_lift="$(path_now)"
+    pathfault_mode "$ctl_a" pass
+    pathfault_mode "$ctl_b" pass
+    if wait_until 5 path_join_hello_since "$session" "$t_lift"; then
+        rejoin_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_lift')))")"
+        ok "[PATH-22] PATHGRACE(c) the Mac re-dialed a join with the same session id ${rejoin_dt}s after the 15 s lift (limit 5.0)"
+    else
+        bad "[PATH-22] PATHGRACE(c) no rejoin named the session within 5.0 s: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
+    fi
+    wait_until 10 path_joined_up_since "$t_lift" \
+        && ok "[PATH-22] PATHGRACE(c) the phone attached the rejoined path to the same session" \
+        || bad "[PATH-6] PATHGRACE(c) no path attached after the 15 s lift"
+    if wait_until 5 path_video_since "$t_lift"; then
+        video_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_lift')))")"
+        if python3 -c "import sys; sys.exit(0 if float('$video_dt') <= 3.0 else 1)"; then
+            ok "[PATH-5] PATHGRACE(c) the picture resumed ${video_dt}s after the 15 s lift (limit 3.0)"
+        else
+            bad "[PATH-5] PATHGRACE(c) the picture resumed ${video_dt}s after the 15 s lift (limit 3.0)"
+        fi
+    else
+        bad "[PATH-5] PATHGRACE(c) no video frame after the 15 s lift"
+    fi
+    wait_until 5 chrome_online "$WORK/chrome-grace3.txt" \
+        && ok "[PATH-17] PATHGRACE(c) the window left reconnecting" \
+        || bad "[PATH-17] PATHGRACE(c) the window still says the link is down"
+    dials="$(python3 - "$WORK/fault-$((PORT + 3)).events" "$WORK/fault-$((PORT + 4)).events" "$t_black" "$t_lift" <<'PY'
+import json, sys
+start, end = float(sys.argv[3]), float(sys.argv[4])
+times = []
+for path in sys.argv[1:3]:
+    try:
+        for line in open(path):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("ev") == "conn" and start <= event.get("ts", 0) <= end:
+                times.append(event["ts"])
+    except OSError:
+        pass
+times.sort()
+gaps = ",".join("%.2f" % (b - a) for a, b in zip(times, times[1:])) or "-"
+print("dials=%d gaps=%s" % (len(times), gaps))
+PY
+)"
+    ok "[PATH-6] PATHGRACE(c) rejoin dials during the 15 s no-route window: ${dials:-none}"
+    stop_app
+    path_stream_stop
+    stop_fakephone
+    pathfault_stop_all
 }
 
 # pathrejoin (D-3, R-3): the only path dies and the route comes back inside the
