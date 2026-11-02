@@ -3829,6 +3829,9 @@ PY
 # the pinch and rotate pointers. Momentum events must reach the phone as nothing.
 check_trackpad() {
     begin_shared || return 1
+    # The closing right click is the "delivered" signal; make it a Back rather
+    # than the default long press, whose touch would be a fifth gesture.
+    control secondary-click back || bad "C15 secondary-click back: $CONTROL_REPLY"
     # The script starts at the first video config. The main thread is busy with
     # the opening frames for a few hundred ms after that, which would stretch one
     # step of the first gesture past the cadence C15 measures. Settle first: the
@@ -3977,6 +3980,7 @@ PY
             esac
         done <<< "$verdicts"
     fi
+    control secondary-click longPress >/dev/null 2>&1 || true
     stop_app
     stop_fakephone
 }
