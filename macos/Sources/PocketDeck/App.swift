@@ -45,6 +45,9 @@ struct LaunchOptions {
     var floatWindows = false
     /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
     var debugChromeState: String?
+    /// `--debug-frame-log FILE`: one line per video frame a window received,
+    /// with the path it arrived on (e2e; DebugFrameLog.swift).
+    var debugFrameLog: String?
     /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
     var debugBanner: String?
     /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
@@ -140,6 +143,7 @@ struct LaunchOptions {
         "--dump-video": true,
         "--float-windows": false,
         "--debug-chrome-state": true,
+        "--debug-frame-log": true,
         "--debug-banner": true,
         "--audio-stats": true,
         "--share-log": true,
@@ -238,6 +242,8 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--debug-chrome-state":
                 options.debugChromeState = next()
+            case "--debug-frame-log":
+                options.debugFrameLog = next()
             case "--debug-banner":
                 options.debugBanner = next()
             case "--debug-deck-grid":

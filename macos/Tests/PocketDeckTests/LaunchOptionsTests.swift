@@ -80,6 +80,14 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugControl)
     }
 
+    func testDebugFrameLogPath() {
+        // The direct-link confirmation boot reads one line per frame, with the
+        // path the frame arrived on.
+        let options = LaunchOptions.parse(["PocketDeck", "--debug-frame-log", "/tmp/pd-frames.tsv"])
+        XCTAssertEqual(options.debugFrameLog, "/tmp/pd-frames.tsv")
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugFrameLog)
+    }
+
     func testResetPairingFlag() {
         XCTAssertTrue(LaunchOptions.parse(["PocketDeck", "--reset-pairing"]).resetPairing)
     }

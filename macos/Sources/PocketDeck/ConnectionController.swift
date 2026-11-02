@@ -593,6 +593,7 @@ final class ConnectionController {
         if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
         windows.floatWindows = options.floatWindows
         windows.chromeStateFile = options.debugChromeState.map { URL(fileURLWithPath: $0) }
+        windows.frameLog = options.debugFrameLog.map(DebugFrameLog.init)
         if let path = options.debugInputScript, let error = armDebugInput(path) {
             FileHandle.standardError.write(Data((error + "\n").utf8))
             exit(2)

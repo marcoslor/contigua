@@ -113,7 +113,8 @@ struct AppInfo: Equatable {
 /// Video payloads, delivered off the main thread.
 enum VideoEvent {
     case config(stream: UInt32, config: VideoConfig, picture: PictureRect)
-    case frame(stream: UInt32, frame: VideoFrameData)
+    /// `path` is the path the frame arrived on, for the e2e frame log.
+    case frame(stream: UInt32, frame: VideoFrameData, path: String)
 }
 
 enum SessionEvent {
@@ -830,7 +831,7 @@ final class Session {
         for event in pathLayer.receive(path: id, frame: frame) {
             switch event {
             case .deliver(let inner):
-                handleFrame(inner)
+                handleFrame(inner, path: id)
             case .pong(let path, let rtt, let rankingSample):
                 // E-8/RRR-4: a pong on a path that carried bulk within the
                 // last second measures the queue, not the link. It proved the
@@ -1192,7 +1193,7 @@ final class Session {
 
     // MARK: Receive dispatch
 
-    private func handleFrame(_ frame: Frame) {
+    private func handleFrame(_ frame: Frame, path: String? = nil) {
         switch frame.messageType {
         case .json:
             guard let message = JSONFrame.decode(payload: frame.payload) else {
@@ -1218,7 +1219,7 @@ final class Session {
                 return
             }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
-            onVideoEvent?(.frame(stream: frame.stream, frame: data))
+            onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
         case .shareData:
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
         case .clipData:
