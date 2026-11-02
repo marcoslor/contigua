@@ -38,7 +38,7 @@ if ! "$HEAVY" bash -c "cd '$MACOS' && swift test --filter '$K2_FILTER'"; then
 fi
 
 echo "== nfr: e2e ($PROFILE on port $PORT)"
-if ! "$HEAVY" bash -c "cd '$MACOS' && PD_E2E_PORT='$PORT' PD_E2E_PROFILE='$PROFILE' ./scripts/check-e2e.sh nfr"; then
+if ! "$HEAVY" bash -c "cd '$MACOS' && PD_E2E_PORT='$PORT' PD_E2E_PROFILE='$PROFILE' bash scripts/check-e2e.sh nfr"; then
     fail=1
 fi
 
