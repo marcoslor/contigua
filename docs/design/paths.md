@@ -346,11 +346,12 @@ hello/join → welcomed, or failed/closed) and logs
 | `Live(cur)` | `CurrentFailed(cur)`, no other path up | `Orphaned(now)`; mark the UI "reconnecting" |
 | `Live(cur)` | `PathDown(other)` | stay `Live` |
 | `Live(cur)` | `PongLost(cur)` and another usable path `b` is up | `Live(b)` at once; `cur` becomes a **standby** — kept open, still pinged, never chosen on a failover, only the margin rule brings it back (D-2) |
-| `Live(cur)` | `PongLost(cur)`, no other usable path | stay `Live(cur)`; the lost pong is a sample only (PATH-21) |
+| `Live(cur)` | `PongLost(cur)`, no other usable path, one path attached | stay `Live(cur)`; the lost pong is a sample only (PATH-21) |
+| `Live(cur)` | `PongLost(cur)`, no other usable path, two or more attached (every other is a standby) | `Orphaned(now)`; mark the UI "reconnecting"; `cur` stays a **standby** — kept open, still pinged, closed by its socket error or the session's end (PATH-21/E-9) |
 | `Live(cur)` | `Close(why)` | `Ended(why)` |
 | `Migrating(from, to)` | `PeerSwitch(to, seq)` | `Live(to)`; the switch is complete |
 | `Migrating(from, to)` | `PathDown(to)` | `Orphaned(now)` if nothing else is up, else back to `Live(from)` when `from` is still usable, else `Migrating` to the next ranked path |
-| `Migrating(from, to)` | `PongLost(to)` | `Live(from)` when `from` is usable (`to` becomes a standby); else the next usable path; else `Orphaned(now)` (PATH-21/D-2) |
+| `Migrating(from, to)` | `PongLost(to)` | `Live(from)` when `from` is usable (`to` becomes a standby); else the next usable path; else `Orphaned(now)` with `to` kept as a standby (PATH-21/D-2/E-9) |
 | `Migrating(from, to)` | `drain 2 s` (planned switch, the peer's marker was not read) | close `from`; stay `Migrating` until the peer's marker or the new path's own pong timeout decides |
 | `Migrating` | `Close(why)` | `Ended(why)` |
 | `Orphaned(since)` | `PathUp(p, joined)` | `Live(p)`; send `path.switch{p, N}` on `p` as the first frame, replay from the last ack, `window.keyframe` per stream |

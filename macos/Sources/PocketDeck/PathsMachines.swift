@@ -202,7 +202,15 @@ struct PathSessionMachine {
                 // (still open, still pinged) instead of closing a live path; a
                 // socket error above still closes it.
                 guard live.count >= 2 else { return [] }
-                guard let next = bestLive(excluding: id) else { return [] }
+                guard let next = bestLive(excluding: id) else {
+                    // E-9 (boot 13): every other attached path is a standby, so
+                    // nothing can carry the session. Start the grace as when no
+                    // path is left; the failing path stays a standby, kept
+                    // open and pinged, closed by its socket error or the end.
+                    standby.insert(id)
+                    state = .orphaned(since: now)
+                    return [.markReconnecting, .ranking(.currentFailed(id: id))]
+                }
                 state = .live(current: next)
                 standby.insert(id)
                 return [.switchTo(path: next), .replayFromLastAck, .requestKeyframes,
@@ -294,8 +302,9 @@ struct PathSessionMachine {
                             .requestKeyframes, .startPing(path: next),
                             .ranking(.currentFailed(id: id))]
                 }
-                live.remove(id)
-                standby.remove(id)
+                // E-9: the target is already a standby above; nothing usable is
+                // left, so the grace starts and the target stays attached —
+                // never removed from the sets without a close.
                 state = .orphaned(since: now)
                 return [.markReconnecting, .ranking(.currentFailed(id: id))]
             case .pongLost:
