@@ -1,6 +1,6 @@
 # Dock and application shortcuts
 
-Prefix: `DOCK`. Owner docs: docs/design/dock.md, docs/UX.md §Deck (the tile's menu), docs/specs/settings.md (the per-phone page). Last reviewed: 2026-10-30, against build 0.1.0.
+Prefix: `DOCK`. Owner docs: docs/design/dock.md, docs/UX.md §Deck (the tile's menu), docs/specs/settings.md (the per-phone page). Last reviewed: 2026-11-01, against build 0.1.0.
 
 ## Purpose
 
@@ -35,6 +35,8 @@ A phone app can have its own Mac app identity: a small shim bundle with the app'
 | DOCK-14 | A shortcut SHALL launch nothing when it is created (Add to Applications and Save all are shortcuts, not windows); only Add to Dock and an open window's automatic identity SHALL launch their shim. | review of `ConnectionController.addToApplications`/`setSaveAllShortcuts`; e2e `shortcuts` `[DOCK-14]` (no `window.open` from Save all) |
 | DOCK-15 | THE shim's name and file name SHALL be "App (Phone)" with `/` and `:` dropped and a leading `.` removed, bounded to 200 characters, and SHALL follow a phone rename or an app relabel. | K2 `DockAppsTests.testNameAndFileName`, `PhoneNicknamesTests`; e2e `nickname` |
 | DOCK-16 | Test profiles SHALL write only their own folder or `--dock-dir DIR`; no run SHALL create, change or delete anything in `~/Applications` or `/Applications`. | K2 `DockAppsTests.testTestProfilesNeverUseApplicationsFolder`; e2e `dock` and `shortcuts` run against `--dock-dir` |
+| DOCK-17 | WHILE an app window is open and its shim runs, THE shim SHALL NOT quit on its own; WHEN an automatic shim starts listening THE shim SHALL post `dev.pocketdeck.dock.ready` every second until the host answers, and the host SHALL answer `opened` only to a bound pid whose token matches the bundle's (an unbound pid SHALL get no answer — its own bind answers); the 30 s self-quit SHALL apply only while no host answers. | K2 `DockShimAckTests` (every transition, the 30 s boundary, the ready answer and its token); e2e `dock` `[DOCK-17]` (a shim listening 2 s late: window open and shim alive at 40 s, bound within 1.5 s of listening) |
+| DOCK-18 | WHEN an app list arrives, or an idle shim is relaunched, and the bundle's recorded shim-executable hash is not this build's THE Mac SHALL rebuild the bundle with this build's executable; a running shim SHALL be left alone until a later refresh after it exits. | K2 `DockAppsTests.testAnOldShimExecutableIsRebuiltByTheNextRefresh`, `testARebuildReplacesAnOlderShimExecutable`, `testInfoPlistKeys`; e2e `dock` `[DOCK-18]` (a bundle with no hash and an old executable is rebuilt) |
 
 ## States and events
 

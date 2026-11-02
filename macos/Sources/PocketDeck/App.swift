@@ -75,6 +75,9 @@ struct LaunchOptions {
     /// `--dock-bind-delay SECONDS`: hold the automatic launch's pid callback
     /// back, as a slow launch would (e2e race).
     var dockBindDelay: TimeInterval?
+    /// `--dock-debug-listen-delay SECONDS`: a newly built shim registers its
+    /// observers that many seconds after launch, as a slow launch does (e2e).
+    var dockDebugListenDelay: TimeInterval?
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
     /// through the same code the Settings ▸ Phones ▸ Rename dialog calls (e2e).
     var setNickname: String?
@@ -150,6 +153,7 @@ struct LaunchOptions {
         "--dock-remove": true,
         "--dock-launch-delay": true,
         "--dock-bind-delay": true,
+        "--dock-debug-listen-delay": true,
         "--set-nickname": true,
         "--continue-on-mac": false,
         "--background": false,
@@ -263,6 +267,8 @@ struct LaunchOptions {
                 if let value = next() { options.dockLaunchDelay = Double(value) }
             case "--dock-bind-delay":
                 if let value = next() { options.dockBindDelay = Double(value) }
+            case "--dock-debug-listen-delay":
+                if let value = next() { options.dockDebugListenDelay = Double(value) }
             case "--set-nickname":
                 options.setNickname = next()
             case "--continue-on-mac":

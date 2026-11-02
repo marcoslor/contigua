@@ -4,6 +4,7 @@
 // `DockApps` object does the file system, LaunchServices and the shim messages.
 
 import AppKit
+import CryptoKit
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -232,6 +233,23 @@ enum DockLaunch {
     }
 }
 
+/// The host's answer to a shim's `ready` (docs/design/dock.md §Launch → window).
+/// Only a pid bound to a window gets `opened`; a pid the bind has not reached
+/// yet gets nothing, because its bind posts `opened` itself. The token is
+/// checked exactly as on `open` (sec L-8).
+enum DockReadyDecision: Equatable {
+    case answer
+    case ignoreUnbound
+    case ignoreToken
+}
+
+enum DockReady {
+    static func decide(bound: Bool, tokenMatches: Bool) -> DockReadyDecision {
+        guard tokenMatches else { return .ignoreToken }
+        return bound ? .answer : .ignoreUnbound
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
@@ -282,6 +300,13 @@ struct DockShimSpec: Equatable {
         return mapped.isEmpty ? "x" : mapped
     }
 
+    /// e2e only: seconds the shim waits before it starts listening
+    /// (`--dock-debug-listen-delay`). No bundle outside the harness writes it.
+    var listenDelay: TimeInterval?
+    /// The shim executable's hash at build time (docs/design/dock.md
+    /// §Lifecycle): the refresh replaces a bundle built from another one.
+    var shimHash = ""
+
     var infoPlist: [String: Any] {
         [
             "CFBundleDevelopmentRegion": "en",
@@ -308,6 +333,8 @@ struct DockShimSpec: Equatable {
             DockMessage.plistIconVersion: iconVersion,
             DockMessage.plistIconLayers: iconLayers,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
+            .merging(listenDelay.map { [DockMessage.plistListenDelay: $0] } ?? [:]) { current, _ in current }
+            .merging(shimHash.isEmpty ? [:] : [DockMessage.plistShimHash: shimHash]) { current, _ in current }
     }
 }
 
@@ -330,6 +357,9 @@ struct DockShimRecord: Equatable {
     var iconVersion = 0
     /// Whether that icon was drawn from the phone's adaptive layers.
     var iconLayers = false
+    /// SHA-256 of the shim executable it was built from (empty in a bundle
+    /// written before the key existed, which the next refresh replaces).
+    var shimHash = ""
 
     /// Added by hand to the Dock ("Add to Dock"): the Show-phone-apps setting
     /// never stops these.
@@ -422,7 +452,8 @@ enum DockShimBuilder {
                                   label: plist[DockMessage.plistLabel] as? String ?? "",
                                   token: plist[DockMessage.plistToken] as? String ?? "",
                                   iconVersion: plist[DockMessage.plistIconVersion] as? Int ?? 0,
-                                  iconLayers: plist[DockMessage.plistIconLayers] as? Bool ?? false)
+                                  iconLayers: plist[DockMessage.plistIconLayers] as? Bool ?? false,
+                                  shimHash: plist[DockMessage.plistShimHash] as? String ?? "")
         }.sorted { $0.url.path < $1.url.path }
     }
 }
@@ -436,9 +467,11 @@ enum DockCleanup: Equatable {
     /// What to do with one phone's shims once its app list arrives
     /// (docs/design/dock.md §Shortcuts): an uninstalled app loses `all` and
     /// `manual`; a renamed app or phone is rebuilt; Save all adds or removes
-    /// `all`; the rest stay untouched.
+    /// `all`; a bundle whose shim executable is from another build is rebuilt
+    /// (`staleShims`: the caller compared the recorded hash); the rest stay
+    /// untouched.
     static func plan(records: [DockShimRecord], deviceId: String, apps: [AppInfo], phoneName: String,
-                     saveAll: Bool = false) -> [DockCleanup] {
+                     saveAll: Bool = false, staleShims: Set<URL> = []) -> [DockCleanup] {
         let labels = Dictionary(apps.map { ($0.pkg, $0.label) }, uniquingKeysWith: { first, _ in first })
         return records.filter { $0.deviceId == deviceId }.compactMap { record in
             let installed = labels[record.pkg] != nil
@@ -457,6 +490,12 @@ enum DockCleanup: Equatable {
                 // A bundle from before tokens existed is rebuilt once, by the
                 // refresh the host already does on every apps list (sec L-8).
                 if record.token.isEmpty { return .rebuild(record, label: label, origins: record.origins) }
+                // An executable from an older PocketDeck keeps the lost-answer
+                // race: replace it while its shim is not running (decision 4;
+                // callers leave a running one to its next refresh).
+                if staleShims.contains(record.url) {
+                    return .rebuild(record, label: label, origins: record.origins)
+                }
                 let wanted = SpotlightIndexer.title(label: label, phoneName: phoneName)
                 return record.name == wanted ? nil : .rebuild(record, label: label, origins: record.origins)
             }
@@ -535,6 +574,9 @@ final class DockApps: NSObject {
     /// e2e race hook: hold the automatic launch's pid callback back, the way a
     /// slow launch would. Zero outside the harness.
     private let bindDelay: TimeInterval
+    /// e2e hook: the seconds a newly built shim waits before it listens
+    /// (`--dock-debug-listen-delay`). Nil outside the harness.
+    private let listenDelay: TimeInterval?
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -558,10 +600,11 @@ final class DockApps: NSObject {
         return url
     }
 
-    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0) {
+    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0, listenDelay: TimeInterval? = nil) {
         self.folder = folder
         self.profile = profile
         self.bindDelay = bindDelay
+        self.listenDelay = listenDelay
         super.init()
     }
 
@@ -569,6 +612,8 @@ final class DockApps: NSObject {
 
     func start() {
         center.addObserver(self, selector: #selector(openRequested(_:)), name: DockMessage.open,
+                           object: profile.name, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(readyRequested(_:)), name: DockMessage.ready,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(quitRequested(_:)), name: DockMessage.quit,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
@@ -683,7 +728,10 @@ final class DockApps: NSObject {
             }
             var url = record.url
             let origins = record.origins.union(.window)
-            if origins != record.origins,
+            // An executable from an older PocketDeck is replaced before it
+            // launches, not only at the next app list (docs/design/dock.md
+            // §Lifecycle). The bundle is idle: establishDockFollow checked.
+            if origins != record.origins || record.shimHash != Self.bundledShimHash(),
                let rebuilt = add(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
                                  launch: false, origins: origins) {
                 url = rebuilt
@@ -720,6 +768,8 @@ final class DockApps: NSObject {
             let icon = PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: 1024)
             var withIcon = spec
             withIcon.iconLayers = layers != nil
+            withIcon.listenDelay = listenDelay
+            withIcon.shimHash = Self.bundledShimHash() ?? ""
             let url = try DockShimBuilder.build(withIcon, in: folder, shimBinary: shellBinary, icon: icon)
             Self.run("/usr/bin/codesign", ["--force", "--sign", "-", url.path])
             LSRegisterURL(url as CFURL, true)
@@ -838,10 +888,30 @@ final class DockApps: NSObject {
                    saveAll: Bool = false) {
         let mine = records().filter { $0.deviceId == deviceId && !keep.contains($0.pkg) }
         for decision in DockCleanup.plan(records: mine, deviceId: deviceId, apps: apps,
-                                         phoneName: phoneName, saveAll: saveAll) {
+                                         phoneName: phoneName, saveAll: saveAll,
+                                         staleShims: staleShims(in: mine)) {
             apply(decision, phoneName: phoneName)
         }
     }
+
+    /// Bundles whose recorded shim hash is not this build's, so the next
+    /// refresh replaces them (docs/design/dock.md §Lifecycle). A running shim
+    /// is left alone: it is replaced on a later refresh, once it has exited.
+    private func staleShims(in records: [DockShimRecord]) -> Set<URL> {
+        guard let current = Self.bundledShimHash() else { return [] }
+        return Set(records.filter { !isRunning($0.url) && $0.shimHash != current }.map(\.url))
+    }
+
+    /// The hash the bundle records for the shim executable this build copies.
+    /// The installed copy is re-signed per bundle id, so its bytes never equal
+    /// the app's shim; this hash is what the refresh compares.
+    static func bundledShimHash() -> String? { bundledShimHashOnce }
+
+    /// Hashed once: the bundled executable does not change under a running app.
+    private static let bundledShimHashOnce: String? = {
+        guard let binary = shimBinary, let data = FileManager.default.contents(atPath: binary.path) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }()
 
     func forget(deviceId: String) {
         for decision in DockCleanup.planForget(records: records(), deviceId: deviceId) {
@@ -953,6 +1023,28 @@ final class DockApps: NSObject {
         }
         Log.app.notice("dock: open \(pkg, privacy: .public) on \(deviceId, privacy: .public) for shim \(pid, privacy: .public)")
         MainActor.assumeIsolated { onOpen?(deviceId, pkg, pid) }
+    }
+
+    /// The automatic path's handshake (docs/design/dock.md §Launch → window): a
+    /// shim whose observers started after the bind says it is listening. A
+    /// bound pid gets `opened`; an unbound one is answered by its own bind.
+    @objc private func readyRequested(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let deviceId = info[DockMessage.deviceIdKey] as? String,
+              let pkg = info[DockMessage.pkgKey] as? String,
+              let pid = info[DockMessage.pidKey] as? Int else { return }
+        let decision = DockReady.decide(
+            bound: bindings[pid] != nil,
+            tokenMatches: DockToken.matches(message: info[DockMessage.tokenKey] as? String,
+                                            stored: shimToken(deviceId: deviceId, pkg: pkg)))
+        switch decision {
+        case .answer:
+            post(DockMessage.opened, pid: pid)
+        case .ignoreUnbound:
+            return
+        case .ignoreToken:
+            Log.app.notice("dock: ignored ready for \(pkg, privacy: .public) on \(deviceId, privacy: .public): no matching shim token")
+        }
     }
 
     @objc private func quitRequested(_ notification: Notification) {
