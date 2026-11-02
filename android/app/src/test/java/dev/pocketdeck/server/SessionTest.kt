@@ -8,6 +8,7 @@ import dev.pocketdeck.proto.Json
 import dev.pocketdeck.proto.TouchPayload
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -15,6 +16,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -31,6 +34,7 @@ class SessionTest {
     @Volatile private var session: Session? = null
     @Volatile private var topTask: TopTask? = null
     @Volatile private var taskPresent = false
+    private var acceptThread: Thread? = null
     private var clock = 1_000L
 
     @Before
@@ -47,16 +51,18 @@ class SessionTest {
                         gates: () -> GateSettings? = { GateSettings(true, true) },
                         secureProbe: SecureProbe? = null,
                         strays: Int = 0) {
-        // Loopback only, with room in the backlog for a stray connection (a
-        // local scanner, another test's late client) to land before this test's
-        // client does: acceptOwnClient() takes only the one this test opened.
-        serverSocket = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
-        repeat(strays) { Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort).close() }
-        client = Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort)
+        awaitPreviousSessionEnded()
+        // This connect's listener and client port: the accept thread must take
+        // this connection even when a later connect has replaced the fields.
+        val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        serverSocket = listener
+        repeat(strays) { Socket(InetAddress.getLoopbackAddress(), listener.localPort).close() }
+        client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         client.soTimeout = 5_000
         reader = FrameReader(client.getInputStream())
+        val ownPort = client.localPort
         val accept = Thread {
-            val s = acceptOwnClient()
+            val s = acceptOwnClient(listener, ownPort) ?: return@Thread
             val sess = Session(
                 socket = s,
                 display = platform,
@@ -90,18 +96,40 @@ class SessionTest {
         }
         accept.isDaemon = true
         accept.start()
+        acceptThread = accept
     }
 
     /**
-     * The connection this test's client opened; anything else that reached the
-     * port first is closed. A stray local connection taken for the Mac would
-     * make the test read that peer's bytes as protocol frames (a full K1 run is
-     * not alone on the machine).
+     * PAIR-21: the phone serves one session at a time, and the next one is only
+     * created after the previous teardown has finished. The helper mirrors that;
+     * without it a reconnect started while the old session's shutdown was still
+     * running, and that shutdown's `stopClipboardSync()` cleared the platform's
+     * one clipboard listener after the new session had registered its own (a
+     * full K1 run lost `taskContinueRelaunchesFreshWhenTheMoveIsRefused` to it).
      */
-    private fun acceptOwnClient(): Socket {
+    private fun awaitPreviousSessionEnded() {
+        val previous = acceptThread ?: return
+        previous.join(TEARDOWN_WAIT_MS)
+        assertTrue("the previous session's teardown never ended", !previous.isAlive)
+    }
+
+    /**
+     * The connection this test's client opened on [listener]; anything else
+     * that reached the port first is closed. A stray local connection taken
+     * for the Mac would make the test read that peer's bytes as protocol
+     * frames (a full K1 run is not alone on the machine). Both the listener
+     * and the port are this connect's own: a thread left over from an earlier
+     * connect must not take a later one's client.
+     */
+    private fun acceptOwnClient(listener: ServerSocket, clientPort: Int): Socket? {
         while (true) {
-            val socket = serverSocket.accept()
-            if (socket.port == client.localPort) {
+            val socket = try {
+                listener.accept()
+            } catch (_: java.io.IOException) {
+                // A later connect or the teardown closed this listener.
+                return null
+            }
+            if (socket.port == clientPort) {
                 socket.tcpNoDelay = true
                 return socket
             }
@@ -495,6 +523,44 @@ class SessionTest {
         addAndAuthenticate()
         send(mapOf("t" to "ping", "ts" to 12))
         assertEquals(12L, readUntil("pong")["ts"])
+    }
+
+    /**
+     * PAIR-21: the phone serves one session at a time, and the next one is only
+     * created after the previous teardown has finished. A full K1 run lost
+     * `taskContinueRelaunchesFreshWhenTheMoveIsRefused` because this helper did
+     * not: the reconnect started while the old session's shutdown was still
+     * running, and that shutdown's `stopClipboardSync()` cleared the platform's
+     * one clipboard listener after the new session had registered its own.
+     */
+    @Test
+    fun aReconnectStartsOnlyAfterThePreviousTeardownEnded() {
+        val teardownStarted = CountDownLatch(1)
+        val teardownMayEnd = CountDownLatch(1)
+        // The old session's shutdown parks in its clipboard stop.
+        platform.onClipStop = {
+            teardownStarted.countDown()
+            teardownMayEnd.await()
+        }
+        closeCurrent()
+        assertTrue("the old session never started its teardown",
+            teardownStarted.await(5, TimeUnit.SECONDS))
+
+        val reconnected = CountDownLatch(1)
+        val reconnect = Thread {
+            connect(pairDecisionTimeoutMs = 30_000)
+            reconnected.countDown()
+        }
+        reconnect.isDaemon = true
+        reconnect.start()
+        // The next session must not be created over the old teardown.
+        assertFalse("a session was created while the previous teardown ran",
+            reconnected.await(1, TimeUnit.SECONDS))
+
+        teardownMayEnd.countDown()
+        assertTrue("the reconnect never started after the teardown",
+            reconnected.await(5, TimeUnit.SECONDS))
+        reconnect.join(5_000)
     }
 
     @Test
@@ -1363,5 +1429,8 @@ class SessionTest {
 
     private companion object {
         const val CLIP_MAX_BYTES = 1_048_576
+
+        /** PAIR-21's bound on a hand-over wait for the old teardown. */
+        const val TEARDOWN_WAIT_MS = 5_000L
     }
 }
