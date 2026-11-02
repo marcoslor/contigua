@@ -249,6 +249,86 @@ class PathSessionTest {
         assertEquals(PathSessionState.Live("a"), m.state)
     }
 
+    /**
+     * E-10 (boot 14): both paths were black-holed; the machine was still
+     * migrating towards the old target when the Mac rejoined with two fresh
+     * paths and its marker named one of them. PATH-8: the Mac alone decides,
+     * so a marker naming any attached path completes the migration there.
+     */
+    @Test
+    fun aMarkerAfterBothPathsWereLostFollowsTheMacsNewPath() {
+        val m = machine(live = setOf("a", "b"))
+        m.handle(PathSessionEvent.PathDown("a"), 1.0)
+        assertEquals(PathSessionState.Migrating("a", "b", 1.0), m.state)
+        m.handle(PathSessionEvent.PathUp("c", joined = true), 2.0)
+        m.handle(PathSessionEvent.PathUp("d", joined = true), 2.1)
+        assertEquals(PathSessionState.Migrating("a", "b", 1.0), m.state)
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("c"))),
+            m.handle(PathSessionEvent.PeerSwitch("c", 9, "c"), 3.0),
+        )
+        assertEquals(PathSessionState.Live("c"), m.state)
+    }
+
+    /** E-10/PATH-8: the same rule while orphaned; the marker also ends the grace. */
+    @Test
+    fun aMarkerDuringTheGraceFollowsTheMacsPathAndEndsTheGrace() {
+        val m = PathSessionMachine(
+            state = PathSessionState.Orphaned(10.0),
+            live = mutableSetOf("c", "d"),
+            scores = mutableMapOf("c" to 500, "d" to 500),
+        )
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("d"))),
+            m.handle(PathSessionEvent.PeerSwitch("d", 4, "c"), 12.0),
+        )
+        assertEquals(PathSessionState.Live("d"), m.state)
+        // The deadline is gone with the orphan: the old grace cannot end it.
+        assertEquals(emptyList<PathSessionAction>(), m.handle(PathSessionEvent.GraceExpired, 45.0))
+        assertEquals(PathSessionState.Live("d"), m.state)
+    }
+
+    /** E-10: a marker for an id this side does not have is ignored everywhere. */
+    @Test
+    fun aMarkerForAnUnknownPathIsIgnoredInEveryState() {
+        val states = listOf(
+            PathSessionMachine(state = PathSessionState.Live("a"), live = mutableSetOf("a")),
+            PathSessionMachine(
+                state = PathSessionState.Migrating("a", "b", 1.0),
+                live = mutableSetOf("a", "b"),
+            ),
+            PathSessionMachine(state = PathSessionState.Orphaned(1.0), live = mutableSetOf("a")),
+        )
+        for (m in states) {
+            val before = m.state
+            assertEquals(
+                "expected Ignore in ${m.describe()}",
+                listOf(PathSessionAction.Ignore),
+                m.handle(PathSessionEvent.PeerSwitch("zz", 1, "a"), 2.0),
+            )
+            assertEquals("the ignored marker changed ${m.describe()}", before, m.state)
+        }
+    }
+
+    /**
+     * E-10: a phone stuck migrating waits for a marker that may never come;
+     * the 30 s deadline bounds the session slot exactly as the orphan's does.
+     */
+    @Test
+    fun aMigrationWithNoMarkerEndsAtThirtySeconds() {
+        val m = PathSessionMachine(
+            state = PathSessionState.Migrating("a", "b", 100.0),
+            live = mutableSetOf("a", "b"),
+        )
+        assertEquals(emptyList<PathSessionAction>(), m.handle(PathSessionEvent.GraceExpired, 129.9))
+        assertEquals(PathSessionState.Migrating("a", "b", 100.0), m.state)
+        assertEquals(
+            listOf(PathSessionAction.End("graceExpired")),
+            m.handle(PathSessionEvent.GraceExpired, 130.0),
+        )
+        assertEquals(PathSessionState.Ended("graceExpired"), m.state)
+    }
+
     @Test
     fun theGraceEndsTheSessionAtThirtySecondsNotBefore() {
         val m = machine(orphanedSince = 100.0)

@@ -65,6 +65,57 @@ class PathHubTest {
         assertFalse(hub.hasPath("aaaa0001"))
     }
 
+    /** A socket whose writes fail at once: a peer that reset the connection. */
+    private class FailingStream : java.io.OutputStream() {
+        override fun write(b: Int) = throw java.io.IOException("reset")
+        override fun write(b: ByteArray, off: Int, len: Int) = throw java.io.IOException("reset")
+    }
+
+    private class FailingSocket(private val out: java.io.OutputStream) : Socket() {
+        override fun getOutputStream() = out
+        override fun getInputStream() = java.io.ByteArrayInputStream(ByteArray(0))
+        override fun shutdownInput() = Unit
+        override fun shutdownOutput() = Unit
+        override fun close() = Unit
+    }
+
+    private fun failingTransport(id: String): PathHub.Transport {
+        val out = FailingStream()
+        return PathHub.Transport(id, FailingSocket(out), FailingSocket(out), PathKind.LAN)
+    }
+
+    /**
+     * E-10/PATH-9: every detach route must reach the session machine as a
+     * `PathDown`, or its live set keeps a socket that is gone (boot 14: the
+     * phone stayed migrating towards a detached path). EOF and a Mac close are
+     * the session reader's `hub.detach`; a writer's socket error is `failPath`.
+     */
+    @Test
+    fun everyDetachRouteReportsThePathDown() {
+        val downs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val hub = PathHub(onDetached = { downs.add(it) })
+        val failing = PathHub(onDetached = { downs.add(it) })
+        try {
+            hub.start(transport("aaaa0001"))
+            assertTrue(hub.attach(transport("bbbb0002")))
+            assertTrue(hub.detach("bbbb0002"))
+            assertFalse("a second detach is not a second down", hub.detach("bbbb0002"))
+            assertEquals(listOf("bbbb0002"), downs.toList())
+
+            failing.start(failingTransport("cccc0003"))
+            failing.send(Frames.encodeJson(0, Json.encode(mapOf("t" to "state", "locked" to true))))
+            val deadline = System.currentTimeMillis() + 2_000
+            while (System.currentTimeMillis() < deadline && !downs.contains("cccc0003")) {
+                Thread.sleep(10) // real-time: the writer thread reports the failure
+            }
+            assertEquals(listOf("bbbb0002", "cccc0003"), downs.toList())
+            assertFalse("a writer failure left the path attached", failing.hasPath("cccc0003"))
+        } finally {
+            hub.closeAll()
+            failing.closeAll()
+        }
+    }
+
     private fun reliable(seq: Long): Frame {
         val inner = Frame(Frames.TYPE_JSON, 0, Json.encode(mapOf("t" to "ping", "ts" to seq)).toByteArray())
         val wrapped = PathCodec.encodeReliable(seq, inner)

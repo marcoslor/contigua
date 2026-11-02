@@ -164,7 +164,7 @@ class PathTlsJoinTest {
                 }
                 assertTrue(
                     "no transition line: ${phone.logs}",
-                    phone.logs.contains("paths: live a1b2c3d4 --failed--> orphaned"),
+                    phone.logs.contains("paths: live a1b2c3d4 --down--> orphaned"),
                 )
             }
         }
