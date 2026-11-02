@@ -577,17 +577,27 @@ refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream sta
 # pairing; this is the same step, and the proof cannot pair without it.
 bring_app_forward() {
     emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
-    local deadline=$(( $(date +%s) + 60 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
+    local start relaunched=0
+    start="$(date +%s)"
+    while [ $(( $(date +%s) - start )) -lt 60 ]; do
         # Android prints `ResumedActivity: ActivityRecord{… dev.pocketdeck/.app.MainActivity …}`
         # (the short component form); the old full-name pattern never matched.
         if emu shell dumpsys activity activities 2>/dev/null |
             grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
-            break
+            sleep 3
+            return 0
         fi
-        sleep 2
+        # restart_server can return before the activity is resumed, and a
+        # prompt that is only a notification is invisible to wait-prompt
+        # (static-stall lost a boot to this). One relaunch at 10 s.
+        if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
+            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            relaunched=1
+        fi
+        sleep 1
     done
-    sleep 3
+    printf '[p1-proof] the app is not the resumed activity after 60 s\n'
+    return 1
 }
 
 
@@ -597,6 +607,64 @@ LOG_STREAM=""
 PROXY_A_PID=""
 PROXY_B_PID=""
 TAP_PID=""
+# The Mac window is real: another agent's visible run could close it with a
+# stray key, so the run holds the machine-wide e2e lock while it is up.
+E2E_LOCK=/tmp/pocketdeck-e2e.lock
+HOLDS_E2E=0
+# The automatic Dock identity (fix/dock-ack, in progress) quits an
+# automatically launched shim 30 s after launch and Quit ↔ close then closes the
+# window; it closed static-stall's window mid-run. The rig's profile does not
+# need phone apps in the Dock, so the setting is off for this run.
+DOCK_DEFAULT_SET=0
+
+# acquire_e2e_lock — wait up to 10 minutes for the lock, never break another
+# holder's (its pid is live); a lock whose holder is gone is cleaned.
+acquire_e2e_lock() {
+    local waited=0 holder
+    until mkdir "$E2E_LOCK" 2>/dev/null; do
+        holder="$(cat "$E2E_LOCK/pid" 2>/dev/null || true)"
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            rm -rf "$E2E_LOCK"
+            continue
+        fi
+        if [ "$waited" -ge 600 ]; then
+            printf '[p1-proof] the e2e lock is still held by pid %s after 10 minutes\n' \
+                "${holder:-unknown}"
+            return 1
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    echo $$ > "$E2E_LOCK/pid"
+    HOLDS_E2E=1
+}
+
+release_e2e_lock() {
+    if [ "$HOLDS_E2E" = 1 ] && [ "$(cat "$E2E_LOCK/pid" 2>/dev/null)" = "$$" ]; then
+        rm -rf "$E2E_LOCK"
+    fi
+    HOLDS_E2E=0
+}
+
+disable_dock_auto() {
+    defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || return 1
+    DOCK_DEFAULT_SET=1
+    [ "$(defaults read "dev.pocketdeck.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
+}
+
+# assert_no_dock_bound — the other half of the Dock bug: a shim bound to this
+# app's pid quits 30 s in and takes the window with it. The per-phase streams
+# watch this app's pid, so a bound line there is this run's.
+assert_no_dock_bound() {
+    local hits
+    hits="$(grep -h 'dock auto: bound' "$WORK"/mac-*.log 2>/dev/null | tail -5)"
+    if [ -n "$hits" ]; then
+        bad "the automatic Dock identity bound a shim during the run"
+        printf '%s\n' "$hits"
+    else
+        ok "no automatic Dock identity bound a shim (showAppsInDock off)"
+    fi
+}
 
 # phone_evidence <label> — everything the phone can still say, written before the
 # emulator dies. A failure that stops the run early (the boot-4 pair) used to
@@ -785,6 +853,11 @@ cleanup() {
     stop_app
     [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null || true
     stop_proxies
+    if [ "$DOCK_DEFAULT_SET" = 1 ]; then
+        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        DOCK_DEFAULT_SET=0
+    fi
+    release_e2e_lock
     if [ "$MODE" = dry ]; then
         rm -rf "$SUPPORT"
         [ "$died" = 0 ] || exit 1
@@ -845,6 +918,12 @@ emu logcat -c >/dev/null 2>&1 || true
 
 # A fresh Mac profile: no pin from a previous run can make this a reconnect.
 rm -rf "$SUPPORT"
+# The rig lessons from the other worktrees: no automatic Dock identity, and no
+# other agent's visible run may close this Mac window with a stray key.
+if [ "$MODE" != dry ]; then
+    disable_dock_auto || bad "could not turn the automatic Dock identity off for $PROFILE"
+    acquire_e2e_lock || bad "no e2e lock: the Mac window is exposed to another agent's input"
+fi
 
 # pair_once <attempt> — one pairing attempt: the app dials, the rig watches the
 # phone's own prompt and taps Allow, and a pin in the fresh profile proves the
@@ -1345,6 +1424,14 @@ else
 fi
 emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log"
 
+# --- evidence, on success too ----------------------------------------------
+section evidence
+# The whole log buffer and the per-phase Mac logs are kept for every run; the
+# reviewer reads them instead of a rerun.
+emu logcat -d -v time -b all > "$WORK/phone-full-logcat.txt" 2>/dev/null || true
+assert_no_dock_bound
+printf '[p1-proof] evidence: %s (%s files)\n' "$WORK" "$(ls "$WORK" | wc -l | tr -d ' ')"
+
 # --dry-run's pass condition: every phase and predicate was reached, and no
 # shell error (the ERR trap) fired. The exit code still comes from the
 # verdicts above, never from a shell error.
@@ -1362,7 +1449,7 @@ if [ "$MODE" = dry ]; then
         printf 'DRY coverage %s:%s\n' "$kind" "$seen"
         [ -z "$missing" ] || bad "the dry run did not reach$missing"
     }
-    dry_check phase boot pair join drop grace version slot
+    dry_check phase boot pair join drop grace version slot evidence
     dry_check predicate pin_stored pair_outcome pair_with_retry wait_slot_free wait_for v3_probe
     if [ -s "$WORK/dry-errors.log" ]; then
         bad "the dry run hit shell errors: $(wc -l < "$WORK/dry-errors.log" | tr -d ' ')"
