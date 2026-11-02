@@ -151,6 +151,12 @@ final class ConnectionController {
 
     private(set) var machine = LinkMachine()
     var link: Link { machine.link }
+    /// The live session has no usable path (PATH-17). The panel shows
+    /// Reconnecting at once and Offline after the same 15 s the windows use,
+    /// while the session keeps its own 30 s grace underneath (PATH-6).
+    private(set) var pathsDown = false
+    private(set) var pathsOffline = false
+    private var pathsDownSince: Date?
     private(set) var transientBanner: Banner?
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
@@ -731,7 +737,31 @@ final class ConnectionController {
 
     private func tick() {
         send(.tick)
+        if pathsDown, let since = pathsDownSince {
+            let offline = Date().timeIntervalSince(since) >= LinkMachine.offlineAfter
+            if offline != pathsOffline { pathsOffline = offline }
+        }
         if let qr, !qr.expired, !qr.succeeded, qr.payload.isExpired() { expireQR() }
+    }
+
+    /// The session's path layer lost or regained every path (`pathsReconnecting`).
+    /// The windows switch at once; the panel follows the same two steps as a
+    /// dropped link so a path outage is never shown as Connected (PANEL-12).
+    private func setPathsDown(_ down: Bool) {
+        if down {
+            guard pathsDownSince == nil else { return }
+            pathsDown = true
+            pathsOffline = false
+            pathsDownSince = Date()
+        } else {
+            clearPathOutage()
+        }
+    }
+
+    private func clearPathOutage() {
+        pathsDown = false
+        pathsOffline = false
+        pathsDownSince = nil
     }
 
     private func observeSystem() {
@@ -2187,6 +2217,7 @@ final class ConnectionController {
 
     private func start(_ newSession: Session, policy: Session.PairingPolicy) {
         stopClipboardSync()
+        clearPathOutage()
         session?.close()
         session = newSession
         newSession.pairingPolicy = policy
@@ -2277,6 +2308,7 @@ final class ConnectionController {
         case .state(let state, let detail):
             switch state {
             case .failed(let reason):
+                clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
@@ -2299,6 +2331,7 @@ final class ConnectionController {
                 }
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
+                clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
@@ -2317,6 +2350,7 @@ final class ConnectionController {
         case .pathsReconnecting(let on):
             // PATH-17: the windows say so at once while there is no path, and
             // return to the live picture by themselves when one joins.
+            setPathsDown(on)
             if on { windows.linkLost() } else { windows.linkRestored() }
         case .pathsSwitched:
             if let session { windows.requestKeyframes(from: session) }
