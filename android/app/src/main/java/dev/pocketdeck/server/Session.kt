@@ -252,7 +252,14 @@ class Session(
     private var clientName = "Mac"
 
     // ---- paths (docs/design/paths.md §3) ------------------------------
-    private val hub = PathHub(log = log, now = now, wake = ::wakeTicker)
+    private val hub = PathHub(
+        log = log,
+        now = now,
+        wake = ::wakeTicker,
+        // E-10/PATH-9: one removal point reports every detach route — a socket
+        // error, EOF, a Mac close, the phone's own ClosePath — to the machine.
+        onDetached = { id -> inbound.put(Inbound.Down(id)) },
+    )
     private val pathMachine = PathSessionMachine()
     private val pathRanking = PathRanking()
     private var sessionId = ""
@@ -647,12 +654,12 @@ class Session(
         when (item) {
             is Inbound.Deliver -> handle(item.frame)
             is Inbound.Down -> {
-                val wasCurrent = hub.currentPath == item.path
-                hub.detach(item.path)
-                handlePathEvent(
-                    if (wasCurrent) PathSessionEvent.CurrentFailed(item.path)
-                    else PathSessionEvent.PathDown(item.path),
-                )
+                // E-10/PATH-9: the hub is the one removal point and it already
+                // reported this detach; every route is a PathDown, whichever
+                // path the phone happens to be sending on. A CurrentFailed for
+                // an id that was not the machine's current used to be ignored
+                // without removing it from `live` (boot 14).
+                handlePathEvent(PathSessionEvent.PathDown(item.path))
             }
             is Inbound.Up -> {
                 hub.transport(item.path)?.let { startPathReader(it) }
@@ -746,16 +753,12 @@ class Session(
             pongFailure(loss, current)?.let { handlePathEvent(it) }
         }
         for (stale in hub.joinedTimeouts()) {
-            val wasCurrent = stale == hub.currentPath
+            // The detach reports its own PathDown (E-10).
             hub.detach(stale)
             log("path joined without a pong: dropped")
-            handlePathEvent(
-                if (wasCurrent) PathSessionEvent.CurrentFailed(stale)
-                else PathSessionEvent.PathDown(stale),
-            )
         }
-        val s = pathMachine.state
-        if (s is PathSessionState.Orphaned) {
+        // E-10/PATH-21: the migrating state carries the orphan's deadline.
+        if (pathMachine.state.graceDeadline() != null) {
             handlePathEvent(PathSessionEvent.GraceExpired)
         }
         val at = now() / 1000.0
@@ -800,9 +803,8 @@ class Session(
      */
     internal fun nextTickDelay(at: Long): Long {
         var next = hub.nextDeadline(transferRunning())
-        val state = pathMachine.state
-        if (state is PathSessionState.Orphaned) {
-            val graceAt = (state.since * 1000).toLong() + (PathTimers.GRACE * 1000).toLong()
+        pathMachine.state.graceDeadline()?.let { deadline ->
+            val graceAt = (deadline * 1000).toLong()
             if (graceAt in (at + 1) until next) next = graceAt
         }
         if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
@@ -890,7 +892,9 @@ class Session(
                     log("path reader ended: ${e.message}")
                 }
             } finally {
-                if (teardown.get() == SessionTeardown.State.LIVE) inbound.put(Inbound.Down(t.id))
+                // E-10/PATH-9: EOF and a Mac close are detaches here; the hub
+                // reports the PathDown from its single removal point.
+                if (teardown.get() == SessionTeardown.State.LIVE) hub.detach(t.id)
             }
         }, "pocketdeck-path-${t.id}")
         thread.isDaemon = true
@@ -911,11 +915,14 @@ class Session(
         if (!hub.attach(t)) return AttachResult.TOO_MANY
         hub.expectFirstPong(pathId)
         sendWelcomeOn(pathId)
+        // E-10: the machine learns the path before its reader can hand over a
+        // marker. Otherwise a marker naming the fresh id would be ignored by a
+        // machine that has not seen the Up yet, after the hub had already moved.
+        inbound.put(Inbound.Up(pathId, joined = true))
         startPathReader(t)
         // D-1: a joined path is pinged at once so its ranking starts (the
         // welcome is already queued; the ping follows it on the same writer).
         hub.pingPath(pathId)
-        inbound.put(Inbound.Up(pathId, joined = true))
         wakeTicker()
         log("paths: joined $pathId (paths ${hub.pathCount})")
         return AttachResult.ATTACHED

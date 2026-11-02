@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -339,6 +340,15 @@ class PathSessionTest {
             m.handle(PathSessionEvent.GraceExpired, 130.0),
         )
         assertEquals(PathSessionState.Ended("graceExpired"), m.state)
+    }
+
+    /** E-10/PATH-21: the ticker's deadline covers the migration as well. */
+    @Test
+    fun theDeadlineCoversTheOrphanAndTheMigration() {
+        assertEquals(130.0, PathSessionState.Orphaned(100.0).graceDeadline()!!, 0.0)
+        assertEquals(130.0, PathSessionState.Migrating("a", "b", 100.0).graceDeadline()!!, 0.0)
+        assertNull(PathSessionState.Live("a").graceDeadline())
+        assertNull(PathSessionState.Ended("x").graceDeadline())
     }
 
     @Test
