@@ -1340,6 +1340,13 @@ check_tls() {
         && ok "TLS4 paired before the Mac rotation" || bad "TLS4 never paired"
     stop_app
     sleep 1
+    # The phone holds the old session's slot through its 30 s path grace
+    # (PATH-6), so the next connection would be answered `busy`, not judged on
+    # the rotated certificate. A restarted phone frees the slot and keeps the
+    # pin in state.json, which is what this row is about.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    start_fake || return 1
     "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/PocketDeck-$PROFILE/identity.json" <<'PY'
 import json, os, subprocess, sys
 identity_dir, identity_file = sys.argv[1], sys.argv[2]
