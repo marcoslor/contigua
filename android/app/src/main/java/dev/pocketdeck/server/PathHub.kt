@@ -35,6 +35,8 @@ class PathHub(
      * session's own end is a `Close`, not a path leaving.
      */
     private val onDetached: (String) -> Unit = {},
+    /** Test seam: a transport's writer first wakes, before it takes a frame. */
+    private val onWriterStart: (String) -> Unit = {},
 ) {
     /**
      * One path's socket plus its own writer (R-2): nothing is written under
@@ -53,6 +55,9 @@ class PathHub(
 
         /** Set by the hub: the writer reports a dead socket from its own thread. */
         @Volatile var onFailure: ((Throwable) -> Unit)? = null
+
+        /** Test seam, set by the hub: the writer first wakes, before it takes a frame. */
+        @Volatile var onWriterStart: (() -> Unit)? = null
 
         private val writeLock = Object()
         private val priority = ArrayDeque<ByteArray>()
@@ -93,6 +98,7 @@ class PathHub(
         }
 
         private fun writerLoop() {
+            onWriterStart?.invoke()
             while (true) {
                 val bytes = synchronized(writeLock) {
                     while (!closed && priority.isEmpty() && normal.isEmpty()) writeLock.wait()
@@ -214,6 +220,7 @@ class PathHub(
 
     fun start(firstPath: Transport) {
         firstPath.onFailure = { failPath(firstPath.id, it) }
+        firstPath.onWriterStart = { onWriterStart(firstPath.id) }
         synchronized(lock) {
             if (paths.isEmpty()) {
                 paths[firstPath.id] = firstPath
@@ -251,6 +258,7 @@ class PathHub(
     fun attach(path: Transport): Boolean = synchronized(lock) {
         if (paths.size >= MAX_PATHS || paths.containsKey(path.id)) return false
         path.onFailure = { failPath(path.id, it) }
+        path.onWriterStart = { onWriterStart(path.id) }
         paths[path.id] = path
         if (current == null) {
             current = path.id
