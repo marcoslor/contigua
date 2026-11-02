@@ -25,10 +25,11 @@ internal object StreamDebug {
 
     /** The live rule: a debug build with the property set right now. */
     fun ignoreRepeatFrame(): Boolean =
-        ignoreRepeatFrame(dev.pocketdeck.BuildConfig.DEBUG, Hidden.systemProperty(IGNORE_REPEAT))
+        dev.pocketdeck.BuildConfig.DEBUG && ignoreRepeatFrame(true, Hidden.systemProperty(IGNORE_REPEAT))
 
     fun freezeDrain(debug: Boolean, property: String?): Boolean = debug && property == "1"
 
+    /** A release build never reads the property: the drain asks twice a second. */
     fun freezeDrain(): Boolean =
-        freezeDrain(dev.pocketdeck.BuildConfig.DEBUG, Hidden.systemProperty(FREEZE_DRAIN))
+        dev.pocketdeck.BuildConfig.DEBUG && freezeDrain(true, Hidden.systemProperty(FREEZE_DRAIN))
 }
