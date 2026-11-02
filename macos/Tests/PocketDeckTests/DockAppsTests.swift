@@ -76,6 +76,10 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(plist["PDOrigins"] as? [String], ["window"], "an automatic shim exists for its window")
         XCTAssertNil(plist["PDPinned"], "the origin set replaces the old marker")
         XCTAssertNil(plist["LSUIElement"], "the shim must show in the Dock and ⌘-Tab")
+        XCTAssertNil(plist["PDShimHash"], "a spec that was not built from a binary has no hash")
+        var hashed = spec()
+        hashed.shimHash = "abc123"
+        XCTAssertEqual(hashed.infoPlist["PDShimHash"] as? String, "abc123")
         var dock = spec()
         dock.origins = [.dock, .manual]
         XCTAssertEqual(dock.infoPlist["PDOrigins"] as? [String], ["dock", "manual"])
@@ -208,6 +212,31 @@ final class DockAppsTests: XCTestCase {
     func testNothingToDoWhenUpToDate() {
         XCTAssertEqual(DockCleanup.plan(records: [record("a", name: "A (Pixel)")], deviceId: "d1",
                                         apps: [app("a", "A")], phoneName: "Pixel"), [])
+    }
+
+    /// A shim bundle updates its executable with the app: an older
+    /// PocketDeckShim is rebuilt by the next refresh, a current one is left.
+    func testAnOldShimExecutableIsRebuiltByTheNextRefresh() {
+        let record = record("a", name: "A (Pixel)", origins: [.dock])
+        XCTAssertEqual(DockCleanup.plan(records: [record], deviceId: "d1",
+                                        apps: [app("a", "A")], phoneName: "Pixel",
+                                        staleShims: [record.url]),
+                       [.rebuild(record, label: "A", origins: [.dock])])
+        XCTAssertEqual(DockCleanup.plan(records: [record], deviceId: "d1",
+                                        apps: [app("a", "A")], phoneName: "Pixel",
+                                        staleShims: []), [],
+                       "the current executable is not rewritten")
+    }
+
+    func testARebuildReplacesAnOlderShimExecutable() throws {
+        let first = try binary()
+        let bundle = try DockShimBuilder.build(spec(), in: folder, shimBinary: first, icon: nil)
+        let installed = bundle.appendingPathComponent("Contents/MacOS/PocketDeckShim")
+        try Data("old shim".utf8).write(to: installed)
+        let newer = folder.appendingPathComponent("shim-binary-new")
+        try Data("#!/bin/sh\n# newer\n".utf8).write(to: newer)
+        _ = try DockShimBuilder.build(spec(), in: folder, shimBinary: newer, icon: nil)
+        XCTAssertEqual(try Data(contentsOf: installed), try Data(contentsOf: newer))
     }
 
     func testALegacyShimWithoutTokenIsRebuiltByTheNextRefresh() {

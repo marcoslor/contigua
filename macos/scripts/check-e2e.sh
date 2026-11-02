@@ -8091,6 +8091,38 @@ check_dock() {
     stop_app
     remove_dock_apps
 
+    # A shim bundle from an older PocketDeck carries an older executable, which
+    # still loses the bind's answer. The next app list replaces it while its
+    # shim is not running (docs/design/dock.md §Lifecycle). The installed copy
+    # is re-signed per bundle, so the bundle records the source shim's hash.
+    local refresh_shim="$dir/WhatsApp (FakePhone).app" refresh_pids refresh_hash
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
+    # Wait for the whole bundle: stopping the app between the executable copy
+    # and the plist would age a half-built bundle.
+    wait_until 30 eval '[ -s "$refresh_shim/Contents/Resources/AppIcon.icns" ] && /usr/libexec/PlistBuddy -c "Print :PDShimHash" "$refresh_shim/Contents/Info.plist" >/dev/null 2>&1' \
+        || { bad "[DOCK-18] dock refresh: no complete shim to age"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    refresh_pids="$(dock_shim_pids)"
+    [ -n "$refresh_pids" ] && kill $refresh_pids >/dev/null 2>&1
+    refresh_hash="$(shasum -a 256 "$E2E_BUNDLE/Contents/MacOS/PocketDeckShim" | awk '{print $1}')"
+    [ -n "$refresh_hash" ] \
+        || { bad "[DOCK-18] dock refresh: no shim executable in the e2e bundle"; stop_app; stop_fakephone; return 1; }
+    /usr/libexec/PlistBuddy -c 'Delete :PDShimHash' "$refresh_shim/Contents/Info.plist" >/dev/null 2>&1
+    printf 'old shim' > "$refresh_shim/Contents/MacOS/PocketDeckShim"
+    [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" = "8" ] \
+        && ok "[DOCK-18] dock refresh: aged the bundle (no shim hash, old executable)" \
+        || bad "[DOCK-18] dock refresh: could not age the bundle (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --quit-after 40
+    wait_until 30 eval '[ -n "$refresh_hash" ] && [ "$(/usr/libexec/PlistBuddy -c "Print :PDShimHash" "$refresh_shim/Contents/Info.plist" 2>/dev/null)" = "$refresh_hash" ]' \
+        && ok "[DOCK-18] dock refresh: an older bundle was rebuilt with this build's shim" \
+        || bad "[DOCK-18] dock refresh: the old bundle was not rebuilt (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
+    [ -x "$refresh_shim/Contents/MacOS/PocketDeckShim" ] \
+        && [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" -gt 1000 ] \
+        && ok "[DOCK-18] dock refresh: the replaced executable is this build's" \
+        || bad "[DOCK-18] dock refresh: the executable was not replaced ($(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null) bytes)"
+    stop_app
+    remove_dock_apps
+
     # The race, made deterministic (reviewer 10-30): a window that closes before
     # its identity finishes launching. The pending work is dropped, so no shim is
     # ever built for a stream that is gone (docs/design/dock.md §Lifecycle).
