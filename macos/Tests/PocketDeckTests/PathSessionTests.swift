@@ -98,10 +98,14 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(Set(["a"]), machine.standby)
         XCTAssertEqual(actions, [.switchTo(path: "b"), .replayFromLastAck,
                                  .requestKeyframes, .ranking(.externalSwitch("b"))])
-        // A standby is never chosen for a failover: with no other usable path
-        // the session stays where it is (the ranking may still win it back).
-        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 5), [])
-        XCTAssertEqual(machine.state, .live(current: "b"))
+        // A standby is never chosen for a failover. With no other usable path
+        // left, the pong loss on the new current path starts the grace as when
+        // no path is left (E-9), keeping both paths as standbys.
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 5),
+                       [.markReconnecting, .ranking(.currentFailed(id: "b"))])
+        XCTAssertEqual(machine.state, .orphaned(since: 5))
+        XCTAssertEqual(Set(["a", "b"]), machine.live)
+        XCTAssertEqual(Set(["a", "b"]), machine.standby)
         // A socket error on the standby drops it for good.
         XCTAssertEqual(machine.handle(.pathDown(id: "a"), now: 6), [.ranking(.pathDown("a"))])
         XCTAssertFalse(machine.live.contains("a"))
