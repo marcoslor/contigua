@@ -15,8 +15,9 @@
 #     Reconnecting, and `orphaned --grace--> ended` follows 30 ± 2 s later, with
 #     the slot free and the panel awake;
 #   * the in-grace rejoin: the same two faults, the route back 10 s after the
-#     second; the Mac rejoins in ≤ 5 s with the same session, the picture
-#     resumes, and no graceExpired follows.
+#     second; the Mac rejoins in ≤ 5 s with the same session, the phone follows
+#     the marker to a rejoined path, the first frame is within 2 s and frames
+#     keep flowing for 20 s (no gap over 1 s), and no graceExpired follows.
 #
 # It boots once (budget .agent/budgets/direct-p0), and kills only
 # `adb -s emulator-5554 emu kill`. A rig failure in the pair step is retried
@@ -543,10 +544,17 @@ PY
                     sleep 0.3
                     printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: orphaned --up--> live\n' "$(dry_stamp)" \
                         >> "$mac_log"
-                    printf '%s\t1\tcccccccc\n' "$("$PYTHON" -c 'import time; print("%.6f" % time.time())')" \
-                        >> "$WORK/grace2-frames.tsv"
+                    # The brief's 20 s of frames, canned: one every 500 ms.
+                    "$PYTHON" - "$WORK/grace2-frames.tsv" <<'PY'
+import sys, time
+t = time.time()
+with open(sys.argv[1], "a") as f:
+    for i in range(41):
+        f.write("%.6f\t1\tcccccccc\n" % (t + i * 0.5))
+PY
                     {
                         printf '11-01 21:00:05.000 I/PocketDeckSvc( 1): paths: joined cccccccc (paths 2)\n'
+                        printf '11-01 21:00:05.010 I/PocketDeckSvc( 1): paths: orphaned --up--> live cccccccc\n'
                         printf '11-01 21:00:05.010 I/PocketDeckSvc( 1): session slot: live --join(own session)--> live\n'
                     } >> "$phone_log"
                 fi
@@ -1721,6 +1729,21 @@ sleep 3
 section grace-rejoin
 emu logcat -c >/dev/null 2>&1 || true
 rm -f "$WORK/grace2-lift"
+# The frame rules are about the path, not the content: keep the phone's screen
+# moving, as the mirror phase does. A still screen makes the encoder emit only
+# on a change (boot 15: 4.66 s to the first frame, a 10 s gap that ended on the
+# status-bar clock), so "within 2 s" and "no gap over 1 s" could never be
+# measured on it.
+emu shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
+sleep 2
+rm -f "$WORK/grace2-stop"
+(
+    while [ ! -e "$WORK/grace2-stop" ]; do
+        emu shell input swipe 540 1600 540 700 220 >/dev/null 2>&1
+        sleep 0.08
+    done
+) &
+SWIPE_PID=$!
 start_fault a grace2 pass 0
 mac_app "$WORK/app-grace2.out" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
@@ -1809,7 +1832,14 @@ GRACE_WELCOMES="$(grep -c ': welcome (protocol' "$WORK/phone-grace2.log" || true
 [ "${GRACE_WELCOMES:-0}" -eq 1 ] \
     && ok "one session for the whole phase (no second welcome)" \
     || bad "$GRACE_WELCOMES welcomes: the rejoin started a new session"
-GRACE_FIRST_FRAME="$(awk -v at="$GRACE_REJOIN_AT" '$1 > at { print $1, $3; exit }' "$WORK/grace2-frames.tsv" 2>/dev/null)"
+GRACE_FIRST_FRAME=""
+# The rule is "within 2.0 s", so give the frame that long to appear; checking
+# at t0 would fail a good 1.9 s resume.
+for _ in $(seq 1 25); do
+    GRACE_FIRST_FRAME="$(awk -v at="$GRACE_REJOIN_AT" '$1 > at { print $1, $3; exit }' "$WORK/grace2-frames.tsv" 2>/dev/null)"
+    [ -n "$GRACE_FIRST_FRAME" ] && break
+    sleep 0.1
+done
 if [ -n "$GRACE_FIRST_FRAME" ]; then
     GRACE_FRAME_DT="$("$PYTHON" -c "print('%.2f' % (float('${GRACE_FIRST_FRAME%% *}') - float('$GRACE_REJOIN_AT')))")"
     if "$PYTHON" -c "import sys; sys.exit(0 if float('$GRACE_FRAME_DT') <= 2.0 else 1)"; then
@@ -1820,9 +1850,68 @@ if [ -n "$GRACE_FIRST_FRAME" ]; then
 else
     bad "no frame after the rejoin (frame log: $(wc -l < "$WORK/grace2-frames.tsv" 2>/dev/null || echo 0) rows)"
 fi
+# E-10: the phone's own machine must come out of the rejoin live on a path
+# the Mac just joined. The boot-14 fault left it migrating towards a detached
+# path and every later marker was ignored.
+GRACE_PHONE_LIVE=""
+for _ in $(seq 1 20); do
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    GRACE_LAST_LINE="$(grep -E 'paths: .* --(up|switch|down|failed|pong-lost)--> ' "$WORK/phone-grace2.log" 2>/dev/null | tail -1)"
+    GRACE_PHONE_LIVE="$(sed -n 's/.*--> live \([0-9a-f]\{8\}\).*/\1/p' <<<"$GRACE_LAST_LINE")"
+    [ -n "$GRACE_PHONE_LIVE" ] && break
+    sleep 0.1
+done
+if [ -n "$GRACE_PHONE_LIVE" ] && grep -q "paths: joined $GRACE_PHONE_LIVE" "$WORK/phone-grace2.log"; then
+    ok "the phone went live $GRACE_PHONE_LIVE on the Mac's marker"
+else
+    bad "the phone did not go live on a rejoined path: $(grep -E 'paths: ' "$WORK/phone-grace2.log" | tail -3 | tr '\n' '|')"
+fi
+# The brief's (b): the picture keeps moving for 20 s after the rejoin.
+if [ "$MODE" != dry ]; then
+    while "$PYTHON" -c "import sys, time; sys.exit(0 if time.time() < float('$GRACE_REJOIN_AT') + 20.0 else 1)"; do
+        sleep 0.5
+    done
+fi
+GRACE_GAP="$("$PYTHON" - "$WORK/grace2-frames.tsv" "$GRACE_REJOIN_AT" <<'PY'
+import sys
+path, rejoin = sys.argv[1], float(sys.argv[2])
+end = rejoin + 20.0
+rows = []
+try:
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            t = float(parts[0])
+            if rejoin <= t <= end:
+                rows.append(t)
+except OSError:
+    pass
+rows.sort()
+if len(rows) < 2:
+    print("rows=%d" % len(rows))
+    sys.exit(1)
+gaps = [b - a for a, b in zip(rows, rows[1:])]
+gaps.append(end - rows[-1])
+worst = max(gaps)
+print("%.2f %d" % (worst, len(rows)))
+sys.exit(0 if worst <= 1.0 else 1)
+PY
+)"
+GRACE_GAP_RC=$?
+if [ "$GRACE_GAP_RC" = 0 ]; then
+    ok "frames kept flowing after the rejoin (${GRACE_GAP% *}s max gap, ${GRACE_GAP##* } frames in 20 s)"
+else
+    bad "frames did not keep flowing after the rejoin (${GRACE_GAP} = gap frames)"
+fi
 grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace2.log" \
     && bad "a graceExpired followed the rejoin" \
     || ok "no graceExpired (the rejoin ended the orphan)"
+: > "$WORK/grace2-stop"
+[ -n "$SWIPE_PID" ] && kill "$SWIPE_PID" 2>/dev/null || true
+wait "$SWIPE_PID" 2>/dev/null || true
+SWIPE_PID=""
 stop_app
 wait_slot_free "$WORK/phone-grace2-end.log" 45 rejoin || true
 stop_proxies
