@@ -162,10 +162,47 @@ mac_log() {
     grep -E "$2" || true
 }
 
+# The pairing prompt lives in the app's main process, while the shell server
+# (a separate process) is the one that answers pair.request/commit. If the app
+# is not the resumed activity the prompt never appears and pairing times out
+# with no code to tap.
+app_foreground() {
+  emu shell dumpsys activity activities 2>/dev/null |
+    grep -E '(topResumedActivity|mResumedActivity)' | grep -q 'dev\.pocketdeck/'
+}
+
+wait_app_foreground() {
+  local start="$(date +%s)" relaunched=0
+  while [ $(( $(date +%s) - start )) -lt 30 ]; do
+    app_foreground && return 0
+    # restart_server may return before the activity is resumed; bring it back
+    # once after 10 s rather than burning the whole pairing window.
+    if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
+      emu shell am start -n "$PKG/.app.MainActivity" >/dev/null 2>&1 || true
+      relaunched=1
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# A pairing failure is only diagnosable from the phone: keep the logcat, the UI
+# tree, the notifications and a shot (the prompt is a dialog, not the screen).
+capture_pair_failure() {
+  emu logcat -d -v time > "$E/logcat-pair.txt" 2>/dev/null || true
+  emu shell dumpsys notification --noredact > "$E/notifications-pair.txt" 2>/dev/null || true
+  emu shell uiautomator dump /sdcard/pocketdeck-pair.xml >/dev/null 2>&1 || true
+  emu shell cat /sdcard/pocketdeck-pair.xml > "$E/ui-pair.xml" 2>/dev/null || true
+  emu exec-out screencap -p > "$E/pair-fail.png" 2>/dev/null || true
+}
+
 pair_mac() {
   say "pairing the Mac profile '$PROFILE' (the phone's prompt: tap Allow)"
   "$PYTHON" "$WT/tools/emulator/poc.py" --serial "$SERIAL" --adb "$ADB" \
-    --addr "127.0.0.1:$PORT" wait-prompt --timeout 90 --tap-timeout 90
+    --addr "127.0.0.1:$PORT" wait-prompt --timeout 90 --tap-timeout 90 || {
+    capture_pair_failure
+    return 1
+  }
 }
 
 # The automatic Dock identity is a separate known bug (fix/dock-ack): a shim it
@@ -236,6 +273,8 @@ phase_after() {
   emu shell pkill -f "$PKG:pocketdeck" >/dev/null 2>&1 || true
   restart_server || { fail "the after build's server did not come up"; return; }
   ensure_forward >/dev/null || { fail "no port forward after the restart"; return; }
+  # The prompt needs the app's main process, not only the shell server.
+  wait_app_foreground || { fail "the app is not the resumed activity before pairing"; capture_pair_failure; return; }
   emu shell setprop debug.pocketdeck.ignore_repeat_frame 1 >/dev/null 2>&1 || true
   [ "$(emu shell getprop debug.pocketdeck.ignore_repeat_frame | tr -d '\r')" = "1" ] ||
     { fail "the ignore-repeat property did not stick"; return; }
