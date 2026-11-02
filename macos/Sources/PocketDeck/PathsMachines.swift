@@ -738,6 +738,10 @@ enum PathRejoinState: Equatable {
     /// Outside the grace: the reconnect backoff holds the next round until
     /// `until`; `failures` is the backoff step it waits on.
     case waiting(until: TimeInterval, failures: Int)
+    /// Inside the grace: a round that failed at once (a refused connection)
+    /// waits until a second after it started, so a phone whose server is
+    /// down is dialed once a second, not every tick.
+    case spacing(until: TimeInterval)
 
     /// A closed token for the transition log: never an address or a session.
     var token: String {
@@ -745,6 +749,7 @@ enum PathRejoinState: Equatable {
         case .idle: return "idle"
         case .inFlight: return "in-flight"
         case .waiting: return "waiting"
+        case .spacing: return "spacing"
         }
     }
 }
@@ -780,7 +785,13 @@ struct PathRejoinMachine {
     /// E-11c: an orphaned rejoin's own connect timeout, the probe's 2.0 s.
     static let connectTimeout: TimeInterval = PathProbeMachine.connectTimeout
 
+    /// Back-to-back rounds inside the grace start at least this far apart: a
+    /// timed-out dial (2.0 s) is redialed at once, a refusal a second later.
+    static let minRoundSpacing: TimeInterval = 1.0
+
     private(set) var state: PathRejoinState = .idle
+    /// When the round in flight was dialed: the grace's spacing counts from it.
+    private var roundStartedAt: TimeInterval = -.infinity
 
     /// `(state, event) -> (state, actions)`; the session owns the dials.
     mutating func handle(_ event: PathRejoinEvent, now: TimeInterval) -> [PathRejoinAction] {
@@ -790,6 +801,12 @@ struct PathRejoinMachine {
             switch state {
             case .idle:
                 state = .inFlight(failures: 0)
+                roundStartedAt = now
+                return [.dial]
+            case .spacing(let until):
+                guard now >= until else { return [.ignore] }
+                state = .inFlight(failures: 0)
+                roundStartedAt = now
                 return [.dial]
             case .inFlight:
                 // One round at a time: a tick never doubles a dial.
@@ -798,13 +815,14 @@ struct PathRejoinMachine {
                 // The grace overrides a wait begun while the session was live.
                 guard orphaned || now >= until else { return [.ignore] }
                 state = .inFlight(failures: failures)
+                roundStartedAt = now
                 return [.dial]
             }
 
         case .failed(let orphaned, let now):
             let failures: Int
             switch state {
-            case .idle:
+            case .idle, .spacing:
                 return [.ignore]
             case .inFlight(let step):
                 failures = step + 1
@@ -812,8 +830,10 @@ struct PathRejoinMachine {
                 failures = step + 1
             }
             if orphaned {
-                // E-11c: no backoff inside the grace; the next tick dials.
-                state = .idle
+                // E-11c: no backoff inside the grace; the next tick dials, but
+                // never sooner than a second after this round began.
+                let earliest = roundStartedAt + Self.minRoundSpacing
+                state = now >= earliest ? .idle : .spacing(until: earliest)
                 return [.ignore]
             }
             state = .waiting(until: now + ReconnectPolicy.delay(afterFailures: failures),

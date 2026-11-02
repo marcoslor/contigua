@@ -110,6 +110,28 @@ final class PathRejoinTests: XCTestCase {
         XCTAssertEqual(machine.handle(tick(at: 2), now: 2), [.dial])
     }
 
+    /// A phone whose server is down refuses at once: inside the grace the
+    /// rounds still start a second apart, so 30 s costs at most 31 dials.
+    func testARefusedOrphanedRejoinIsRedialedASecondAfterItsRoundBegan() {
+        var machine = PathRejoinMachine()
+        XCTAssertEqual(machine.handle(tick(at: 0), now: 0), [.dial])
+        XCTAssertEqual(machine.handle(.failed(orphaned: true, now: 0.05), now: 0.05), [.ignore])
+        XCTAssertEqual(machine.state, .spacing(until: 1.0))
+        for now in [0.25, 0.5, 0.75] {
+            XCTAssertEqual(machine.handle(tick(at: now), now: now), [.ignore])
+        }
+        XCTAssertEqual(machine.handle(tick(at: 1.0), now: 1.0), [.dial])
+        var dials = 1
+        var now: TimeInterval = 1.0
+        while now < 30 {
+            _ = machine.handle(.failed(orphaned: true, now: now + 0.05), now: now + 0.05)
+            now += 0.25
+            if machine.handle(tick(at: now), now: now) == [.dial] { dials += 1 }
+        }
+        XCTAssertLessThanOrEqual(dials, 31)
+        XCTAssertGreaterThanOrEqual(dials, 29)
+    }
+
     /// E-11c: the orphaned rejoin reuses the probe's own 2.0 s timeout.
     func testTheConnectTimeoutIsTwoSeconds() {
         XCTAssertEqual(PathRejoinMachine.connectTimeout, 2.0)

@@ -81,22 +81,26 @@ final class PathRejoinSessionTests: XCTestCase {
         return (session, times)
     }
 
-    /// E-11c: while orphaned a rejoin that fails is dialed again on the next
-    /// tick, not after the reconnect backoff's 1 s first step.
-    func testAFailedRejoinIsDialedAgainAtOnce() throws {
+    /// E-11c: while orphaned a refused rejoin is dialed again a second after
+    /// its round began, every time: the reconnect backoff no longer grows
+    /// (1, 2, 4, 8 s), and a phone whose server is down is not dialed on
+    /// every 0.25 s tick either.
+    func testARefusedRejoinIsRedialedASecondLaterEveryTime() throws {
         let (session, joinTimes) = try startAndOrphan { connection in
             connection.close()
         }
         defer { session.closeAndWait() }
-        XCTAssertTrue(waitFor(timeout: 6) { joinTimes().count >= 2 },
-                      "the failed rejoin was never redialed")
+        XCTAssertTrue(waitFor(timeout: 8) { joinTimes().count >= 4 },
+                      "the refused rejoin was not redialed every second")
         let times = joinTimes()
-        guard times.count >= 2 else {
+        guard times.count >= 4 else {
             return XCTFail("only \(times.count) rejoin dials")
         }
-        let gap = times[1] - times[0]
-        XCTAssertLessThanOrEqual(gap, 0.75,
-                                 "a failed rejoin waited \(gap)s for the next dial (E-11c: at once)")
+        for i in 1..<4 {
+            let gap = times[i] - times[i - 1]
+            XCTAssertGreaterThanOrEqual(gap, 0.9, "rejoin \(i) came \(gap)s after the last: faster than once a second")
+            XCTAssertLessThanOrEqual(gap, 1.6, "rejoin \(i) waited \(gap)s (E-11c: about a second, never a growing backoff)")
+        }
     }
 
     /// E-11c: an orphaned rejoin's connect timeout is 2.0 s, not the session's
