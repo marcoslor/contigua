@@ -2359,7 +2359,15 @@ final class ConnectionController {
             // PATH-17: the windows say so at once while there is no path, and
             // return to the live picture by themselves when one joins.
             setPathsDown(on)
-            if on { windows.linkLost() } else { windows.linkRestored() }
+            if on {
+                windows.linkLost()
+                // No banner, live row or attachment outlives the phone (the
+                // same rule as a session close): the grace keeps the session
+                // for a join, never the person's data.
+                notifyCenter.clearAll()
+            } else {
+                windows.linkRestored()
+            }
         case .pathsSwitched:
             if let session { windows.requestKeyframes(from: session) }
         case .versionRefused(let sentence):
