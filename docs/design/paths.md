@@ -377,8 +377,9 @@ path that is gone. `CurrentFailed` is the pong rule's failure signal, never the
 detach route (E-10).
 
 While `Orphaned` (and whenever the path count is below what the ready providers
-can give) the Mac re-dials them with `hello{join}` on the reconnect backoff
-(1, 2, 4, 8, 15 s), inside the 30 s grace (PATH-22/D-3). A rejoin is
+can give) the Mac re-dials them with `hello{join}`: back to back with a 2.0 s
+connect timeout inside the grace (E-11c), and on the reconnect backoff
+(1, 2, 4, 8, 15 s) outside it, inside the 30 s grace (PATH-22/D-3). A rejoin is
 `PathUp` on the orphan, so it gets the unplanned switch's marker and replay.
 
 The session ends (not just the path) on: the 30 s grace expiring, an oversized
@@ -423,6 +424,38 @@ sitting out the general timeout. After a failure the next probe is dialed at
 once: back-to-back, never more than one dial in flight, while the trigger
 holds. The machine stops when inbound frames arrive on any path, the stream
 closes or the session ends. The cost is one SYN every ~2 s during an outage.
+
+**E-11c.** The same reasoning applies to the orphan's rejoin. PATH-6's grace
+exists to bring the session back quickly, so while the session is `orphaned` a
+rejoin gives up after **2.0 s** (the probe's constant, not the session's
+general dial timeout) and a failed one is dialed again on the next 0.25 s
+tick. A round dials every missing provider once; a tick never dials a provider
+that already has a dial in flight, and a failed one is redialed on the next
+tick, but a round never starts sooner than **1.0 s** after the last one began: a dial that times out (2.0 s) is redialed at once, while a refusal — a phone whose server is down — is retried once a second, not on every tick (the radio on the phone wakes for each SYN). A `no_session` reply still ends the grace and starts one new session at
+once (RR-12). Outside the grace — a live session that is a path short — the
+reconnect backoff (1, 2, 4, 8, 15 s) is unchanged, and so is the controller's
+schedule for a new session after the grace ends.
+
+| State | Event | Result |
+|---|---|---|
+| `idle` | `tick`, a provider missing | `inFlight`, dial the round |
+| `idle` | `tick`, nothing missing | stay `idle` |
+| `inFlight` | `tick` | stay `inFlight` (no dial for a provider already dialing) |
+| `inFlight` | `failed`, orphaned, ≥ 1.0 s after the round began | `idle`; the next tick dials at once |
+| `inFlight` | `failed`, orphaned, sooner (a refusal) | `spacing(until: round start + 1.0 s)` |
+| `spacing` | `tick` before `until` | stay `spacing` |
+| `spacing` | `tick` at `until` | `inFlight`, dial the round |
+| `inFlight` | `failed`, not orphaned | `waiting(until, failures + 1)` |
+| `waiting` | `tick` before `until`, not orphaned | stay `waiting` |
+| `waiting` | `tick` at `until`, or orphaned | `inFlight`, dial the round |
+| any | `welcomed` | `idle` (the backoff restarts) |
+| any | `stop` | `idle` |
+
+The cost is one rejoin round per in-flight dial — about every 2 s while the
+dial hangs, once a second while it is refused — and a phone that comes
+back 10 s into the grace meets a dial within a tick when the refusal clears,
+or within about 2 s when the black hole was swallowing the handshake, instead
+of waiting out an 8 s backoff step.
 
 When the probe welcomes, the session has two paths, so PATH-7's pings start.
 If the old path is **still silent** the session switches to the probe at once
@@ -544,7 +577,7 @@ one that sends `path.switch`.
 |---|---|---|---|
 | path ping | **2 s** with two or more paths while the screen is on, an app stream is open, or bulk moved within the **2 s** transfer window; **15 s** otherwise; **never** with one path | both sides, every path, standby included | D1/RR-9 |
 | pong timeout | **1.5 s** per ping; not lost while the path receives | both | D5/D2 |
-| rejoin dial | reconnect backoff **1, 2, 4, 8, 15 s**, inside the 30 s grace | Mac | D3 |
+| rejoin dial | **back to back with a 2.0 s connect timeout inside the 30 s grace, rounds at least 1.0 s apart** (E-11c); the reconnect backoff **1, 2, 4, 8, 15 s** outside it | Mac | D3/E-11c |
 | sample window | **30 s** (≤ 15 samples) | both | D5 |
 | switch hysteresis | **5 s** at the margin | Mac acts; both compute | D5 |
 | planned-switch hold | **30 s** per session between planned (margin) switches; failovers and demotes are never held | Mac acts; the ranking holds | E-8 |

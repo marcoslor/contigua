@@ -347,10 +347,9 @@ final class Session {
     /// path id -> the provider that dialed it: a provider with no path and no
     /// attempt is missing and gets re-dialed (D-3).
     private var pathProvider: [String: Int] = [:]
-    /// Rejoin backoff inside the grace (D-3): consecutive dial failures and the
-    /// earliest next dial.
-    private var rejoinFailures = 0
-    private var rejoinNextAt: TimeInterval = 0
+    /// The orphan's rejoin schedule (E-11c): back-to-back with a 2.0 s timeout
+    /// inside the grace, the reconnect backoff outside it.
+    private var pathRejoin = PathRejoinMachine()
     /// True once a path was attached: a later path reaching an empty layer is
     /// a rejoin, not the founder (it replays instead of starting). Derived from
     /// the machine, never a flag beside it (RR-14).
@@ -510,6 +509,7 @@ final class Session {
         }
         pathStart = PathStart()
         pathProbe = PathProbeMachine()
+        pathRejoin = PathRejoinMachine()
         probeAttemptId = nil
         _ = pathStart.handle(.start(started.map(\.id)))
         for item in started {
@@ -525,8 +525,10 @@ final class Session {
     }
 
     /// One dial: a start attempt (PathStart owns its hello) or a rejoin (D-3).
+    /// `timeout` overrides the session's general one for a path that has its
+    /// own deadline (E-11b's probe, E-11c's orphaned rejoin).
     private func startDial(index: Int, provider: PathProvider, join: Bool, id: String,
-                           probe: Bool = false) {
+                           probe: Bool = false, timeout: TimeInterval? = nil) {
         guard let endpoint = provider.endpoint else { return }
         attempts[id] = Attempt(id: id, endpoint: endpoint,
                                dialedPinned: dialPinned != nil,
@@ -541,7 +543,7 @@ final class Session {
         attempts[id]?.timer = timer
         // E-11b: a probe has its own 2.0 s connect timeout; the session's first
         // connect keeps the general one.
-        let deadline = probe ? PathProbeMachine.connectTimeout : connectTimeout
+        let deadline = timeout ?? (probe ? PathProbeMachine.connectTimeout : connectTimeout)
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline, execute: timer)  // gcd: a deadline timer hops back to the session queue
         let group = eventLoopGroup!
         let learned = dialLearned
@@ -709,17 +711,45 @@ final class Session {
         performStart(pathStart.handle(.attemptFailed(id)))
     }
 
-    /// A rejoin dial failed: the next one waits on the reconnect backoff, still
-    /// inside the grace (D-3).
+    /// A rejoin dial failed: inside the grace the next tick dials at once
+    /// (E-11c); outside it the reconnect backoff holds the next round (D-3).
     private func rejoinFailed() {
-        rejoinFailures += 1
-        rejoinNextAt = uptime + ReconnectPolicy.delay(afterFailures: rejoinFailures)
+        let now = uptime
+        dispatchRejoin(.failed(orphaned: pathMachine.isOrphaned, now: now), now: now)
+    }
+
+    /// Runs one rejoin-schedule event, logs any transition (`rejoin: <from>
+    /// --<event>--> <to>`) and performs the dial it asks for.
+    private func dispatchRejoin(_ event: PathRejoinEvent, now: TimeInterval,
+                                missing: [(Int, PathProvider)] = []) {
+        let before = pathRejoin.state
+        let actions = pathRejoin.handle(event, now: now)
+        if before != pathRejoin.state {
+            let from = before.token
+            let to = pathRejoin.state.token
+            Log.session.notice("rejoin: \(from, privacy: .public) --\(event.token, privacy: .public)--> \(to, privacy: .public)")  // log-ok: closed state and event tokens
+        }
+        for action in actions {
+            guard case .dial = action else { continue }
+            var live = Set(attempts.keys)
+            for id in pathLayer.pathIds { live.insert(id) }
+            let orphaned = pathMachine.isOrphaned
+            Log.session.notice("paths: rejoin round, \(missing.count, privacy: .public) provider(s), orphaned \(orphaned ? 1 : 0)")  // log-ok: a count and a closed flag
+            for item in missing {
+                let id = PathIds.pathId(among: live)
+                live.insert(id)
+                // E-11c: an orphaned rejoin gives up on its own 2.0 s.
+                startDial(index: item.0, provider: item.1, join: true, id: id,
+                          timeout: orphaned ? PathRejoinMachine.connectTimeout : nil)
+            }
+        }
     }
 
     /// Dials the providers that have neither a path nor an attempt while the
     /// session is below the paths its providers can give (D-3: orphaned or a
     /// path short). Runs on the session queue's tick.
-    private func maintainPaths() {        guard !intentionalClose, pathSessionId.get() != nil else { return }
+    private func maintainPaths() {
+        guard !intentionalClose, pathSessionId.get() != nil else { return }
         let ready = readyProviders()
         guard !ready.isEmpty else { return }
         let target = min(ready.count, PathLayer.maxPaths)
@@ -727,17 +757,9 @@ final class Session {
         var attached: Set<Int> = Set(pathProvider.values)
         attached.formUnion(dialing)
         let missing = ready.filter { !attached.contains($0.0) }
-        guard !missing.isEmpty, pathLayer.pathCount + attempts.count < target else { return }
-        let now = uptime
-        guard now >= rejoinNextAt else { return }
-        rejoinNextAt = now + ReconnectPolicy.delay(afterFailures: rejoinFailures + 1)
-        var live = Set(attempts.keys)
-        for id in pathLayer.pathIds { live.insert(id) }
-        for item in missing {
-            let id = PathIds.pathId(among: live)
-            live.insert(id)
-            startDial(index: item.0, provider: item.1, join: true, id: id)
-        }
+        let needed = !missing.isEmpty && pathLayer.pathCount + attempts.count < target
+        dispatchRejoin(.tick(needed: needed, orphaned: pathMachine.isOrphaned, now: uptime),
+                       now: uptime, missing: needed ? missing : [])
     }
 
     // MARK: The single-path silence probe (PATH-24, E-11)
@@ -901,8 +923,7 @@ final class Session {
             _ = pathRanking.handle(.externalSwitch(id), now: uptime)
         }
         dialedAddress = attempt.address ?? dialedAddress
-        rejoinFailures = 0
-        rejoinNextAt = 0
+        dispatchRejoin(.welcomed, now: uptime)
     }
 
     // MARK: Path events and the session machine
@@ -1143,8 +1164,7 @@ final class Session {
         preWelcomeSender.set(nil)
         pathSessionId.set(nil)
         pathProvider.removeAll()
-        rejoinFailures = 0
-        rejoinNextAt = 0
+        pathRejoin = PathRejoinMachine()
         pathProbe = PathProbeMachine()
         probeAttemptId = nil
         pathLayer.closeAll()
