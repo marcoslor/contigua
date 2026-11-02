@@ -18,7 +18,10 @@ sealed interface PathSessionEvent {
     data class PathUp(val id: String, val joined: Boolean) : PathSessionEvent
     data class PathDown(val id: String) : PathSessionEvent
 
-    /** A socket error, or a five-second joined-path silence: the path is gone. */
+    /**
+     * The path the session was using failed (PATH-7's lost pong on a path that
+     * is not receiving). A path leaving the layer is [PathDown], never this.
+     */
     data class CurrentFailed(val id: String) : PathSessionEvent
 
     /**
