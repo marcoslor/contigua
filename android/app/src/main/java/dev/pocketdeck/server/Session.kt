@@ -144,6 +144,10 @@ class Session(
     private val preReadHello: Map<String, Any?>? = null,
     /** This path's provider class (the public build's is LAN). */
     private val pathKind: PathKind = PathKind.LAN,
+    /** Test seam: every [startPathReader] call, by path id. */
+    private val onPathReaderStart: (String) -> Unit = {},
+    /** Test seam: a new path writer's first wake, by path id. */
+    private val onPathWriterStart: (String) -> Unit = {},
 ) : VideoSink, AudioSink, LiveSession {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -259,6 +263,7 @@ class Session(
         // E-10/PATH-9: one removal point reports every detach route — a socket
         // error, EOF, a Mac close, the phone's own ClosePath — to the machine.
         onDetached = { id -> inbound.put(Inbound.Down(id)) },
+        onWriterStart = onPathWriterStart,
     )
     private val pathMachine = PathSessionMachine()
     private val pathRanking = PathRanking()
@@ -822,6 +827,7 @@ class Session(
         reader: FrameReader = FrameReader(t.socket.getInputStream()),
         first: Frame? = null,
     ) {
+        onPathReaderStart(t.id)
         if (pathReaders.any { it.name == "pocketdeck-path-${t.id}" }) return
         val thread = Thread({
             var pending: Frame? = first
