@@ -34,6 +34,11 @@ final class VideoLayerView: NSView {
     private var resizeFillUntil: TimeInterval?
     private var resizeTimeout: DispatchWorkItem?
 
+    /// The window is being resized right now (a drag, or the app's own zoom
+    /// animation). A stale picture cannot answer a request at this size, even
+    /// when the two aspects are close enough for the settled rule.
+    var isWindowLiveResizing = false
+
     /// A phone that never answers must not leave a cropped picture up forever.
     static let resizeFillTimeout: TimeInterval = 2
 
@@ -278,11 +283,22 @@ final class VideoLayerView: NSView {
         updateGravity()
     }
 
+    /// The pending-fill rule's two flags, for the zoom probe
+    /// (`--debug-stream-zoom`): whether the fill is armed and whether it still
+    /// applies at this size.
+    var resizeFillState: (armed: Bool, pending: Bool) { (resizeFillUntil != nil, resizeIsPending) }
+
+    /// Frames handed to the display layer, for the zoom probe: the picture's
+    /// liveness across a window animation (an animation that holds the main
+    /// run loop stops these).
+    private(set) var framesDrained = 0
+
     /// A resize is pending while the window has asked and the last frame is not
     /// the size it asked for.
     private var resizeIsPending: Bool {
         guard let until = resizeFillUntil, ProcessInfo.processInfo.systemUptime < until else { return false }
-        return !Letterbox.answers(config: videoSize, request: requestedPixels)
+        return Letterbox.resizeStillPending(video: videoSize, request: requestedPixels,
+                                            liveResizing: isWindowLiveResizing || window?.inLiveResize == true)
     }
 
     /// What the window's own size asks the phone for (the same number
@@ -463,6 +479,7 @@ final class VideoLayerView: NSView {
                     renderer.flush()
                 }
                 renderer.enqueue(sample)
+                framesDrained += 1
                 if renderer.status == .failed {
                     Log.video.error("display layer failed; flush + keyframe")
                     renderer.flush()

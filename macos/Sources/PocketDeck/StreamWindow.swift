@@ -5,6 +5,22 @@
 import AppKit
 import SwiftUI
 
+/// A stream window whose zoom the app can run itself. AppKit's zoom animation
+/// holds the main run loop for its whole length; while it runs no decoded
+/// frame reaches the display layer, the phone's sender backs up and re-attaches
+/// its encoder when the backlog clears (measured in .agent/zoom-jank). The
+/// controller animates the same frame sequence from its display link instead,
+/// as a live resize, and the window keeps streaming.
+final class StreamWindow: NSWindow {
+    /// Returns true when the window handled the zoom itself.
+    var customZoom: (() -> Bool)?
+
+    override func zoom(_ sender: Any?) {
+        if customZoom?() == true { return }
+        super.zoom(sender)
+    }
+}
+
 class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The stream this window shows.
     let stream: UInt32
@@ -160,9 +176,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // under a transparent titlebar, and is transparent itself outside
         // the stream.
         let frameSize = style.windowSize(stream: contentSize)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: frameSize),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = StreamWindow(contentRect: NSRect(origin: .zero, size: frameSize),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         // The app sets this window's frame itself (a stream's size, a phone's
         // turn): the backstop leaves those frames to the delegate above.
@@ -177,6 +193,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome = StreamChromeView(video: videoView, style: style)
         super.init(window: window)
         window.delegate = self
+        window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
         // Where AppKit put the standard buttons before the chrome moves them;
         // full screen gives them back (applyChromeConfig).
@@ -766,8 +783,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func rememberFrame() {
         // Never the screen-sized frame full screen moves the window to: the
-        // next open would come back too big.
-        guard let window, window.isVisible, !closingFromRemote,
+        // next open would come back too big. A resize in progress (a drag's
+        // steps, a zoom's animation) is not a frame to come back to either:
+        // its end remembers the settled one.
+        guard let window, window.isVisible, !closingFromRemote, !isLiveResizing,
               !window.styleMask.contains(.fullScreen), windowedFrame == nil else { return }
         manager.saveFrame(window.frame, forKey: frameKey)
     }
@@ -786,6 +805,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             StreamMenuState.shared.fullScreen = false
         }
         liveText.exit(.close)
+        stopZoomAnimation()
         openingTimer?.invalidate()
         openingTimer = nil
         dwellTimer?.invalidate()
@@ -799,15 +819,146 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         manager.remove(stream: stream)
     }
 
+    // MARK: Zoom
+
+    /// Whether this window's zoom runs as an app-driven live resize. Every
+    /// stream window does — an app, a link, a handoff or the phone mirror —
+    /// because all of them show a live picture that AppKit's own zoom would
+    /// freeze for the animation's whole length. The target is the delegate's
+    /// standard frame: the screen's visible frame, or the phone's fit.
+    var zoomsAsLiveResize: Bool { true }
+
+    /// The standard frame the window is showing, and the frame a second zoom
+    /// returns to (WindowZoom).
+    private(set) var zoom = WindowZoom.State.normal
+    private var zoomLink: CADisplayLink?
+    /// A display link pauses with its screen: the timer finishes the animation
+    /// even when no frame drives it (a hidden or occluded window).
+    private var zoomTimer: Timer?
+    private var zoomFrom: NSRect = .zero
+    private var zoomTo: NSRect = .zero
+    private var zoomStarted: CFTimeInterval = 0
+    /// AppKit's own zoom takes about a third of a second; the app-driven one
+    /// keeps that so a double-click feels the same.
+    private static let zoomDuration: CFTimeInterval = 0.3
+
+    /// The window's own zoom path (double-click on the bar, the green light,
+    /// Window ▸ Zoom): animate the frame from the display link as a live
+    /// resize, so the picture keeps arriving. Returns false when the window
+    /// does not run its own zoom.
+    func zoomAsLiveResize() -> Bool {
+        guard zoomsAsLiveResize, zoomLink == nil, !isLiveResizing,
+              let window, let screen = window.screen else { return false }
+        let standard = zoomStandardFrame(on: screen)
+        let (state, target) = WindowZoom.onZoom(zoom, frame: window.frame, standard: standard)
+        zoom = state
+        // The state is a closed set; no person data.
+        Log.app.notice("window zoom: \(state.name, privacy: .public)")  // log-ok: closed state set
+        guard !sameFrame(window.frame, target) else { return true }
+        zoomFrom = window.frame
+        zoomTo = target
+        beginLiveResize()
+        zoomStarted = CACurrentMediaTime()
+        let link = window.contentView?.displayLink(target: self, selector: #selector(zoomTick(_:)))
+        link?.add(to: .main, forMode: .common)
+        zoomLink = link
+        if link == nil {
+            finishZoom()
+            return true
+        }
+        let timer = Timer(timeInterval: Self.zoomDuration + 0.2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishZoom() }
+        }
+        zoomTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        return true
+    }
+
+    /// The frame AppKit would zoom to: the screen's visible frame, or what the
+    /// window's delegate makes of it (the phone window's phone-shaped fit).
+    private func zoomStandardFrame(on screen: NSScreen) -> NSRect {
+        var frame = screen.visibleFrame
+        if let window, let delegate = window.delegate,
+           delegate.responds(to: #selector(NSWindowDelegate.windowWillUseStandardFrame(_:defaultFrame:))) {
+            frame = delegate.windowWillUseStandardFrame?(window, defaultFrame: frame) ?? frame
+        }
+        return frame
+    }
+
+    /// One animation step, driven by the display link: the same delegate calls
+    /// a person's live drag makes, with AppKit's ease-out curve.
+    @objc private func zoomTick(_ link: CADisplayLink) {
+        guard let window else { finishZoom(); return }
+        let raw = min(1, max(0, (CACurrentMediaTime() - zoomStarted) / Self.zoomDuration))
+        let t = 1 - pow(1 - raw, 3)
+        let frame = NSRect(x: zoomFrom.minX + (zoomTo.minX - zoomFrom.minX) * t,
+                           y: zoomFrom.minY + (zoomTo.minY - zoomFrom.minY) * t,
+                           width: zoomFrom.width + (zoomTo.width - zoomFrom.width) * t,
+                           height: zoomFrom.height + (zoomTo.height - zoomFrom.height) * t)
+        liveResizeFrame(frame)
+        if raw >= 1 { finishZoom() }
+    }
+
+    private func finishZoom() {
+        stopZoomAnimation()
+        if let window {
+            // A display link that never ticked (no link, or a hidden window
+            // whose link paused) still owes the zoom its frame.
+            if !sameFrame(window.frame, zoomTo) { liveResizeFrame(zoomTo) }
+            zoom = WindowZoom.settled(zoom, at: window.frame)
+        }
+        // The same delegate call a drag's end makes, so a kind with its own
+        // end work (the phone mirror's rotation) runs it.
+        if let window {
+            windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+        } else {
+            endLiveResize()
+        }
+    }
+
+    private func stopZoomAnimation() {
+        zoomLink?.invalidate()
+        zoomLink = nil
+        zoomTimer?.invalidate()
+        zoomTimer = nil
+    }
+
+    private func sameFrame(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) <= 0.5 && abs(a.minY - b.minY) <= 0.5
+            && abs(a.width - b.width) <= 0.5 && abs(a.height - b.height) <= 0.5
+    }
+
     // MARK: Resize
 
     /// The person is dragging a corner: only the drag sets the frame until it
     /// ends. A stream event (a rotation) must not move the window under the
-    /// hand; it waits for `windowDidEndLiveResize`.
+    /// hand; it waits for `windowDidEndLiveResize`. The same state covers the
+    /// app's own zoom animation: both are one shape change the phone hears
+    /// about once, at the end.
     private(set) var isLiveResizing = false
 
     func windowWillStartLiveResize(_ notification: Notification) {
+        // A hand on the window takes over from a zoom animation in flight.
+        stopZoomAnimation()
+        beginLiveResize()
+    }
+
+    /// A drag's or the zoom's first frame: the last picture starts filling the
+    /// window before the first size change, so no letterbox frame shows.
+    private func beginLiveResize() {
         isLiveResizing = true
+        videoView.isWindowLiveResizing = true
+        videoView.noteResizeRequested()
+        liveText.exit(.resize)
+    }
+
+    /// The shape change is over: the phone is asked once, now, and the settled
+    /// frame is the one to come back to.
+    private func endLiveResize() {
+        isLiveResizing = false
+        videoView.isWindowLiveResizing = false
+        scheduleResize(after: 0)
+        rememberFrame()
     }
 
     /// The proposed size a person's drag or an Accessibility resize asks for,
@@ -826,6 +977,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(NSRect(origin: window.frame.origin, size: snapped), display: true)
     }
 
+    /// One step of the zoom animation: the size is the person's drag rule, the
+    /// origin moves with it (a zoom centres the window on the screen).
+    private func liveResizeFrame(_ frame: NSRect) {
+        guard let window else { return }
+        let size = windowWillResize(window, to: frame.size)
+        window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+    }
+
     func windowDidResize(_ notification: Notification) {
         // A stream window changing shape cannot keep a frozen frame: the new
         // picture would be a different size under the same overlay.
@@ -836,9 +995,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        isLiveResizing = false
-        scheduleResize(after: 0)
-        rememberFrame()
+        endLiveResize()
     }
 
     private func scheduleResize(after delay: TimeInterval) {

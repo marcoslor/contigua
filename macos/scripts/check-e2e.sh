@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -8758,6 +8758,37 @@ check_windows() {
     wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
         && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
         || bad "[WIN-40] the live bar: $(chrome_state)"
+    stop_app
+    stop_fakephone
+}
+
+# --- Zoom: a stream window's double-click resize ----------------------------
+
+# check_zoom — double-clicking a live stream window's title bar must resize it
+# as smoothly as a live drag does, and must not re-render the phone per
+# animation step. `--debug-stream-zoom` zooms the window through NSWindow.zoom
+# (the title bar's own path), unzooms, then makes the same size change with a
+# scripted live drag; the fake phone's log is the authority for the resize
+# requests each phase sent and their sizes.
+check_zoom() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+        --debug-stream-zoom "$WORK/stream-zoom.json" --quit-after 60
+    wait_until 25 window_rx window.open "com.android.settings" \
+        || bad "ZOOM the app window never opened"
+    if wait_until 60 [ -s "$WORK/stream-zoom.json" ]; then
+        local limit report
+        limit="$(nfr_limit stream_zoom_frame_p95_ms)"
+        if report="$(python3 "$MACOS/scripts/stream-zoom.py" \
+                "$WORK/stream-zoom.json" "$WORK/events.jsonl" "$limit")"; then
+            ok "[WIN-41] ZOOM the zoom is handled like a live resize, once at the end ($report)"
+        else
+            bad "[WIN-41] ZOOM the zoom is not a live resize ($report)"
+        fi
+    else
+        bad "ZOOM no measurement (--debug-stream-zoom)"
+    fi
     stop_app
     stop_fakephone
 }

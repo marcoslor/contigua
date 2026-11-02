@@ -4,6 +4,7 @@
   "contrast_min": 3.0,
   "deck_zoom_frame_p95_ms": 40,
   "deck_drag_frame_p95_ms": 21,
+  "stream_zoom_frame_p95_ms": 40,
   "density_burst_first_frame_ms": 600,
   "density_burst_stall_ms": 1500,
   "fetch_small_ms": 3000,
