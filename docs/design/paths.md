@@ -429,10 +429,10 @@ closes or the session ends. The cost is one SYN every ~2 s during an outage.
 exists to bring the session back quickly, so while the session is `orphaned` a
 rejoin gives up after **2.0 s** (the probe's constant, not the session's
 general dial timeout) and a failed one is dialed again on the next 0.25 s
-tick. A round dials every missing provider once; a tick never starts a second
-round while one is out, so a provider with a dial in flight is never doubled.
-A `no_session` reply still ends the grace and starts one new session at once
-(RR-12). Outside the grace — a live session that is a path short — the
+tick. A round dials every missing provider once; a tick never dials a provider
+that already has a dial in flight, and a failed one is redialed on the next
+tick. A `no_session` reply still ends the grace and starts one new session at
+once (RR-12). Outside the grace — a live session that is a path short — the
 reconnect backoff (1, 2, 4, 8, 15 s) is unchanged, and so is the controller's
 schedule for a new session after the grace ends.
 
@@ -440,7 +440,7 @@ schedule for a new session after the grace ends.
 |---|---|---|
 | `idle` | `tick`, a provider missing | `inFlight`, dial the round |
 | `idle` | `tick`, nothing missing | stay `idle` |
-| `inFlight` | `tick` | stay `inFlight` (never a second round) |
+| `inFlight` | `tick` | stay `inFlight` (no dial for a provider already dialing) |
 | `inFlight` | `failed`, orphaned | `idle`; the next tick dials at once |
 | `inFlight` | `failed`, not orphaned | `waiting(until, failures + 1)` |
 | `waiting` | `tick` before `until`, not orphaned | stay `waiting` |
