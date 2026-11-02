@@ -108,6 +108,26 @@ final class VideoFillTests: XCTestCase {
         XCTAssertTrue(Letterbox.answers(config: request, request: request))
     }
 
+    func testWhileResizingAnOldFrameCloseInAspectDoesNotEndTheFill() {
+        // 1792x1200 vs a request of 1856x1232: more than one 16 px step on the
+        // width, but the aspects agree within the settled tolerance. The
+        // settled rule accepts it; a live resize must not (the one letterboxed
+        // frame in the zoom, e2e `zoom`).
+        let old = CGSize(width: 1792, height: 1200)
+        let request = CGSize(width: 1856, height: 1232)
+        XCTAssertTrue(Letterbox.answers(config: old, request: request),
+                      "the aspect is within the settled tolerance for this request")
+        XCTAssertTrue(Letterbox.resizeStillPending(video: old, request: request, liveResizing: true))
+        XCTAssertFalse(Letterbox.resizeStillPending(video: old, request: request, liveResizing: false))
+    }
+
+    func testWhileResizingAConfigAtTheRequestedSizeEndsTheFill() {
+        let request = CGSize(width: 1792, height: 1216)
+        XCTAssertFalse(Letterbox.resizeStillPending(video: CGSize(width: 1792, height: 1200), request: request,
+                                                    liveResizing: true))
+        XCTAssertFalse(Letterbox.resizeStillPending(video: request, request: request, liveResizing: true))
+    }
+
     func testAConfigOfTheOldShapeDoesNotAnswer() {
         XCTAssertFalse(Letterbox.answers(config: wide, request: CGSize(width: 1200, height: 2000)))
         XCTAssertFalse(Letterbox.answers(config: .zero, request: CGSize(width: 1200, height: 2000)))
