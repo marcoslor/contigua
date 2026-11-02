@@ -905,10 +905,13 @@ final class DockApps: NSObject {
     /// The hash the bundle records for the shim executable this build copies.
     /// The installed copy is re-signed per bundle id, so its bytes never equal
     /// the app's shim; this hash is what the refresh compares.
-    static func bundledShimHash() -> String? {
+    static func bundledShimHash() -> String? { bundledShimHashOnce }
+
+    /// Hashed once: the bundled executable does not change under a running app.
+    private static let bundledShimHashOnce: String? = {
         guard let binary = shimBinary, let data = FileManager.default.contents(atPath: binary.path) else { return nil }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
+    }()
 
     func forget(deviceId: String) {
         for decision in DockCleanup.planForget(records: records(), deviceId: deviceId) {
