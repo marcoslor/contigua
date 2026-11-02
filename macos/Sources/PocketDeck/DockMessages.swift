@@ -35,6 +35,10 @@ enum DockMessage {
     /// the way a slow launch does. Written only when the host is given
     /// `--dock-debug-listen-delay` in a build with the test hooks.
     static let plistListenDelay = "PDListenDelay"
+    /// SHA-256 of the shim executable this bundle was built from. The copy is
+    /// re-signed per bundle id, so its bytes never equal the app's shim; the
+    /// refresh compares this hash and rebuilds a bundle from an older build.
+    static let plistShimHash = "PDShimHash"
     /// Why the bundle exists (docs/design/dock.md §Shortcuts): an array of
     /// `dock`, `manual`, `all`, `window`. Written by every current build.
     static let plistOrigins = "PDOrigins"
