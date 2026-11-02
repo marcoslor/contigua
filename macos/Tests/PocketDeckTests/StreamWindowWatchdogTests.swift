@@ -83,6 +83,77 @@ final class StreamWindowWatchdogTests: XCTestCase {
         XCTAssertFalse(controller.isStalled)
     }
 
+    /// `window.still` is a heartbeat, never a first frame: the opening cover
+    /// stays up (WIN-11) and the cover's ground is not changed by it.
+    func testAStillBeforeTheFirstFrameDoesNotEndTheOpeningCover() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.occlusionVisibleOverride = true
+        let t0 = ProcessInfo.processInfo.systemUptime
+        XCTAssertTrue(controller.isOpening, "a fresh window wears the opening cover")
+
+        controller.noteStill(at: t0)
+        XCTAssertTrue(controller.isOpening, "a still is not a frame: the cover and its ground stay")
+        for step in stride(from: 0.25, through: 30, by: 0.25) {
+            controller.tickFrameWatchdog(at: t0 + step)
+        }
+        XCTAssertTrue(controller.isOpening)
+    }
+
+    /// A still ends a stall the same way a frame does.
+    func testAStillEndsAShownStallInTheWindow() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.occlusionVisibleOverride = true
+        controller.noteFirstFrame()
+        let t0 = ProcessInfo.processInfo.systemUptime
+        controller.frameClock.note(at: t0)
+        controller.tickFrameWatchdog(at: t0)
+        controller.tickFrameWatchdog(at: t0 + 2)
+        XCTAssertTrue(controller.isStalled, "the baseline: 2 s of silence stalls")
+
+        controller.noteStill(at: t0 + 2.1)
+        XCTAssertFalse(controller.isStalled, "the phone said the stream is alive")
+        controller.tickFrameWatchdog(at: t0 + 2.1)
+        XCTAssertFalse(controller.isStalled)
+    }
+
+    /// The change is per stream: another stream's still says nothing about
+    /// this window's picture.
+    func testAnotherStreamsStillDoesNotKeepThisWindowLive() {
+        let manager = makeManager()
+        let first = manager.openOrRaise(pkg: "com.example.one")
+        let second = manager.openOrRaise(pkg: "com.example.two")
+        defer {
+            first.window?.close()
+            second.window?.close()
+        }
+        first.occlusionVisibleOverride = true
+        second.occlusionVisibleOverride = true
+        first.noteFirstFrame()
+        second.noteFirstFrame()
+        let t0 = ProcessInfo.processInfo.systemUptime
+        first.frameClock.note(at: t0)
+        second.frameClock.note(at: t0)
+        first.tickFrameWatchdog(at: t0)
+        second.tickFrameWatchdog(at: t0)
+
+        manager.handle(.windowStill(stream: second.stream))
+        let now = ProcessInfo.processInfo.systemUptime
+        first.tickFrameWatchdog(at: now + 2)
+        second.tickFrameWatchdog(at: now + 0.5)
+        XCTAssertTrue(first.isStalled, "stream 2's still is not stream 1's heartbeat")
+        XCTAssertFalse(second.isStalled, "stream 2's own still kept it live")
+    }
+
     /// L2: the phone's own power press with our streams up (`power.locked`).
     /// The window holds the last frame — no "Not responding" pill, no input
     /// block — through the grace, and a real stall after it still says so.

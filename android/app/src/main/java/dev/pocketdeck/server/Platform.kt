@@ -195,6 +195,8 @@ interface VideoSink {
     /** [content] is where the picture sits in the w×h frame (a mirror's black edges are outside it). */
     fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect)
     fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray)
+    /** `window.still`: the stream is live, but its encoder produced nothing. */
+    fun onStill(stream: Int)
 }
 
 /** Receives encoded device-wide audio (one mixer tap, stream 0). */

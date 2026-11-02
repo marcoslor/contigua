@@ -1,6 +1,6 @@
 # Phone app
 
-Prefix: `PHONE`. Owner docs: [UX.md](../UX.md) § "Android app", [DESIGN.md](../DESIGN.md) §2–3, [PROTOCOL.md](../PROTOCOL.md) § "Transport", § "Phone screen" and § "Ring", [design/phone-mirror.md](../design/phone-mirror.md) (the panel hold), [design/notify.md](../design/notify.md) (the listener grant). Last reviewed: 2026-10-27, against main `12f9d7a`.
+Prefix: `PHONE`. Owner docs: [UX.md](../UX.md) § "Android app", [DESIGN.md](../DESIGN.md) §2–3, [PROTOCOL.md](../PROTOCOL.md) § "Transport", § "Phone screen" and § "Ring", [design/phone-mirror.md](../design/phone-mirror.md) (the panel hold), [design/notify.md](../design/notify.md) (the listener grant). Last reviewed: 2026-11-01, against main `a3f0731c`.
 
 ## Purpose
 
@@ -59,8 +59,9 @@ The Android app as a person sees it on the phone: one home screen that says whet
 | PHONE-19 | THE onboarding step and the home switch SHALL share one keep-running action: ON SHALL store the pref, start the service and ask for the battery exemption only WHILE it is missing (the exemption dialog, then the app's battery page, then the system's exemption list; each failure logged and reported with "Couldn't open battery settings…"), OFF SHALL store the pref and leave the service running with the task; and the row SHALL say what the pref plus the exemption mean — "Keeps running after you swipe it away and starts when the phone restarts." with the exemption, "Battery restriction still on — Android may stop it." with a button that opens the settings without it, and "Runs only while PocketDeck is open." when off; onboarding SHALL show "On — PocketDeck keeps running in the background" with a check, or "Battery restriction still on" with the same button, and SHALL NOT advance that step while the exemption is still missing. | K1 `KeepRunningActionTest` (pref, service, exemption only when missing, the reported failure), `BatteryExemptionTest` (the fallback chain), `keepRunningState` in `UiStateTest`, `StatusActionTest` (`the onboarding keep-running button does what the home switch does`), `HomeScreenTest` (both lines), `UiStateTest` (`notifications step waits for the grant and a real exemption`); screenshots `onboarding_keep_running_on_*`, `onboarding_keep_running_restricted_*`, `home_keep_running_restricted_*`; emulator `background-switch` (the tap before/after, the swipe with on and with off) |
 | PHONE-17 | THE app SHALL write no notification text, notification title, media title/artist/album, file name, pasteboard content, Mac pairing secret, QR secret or key material to logcat or a crash report: ids, counts, states, sizes and hash prefixes only, and the pairing code is displayed, never logged. | review of every `Log` call in the app and the shell service; K1 `NotifyEventsTest`/`MediaArtTest` (their records carry no text); pairing.md PAIR-18, notifications.md NOTIFY-3 |
 | PHONE-20 | WHEN Shizuku's binder arrives, or arrives again after its server died, THE app SHALL bind the shell user service by itself — binder received, permission check, bind, service ready — with no tap and no relaunch; it SHALL treat a Shizuku permission it cannot read (no binder, or not attached yet) as the last known answer and never as a denial, so a grant that survived the server restart asks for nothing; and the binding SHALL follow one state machine — NoBinder, NeedsPermission, Binding, WaitingRetry, Ready, Failed(reason) — where a bind failure or timeout retries at most 3 times with a 1 s then 2 s backoff and a 5 s timeout per try, then ends in Failed with the card's Retry, and where a binder death returns to NoBinder so the next binder recovers without a tap. Every transition SHALL be logged as `shell binding: <from> --<event>--> <to>`, and a failure SHALL carry one of `bind_timeout`, `binder_dead`, `permission_denied`, `service_died`, `bind_failed` plus, for a thrown bind, only its exception class name. | K1 `ShellBindingTest` (every state/event pair, the bound, the backoff, the recovery paths, the log tokens); emulator `shizuku-restart` (3 rounds on one boot: the server and the shell service die, the server starts again, the shell service serves again within 10 s with no tap and no permission prompt); review of `ShizukuClient`, `DeckForegroundService` and `DeckViewModel` |
+| PHONE-21 | WHILE a stream is live THE phone SHALL keep its picture's silence under one second: IF the encoder has produced no output buffer for 1000 ms THEN the stream SHALL send JSON `{"t":"window.still","stream":N}` from its own drain loop, and SHALL send it again once a second while the silence lasts; it SHALL send nothing while the stream is paused or covered (the Mac's `window.pause`) and stop when it closes; a stalled drain loop, a stuck session or a backlogged socket SHALL send neither frames nor `still`, leaving the Mac's WIN-17 to say "Not responding"; an encoder that hangs while the drain loop keeps polling reads as still (the known gap, not built for); the stream SHALL log its `still` count as a fact and every transition as `heartbeat: <from> --<event>--> <to>`. | K1 `IdleFrameWatchdogTest` (a fake vendor encoder that produces nothing: a `still` within 1.0–1.2 s and every second for 30 s, none while paused/covered/closed, no poll and no `still` from a stuck drain, every transition); emulator `static-stall` (with `debug.pocketdeck.ignore_repeat_frame=1`: no `stall` for 30 s on a still Settings screen, `still` 25 on the phone and 25 on the Mac, 2026-11-01; the `debug.pocketdeck.freeze_drain=1` phase is not run yet: a stuck drain is K1's case and the Mac's 1.5 s rule is e2e `nfr`'s); the S25+ field check remains for the vendor encoder itself |
 
-Priority note: PHONE-1, 2, 3, 5, 6, 7, 8, 9, 11, 12, 13 and 17 are P1; the list's detail, the undo, the ring face and the visual rules are P2.
+Priority note: PHONE-1, 2, 3, 5, 6, 7, 8, 9, 11, 12, 13, 17 and 21 are P1; the list's detail, the undo, the ring face and the visual rules are P2.
 
 ## States and events
 
@@ -104,6 +105,27 @@ starts a new round.
 | Failed (bind_timeout) | Retry | Binding (1) |
 
 Ignored events, stated so nobody builds them: a second Retry while the service is starting, a listener grant while the Mac's sharing switch is off, a pairing answer with no pending prompt, and a notification-access item while the master switch is off (Connections are off wins).
+
+### The stream heartbeat (PHONE-21)
+
+`android/app/src/main/java/dev/pocketdeck/server/IdleFrameWatchdog.kt` is the one
+state machine for a live stream's silence; `WindowStream`'s drain thread feeds it
+its clock and performs its actions, and keeps no idle flag of its own. A still
+screen sends one `window.still` a second; a paused or covered stream sends
+nothing; a closed one never sends again.
+
+| State | Event | Result |
+|---|---|---|
+| Idle | an encoder is attached, or the stream resumes | Armed: due in 1000 ms |
+| Idle | a tick, a frame, a pause | nothing |
+| Armed | a frame | Armed: due moves to frame + 1000 ms (the clock restarts) |
+| Armed | a tick with no output buffer at its deadline | Still: one `window.still`, due + 1000 ms |
+| Armed | a second live | nothing (the encoder's clock is already running) |
+| Still | a frame | Armed: due + 1000 ms |
+| Still | a tick with no output buffer at its deadline | Still: send again, due + 1000 ms (a stuck encoder stays silent) |
+| Armed / Still | a pause or a cover (`window.pause`) | Idle: nothing until the next resume |
+| Armed / Still | close | Closed, with the stream's `still` count logged |
+| Closed | any event | nothing: the stream is gone |
 
 The service is a small lifecycle of its own (`DeckForegroundService`):
 
