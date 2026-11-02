@@ -37,6 +37,14 @@ class DeckForegroundService : Service() {
         override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
             handleSessionChanged(connected, clientId, macName, windows)
 
+        override fun onVersionRefused(macV: Int) {
+            // R-8/D-4: the status card shows the sentence until a session succeeds.
+            DeckState.versionSentence = dev.pocketdeck.proto.PathVersion.phoneSentence(
+                if (macV < 0) null else macV,
+            )
+            DeckState.notifyChanged()
+        }
+
         override fun onNotifyState(forwarding: Boolean, reason: String?) {
             DeckState.notifyForward = forwarding
             DeckState.notifyNoAccess = reason == "no_access"
@@ -196,6 +204,7 @@ class DeckForegroundService : Service() {
         DeckState.port = -1
         DeckState.connectedMac = null
         DeckState.connectedClientId = null
+        DeckState.versionSentence = null
         updateShizukuState()
         nsd.stop()
         updateOngoing()
@@ -284,6 +293,8 @@ class DeckForegroundService : Service() {
         }
         DeckState.connectedMac = if (connected) macName else null
         DeckState.connectedClientId = if (connected) clientId else null
+        // A live session is the way out of the version card (R-8/D-4).
+        if (connected) DeckState.versionSentence = null
         DeckState.windows = windows
         updateOngoing()
         DeckState.notifyChanged()

@@ -32,6 +32,24 @@ enum HandoffStart: Equatable {
     case fresh
 }
 
+/// A source of paths (docs/design/paths.md §9). A provider moves bytes and
+/// declares its class; it never reads a frame or decides a switch. The public
+/// build has the LAN only; a direct build adds a provider without touching the
+/// session layer, and a tunnel later is one more.
+protocol PathProvider {
+    var kind: PathKind { get }
+    var availability: PathAvailability { get }
+    /// Where this provider dials this phone; nil when it has no target.
+    var endpoint: Session.Endpoint? { get }
+}
+
+/// The public build's provider: today's Bonjour discovery + TCP.
+struct LanPathProvider: PathProvider {
+    let endpoint: Session.Endpoint?
+    let kind = PathKind.lan
+    let availability = PathAvailability.ready
+}
+
 struct PhoneInfo: Equatable {
     var id: String
     var name: String
@@ -95,12 +113,21 @@ struct AppInfo: Equatable {
 /// Video payloads, delivered off the main thread.
 enum VideoEvent {
     case config(stream: UInt32, config: VideoConfig, picture: PictureRect)
-    case frame(stream: UInt32, frame: VideoFrameData)
+    /// `path` is the path the frame arrived on, for the e2e frame log.
+    case frame(stream: UInt32, frame: VideoFrameData, path: String)
 }
 
 enum SessionEvent {
     case state(SessionState, String?)
     case ready(PhoneInfo, isReconnect: Bool, address: CachedAddress?)
+    /// PATH-17: no usable path; the windows say "reconnecting" at once and
+    /// return to the live picture by themselves when a path joins.
+    case pathsReconnecting(Bool)
+    /// A switch completed: the owner asks each open stream for a keyframe.
+    case pathsSwitched
+    /// PATH-1: the phone refused this Mac's protocol version; the sentence
+    /// names which app to update and the session stops retrying.
+    case versionRefused(String)
     case apps([AppInfo])
     /// The adaptive layers ride along when the icon is one (`icon` message).
     case icon(pkg: String, png: Data, fg: Data?, bg: Data?, mono: Data?)
@@ -206,6 +233,9 @@ final class Session {
     }
 
     private let endpoint: Endpoint
+    /// Every provider's dial target, in planner order (PATH-20). The public
+    /// build has one (the LAN); a test may start a second LAN provider.
+    private let providers: [PathProvider]
     private let knownDeviceFor: String?
     var knownDeviceId: String? {
         // Set for real on `welcome`; before that it is the remembered id this
@@ -231,9 +261,6 @@ final class Session {
     private let pinSessionEstablished: ((PinnedPhoneV2) -> Void)?
 
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
-    private let connectionLock = NSLock()
-    private var channel: Channel?
-    private var channelSend: (@Sendable (Frame) -> Void)?
     private var exporterProvider: (() -> [UInt8]?)?
     private var eventLoopGroup: EventLoopGroup?
     private var ownsGroup: Bool = false
@@ -254,6 +281,7 @@ final class Session {
     private var macFingerprintHex: String
 
     private var pingTimer: Timer?
+    private var pathTimer: Timer?
     private var connectWatchdog: DispatchWorkItem?
     private var pairingDeadline: DispatchWorkItem?
     /// The session-level `error` code the phone sent on this connection, if any.
@@ -275,6 +303,78 @@ final class Session {
     private var loggedExporterSha = false
     private var failedOnce = false
 
+    // MARK: Paths (docs/design/paths.md §3–§9)
+
+    /// One dialed path. The session queue owns every field.
+    private struct Attempt {
+        let id: String
+        let endpoint: Endpoint
+        var channel: Channel?
+        var sendRaw: (@Sendable ([UInt8]) -> Void)?
+        /// NIO's writability and read switch for this channel (D-2, R-11).
+        var isWritable: (@Sendable () -> Bool)?
+        var setReading: (@Sendable (Bool) -> Void)?
+        var exporter: (() -> [UInt8]?)?
+        var timer: DispatchWorkItem?  // gcd: the session's one timeout timer per attempt
+        /// dialing -> ready -> hello/join -> welcomed, or failed (R-14).
+        var machine = AttemptMachine()
+        /// The dial used a pin: only such a path may join.
+        var dialedPinned = false
+        /// Which provider dialed it: a missing provider is re-dialed on the
+        /// reconnect backoff while the session is below its path target (D-3).
+        let providerIndex: Int
+        /// A rejoin dial: its hello carries `join` at once (D-3).
+        var rejoin = false
+        /// The dialed host:port, for the cached address (C10).
+        var address: CachedAddress?
+        let kind: PathKind
+    }
+
+    private let pathLayer = PathLayer(log: { line in
+        Log.session.notice("paths: \(line, privacy: .public)")  // log-ok: closed tokens and a byte count, never a value from the wire
+    })
+    private var pathStart = PathStart()
+    private var attempts: [String: Attempt] = [:]
+    private var attemptReasons: [String: String] = [:]
+    /// The pin and the handshake-learned values every dial uses (a rejoin dial
+    /// happens long after doConnect).
+    private var dialPinned: PinnedPhoneV2?
+    private var dialLearned = SessionLockedBox(value: "")
+    private var dialLearnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
+    /// path id -> the provider that dialed it: a provider with no path and no
+    /// attempt is missing and gets re-dialed (D-3).
+    private var pathProvider: [String: Int] = [:]
+    /// Rejoin backoff inside the grace (D-3): consecutive dial failures and the
+    /// earliest next dial.
+    private var rejoinFailures = 0
+    private var rejoinNextAt: TimeInterval = 0
+    /// True once a path was attached: a later path reaching an empty layer is
+    /// a rejoin, not the founder (it replays instead of starting). Derived from
+    /// the machine, never a flag beside it (RR-14).
+    private var everAttached: Bool {
+        if case .unfounded = pathMachine.state { return false }
+        return true
+    }
+    /// Pre-welcome sends travel bare on the one attempt holding the plain
+    /// hello (PATH-2). The box carries the decision across threads; the
+    /// session queue clears it at the founding welcome (R-4/R-7).
+    private let preWelcomeSender = SessionLockedBox<(@Sendable ([UInt8]) -> Void)?>(value: nil)
+    /// Set once a `welcome` founded the session: from then on every frame is a
+    /// path-layer frame, even with no path attached (PATH-6). The box is the
+    /// one cross-thread view of [pathSessionId]; there is no second flag
+    /// (RR-14).
+    private let pathSessionId = SessionLockedBox<String?>(value: nil)
+    private var lastFramePath: String?
+    private var pathMachine = PathSessionMachine()
+    private var pathRanking = PathRanking()
+    /// D-1: the phone's screen state from the last `state` message. A session
+    /// that has not heard one yet counts as active (the safe default).
+    private var phoneScreenOn = true
+    private var reconnectingEmitted = false
+    private var pairingAttempt = false
+    /// The founding path's phone identity, for the pairing pin record.
+    private var foundingPeerPin = ""
+    private var foundingPeerCert: NIOSSLCertificate?
     /// The streams this session closed: no later message may go out for one
     /// (WIN-38). Guarded by its own lock: sends come from the main thread, the
     /// session queue and the video queue.
@@ -302,7 +402,8 @@ final class Session {
 
     /// The designated init: the owner decides the identity (profile-loaded),
     /// the pin record (nil = pairing) and the shared pin store.
-    init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
+    init(endpoint: Endpoint, endpoints: [Endpoint]? = nil,
+         knownDeviceId: String?, strictDeviceId: String? = nil,
          clientId: String, identity: DeviceIdentityV2? = nil,
          pinnedPhone: PinnedPhoneV2? = nil, pinStore: PhonePinStoreV2? = nil,
          onPinEstablished: ((PinnedPhoneV2) -> Void)? = nil,
@@ -310,6 +411,7 @@ final class Session {
          connectTimeout: TimeInterval = Session.defaultConnectTimeout,
          pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
         self.endpoint = endpoint
+        self.providers = (endpoints ?? [endpoint]).map { LanPathProvider(endpoint: $0) }
         self.knownDeviceFor = knownDeviceId
         self.strictDeviceId = strictDeviceId
         self.clientId = clientId
@@ -338,11 +440,13 @@ final class Session {
 
     /// Placeholder sessions (WindowManager construction) and most unit tests:
     /// an ad-hoc identity, no pin store.
-    convenience init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
+    convenience init(endpoint: Endpoint, endpoints: [Endpoint]? = nil,
+                     knownDeviceId: String?, strictDeviceId: String? = nil,
                      clientId: String,
                      connectTimeout: TimeInterval = Session.defaultConnectTimeout,
                      pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
-        self.init(endpoint: endpoint, knownDeviceId: knownDeviceId, strictDeviceId: strictDeviceId,
+        self.init(endpoint: endpoint, endpoints: endpoints,
+                  knownDeviceId: knownDeviceId, strictDeviceId: strictDeviceId,
                   clientId: clientId, identity: nil,
                   connectTimeout: connectTimeout, pairingTimeout: pairingTimeout)
     }
@@ -353,19 +457,11 @@ final class Session {
         intentionalClose = false
         failedOnce = false
         transition(.connecting, nil)
-        armConnectWatchdog()
         queue.async { [weak self] in self?.doConnect() }
     }
 
     private func doConnect() {
         guard !intentionalClose else { return }
-        guard let target = resolveTarget(endpoint) else {
-            fail("resolve"); return
-        }
-        dialedAddress = nil
-        if let port = UInt16(exactly: target.port) {
-            dialedAddress = CachedAddress(host: target.host, port: port)
-        }
 
         // The pin record for a reconnect comes from the shared store; pairing
         // attempts NEVER use one (§7: a stale pin must not block a person's
@@ -381,73 +477,530 @@ final class Session {
             Log.session.notice("no pin for \(self.describeEndpoint(), privacy: .public); not connecting automatically")
             fail("no-pin"); return
         }
+        pairingAttempt = pinned == nil && pairingPolicy == .allowed
 
         if eventLoopGroup == nil {
             eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
             ownsGroup = true
         }
         let group = eventLoopGroup!
-
-        let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: group)
         let learned = SessionLockedBox(value: "")
         let learnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
-        let connectResult: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void)?
-        do {
-            connectResult = try connector.connect(host: target.host, port: target.port,
-                  onFrame: { [weak self] frame in
-                guard let self else { return }
-                self.queue.async { self.handleFrame(frame) }
-            }, onError: { [weak self] err in
-                guard let self else { return }
-                self.queue.async { self.handleTransportError(err) }
-            }, onPeerPin: { fp in learned.set(fp) },
-               onPeerCert: { cert in learnedCert.set(cert) })
-        } catch let error as TlsV2Error {
-            Log.session.error("tls connect refused: \(error.description, privacy: .public)")
-            switch error {
-            case .pinMismatch: fail("pin-mismatch")
-            case .noPin: fail("no-pin")
-            default: fail("tls")
-            }
-            return
-        } catch {
-            let message = String(describing: error)
-            // A mid-handshake verification failure IS the stale-pin refusal
-            // (§7): the dial carries the pin record's phone cert as its only
-            // trust root, so the peer cert failing to verify means the phone's
-            // certificate changed. Surface it as pin-mismatch, not generic tls.
-            if message.contains("certificate_verify_failed") || message.contains("certificate verify") {
-                Log.session.error("tls verify refused: \(message.prefix(160), privacy: .private)")
-                fail("pin-mismatch"); return
-            }
-            Log.session.error("tls connect failed: \(message.prefix(160), privacy: .private)")
-            fail("tls"); return
-        }
-        guard let res = connectResult else {
-            fail("tls"); return
-        }
-        channel = res.channel
-        channelSend = res.send
-        exporterProvider = res.exporter
-        // The handshake watcher resolves asynchronously: the pin and the peer
-        // cert are read on demand (pairing time is well after the handshake).
         learnedPinProvider = { learned.get() }
         learnedCertProvider = { learnedCert.get() }
-        transition(.handshaking, nil)
-        Log.session.info("tls connected (\(self.describeEndpoint(), privacy: .public)); hello v2")
-        // A user-driven pairing says so in the hello: a Mac that believes it is
-        // paired sends a bare one, and a phone that pins nothing for it answers
-        // `not_paired` at once instead of waiting for a request that never comes
-        // (PAIR-23). A QR probe only opens the pairing channel (`.probe`), and
-        // `.never` stays silent, so neither is a pairing attempt.
-        let isPairingAttempt = pinned == nil && pairingPolicy == .allowed
-        var hello: [String: Any] = ["t": "hello", "v": 3, "clientId": clientId,
-                                    "name": ClientIdentity.name, "id": identity.deviceId]
-        if isPairingAttempt { hello["pair"] = true }
-        sendJSON(hello)
-        // Start the code pairing right away; a paired target answers `welcome`.
-        if isPairingAttempt {
-            sendJSON(["t": "pair.request"])
+        dialLearned = learned
+        dialLearnedCert = learnedCert
+        dialPinned = pinned
+
+        // PATH-20: every ready provider starts at once and only the hello is
+        // serialized. PathStart hands the one plain hello to the first attempt
+        // whose TLS is up and every other finished attempt joins the session.
+        var live = Set<String>()
+        var started: [(index: Int, provider: PathProvider, id: String)] = []
+        for (index, provider) in readyProviders() {
+            let id = PathIds.pathId(among: live)
+            live.insert(id)
+            started.append((index, provider, id))
+        }
+        pathStart = PathStart()
+        _ = pathStart.handle(.start(started.map(\.id)))
+        for item in started {
+            startDial(index: item.index, provider: item.provider, join: false, id: item.id)
+        }
+    }
+
+    /// The ready providers with their index, the target the rejoin dials up to.
+    private func readyProviders() -> [(Int, PathProvider)] {
+        providers.enumerated().compactMap { index, provider in
+            provider.availability.isReady && provider.endpoint != nil ? (index, provider) : nil
+        }
+    }
+
+    /// One dial: a start attempt (PathStart owns its hello) or a rejoin (D-3).
+    private func startDial(index: Int, provider: PathProvider, join: Bool, id: String) {
+        guard let endpoint = provider.endpoint else { return }
+        attempts[id] = Attempt(id: id, endpoint: endpoint,
+                               dialedPinned: dialPinned != nil,
+                               providerIndex: index,
+                               rejoin: join,
+                               kind: provider.kind)
+        let timer = DispatchWorkItem { [weak self] in  // gcd: the session's one deadline timer
+            guard let self else { return }
+            self.queue.async { self.attemptFailed(id, reason: "timeout") }
+        }
+        attempts[id]?.timer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: timer)  // gcd: a deadline timer hops back to the session queue
+        let group = eventLoopGroup!
+        let learned = dialLearned
+        let learnedCert = dialLearnedCert
+        let pinned = dialPinned
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
+            self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
+                       learned: learned, learnedCert: learnedCert)
+        }
+    }
+
+    /// One provider's dial, off the session queue: resolution and the TLS
+    /// handshake block, and the providers must run at the same time (§9.1).
+    private func dial(id: String, endpoint: Endpoint, pinned: PinnedPhoneV2?,
+                      group: EventLoopGroup,
+                      learned: SessionLockedBox<String>,
+                      learnedCert: SessionLockedBox<NIOSSLCertificate?>) {
+        guard let target = resolveTarget(endpoint) else {
+            queue.async { [weak self] in self?.attemptFailed(id, reason: "resolve") }
+            return
+        }
+        let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: group)
+        do {
+            let result = try connector.connect(host: target.host, port: target.port,
+                onFrame: { [weak self] frame in
+                    guard let self else { return }
+                    self.queue.async { self.handlePathFrame(id, frame) }
+                }, onError: { [weak self] message in
+                    guard let self else { return }
+                    self.queue.async { self.handlePathError(id, message) }
+                }, onPeerPin: { fingerprint in learned.set(fingerprint) },
+                onPeerCert: { cert in learnedCert.set(cert) },
+                onWritableChange: { [weak self] writable in
+                    guard let self, writable else { return }
+                    self.queue.async { self.pathLayer.writable(id) }
+                })
+            queue.async { [weak self] in
+                self?.install(id, result: result, target: target)
+            }
+        } catch let error as TlsV2Error {
+            let reason: String
+            switch error {
+            case .pinMismatch: reason = "pin-mismatch"
+            case .noPin: reason = "no-pin"
+            default: reason = "tls"
+            }
+            queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
+        } catch {
+            let message = String(describing: error)
+            // A mid-handshake verify failure IS the stale-pin refusal (§7).
+            let reason = (message.contains("certificate_verify_failed") || message.contains("certificate verify"))
+                ? "pin-mismatch" : "tls"
+            queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
+        }
+    }
+
+    /// A provider's TLS handshake completed. Runs on the session queue.
+    private func install(_ id: String,
+                         result: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void,
+                                  isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void),
+                         target: (host: String, port: Int)) {
+        guard !intentionalClose, var attempt = attempts[id],
+              attempt.machine.phase == .dialing else {
+            result.channel.close()
+            return
+        }
+        attempt.channel = result.channel
+        attempt.exporter = result.exporter
+        attempt.isWritable = result.isWritable
+        attempt.setReading = result.setReading
+        attempt.sendRaw = { bytes in
+            guard let frame = Frame(encoded: bytes) else { return }
+            result.send(frame)
+        }
+        attempt.address = UInt16(exactly: target.port).map { CachedAddress(host: target.host, port: $0) }
+        attempts[id] = attempt
+        attemptEvent(id, .tlsReady)
+        if state == .connecting { transition(.handshaking, nil) }
+        Log.session.info("tls connected (path \(id, privacy: .public)); hello v\(PathVersion.current, privacy: .private)")
+        if attempts[id]?.rejoin == true, let session = pathSessionId.get() {
+            // D-3: the orphan's own dial joins the session it was on.
+            sendHello(on: id, join: session)
+        } else {
+            performStart(pathStart.handle(.ready(id)))
+        }
+    }
+
+    private func performStart(_ actions: [PathStartAction]) {
+        for action in actions {
+            switch action {
+            case .sendPlainHello(let id):
+                sendHello(on: id, join: nil)
+            case .sendJoin(let ids, let session):
+                for id in ids { sendHello(on: id, join: session) }
+            case .sessionFounded:
+                break
+            case .fail:
+                fail(attemptReasons.values.first ?? "tls")
+            }
+        }
+    }
+
+    /// Records one attempt transition and logs it (`attempt: <from> --<event>--> <to>`).
+    /// Runs on the session queue, where the attempt record lives (R-14).
+    private func attemptEvent(_ id: String, _ event: AttemptEvent) {
+        guard var attempt = attempts[id] else { return }
+        let before = attempt.machine.phase
+        _ = attempt.machine.handle(event)
+        attempts[id] = attempt
+        guard before != attempt.machine.phase else { return }
+        Log.session.notice("attempt: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(attempt.machine.phase.token, privacy: .public) (path \(id, privacy: .public))")  // log-ok: closed phase tokens and a path id
+    }
+
+    /// Sends this path's `hello` directly (no seq space exists before welcome).
+    private func sendHello(on id: String, join: String?) {
+        guard var attempt = attempts[id], let send = attempt.sendRaw else { return }
+        if let join {
+            // Only a pinned TLS connection may join (PATH-3): TLS is the only
+            // authentication, and a pairing-mode one has verified nothing.
+            guard attempt.dialedPinned else {
+                closeAttempt(id)
+                return
+            }
+        }
+        var hello: [String: Any] = [
+            "t": "hello", "v": PathVersion.current, "path": id,
+            "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId,
+        ]
+        if let join { hello["join"] = join }
+        if pairingAttempt, join == nil { hello["pair"] = true }
+        // Through the one recorder, so `ready --hello--> hello` is logged like
+        // every other attempt transition (R-14): the machine call here was
+        // silent.
+        attemptEvent(id, .sentHello(join: join))
+        send(Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(hello)).encoded)
+        if join == nil {
+            preWelcomeSender.set(send)
+            exporterProvider = attempt.exporter
+            if pairingAttempt {
+                send(Frame(type: MessageType.json.rawValue, stream: 0,
+                           payload: JSONFrame.payload(["t": "pair.request"])).encoded)
+            }
+        }
+    }
+
+    private func attemptFailed(_ id: String, reason: String) {
+        guard !intentionalClose, let attempt = attempts[id] else { return }
+        // A late timer for a path that already welcomed is not a failure.
+        if attempt.machine.phase.isWelcomed || pathLayer.hasPath(id) {
+            attempt.timer?.cancel()
+            return
+        }
+        attempt.timer?.cancel()
+        attemptEvent(id, .failed(reason: reason))
+        attempts.removeValue(forKey: id)
+        attemptReasons[id] = reason
+        if attempt.rejoin {
+            rejoinFailed()
+            return
+        }
+        performStart(pathStart.handle(.attemptFailed(id)))
+    }
+
+    /// A rejoin dial failed: the next one waits on the reconnect backoff, still
+    /// inside the grace (D-3).
+    private func rejoinFailed() {
+        rejoinFailures += 1
+        rejoinNextAt = uptime + ReconnectPolicy.delay(afterFailures: rejoinFailures)
+    }
+
+    /// Dials the providers that have neither a path nor an attempt while the
+    /// session is below the paths its providers can give (D-3: orphaned or a
+    /// path short). Runs on the session queue's tick.
+    private func maintainPaths() {
+        guard !intentionalClose, pathSessionId.get() != nil else { return }
+        let ready = readyProviders()
+        guard !ready.isEmpty else { return }
+        let target = min(ready.count, PathLayer.maxPaths)
+        let dialing: Set<Int> = Set(attempts.values.map(\.providerIndex))
+        var attached: Set<Int> = Set(pathProvider.values)
+        attached.formUnion(dialing)
+        let missing = ready.filter { !attached.contains($0.0) }
+        guard !missing.isEmpty, pathLayer.pathCount + attempts.count < target else { return }
+        let now = uptime
+        guard now >= rejoinNextAt else { return }
+        rejoinNextAt = now + ReconnectPolicy.delay(afterFailures: rejoinFailures + 1)
+        var live = Set(attempts.keys)
+        for id in pathLayer.pathIds { live.insert(id) }
+        for item in missing {
+            let id = PathIds.pathId(among: live)
+            live.insert(id)
+            startDial(index: item.0, provider: item.1, join: true, id: id)
+        }
+    }
+
+    /// One path's channel ended. Before welcome that is a failed attempt; after
+    /// it, one path died and the session lives on (§6).
+    private func handlePathError(_ id: String, _ message: String) {
+        if pathLayer.hasPath(id) {
+            // Boot 6 left no trace of which side closed a live path: name the
+            // class, never the message (R-PRIV-1).
+            let token: String
+            if message.contains("closed-by-peer") { token = "closed-by-peer" }
+            else if message.hasPrefix("framing") { token = "framing" }
+            else if message.hasPrefix("tls") { token = "tls" }
+            else { token = "other" }
+            Log.session.notice("paths: path down \(id, privacy: .public) (\(token, privacy: .public))")  // log-ok: closed reason token, never the wire message
+            let wasCurrent = pathLayer.currentPath == id
+            dropPath(id)
+            handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
+            return
+        }
+        guard let attempt = attempts[id] else { return }
+        attempt.timer?.cancel()
+        var reason = "tls"
+        let lowered = message.lowercased()
+        if message.contains("closed-by-peer") {
+            if !everReady && phoneErrorCode == nil { reason = "closed-early" }
+        } else if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
+            reason = "pin-mismatch"
+        }
+        attemptEvent(id, .failed(reason: reason))
+        closeAttempt(id)
+        attemptReasons[id] = reason
+        if attempt.rejoin {
+            rejoinFailed()
+            return
+        }
+        performStart(pathStart.handle(.attemptFailed(id)))
+    }
+
+    private func closeAttempt(_ id: String) {
+        attemptEvent(id, .closed)
+        guard let attempt = attempts.removeValue(forKey: id) else { return }
+        attempt.timer?.cancel()
+        if let channel = attempt.channel { channel.close() }
+    }
+
+    /// Ends one attached path: closes its channel and forgets the provider that
+    /// dialed it, so a provider with no path is missing and gets re-dialed
+    /// (E-5/PATH-22). Every detach goes through here: the machine's closePath,
+    /// a socket error, a joined-path timeout and the planned drain.
+    private func dropPath(_ id: String) {
+        pathLayer.detach(id)
+        pathProvider.removeValue(forKey: id)
+        attempts.removeValue(forKey: id)
+    }
+
+    /// Adds a welcome'd path to the layer; the first one founds the session.
+    private func attachPath(_ id: String) {
+        guard let attempt = attempts[id], let send = attempt.sendRaw, let channel = attempt.channel else { return }
+        attempts[id]?.timer?.cancel()
+        guard pathLayer.pathCount < PathLayer.maxPaths else {
+            closeAttempt(id)
+            return
+        }
+        let path = PathLayer.Path(id: id, kind: .lan, send: send,
+                                  close: { channel.close() },
+                                  isWritable: attempt.isWritable ?? { true },
+                                  setReading: attempt.setReading ?? { _ in })
+        pathProvider[id] = attempt.providerIndex
+        // E-5: the attempt is the path now. Counting a welcomed attempt as
+        // well made `pathCount + attempts.count` count every attached path
+        // twice, so a session that lost one of two never re-dialed.
+        attempts.removeValue(forKey: id)
+        if pathLayer.pathCount == 0 {
+            pathLayer.start(first: path)
+            if everAttached {
+                // An orphan's path came back: unplanned-switch semantics, so the
+                // frames held while no path was up replay onto it (PATH-6/9).
+                handlePath(.pathUp(id: id, joined: true))
+            } else {
+                pathMachine.startLive(path: id)
+            }
+        } else {
+            pathLayer.attach(path, joined: true)
+            // Item 7's join predicate: a Mac-side fact that two paths are live
+            // on one session, not a state-token transition.
+            Log.session.notice("paths: attached \(id, privacy: .public) (paths \(self.pathLayer.pathCount))")  // log-ok: a path id and a count
+            handlePath(.pathUp(id: id, joined: true))
+        }
+        pathRanking.register(id: id, kind: attempt.kind)
+        if pathLayer.currentPath == id {
+            // The ranking's current starts as the session's current: the
+            // founder was made live without a pathUp event.
+            _ = pathRanking.handle(.externalSwitch(id), now: uptime)
+        }
+        dialedAddress = attempt.address ?? dialedAddress
+        rejoinFailures = 0
+        rejoinNextAt = 0
+    }
+
+    // MARK: Path events and the session machine
+
+    private func handlePathFrame(_ id: String, _ frame: Frame) {
+        lastFramePath = id
+        guard pathLayer.hasPath(id) else {
+            // Before this path joined the layer every frame is handshake
+            // (welcome, or a refusal that ends the attempt).
+            handleFrame(frame)
+            return
+        }
+        for event in pathLayer.receive(path: id, frame: frame) {
+            switch event {
+            case .deliver(let inner):
+                handleFrame(inner, path: id)
+            case .pong(let path, let rtt, let rankingSample):
+                // E-8/RRR-4: a pong on a path that carried bulk within the
+                // last second measures the queue, not the link. It proved the
+                // path alive above; it never enters the score.
+                guard rankingSample else { break }
+                let now = uptime
+                pathRanking.addSample(id: path, rttMs: rtt, at: now)
+                pathMachine.scores[path] = pathRanking.score(id: path, now: now) ?? -1
+            case .ping:
+                break
+            case .peerSwitch(let path, let seq, let arrivedOn):
+                if arrivedOn != path { pathLayer.drainNow(arrivedOn) }
+                handlePath(.peerSwitch(id: path, seq: seq, arrivedOn: arrivedOn))
+            case .down(let path):
+                handlePathError(path, "closed-by-peer")
+            case .ackAboveSent:
+                Log.session.error("paths: ack above what was sent")
+                phoneErrorCode = "protocol"
+                fail("protocol")
+            case .protocolError(let token):
+                Log.session.error("paths: protocol error (\(token, privacy: .public))")  // log-ok: a closed token
+                phoneErrorCode = "protocol"
+                fail("protocol")
+            }
+        }
+    }
+
+    /// A bare `path.ping` read before its path's welcome. The phone pings a
+    /// path the moment it attaches it, and a join is attached on the phone's
+    /// acceptor thread: that ping can be on the wire ahead of the join's
+    /// welcome. Answer it on the path it arrived on, naming the id our own
+    /// hello gave that path. Nothing else pre-welcome changes course: every
+    /// other frame still goes to the handshake router, and a ping for any
+    /// other id is left to PathLayer (PATH-12).
+    private func answerPreAttachPing(_ message: JSONMessage) {
+        guard let id = lastFramePath, let attempt = attempts[id], let send = attempt.sendRaw else { return }
+        let pingPath = message.string("path") ?? id
+        guard pingPath == id else { return }
+        let ts = Int64(message.int("ts") ?? 0)
+        let pong = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
+            "t": "path.pong", "path": pingPath, "ts": NSNumber(value: ts),
+        ]))
+        send(pong.encoded)
+    }
+
+    private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    private func handlePath(_ event: PathSessionEvent) {
+        let now = uptime
+        for id in pathMachine.live {
+            pathMachine.scores[id] = pathRanking.score(id: id, now: now) ?? -1
+        }
+        let before = pathMachine.state
+        let actions = pathMachine.handle(event, now: now)
+        for action in actions {
+            switch action {
+            case .startPing, .stopPing, .ignore:
+                break
+            case .ranking(let rankingEvent):
+                _ = pathRanking.handle(rankingEvent, now: now)
+            case .closePath(let path):
+                dropPath(path)
+            case .switchTo(let path):
+                switchTo(path, why: event.token)
+            case .replayFromLastAck:
+                pathLayer.replayOnCurrent()
+            case .requestKeyframes:
+                emit(.pathsSwitched)
+            case .markReconnecting:
+                setReconnecting(true)
+            case .end(let reason):
+                fail(reason)
+            }
+        }
+        if case .live = pathMachine.state { setReconnecting(false) }
+        if before != pathMachine.state {
+            Log.session.notice("paths: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(self.pathMachine.state.token, privacy: .public)")  // log-ok: closed state tokens, never a value
+        }
+    }
+
+    /// A failure or an orphan's join: the marker is the first frame on the new
+    /// path, then the replay (PATH-9).
+    private func switchTo(_ path: String, why: String) {
+        guard pathLayer.hasPath(path) else { return }
+        let from = pathLayer.currentPath
+        pathLayer.moveTo(path, plannedFrom: nil)
+        if let from, from != path {
+            Log.session.notice("paths: sending \(from, privacy: .public) -> \(path, privacy: .public) (\(why, privacy: .public))")  // log-ok: path ids and a closed event token
+        }
+        _ = pathLayer.sendMarker(on: path, to: path)
+        emit(.pathsSwitched)
+    }
+
+    /// A margin switch: the marker is the last frame on the old path (§5.4).
+    private func plannedSwitch(to path: String) {
+        guard pathLayer.hasPath(path), let old = pathLayer.currentPath, old != path else {
+            Log.session.notice("paths: planned switch not possible")  // log-ok: a state token
+            return
+        }
+        guard pathLayer.sendMarker(on: old, to: path) else { return }
+        pathLayer.moveTo(path, plannedFrom: old)
+        Log.session.notice("paths: sending \(old, privacy: .public) -> \(path, privacy: .public) (planned)")  // log-ok: path ids and a closed reason
+        pathLayer.replayOnCurrent()
+        handlePath(.peerSwitch(id: path, seq: 0, arrivedOn: old))
+    }
+
+    private func setReconnecting(_ on: Bool) {
+        guard reconnectingEmitted != on else { return }
+        reconnectingEmitted = on
+        emit(.pathsReconnecting(on))
+    }
+
+    private func startPathTimer() {
+        guard pathTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { self.tickPaths() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pathTimer = timer
+    }
+
+    /// D-1/PATH-7/RR-9: "active" is the phone's screen on, any open stream
+    /// (a mirrored app window outlives the screen), or a bulk transfer in the
+    /// last 2 s. The same rule on both sides.
+    private var pingActive: Bool {
+        if phoneScreenOn { return true }
+        closedStreamsLock.lock()
+        let streams = closedStreams.hasOpenStream
+        closedStreamsLock.unlock()
+        return streams || pathLayer.transferActive
+    }
+
+    private func tickPaths() {
+        maintainPaths()
+        pathLayer.pingAll(active: pingActive)
+        let now = uptime
+        // A pong lost on a path that is still receiving is a ranking sample,
+        // never a failure (D-2/RR-14), exactly as the phone records it.
+        for late in pathLayer.latePongs() {
+            pathRanking.addSample(id: late, rttMs: nil, at: now)
+        }
+        for lost in pathLayer.lostPings() {
+            pathRanking.addSample(id: lost, rttMs: nil, at: now)
+            if lost == pathLayer.currentPath { handlePath(.pongLost(id: lost)) }
+        }
+        for stale in pathLayer.joinedTimeouts() {
+            let wasCurrent = pathLayer.currentPath == stale
+            dropPath(stale)
+            handlePath(wasCurrent ? .currentFailed(id: stale) : .pathDown(id: stale))
+        }
+        for path in pathLayer.closeDrained() { dropPath(path) }
+        if case .migrating(_, _, let since) = pathMachine.state, now - since >= PathTimers.drainBackstop {
+            handlePath(.drainExpired)
+        }
+        if case .orphaned(let since) = pathMachine.state, now - since >= PathTimers.grace {
+            handlePath(.graceExpired)
+        }
+        for action in pathRanking.handle(.tick(now: now), now: now) {
+            switch action {
+            case .switchTo(let path):
+                Log.session.notice("paths: rank switch to \(path, privacy: .public)")  // log-ok: a path id, not a value from the wire
+                plannedSwitch(to: path)
+            case .sessionOrphan:
+                if let current = pathLayer.currentPath { handlePath(.currentFailed(id: current)) }
+            }
         }
     }
 
@@ -491,13 +1044,16 @@ final class Session {
     }
 
     private func closeChannel() {
-        connectionLock.lock()
-        let ch = channel
-        channel = nil
-        channelSend = nil
         exporterProvider = nil
-        connectionLock.unlock()
-        if let ch { try? ch.close().wait() }
+        for id in Array(attempts.keys) { closeAttempt(id) }
+        attempts.removeAll()
+        attemptReasons.removeAll()
+        preWelcomeSender.set(nil)
+        pathSessionId.set(nil)
+        pathProvider.removeAll()
+        rejoinFailures = 0
+        rejoinNextAt = 0
+        pathLayer.closeAll()
     }
 
     /// Bonjour services still resolve through Network.framework (NIO cannot
@@ -576,20 +1132,15 @@ final class Session {
         return (value & 0xffc0) == 0xfe80
     }
 
-    private func armConnectWatchdog() {
-        connectWatchdog?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.intentionalClose, self.state != .ready else { return }
-            Log.session.notice("connect timed out after \(self.connectTimeout, privacy: .public)s")
-            self.fail("timeout")
-        }
-        connectWatchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: work)
-    }
-
     private func armPairingDeadline() {
         connectWatchdog?.cancel()
         connectWatchdog = nil
+        // A person deciding is not a slow connect: the attempt timers stop
+        // here and the pairing deadline owns the wait (PAIR-13).
+        for id in Array(attempts.keys) {
+            attempts[id]?.timer?.cancel()
+            attempts[id]?.timer = nil
+        }
         pairingDeadline?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.intentionalClose, self.state != .ready else { return }
@@ -608,11 +1159,18 @@ final class Session {
         pairingDeadline = nil
         pingTimer?.invalidate()
         pingTimer = nil
+        pathTimer?.invalidate()
+        pathTimer = nil
     }
 
     private func transition(_ newState: SessionState, _ detail: String?) {
         state = newState
         emit(.state(newState, detail))
+    }
+
+    /// 32 lowercase hex: PORT's session id shape (PATH-3/19).
+    static func isSessionId(_ text: String) -> Bool {
+        text.count == 32 && text.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
     static func tcpParameters(for endpoint: Endpoint) -> NWParameters {
@@ -638,40 +1196,7 @@ final class Session {
 
     // MARK: Receive dispatch
 
-    private func handleTransportError(_ message: String) {
-        // The pinned-reconnect paths surface the stale-pin case as a TLS verify
-        // failure inside the pin callback (§7: "certificate changed").
-        // A plain "closed-by-peer" is the phone's normal hang-up: notice, not
-        // error (the phone treats aborted sessions quietly; the Mac mirrors it).
-        if message.hasPrefix("closed-by-peer") {
-            if !intentionalClose {
-                Log.session.notice("the phone closed the TLS session")
-            }
-            // PAIR-23: a phone that pins nothing for this Mac closes as soon as
-            // TLS completes, without a word. Before `welcome` that is not a
-            // transient network loss; the owner decides what a second one means.
-            if !everReady && phoneErrorCode == nil {
-                fail("closed-early")
-                return
-            }
-        } else {
-            Log.session.error("tls transport refused: \(message.lowercased().prefix(240), privacy: .private)")
-        }
-        let lowered = message.lowercased()
-        if message.contains(TlsV2Error.pinMismatch(got: "", expected: "").description.prefix(18)) {
-            fail("pin-mismatch")
-            return
-        }
-        // The trust root IS the pinned leaf; its verify failing mid-handshake
-        // means the phone's certificate changed (stale pin, §7).
-        if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
-            fail("pin-mismatch")
-            return
-        }
-        fail("tls")
-    }
-
-    private func handleFrame(_ frame: Frame) {
+    private func handleFrame(_ frame: Frame, path: String? = nil) {
         switch frame.messageType {
         case .json:
             guard let message = JSONFrame.decode(payload: frame.payload) else {
@@ -697,7 +1222,7 @@ final class Session {
                 return
             }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
-            onVideoEvent?(.frame(stream: frame.stream, frame: data))
+            onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
         case .shareData:
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
         case .clipData:
@@ -843,6 +1368,38 @@ final class Session {
                 Log.session.error("welcome without device")
                 return
             }
+            // PATH-3: `session` names the session this path belongs to. A join
+            // must echo the id it asked for; a mismatch closes only that path.
+            guard let session = message.string("session"), Self.isSessionId(session) else {
+                Log.session.error("welcome without a valid session id")
+                fail("protocol")
+                return
+            }
+            let welcomedOn = lastFramePath
+            if let welcomedOn, let asked = attempts[welcomedOn]?.machine.phase.joinSession {
+                guard asked == session else {
+                    Log.session.notice("path join mismatch")
+                    closeAttempt(welcomedOn)
+                    return
+                }
+                // A later path: one more connection, no second session, no
+                // second ready event (PATH-3).
+                attemptEvent(welcomedOn, .welcomed(session: session))
+                attachPath(welcomedOn)
+                emit(.pathsReconnecting(false))
+                return
+            }
+            // From here the seq space exists: no frame may travel bare again,
+            // and a frame with no attached path is held for the join (R-4).
+            // Clear the bare sender first: a frame racing the founding is
+            // dropped (E-2), never written bare after the welcome.
+            preWelcomeSender.set(nil)
+            pathSessionId.set(session)
+            if let welcomedOn {
+                attemptEvent(welcomedOn, .welcomed(session: session))
+                attachPath(welcomedOn)
+            }
+            performStart(pathStart.handle(.welcome(attempt: welcomedOn ?? "", session: session)))
             if let strict = strictDeviceId, info.id != strict {
                 // A cached address must keep belonging to the same phone.
                 Log.session.error("address answers as \(info.id, privacy: .public), expected \(strict, privacy: .public); dropping")
@@ -860,8 +1417,12 @@ final class Session {
                 emit(.qrPaired(deviceId: info.id))
             }
             phone = info
-            cancelTimers()
+            connectWatchdog?.cancel()
+            connectWatchdog = nil
+            pairingDeadline?.cancel()
+            pairingDeadline = nil
             startPing()
+            startPathTimer()
             let isReconnect = everReady
             everReady = true
             transition(.ready, nil)
@@ -889,7 +1450,12 @@ final class Session {
                                   dpi: message.int("dpi") ?? 0,
                                   outcome: message.string("outcome") ?? ""))
         case "window.closed":
-            emit(.windowClosed(stream: UInt32(message.int("stream") ?? 0),
+            let closed = UInt32(message.int("stream") ?? 0)
+            // RRR-5: the phone ended it, so it is no longer an open stream
+            // (D-1's active test); a Mac close skips sendClose, so this is the
+            // only place the id is forgotten.
+            forgetStream(closed)
+            emit(.windowClosed(stream: closed,
                                reason: message.string("reason") ?? ""))
         case "window.title":
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
@@ -898,6 +1464,7 @@ final class Session {
         case "window.still":
             emit(.windowStill(stream: UInt32(message.int("stream") ?? 0)))
         case "state":
+            phoneScreenOn = (message.string("screen") ?? "on") == "on"
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
                              charging: message.bool("charging") ?? false,
@@ -1044,13 +1611,42 @@ final class Session {
             emit(.fsChanges(paths: message.strings("paths") ?? []))
         case "error":
             let code = message.string("code") ?? "unknown"
+            // PATH-1: the phone refused the version. Its `v` names which app
+            // to update; there is no retry and no reduced session.
+            if code == "version" {
+                phoneErrorCode = "version"
+                emit(.versionRefused(PathVersion.macSentence(peer: message.int("v"))))
+                fail("version")
+                return
+            }
             // An fs failure names the request it answers; it is not the
             // session-level error a stream-less `error` otherwise is.
             if let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 {
                 emit(.fsError(id: id, code: code, message: message.string("message")))
                 return
             }
+            // RR-12: a rejoin refused because the session is gone (the phone's
+            // server restarted, or its grace ended first) ends the orphan at
+            // once, so the controller's reconnect starts exactly one new
+            // session instead of dialing a dead id for the whole grace.
+            // RRR-9: for a join, `busy` means that same thing (the session is
+            // ending), never "another Mac is connected": it fails as
+            // `no_session` so the person reads the right sentence.
+            if message.int("stream") == nil, let attemptId = lastFramePath,
+               attempts[attemptId]?.machine.phase.joinSession != nil,
+               code == "no_session" || code == "busy" {
+                let refusal = code == "busy" ? "no_session" : code
+                phoneErrorCode = refusal
+                fail(refusal)
+                return
+            }
             if message.int("stream") == nil { phoneErrorCode = code }
+            // RRR-5: the phone has forgotten this stream (a window it closed
+            // itself); it must not keep the fast ping alive either.
+            if code == "no_stream", let raw = message.int("stream"),
+               let stream = UInt32(exactly: raw) {
+                forgetStream(stream)
+            }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
             // A terminal reply before `welcome` ends the attempt now: the phone's
@@ -1061,6 +1657,13 @@ final class Session {
                 fail(code)
                 return
             }
+        case "path.ping":
+            // The phone's ticker pings a path the moment it is attached; for a
+            // join that is on its acceptor thread, so the ping can precede the
+            // join's welcome. Answer it for the path we are attaching: it names
+            // the id our own hello gave that path, so no other frame moves and
+            // nothing else pre-welcome changes course.
+            answerPreAttachPing(message)
         default:
             if !loggedUnknown.contains(message.t) {
                 loggedUnknown.insert(message.t)
@@ -1142,22 +1745,50 @@ final class Session {
         }
     }
 
-    func sendBytes(_ bytes: [UInt8]) {
-        connectionLock.lock()
-        let ch = channel
-        connectionLock.unlock()
-        guard let ch else { return }
-        var buf = ch.allocator.buffer(capacity: bytes.count)
-        buf.writeBytes(bytes)
-        _ = ch.writeAndFlush(buf)
+    @discardableResult
+    func sendBytes(_ bytes: [UInt8]) -> Bool {
+        guard let frame = Frame(encoded: bytes) else { return false }
+        return sendReliable(frame)
+    }
+
+    /// One frame above the path layer. Before founding there is no seq space:
+    /// handshake and pairing frames travel bare on the one path that holds the
+    /// plain hello (PATH-2), and any other send is dropped with `sent(false)`
+    /// (E-2) — admitting it would spend a seq that never reaches a path, and the
+    /// phone would hold every later frame at the seq-1 gap (RR-2). After
+    /// founding every frame is a path-layer frame: with no attached path it is
+    /// held for replay, never written bare to a dead attempt (PATH-6, R-4).
+    @discardableResult
+    private func sendReliable(_ frame: Frame, completion: (@Sendable (Bool) -> Void)? = nil) -> Bool {
+        if let preWelcome = preWelcomeSender.get() {
+            preWelcome(frame.encoded)
+            completion?(true)
+            return true
+        }
+        guard pathSessionId.get() != nil else {
+            completion?(false)
+            return false
+        }
+        pathLayer.send(frame, completion: completion)
+        return true
     }
 
     func sendJSON(_ object: [String: Any]) {
+        // RRR-5: an opened stream counts as activity only once its send is
+        // accepted; a `window.open` dropped before founding (E-2) is not open.
+        var opening: UInt32?
         if let type = object["t"] as? String,
            let value = object["stream"] as? Int,
-           let stream = UInt32(exactly: value),
-           !sendAllowed(type: type, stream: stream) { return }
-        sendBytes(JSONFrame.encode(object))
+           let stream = UInt32(exactly: value) {
+            guard sendAllowed(type: type, stream: stream) else { return }
+            if ClosedStreams.opening.contains(type) { opening = stream }
+        }
+        let accepted = sendBytes(JSONFrame.encode(object))
+        if let opening, accepted {
+            closedStreamsLock.lock()
+            closedStreams.opened(opening)
+            closedStreamsLock.unlock()
+        }
     }
 
     /// The one gate for a closed stream (WIN-38): false when the message must
@@ -1171,6 +1802,13 @@ final class Session {
         guard decision == .drop else { return true }
         Log.session.notice("\(ClosedStreams.lateLog(type: type, stream: stream), privacy: .public)")
         return false
+    }
+
+    /// RRR-5: the phone ended this stream; it stops counting as activity.
+    private func forgetStream(_ stream: UInt32) {
+        closedStreamsLock.lock()
+        closedStreams.forget(stream)
+        closedStreamsLock.unlock()
     }
 
     func requestApps() { sendJSON(["t": "apps.list"]) }
@@ -1332,16 +1970,12 @@ final class Session {
         sendJSON(["t": on ? "fs.watch" : "fs.unwatch", "id": Int(id), "paths": paths])
     }
     private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        guard let ch = channel else { return sent(false) }
-        let frame = Frame(type: kind, stream: id, payload: bytes).encodedData()
-        var buf = ch.allocator.buffer(capacity: frame.count)
-        buf.writeBytes(frame)
-        ch.writeAndFlush(buf).whenComplete { result in
-            switch result {
-            case .success: sent(true)
-            case .failure: sent(false)
-            }
-        }
+        // The replay buffer holds the frame; the completion means "accepted for
+        // delivery", so a producer waits on credit without blocking the UI,
+        // and an orphaned session keeps the frame for the join (PATH-6, R-4).
+        // Before founding it is dropped with `sent(false)` (E-2): a FileDrop
+        // then fails the transfer instead of waiting for a seq that is gone.
+        sendReliable(Frame(type: kind, stream: id, payload: bytes), completion: sent)
     }
     func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
     func touch(_ event: TouchEvent, stream: UInt32) {

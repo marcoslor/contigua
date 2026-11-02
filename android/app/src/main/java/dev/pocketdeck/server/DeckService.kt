@@ -146,7 +146,7 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
-        val factory = SessionFactory { socket, plain ->
+        val factory = SessionFactory { socket, plain, hello ->
             Session(
                 socket = socket,
                 plainSocket = plain,
@@ -206,6 +206,7 @@ class DeckService(private val appContext: Context?) :
                 ringerMode = ringerControl,
                 volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
+                preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
@@ -222,7 +223,8 @@ class DeckService(private val appContext: Context?) :
             )
         }
         val srv = Server(factory, ::log, ::servedCertPem, ::servedKeyP8, { gates },
-            { servedClients().map { it.macFpHex } })
+            { servedClients().map { it.macFpHex } },
+            onVersionRefused = { v -> onVersionRefused(v) })
         server = srv
         return srv.start()
     }
@@ -502,6 +504,10 @@ class DeckService(private val appContext: Context?) :
 
     override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
         sendToApp { it.onSessionChanged(connected, clientId, macName, windows) }
+
+    /** R-8/D-4: a refused hello's version reaches the app's status card. */
+    override fun onVersionRefused(macV: Int?) =
+        sendToApp { it.onVersionRefused(macV ?: -1) }
 
     // ------------------------------------------------------------------
 

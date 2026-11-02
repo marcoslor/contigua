@@ -28,6 +28,29 @@ class UiStateTest {
     }
 
     @Test
+    fun `a refused Mac version shows the update sentence until a session succeeds`() {
+        val status = mapStatus(readyInput.copy(versionSentence = "Update PocketDeck on this Mac."))
+        assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.VERSION), status)
+        val connected = mapStatus(
+            readyInput.copy(connectedMac = "Studio Mac", versionSentence = null),
+        )
+        assertEquals(DeckStatus(StatusState.CONNECTED, AttentionKind.NONE), connected)
+    }
+
+    /// RR-13: two Macs, one of them not updated. The connected one owns the
+    /// card; the other's refused hello must not replace it with the sentence.
+    @Test
+    fun `a connected Mac wins over another Macs version sentence`() {
+        val status = mapStatus(
+            readyInput.copy(
+                connectedMac = "Studio Mac",
+                versionSentence = "Update PocketDeck on this Mac.",
+            ),
+        )
+        assertEquals(DeckStatus(StatusState.CONNECTED, AttentionKind.NONE), status)
+    }
+
+    @Test
     fun `connections off needs attention with the turn-on action`() {
         val status = mapStatus(readyInput.copy(allowConnections = false))
         assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF), status)

@@ -77,8 +77,8 @@ class PanelPowerSessionTest {
     }
 
     private fun readJson(): Map<String, Any?> {
-        val frame = reader.readFrame() ?: error("connection closed; logs: $logs")
-        return Json.parseObject(String(frame.payload))
+        val frame = readPathFrame(reader) ?: error("connection closed; logs: $logs")
+        return pathJson(frame)
     }
 
     private fun readUntil(t: String): Map<String, Any?> {
@@ -90,7 +90,7 @@ class PanelPowerSessionTest {
     }
 
     private fun authenticate() {
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Mac", "pair" to true))
+        send(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "Mac", "pair" to true))
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))

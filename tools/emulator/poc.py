@@ -71,12 +71,12 @@ CODE_RE = re.compile(r"\b(\d{3})\s(\d{3})\b")
 UI_DUMP = "/sdcard/pocketdeck-ui.xml"
 
 
-def ui_dump(adb):
+def ui_dump(adb, timeout=30):
     """Return the uiautomator XML of the current window ('' when unavailable)."""
-    res = adb.sh("uiautomator", "dump", "--compressed", UI_DUMP)
+    res = adb.sh("uiautomator", "dump", "--compressed", UI_DUMP, timeout=timeout)
     if "dumped" not in (res.stdout + res.stderr):
         return ""
-    return adb.sh("cat", UI_DUMP).stdout
+    return adb.sh("cat", UI_DUMP, timeout=timeout).stdout
 
 
 def find_node(xml, text):
@@ -104,6 +104,49 @@ def notification_code(adb):
     return m.group(1) + m.group(2) if m else None
 
 
+# The phone-side facts a failed pair needs: who is alive, why, and what the
+# app/shell logged. Without these a `session failed: tls` on the Mac cannot be
+# told from a dropped session, a dead server or a crash.
+EVIDENCE_RE = re.compile(
+    r"PocketDeckSvc|PocketDeckApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|"
+    r"tombstone|am_crash|am_anr|lowmemorykiller|Force finishing|"
+    r"Process dev\.pocketdeck|Killing [0-9]+:dev\.pocketdeck")
+
+
+def write_evidence(directory, name, text):
+    if not directory:
+        return None
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, name)
+    with open(path, "w") as fh:
+        fh.write(text if text.endswith("\n") else text + "\n")
+    print("evidence: %s (%d bytes)" % (path, len(text)))
+    return path
+
+
+def phone_evidence(adb, directory, label):
+    """Dump logcat/process/activity state before the emulator is killed."""
+    if not directory:
+        return None
+    lines = ["== phone evidence: %s at %s ==" %
+             (label, time.strftime("%Y-%m-%d %H:%M:%S"))]
+    for name in (APP_PKG, APP_PKG + ":pocketdeck"):
+        lines.append("pidof %s: %s" % (name, adb.out("pidof", name)))
+    ps = adb.sh("ps", "-A", "-o", "PID,PPID,USER,NAME")
+    lines.append("-- ps (pocketdeck/shizuku) --")
+    lines.extend(line for line in ps.stdout.splitlines()
+                 if "pocketdeck" in line or "shizuku" in line.lower())
+    acts = adb.sh("dumpsys", "activity", "activities")
+    lines.append("-- activity --")
+    lines.extend(line for line in acts.stdout.splitlines()
+                 if "ResumedActivity" in line or "mFocusedApp" in line)
+    lines.append("-- logcat --")
+    logcat = adb.sh("logcat", "-d", "-v", "time", "-b", "all", timeout=60)
+    lines.extend(line for line in logcat.stdout.splitlines()
+                 if EVIDENCE_RE.search(line))
+    return write_evidence(directory, "phone-%s.log" % label, "\n".join(lines))
+
+
 def read_new_code(adb, timeout, interval=0.4, stale=None):
     """Wait for a *new* pairing code: notification first (fast), dialog second.
 
@@ -124,17 +167,31 @@ def read_new_code(adb, timeout, interval=0.4, stale=None):
     return None
 
 
-def tap_allow(adb, timeout):
+def tap_allow(adb, timeout, evidence_dir=None):
     """Tap the prompt's Allow: app dialog first, then the notification shade.
 
-    Not time-critical: the phone waits 120 s for the decision.
+    Not time-critical: the phone waits 120 s for the decision. With
+    *evidence_dir*, the phone's state around the tap is written there, so a
+    failure after the tap has the logcat/pid lines of the exact moment.
     """
     deadline = time.time() + timeout
+    first = True
     while time.time() < deadline:
+        if first:
+            first = False
+            phone_evidence(adb, evidence_dir, "before-tap")
+            write_evidence(evidence_dir, "ui-before-tap.xml", ui_dump(adb, 10))
+            # The dumps can be slow on a fresh boot; they must not eat the
+            # window that finds the Allow button.
+            deadline = time.time() + timeout
         allow = find_node(ui_dump(adb), "Allow")
         if allow:
             adb.tap(*allow)
             print("tap-allow: tapped at %.0f,%.0f (dialog)" % allow)
+            if evidence_dir:
+                time.sleep(0.5)
+                phone_evidence(adb, evidence_dir, "after-tap")
+                write_evidence(evidence_dir, "ui-after-tap.xml", ui_dump(adb, 10))
             return True
         adb.sh("cmd", "statusbar", "expand-notifications")
         time.sleep(0.8)
@@ -142,6 +199,10 @@ def tap_allow(adb, timeout):
         if allow:
             adb.tap(*allow)
             print("tap-allow: tapped at %.0f,%.0f (notification)" % allow)
+            if evidence_dir:
+                time.sleep(0.5)
+                phone_evidence(adb, evidence_dir, "after-tap")
+                write_evidence(evidence_dir, "ui-after-tap.xml", ui_dump(adb, 10))
             return True
         adb.sh("cmd", "statusbar", "collapse-notifications")
         time.sleep(0.4)
@@ -261,11 +322,15 @@ def cmd_wait_prompt(args):
     phone announces) and this helper in another. flow.sh pairs through `pair`.
     """
     adb = Adb(args.adb, args.serial)
-    code = read_new_code(adb, args.timeout, args.interval)
+    # A fresh boot has no earlier prompt: `--stale none` keeps a code that
+    # appears while the first UI dump is being taken from being mistaken for a
+    # leftover one (boot 9 ignored the only prompt for the full 60 s that way).
+    stale = "" if args.stale == "none" else None
+    code = read_new_code(adb, args.timeout, args.interval, stale=stale)
     if code is None:
         raise PocError("no new pairing code within %.0fs" % args.timeout)
     print("wait-prompt: prompt shows code %s" % code)
-    return 0 if tap_allow(adb, args.tap_timeout) else 1
+    return 0 if tap_allow(adb, args.tap_timeout, args.evidence) else 1
 
 
 def phase_pngs(directory, prefix):
@@ -319,7 +384,7 @@ def cmd_verify(args):
 
 
 # --- CLI -------------------------------------------------------------------
-def main(argv=None):
+def build_parser():
     p = argparse.ArgumentParser(
         description="Emulator-rig helper for PocketDeck (pairing + frame checks).")
     p.add_argument("--addr", default=os.environ.get("POCKETDECK_ADDR", "127.0.0.1:47811"),
@@ -345,6 +410,11 @@ def main(argv=None):
     sp.add_argument("--timeout", type=float, default=90.0)
     sp.add_argument("--interval", type=float, default=0.4)
     sp.add_argument("--tap-timeout", type=float, default=25.0)
+    sp.add_argument("--evidence", metavar="DIR",
+                    help="write the phone's logcat/pid/UI state before and after the tap")
+    sp.add_argument("--stale", choices=("auto", "none"), default="auto",
+                    help="`none` when no earlier prompt can exist (a fresh boot): "
+                         "a code that appears while the first dump is taken is new, not stale")
     sp.set_defaults(func=cmd_wait_prompt)
 
     sp = sub.add_parser("verify-phases", help="check the PNGs deckctl multi wrote")
@@ -354,6 +424,11 @@ def main(argv=None):
                     help="fail a frame darker than this (black/keyguard guard)")
     sp.set_defaults(func=cmd_verify)
 
+    return p
+
+
+def main(argv=None):
+    p = build_parser()
     args = p.parse_args(argv)
     try:
         return args.func(args)

@@ -1,7 +1,7 @@
 # fakephone — fake PocketDeck phone + conformance client
 
 A protocol-faithful test harness for [docs/PROTOCOL.md](../../docs/PROTOCOL.md)
-v2 (TLS 1.3 client certificates, pins). Python 3.11+ for the TLS parts (3.9's
+v4 (TLS 1.3 client certificates, pins, reliable paths). Python 3.11+ for the TLS parts (3.9's
 LibreSSL cannot do TLS 1.3), plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
 
 - `proto.py` — the frame codec (JSON, VIDEO_CONFIG, VIDEO_FRAME, TOUCH, SCROLL,
@@ -11,6 +11,8 @@ LibreSSL cannot do TLS 1.3), plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
   phone→mac message, and one ffmpeg H.264 encoder per window stream.
 - `deckctl.py` — the fake Mac client, used to conformance-test any phone server
   (this fake today, the Android server later).
+- `paths.py` — the paths core: RELIABLE/ACK, the replay buffer with credit,
+  the reorder window, pings and the switch marker.
 - `test_selfcheck.sh` — end-to-end check of all of the above.
 - `test_busy_reject.py` — unit check of one connection path the selfcheck only
   reaches at its end: a rejected second connection (TLS-wrapped, stale) must
@@ -51,6 +53,14 @@ python3 tools/fakephone/fakephone.py            # mDNS on, random port, prompts 
 python3 tools/fakephone/fakephone.py --no-mdns --auto-allow \
     --port 47811 --state /tmp/fh.json --events /tmp/ev.jsonl
 ```
+
+Paths (docs/PROTOCOL.md "Paths"): `--paths N` opens N listeners (`PORT`,
+`PORT+1`, …) so a Mac can join a second path and switch to it; `--version N`
+speaks protocol N (default 4; `3` refuses a v4 Mac with `error version`);
+`--join ID` fixes/serves only that 32-hex session id; `--no-pong PATH`,
+`--slow-pong PATH MS` and `--drop-path PATH after S` break one path by its
+8-hex id or its join order (or `all`); `--ctl-file F` does the same at run
+time (`pong ID on|off|delay [MS]`, `slow ID MS`, `drop ID`).
 
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
 `--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.pocketdeck-fakephone.json`),
@@ -113,6 +123,14 @@ One JSON object per line, exactly:
 {"ev":"apk","id":N,"files":[{"name","size","sha256","match"}],"ok":bool,"code":..,"ts":..}  (acts like pm; a part containing PD_FAKE_DOWNGRADE fails with INSTALL_FAILED_VERSION_DOWNGRADE)
 ```
 
+## pdpathfault
+
+`tools/pdpathfault/pdpathfault.py` is a TCP proxy in front of one path
+listener for the e2e checks. `--mode pass|delay|blackhole|rst|throttle`
+(`--delay-ms`, `--rate-mbit`) can be changed at run time by writing
+`mode blackhole` to `--ctl-file`; each connection and mode change is a JSON
+line on `--events`. It does not terminate TLS.
+
 ## deckctl
 
 ```sh
@@ -127,6 +145,12 @@ keys; `--pair` pairs on first contact: it prints the code the phone shows (`--co
 also writes it to `F`) and waits for Allow on the phone.
 Subcommands:
 
+- `version` — print `hello.v`, the session id and this path's id.
+- `paths` — list the phone's live paths (`*current*` marks the sending one).
+- `switch PATH` — send `path.switch` and wait for the phone's own marker
+  (`current` names this client's path).
+- `kill-path PATH`, `pong-mode PATH on|off|delay [--ms N]` — fake-phone
+  conformance hooks (a real phone ignores them).
 - `apps` — list `pkg<TAB>label`.
 - `icon PKG --out f.png` — fetch a 96x96 PNG.
 - `open (PKG|--phone) --w --h --dpi --seconds N --out f.h264` — record raw

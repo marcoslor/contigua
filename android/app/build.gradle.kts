@@ -82,6 +82,10 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 
+    // Android's TLS provider on the JVM: the boot-5 pairing failure only shows
+    // on Conscrypt, not on the JVM's SunJSSE (PathTlsJoinTest).
+    testImplementation("org.conscrypt:conscrypt-openjdk-uber:2.5.2")
+
     // JVM screenshot tests: Robolectric + Roborazzi.
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core-ktx:1.6.1")

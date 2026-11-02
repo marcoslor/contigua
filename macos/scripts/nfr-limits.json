@@ -14,6 +14,7 @@
   "icon_covered_flat_scale": 1.3,
   "icon_mean_tolerance": 3.0,
   "icon_min_source_scale": 1.0,
+  "input_latency_ms": 100,
   "layout_min_screen": [
     1280,
     800

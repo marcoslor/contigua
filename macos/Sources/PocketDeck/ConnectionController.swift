@@ -605,6 +605,7 @@ final class ConnectionController {
         if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
         windows.floatWindows = options.floatWindows
         windows.chromeStateFile = options.debugChromeState.map { URL(fileURLWithPath: $0) }
+        windows.frameLog = options.debugFrameLog.map(DebugFrameLog.init)
         if let path = options.debugInputScript, let error = armDebugInput(path) {
             FileHandle.standardError.write(Data((error + "\n").utf8))
             exit(2)
@@ -2109,7 +2110,8 @@ final class ConnectionController {
             ? discovered.first { $0.deviceId == ref.id } : nil
         if found == nil, let connect = options.connect {
             lastAttemptWasService = false
-            start(Session(endpoint: .hostPort(host: connect.host, port: connect.port),
+            let endpoints = manualEndpoints(connect)
+            start(Session(endpoint: endpoints[0], endpoints: endpoints,
                           knownDeviceId: ref.id.isEmpty ? nil : ref.id, clientId: clientId,
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
@@ -2249,8 +2251,19 @@ final class ConnectionController {
         startManual(host: host, port: port, ref: ref)
     }
 
+    /// The test-only second provider rides beside the LAN one (PATH-20/§10).
+    private func manualEndpoints(_ connect: (host: String, port: UInt16)) -> [Session.Endpoint] {
+        var endpoints = [Session.Endpoint.hostPort(host: connect.host, port: connect.port)]
+        if let second = options.connect2 {
+            endpoints.append(.hostPort(host: second.host, port: second.port))
+        }
+        return endpoints
+    }
+
     private func startManual(host: String, port: UInt16, ref: PhoneRef) {
-        start(Session(endpoint: .hostPort(host: host, port: port), knownDeviceId: ref.id.isEmpty ? nil : ref.id,
+        let endpoints = manualEndpoints((host, port))
+        start(Session(endpoint: endpoints[0], endpoints: endpoints,
+                      knownDeviceId: ref.id.isEmpty ? nil : ref.id,
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
@@ -2301,6 +2314,18 @@ final class ConnectionController {
             default:
                 break
             }
+        case .pathsReconnecting(let on):
+            // PATH-17: the windows say so at once while there is no path, and
+            // return to the live picture by themselves when one joins.
+            if on { windows.linkLost() } else { windows.linkRestored() }
+        case .pathsSwitched:
+            if let session { windows.requestKeyframes(from: session) }
+        case .versionRefused(let sentence):
+            // PATH-1: name which app to update; the retry loop stops below on
+            // the `version` failure and `retriesAutomatically` says no.
+            // A version mismatch is not a blip: keep the sentence that names
+            // the app to update up long enough to read (PATH-1).
+            showTransient(sentence, seconds: 30)
         case .clipboard(let text):
             clipboardSync?.receive(text)
         case .dropProgress(let id, let bytes):
@@ -2883,14 +2908,14 @@ final class ConnectionController {
         sheet = .code
     }
 
-    private func showTransient(_ text: String) {
+    private func showTransient(_ text: String, seconds: TimeInterval = 5) {
         transientBanner = Banner(text: text, action: nil)
         transientTimer?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.transientBanner = nil }
         }
         transientTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)  // gcd: the banner's dismissal timer
     }
 
     // MARK: Test hooks

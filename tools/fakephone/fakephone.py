@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import random
 import re
 import select
@@ -47,6 +48,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import proto  # noqa: E402  (codec + the shared v2 TLS identity helpers)
+import paths  # noqa: E402  (the path layer: RELIABLE/ACK, pings, switches)
 
 tls_guard = proto.tls_guard
 make_identity = proto.make_identity
@@ -855,6 +857,30 @@ class EventLog(object):
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
 
+    def hello(self, msg, listener=None):
+        """One connection's hello: the pathstart check counts plain hellos."""
+        self._emit({"ev": "hello", "v": msg.get("v"), "path": msg.get("path"),
+                    "join": msg.get("join"), "plain": not bool(msg.get("join")),
+                    "listener": listener, "ts": time.time()})
+
+    def welcome(self, session):
+        """The session id this phone welcomed (an id only, never a value)."""
+        self._emit({"ev": "welcome", "session": session, "ts": time.time()})
+
+    def paths(self, ports):
+        self._emit({"ev": "paths", "ports": ports, "count": len(ports),
+                    "ts": time.time()})
+
+    def rel(self, path_id, seq):
+        """One reliable frame's seq as received (in order, after the hub)."""
+        self._emit({"ev": "rel", "path": path_id, "seq": seq, "ts": time.time()})
+
+    def path(self, kind, path_id, current=None, **fields):
+        obj = {"ev": "path", "kind": kind, "path": path_id, "current": current,
+               "ts": time.time()}
+        obj.update(fields)
+        self._emit(obj)
+
     def dnd(self, mode, by_mac):
         """The phone's DND after a Mac command (mode name only, never a person)."""
         self._emit({"ev": "dnd", "mode": mode, "byMac": by_mac, "ts": time.time()})
@@ -980,6 +1006,12 @@ class EventLog(object):
 
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
+                    "ts": time.time()})
+
+    def drop_progress(self, drop_id, bytes_received):
+        """Every 8 MiB a file drop has received, so a check can cut the path
+        mid-file instead of guessing from wall time."""
+        self._emit({"ev": "drop_progress", "id": drop_id, "bytes": bytes_received,
                     "ts": time.time()})
 
     def clip_image(self, direction, name, **extra):
@@ -1495,8 +1527,10 @@ class Store(object):
 
 # --- outgoing send queue (priority + per-stream backpressure) --------------
 class Sender(object):
-    def __init__(self, sock, on_backlog_cleared):
-        self._sock = sock
+    def __init__(self, send, on_backlog_cleared):
+        # `send` routes one framed message through the path layer (reliable
+        # frames are wrapped and replayed there); the sender keeps its lanes.
+        self._send = send if callable(send) else send.sendall
         self._on_backlog_cleared = on_backlog_cleared
         self._json = []
         self._key = []
@@ -1609,7 +1643,7 @@ class Sender(object):
                         finally:
                             self._cv.acquire()
             try:
-                self._sock.sendall(data)
+                self._send(data)
                 # The e2e cancel rule needs the write, not the enqueue: a frame
                 # dropped from the queue must leave no line behind.
                 if len(data) >= 9 and (data[4] & 0xFF) == proto.TYPE_FS_DATA:
@@ -1625,6 +1659,78 @@ class Sender(object):
         with self._cv:
             self._closed = True
             self._cv.notify_all()
+
+
+# --- paths -----------------------------------------------------------------
+def paths_random_id(among):
+    """An 8-hex path id unique among [among] (the Mac picks its own)."""
+    while True:
+        candidate = "%08x" % random.getrandbits(32)
+        if candidate not in among:
+            return candidate
+
+
+class PathConn(object):
+    """One TLS path's reader thread. All writes go through PathHub."""
+
+    def __init__(self, session, path_id, transport):
+        self.session = session
+        self.path_id = path_id
+        self.transport = transport
+        self.reader = proto.FrameReader()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._done = False
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._done = True
+        self.transport.close()
+
+    def _run(self):
+        pending = None
+        try:
+            while not self._done and not self.session._ending:
+                try:
+                    frame = pending if pending is not None else self.reader.read(self.transport.sock)
+                except (OSError, ValueError):
+                    break
+                except proto.ProtocolError as exc:
+                    sys.stderr.write("fakephone: path %s: %s\n" % (self.path_id, exc))
+                    break
+                pending = None
+                if frame is None:
+                    break
+                events = self.session.hub.receive(self.path_id, frame)
+                retry = False
+                for event in events:
+                    kind = event[0]
+                    if kind == "deliver":
+                        self.session._inbound.put(event)
+                    elif kind == "down":
+                        self.session._inbound.put(("down", self.path_id))
+                        return
+                    elif kind == "peer_switch":
+                        self.session._inbound.put(event)
+                    elif kind == "ack_above":
+                        self.session._inbound.put(("ack_above",))
+                    elif kind == "pong":
+                        self.session.phone.events.path(
+                            "pong", event[1], current=self.session.hub.current_path)
+                    elif kind == "backpressure":
+                        # The reorder window is full: stop reading this path
+                        # instead of dropping the frame (PATH-10).
+                        pending = frame
+                        retry = True
+                        break
+                if retry:
+                    self.session.hub.await_reorder_space()
+        except Exception as exc:
+            dbg("path reader ended: %s: %s" % (type(exc).__name__, exc))
+        finally:
+            if not self._done and not self.session._ending:
+                self.session._inbound.put(("down", self.path_id))
 
 
 # --- one encoder-backed window stream -------------------------------------
@@ -2031,6 +2137,21 @@ class Session(object):
         self._live_last = {}
         self._live_pending = {}
         self._live_flusher = None
+        # Paths (docs/PROTOCOL.md "Paths"): the hello is read by FakePhone's
+        # connection handler, which needs it to choose the slot.
+        self.hello = None
+        self.session_id = None
+        self.path_id = None
+        self.hub = None
+        self._inbound = queue.Queue()
+        self._path_conns = {}
+        self._attach_lock = threading.Lock()
+        self._ending = False
+        self._teardown_done = False
+        self._ended = threading.Event()
+        self._welcomed = False
+        self._grace_deadline = None
+        self._ticker = None
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
         self._thread.start()
@@ -2049,38 +2170,29 @@ class Session(object):
                 pass
 
     def _run(self):
-        """TLS wrap first (docs/design/e2ee.md §2): nothing speaks plaintext.
+        """Handshake, then the session's one dispatch loop.
 
-        Anything that dies before the first session byte — an aborted client
-        (the Mac's Bonjour resolve opens a connection and closes it: review
-        R4-b), a plaintext probe, a port scan — stays quiet: no error-level
-        log, no pairing prompt, no counted failed attempt. A debug hint under
-        FAKE_DEBUG only.
+        The TLS wrap and the hello are done by FakePhone's connection handler
+        (it needs the hello to choose the session slot); this thread owns the
+        pairing state, the paths and every feature message after it.
         """
         try:
-            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            if self.phone.args.no_tls:
-                self.phone.events.session("open")
-                self._handshake_serve()
+            if not self.authenticate(self.hello):
                 return
-            conn = self.phone.accept_tls(self.sock)
-            self.sock = conn
-            self.phone.events.session("open")
-            self._handshake_serve()
+            self._begin_paths()
+            self._main_loop()
         except proto.ProtocolError as exc:
             sys.stderr.write("fakephone: session error: %s\n" % exc)
         except Exception as exc:
-            dbg("tls handshake dropped: %s: %s" % (type(exc).__name__, exc))
+            dbg("session dropped: %s: %s" % (type(exc).__name__, exc))
         finally:
             self._teardown()
 
-    def _handshake_serve(self):
-        self.sender = Sender(self.sock, self.phone.on_backlog_cleared)
-        self.phone.sender = self.sender
-        if self.handshake():
-            self._main_loop()
-
     def _teardown(self):
+        if self._teardown_done:
+            return
+        self._teardown_done = True
+        self._ending = True
         self._live_stop.set()
         try:
             self.audio.stop()
@@ -2092,13 +2204,262 @@ class Session(object):
         for stream_id in list(self.windows):
             self.windows[stream_id].stop()
         self.windows.clear()
+        for conn in list(self._path_conns.values()):
+            conn.stop()
+        self._path_conns.clear()
+        if self.hub is not None:
+            self.hub.close_all()
         if self.sender:
             self.sender.close()
         if self.phone.sender is self.sender:
             self.phone.sender = None
-        self.close()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
         self.phone.events.session("closed")
-        self._on_end()
+        self._on_end(self)
+        self._ended.set()
+
+    # -- paths --
+    def _begin_paths(self):
+        """The session is founded: the founding socket becomes path one."""
+        self.hub = paths.PathHub(log=dbg, on_seq=self._log_seq)
+        self.sock.settimeout(None)
+        transport = paths.Transport(self.path_id, self.sock,
+                                    getattr(self.sock, "raw_socket", lambda: self.sock)())
+        self.hub.start(transport)
+        self._path_conns[self.path_id] = PathConn(self, self.path_id, transport)
+        self._path_conns[self.path_id].start()
+        self.sender = Sender(self.hub.send, self.phone.on_backlog_cleared)
+        self.phone.sender = self.sender
+        self.phone.events.path("up", self.path_id, current=self.path_id, joined=False)
+        self._apply_path_flags(self.path_id, 1)
+        self._ping_on_welcome(self.path_id)
+        # The tail the v2 welcome did itself, now that reliable frames have a
+        # path layer to travel through.
+        self.send_state()
+        if self.phone.args.clip_on_welcome is not None:
+            text = self.phone.args.clip_on_welcome
+            self._send({"t": "clip.set", "text": text})
+            self.phone.events.clip("tx", text)
+        if self.phone.args.share:
+            threading.Thread(target=self._send_shares, daemon=True).start()
+        if self.phone.args.clip_copy is not None:
+            threading.Thread(target=self._send_clip_copy, daemon=True).start()
+        self._arm_drop()
+        self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
+        self._ticker.start()
+
+    def attach_conn(self, conn, msg):
+        """A join (PATH-3): attach the socket and answer welcome.session.
+
+        Called on the joining connection's own thread after the hello; returns
+        "attached", "too_many" or "busy"."""
+        with self._attach_lock:
+            if self.hub is None or not self._welcomed or self._ending:
+                return "busy"
+            path_id = msg.get("path")
+            if not isinstance(path_id, str) or not path_id:
+                path_id = paths_random_id(self._path_conns)
+            if path_id in self._path_conns or self.hub.path_count >= paths.MAX_PATHS:
+                return "too_many"
+            conn.settimeout(None)
+            transport = paths.Transport(path_id, conn,
+                                        getattr(conn, "raw_socket", lambda: conn)())
+            if not self.hub.attach(transport, joined=True):
+                return "too_many"
+            # Attach before the welcome: a debug.paths reply racing the join
+            # must not miss the path the Mac is about to hear about.
+            self._path_conns[path_id] = PathConn(self, path_id, transport)
+            # --ping-on-welcome: the phone's ticker runs on its session thread
+            # while the join is attached here, on the acceptor: its ping can be
+            # on the wire ahead of the join's welcome. Model that race.
+            self._ping_on_welcome(path_id)
+            self.hub.send_json_on(path_id, {"t": "welcome", "session": self.session_id,
+                                            "device": self.device_message()})
+            self._path_conns[path_id].start()
+            self.phone.events.path("up", path_id, current=self.hub.current_path, joined=True)
+            self._apply_path_flags(path_id, len(self._path_conns))
+            dbg("paths: joined %s" % path_id)
+            return "attached"
+
+    def _ping_on_welcome(self, path_id):
+        """--ping-on-welcome: the phone's first ping names the path it has just
+        attached. D-1: only a join is pinged at once; a founder is not, because
+        a session with one path is never pinged."""
+        if not self.phone.args.ping_on_welcome:
+            return
+        if self.hub.path_count < 2:
+            return
+        self.hub.ping_now(path_id)
+
+    def _log_seq(self, path_id, seq):
+        self.phone.events.rel(path_id, seq)
+
+    @staticmethod
+    def _path_selector_matches(selector, path_id, index):
+        return selector == "all" or selector == path_id or selector == str(index)
+
+    def _apply_path_flags(self, path_id, index):
+        """--no-pong/--slow-pong/--drop-path: startup flags name a path by its
+        id or its join order; a check that does not know the Mac's random id
+        uses the order."""
+        for selector in self.phone.args.no_pong:
+            if self._path_selector_matches(selector, path_id, index):
+                self.hub.set_pong_mode(path_id, True)
+        for selector, ms in self.phone.args.slow_pong:
+            if self._path_selector_matches(selector, path_id, index):
+                try:
+                    delay = float(ms)
+                except ValueError:
+                    delay = 0.0
+                self.hub.set_pong_mode(path_id, delay)
+        for selector, word, seconds in self.phone.args.drop_path:
+            if word != "after":
+                raise SystemExit("fakephone: --drop-path takes PATH after SECONDS")
+            if not self._path_selector_matches(selector, path_id, index):
+                continue
+            if selector == "all" and index != 1:
+                # One timer for "all": paths that join later are collected when
+                # it fires, not given a fresh delay each.
+                continue
+            try:
+                delay = float(seconds)
+            except ValueError:
+                raise SystemExit("fakephone: --drop-path SECONDS is not a number")
+            threading.Timer(delay, self._drop_path_later, args=(selector,)).start()
+
+    def _drop_path_later(self, selector):
+        for index, path_id in enumerate(list(self._path_conns), start=1):
+            if self._path_selector_matches(selector, path_id, index):
+                self._inbound.put(("drop", path_id))
+
+    def _tick_loop(self):
+        while not self._ending:
+            time.sleep(0.25)
+            if self._ending:
+                return
+            self._inbound.put(("tick",))
+
+    def _path_down(self, path_id):
+        conn = self._path_conns.pop(path_id, None)
+        self.hub.detach(path_id)
+        if conn is not None:
+            conn.stop()
+        self.phone.events.path("down", path_id, current=self.hub.current_path)
+        if self.hub.path_count == 0:
+            if self._grace_deadline is None:
+                self._grace_deadline = time.monotonic() + 30.0
+                sys.stderr.write("fakephone: paths: no path, 30 s grace\n")
+            self.phone.events.path("grace", path_id, current=None)
+        self._pump_ended()
+
+    def _tick_paths(self):
+        if self.hub is None or self._ending:
+            return
+        self.hub.ping_all(active=self.phone.screen_state == "on")
+        for lost in self.hub.pong_timeouts():
+            self.phone.events.path("pong_lost", lost, current=self.hub.current_path)
+        for stale in self.hub.joined_timeouts():
+            dbg("path joined without a pong: dropped")
+            self._path_down(stale)
+        if self.hub.path_count == 0:
+            if self._grace_deadline is None:
+                self._grace_deadline = time.monotonic() + 30.0
+                sys.stderr.write("fakephone: paths: no path, 30 s grace\n")
+                self.phone.events.path("grace", None, current=None)
+            elif time.monotonic() >= self._grace_deadline:
+                sys.stderr.write("fakephone: paths: grace expired\n")
+                self._end_session()
+        else:
+            self._grace_deadline = None
+
+    def _follow_switch(self, target, seq, arrived_on):
+        planned_from = arrived_on if (arrived_on != target and self.hub.has_path(arrived_on)) else None
+        if planned_from is not None:
+            # The marker arrived on the path being left: our own marker is the
+            # last frame we send on it, so the Mac has read everything before
+            # it and closes that path after its drain. It stays attached as a
+            # standby until then, and is never closed by this side (E-3).
+            self.hub.send_marker_on(planned_from, target)
+            self.hub.move_to(target)
+        else:
+            self.hub.move_to(target)
+            self.hub.send_marker(target)
+        self.hub.replay_on_current()
+        self.phone.events.path("switch", target, current=self.hub.current_path,
+                               arrived_on=arrived_on, seq=seq)
+        self._pump_ended()
+
+    def _pump_ended(self):
+        return
+
+    def _end_session(self):
+        self._ending = True
+        self._inbound.put(("stop",))
+
+    def _main_loop(self):
+        while not self._ending:
+            try:
+                item = self._inbound.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            kind = item[0]
+            if kind == "deliver":
+                self._dispatch_frame(item[1])
+            elif kind == "down":
+                self._path_down(item[1])
+            elif kind == "peer_switch":
+                self._follow_switch(item[1], item[2], item[3])
+            elif kind == "drop":
+                self._path_down(item[1])
+            elif kind == "tick":
+                self._tick_paths()
+            elif kind == "ack_above":
+                sys.stderr.write("fakephone: paths: ack above what was sent\n")
+                self._end_session()
+            elif kind == "stop":
+                break
+
+    def _dispatch_frame(self, frame):
+        if frame.type == proto.TYPE_JSON:
+            msg = proto.unpack_json(frame)
+            self.phone.events.rx(msg)
+            if msg.get("t") in WRITE_TYPES:
+                self.phone.events.write(msg.get("t"))
+            # Back/Home/Recents and typed text reach the phone as one
+            # message, not as key frames: they are input events too.
+            if msg.get("t") in INPUT_TYPES:
+                self.phone.events.input(msg.get("t"))
+            self._handle_json(msg)
+        elif frame.type == proto.TYPE_TOUCH:
+            action, pointer, nx, ny = proto.unpack_touch(frame)
+            self.phone.events.input("touch")
+            self.phone.events.touch(frame.stream, action, pointer, nx, ny)
+        elif frame.type == proto.TYPE_SCROLL:
+            nx, ny, h, v = proto.unpack_scroll(frame)
+            self.phone.events.input("scroll")
+            self.phone.events.scroll(frame.stream, nx, ny, h, v)
+        elif frame.type == proto.TYPE_KEY:
+            action, keycode, meta = proto.unpack_key(frame)
+            self.phone.events.input("key")
+            self.phone.events.key(frame.stream, action, keycode, meta)
+        elif frame.type == proto.TYPE_HOVER:
+            action, nx, ny = proto.unpack_hover(frame)
+            self.phone.events.input("hover")
+            self.phone.events.hover(frame.stream, action, nx, ny)
+        elif frame.type == proto.TYPE_APK_DATA:
+            self._on_apk_data(frame.stream, frame.payload)
+        elif frame.type == proto.TYPE_DROP_DATA:
+            self._on_drop_data(frame.stream, frame.payload)
+        elif frame.type == proto.TYPE_CLIP_DATA:
+            self._on_clip_data(frame.stream, frame.payload)
+        elif frame.type == proto.TYPE_FS_DATA:
+            self._on_fs_data(frame.stream, frame.payload)
+        elif frame.type not in self._unknown_types:
+            self._unknown_types.add(frame.type)
+            sys.stderr.write("fakephone: ignoring unknown frame type 0x%02x\n" % frame.type)
 
     # -- handshake --
     def _send(self, obj):
@@ -2107,30 +2468,18 @@ class Session(object):
         # so the older event counts stay unchanged.
         if str(obj.get("t", "")).startswith("pair."):
             self.phone.events.tx(obj)
-        self.sender.send_json(obj)
+        if self.sender is None:
+            # Before the welcome there is no path layer: pairing frames are
+            # bare, as the protocol says.
+            self.sock.sendall(proto.pack_json(obj))
+        else:
+            self.sender.send_json(obj)
 
-    def handshake(self):
-        """The v2 greeting (parity with the phone's Session.kt): hello v2 names
-        the client; the Mac's fingerprint comes from the TLS handshake's client
-        certificate, never from a hello field. A pinned Mac that still presents
-        its stored fingerprint gets `welcome`; anything else pairs via §4 or
-        the R2 QR."""
-        frame = proto.recv_frame(self.sock)
-        if frame is None:
-            return False
-        if frame.type != proto.TYPE_JSON:
-            self._send_error("protocol", "expected hello")
-            return False
-        msg = proto.unpack_json(frame)
-        self.phone.events.rx(msg)
-        if msg.get("t") != "hello":
-            self._send_error("protocol", "expected hello")
-            return False
-        version = msg.get("v")
-        if not self.phone.args.legacy_phone:
-            if version != 3:
-                self._send_error("version")
-                return False
+    def authenticate(self, msg):
+        """The phone's side of the hello (parity with Session.kt): the Mac's
+        fingerprint comes from the TLS handshake's client certificate, never
+        from a hello field. A pinned Mac that still presents its stored
+        fingerprint gets `welcome`; anything else pairs via §4 or the QR."""
         self.client_id = msg.get("clientId")
         self.client_name = msg.get("name", "")
         if self.phone.args.refuse_connections:
@@ -2335,25 +2684,22 @@ class Session(object):
                 # The Mac says nothing while a person decides: readable means it hung up.
                 return None
 
-    def welcome(self):
-        self._send({"t": "welcome", "device": {
+    def device_message(self):
+        return {
             "id": self.phone.store.device_id,
             "name": self.phone.name,
             "model": DEVICE_MODEL,
             "sdk": 36,
             "screen": {"w": SCREEN_W, "h": SCREEN_H, "dpi": SCREEN_DPI},
             "locked": True,
-        }})
-        self.send_state()
-        if self.phone.args.clip_on_welcome is not None:
-            text = self.phone.args.clip_on_welcome
-            self._send({"t": "clip.set", "text": text})
-            self.phone.events.clip("tx", text)
-        if self.phone.args.share:
-            threading.Thread(target=self._send_shares, daemon=True).start()
-        if self.phone.args.clip_copy is not None:
-            threading.Thread(target=self._send_clip_copy, daemon=True).start()
-        self._arm_drop()
+        }
+
+    def welcome(self):
+        self._welcomed = True
+        self.phone.session_welcomed(self)
+        self.phone.events.welcome(self.session_id)
+        self._send({"t": "welcome", "session": self.session_id,
+                    "device": self.device_message()})
 
     def _arm_drop(self):
         """--drop-after: this session drops like a Wi-Fi loss this long after the
@@ -2409,50 +2755,6 @@ class Session(object):
                 self.phone.events.share("image", value, size=len(data), sha256=digest)
             time.sleep(0.5)
 
-    # -- steady state --
-    def _main_loop(self):
-        while True:
-            frame = proto.recv_frame(self.sock)
-            if frame is None:
-                return
-            if frame.type == proto.TYPE_JSON:
-                msg = proto.unpack_json(frame)
-                self.phone.events.rx(msg)
-                if msg.get("t") in WRITE_TYPES:
-                    self.phone.events.write(msg.get("t"))
-                # Back/Home/Recents and typed text reach the phone as one
-                # message, not as key frames: they are input events too.
-                if msg.get("t") in INPUT_TYPES:
-                    self.phone.events.input(msg.get("t"))
-                self._handle_json(msg)
-            elif frame.type == proto.TYPE_TOUCH:
-                action, pointer, nx, ny = proto.unpack_touch(frame)
-                self.phone.events.input("touch")
-                self.phone.events.touch(frame.stream, action, pointer, nx, ny)
-            elif frame.type == proto.TYPE_SCROLL:
-                nx, ny, h, v = proto.unpack_scroll(frame)
-                self.phone.events.input("scroll")
-                self.phone.events.scroll(frame.stream, nx, ny, h, v)
-            elif frame.type == proto.TYPE_KEY:
-                action, keycode, meta = proto.unpack_key(frame)
-                self.phone.events.input("key")
-                self.phone.events.key(frame.stream, action, keycode, meta)
-            elif frame.type == proto.TYPE_HOVER:
-                action, nx, ny = proto.unpack_hover(frame)
-                self.phone.events.input("hover")
-                self.phone.events.hover(frame.stream, action, nx, ny)
-            elif frame.type == proto.TYPE_APK_DATA:
-                self._on_apk_data(frame.stream, frame.payload)
-            elif frame.type == proto.TYPE_DROP_DATA:
-                self._on_drop_data(frame.stream, frame.payload)
-            elif frame.type == proto.TYPE_CLIP_DATA:
-                self._on_clip_data(frame.stream, frame.payload)
-            elif frame.type == proto.TYPE_FS_DATA:
-                self._on_fs_data(frame.stream, frame.payload)
-            elif frame.type not in self._unknown_types:
-                self._unknown_types.add(frame.type)
-                sys.stderr.write("fakephone: ignoring unknown frame type 0x%02x\n" % frame.type)
-
     def _handle_json(self, msg):
         kind = msg.get("t")
         handlers = {
@@ -2500,6 +2802,11 @@ class Session(object):
             "fs.watch": self._on_fs_watch,
             "fs.unwatch": self._on_fs_unwatch,
             "fs.cancel": self._on_fs_cancel,
+            # Fake-only conformance hooks (deckctl's paths/switch/kill-path/
+            # pong-mode): a real phone ignores these unknown messages.
+            "debug.paths": self._on_debug_paths,
+            "debug.kill-path": self._on_debug_kill_path,
+            "debug.pong": self._on_debug_pong,
         }
         # A phone without DND support keeps phone.dnd unknown (logged once).
         if self.phone.zen.supported:
@@ -2525,6 +2832,33 @@ class Session(object):
 
     def _on_ping(self, msg):
         self._send({"t": "pong", "ts": msg.get("ts")})
+
+    # -- fake-only path conformance hooks (deckctl) --
+    def _on_debug_paths(self, _msg):
+        self._send({"t": "paths.list",
+                    "paths": list(self._path_conns.keys()),
+                    "current": self.hub.current_path if self.hub is not None else None,
+                    "session": self.session_id})
+
+    def _on_debug_kill_path(self, msg):
+        target = msg.get("path")
+        if target in self._path_conns:
+            self._inbound.put(("drop", target))
+
+    def _on_debug_pong(self, msg):
+        target = msg.get("path")
+        mode = msg.get("mode")
+        if self.hub is None or target not in self._path_conns:
+            return
+        if mode == "off":
+            self.hub.set_pong_mode(target, True)
+        elif mode == "on":
+            self.hub.set_pong_mode(target, False)
+        elif mode == "delay":
+            try:
+                self.hub.set_pong_mode(target, max(0, int(msg.get("ms") or 0)))
+            except (TypeError, ValueError):
+                self.hub.set_pong_mode(target, 0)
 
     def _on_phone_dnd(self, msg):
         """phone.dnd (docs/design/focus.md): the fake applies the phone's own
@@ -2778,6 +3112,10 @@ class Session(object):
             return
         drop["data"] += payload
         got = len(drop["data"])
+        mark = got // (8 << 20)
+        if mark > drop.get("log_mark", 0):
+            drop["log_mark"] = mark
+            self.phone.events.drop_progress(drop_id, mark << 20)
         if got > drop["size"]:
             # The real receiver's rule: every byte must fit the announcement.
             self._drop = None
@@ -4076,9 +4414,10 @@ class FakePhone(object):
         # tree here and the fs.* handlers serve it with the phone's rules.
         self.fs = FsFake(args.fs_root) if args.fs_root else None
         self.sender = None            # active session's sender
-        self._session = None
-        self._busy = threading.Event()
+        self._session = None          # the one live (or pairing) session
+        self._slot_lock = threading.Lock()
         self._stop = threading.Event()
+        self._srvs = []
         self._srv = None
         self._icon_cache = {}
         self._layers_cache = {}
@@ -4086,6 +4425,8 @@ class FakePhone(object):
         self._display_seq = 100
         self._display_lock = threading.Lock()
         self._mdns = None
+        self._ctl_mtime = None
+        self._ctl_thread = None
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
         # Drops that finished, so bytes arriving after the result (a re-sent
         # tail) are reported like the real receiver's "more bytes than announced".
@@ -4180,7 +4521,7 @@ class FakePhone(object):
         if session is None:
             return
         window = session.windows.get(stream_id)
-        if window is not None:
+        if window is not None and not window._paused:
             threading.Thread(target=window.start, daemon=True).start()
 
     def _reject_busy(self, conn):
@@ -4215,19 +4556,37 @@ class FakePhone(object):
                 pass
 
     def run(self):
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", self.args.port))
-        port = srv.getsockname()[1]
-        srv.listen(8)
-        srv.settimeout(0.5)
-        self._srv = srv
-        print("fakephone %s listening on 0.0.0.0:%d" % (self.store.device_id, port),
-              file=sys.stderr)
+        ports = []
+        first_port = None
+        for index in range(max(1, self.args.paths)):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if index == 0:
+                srv.bind(("0.0.0.0", self.args.port))
+            else:
+                want = (first_port + index) if first_port else 0
+                try:
+                    srv.bind(("0.0.0.0", want))
+                except OSError as exc:
+                    srv.close()
+                    raise SystemExit("fakephone: path listener %d cannot bind port %d: %s"
+                                     % (index + 1, want, exc))
+            port = srv.getsockname()[1]
+            if first_port is None:
+                first_port = port
+            srv.listen(8)
+            srv.settimeout(0.5)
+            ports.append(port)
+            self._srvs.append(srv)
+            print("fakephone %s listening on 0.0.0.0:%d (path %d/%d)"
+                  % (self.store.device_id, port, index + 1, max(1, self.args.paths)),
+                  file=sys.stderr)
+        self._srv = self._srvs[0]
+        self.events.paths(ports)
         if self.args.no_resize_ack:
             print("fakephone: window.resize acks off (an old build)", file=sys.stderr)
         if not self.args.no_mdns:
-            self._mdns = MDNS(self.name, port, self.store.device_id)
+            self._mdns = MDNS(self.name, ports[0], self.store.device_id)
             try:
                 self._mdns.start()
                 print("fakephone advertising %s as %r" % (SERVICE_TYPE, self.name),
@@ -4236,30 +4595,279 @@ class FakePhone(object):
                 sys.stderr.write("fakephone: mDNS unavailable (%s)\n" % exc)
                 self._mdns = None
 
+        for srv in self._srvs:
+            threading.Thread(target=self._accept_loop, args=(srv,), daemon=True).start()
+        if self.args.ctl_file:
+            self._ctl_thread = threading.Thread(target=self._watch_ctl, daemon=True)
+            self._ctl_thread.start()
+        while not self._stop.wait(0.5):
+            pass
+        self.shutdown()
+
+    def _watch_ctl(self):
+        """--ctl-file: run-time changes so a check can break a path once it has
+        read the Mac's random path id from the hello event."""
+        while not self._stop.wait(0.05):
+            try:
+                mtime = os.stat(self.args.ctl_file).st_mtime
+            except OSError:
+                continue
+            if mtime == self._ctl_mtime:
+                continue
+            self._ctl_mtime = mtime
+            try:
+                with open(self.args.ctl_file) as fp:
+                    lines = [line.strip() for line in fp if line.strip()]
+            except OSError:
+                continue
+            if not lines:
+                continue
+            self.events.path("ctl", None, current=None, line=lines[-1])
+            self._run_ctl(lines[-1])
+
+    def _run_ctl(self, line):
+        parts = line.split()
+        if not parts:
+            return
+        session = self._session
+        if session is None or session.hub is None:
+            return
+        command = parts[0]
+        if command in ("pong", "slow") and len(parts) >= 3:
+            selector = parts[1]
+            mode = parts[2]
+            targets = self._live_path_ids(session)
+            for path_id in targets:
+                index = self._path_index(session, path_id)
+                if not session._path_selector_matches(selector, path_id, index):
+                    continue
+                if command == "slow":
+                    try:
+                        delay = float(mode)
+                    except ValueError:
+                        delay = 0.0
+                    session.hub.set_pong_mode(path_id, delay)
+                elif mode == "off":
+                    session.hub.set_pong_mode(path_id, True)
+                elif mode == "on":
+                    session.hub.set_pong_mode(path_id, 0)
+                elif mode == "delay":
+                    ms = int(parts[3]) if len(parts) > 3 else 300
+                    session.hub.set_pong_mode(path_id, ms)
+        elif command == "drop" and len(parts) >= 2:
+            selector = parts[1]
+            for path_id in self._live_path_ids(session):
+                index = self._path_index(session, path_id)
+                if session._path_selector_matches(selector, path_id, index):
+                    session._inbound.put(("drop", path_id))
+
+    @staticmethod
+    def _live_path_ids(session):
+        return list(session._path_conns.keys())
+
+    @staticmethod
+    def _path_index(session, path_id):
+        for index, pid in enumerate(session._path_conns.keys(), start=1):
+            if pid == path_id:
+                return index
+        return 0
+
+    def _accept_loop(self, srv):
         while not self._stop.is_set():
             try:
                 conn, addr = srv.accept()
             except socket.timeout:
                 continue
             except OSError:
-                break
-            if self._busy.is_set():
-                threading.Thread(target=self._reject_busy, args=(conn,), daemon=True).start()
-                continue
-            self._busy.set()
-            session = Session(self, conn, addr, self._busy.clear)
+                return
+            port = srv.getsockname()[1]
+            threading.Thread(target=self.handle_connection, args=(conn, addr, port),
+                             daemon=True).start()
+
+    def _refuse_conn(self, conn, code, message=None):
+        try:
+            obj = {"t": "error", "code": code}
+            if message:
+                obj["message"] = message
+            conn.sendall(proto.pack_json(obj))
+            try:
+                conn.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            conn.settimeout(2.0)
+            try:
+                while conn.recv(4096):
+                    pass
+            except OSError:
+                pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def handle_connection(self, conn, addr, listener_port=None):
+        """TLS, hello, then the session slot (docs/PROTOCOL.md §4).
+
+        Only this method reads the hello: it decides a new session, a join or
+        a refusal before the session thread exists."""
+        handed_off = False
+        try:
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if not self.args.no_tls:
+                conn = self.accept_tls(conn)
+            self.events.session("open")
+            reader = proto.FrameReader()
+            try:
+                frame = proto.recv_frame(conn)
+            except socket.timeout:
+                dbg("hello read timed out")
+                return
+            if frame is None:
+                return
+            if frame.type != proto.TYPE_JSON:
+                self._refuse_conn(conn, "protocol", "expected hello")
+                return
+            msg = proto.unpack_json(frame)
+            self.events.rx(msg)
+            if msg.get("t") != "hello":
+                self._refuse_conn(conn, "protocol", "expected hello")
+                return
+            if not self.args.legacy_phone:
+                if msg.get("v") != self.args.version:
+                    # PATH-1: the answer names the version that refused. Log
+                    # the decision before the write-and-drain, so a check never
+                    # waits on how long the peer takes to close.
+                    self.events.path("version_refused", None,
+                                     current=None, peer=msg.get("v"), v=self.args.version)
+                    self._refuse_conn_version(conn, self.args.version)
+                    return
+            self.events.hello(msg, listener=listener_port)
+            mac_fp = (proto.point_fp_from_der(conn.client_der)
+                      if getattr(conn, "client_der", None) else "")
+            decision = ("founder",)
+            stale = None
+            with self._slot_lock:
+                live = self._session
+                if live is not None and not live._welcomed:
+                    decision = ("busy", "busy", "one session at a time")
+                elif live is not None:
+                    join = msg.get("join")
+                    if join:
+                        if join != live.session_id:
+                            decision = ("error", "no_session", None)
+                        elif self.args.no_rejoin and live._grace_deadline is not None:
+                            # The phone has no route back either: its own grace
+                            # is running, so a join gets no answer at all and
+                            # the connection closes (pathgrace waits the Mac's
+                            # whole 30 s grace; a `busy` reply would end it at
+                            # once, RR-12).
+                            decision = ("silent",)
+                        elif msg.get("clientId") != live.client_id:
+                            decision = ("busy", "busy", "one session at a time")
+                        else:
+                            pinned = self.store.pinned_for(live.client_id)
+                            if pinned is not None and not hmac.compare_digest(pinned, mac_fp):
+                                decision = ("error", "bad_pin", None)
+                            else:
+                                result = live.attach_conn(conn, msg)
+                                if result == "attached":
+                                    decision = ("attached",)
+                                elif result == "too_many":
+                                    decision = ("error", "too_many_paths", None)
+                                else:
+                                    decision = ("busy", "busy", "one session at a time")
+                    else:
+                        # No path is left (the session is in its grace) and
+                        # this is its own pinned Mac: adopt the new connection,
+                        # waiting at most 2 s for the old teardown
+                        # (docs/PROTOCOL.md §4, the slot's adopt row).
+                        pinned = self.store.pinned_for(live.client_id)
+                        same_mac = (msg.get("clientId") == live.client_id and
+                                    (pinned is None or hmac.compare_digest(pinned, mac_fp)))
+                        # Only a session with no path left is stale enough to
+                        # adopt; a live one keeps its slot and answers busy.
+                        drained = live.hub is None or live.hub.path_count == 0
+                        if same_mac and drained:
+                            stale = live
+                            self._session = None
+                        else:
+                            decision = ("busy", "busy", "one session at a time")
+                elif msg.get("join"):
+                    decision = ("error", "no_session", None)
+            if decision[0] == "attached":
+                handed_off = True
+                return
+            if decision[0] == "silent":
+                return
+            if decision[0] in ("busy", "error"):
+                self._refuse_conn(conn, decision[1], decision[2] if len(decision) > 2 else None)
+                return
+            if stale is not None:
+                stale.close()
+                stale._end_session()
+                stale._ended.wait(2.0)
+            session = Session(self, conn, addr, self.session_ended)
+            session.hello = msg
+            # --join fixes the served id so a second fake can be told it.
+            session.session_id = self.args.join or os.urandom(16).hex()
+            path_id = msg.get("path")
+            if not isinstance(path_id, str) or not path_id:
+                path_id = paths_random_id(set())
+            session.path_id = path_id
             self._session = session
+            handed_off = True
             session.start()
-        self.shutdown()
+        except proto.ProtocolError as exc:
+            dbg("connection protocol error: %s" % exc)
+        except Exception as exc:
+            dbg("connection dropped: %s: %s" % (type(exc).__name__, exc))
+        finally:
+            if not handed_off:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    def _refuse_conn_version(self, conn, own):
+        try:
+            conn.sendall(proto.pack_json({"t": "error", "code": "version", "v": own}))
+            try:
+                conn.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            conn.settimeout(2.0)
+            try:
+                while conn.recv(4096):
+                    pass
+            except OSError:
+                pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def session_welcomed(self, session):
+        with self._slot_lock:
+            if self._session is session:
+                # The slot is live from the welcome's write onward.
+                pass
+
+    def session_ended(self, session):
+        with self._slot_lock:
+            if self._session is session:
+                self._session = None
 
     def shutdown(self):
         self._stop.set()
-        if self._srv is not None:
+        for srv in self._srvs:
             try:
-                self._srv.close()
+                srv.close()
             except OSError:
                 pass
-            self._srv = None
+        self._srvs = []
+        self._srv = None
         if self._mdns is not None:
             self._mdns.stop()
             self._mdns = None
@@ -4275,6 +4883,27 @@ class FakePhone(object):
 def build_parser():
     p = argparse.ArgumentParser(description="Fake PocketDeck phone (protocol-faithful).")
     p.add_argument("--port", type=int, default=0, help="TCP port (0 = ephemeral)")
+    p.add_argument("--version", type=int, default=paths.CURRENT_VERSION, metavar="N",
+                   help="protocol version in hello/welcome (default 4; 3 is the old peer)")
+    p.add_argument("--paths", type=int, default=1, metavar="N",
+                   help="how many path listeners to open (ports PORT..PORT+N-1)")
+    p.add_argument("--join", metavar="ID", default=None,
+                   help="serve only this 32-hex session id (a founder uses it as its id)")
+    p.add_argument("--ping-on-welcome", action="store_true",
+                   help="ping each path the moment its welcome is written (the real server does)")
+    p.add_argument("--no-pong", metavar="PATH", action="append", default=[],
+                   help="black-hole a path's pings (PATH = id, join index, or 'all')")
+    p.add_argument("--slow-pong", nargs=2, metavar=("PATH", "MS"), action="append", default=[],
+                   help="delay a path's pong by MS (scores it worse without failing it)")
+    p.add_argument("--drop-path", nargs=3, metavar=("PATH", "AFTER", "SECONDS"),
+                   action="append", default=[],
+                   help="close a path SECONDS after start (PATH = id, join index, or 'all')")
+    p.add_argument("--no-rejoin", action="store_true",
+                   help="answer a join busy while the session waits for a path "
+                        "(a phone whose route is gone, for the Mac's 30 s grace check)")
+    p.add_argument("--ctl-file", metavar="PATH", default=None,
+                   help="change a live path at run time: `pong ID on|off|delay [MS]`, "
+                        "`slow ID MS`, `drop ID` (ID = path id, join index, or 'all')")
     p.add_argument("--name", default="FakePhone", help="device name advertised over mDNS")
     p.add_argument("--no-mdns", action="store_true", help="do not advertise over mDNS")
     p.add_argument("--refuse-connections", action="store_true",

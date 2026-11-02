@@ -16,8 +16,10 @@ EMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EMU_DIR/../.." && pwd)"
 CACHE_DIR="$EMU_DIR/.cache"
 ADB="$ANDROID_HOME/platform-tools/adb"
+# shellcheck disable=SC2034 # library value: start.sh boots $AVD_NAME
 EMULATOR="$ANDROID_HOME/emulator/emulator"
 AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+# shellcheck disable=SC2034 # library value: start.sh boots this AVD
 AVD_NAME="${POCKETDECK_AVD:-pocketdeck-api36}"
 SERIAL="${POCKETDECK_SERIAL:-emulator-5554}"
 PORT="${POCKETDECK_PORT:-47811}"
@@ -40,6 +42,7 @@ pick_python() {
   done
   command -v python3
 }
+# shellcheck disable=SC2034 # library value: every rig script calls "$PYTHON"
 PYTHON="$(pick_python)"
 
 emu() { timeout "${ADB_TIMEOUT:-20}" "$ADB" -s "$SERIAL" "$@"; }
