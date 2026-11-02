@@ -467,8 +467,8 @@ enum DockCleanup: Equatable {
     /// What to do with one phone's shims once its app list arrives
     /// (docs/design/dock.md §Shortcuts): an uninstalled app loses `all` and
     /// `manual`; a renamed app or phone is rebuilt; Save all adds or removes
-    /// `all`; a bundle whose shim executable is older than this build's is
-    /// rebuilt (`staleShims`: the caller compared the bytes); the rest stay
+    /// `all`; a bundle whose shim executable is from another build is rebuilt
+    /// (`staleShims`: the caller compared the recorded hash); the rest stay
     /// untouched.
     static func plan(records: [DockShimRecord], deviceId: String, apps: [AppInfo], phoneName: String,
                      saveAll: Bool = false, staleShims: Set<URL> = []) -> [DockCleanup] {
