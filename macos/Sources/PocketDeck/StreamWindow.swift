@@ -896,6 +896,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func finishZoom() {
         stopZoomAnimation()
+        if let window {
+            // A display link that never ticked (no link, or a hidden window
+            // whose link paused) still owes the zoom its frame.
+            if !sameFrame(window.frame, zoomTo) { liveResizeFrame(zoomTo) }
+            zoom = WindowZoom.settled(zoom, at: window.frame)
+        }
         // The same delegate call a drag's end makes, so a kind with its own
         // end work (the phone mirror's rotation) runs it.
         if let window {

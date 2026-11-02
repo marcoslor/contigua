@@ -8,7 +8,7 @@ final class WindowZoomTests: XCTestCase {
 
     func testTheFirstZoomGoesToTheStandardFrameAndKeepsTheFrameItCameFrom() {
         let (state, target) = WindowZoom.onZoom(.normal, frame: original, standard: standard)
-        XCTAssertEqual(state, .zoomed(from: original))
+        XCTAssertEqual(state, .zoomed(from: original, to: standard))
         XCTAssertEqual(target, standard)
     }
 
@@ -34,12 +34,23 @@ final class WindowZoomTests: XCTestCase {
         XCTAssertEqual(state, .normal)
     }
 
-    func testAFrameThePersonResizedWhileZoomedStillReturnsToTheFrameBeforeTheZoom() {
-        // The person drags the standard-sized window smaller, then zooms out:
-        // the state still holds the frame from before the zoom in.
+    func testAWindowThePersonResizedWhileZoomedZoomsToTheStandardFrameAgain() {
+        // As AppKit's zoom: the person drags the zoomed window smaller, and
+        // the next zoom fills the screen again, keeping the dragged frame.
         let (zoomed, _) = WindowZoom.onZoom(.normal, frame: original, standard: standard)
         let resized = NSRect(x: 0, y: 0, width: 1000, height: 700)
         let (state, target) = WindowZoom.onZoom(zoomed, frame: resized, standard: standard)
+        XCTAssertEqual(state, .zoomed(from: resized, to: standard))
+        XCTAssertEqual(target, standard)
+    }
+
+    func testAZoomThatSettledOffTheStandardFrameStillReturns() {
+        // The window's size rules rounded the standard frame: the frame it
+        // settled at is the zoomed one.
+        let (zoomed, _) = WindowZoom.onZoom(.normal, frame: original, standard: standard)
+        let rounded = NSRect(x: 0, y: 0, width: 1440, height: 864)
+        let settled = WindowZoom.settled(zoomed, at: rounded)
+        let (state, target) = WindowZoom.onZoom(settled, frame: rounded, standard: standard)
         XCTAssertEqual(state, .normal)
         XCTAssertEqual(target, original)
     }
