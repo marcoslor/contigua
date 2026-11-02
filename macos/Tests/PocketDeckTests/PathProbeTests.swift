@@ -1,6 +1,7 @@
 // The single-path silence probe (docs/design/paths.md §6.1, PATH-24/E-11):
 // one path, a live stream and 2 s without an inbound frame start one join
-// beside it, on a 1, 2, 4 s backoff; nothing else may start one.
+// beside it, with a 2.0 s connect timeout and no backoff after a failure;
+// nothing else may start one.
 
 import XCTest
 @testable import PocketDeck
@@ -16,7 +17,7 @@ final class PathProbeTests: XCTestCase {
         XCTAssertEqual(probe.handle(tick(silent: 1.99), now: 0), [.ignore])
         XCTAssertEqual(probe.state, .idle)
         XCTAssertEqual(probe.handle(tick(silent: 2.0), now: 1), [.dial])
-        XCTAssertEqual(probe.state, .inFlight(failures: 0))
+        XCTAssertEqual(probe.state, .inFlight)
     }
 
     func testNoProbeWithoutALiveStream() {
@@ -43,42 +44,41 @@ final class PathProbeTests: XCTestCase {
         for now in stride(from: 0.25, through: 4.0, by: 0.25) {
             XCTAssertEqual(probe.handle(tick(), now: now), [.ignore])
         }
-        XCTAssertEqual(probe.state, .inFlight(failures: 0))
+        XCTAssertEqual(probe.state, .inFlight)
     }
 
-    func testTheRetriesBackOffOneTwoFourAndStayAtFour() {
-        var probe = PathProbeMachine()
-        XCTAssertEqual(probe.handle(tick(), now: 10), [.dial])
-        XCTAssertEqual(probe.handle(.failed, now: 10), [.ignore])
-        XCTAssertEqual(probe.state, .waiting(nextAt: 11, failures: 1))
-        XCTAssertEqual(probe.handle(tick(), now: 10.99), [.ignore])
-        XCTAssertEqual(probe.handle(tick(), now: 11), [.dial])
-
-        XCTAssertEqual(probe.handle(.failed, now: 11), [.ignore])
-        XCTAssertEqual(probe.state, .waiting(nextAt: 13, failures: 2))
-        XCTAssertEqual(probe.handle(tick(), now: 12.99), [.ignore])
-        XCTAssertEqual(probe.handle(tick(), now: 13), [.dial])
-
-        XCTAssertEqual(probe.handle(.failed, now: 13), [.ignore])
-        XCTAssertEqual(probe.state, .waiting(nextAt: 17, failures: 3))
-        XCTAssertEqual(probe.handle(tick(), now: 16.99), [.ignore])
-        XCTAssertEqual(probe.handle(tick(), now: 17), [.dial])
-
-        XCTAssertEqual(probe.handle(.failed, now: 17), [.ignore])
-        XCTAssertEqual(probe.state, .waiting(nextAt: 21, failures: 4))
-        XCTAssertEqual(probe.handle(tick(), now: 20.99), [.ignore])
-        XCTAssertEqual(probe.handle(tick(), now: 21), [.dial])
-    }
-
-    func testTheBackoffWaitsWhileTheTriggerDoesNotHold() {
+    /// E-11b: a failed probe is followed by the next one at once — no backoff
+    /// while the silence holds — and never with two in flight.
+    func testAFailureIsFollowedByTheNextProbeAtOnce() {
         var probe = PathProbeMachine()
         XCTAssertEqual(probe.handle(tick(), now: 0), [.dial])
-        XCTAssertEqual(probe.handle(.failed, now: 0), [.ignore])
+        XCTAssertEqual(probe.handle(.failed, now: 2), [.ignore])
+        // No waiting step: the very next tick may dial again.
+        XCTAssertEqual(probe.handle(tick(), now: 2), [.dial])
+    }
+
+    /// E-11b: no backoff — each failure is followed by the next dial on the
+    /// next tick, back-to-back while the silence holds.
+    func testAFailedProbeIsDialedAgainBackToBackWhileTheSilenceHolds() {
+        var probe = PathProbeMachine()
+        XCTAssertEqual(probe.handle(tick(), now: 10), [.dial])
+        for now in stride(from: 12.0, through: 22.0, by: 2.0) {
+            XCTAssertEqual(probe.handle(.failed, now: now), [.ignore])
+            XCTAssertEqual(probe.state, .idle)
+            XCTAssertEqual(probe.handle(tick(), now: now), [.dial])
+            XCTAssertEqual(probe.state, .inFlight)
+        }
+    }
+
+    func testTheTriggerGoneAfterAFailureStopsTheRetries() {
+        var probe = PathProbeMachine()
+        XCTAssertEqual(probe.handle(tick(), now: 0), [.dial])
+        XCTAssertEqual(probe.handle(.failed, now: 2), [.ignore])
         // A frame arrives: the silence ended, so no retry is due.
-        XCTAssertEqual(probe.handle(tick(silent: 0), now: 0.5), [.ignore])
+        XCTAssertEqual(probe.handle(tick(silent: 0), now: 2), [.ignore])
         XCTAssertEqual(probe.state, .idle)
-        // The next silence starts over at the first step.
-        XCTAssertEqual(probe.handle(tick(), now: 3), [.dial])
+        // The next silence starts a fresh probe.
+        XCTAssertEqual(probe.handle(tick(), now: 5), [.dial])
     }
 
     func testInboundFramesCancelAnInFlightProbe() {
@@ -106,5 +106,11 @@ final class PathProbeTests: XCTestCase {
 
     func testTheSilenceConstantIsTwoSeconds() {
         XCTAssertEqual(PathProbeMachine.silence, 2.0)
+    }
+
+    /// E-11b: the probe's own connect timeout is 2.0 s; the session's first
+    /// connect keeps its own timeout.
+    func testTheProbesConnectTimeoutIsTwoSeconds() {
+        XCTAssertEqual(PathProbeMachine.connectTimeout, 2.0)
     }
 }
