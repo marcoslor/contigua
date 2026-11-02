@@ -213,8 +213,14 @@ start_fake() {
 # launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
 # add --background: no activation, no Dock icon, windows on a virtual display.
 launch() {
-    local quiet=()
+    local quiet=() arg previous=""
     [ "$VISIBLE" = "1" ] || quiet=(--background)
+    # A relaunch must never be read through the last launch's chrome state (it
+    # may already say loading=0): the file starts empty with every launch.
+    for arg in "$@"; do
+        [ "$previous" = "--debug-chrome-state" ] && rm -f "$arg"
+        previous="$arg"
+    done
     "$APP" --profile "$PROFILE" ${quiet[@]+"${quiet[@]}"} "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
     start_watchdog app "$APP_PID"
