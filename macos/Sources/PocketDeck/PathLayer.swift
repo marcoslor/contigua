@@ -153,10 +153,21 @@ final class PathLayer {
             current = first.id
             outbox[first.id] = []
             outboxBytes[first.id] = 0
+            lastInboundAt[first.id] = nowMs()
         }
     }
 
     func hasPath(_ id: String) -> Bool { locked { paths[id] != nil } }
+
+    /// Seconds since this path last delivered any inbound frame (PATH-24's
+    /// silence). A path that has not delivered since it attached measures from
+    /// the attach, so a path that never speaks still starts the probe's clock.
+    func silentFor(_ id: String) -> TimeInterval? {
+        locked {
+            guard let at = lastInboundAt[id] else { return nil }
+            return Double(max(0, nowMs() - at)) / 1000.0
+        }
+    }
 
     /// Adds a joined path. The session enforces the 3-path cap before calling.
     /// A join is pinged at once (PATH-12/D-1), so its ranking starts at once.
@@ -168,6 +179,7 @@ final class PathLayer {
             order.append(path.id)
             outbox[path.id] = []
             outboxBytes[path.id] = 0
+            lastInboundAt[path.id] = nowMs()
             if current == nil { current = path.id }
             if joined {
                 let at = nowMs()
