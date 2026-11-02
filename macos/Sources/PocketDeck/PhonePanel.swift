@@ -269,7 +269,9 @@ extension PhoneControlsState.Connection {
         switch link {
         case .online: return pathsDown ? (pathsOffline ? .offline : .reconnecting) : .online
         case .connecting, .pairing: return .connecting
-        case .reconnecting: return .reconnecting
+        // The controller reports a path outage as Reconnecting; the panel holds
+        // it for the windows' 15 s and then says Offline (PANEL-12).
+        case .reconnecting: return pathsDown && pathsOffline ? .offline : .reconnecting
         case .offline: return .offline
         case .needsPairing: return .needsPairing
         case .idle: return .idle

@@ -150,7 +150,15 @@ final class ConnectionController {
     // MARK: Published state
 
     private(set) var machine = LinkMachine()
-    var link: Link { machine.link }
+    /// The link the UI and every action reads. A live session with no usable
+    /// path is not online: requests would queue into the grace's dead session
+    /// (PATH-17), so it reads as Reconnecting until a path joins or the session
+    /// ends. The machine's own link is untouched, so no new attempt is started
+    /// over the session the paths layer is trying to bring back.
+    var link: Link {
+        guard pathsDown, case .online(let phone) = machine.link else { return machine.link }
+        return .reconnecting(phone)
+    }
     /// The live session has no usable path (PATH-17). The panel shows
     /// Reconnecting at once and Offline after the same 15 s the windows use,
     /// while the session keeps its own 30 s grace underneath (PATH-6).

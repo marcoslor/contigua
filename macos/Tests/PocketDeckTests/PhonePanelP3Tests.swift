@@ -179,8 +179,13 @@ final class PhonePanelP3Tests: XCTestCase {
             link: .online(phone), pathsDown: true, pathsOffline: false), .reconnecting)
         XCTAssertEqual(PhoneControlsState.Connection.resolve(
             link: .online(phone), pathsDown: true, pathsOffline: true), .offline)
+        // The controller's own `link` already reports the outage as Reconnecting.
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .reconnecting(phone), pathsDown: true, pathsOffline: false), .reconnecting)
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .reconnecting(phone), pathsDown: true, pathsOffline: true), .offline)
         var state = state(online: true, phoneWindow: true)
-        state.connection = .resolve(link: .online(phone), pathsDown: true, pathsOffline: true)
+        state.connection = .resolve(link: .reconnecting(phone), pathsDown: true, pathsOffline: true)
         XCTAssertFalse(PhonePanelItem.screen.isEnabled(in: state),
                        "Turn Off Screen was enabled with no usable path")
         XCTAssertEqual(PhonePanelItem.screen.reason(in: state), "Connect your phone to use these.")
