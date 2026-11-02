@@ -1853,11 +1853,18 @@ class WindowStream(object):
         timer.daemon = True
         timer.start()
 
-    def start(self):
-        """(Re)start the encoder: used by open, resize, resume and keyframe."""
+    def start(self, resume=True):
+        """(Re)start the encoder: used by open, resize, resume and keyframe.
+
+        `resume=False` is the backlog-cleared path: it must not undo a pause
+        that landed between the caller's check and this call (the paths layer
+        drains the queue often, and Live Text pauses the stream under it).
+        """
         if self._start_held:
             return
         with self._lock:
+            if self._paused and not resume:
+                return
             self._stop_locked()
             self._configured = False
             self._au_index = 0
@@ -4527,8 +4534,8 @@ class FakePhone(object):
         if session is None:
             return
         window = session.windows.get(stream_id)
-        if window is not None and not window._paused:
-            threading.Thread(target=window.start, daemon=True).start()
+        if window is not None:
+            threading.Thread(target=window.start, args=(False,), daemon=True).start()
 
     def _reject_busy(self, conn):
         try:
