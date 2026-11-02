@@ -539,7 +539,10 @@ final class Session {
             self.queue.async { self.attemptFailed(id, reason: "timeout") }
         }
         attempts[id]?.timer = timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: timer)  // gcd: a deadline timer hops back to the session queue
+        // E-11b: a probe has its own 2.0 s connect timeout; the session's first
+        // connect keeps the general one.
+        let deadline = probe ? PathProbeMachine.connectTimeout : connectTimeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + deadline, execute: timer)  // gcd: a deadline timer hops back to the session queue
         let group = eventLoopGroup!
         let learned = dialLearned
         let learnedCert = dialLearnedCert

@@ -613,14 +613,13 @@ struct PathRanking {
 /// connection may sit in retransmission backoff for seconds after the network
 /// returns. While a stream is open, 2 s without ANY inbound frame is the one
 /// cheap signal that the path is silent, so the Mac dials one join beside it
-/// and keeps trying on a 1, 2, 4 s backoff. It never fails or closes the live
-/// path; the session decides the switch when the probe welcomes.
+/// and, when that fails, dials the next one at once (E-11b). It never fails or
+/// closes the live path; the session decides the switch when the probe
+/// welcomes.
 enum PathProbeState: Equatable {
     case idle
-    /// One dial is out; `failures` counts the ones before it.
-    case inFlight(failures: Int)
-    /// The probe failed; the next one is due at `nextAt`.
-    case waiting(nextAt: TimeInterval, failures: Int)
+    /// One dial is out; a failure goes back to `idle` and the next tick dials.
+    case inFlight
 }
 
 enum PathProbeEvent: Equatable {
@@ -647,17 +646,13 @@ struct PathProbeMachine {
     /// E-11: frames, `window.still`, JSON or anything else count as inbound.
     static let silence: TimeInterval = 2.0
 
-    private(set) var state: PathProbeState = .idle
+    /// E-11b: the probe's own connect timeout. It is deliberately shorter than
+    /// the session's general dial timeout (the first connect keeps that one) so
+    /// a probe begun during an outage catches the network's return within
+    /// about a second instead of sitting out the general timeout.
+    static let connectTimeout: TimeInterval = 2.0
 
-    /// E-11's steps: 1 s, then 2 s, then 4 s, capped at 4 s.
-    static func backoff(afterFailures failures: Int) -> TimeInterval {
-        switch failures {
-        case ..<1: return 0
-        case 1: return 1
-        case 2: return 2
-        default: return 4
-        }
-    }
+    private(set) var state: PathProbeState = .idle
 
     /// `(state, event) -> (state, actions)`; the session owns the dial.
     mutating func handle(_ event: PathProbeEvent, now: TimeInterval) -> [PathProbeAction] {
@@ -667,7 +662,7 @@ struct PathProbeMachine {
             switch state {
             case .idle:
                 guard trigger else { return [.ignore] }
-                state = .inFlight(failures: 0)
+                state = .inFlight
                 return [.dial]
             case .inFlight:
                 // One probe in flight is the most the rule allows. A tick with
@@ -675,14 +670,6 @@ struct PathProbeMachine {
                 guard !trigger else { return [.ignore] }
                 state = .idle
                 return [.cancel]
-            case .waiting(let nextAt, let failures):
-                guard trigger else {
-                    state = .idle
-                    return [.ignore]
-                }
-                guard now >= nextAt else { return [.ignore] }
-                state = .inFlight(failures: failures)
-                return [.dial]
             }
 
         case .welcomed:
@@ -693,10 +680,11 @@ struct PathProbeMachine {
             switch state {
             case .idle:
                 return [.ignore]
-            case .inFlight(let failures), .waiting(_, let failures):
-                let next = failures + 1
-                state = .waiting(nextAt: now + Self.backoff(afterFailures: next),
-                                 failures: next)
+            case .inFlight:
+                // E-11b: no backoff. The next tick finds the trigger still
+                // holding and dials at once, so a returning network meets a
+                // probe within a tick instead of seconds later.
+                state = .idle
                 return [.ignore]
             }
 
@@ -705,7 +693,7 @@ struct PathProbeMachine {
             case .inFlight:
                 state = .idle
                 return [.cancel]
-            case .idle, .waiting:
+            case .idle:
                 state = .idle
                 return [.ignore]
             }
@@ -715,7 +703,7 @@ struct PathProbeMachine {
             case .inFlight:
                 state = .idle
                 return [.cancel]
-            case .idle, .waiting:
+            case .idle:
                 state = .idle
                 return [.ignore]
             }

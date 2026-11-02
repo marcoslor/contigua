@@ -546,6 +546,11 @@ class TlsServerSession(object):
         # Blocking: OpenSSL retries the syscall itself; SO_RCVTIMEO bounds a
         # client that never finishes.
         self._conn.do_handshake()
+        # SO_RCVTIMEO is a kernel option and socket.settimeout() does not clear
+        # it, so the handshake deadline would otherwise end a live path after
+        # 15 s of silence (the 20 s probe check black-holes one that long).
+        self._raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO,
+                             struct.pack("ll", 0, 0))
         from OpenSSL.crypto import FILETYPE_ASN1, dump_certificate
         leaf = self._capture.get("leaf")
         self.client_der = dump_certificate(FILETYPE_ASN1, leaf) if leaf else None

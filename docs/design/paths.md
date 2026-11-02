@@ -412,16 +412,17 @@ The probe is its own machine (one enum, one pure transition):
 | `idle` | `tick` any other way | stay `idle` |
 | `inFlight` | `tick` with the trigger still holding | stay `inFlight` (never a second dial) |
 | `inFlight` | `tick` with frames back | `idle`, cancel the dial |
-| `inFlight` | `failed` | `waiting(nextAt = now + 1 s)` |
-| `waiting` | `tick` before `nextAt` | stay `waiting` |
-| `waiting` | `tick` at `nextAt`, trigger holds | `inFlight`, dial |
-| `waiting` | `tick` with the trigger gone | `idle` |
-| `inFlight` / `waiting` | `inbound` / `stop` | `idle`, cancel a dial in flight |
+| `inFlight` | `failed` | `idle`; the next tick dials at once if the trigger holds |
+| `inFlight` | `inbound` / `stop` | `idle`, cancel a dial in flight |
 | any | `welcomed` | `idle` (the session owns the switch) |
 
-The retries back off 1 s, 2 s, 4 s and cap at 4 s, while the trigger holds;
-the machine never has more than one dial in flight, and stops when inbound
-frames arrive on any path, the stream closes or the session ends.
+A probe's connect timeout is **2.0 s** — its own, not the session's general
+dial timeout, which the session's first connect keeps — so a probe begun
+during an outage gives up within the blink of a returning network instead of
+sitting out the general timeout. After a failure the next probe is dialed at
+once: back-to-back, never more than one dial in flight, while the trigger
+holds. The machine stops when inbound frames arrive on any path, the stream
+closes or the session ends. The cost is one SYN every ~2 s during an outage.
 
 When the probe welcomes, the session has two paths, so PATH-7's pings start.
 If the old path is **still silent** the session switches to the probe at once
