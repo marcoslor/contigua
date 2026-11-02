@@ -330,8 +330,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     }
 
     override fun stop() {
+        onClipStop?.invoke()
         clipListener = null
     }
+
+    /** Runs inside the session's shutdown, before the listener goes: a slow teardown. */
+    var onClipStop: (() -> Unit)? = null
 
     /** Whether the session has started listening; it does so just after `welcome` is queued. */
     val clipListening: Boolean get() = clipListener != null
