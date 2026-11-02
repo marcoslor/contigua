@@ -16,6 +16,13 @@ oneway interface IDeckCallback {
     void onPairingEnded(String requestId);
 
     /**
+     * The Mac's hello named another protocol version (R-8/D-4): `macV` is the
+     * Mac's version, -1 when its hello carried none. The app shows the
+     * sentence naming which side to update until a session succeeds.
+     */
+    void onVersionRefused(int macV);
+
+    /**
      * The notification gate's answer (docs/design/notify.md): `forwarding` is
      * live, and `reason` is "no_access" when the Mac asked but the phone's
      * listener grant is missing (null otherwise).

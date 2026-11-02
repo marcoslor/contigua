@@ -6,15 +6,15 @@ phone stays locked**. LAN only. Open source.
 
 ```
  macOS app (Swift)                             Android phone
-┌──────────────────────────────┐  1 TCP session ┌────────────────────────────────────┐
+┌──────────────────────────────┐ 1-3 paths (TLS)┌────────────────────────────────────┐
 │ ConnectionController ────────┼───────────────►│ App process (dev.pocketdeck)       │
-│ Session + Protocol (frames)  │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
-│ Discovery (Bonjour) / Direct │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
+│ Session (paths) + Protocol   │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
+│ Path providers: lan, direct  │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
 │ Deck (app grid, search)      │                │  PdNotificationListener, prefs     │
 │ AppWindow/StreamWindow +     │                │        │ AIDL (control only)       │
 │  WindowStyle chrome          │                │ Shell service (UID 2000, Shizuku)  │
 │  VideoLayerView              │                │  DeckService (IDeckService.aidl)   │
-│ InputMapper + gestures       │                │  Server → Session →                │
+│ InputMapper + gestures       │                │  Server → Session (paths) →        │
 │ AudioEngine (Opus/AAC)       │                │   WindowStream × N:                │
 │ NotifyCenter / NowPlaying    │                │    VirtualDisplay + MediaCodec     │
 │ ClipboardSync, FileDrop,     │                │   WindowStream.startMirror         │
@@ -238,6 +238,19 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 
 - No session → no VD, no encoder, no wake lock, no polling; idle cost is one
   listening socket + NSD registration.
+- **Two exceptions, and only in a direct build** (the phone's switch on with a
+  key for a paired Mac):
+  1. an **idle publish** with no session, so a direct path can *start* a session
+     after the LAN is gone;
+  2. a **standby NDP** while a session is live, so a switch is instant.
+  Both end with the phone's switch (or the Mac's); the standby also ends with
+  the session. Neither exists in the public build, and the settings name the
+  battery cost in one sentence (docs/design/direct-link.md §4.3, `DIRECT-1`,
+  `DIRECT-7`, `DIRECT-16`).
+- A session outlives its connection: from protocol 4 one session has one to
+  three **paths** (each one TLS connection), and a path that dies is replaced
+  without a new session — up to the 30 s grace, then the session ends as above
+  (docs/design/paths.md).
 - Windows hidden/occluded → `window.pause` (encoder stopped, VD surface
   detached). Static content emits no frames. App-level ping every 15 s.
 - Keep-awake pokes the VD's display group (on stream open, throttled input,

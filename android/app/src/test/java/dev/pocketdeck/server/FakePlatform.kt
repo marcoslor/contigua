@@ -84,6 +84,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val paired = CopyOnWriteArrayList<PairedClient>()
     val pairEnded = CopyOnWriteArrayList<String>()
     val sessionChanges = CopyOnWriteArrayList<SessionChange>()
+    /** R-8: every protocol version a Mac's hello was refused for (null = absent). */
+    val versionRefusals = CopyOnWriteArrayList<Int?>()
 
     var apps: List<AppEntry> = emptyList()
     var iconResult: String? = null
@@ -373,5 +375,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) {
         sessionChanges.add(SessionChange(connected, clientId, macName, windows))
+    }
+
+    override fun onVersionRefused(macV: Int?) {
+        versionRefusals.add(macV)
     }
 }

@@ -57,6 +57,8 @@
 //                                  dragging its bar upward pins it)
 //   waitfile PATH [SECONDS]        wait until PATH exists (default 30 s): the check script
 //                                  says when the next step may run
+//   stamp PATH                     write this moment's epoch seconds to PATH: the next
+//                                  action's latency is measured from it (e.g. a key)
 //   notifyclick ID           the same routing a click on that phone notification runs
 //                            (opens the app's window); not a stream action
 //   notifyaction ID I [TEXT] the same routing a banner button (or reply, with TEXT)
@@ -144,6 +146,8 @@ enum DebugInputAction: Equatable {
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
     case windowTop
     case waitFile(String, timeout: Double)
+    /// The moment (epoch seconds) an e2e check measures the next action from.
+    case stamp(String)
     case notifyClick(String)
     case notifyAction(String, Int, String?)
     case notifyDismiss(String)
@@ -332,6 +336,11 @@ enum DebugInputScript {
         case "windowtop":
             guard args.isEmpty else { throw LineError(message: "windowtop takes no arguments") }
             return .windowTop
+        case "stamp":
+            guard args.count == 1, args[0].hasPrefix("/") else {
+                throw LineError(message: "stamp needs an absolute PATH")
+            }
+            return .stamp(args[0])
         case "waitfile":
             guard (1...2).contains(args.count), args[0].hasPrefix("/") else {
                 throw LineError(message: "waitfile needs an absolute PATH and optionally SECONDS")
@@ -753,6 +762,9 @@ final class DebugInputDriver {
             while !cancelled, !FileManager.default.fileExists(atPath: path), Date() < deadline {
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
             }
+        case .stamp(let path):
+            let now = String(Date().timeIntervalSince1970)
+            try? now.write(toFile: path, atomically: true, encoding: .utf8)
         case .notifyClick(let id):
             waitForNotify { self.notifyClick?(id) == true }
         case .notifyAction(let id, let index, let text):

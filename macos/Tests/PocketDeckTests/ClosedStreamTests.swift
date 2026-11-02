@@ -33,6 +33,49 @@ final class ClosedStreamTests: XCTestCase {
         XCTAssertEqual(closed.decide(type: "task.continue", stream: 1), .send)
     }
 
+    /// RR-9: an open stream is the session's "activity" while the phone's
+    /// screen is off; the close ends it. RRR-5: only an accepted open counts,
+    /// and the phone's own close forgets it.
+    func testAnOpenStreamCountsAsActivityUntilItCloses() {
+        var streams = ClosedStreams()
+        XCTAssertFalse(streams.hasOpenStream)
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 1), .send)
+        streams.opened(1)
+        XCTAssertTrue(streams.hasOpenStream)
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 2), .send)
+        streams.opened(2)
+        XCTAssertEqual(streams.decide(type: "window.close", stream: 1), .send)
+        XCTAssertTrue(streams.hasOpenStream, "stream 2 is still open")
+        XCTAssertEqual(streams.decide(type: "window.close", stream: 2), .send)
+        XCTAssertFalse(streams.hasOpenStream)
+    }
+
+    /// RRR-5: the phone ended a stream (`window.closed`, or `error no_stream`
+    /// for it). It stops counting as activity, but a late message for it is
+    /// still dropped.
+    func testAStreamThePhoneClosedStopsCountingAsActivity() {
+        var streams = ClosedStreams()
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 7), .send)
+        streams.opened(7)
+        XCTAssertTrue(streams.hasOpenStream)
+        streams.forget(7)
+        XCTAssertFalse(streams.hasOpenStream)
+        XCTAssertEqual(streams.decide(type: "hover", stream: 7), .drop)
+        // An accepted open on that id makes it live again.
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 7), .send)
+        streams.opened(7)
+        XCTAssertTrue(streams.hasOpenStream)
+    }
+
+    /// RRR-5/E-2: a `window.open` dropped before founding is not an open
+    /// stream, so it never keeps the fast ping alive for a window that does
+    /// not exist.
+    func testAnUnacceptedOpenIsNotAnOpenStream() {
+        var streams = ClosedStreams()
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 3), .send)
+        XCTAssertFalse(streams.hasOpenStream, "only the accepted send opens a stream")
+    }
+
     func testEachOpenerRevivesTheStream() {
         for opener in ClosedStreams.opening {
             var closed = ClosedStreams()

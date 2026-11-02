@@ -1,12 +1,15 @@
-# PocketDeck wire protocol — v2
+# PocketDeck wire protocol — v4
 
 The single source of truth for Mac ⇄ phone traffic. Both sides MUST implement
 exactly this. Change it here first, then in code.
 
 ## Transport
 
-- **LAN only.** The phone listens on TCP (ephemeral port) and advertises it
-  over mDNS/DNS-SD as service type `_pocketdeck._tcp.` with TXT records:
+- **LAN, and optionally a direct path.** The default transport is the LAN; a
+  build compiled with the direct provider can also carry the session over
+  Wi-Fi Aware (see "Paths"). The phone always listens on TCP (ephemeral port)
+  on the LAN and advertises it over mDNS/DNS-SD as service type
+  `_pocketdeck._tcp.` with TXT records:
   `v=1` (the discovery record's generation), `id=<deviceId>` (stable random
   hex, 16 chars), `name=<device name>`, `model=<Build.MODEL>`. No fingerprint
   or other tracking identifier rides in the TXT. While the phone's "Allow
@@ -20,9 +23,14 @@ exactly this. Change it here first, then in code.
   certificate pinned (the phone pins the Mac's certificate fingerprint, the
   Mac pins the phone's). There is no plaintext phase and no v1 fallback: a
   client that does not complete the handshake is closed without a byte.
-- The Mac connects **one TCP connection per phone** (the "session"). Everything
-  — control, input and every video stream — is multiplexed on it.
-- Both ends set `TCP_NODELAY`. Byte order is **big-endian** everywhere.
+- The Mac connects **one or more TCP connections per phone**: each connection is
+  a **path**, and **the session spans the paths** ("Paths"). At first there is
+  one path, and everything — control, input and every video stream — is
+  multiplexed on it, exactly as before. A later path can be added to the same
+  session, and the session survives the loss of any one of them. Every path does
+  its own full TLS handshake; TLS is never resumed across paths.
+- Both ends set `TCP_NODELAY` on every path. Byte order is **big-endian**
+  everywhere.
 
 ## Framing
 
@@ -55,6 +63,8 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x22` | DROP_DATA | mac→phone | the next bytes (≤ 1 MiB) of a file dropped on a window; `stream` = the drop `id`; see "Drop Mac → phone" |
 | `0x23` | CLIP_DATA | both | the next bytes (≤ 1 MiB) of a clipboard image; `stream` = the image `id`; see "Clipboard images" |
 | `0x24` | FS_DATA | both | the next bytes (≤ 256 KiB) of an `fs.read` or `fs.write`; `stream` = the request `id`; see "Phone files" |
+| `0x30` | RELIABLE | both | one reliable frame, wrapped: `u64 seq` · `u8 innerType` · `u32 innerStream` · `u8[] innerPayload`; `len` = 18 + innerPayload, the outer `stream` mirrors `innerStream`; see "Paths" |
+| `0x31` | ACK | both | `u64 ack` = the next seq this side expects; `stream` 0; `len` = 13 |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -141,11 +151,16 @@ display id on every injected event.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":3,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`,
+2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>"}`,
    plus `"pair":true` when the person asked this attempt to pair (a user-driven
    pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
-   believes it is already paired.
-   A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
+   believes it is already paired. `path` names this connection (its path id,
+   8 lowercase hex, unique among the session's live paths) and is on every
+   hello. A hello on a **later** connection for the same session also carries
+   `"join":"<32 hex>"`, the session id from `welcome` — see "Paths".
+   A `v` other than 4 gets `{"t":"error","code":"version","v":4}` and a close:
+   `v` is the version that refused, so the Mac can name which app to update
+   (see "Versioning").
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
    paired or not, with `{"t":"error","code":"connections_off"}` and a close —
@@ -167,16 +182,29 @@ display id on every injected event.
      phone pins nothing for it. The phone answers
      `{"t":"error","code":"not_paired"}` at once and closes, never after its
      handshake timeout.
-4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
-   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. The phone allows
-   exactly one session at a time: a second connection gets
-   `{"t":"error","code":"busy","message":"one session at a time"}` and a close —
-   unless it is the live session's own pinned Mac (a network drop the phone has
-   not noticed yet): the phone drops the stale session, waits for its teardown
-   to release the phone's shared state (at most 2 s) and adopts the new
-   connection; at the bound it answers `busy`. A different Mac, an unpinned peer
-   and a peer that has not authenticated always get `busy`.
-5. Every accepted session socket carries TCP keepalive (`SO_KEEPALIVE`,
+4. Phone → `{"t":"welcome","session":"<32 hex>","device":{"id":..,"name":..,"model":..,"sdk":36,
+   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. `session` is this
+   session's id: 128 random bits as 32 lowercase hex, a new one for every new
+   session, never reused and never derived from a device or peer id; a phone
+   answers the id it was asked to join with. The phone allows exactly one
+   session at a time:
+   - a hello carrying `"join"` for that live session's id, from the live
+     session's own pinned Mac, is a **join**: the connection becomes one more
+     path of the running session. The session is not dropped, nothing is
+     re-paired, and the phone answers `welcome` with the same `session` on it;
+   - a hello carrying `"join"` for an id the phone does not serve answers
+     `{"t":"error","code":"no_session"}` and closes (the Mac then starts a new
+     session); only the live session's own pinned Mac ever hears that code;
+   - a second connection without `join` gets
+     `{"t":"error","code":"busy","message":"one session at a time"}` and a close —
+     unless it is the live session's own pinned Mac (a network drop the phone has
+     not noticed yet): the phone drops the stale session, waits for its teardown
+     to release the phone's shared state (at most 2 s) and adopts the new
+     connection; at the bound it answers `busy`. A different Mac, an unpinned
+     peer and a peer that has not authenticated always get `busy`.
+   A session has at most 3 paths; a join past that answers
+   `{"t":"error","code":"too_many_paths"}` and closes.
+5. Every accepted path socket carries TCP keepalive (`SO_KEEPALIVE`,
    `TCP_KEEPIDLE` 20 s, `TCP_KEEPINTVL` 5 s, `TCP_KEEPCNT` 4) and
    `TCP_USER_TIMEOUT` 40 000 ms. A Mac that vanished without a FIN is therefore
    ended by the kernel in about 40 s instead of at the retransmit give-up
@@ -186,6 +214,122 @@ display id on every injected event.
 Nothing but `hello`, `pair.request`, `pair.nonce` and `pair.ok` is accepted
 before `welcome`; anything else is `{"t":"error","code":"protocol"}` and a
 close.
+
+## Paths
+
+A **session** is what the person sees; a **path** is one TLS connection carrying
+it. A session starts with one path and can grow to three, so a dropped
+connection does not end it (`docs/design/paths.md`).
+
+### Reliable and lossy frames
+
+Each direction numbers its **reliable** frames with one `u64` seq per session,
+starting at 1:
+
+- reliable, sent wrapped in a `RELIABLE` (`0x30`) frame: `JSON` (`0x01`), `TOUCH`,
+  `SCROLL`, `KEY`, `APK_DATA`, `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`;
+- lossy, sent bare: `VIDEO_CONFIG`, `VIDEO_FRAME`, `AUDIO_CONFIG`, `AUDIO_FRAME`,
+  `HOVER`. They are never replayed, and a new frame type is lossy unless it is
+  listed above.
+
+```
+RELIABLE (0x30):  len = 18 + n; type 0x30; stream = innerStream
+                  payload: u64 seq | u8 innerType | u32 innerStream | n bytes
+ACK (0x31):       len = 13;      type 0x31; stream = 0
+                  payload: u64 ack      // the next seq this side expects
+```
+
+- The ACK is cumulative: every seq below `ack` was received, in order. It is
+  sent at most every 10 ms and at least once per 16 received frames, on any live
+  path.
+- A duplicate (`seq < ack`) is dropped and acked at once. A frame above the next
+  expected seq waits in a reorder window of at most 64 frames and 4 MiB; when it
+  is full the receiver **stops reading that path** until the gap fills (TCP
+  backpressure) — it never drops a frame and never ends the session.
+- A receiver acks and drops an unknown `innerType`, so a new message never
+  stalls the stream. A `RELIABLE` whose outer `stream` differs from
+  `innerStream` is a protocol error.
+- The sender keeps unacked reliable frames in a replay buffer of at most
+  **16 MiB** per direction, and it is **credit-based**: before reading the next
+  chunk of its source a producer checks that the frame fits, and waits for an ACK
+  if it does not. So the buffer never overflows, no frame is dropped, and the
+  session is never ended for a full buffer. Bulk frames (`APK_DATA`,
+  `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`) may hold at most **12 MiB**,
+  which keeps **4 MiB** free so a `JSON`, `TOUCH`, `SCROLL` or `KEY` frame never
+  waits behind a file (`docs/design/paths.md` §8).
+
+Example bytes, `ACK` with `ack` 42:
+
+```
+00 00 00 0d 31 00 00 00 00 00 00 00 00 00 00 00 2a
+```
+
+### The path messages
+
+| t | fields | meaning |
+|---|---|---|
+| `path.ping` | `path`, `ts` | on that path only, every **2 s**; sent **bare** (not wrapped, not seq'd, not replayed) |
+| `path.pong` | `path`, `ts` | the answer, on the same path, at once; RTT is measured with the receiver's own monotonic clock |
+| `path.switch` | `path`, `seq` | "my next reliable frame is `seq` and it goes on `path`" |
+
+- `path.ping`/`path.pong` are the only JSON frames that travel bare; they are
+  per-path liveness and mean nothing after a switch. A ping with no pong within
+  **1.5 s** is one lost sample.
+- A **planned** switch is make-before-break: the new path is up and joined, then
+  the Mac sends `path.switch` as the last frame on the old path (TCP order means
+  everything before it has arrived), then continues on the new one. An
+  **unplanned** one sends `path.switch` first on the new path, after the old one
+  failed.
+- On receiving `path.switch{path, seq}` a side sends its own later frames on
+  `path`, and the phone answers with its own `path.switch` marker for its
+  direction. The old path is closed once both markers are in, or after 2 s.
+- After every switch the Mac sends `window.keyframe` for each open video stream
+  (the phone may answer with a fresh `VIDEO_CONFIG` first, as it always may),
+  and the phone repeats its current `AUDIO_CONFIG` before its next
+  `AUDIO_FRAME` when audio is running.
+
+### Ranking and the switch
+
+Every path, the standby included, is pinged every 2 s; each side keeps RTT
+p50/p95 and loss over the last **30 s** and scores a path from those numbers
+plus its provider's throughput class (the formula is in
+`docs/design/paths.md` §7). Only the **Mac** decides:
+
+- the current path fails (a socket error, or no pong within 1.5 s) → switch at
+  once to the best live path;
+- another path beats the current one by at least 100 points for **5 s** → switch
+  to it;
+- a path with fewer than 2 pongs in its window never wins on margin.
+
+### The grace
+
+If no path is usable the session stays live for **30 s** waiting for a join,
+replays reliable frames from the peer's last ack when one arrives, and ends at
+30 s. The join may arrive on a path of any provider, including one that was
+never part of the session before (the phone is published with no session open,
+so the next connection can found a new one too). A frame in a `VIDEO_*`, `AUDIO_*` or `HOVER` frame that was in flight is
+lost; the keyframe request above repairs the picture.
+
+## Direct link
+
+Only a build compiled with the direct provider offers this
+(`docs/design/direct-link.md`); a public build never dials it and never sends
+these messages. The path itself is ordinary: one more TLS connection, pinned the
+same way, ranked like any other. The phone publishes the Wi-Fi Aware service
+`_pocketdeck-nan._tcp` and listens on the Aware network; the Mac dials it.
+
+| t | dir | fields | meaning |
+|---|---|---|---|
+| `direct.enable` | mac→phone | `on` | this Mac's switch for this phone; sent at `welcome` and on change, and **stored** by the phone (so `on: false` keeps it from being published for even with no session open). The phone publishes and keeps a standby only while it is on, its own switch is on, its permission is granted and it holds a key |
+| `direct.key` | mac→phone | `key` (64 hex) | the data-path key for the Wi-Fi Aware data path, 32 random bytes; sent once, inside TLS, on the first LAN session in which both switches are on |
+| `direct.key.ok` | phone→mac | — | the key is stored; an unacknowledged key is regenerated on the next LAN session |
+| `direct.state` | phone→mac | `on`, `reason`? | the phone's switch and permission state; `reason` is `no_permission`, `no_feature`, `location_off` or `aware_busy` |
+
+- The key is never logged on either side, and its only wire form is this
+  message. It is used as the Wi-Fi Aware data path's passphrase (base64 of the
+  32 bytes) and for the service-specific info the phone publishes:
+  `HMAC-SHA256(key, "pd-nan-v1" ‖ u64_be(window))[0..8]` for a 10-minute window,
+  which is all the air carries — no device id, name, model or fingerprint.
 
 ## Pairing (first contact)
 
@@ -261,6 +405,11 @@ Mac → phone (after `welcome`):
 | t | fields | meaning |
 |---|---|---|
 | `ping` | `ts` | phone replies `pong` with same `ts` |
+| `path.ping` | `path`, `ts` | a path's own liveness probe, sent bare on that path every 2 s; see "Paths" |
+| `path.pong` | `path`, `ts` | the answer, on the same path; either side sends it |
+| `path.switch` | `path`, `seq` | "my next reliable frame is `seq` and it goes on `path`"; see "Paths" |
+| `direct.enable` | `on` | this Mac's direct-link switch for this phone (direct builds); the phone publishes only while it is on; see "Direct link" |
+| `direct.key` | `key` | the Wi-Fi Aware data-path key, 64 hex, sent inside TLS once; see "Direct link" |
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` before a display exists (see "Several windows of one app") |
@@ -303,6 +452,11 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `pong` | `ts` |
+| `path.ping` | `path`, `ts` | the same probe from the phone's side |
+| `path.pong` | `path`, `ts` | its answer |
+| `path.switch` | `path`, `seq` | the phone's own marker when the Mac switches the session ("Paths") |
+| `direct.key.ok` | — | the key in `direct.key` is stored ("Direct link") |
+| `direct.state` | `on`, `reason`? | the phone's direct-link switch and permission state; `reason` is `no_permission`, `no_feature`, `location_off` or `aware_busy` |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apps` | `apps`: `[{"pkg","label","activity","multi"}]` — launchable activities, sorted by label; `multi` says whether a second instance can run (WIN-24): the launcher activity declares `android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` (read per component with `PackageManager.getProperty`, API 35+, false on older phones) **and** its `launchMode` is not `singleTask`/`singleInstance` **and** its `documentLaunchMode` is not `never`; an allow-list covers apps found to work without the property (empty today) |
 | `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
@@ -887,12 +1041,15 @@ mode (docs/design/focus.md):
 
 ## Error codes
 
-`{"t":"error","code":...}` codes: `busy` (another session is active), `bad_pin` (the
+`{"t":"error","code":...}` codes: `busy` (another session is active), `no_session`
+(a `hello`'s `join` names a session this phone does not serve: the Mac starts a new
+session), `too_many_paths` (a join past the session's 3 paths), `bad_pin` (the
 peer's certificate fingerprint is not the pinned one — the Mac shows "This phone's
 identity changed. Pair again."), `not_paired` (the phone pins nothing for this Mac
 and the Mac did not ask to pair — the Mac shows "<phone name> no longer trusts this
 Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
-not match the commit), `version`, `protocol` (message not allowed in the current state;
+not match the commit), `version` (this side's protocol version differs; `v` carries the
+version that refused, so the other side can say which app to update), `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
 the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
@@ -917,11 +1074,18 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 
 ## Versioning
 
-`v` = **3** in `hello` is the protocol version (3 added `window.content`, which every
-VIDEO_CONFIG now needs). Additive messages do not bump it: `window.still` is a
-phone→Mac JSON message an older Mac ignores as an unknown `t`, and an older
-phone never sends it. The mDNS TXT `v` is the
-discovery record's own generation (`1`), a Mac ignores records with another
-value. A phone that can't serve the Mac's protocol version replies
-`{"t":"error","code":"version"}` and closes; there is no v1 negotiation and
-no plaintext fallback (v2 is TLS-only).
+`v` = **4** in `hello` is the protocol version (4 added the paths layer — session
+ids, joins, `RELIABLE`/`ACK`, `path.*` — and the direct-link messages; 3 added
+`window.content`, which every VIDEO_CONFIG needs). `window.still` is an ordinary
+phone→Mac JSON message under v4: it travels as a reliable, seq'd frame like every
+other JSON frame, and an unknown `t` is still ignored. Both apps ship together and
+there is no older-peer mode: a peer that does not serve 4 replies
+`{"t":"error","code":"version","v":4}` and closes, in both directions.
+`v` is the refusing side's own version, so the other side can compare it with
+its own and say which app to update: the phone's `v` below the Mac's (or absent,
+as from a v3 phone) means "Update PocketDeck on your phone."; above means
+"Update PocketDeck on this Mac.". The Mac stops retrying. The phone's own screen
+names the Mac's side the same way from the `hello`'s `v`. There is no v1
+negotiation, no plaintext fallback and no reduced transport (v2 and v3 are
+TLS-only). The mDNS TXT `v` is the discovery record's own generation (`1`), a
+Mac ignores records with another value.

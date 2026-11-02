@@ -8,6 +8,8 @@ import SwiftUI
 
 struct LaunchOptions {
     var connect: (host: String, port: UInt16)?
+    /// `--connect2`: the test-only second LAN provider (PATH-20's e2e).
+    var connect2: (host: String, port: UInt16)?
     var openPackages: [String] = []
     var openPhone = false
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
@@ -43,6 +45,9 @@ struct LaunchOptions {
     var floatWindows = false
     /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
     var debugChromeState: String?
+    /// `--debug-frame-log FILE`: one line per video frame a window received,
+    /// with the path it arrived on (e2e; DebugFrameLog.swift).
+    var debugFrameLog: String?
     /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
     var debugBanner: String?
     /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
@@ -123,6 +128,7 @@ struct LaunchOptions {
     /// (sec L-6: `--debug-control` alone can drive a live session).
     static let testHooks: [String: Bool] = [
         "--connect": true,
+        "--connect2": true,
         "--open": true,
         "--open-phone": false,
         "--resize-stream": true,
@@ -143,6 +149,7 @@ struct LaunchOptions {
         "--dump-video": true,
         "--float-windows": false,
         "--debug-chrome-state": true,
+        "--debug-frame-log": true,
         "--debug-banner": true,
         "--audio-stats": true,
         "--share-log": true,
@@ -195,6 +202,11 @@ struct LaunchOptions {
                    let port = UInt16(value[value.index(after: colon)...]) {
                     options.connect = (String(value[..<colon]), port)
                 }
+            case "--connect2":
+                if let value = next(), let colon = value.lastIndex(of: ":"),
+                   let port = UInt16(value[value.index(after: colon)...]) {
+                    options.connect2 = (String(value[..<colon]), port)
+                }
             case "--open":
                 if let value = next() {
                     options.openPackages += value.split(separator: ",").map(String.init)
@@ -237,6 +249,8 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--debug-chrome-state":
                 options.debugChromeState = next()
+            case "--debug-frame-log":
+                options.debugFrameLog = next()
             case "--debug-banner":
                 options.debugBanner = next()
             case "--debug-deck-grid":
@@ -337,6 +351,17 @@ struct LaunchOptions {
         let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
         return (UInt32(parts.first ?? "") ?? 0, parts.count > 1 ? (Double(parts[1]) ?? 0) : 0)
     }
+
+    #if PD_TEST_HOOKS
+    /// `--check-input-script FILE`: the e2e rig's rehearsal. Parses the script
+    /// through the same grammar the driver uses and exits, so a boot can never
+    /// spend itself on a line the app would reject at load (`wait 80`).
+    static func checkInputScript(_ arguments: [String]) -> String? {
+        guard let flag = arguments.firstIndex(of: "--check-input-script"),
+              arguments.indices.contains(flag + 1) else { return nil }
+        return arguments[flag + 1]
+    }
+    #endif
 }
 
 // MARK: - Environment shared by the scenes and the delegate
@@ -571,6 +596,39 @@ enum DeckWindow {
 @main
 enum PocketDeckMain {
     static func main() {
+        #if PD_TEST_HOOKS
+        if let script = LaunchOptions.checkInputScript(CommandLine.arguments) {
+            do {
+                let text = try String(contentsOfFile: script, encoding: .utf8)
+                _ = try DebugInputScript.parse(text)
+                // The rest of the phase's argv is parsed exactly as the run
+                // would parse it; a flag with a missing or malformed value is
+                // a failure here, not a boot.
+                let options = LaunchOptions.parse(CommandLine.arguments)
+                let arguments = CommandLine.arguments
+                let required: [(String, Bool)] = [
+                    ("--connect", options.connect != nil),
+                    ("--connect2", options.connect2 != nil),
+                    ("--quit-after", options.quitAfter != nil),
+                    ("--debug-input-script", options.debugInputScript != nil),
+                    ("--profile", options.profile != nil),
+                ]
+                for (flag, parsed) in required where arguments.contains(flag) && !parsed {
+                    throw NSError(domain: "p1-proof", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "\(flag) has no valid value"])
+                }
+                if let refusal = options.launchRefusal(releaseBuild: false) {
+                    throw NSError(domain: "p1-proof", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: refusal])
+                }
+                print("input script ok")
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(("check-launch \(script): \(error)\n").utf8))
+                exit(2)
+            }
+        }
+        #endif
         // Window state saved by an older build (or by a copy started without a
         // window) must never leave the app without its Deck. Registered, not
         // written: nothing lands in the user's defaults.
