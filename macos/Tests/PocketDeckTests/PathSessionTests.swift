@@ -247,6 +247,7 @@ final class PathSessionTests: XCTestCase {
         var machine = PathSessionMachine(state: .ended(reason: "x"))
         for event: PathSessionEvent in [.pathDown(id: "a"), .currentFailed(id: "a"),
                                         .peerSwitch(id: "b", seq: 1, arrivedOn: "a"),
+                                        .probeWelcomed(id: "b", oldSilent: true),
                                         .graceExpired, .drainExpired, .close(reason: "y")] {
             XCTAssertEqual(machine.handle(event, now: 99), [.ignore])
         }
@@ -274,6 +275,39 @@ final class PathSessionTests: XCTestCase {
 }
 
 extension PathSessionTests {
+    /// PATH-24/E-11: a probe join welcomed while the only path is still silent
+    /// moves the session to the probe at once — an unplanned failover — and
+    /// the silent path stays attached as a standby: not failed, not closed,
+    /// not "reconnecting".
+    func testAProbeWelcomeOnAStillSilentPathSwitchesAtOnce() {
+        var machine = machine()
+        XCTAssertEqual(machine.handle(.pathUp(id: "b", joined: true), now: 10),
+                       [.startPing(path: "b"), .ranking(.pathUp("b"))])
+        XCTAssertEqual(machine.handle(.probeWelcomed(id: "b", oldSilent: true), now: 10.1),
+                       [.switchTo(path: "b"), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch("b"))])
+        XCTAssertEqual(.live(current: "b"), machine.state)
+        XCTAssertEqual(Set(["a", "b"]), machine.live)
+        XCTAssertEqual(Set(["a"]), machine.standby)
+    }
+
+    /// The path came back before the probe welcomed: PATH-7's two-path ping
+    /// decides from now on, and the session stays where it is.
+    func testAProbeWelcomeOnALivePathOnlyAddsIt() {
+        var machine = machine()
+        _ = machine.handle(.pathUp(id: "b", joined: true), now: 10)
+        XCTAssertEqual(machine.handle(.probeWelcomed(id: "b", oldSilent: false), now: 10.1),
+                       [])
+        XCTAssertEqual(.live(current: "a"), machine.state)
+        XCTAssertTrue(machine.standby.isEmpty)
+    }
+
+    func testAProbeWelcomeForAPathThatNeverAttachedIsIgnored() {
+        var machine = machine()
+        XCTAssertEqual(machine.handle(.probeWelcomed(id: "zz", oldSilent: true), now: 1),
+                       [.ignore])
+    }
+
     /// D-2: a demoted path stays reachable by the margin rule. The ranking's
     /// planned switch arrives as a peer switch naming the standby; it becomes
     /// current and leaves the standby set, and the old path is closed after its

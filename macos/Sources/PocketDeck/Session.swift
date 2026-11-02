@@ -325,6 +325,9 @@ final class Session {
         let providerIndex: Int
         /// A rejoin dial: its hello carries `join` at once (D-3).
         var rejoin = false
+        /// A silence probe (PATH-24): a join beside a live path, never a
+        /// start and never the orphan's own rejoin.
+        var probeJoin = false
         /// The dialed host:port, for the cached address (C10).
         var address: CachedAddress?
         let kind: PathKind
@@ -367,6 +370,9 @@ final class Session {
     private var lastFramePath: String?
     private var pathMachine = PathSessionMachine()
     private var pathRanking = PathRanking()
+    /// PATH-24: the single-path silence probe and its one dial in flight.
+    private var pathProbe = PathProbeMachine()
+    private var probeAttemptId: String?
     /// D-1: the phone's screen state from the last `state` message. A session
     /// that has not heard one yet counts as active (the safe default).
     private var phoneScreenOn = true
@@ -503,6 +509,8 @@ final class Session {
             started.append((index, provider, id))
         }
         pathStart = PathStart()
+        pathProbe = PathProbeMachine()
+        probeAttemptId = nil
         _ = pathStart.handle(.start(started.map(\.id)))
         for item in started {
             startDial(index: item.index, provider: item.provider, join: false, id: item.id)
@@ -517,12 +525,14 @@ final class Session {
     }
 
     /// One dial: a start attempt (PathStart owns its hello) or a rejoin (D-3).
-    private func startDial(index: Int, provider: PathProvider, join: Bool, id: String) {
+    private func startDial(index: Int, provider: PathProvider, join: Bool, id: String,
+                           probe: Bool = false) {
         guard let endpoint = provider.endpoint else { return }
         attempts[id] = Attempt(id: id, endpoint: endpoint,
                                dialedPinned: dialPinned != nil,
                                providerIndex: index,
                                rejoin: join,
+                               probeJoin: probe,
                                kind: provider.kind)
         let timer = DispatchWorkItem { [weak self] in  // gcd: the session's one deadline timer
             guard let self else { return }
@@ -685,6 +695,10 @@ final class Session {
         attemptEvent(id, .failed(reason: reason))
         attempts.removeValue(forKey: id)
         attemptReasons[id] = reason
+        if attempt.probeJoin {
+            probeFailed()
+            return
+        }
         if attempt.rejoin {
             rejoinFailed()
             return
@@ -702,8 +716,7 @@ final class Session {
     /// Dials the providers that have neither a path nor an attempt while the
     /// session is below the paths its providers can give (D-3: orphaned or a
     /// path short). Runs on the session queue's tick.
-    private func maintainPaths() {
-        guard !intentionalClose, pathSessionId.get() != nil else { return }
+    private func maintainPaths() {        guard !intentionalClose, pathSessionId.get() != nil else { return }
         let ready = readyProviders()
         guard !ready.isEmpty else { return }
         let target = min(ready.count, PathLayer.maxPaths)
@@ -722,6 +735,70 @@ final class Session {
             live.insert(id)
             startDial(index: item.0, provider: item.1, join: true, id: id)
         }
+    }
+
+    // MARK: The single-path silence probe (PATH-24, E-11)
+
+    /// True while an open stream expects a moving picture: a paused or covered
+    /// one sends no frames by design, so its silence proves nothing.
+    private var streamLiveForProbe: Bool {
+        closedStreamsLock.lock()
+        defer { closedStreamsLock.unlock() }
+        return closedStreams.hasLiveStream
+    }
+
+    /// E-11's trigger and retry, once per 0.25 s tick.
+    private func tickProbe() {
+        let silent = pathLayer.currentPath.flatMap { pathLayer.silentFor($0) } ?? 0
+        let event = PathProbeEvent.tick(pathCount: pathLayer.pathCount,
+                                        streamLive: streamLiveForProbe,
+                                        silentFor: silent)
+        for action in pathProbe.handle(event, now: uptime) {
+            switch action {
+            case .dial: startProbe()
+            case .cancel: cancelProbe()
+            case .ignore: break
+            }
+        }
+    }
+
+    /// PATH-24: one join beside the live path, on a ready provider with no
+    /// path, else the current path's own provider (a second TCP connection to
+    /// the same endpoint).
+    private func startProbe() {
+        guard probeAttemptId == nil, let current = pathLayer.currentPath else { return }
+        let ready = readyProviders()
+        guard let pick = ready.first(where: { !pathProvider.values.contains($0.0) })
+                ?? ready.first(where: { $0.0 == pathProvider[current] })
+                ?? ready.first else { return }
+        var live = Set(attempts.keys)
+        for id in pathLayer.pathIds { live.insert(id) }
+        let id = PathIds.pathId(among: live)
+        probeAttemptId = id
+        Log.session.notice("paths: probe \(id, privacy: .public) (paths \(self.pathLayer.pathCount, privacy: .public))")  // log-ok: a path id and a count
+        startDial(index: pick.0, provider: pick.1, join: true, id: id, probe: true)
+    }
+
+    /// The probe is no longer wanted: close its dial and forget it.
+    private func cancelProbe() {
+        guard let id = probeAttemptId else { return }
+        probeAttemptId = nil
+        if attempts[id] != nil { closeAttempt(id) }
+    }
+
+    private func probeFailed() {
+        probeAttemptId = nil
+        _ = pathProbe.handle(.failed, now: uptime)
+    }
+
+    /// The probe welcomed. E-11 switches at once only while the old path is
+    /// still silent; otherwise PATH-7's two-path ping rule takes over. The old
+    /// path is never failed or closed by this.
+    private func probeWelcomed(_ id: String) {
+        probeAttemptId = nil
+        _ = pathProbe.handle(.welcomed, now: uptime)
+        let silent = pathLayer.currentPath.flatMap { pathLayer.silentFor($0) } ?? 0
+        handlePath(.probeWelcomed(id: id, oldSilent: silent >= PathProbeMachine.silence))
     }
 
     /// One path's channel ended. Before welcome that is a failed attempt; after
@@ -753,6 +830,10 @@ final class Session {
         attemptEvent(id, .failed(reason: reason))
         closeAttempt(id)
         attemptReasons[id] = reason
+        if attempt.probeJoin {
+            probeFailed()
+            return
+        }
         if attempt.rejoin {
             rejoinFailed()
             return
@@ -825,6 +906,13 @@ final class Session {
 
     private func handlePathFrame(_ id: String, _ frame: Frame) {
         lastFramePath = id
+        // PATH-24: any inbound frame on a live path ends the silence the probe
+        // was covering, so a dial still in flight is dropped.
+        if pathLayer.hasPath(id) {
+            for action in pathProbe.handle(.inbound, now: uptime) {
+                if case .cancel = action { cancelProbe() }
+            }
+        }
         guard pathLayer.hasPath(id) else {
             // Before this path joined the layer every frame is handshake
             // (welcome, or a refusal that ends the attempt).
@@ -970,6 +1058,7 @@ final class Session {
 
     private func tickPaths() {
         maintainPaths()
+        tickProbe()
         pathLayer.pingAll(active: pingActive)
         let now = uptime
         // A pong lost on a path that is still receiving is a ranking sample,
@@ -1053,6 +1142,8 @@ final class Session {
         pathProvider.removeAll()
         rejoinFailures = 0
         rejoinNextAt = 0
+        pathProbe = PathProbeMachine()
+        probeAttemptId = nil
         pathLayer.closeAll()
     }
 
@@ -1385,7 +1476,9 @@ final class Session {
                 // A later path: one more connection, no second session, no
                 // second ready event (PATH-3).
                 attemptEvent(welcomedOn, .welcomed(session: session))
+                let wasProbe = attempts[welcomedOn]?.probeJoin == true
                 attachPath(welcomedOn)
+                if wasProbe { probeWelcomed(welcomedOn) }
                 emit(.pathsReconnecting(false))
                 return
             }
@@ -1773,14 +1866,15 @@ final class Session {
         return true
     }
 
-    func sendJSON(_ object: [String: Any]) {
+    @discardableResult
+    func sendJSON(_ object: [String: Any]) -> Bool {
         // RRR-5: an opened stream counts as activity only once its send is
         // accepted; a `window.open` dropped before founding (E-2) is not open.
         var opening: UInt32?
         if let type = object["t"] as? String,
            let value = object["stream"] as? Int,
            let stream = UInt32(exactly: value) {
-            guard sendAllowed(type: type, stream: stream) else { return }
+            guard sendAllowed(type: type, stream: stream) else { return false }
             if ClosedStreams.opening.contains(type) { opening = stream }
         }
         let accepted = sendBytes(JSONFrame.encode(object))
@@ -1789,6 +1883,7 @@ final class Session {
             closedStreams.opened(opening)
             closedStreamsLock.unlock()
         }
+        return accepted
     }
 
     /// The one gate for a closed stream (WIN-38): false when the message must
@@ -1837,8 +1932,18 @@ final class Session {
         sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
     func closeWindow(stream: UInt32) { sendJSON(["t": "window.close", "stream": Int(stream)]) }
-    func pauseWindow(stream: UInt32) { sendJSON(["t": "window.pause", "stream": Int(stream)]) }
-    func resumeWindow(stream: UInt32) { sendJSON(["t": "window.resume", "stream": Int(stream)]) }
+    func pauseWindow(stream: UInt32) {
+        guard sendJSON(["t": "window.pause", "stream": Int(stream)]) else { return }
+        closedStreamsLock.lock()
+        closedStreams.pause(stream)
+        closedStreamsLock.unlock()
+    }
+    func resumeWindow(stream: UInt32) {
+        guard sendJSON(["t": "window.resume", "stream": Int(stream)]) else { return }
+        closedStreamsLock.lock()
+        closedStreams.resume(stream)
+        closedStreamsLock.unlock()
+    }
     func requestKeyframe(stream: UInt32) { sendJSON(["t": "window.keyframe", "stream": Int(stream)]) }
     func launch(stream: UInt32, pkg: String, activity: String?) {
         var message: [String: Any] = ["t": "window.launch", "stream": Int(stream), "pkg": pkg]

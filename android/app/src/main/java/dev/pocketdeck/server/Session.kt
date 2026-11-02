@@ -144,6 +144,10 @@ class Session(
     private val preReadHello: Map<String, Any?>? = null,
     /** This path's provider class (the public build's is LAN). */
     private val pathKind: PathKind = PathKind.LAN,
+    /** Test seam: every [startPathReader] call, by path id. */
+    private val onPathReaderStart: (String) -> Unit = {},
+    /** Test seam: a new path writer's first wake, by path id. */
+    private val onPathWriterStart: (String) -> Unit = {},
 ) : VideoSink, AudioSink, LiveSession {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -259,6 +263,7 @@ class Session(
         // E-10/PATH-9: one removal point reports every detach route — a socket
         // error, EOF, a Mac close, the phone's own ClosePath — to the machine.
         onDetached = { id -> inbound.put(Inbound.Down(id)) },
+        onWriterStart = onPathWriterStart,
     )
     private val pathMachine = PathSessionMachine()
     private val pathRanking = PathRanking()
@@ -822,6 +827,7 @@ class Session(
         reader: FrameReader = FrameReader(t.socket.getInputStream()),
         first: Frame? = null,
     ) {
+        onPathReaderStart(t.id)
         if (pathReaders.any { it.name == "pocketdeck-path-${t.id}" }) return
         val thread = Thread({
             var pending: Frame? = first
@@ -916,10 +922,11 @@ class Session(
         hub.expectFirstPong(pathId)
         sendWelcomeOn(pathId)
         // E-10: the machine learns the path before its reader can hand over a
-        // marker. Otherwise a marker naming the fresh id would be ignored by a
-        // machine that has not seen the Up yet, after the hub had already moved.
+        // marker. The session thread starts the reader (Inbound.Up) and is the
+        // only caller: two startPathReader calls on one socket raced, and the
+        // losing reader read the first frame's body as its length ("frame
+        // length too large: 16777216", a probe join's first ping, 11-02).
         inbound.put(Inbound.Up(pathId, joined = true))
-        startPathReader(t)
         // D-1: a joined path is pinged at once so its ranking starts (the
         // welcome is already queued; the ping follows it on the same writer).
         hub.pingPath(pathId)
@@ -1432,7 +1439,10 @@ class Session(
 
     /** A `welcome` on a joined path echoes the same session id (PATH-3). */
     private fun sendWelcomeOn(pathId: String) {
-        hub.sendJSONOn(pathId, welcomeMessage())
+        // PATH-3: the welcome must precede every path frame, and the join ping
+        // (PATH-12/D-1) is a priority frame: both take the priority lane in
+        // queue order, or the ping would overtake the welcome.
+        hub.sendJSONOn(pathId, welcomeMessage(), priority = true)
     }
 
     private fun welcomeMessage(): Map<String, Any?> {

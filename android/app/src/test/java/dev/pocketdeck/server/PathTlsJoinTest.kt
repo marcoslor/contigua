@@ -12,6 +12,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The real shell server's TLS join (direct-p1 item 7 round 2): the emulator
@@ -214,6 +216,100 @@ class PathTlsJoinTest {
         }
     }
 
+    /**
+     * PATH-3/E-10: one join gets exactly one reader. The accept thread used to
+     * start the join's reader as well as the session thread, and two readers on
+     * one socket made the loser read a frame body as a length (`frame length
+     * too large: 16777216`, emulator 11-02). Count the calls the real server
+     * makes for one join handled end to end.
+     */
+    @Test
+    fun aJoinedPathGetsExactlyOnePathReader() {
+        val starts = Collections.synchronizedList(mutableListOf<String>())
+        harness(onPathReaderStart = { starts.add(it) }).use { phone ->
+            phone.client().use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(firstReader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+
+                phone.client().use { second ->
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(hello("b2c3d4e5", join = session))
+                    second.getOutputStream().flush()
+                    val joined = readJson(secondReader)
+                    assertEquals("welcome", joined["t"])
+                    assertEquals(session, joined["session"])
+
+                    // Inbound.Up was queued before the welcome went out; the
+                    // session thread answers this later app ping only after it,
+                    // so the reply orders every startPathReader caller.
+                    first.getOutputStream().write(
+                        Frames.encodeJson(0, Json.encode(mapOf("t" to "ping", "ts" to 21))),
+                    )
+                    first.getOutputStream().flush()
+                    assertEquals(21L, gatherUntil(firstReader, "ts", 21L)["ts"])
+                    assertEquals(
+                        "one join started more than one path reader: $starts",
+                        listOf("b2c3d4e5"),
+                        starts.filter { it == "b2c3d4e5" },
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * PATH-3/PATH-12: on a joined path the `welcome` is the first frame out,
+     * ahead of the join's priority ping. Record the order the hub puts on the
+     * wire: the ping taking the priority lane must not overtake it.
+     */
+    @Test
+    fun aJoinedPathsWelcomePrecedesItsJoinPing() {
+        val queued = CountDownLatch(1)
+        harness(onPathWriterStart = { id ->
+            // Hold the new path's writer until the join has queued both its
+            // welcome and its priority ping: then the lane decides the order.
+            if (id == "b2c3d4e5") queued.await(3, TimeUnit.SECONDS)
+        }).use { phone ->
+            phone.client().use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(firstReader)
+                assertEquals("welcome", welcome["t"])
+                val session = welcome["session"] as String
+
+                phone.client().use { second ->
+                    second.soTimeout = 5_000
+                    val secondReader = FrameReader(second.getInputStream())
+                    second.getOutputStream().write(hello("b2c3d4e5", join = session))
+                    second.getOutputStream().flush()
+                    // attachPath logs this line after it queued the welcome and
+                    // the join ping, so both frames are waiting for the writer.
+                    val deadline = System.nanoTime() + 3_000_000_000L
+                    while (System.nanoTime() < deadline &&
+                        phone.logs.none { it == "paths: joined b2c3d4e5 (paths 2)" }
+                    ) {
+                        Thread.sleep(20) // real-time: polls the join line
+                    }
+                    queued.countDown()
+                    val firstOut = readJson(secondReader)
+                    val secondOut = readJson(secondReader)
+                    assertEquals(
+                        "a joined path's frame order: ${listOf(firstOut["t"], secondOut["t"])}",
+                        listOf("welcome", "path.ping"),
+                        listOf(firstOut["t"], secondOut["t"]),
+                    )
+                    assertEquals(session, firstOut["session"])
+                    assertEquals("b2c3d4e5", secondOut["path"])
+                }
+            }
+        }
+    }
+
     @Test
     fun aPairedHelloAndAJoinAcrossAByteRelayGetOneSession() {
         harness().use { phone ->
@@ -388,6 +484,8 @@ class PathTlsJoinTest {
         clients: List<PairedClient> = listOf(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX)),
         serverTls: ServerTls? = null,
         clock: () -> Long = { 1_000 },
+        onPathReaderStart: (String) -> Unit = {},
+        onPathWriterStart: (String) -> Unit = {},
     ): Harness {
         val platform = FakePlatform()
         platform.clients.addAll(clients)
@@ -395,7 +493,7 @@ class PathTlsJoinTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (join paranoia)")
         val logs = Collections.synchronizedList(mutableListOf<String>())
         val server = Server(
-            { socket, plain, hello -> sessionFor(platform, socket, plain, hello, logs, clock) },
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello, logs, clock, onPathReaderStart, onPathWriterStart) },
             log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
             { listOf(fingerprintHex(macIdentity)) },
@@ -427,6 +525,8 @@ class PathTlsJoinTest {
         hello: Map<String, Any?>?,
         logs: MutableList<String>,
         clock: () -> Long = { 1_000 },
+        onPathReaderStart: (String) -> Unit = {},
+        onPathWriterStart: (String) -> Unit = {},
     ): Session = Session(
         socket = socket,
         plainSocket = plain,
@@ -444,6 +544,8 @@ class PathTlsJoinTest {
         tlsView = TlsV2Fixture.view,
         gateProvider = { GateSettings(true, true) },
         preReadHello = hello,
+        onPathReaderStart = onPathReaderStart,
+        onPathWriterStart = onPathWriterStart,
     )
 
     private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
