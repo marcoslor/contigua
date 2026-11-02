@@ -28,6 +28,13 @@ class PathHub(
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     /** R-15: wakes the ticker so the 10 ms ACK timer is not late. */
     private val wake: () -> Unit = {},
+    /**
+     * E-10/PATH-9: every path that leaves the hub — a socket error, EOF, the
+     * Mac's close or the phone's own `ClosePath` — reaches the session machine
+     * as a `PathDown`, so its live set never names a detached path. The
+     * session's own end is a `Close`, not a path leaving.
+     */
+    private val onDetached: (String) -> Unit = {},
 ) {
     /**
      * One path's socket plus its own writer (R-2): nothing is written under
@@ -268,6 +275,8 @@ class PathHub(
         // Closing can wait on a peer's read; never under the hub lock (R-2).
         // A short drain lets a refusal or a planned switch's marker go out.
         runCatching { t.close(System.currentTimeMillis() + CLOSE_DRAIN_MS) }
+        // E-10: one removal point, so every detach route reports itself.
+        onDetached(id)
         return true
     }
 
