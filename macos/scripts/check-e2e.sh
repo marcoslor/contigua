@@ -565,8 +565,12 @@ shared_alive() {
 # with an empty phone event log and work dir, or else a fresh one.
 begin_shared() {
     if shared_alive && control reset prefs; then
+        # Keep the phone's own files: its state, the TLS identity next to it
+        # (a restart must serve the certificate the Mac pinned, not mint a
+        # new one the pin refuses), and its logs. Everything else is the
+        # previous check's.
         find "$WORK" -mindepth 1 -maxdepth 1 ! -name events.jsonl ! -name state.json \
-            ! -name 'fake*.log' ! -name fake.err ! -name app.log -exec rm -rf {} +
+            ! -name 'state.json.identity' ! -name 'fake*.log' ! -name fake.err ! -name app.log -exec rm -rf {} +
         : > "$WORK/events.jsonl"
         APP_PID="$SHARED_PID"
         FAKE_PID="$SHARED_FAKE_PID"
