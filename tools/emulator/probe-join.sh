@@ -12,6 +12,9 @@
 #     one `welcome`), the Mac switches to it at once (`live --probe--> live`),
 #     and the first frame over the new path arrives within `blip_recovery_ms`
 #     (macOS-*-limits.json) of the lift;
+#   * the new path stays up for 30 s after the switch: its proxy connection is
+#     still open, frames keep arriving on it, and the phone logs no
+#     `frame length too large`;
 #   * no Reconnecting and no `path down` before the switch.
 #
 # Run it as: heavy.sh timeout 2700 bash tools/emulator/probe-join.sh
@@ -298,6 +301,41 @@ print("none" if first is None else "%.0f" % ((first - lift) * 1000.0))
 PY
 }
 
+has_other_frame() { # has_other_frame <frames tsv> <since> <founder>
+    [ "$(first_other_frame_ms "$@")" != "none" ]
+}
+
+conn_id_since() { # conn_id_since <events file> <epoch>: the first conn at/after it
+    "$PYTHON" - "$1" "$2" <<'PY'
+import json, sys
+since = float(sys.argv[2])
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "conn" and float(event.get("ts", 0)) >= since:
+        print(event["id"])
+        break
+PY
+}
+
+conn_alive() { # conn_alive <events file> <id>: no eof/close for it yet
+    "$PYTHON" - "$1" "$2" <<'PY'
+import json, sys
+conn = int(sys.argv[2])
+closed = False
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") in ("eof", "close") and event.get("id") == conn:
+        closed = True
+print("closed" if closed else "open")
+PY
+}
+
 CLEANED=0
 cleanup() {
     local trap_rc=$?
@@ -399,17 +437,21 @@ fi
 sleep 4
 founder="$(awk '$1 >= 0 { p = $3 } END { print p }' "$WORK/frames.tsv")"
 [ -n "$founder" ] || bad "the frame log names no path"
+# The phone's first blip attempt can close at its hello (the pair session's
+# tail supersedes it); count probes from the founded session, not from launch.
+conns_founded="$(conn_count "$WORK/fault.events")"
+[ "${conns_founded:-0}" -ge 1 ] || bad "no connection reached the proxy"
 conns="$(conn_count "$WORK/fault.events")"
-[ "${conns:-0}" -eq 1 ] \
-    && ok "no probe was dialed while the path was healthy (one connection)" \
-    || bad "$conns connections before the fault"
+[ "${conns:-0}" -eq "${conns_founded:-0}" ] \
+    && ok "no probe was dialed while the path was healthy ($conns connection(s), all from startup)" \
+    || bad "$((conns - conns_founded)) probe connection(s) before the fault"
 t_fault="$("$PYTHON" -c 'import time; print("%.6f" % time.time())')"
 printf 'mode blackhole\n' > "$ctl"
 # E-11's 2 s of silence must dial one join; the proxy accepts its TCP
 # connection even though the TLS hello is dropped.
 wait_for_epoch "$("$PYTHON" -c "print(float('$t_fault') + 3.5)")"
 conns="$(conn_count "$WORK/fault.events")"
-[ "${conns:-0}" -ge 2 ] \
+[ "${conns:-0}" -ge $((conns_founded + 1)) ] \
     && ok "the Mac dialed one probe join during the silence" \
     || bad "no probe join was dialed during the silence ($conns connection(s))"
 wait_for_epoch "$("$PYTHON" -c "print(float('$t_fault') + 8.0)")"
@@ -420,14 +462,18 @@ wait_for 10 grep -q 'paths: attached .* (paths 2)' "$WORK/mac-blip.log" 2>/dev/n
     bad "the probe never attached a second path"
 wait_for 10 grep -q -- 'live --probe--> live' "$WORK/mac-blip.log" 2>/dev/null ||
     bad "the Mac did not switch to the probe"
-sleep 1
-emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-blip.log"
-joins="$(grep -c 'paths: joined [0-9a-f]* (paths 2)' "$WORK/phone-blip.log" 2>/dev/null || true)"
-welcomes="$(grep -c 'session [0-9a-f]*: welcome' "$WORK/phone-blip.log" 2>/dev/null || true)"
-[ "${joins:-0}" -ge 1 ] && [ "${welcomes:-0}" -eq 1 ] \
-    && ok "one session: one welcome and the probe's join (joins=${joins:-0} welcomes=${welcomes:-0})" \
-    || bad "the phone's session accounting is wrong (joins=${joins:-0} welcomes=${welcomes:-0})"
+t_switch="$("$PYTHON" -c 'import time; print("%.6f" % time.time())')"
+new_conn="$(conn_id_since "$WORK/fault.events" "$t_lift")"
+[ -n "$new_conn" ] || bad "no proxy connection was accepted after the lift"
+# One founder and one join welcome on the Mac: a second founder would mean a
+# new session instead of the same one.
+founders="$(grep -c 'attempt: hello --welcome--> welcomed' "$WORK/mac-blip.log" 2>/dev/null || true)"
+joined="$(grep -c 'attempt: hello-join --welcome--> welcomed' "$WORK/mac-blip.log" 2>/dev/null || true)"
+[ "${founders:-0}" -eq 1 ] && [ "${joined:-0}" -eq 1 ] \
+    && ok "same session: one founder welcome and one join welcome (founders=${founders} joins=${joined})" \
+    || bad "wrong welcome accounting (founders=${founders:-0} joins=${joined:-0})"
 blip_ms="$(blip_recovery_ms)"
+wait_for 5 has_other_frame "$WORK/frames.tsv" "$t_lift" "$founder" || true
 delta="$(first_other_frame_ms "$WORK/frames.tsv" "$t_lift" "$founder")"
 if [ "$delta" = "none" ]; then
     bad "no frame arrived over the new path after the lift"
@@ -456,6 +502,33 @@ PY
 [ $? -eq 0 ] \
     && ok "the Mac switched to the probe while the old path was still live" \
     || bad "no probe switch, or the old path was down before it: $(grep 'paths:' "$WORK/mac-blip.log" | tail -3 | tr '\n' ' ')"
+# E-11 after the switch: the new path is the sending one and must stay up for
+# 30 s. The old socket may die meanwhile; only the new path's connection, its
+# frames and the phone's reader-fault signature are checked.
+say "switch at $t_switch; holding the new path for 30 s"
+wait_for_epoch "$("$PYTHON" -c "print(float('$t_switch') + 30.0)")"
+emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-blip.log"
+joins="$(grep -c 'paths: joined [0-9a-f]* (paths 2)' "$WORK/phone-blip.log" 2>/dev/null || true)"
+[ "${joins:-0}" -eq 1 ] \
+    && ok "the phone handled exactly one join" \
+    || bad "the phone logged ${joins:-0} joins, expected 1"
+since="$("$PYTHON" -c "print(float('$t_switch') + 28.0)")"
+recent="$(awk -v since="$since" -v founder="$founder" \
+    '$1 >= since && $3 != founder { n++ } END { print n + 0 }' "$WORK/frames.tsv")"
+[ "${recent:-0}" -gt 0 ] \
+    && ok "frames still land on the new path 30 s after the switch ($recent in the last 2 s)" \
+    || bad "no frame landed on the new path in the last 2 s of the 30 s hold"
+alive="$(conn_alive "$WORK/fault.events" "$new_conn")"
+[ "$alive" = "open" ] \
+    && ok "the new path's connection stayed open for 30 s (conn $new_conn)" \
+    || bad "the new path's connection closed during the 30 s hold (conn $new_conn)"
+grep -q 'frame length too large' "$WORK/phone-blip.log" \
+    && bad "the phone logged the reader-race signature" \
+    || ok "the phone logged no frame length too large"
+grep -q "paths: path down $new_conn" "$WORK/mac-blip.log" \
+    && bad "the Mac marked the new path down" \
+    || ok "the Mac kept the new path up"
+kill -0 "$APP_PID" 2>/dev/null || bad "the Mac app exited during the 30 s hold"
 grep -q 'bar_offline=1' "$WORK/chrome-ticks.txt" \
     && bad "the window said Reconnecting during the blip" \
     || ok "the window never said Reconnecting"
@@ -467,7 +540,7 @@ grep -qF "session failed" "$WORK/app-blip.out" \
 
 printf '\n== result ==\n'
 if [ "$FAIL" = 0 ]; then
-    echo "PROBE-JOIN PASS: one boot; probe ${t_fault} fault / ${t_lift} lift; first frame ${delta} ms (limit ${blip_ms})"
+    echo "PROBE-JOIN PASS: one boot; probe ${t_fault} fault / ${t_lift} lift; first frame ${delta} ms (limit ${blip_ms}); conn ${new_conn} up 30 s"
 else
     echo "PROBE-JOIN FAIL: $FAIL proof(s) failed"
 fi
