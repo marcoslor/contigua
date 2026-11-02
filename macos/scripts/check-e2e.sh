@@ -213,8 +213,14 @@ start_fake() {
 # launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
 # add --background: no activation, no Dock icon, windows on a virtual display.
 launch() {
-    local quiet=()
+    local quiet=() arg previous=""
     [ "$VISIBLE" = "1" ] || quiet=(--background)
+    # A relaunch must never be read through the last launch's chrome state (it
+    # may already say loading=0): the file starts empty with every launch.
+    for arg in "$@"; do
+        [ "$previous" = "--debug-chrome-state" ] && rm -f "$arg"
+        previous="$arg"
+    done
     "$APP" --profile "$PROFILE" ${quiet[@]+"${quiet[@]}"} "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
     start_watchdog app "$APP_PID"
@@ -4619,12 +4625,6 @@ PY
     # so the button stays unchecked and a 2 s pill says so.
     wait_until 5 no_fakephone
     rm -f "$WORK/control/panel-menu.done" "$WORK/control/panel-menu.cmd"
-    # The previous launch left a chrome state that already says loading=0. Read
-    # from no state, so the wait below can only pass on this window's own first
-    # frame: a panel-menu during the opening cover is a frozen mode and sends
-    # nothing (MIRROR-13), and the check would fail having never asked a live
-    # window.
-    rm -f "$WORK/chrome.txt"
     FAKE_ARGS="--panel-refuse --first-frame-delay 1" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 30
