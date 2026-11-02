@@ -42,6 +42,7 @@ APP_PID=0
 FAILS=0
 E2E_LOCK=/tmp/pocketdeck-e2e.lock
 HOLDS_E2E=0
+DOCK_DEFAULT_SET=0
 
 say() { printf '[%s] %s\n' "$(basename "$0")" "$*"; }
 fail() { say "FAIL: $*"; FAILS=$((FAILS + 1)); }
@@ -102,6 +103,10 @@ release_e2e_lock() {
 
 cleanup() {
   stop_app
+  if [ "$DOCK_DEFAULT_SET" = "1" ]; then
+    defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+    DOCK_DEFAULT_SET=0
+  fi
   release_e2e_lock
   # The e2e bundle registers its Share extension when it runs (RULES 5).
   pluginkit -r "$WT/macos/build/e2e/PocketDeck.app/Contents/PlugIns/Share.appex" >/dev/null 2>&1 || true
@@ -161,6 +166,28 @@ pair_mac() {
   say "pairing the Mac profile '$PROFILE' (the phone's prompt: tap Allow)"
   "$PYTHON" "$WT/tools/emulator/poc.py" --serial "$SERIAL" --adb "$ADB" \
     --addr "127.0.0.1:$PORT" wait-prompt --timeout 90 --tap-timeout 90
+}
+
+# The automatic Dock identity is a separate known bug (fix/dock-ack): a shim it
+# launches misses the host's single `opened` answer, quits itself 30 s later, and
+# the Quit ↔ close rule closes the window under the watch. The rig has no reason
+# to show phone apps in the Dock, so it turns the setting off for its profile
+# and restores it in cleanup. Turn it back on once fix/dock-ack is merged.
+disable_dock_auto() {
+  defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || return 1
+  DOCK_DEFAULT_SET=1
+  [ "$(defaults read "dev.pocketdeck.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
+}
+
+# assert_no_dock_bound <tag>: no shim may be bound to this app's pid during the
+# run (that is the other bug, and it would end the window mid-watch).
+assert_no_dock_bound() {
+  local lines
+  lines="$(mac_log "$APP_PID" 'dock auto: bound')"
+  if [ -n "$lines" ]; then
+    fail "$1: the automatic Dock identity bound a shim during this run"
+    printf '%s\n' "$lines" | tail -5
+  fi
 }
 
 phone_stills() { # the stream's own count of sent window.still messages
@@ -245,6 +272,7 @@ phase_after() {
     sleep 0.25
   done
   app_alive || fail "the Mac app exited during the 30 s watch"
+  assert_no_dock_bound "AFTER"
   phone="$(phone_stills)"
   mac="$(mac_stills)"
   say "AFTER: no stall for 30 s; stills phone=$phone mac=$mac"
@@ -288,6 +316,7 @@ phase_stall() {
   "$PYTHON" -c "import sys; sys.exit(0 if 1.5 <= $delta <= 2.5 else 1)" ||
     fail "the stall came ${delta}s after the last still, outside 1.5-2.5 s"
   mac_log "$APP_PID" 'stall=1' | tail -1
+  assert_no_dock_bound "STALL"
   emu logcat -d -v time -s PocketDeckSvc:I > "$E/logcat-stall.txt" 2>/dev/null || true
   stop_app
   say "STALL RESULT: done"
@@ -313,6 +342,7 @@ main() {
   # A clean profile: the first launch pairs (and must), the rest reuse the pins.
   defaults delete "dev.pocketdeck.mac.$PROFILE" >/dev/null 2>&1 || true
   rm -rf "$HOME/Library/Application Support/PocketDeck-$PROFILE"
+  disable_dock_auto || { say "could not turn the Dock identity off for this profile"; exit 1; }
 
   say "staging the after APK as the boot's own APK"
   cp "$AFTER_APK" "$BUILT_APK" || { say "cannot stage the after APK"; exit 1; }
