@@ -6,6 +6,9 @@
 #     joined`), no supersede and no new session;
 #   * a 32 MiB drop through a path black-holed after 8 MiB: the file lands
 #     byte-exact via the standby path;
+#   * a phone mirror keeps moving across a black-holed path: frames are logged
+#     with the path they arrived on, the first frame over the standby is inside
+#     4 s, and no gap over 1 s follows (RRR-1/RRR-2, PATH-7/PATH-21);
 #   * a v3-shaped hello refused with `error version {v:4}` and a close;
 #   * the 30 s grace: both paths killed, `paths: ended graceExpired` on the
 #     phone and `orphaned --grace--> ended` on the Mac, the slot free after,
@@ -42,7 +45,7 @@ for arg in "$@"; do
     case "$arg" in
         --check) MODE=check ;;
         --dry-run) MODE=dry ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
         *) echo "p1-proof.sh: unknown flag $arg" >&2; exit 2 ;;
     esac
 done
@@ -198,6 +201,7 @@ if [ "$MODE" = check ]; then
         [ -z "$stale" ] || cfail "the Mac app is older than $stale"
     fi
     for f in "$ROOT/tools/pdpathfault/pdpathfault.py" "$HERE/poc.py" \
+             "$HERE/mirror-blackhole.py" \
              "$ROOT/tools/fakephone/proto.py" "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"; do
         [ -f "$f" ] || cfail "missing $f"
     done
@@ -217,10 +221,16 @@ if [ "$MODE" = check ]; then
     else
         cfail "wait-prompt stale check: $(printf '%s' "$poc_out" | tail -2 | tr '\n' ' ')"
     fi
+    if mirror_out="$("$PYTHON" "$HERE/mirror-blackhole.py" --self-test \
+            --out "${TMPDIR:-/tmp}/pd-mirror-check" 2>&1)"; then
+        printf 'P1-PROOF CHECK: the mirror analyser fails every bad timeline and passes the good one\n'
+    else
+        cfail "mirror analyser self-test: $(printf '%s' "$mirror_out" | tail -3 | tr '\n' ' ')"
+    fi
     # Item 7's join predicate reads these two lines; a bundle without them can
     # only fail the join after a full boot.
     if [ -x "$APP" ]; then
-        for line in 'paths: attached' 'paths: sending'; do
+        for line in 'paths: attached' 'paths: sending' '--debug-frame-log'; do
             grep -aq -- "$line" "$APP" || cfail "$APP lacks '$line' (rebuild the e2e bundle)"
         done
     fi
@@ -258,6 +268,12 @@ if [ "$MODE" = check ]; then
                 --quit-after 150
             rehearse grace --profile "$PROFILE" --background \
                 --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone --quit-after 70
+            rehearse mirror --profile "$PROFILE" --background \
+                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone \
+                --debug-control "$checkdir/control" \
+                --debug-chrome-state "$checkdir/chrome.txt" \
+                --debug-frame-log "$checkdir/frames.tsv" \
+                --quit-after 170
         fi
         # Every single wait the run will load is inside the 60 s cap.
         if awk '$1 == "waitfile" && $3 > 60 { bad = 1 } $1 == "wait" && $2 > 60 { bad = 1 }
@@ -607,6 +623,8 @@ LOG_STREAM=""
 PROXY_A_PID=""
 PROXY_B_PID=""
 TAP_PID=""
+SWIPE_PID=""
+CHROME_PID=""
 # The Mac window is real: another agent's visible run could close it with a
 # stray key, so the run holds the machine-wide e2e lock while it is up.
 E2E_LOCK=/tmp/pocketdeck-e2e.lock
@@ -852,6 +870,9 @@ cleanup() {
     crash_evidence cleanup
     stop_app
     [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null || true
+    for pid in "${SWIPE_PID:-}" "${CHROME_PID:-}"; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    done
     stop_proxies
     if [ "$DOCK_DEFAULT_SET" = 1 ]; then
         defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
@@ -1287,6 +1308,191 @@ stop_app
 wait_slot_free "$WORK/phone-join-end.log" 40 join || true
 stop_proxies
 
+# --- the mirror across a black-holed path (RRR-1/RRR-2) -------------------
+# No fake phone can see these two: the session writer parked on a dead standby,
+# and the send buffer a joined socket got. Both live in the real phone server's
+# paths layer, so this phase runs a real phone mirror on the Mac, keeps the
+# picture moving, black-holes the current path after 10 s of steady frames, and
+# watches 60 s. The verdicts come from the frames' own timeline and paths
+# (mirror-blackhole.py).
+section mirror-blackhole
+MIRROR_CONFIRM="$ROOT/.agent/direct-link/p1-confirm"
+
+# mirror_steady — 0 when the last 10 s hold frames with no empty run over 1 s.
+mirror_steady() {
+    [ -s "$WORK/mirror-frames.tsv" ] || return 1
+    local now
+    now="$("$PYTHON" -c 'import time; print("%.6f" % time.time())')"
+    awk -v now="$now" '
+        { t[NR] = $1 }
+        END {
+            first = now - 10.0
+            if (NR == 0 || t[NR] < now - 1.5) exit 1
+            last = first; count = 0; worst = 0
+            for (i = 1; i <= NR; i++) {
+                if (t[i] < first || t[i] > now) continue
+                gap = t[i] - last
+                if (gap > worst) worst = gap
+                last = t[i]; count++
+            }
+            if (count < 50 || worst > 1.0) exit 1
+            exit 0
+        }' "$WORK/mirror-frames.tsv"
+}
+
+if [ "$MODE" = dry ]; then
+    # Canned evidence with the shape the phase produces, through the real
+    # analyser: a 10 s steady stretch on A, the switch, frames on B, one stall.
+    dry_mark predicate mirror_analyse
+    T0="$(dry_now)"
+    mkdir -p "$WORK/mirror-confirm"
+    "$PYTHON" - "$WORK/mirror-frames.tsv" "$WORK/mac-mirror.log" \
+        "$WORK/mirror-chrome.tsv" "$WORK/phone-mirror.log" "$T0" <<'PY'
+import datetime, sys
+frames_path, mac_path, chrome_path, phone_path, t0_text = sys.argv[1:6]
+t0 = float(t0_text)
+with open(frames_path, "w") as fp:
+    for index in range(300):
+        fp.write("%.6f\t1\taaaaaaaa\n" % (t0 - 10.0 + index / 30.0))
+    at = t0 + 3.4
+    while at < t0 + 60.0:
+        fp.write("%.6f\t1\tbbbbbbbb\n" % at)
+        at += 1.0 / 30.0
+
+def stamp(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S.%f") + "+0000"
+
+with open(mac_path, "w") as fp:
+    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] tls connected (path aaaaaaaa); hello v4\n" % stamp(t0 - 9.0))
+    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] tls connected (path bbbbbbbb); hello v4\n" % stamp(t0 - 7.5))
+    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: attached bbbbbbbb (paths 2)\n" % stamp(t0 - 7.4))
+    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n" % stamp(t0 + 3.2))
+with open(chrome_path, "w") as fp:
+    for offset in range(-12, 62):
+        state = "stall=1 stall_pill=1 bar_offline=0 loading=0" if offset == 2 else \
+            "stall=0 stall_pill=0 bar_offline=0 loading=0"
+        fp.write("%.6f\t%s\n" % (t0 + offset, state))
+with open(phone_path, "w") as fp:
+    fp.write("11-01 21:00:00.000 I/PocketDeckSvc( 1): session 1f8f4b53: welcome (protocol 4)\n")
+    fp.write("11-01 21:00:00.100 I/PocketDeckSvc( 1): paths: joined bbbbbbbb (paths 2)\n")
+PY
+    MIRROR_RC=0
+    "$PYTHON" "$HERE/mirror-blackhole.py" --frames "$WORK/mirror-frames.tsv" \
+        --mac-log "$WORK/mac-mirror.log" --chrome "$WORK/mirror-chrome.tsv" \
+        --phone-log "$WORK/phone-mirror.log" --t0 "$T0" --a aaaaaaaa --b bbbbbbbb \
+        --out "$WORK/mirror-confirm" > "$WORK/mirror-blackhole.txt" 2>&1 || MIRROR_RC=$?
+    cat "$WORK/mirror-blackhole.txt"
+    FAIL=$((FAIL + $(grep -c '^FAIL ' "$WORK/mirror-blackhole.txt" || true)))
+    [ "$MIRROR_RC" -eq 0 ] || bad "the canned mirror timeline did not pass (rc=$MIRROR_RC)"
+else
+    start_faults mirror pass delay 1500
+    # Settings behind the mirror: a scrollable screen the swipe loop moves.
+    emu shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
+    sleep 2
+    rm -f "$WORK/mirror-stop" "$WORK/mirror-frames.tsv" "$WORK/mirror-chrome.tsv"
+    mkdir -p "$WORK/control" "$MIRROR_CONFIRM"
+    (
+        while [ ! -e "$WORK/mirror-stop" ]; do
+            emu shell input swipe 540 1600 540 700 220 >/dev/null 2>&1
+            sleep 0.08
+        done
+    ) &
+    SWIPE_PID=$!
+    mac_app "$WORK/app-mirror.out" --profile "$PROFILE" --background \
+        --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
+        --open-phone --debug-control "$WORK/control" \
+        --debug-chrome-state "$WORK/mirror-chrome-state.txt" \
+        --debug-frame-log "$WORK/mirror-frames.tsv" \
+        --quit-after 260 &
+    APP_PID=$!
+    LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-mirror.log")"
+    MIRROR_JOINED=0
+    for _ in $(seq 1 160); do
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
+        grep -q 'paths: joined .* (paths 2)' "$WORK/phone-mirror.log" && { MIRROR_JOINED=1; break; }
+        sleep 0.25
+    done
+    if [ "$MIRROR_JOINED" = 1 ]; then
+        ok "the mirror session has two paths ($(grep -o 'paths: joined [0-9a-f]* (paths 2)' "$WORK/phone-mirror.log" | tail -1))"
+    else
+        bad "the mirror session never joined a second path"
+    fi
+    MIRROR_ATTACH=""
+    for _ in $(seq 1 80); do
+        MIRROR_ATTACH="$(grep -o 'paths: attached [0-9a-f]* (paths 2)' "$WORK/mac-mirror.log" | tail -1)"
+        [ -n "$MIRROR_ATTACH" ] && break
+        sleep 0.25
+    done
+    if [ -z "$MIRROR_ATTACH" ]; then
+        refresh_log "$APP_PID" "$WORK/mac-mirror.log"
+        MIRROR_ATTACH="$(grep -o 'paths: attached [0-9a-f]* (paths 2)' "$WORK/mac-mirror.log" | tail -1)"
+    fi
+    if [ -n "$MIRROR_ATTACH" ]; then
+        ok "the Mac logged both paths up: $MIRROR_ATTACH"
+    else
+        bad "the Mac did not log a second live path for the mirror"
+    fi
+    STEADY=0
+    if wait_for 100 mirror_steady; then
+        STEADY=1
+        ok "the mirror showed 10 s of steady frames before the black-hole ($(wc -l < "$WORK/mirror-frames.tsv" | tr -d ' ') frames)"
+    else
+        bad "the mirror never showed 10 s of steady frames ($(wc -l < "$WORK/mirror-frames.tsv" 2>/dev/null | tr -d ' ') frames logged)"
+    fi
+    if [ "$STEADY" = 1 ]; then
+        T0="$("$PYTHON" -c 'import time; print("%.6f" % time.time())')"
+        printf 'mode blackhole\n' > "$WORK/fault-a.mirror.ctl"
+        "$PYTHON" - "$WORK/mirror-chrome-state.txt" "$WORK/mirror-chrome.tsv" "$T0" <<'PY' &
+import sys, time
+state, out, t0 = sys.argv[1], sys.argv[2], float(sys.argv[3])
+end, last = t0 + 62.0, None
+while time.time() < end:
+    try:
+        with open(state) as fp:
+            line = fp.read().strip()
+    except OSError:
+        line = ""
+    if line and line != last:
+        with open(out, "a") as fp:
+            fp.write("%.6f\t%s\n" % (time.time(), line))
+        last = line
+    time.sleep(0.25)
+PY
+        CHROME_PID=$!
+        sleep 62
+        wait "$CHROME_PID" 2>/dev/null || true
+        CHROME_PID=""
+        printf '[p1-proof] the black-hole was set at %s; 60 s watched\n' "$T0"
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
+        grep -E 'paths:|session [0-9a-f]+: welcome|session slot:' "$WORK/phone-mirror.log" \
+            > "$WORK/phone-paths-mirror.log" 2>/dev/null || true
+        cp "$WORK/phone-paths-mirror.log" "$MIRROR_CONFIRM/phone-paths.log" 2>/dev/null || true
+        refresh_log "$APP_PID" "$WORK/mac-mirror.log"
+        MIRROR_A="$(awk -v t0="$T0" '$1 < t0 { p = $3 } END { print p }' "$WORK/mirror-frames.tsv")"
+        MIRROR_RC=0
+        "$PYTHON" "$HERE/mirror-blackhole.py" --frames "$WORK/mirror-frames.tsv" \
+            --mac-log "$WORK/mac-mirror.log" --chrome "$WORK/mirror-chrome.tsv" \
+            --phone-log "$WORK/phone-mirror.log" --t0 "$T0" --a "$MIRROR_A" \
+            --out "$MIRROR_CONFIRM" > "$WORK/mirror-blackhole.txt" 2>&1 || MIRROR_RC=$?
+        cat "$WORK/mirror-blackhole.txt"
+        FAIL=$((FAIL + $(grep -c '^FAIL ' "$WORK/mirror-blackhole.txt" || true)))
+        if [ "$MIRROR_RC" -gt 1 ]; then
+            bad "the mirror analyser did not run (rc=$MIRROR_RC): $(tail -3 "$WORK/mirror-blackhole.txt" | tr '\n' ' ')"
+        fi
+        cp "$WORK/mirror-frames.tsv" "$MIRROR_CONFIRM/mirror-frames-raw.tsv" 2>/dev/null || true
+        emu shell "dumpsys meminfo dev.pocketdeck:pocketdeck 2>/dev/null" 2>/dev/null | tr -d '\r' |
+            grep -E 'TOTAL|Java Heap|Native Heap' > "$WORK/phone-mirror-meminfo.txt" || true
+    fi
+    : > "$WORK/mirror-stop"
+    [ -n "$SWIPE_PID" ] && kill "$SWIPE_PID" 2>/dev/null || true
+    wait "$SWIPE_PID" 2>/dev/null || true
+    SWIPE_PID=""
+    stop_app
+    wait_slot_free "$WORK/phone-mirror-end.log" 40 mirror || true
+    stop_proxies
+fi
+
 # --- 30 s grace ------------------------------------------------------------
 section grace
 emu logcat -c >/dev/null 2>&1 || true
@@ -1449,8 +1655,8 @@ if [ "$MODE" = dry ]; then
         printf 'DRY coverage %s:%s\n' "$kind" "$seen"
         [ -z "$missing" ] || bad "the dry run did not reach$missing"
     }
-    dry_check phase boot pair join drop grace version slot evidence
-    dry_check predicate pin_stored pair_outcome pair_with_retry wait_slot_free wait_for v3_probe
+    dry_check phase boot pair join drop mirror-blackhole grace version slot evidence
+    dry_check predicate pin_stored pair_outcome pair_with_retry wait_slot_free wait_for v3_probe mirror_analyse
     if [ -s "$WORK/dry-errors.log" ]; then
         bad "the dry run hit shell errors: $(wc -l < "$WORK/dry-errors.log" | tr -d ' ')"
     fi
