@@ -40,6 +40,10 @@ final class WindowManager {
     /// Test hook (`--dump-video`): the streams' H.264 written to disk.
     var videoDump: VideoDump?
 
+    /// Test hook (`--debug-frame-log`): one line per frame a window received,
+    /// with the path it arrived on.
+    var frameLog: DebugFrameLog?
+
     /// Files a Finder drag dropped on a stream window (docs/design/dragdrop.md).
     /// The owner (ConnectionController) routes them; an .apk keeps its own route.
     var onFilesDropped: (([URL]) -> Void)?
@@ -590,7 +594,8 @@ final class WindowManager {
                 self?.controller(for: stream)?.resizeSettled()
             }
             controller(for: stream)?.videoView.configure(config, picture: picture)
-        case .frame(let stream, let frame):
+        case .frame(let stream, let frame, let path):
+            frameLog?.note(stream: stream, path: path)
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
