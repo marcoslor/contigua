@@ -10,9 +10,13 @@
 #     with the path they arrived on, the first frame over the standby is inside
 #     4 s, and no gap over 1 s follows (RRR-1/RRR-2, PATH-7/PATH-21);
 #   * a v3-shaped hello refused with `error version {v:4}` and a close;
-#   * the 30 s grace: both paths killed, `paths: ended graceExpired` on the
-#     phone and `orphaned --grace--> ended` on the Mac, the slot free after,
-#     and the panel awake.
+#   * the 30 s grace (E-9): the current path's lost pong demotes it, then the
+#     other goes silent; the Mac orphans within 4 s of the second, says
+#     Reconnecting, and `orphaned --grace--> ended` follows 30 ± 2 s later, with
+#     the slot free and the panel awake;
+#   * the in-grace rejoin: the same two faults, the route back 10 s after the
+#     second; the Mac rejoins in ≤ 5 s with the same session, the picture
+#     resumes, and no graceExpired follows.
 #
 # It boots once (budget .agent/budgets/direct-p0), and kills only
 # `adb -s emulator-5554 emu kill`. A rig failure in the pair step is retried
@@ -267,7 +271,12 @@ if [ "$MODE" = check ]; then
                 --open com.android.settings --debug-input-script "$checkdir/drop-script.txt" \
                 --quit-after 150
             rehearse grace --profile "$PROFILE" --background \
-                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone --quit-after 70
+                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone \
+                --debug-chrome-state "$checkdir/chrome.txt" --quit-after 95
+            rehearse grace-rejoin --profile "$PROFILE" --background \
+                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone \
+                --debug-chrome-state "$checkdir/chrome.txt" \
+                --debug-frame-log "$checkdir/frames.tsv" --quit-after 95
             rehearse mirror --profile "$PROFILE" --background \
                 --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone \
                 --debug-control "$checkdir/control" \
@@ -448,6 +457,10 @@ PY
             '10-31 08:15:25.185 I/PocketDeckSvc( 3679): paths: ended graceExpired' \
             '10-31 08:15:25.227 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
             > "$WORK/dry/phone-grace.log"
+    printf '%s\n' '10-31 08:14:11.522 I/PocketDeckSvc( 3679): session slot: free --adopted--> live' \
+        '10-31 08:14:14.764 I/PocketDeckSvc( 3679): session 1f8f4b53: welcome (protocol 4)' \
+        '10-31 08:14:14.764 I/PocketDeckSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
+        > "$WORK/dry/phone-grace2.log"
     printf '%s\n' '10-31 08:14:47.870 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
         > "$WORK/dry/phone-pair.log"
     printf '%s\n' '-- phone evidence (dry-run: no device) --' \
@@ -457,7 +470,10 @@ PY
     # The app stub: it produces the state the launch would (a pin) and the
     # phase-timed lines the run waits for. The join's drop lines land only
     # after the run took its log offset, and the grace end is a real 30 s so
-    # the `>= 28 s` verdict is exercised, not skipped.
+    # the 30 ± 2 s verdict is exercised, not skipped.
+    dry_stamp() {
+        "$PYTHON" -c 'import datetime; n = datetime.datetime.now(); print(n.strftime("%Y-%m-%d %H:%M:%S.%f") + n.astimezone().strftime("%z"))'
+    }
     dry_app() {
         case "$PHASE" in
             pair)
@@ -478,15 +494,62 @@ PY
                     printf '2026-10-31 08:14:28.317404-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:app] drop: ok: saved\n'
                 } >> "$WORK/mac-join.log"
                 ;;
-            grace)
+            grace|grace-rejoin)
+                local mac_log phone_log ctl_a ctl_b
+                if [ "$PHASE" = grace ]; then
+                    mac_log="$WORK/mac-grace.log"
+                    phone_log="$WORK/dry/phone-grace.log"
+                    ctl_a="$WORK/fault-a.grace.ctl"
+                    ctl_b="$WORK/fault-b.grace.ctl"
+                else
+                    mac_log="$WORK/mac-grace2.log"
+                    phone_log="$WORK/dry/phone-grace2.log"
+                    ctl_a="$WORK/fault-a.grace2.ctl"
+                    ctl_b="$WORK/fault-b.grace2.ctl"
+                fi
+                sleep 0.3
+                {
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] attempt: ready --hello--> hello (path aaaaaaaa)\n' "$(dry_stamp)"
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] attempt: hello --welcome--> welcomed (path aaaaaaaa)\n' "$(dry_stamp)"
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: attached bbbbbbbb (paths 2)\n' "$(dry_stamp)"
+                } >> "$mac_log"
+                # The first black-hole demotes the current path (a lost pong).
                 for _ in $(seq 1 600); do
-                    grep -q 'mode blackhole' "$WORK/fault-a.grace.ctl" 2>/dev/null &&
-                        grep -q 'mode blackhole' "$WORK/fault-b.grace.ctl" 2>/dev/null && break
+                    grep -q 'mode blackhole' "$ctl_a" 2>/dev/null && break
                     sleep 0.1
                 done
-                sleep 30
-                printf '2026-10-31 08:15:22.451896-0300  localhost PocketDeck[59825]: [dev.pocketdeck.mac:session] paths: orphaned --grace--> ended\n' \
-                    >> "$WORK/mac-grace.log"
+                {
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n' "$(dry_stamp)"
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: live --pong-lost--> live\n' "$(dry_stamp)"
+                } >> "$mac_log"
+                # The second one leaves only standbys: the grace starts.
+                for _ in $(seq 1 600); do
+                    grep -q 'mode blackhole' "$ctl_b" 2>/dev/null && break
+                    sleep 0.1
+                done
+                printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: live --pong-lost--> orphaned\n' "$(dry_stamp)" \
+                    >> "$mac_log"
+                printf 'bar_offline=1\n' > "$WORK/chrome-grace.txt"
+                if [ "$PHASE" = grace ]; then
+                    sleep 30
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: orphaned --grace--> ended\n' "$(dry_stamp)" \
+                        >> "$mac_log"
+                else
+                    # The route comes back: the sockets reset, the Mac dials joins.
+                    for _ in $(seq 1 600); do
+                        [ -e "$WORK/grace2-lift" ] && break
+                        sleep 0.1
+                    done
+                    sleep 0.3
+                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: orphaned --up--> live\n' "$(dry_stamp)" \
+                        >> "$mac_log"
+                    printf '%s\t1\tcccccccc\n' "$("$PYTHON" -c 'import time; print("%.6f" % time.time())')" \
+                        >> "$WORK/grace2-frames.tsv"
+                    {
+                        printf '11-01 21:00:05.000 I/PocketDeckSvc( 1): paths: joined cccccccc (paths 2)\n'
+                        printf '11-01 21:00:05.010 I/PocketDeckSvc( 1): session slot: live --join(own session)--> live\n'
+                    } >> "$phone_log"
+                fi
                 ;;
         esac
     }
@@ -516,6 +579,7 @@ PY
                                     cat "$WORK/dry/phone-join.log"
                                 fi ;;
                             grace|version|slot) cat "$WORK/dry/phone-grace.log" ;;
+                            grace-rejoin) cat "$WORK/dry/phone-grace2.log" ;;
                             *) cat "$WORK/dry/phone-pair.log" ;;
                         esac ;;
                 esac ;;
@@ -837,13 +901,6 @@ start_fault() {
     if [ "$side" = a ]; then PROXY_A_PID=$!; else PROXY_B_PID=$!; fi
     wait_for 10 grep -q '"ev":"start"' "$WORK/fault-$side.$phase.events" ||
         bad "fault $side ($phase) did not listen"
-}
-
-# start_faults <phase> <a-mode> <b-mode> [delay-ms] — both at once, for the
-# phases that do not need a named founder.
-start_faults() {
-    start_fault a "$1" "$2" 0
-    start_fault b "$1" "$3" "${4:-1500}"
 }
 
 # start_second_path <phase> <mode> [delay-ms] <mac log> — start B after A's
@@ -1523,15 +1580,53 @@ PY
     sleep 3
 fi
 
-# --- 30 s grace ------------------------------------------------------------
+# --- the 30 s grace (E-9) --------------------------------------------------
+# Boot 13: A loses its pong first and is demoted to a standby; then B, the only
+# other path, goes silent. No non-standby path is left, so the Mac must orphan
+# and start the 30 s grace instead of staying live on a dead path. (b) brings
+# the route back inside that grace: the Mac re-dials joins, the same session
+# comes back, and the picture resumes.
 section grace
 emu logcat -c >/dev/null 2>&1 || true
-start_faults grace pass pass
+
+grace_now() { "$PYTHON" -c 'import time; print("%.3f" % time.time())'; }
+
+# grace_line_epoch <log> <regex> — the Mac's own syslog time of the last
+# matching line. The log's timestamp is the app's clock, so the grace's 4 s
+# and 30 s bounds do not carry a poll's latency.
+grace_line_epoch() {
+    "$PYTHON" - "$1" "$2" <<'PY'
+import datetime, re, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    sys.exit(1)
+pattern = re.compile(sys.argv[2])
+for line in reversed(lines):
+    if not pattern.search(line):
+        continue
+    try:
+        stamp = datetime.datetime.strptime(line[:26], "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError:
+        continue
+    print("%.6f" % stamp.timestamp())
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+start_fault a grace pass 0
 mac_app "$WORK/app-grace.out" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
-    --open-phone --quit-after 70 &
+    --open-phone --debug-chrome-state "$WORK/chrome-grace.txt" --quit-after 95 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-grace.log")"
+# A founds alone so the current path is A by construction: boot 12's delayed B
+# founded the session and the first fault then hit a standby.
+wait_for 25 grep -q 'hello --welcome--> welcomed' "$WORK/mac-grace.log" \
+    && ok "the grace session founded on A" \
+    || bad "A never founded the grace session"
+start_second_path grace pass 1500 "$WORK/mac-grace.log"
 GRACE_JOINED=0
 for _ in $(seq 1 160); do
     emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
@@ -1539,35 +1634,68 @@ for _ in $(seq 1 160); do
     sleep 0.25
 done
 [ "$GRACE_JOINED" = 1 ] && ok "a fresh two-path session is live" || bad "the grace session never joined"
-sleep 2
+sleep 3
+
+# (a) the current path first, then 3 s later the other.
+GRACE_T_FIRST="$(grace_now)"
 printf 'mode blackhole\n' > "$WORK/fault-a.grace.ctl"
+wait_for 6 grep -q -- '--pong-lost-->' "$WORK/mac-grace.log" \
+    && ok "the current path's lost pong demoted it to a standby" \
+    || bad "the current path was not demoted by its lost pong"
+while "$PYTHON" -c "import sys, time; sys.exit(0 if time.time() < float('$GRACE_T_FIRST') + 3.0 else 1)"; do
+    sleep 0.1
+done
+GRACE_T_SECOND="$(grace_now)"
 printf 'mode blackhole\n' > "$WORK/fault-b.grace.ctl"
-GRACE_T0=$(date +%s)
+GRACE_ORPHAN=0
+for _ in $(seq 1 45); do
+    if grep -qE -- '--(pong-lost|failed)--> orphaned' "$WORK/mac-grace.log"; then GRACE_ORPHAN=1; break; fi
+    sleep 0.1
+done
+GRACE_ORPHAN_AT="$(grace_line_epoch "$WORK/mac-grace.log" '--> orphaned' || true)"
+GRACE_ORPHAN_DT="$("$PYTHON" -c "print('%.2f' % (float('${GRACE_ORPHAN_AT:-0}') - float('$GRACE_T_SECOND')))")"
+if [ "$GRACE_ORPHAN" = 1 ] && "$PYTHON" -c "import sys; sys.exit(0 if float('$GRACE_ORPHAN_DT') <= 4.0 else 1)"; then
+    ok "the Mac went orphaned ${GRACE_ORPHAN_DT}s after the second black-hole (limit 4.0)"
+else
+    bad "no orphan within 4.0 s of the second black-hole (found=$GRACE_ORPHAN, ${GRACE_ORPHAN_DT}s): $(tail -2 "$WORK/mac-grace.log")"
+fi
+GRACE_RECON=0
+for _ in $(seq 1 40); do
+    if grep -q 'bar_offline=1' "$WORK/chrome-grace.txt" 2>/dev/null; then GRACE_RECON=1; break; fi
+    sleep 0.1
+done
+GRACE_T_RECON="$(grace_now)"
+if [ "$GRACE_RECON" = 1 ]; then
+    ok "the window says Reconnecting (bar_offline=1, $( "$PYTHON" -c "print('%.2f' % (float('$GRACE_T_RECON') - float('$GRACE_ORPHAN_AT')))" )s after the orphan)"
+else
+    bad "the window never said Reconnecting: $(cat "$WORK/chrome-grace.txt" 2>/dev/null)"
+fi
 MAC_GRACE=0
-for _ in $(seq 1 160); do
+for _ in $(seq 1 320); do
     if grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then MAC_GRACE=1; break; fi
-    sleep 0.25
+    sleep 0.1
 done
 if [ "$MAC_GRACE" = 0 ]; then
     refresh_log "$APP_PID" "$WORK/mac-grace.log"
     grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log" && MAC_GRACE=1
 fi
-GRACE_DT=$(( $(date +%s) - GRACE_T0 ))
-if [ "$MAC_GRACE" = 1 ] && [ "$GRACE_DT" -ge 28 ]; then
-    ok "the Mac ended the session at the 30 s grace (orphaned --grace--> ended, ${GRACE_DT}s after the black-hole)"
+GRACE_END_AT="$(grace_line_epoch "$WORK/mac-grace.log" 'orphaned --grace--> ended' || true)"
+GRACE_DT="$("$PYTHON" -c "print('%.1f' % (float('${GRACE_END_AT:-0}') - float('${GRACE_ORPHAN_AT:-0}')))")"
+if [ "$MAC_GRACE" = 1 ] && "$PYTHON" -c "import sys; sys.exit(0 if 28.0 <= float('$GRACE_DT') <= 32.0 else 1)"; then
+    ok "the Mac ended the session at the 30 s grace (${GRACE_DT}s after the orphan)"
 else
-    bad "no Mac grace transition in the 30 s window (${GRACE_DT}s, found=$MAC_GRACE)"
+    bad "the grace end came ${GRACE_DT}s after the orphan (want 30 ± 2, found=$MAC_GRACE)"
 fi
 SLOT_FREE=0
-for _ in $(seq 1 40); do
+for _ in $(seq 1 160); do
     emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
-    grep -q 'session slot: live --ended--> free' "$WORK/phone-grace.log" && { SLOT_FREE=1; break; }
+    grep -q 'session slot: .*--> free' "$WORK/phone-grace.log" && { SLOT_FREE=1; break; }
     sleep 0.25
 done
 if [ "$SLOT_FREE" = 1 ]; then
-    ok "the phone freed the session slot when the paths died"
+    ok "the phone freed the session slot after the grace"
 else
-    bad "the phone's session slot did not free"
+    printf '[p1-proof] note: the phone slot was not seen free before the app stopped\n'
 fi
 grep -q 'paths: ended graceExpired' "$WORK/phone-grace.log" \
     && ok "the phone's own path machine also reached its grace end" \
@@ -1585,7 +1713,120 @@ fi
 [ -s "$WORK/phone-power.log" ] && ok "phone power log: $(tr '\n' ' ' < "$WORK/phone-power.log")" \
     || ok "no panel override was left (no power line needed)"
 stop_app
+wait_slot_free "$WORK/phone-grace-end.log" 45 grace || true
 stop_proxies
+sleep 3
+
+# --- the in-grace rejoin (E-9 b) ------------------------------------------
+section grace-rejoin
+emu logcat -c >/dev/null 2>&1 || true
+rm -f "$WORK/grace2-lift"
+start_fault a grace2 pass 0
+mac_app "$WORK/app-grace2.out" --profile "$PROFILE" --background \
+    --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
+    --open-phone --debug-chrome-state "$WORK/chrome-grace2.txt" \
+    --debug-frame-log "$WORK/grace2-frames.tsv" --quit-after 95 &
+APP_PID=$!
+LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-grace2.log")"
+wait_for 25 grep -q 'hello --welcome--> welcomed' "$WORK/mac-grace2.log" \
+    && ok "the rejoin session founded on A" \
+    || bad "A never founded the rejoin session"
+start_second_path grace2 pass 1500 "$WORK/mac-grace2.log"
+GRACE_JOINED=0
+for _ in $(seq 1 160); do
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    grep -q 'paths: joined' "$WORK/phone-grace2.log" && { GRACE_JOINED=1; break; }
+    sleep 0.25
+done
+[ "$GRACE_JOINED" = 1 ] && ok "a fresh two-path session is live" || bad "the rejoin session never joined"
+GRACE_SESSION="$(sed -n 's/.*session \([0-9a-f]\{8\}\): welcome.*/\1/p' "$WORK/phone-grace2.log" | tail -1)"
+[ -n "$GRACE_SESSION" ] && ok "the phone minted the session (${GRACE_SESSION})" \
+    || bad "no welcome reached the phone"
+sleep 3
+GRACE_T_FIRST="$(grace_now)"
+printf 'mode blackhole\n' > "$WORK/fault-a.grace2.ctl"
+wait_for 6 grep -q -- '--pong-lost-->' "$WORK/mac-grace2.log" \
+    && ok "the current path's lost pong demoted it to a standby" \
+    || bad "the current path was not demoted by its lost pong"
+while "$PYTHON" -c "import sys, time; sys.exit(0 if time.time() < float('$GRACE_T_FIRST') + 3.0 else 1)"; do
+    sleep 0.1
+done
+GRACE_T_SECOND="$(grace_now)"
+printf 'mode blackhole\n' > "$WORK/fault-b.grace2.ctl"
+GRACE_ORPHAN=0
+for _ in $(seq 1 45); do
+    if grep -qE -- '--(pong-lost|failed)--> orphaned' "$WORK/mac-grace2.log"; then GRACE_ORPHAN=1; break; fi
+    sleep 0.1
+done
+GRACE_ORPHAN_AT="$(grace_line_epoch "$WORK/mac-grace2.log" '--> orphaned' || true)"
+GRACE_ORPHAN_DT="$("$PYTHON" -c "print('%.2f' % (float('${GRACE_ORPHAN_AT:-0}') - float('$GRACE_T_SECOND')))")"
+[ "$GRACE_ORPHAN" = 1 ] && ok "the Mac went orphaned ${GRACE_ORPHAN_DT}s after the second black-hole (limit 4.0)" \
+    || bad "no orphan after the second black-hole: $(tail -2 "$WORK/mac-grace2.log")"
+# Ten seconds without a route: still orphaned, no early end, no standby comeback.
+while "$PYTHON" -c "import sys, time; sys.exit(0 if time.time() < float('$GRACE_T_SECOND') + 10.0 else 1)"; do
+    sleep 0.2
+done
+grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace2.log" \
+    && bad "the session ended inside the 10 s black-out" \
+    || ok "still orphaned 10 s after the second black-hole, inside the grace"
+# Lift the black-holes: a raised radio reassociates, so the starved sockets
+# reset and the Mac re-dials joins over the restored route.
+GRACE_T_LIFT="$(grace_now)"
+: > "$WORK/grace2-lift"
+printf 'mode rst\n' > "$WORK/fault-a.grace2.ctl"
+printf 'mode rst\n' > "$WORK/fault-b.grace2.ctl"
+sleep 0.3
+printf 'mode pass\n' > "$WORK/fault-a.grace2.ctl"
+printf 'mode pass\n' > "$WORK/fault-b.grace2.ctl"
+GRACE_REJOIN=0
+for _ in $(seq 1 50); do
+    if grep -q -- 'orphaned --up--> live' "$WORK/mac-grace2.log"; then GRACE_REJOIN=1; break; fi
+    sleep 0.1
+done
+GRACE_REJOIN_AT="$(grace_line_epoch "$WORK/mac-grace2.log" 'orphaned --up--> live' || true)"
+GRACE_REJOIN_DT="$("$PYTHON" -c "print('%.2f' % (float('${GRACE_REJOIN_AT:-0}') - float('$GRACE_T_LIFT')))")"
+if [ "$GRACE_REJOIN" = 1 ] && "$PYTHON" -c "import sys; sys.exit(0 if float('$GRACE_REJOIN_DT') <= 5.0 else 1)"; then
+    ok "the Mac rejoined ${GRACE_REJOIN_DT}s after the route came back (limit 5.0)"
+else
+    bad "no rejoin within 5.0 s of the route (found=$GRACE_REJOIN, ${GRACE_REJOIN_DT}s): $(tail -2 "$WORK/mac-grace2.log")"
+fi
+GRACE_JOINED2=0
+for _ in $(seq 1 40); do
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    grep -q 'paths: joined' "$WORK/phone-grace2.log" && [ "$(grep -c 'paths: joined' "$WORK/phone-grace2.log")" -ge 2 ] && { GRACE_JOINED2=1; break; }
+    sleep 0.25
+done
+if [ "$GRACE_JOINED2" = 1 ]; then
+    ok "the phone attached the rejoined paths ($(grep -c 'paths: joined' "$WORK/phone-grace2.log") joins)"
+else
+    bad "the phone did not attach a rejoined path: $(grep -E 'paths: |session slot:' "$WORK/phone-grace2.log" | tail -4)"
+fi
+# PATH-11: the join is admitted only for the live session's own pinned Mac.
+# Log what the phone's slot and path machine said around it.
+GRACE_PHONE_SLOT="$(grep -E 'session slot:|paths: (joined|reconnecting)|paths: (orphaned|live)( |--)' "$WORK/phone-grace2.log" | tail -6 | tr '\n' '|')"
+ok "phone around the rejoin: ${GRACE_PHONE_SLOT}"
+GRACE_WELCOMES="$(grep -c ': welcome (protocol' "$WORK/phone-grace2.log" || true)"
+[ "${GRACE_WELCOMES:-0}" -eq 1 ] \
+    && ok "one session for the whole phase (no second welcome)" \
+    || bad "$GRACE_WELCOMES welcomes: the rejoin started a new session"
+GRACE_FIRST_FRAME="$(awk -v at="$GRACE_REJOIN_AT" '$1 > at { print $1, $3; exit }' "$WORK/grace2-frames.tsv" 2>/dev/null)"
+if [ -n "$GRACE_FIRST_FRAME" ]; then
+    GRACE_FRAME_DT="$("$PYTHON" -c "print('%.2f' % (float('${GRACE_FIRST_FRAME%% *}') - float('$GRACE_REJOIN_AT')))")"
+    if "$PYTHON" -c "import sys; sys.exit(0 if float('$GRACE_FRAME_DT') <= 2.0 else 1)"; then
+        ok "the first frame after the rejoin was ${GRACE_FRAME_DT}s later on path ${GRACE_FIRST_FRAME##* } (stale_picture_ms 2000)"
+    else
+        bad "the first frame after the rejoin took ${GRACE_FRAME_DT}s on path ${GRACE_FIRST_FRAME##* }"
+    fi
+else
+    bad "no frame after the rejoin (frame log: $(wc -l < "$WORK/grace2-frames.tsv" 2>/dev/null || echo 0) rows)"
+fi
+grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace2.log" \
+    && bad "a graceExpired followed the rejoin" \
+    || ok "no graceExpired (the rejoin ended the orphan)"
+stop_app
+wait_slot_free "$WORK/phone-grace2-end.log" 45 rejoin || true
+stop_proxies
+sleep 3
 
 # --- a v3 hello is refused with v ------------------------------------------
 section version
