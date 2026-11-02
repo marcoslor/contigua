@@ -3688,6 +3688,15 @@ check_density() {
     wait_until 20 events_have '"ev":"video","stream":1,' \
         || { bad "C16 no video for the old-phone burst window"; end_shared; return 1; }
     sleep 1
+    # The launch's pairing sheet takes the key window from the first stream
+    # window and leaves none when it closes (C13's scripts wait out the same
+    # churn). A person brings the window back by clicking its Deck tile; the
+    # keys below need it key or they land nowhere.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" || return 1
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "Settings (FakePhone)" ] \
+        && ok "C16 the old-phone window is key before the burst" \
+        || bad "C16 the old-phone window is not key before the burst ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
     local press pw0 top0
     pw0=$((900 * RUN_SCALE / 16 * 16))
     top0=$(python3 -c "print(int(160 * $pw0 / 900 * 1.5 + 0.5))")
