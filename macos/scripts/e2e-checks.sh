@@ -6,7 +6,7 @@
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
             deck deckrail windows zoom render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files files-bridge files-write files-watch intents mcp focus controls
-            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathbulk
+            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk
             dnd-edge panel-edge
             files-domain nfr menubar-shots)
 
@@ -155,6 +155,38 @@ for line in open(sys.argv[1]):
             and event.get("joined") and event.get("ts", 0) > start):
         sys.exit(0)
 sys.exit(1)
+PY
+}
+
+# path_restart_timeline <old-session> <epoch> — after <epoch>, the first join
+# hello naming the old session, the first plain hello and the first welcome
+# carrying a *different* session id (a restarted phone's process). Prints
+# `join=… hello=… welcome=… session=…`; exits 1 until that new welcome exists.
+path_restart_timeline() {
+    python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+old, start = sys.argv[2], float(sys.argv[3])
+join = hello = welcome = None
+session = ""
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "hello" and event.get("ts", 0) > start:
+        if event.get("join") == old and join is None:
+            join = event["ts"]
+        elif event.get("plain") and hello is None:
+            hello = event["ts"]
+    if (event.get("ev") == "welcome" and event.get("ts", 0) > start
+            and event.get("session") and event["session"] != old and welcome is None):
+        welcome = event["ts"]
+        session = event["session"]
+if welcome is None:
+    sys.exit(1)
+def show(value):
+    return "none" if value is None else "%.3f" % value
+print("join=%s hello=%s welcome=%s session=%s" % (show(join), show(hello), show(welcome), session))
 PY
 }
 
@@ -1028,6 +1060,86 @@ PY
     stop_app
     stop_fakephone
     pathfault_stop_all
+}
+
+# pathrestart (RR-12): the phone's server restarts while the Mac holds a
+# session (an app update, or Android killing and restarting the service). The
+# new process knows no session, so the Mac's orphan join gets `no_session`;
+# the Mac must start one new session at once, never wait out the 30 s grace.
+# (a) one path, (b) two: the same with both providers.
+pathrestart_phase() {
+    local paths="$1" label="$2" session t_kill t_listen timeline t_join t_hello t_welcome
+    local new_session chrome="$WORK/chrome-restart-$label.txt" second=()
+    clean
+    pathfault_nuke
+    FAKE_ARGS="--paths $paths" start_fake || return 1
+    path_pair_once "$PORT"
+    [ "$paths" -lt 2 ] || second=(--connect2 "127.0.0.1:$((PORT + 1))")
+    launch --connect "127.0.0.1:$PORT" ${second[@]+"${second[@]}"} \
+        --open com.android.settings --debug-chrome-state "$chrome" --quit-after 70
+    path_stream_start
+    wait_until 20 path_upto "$paths" \
+        && ok "[PATH-22] PATHRESTART($label) the ${paths}-path session is live before the kill" \
+        || bad "[PATH-22] PATHRESTART($label) only $(grep -c '"kind":"up"' "$WORK/events.jsonl" 2>/dev/null) paths were up before the kill"
+    wait_until 15 events_have '"ev":"video"' \
+        && ok "[PATH-22] PATHRESTART($label) the app window shows a live picture before the kill" \
+        || bad "[PATH-22] PATHRESTART($label) no app-window video before the kill"
+    session="$(path_welcome_session)"
+    [ -n "$session" ] \
+        && ok "[PATH-22] PATHRESTART($label) the phone minted the first session" \
+        || bad "[PATH-22] PATHRESTART($label) no welcome before the kill"
+    t_kill="$(path_now)"
+    kill -9 "$FAKE_PID"
+    wait "$FAKE_PID" 2>/dev/null
+    wait_until 5 chrome_offline "$chrome" \
+        && ok "[PATH-17] PATHRESTART($label) the Mac shows Reconnecting while the phone is gone" \
+        || bad "[PATH-17] PATHRESTART($label) the window kept the link up after the kill: $(cat "$chrome" 2>/dev/null)"
+    # The brief's gap: the new process listens 2 s after the kill, not before.
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_kill') + 2.0 else 1)"; do
+        sleep 0.1
+    done
+    start_fake || return 1
+    t_listen="$(path_now)"
+    timeline=""
+    for _ in $(seq 1 150); do
+        timeline="$(path_restart_timeline "$session" "$t_kill")" && break
+        sleep 0.1
+    done
+    if [ -z "$timeline" ]; then
+        bad "[PATH-22] PATHRESTART($label) no new session within 15 s of the new fake: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
+        stop_app; path_stream_stop; stop_fakephone; return 1
+    fi
+    t_join="$(sed -n 's/.*join=\([^ ]*\).*/\1/p' <<<"$timeline")"
+    t_hello="$(sed -n 's/.*hello=\([^ ]*\).*/\1/p' <<<"$timeline")"
+    t_welcome="$(sed -n 's/.*welcome=\([^ ]*\).*/\1/p' <<<"$timeline")"
+    new_session="$(sed -n 's/.*session=\([^ ]*\).*/\1/p' <<<"$timeline")"
+    [ "$new_session" != "$session" ] \
+        && ok "[PATH-22] PATHRESTART($label) the restarted phone minted a new session (not $session)" \
+        || bad "[PATH-22] PATHRESTART($label) the session id did not change"
+    grep -q -- 'session failed: no_session' "$WORK/app-stream.log" 2>/dev/null \
+        && ok "[PATH-22] PATHRESTART($label) the orphan join was refused no_session and ended the old session at once" \
+        || bad "[PATH-22] PATHRESTART($label) no no_session in the app log: $(grep 'session failed' "$WORK/app-stream.log" 2>/dev/null | tail -2)"
+    if python3 -c "import sys; sys.exit(0 if float('$t_welcome') - float('$t_listen') <= 5.0 else 1)"; then
+        ok "[PATH-22] PATHRESTART($label) the Mac was online $(python3 -c "print('%.2f' % (float('$t_welcome') - float('$t_listen')))")s after the new fake listened (limit 5.0)"
+    else
+        bad "[PATH-22] PATHRESTART($label) the Mac was online $(python3 -c "print('%.2f' % (float('$t_welcome') - float('$t_listen')))")s after the new fake listened (limit 5.0)"
+    fi
+    ok "[PATH-22] PATHRESTART($label) times: kill=$t_kill listen=$t_listen join=$t_join no_session=see-log hello=$t_hello welcome=$t_welcome"
+    wait_until 10 chrome_online "$chrome" \
+        && ok "[PATH-17] PATHRESTART($label) the window left Reconnecting" \
+        || bad "[PATH-17] PATHRESTART($label) the window still says the link is down: $(cat "$chrome" 2>/dev/null)"
+    wait_until 10 path_video_since "$t_listen" \
+        && ok "[PATH-22] PATHRESTART($label) the app window shows a live picture again" \
+        || bad "[PATH-22] PATHRESTART($label) no video frame after the restart"
+    stop_app
+    path_stream_stop
+    stop_fakephone
+    pathfault_stop_all
+}
+
+check_pathrestart() {
+    pathrestart_phase 1 a
+    pathrestart_phase 2 b
 }
 
 # pathbulk (D-2, R-5): a 16 Mbit/s path carries a 32 MiB drop while a fast
