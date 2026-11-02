@@ -3688,6 +3688,15 @@ check_density() {
     wait_until 20 events_have '"ev":"video","stream":1,' \
         || { bad "C16 no video for the old-phone burst window"; end_shared; return 1; }
     sleep 1
+    # The launch's pairing sheet takes the key window from the first stream
+    # window and leaves none when it closes (C13's scripts wait out the same
+    # churn). A person brings the window back by clicking its Deck tile; the
+    # keys below need it key or they land nowhere.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" || return 1
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "Settings (FakePhone)" ] \
+        && ok "C16 the old-phone window is key before the burst" \
+        || bad "C16 the old-phone window is not key before the burst ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
     local press pw0 top0
     pw0=$((900 * RUN_SCALE / 16 * 16))
     top0=$(python3 -c "print(int(160 * $pw0 / 900 * 1.5 + 0.5))")
@@ -3820,6 +3829,9 @@ PY
 # the pinch and rotate pointers. Momentum events must reach the phone as nothing.
 check_trackpad() {
     begin_shared || return 1
+    # The closing right click is the "delivered" signal; make it a Back rather
+    # than the default long press, whose touch would be a fifth gesture.
+    control secondary-click back || bad "C15 secondary-click back: $CONTROL_REPLY"
     # The script starts at the first video config. The main thread is busy with
     # the opening frames for a few hundred ms after that, which would stretch one
     # step of the first gesture past the cadence C15 measures. Settle first: the
@@ -3968,6 +3980,7 @@ PY
             esac
         done <<< "$verdicts"
     fi
+    control secondary-click longPress >/dev/null 2>&1 || true
     stop_app
     stop_fakephone
 }
