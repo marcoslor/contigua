@@ -1072,12 +1072,15 @@ PY
 check_pathblip() {
     clean
     pathfault_nuke
-    local ctl session founder t_fault t_lift conns_before delta blip_ms chrome_pid=""
+    local ctl session founder t_launch t_fault t_lift conns_before delta blip_ms chrome_pid=""
     blip_ms="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["blip_recovery_ms"]))' "$MACOS/scripts/nfr-limits.json")"
     FAKE_ARGS="--paths 1" start_fake || return 1
     path_pair_once "$PORT"
     pathfault_start "$((PORT + 3))" "$PORT"
     ctl="$PATHFAULT_CTL"
+    # The rig's own readiness probes reach the proxy before the app does: the
+    # count below starts at this launch.
+    t_launch="$(path_now)"
     launch --connect "127.0.0.1:$((PORT + 3))" --open com.android.settings \
         --debug-frame-log "$WORK/frames.tsv" --debug-chrome-state "$WORK/chrome.txt" \
         --quit-after 80
@@ -1105,15 +1108,16 @@ check_pathblip() {
     sleep 4
     founder="$(awk '$1 >= 0 { p = $3 } END { print p }' "$WORK/frames.tsv")"
     [ -n "$founder" ] || bad "[PATH-24] PATHBLIP the frame log names no path"
-    conns_before="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
+    conns_before="$(python3 - "$WORK/fault-$((PORT + 3)).events" "$t_launch" <<'PY'
 import json, sys
+since = float(sys.argv[2])
 count = 0
 for line in open(sys.argv[1]):
     try:
         event = json.loads(line)
     except ValueError:
         continue
-    if event.get("ev") == "conn":
+    if event.get("ev") == "conn" and float(event.get("ts", 0)) >= since:
         count += 1
 print(count)
 PY
