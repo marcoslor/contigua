@@ -112,6 +112,102 @@ path_ctl_for_listener() {
     fi
 }
 
+# path_ctl_other <listener> — the proxy in front of the listener that did not
+# found the session.
+path_ctl_other() {
+    if [ "$1" = "$PORT" ]; then
+        printf '%s\n' "$WORK/fault-$((PORT + 4)).ctl"
+    else
+        printf '%s\n' "$WORK/fault-$((PORT + 3)).ctl"
+    fi
+}
+
+# path_join_hello_since <session> <epoch> — a join naming that session arrived
+# after <epoch> (a rejoin, not the one the phase already made).
+path_join_hello_since() {
+    python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+want, start = sys.argv[2], float(sys.argv[3])
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if (event.get("ev") == "hello" and event.get("join") == want
+            and event.get("ts", 0) > start):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# path_joined_up_since <epoch> — a joined (not founding) path attached after
+# <epoch> (the phase's own first join is not the rejoin being proved).
+path_joined_up_since() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+start = float(sys.argv[2])
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if (event.get("ev") == "path" and event.get("kind") == "up"
+            and event.get("joined") and event.get("ts", 0) > start):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# path_video_since <epoch> — a video frame arrived after <epoch>.
+path_video_since() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+start = float(sys.argv[2])
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video" and event.get("ts", 0) > start:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# chrome_offline <file> — the stream window's bar says the link is down
+# (PATH-17's reconnecting state); the app writes it with --debug-chrome-state.
+chrome_offline() { grep -q 'bar_offline=1' "$1" 2>/dev/null; }
+chrome_online() { grep -q 'bar_offline=0' "$1" 2>/dev/null; }
+
+# path_now — decimal epoch seconds, for the grace's 4 s and 30 s bounds.
+path_now() { python3 -c 'import time; print("%.3f" % time.time())'; }
+
+# path_stream_start — follow this run's app into $WORK/app-stream.log. A poll of
+# the unified log costs about a second per call; the grace's 4 s bound and its
+# 30 s timer need the transitions as they land.
+path_stream_start() {
+    /usr/bin/log stream --info --style syslog --predicate "processID == $APP_PID" \
+        > "$WORK/app-stream.log" 2>/dev/null &
+    PATH_STREAM_PID=$!
+}
+
+path_stream_stop() {
+    [ -n "${PATH_STREAM_PID:-}" ] && kill "$PATH_STREAM_PID" >/dev/null 2>&1
+    wait "$PATH_STREAM_PID" 2>/dev/null || true
+    PATH_STREAM_PID=""
+}
+
+# path_wait_line <seconds> <extended regex> — the live app log gains the line
+# before the deadline.
+path_wait_line() {
+    local end=$((SECONDS + $1))
+    while :; do
+        grep -qE -- "$2" "$WORK/app-stream.log" 2>/dev/null && return 0
+        [ "$SECONDS" -lt "$end" ] || return 1
+        sleep 0.1
+    done
+}
+
 # path_pair_once <port> — pair on a fresh profile before a two-provider
 # launch: a held, unpinned attempt is closed at welcome (pathstart), so the
 # second launch must find a pin. The fake's log is truncated after it.
@@ -603,6 +699,17 @@ PY
     stop_fakephone
 }
 
+# pathgrace (PATH-6, PATH-21/E-9, PATH-17): the grace starts three ways:
+#  1. every path is killed and no join ever comes: at 30 s the session ends
+#     cleanly — one `paths: ... --grace--> ended`, the phone's slot is free,
+#     the Mac retries, no orphaned socket stays open;
+#  2. E-9 (boot 13): the current path loses its pong and becomes a standby,
+#     then the only other path goes silent. No non-standby path is left, so
+#     the Mac orphans within 4 s of the second, its window says the link is
+#     down, and the grace ends 30 s ± 2 s later;
+#  3. the same, but the route comes back 10 s after the second path went
+#     silent: the Mac re-dials joins, the same session id comes back, and the
+#     picture resumes within 5 s of the route.
 check_pathgrace() {
     clean
     local ends
@@ -661,6 +768,183 @@ PY
         || bad "[PATH-6] PATHGRACE the old session's paths did not close"
     stop_app
     stop_fakephone
+
+    # (a) E-9: A, the founder and current path, loses its pong and becomes a
+    # standby; 3 s after that first black-hole the other path goes silent too.
+    # Nothing non-standby is left, so the session orphans and starts the grace
+    # exactly as when no path is left.
+    clean
+    pathfault_nuke
+    local founder ctl_a ctl_b t_first t_second t_seen dt_orphan orphan_seen grace_seen grace_dt
+    FAKE_ARGS="--paths 2" start_fake || return 1
+    pathfault_start "$((PORT + 3))" "$PORT"
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))"
+    path_pair_once "$PORT"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open-phone --debug-chrome-state "$WORK/chrome-grace.txt" --quit-after 70
+    path_stream_start
+    wait_until 20 path_upto 2 \
+        || bad "[PATH-6] PATHGRACE(a) the second path never joined"
+    wait_until 15 events_have '"ev":"video"' \
+        && ok "[PATH-6] PATHGRACE(a) the two-path session is live before the faults" \
+        || bad "[PATH-6] PATHGRACE(a) no mirror video before the faults"
+    founder=""
+    for _ in $(seq 1 80); do
+        founder="$(path_hello_listener)"
+        [ -n "$founder" ] && break
+        sleep 0.25
+    done
+    ctl_a="$(path_ctl_for_listener "$founder")"
+    ctl_b="$(path_ctl_other "$founder")"
+    t_first="$(path_now)"
+    pathfault_mode "$ctl_a" blackhole
+    path_wait_line 5 -- '--pong-lost-->' \
+        && ok "[PATH-7] PATHGRACE(a) the current path's lost pong demoted it to a standby" \
+        || bad "[PATH-7] PATHGRACE(a) the current path was not demoted: $(path_log | tail -2)"
+    # The brief's 3 s, counted from the first black-hole; the demote lands
+    # inside them at the 2 s ping / 1.5 s pong cadence.
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_first') + 3.0 else 1)"; do
+        sleep 0.1
+    done
+    t_second="$(path_now)"
+    pathfault_mode "$ctl_b" blackhole
+    orphan_seen=0
+    for _ in $(seq 1 45); do
+        if grep -qE -- '--(pong-lost|failed)--> orphaned' "$WORK/app-stream.log" 2>/dev/null; then
+            orphan_seen=1
+            break
+        fi
+        sleep 0.1
+    done
+    t_seen="$(path_now)"
+    dt_orphan="$(python3 -c "print('%.2f' % (float('$t_seen') - float('$t_second')))")"
+    if [ "$orphan_seen" = 1 ] && python3 -c "import sys; sys.exit(0 if float('$dt_orphan') <= 4.0 else 1)"; then
+        ok "[PATH-21] PATHGRACE(a) the Mac went orphaned ${dt_orphan}s after the second black-hole (limit 4.0)"
+    else
+        bad "[PATH-21] PATHGRACE(a) no orphan within 4.0 s of the second black-hole: seen=$orphan_seen dt=${dt_orphan}s $(tail -2 "$WORK/app-stream.log" 2>/dev/null)"
+    fi
+    wait_until 3 chrome_offline "$WORK/chrome-grace.txt" \
+        && ok "[PATH-17] PATHGRACE(a) the window says the link is down (reconnecting), not a live picture" \
+        || bad "[PATH-17] PATHGRACE(a) the window kept the link up: $(cat "$WORK/chrome-grace.txt" 2>/dev/null)"
+    grace_seen=0
+    for _ in $(seq 1 320); do
+        if grep -q -- '--grace--> ended' "$WORK/app-stream.log" 2>/dev/null; then grace_seen=1; break; fi
+        sleep 0.1
+    done
+    grace_dt="$(python3 -c "import time; print('%.1f' % (time.time() - float('$t_seen')))")"
+    if [ "$grace_seen" = 1 ] && python3 -c "import sys; sys.exit(0 if 28.0 <= float('$grace_dt') <= 32.0 else 1)"; then
+        ok "[PATH-6] PATHGRACE(a) the Mac ended the session at the 30 s grace (${grace_dt}s after the orphan)"
+    else
+        bad "[PATH-6] PATHGRACE(a) the grace end came ${grace_dt}s after the orphan (want 30 ± 2), seen=$grace_seen: $(tail -2 "$WORK/app-stream.log" 2>/dev/null)"
+    fi
+    stop_app
+    path_stream_stop
+    stop_fakephone
+    pathfault_stop_all
+
+    # (b) E-9's in-grace recovery: same two faults, and the route is back 10 s
+    # after the second. A raised black-hole resets the sockets it starved (the
+    # radio reassociated), so the Mac re-dials joins over the restored route:
+    # the same session id comes back and the picture resumes.
+    clean
+    pathfault_nuke
+    local session t_lift rejoin_dt
+    FAKE_ARGS="--paths 2" start_fake || return 1
+    pathfault_start "$((PORT + 3))" "$PORT"
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))"
+    path_pair_once "$PORT"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open-phone --debug-chrome-state "$WORK/chrome-grace2.txt" --quit-after 60
+    path_stream_start
+    wait_until 20 path_upto 2 \
+        || bad "[PATH-6] PATHGRACE(b) the second path never joined"
+    wait_until 15 events_have '"ev":"video"' \
+        && ok "[PATH-6] PATHGRACE(b) the two-path session is live before the faults" \
+        || bad "[PATH-6] PATHGRACE(b) no mirror video before the faults"
+    founder=""
+    for _ in $(seq 1 80); do
+        founder="$(path_hello_listener)"
+        [ -n "$founder" ] && break
+        sleep 0.25
+    done
+    ctl_a="$(path_ctl_for_listener "$founder")"
+    ctl_b="$(path_ctl_other "$founder")"
+    session="$(path_welcome_session)"
+    [ -n "$session" ] \
+        && ok "[PATH-3] PATHGRACE(b) the phone minted the session" \
+        || bad "[PATH-3] PATHGRACE(b) no welcome reached the phone"
+    t_first="$(path_now)"
+    pathfault_mode "$ctl_a" blackhole
+    path_wait_line 5 -- '--pong-lost-->' \
+        && ok "[PATH-7] PATHGRACE(b) the current path's lost pong demoted it to a standby" \
+        || bad "[PATH-7] PATHGRACE(b) the current path was not demoted: $(path_log | tail -2)"
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_first') + 3.0 else 1)"; do
+        sleep 0.1
+    done
+    t_second="$(path_now)"
+    pathfault_mode "$ctl_b" blackhole
+    orphan_seen=0
+    for _ in $(seq 1 45); do
+        if grep -qE -- '--(pong-lost|failed)--> orphaned' "$WORK/app-stream.log" 2>/dev/null; then
+            orphan_seen=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$orphan_seen" = 1 ]; then
+        ok "[PATH-21] PATHGRACE(b) the Mac went orphaned after the second black-hole"
+    else
+        bad "[PATH-21] PATHGRACE(b) no orphan after the second black-hole: $(tail -2 "$WORK/app-stream.log" 2>/dev/null)"
+    fi
+    # Ten seconds with no route: the session must stay orphaned, never end
+    # early and never resume on a standby.
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_second') + 10.0 else 1)"; do
+        sleep 0.2
+    done
+    grep -q -- '--grace--> ended' "$WORK/app-stream.log" 2>/dev/null \
+        && bad "[PATH-6] PATHGRACE(b) the session ended inside the 10 s black-out" \
+        || ok "[PATH-6] PATHGRACE(b) still orphaned 10 s after the second black-hole, inside the grace"
+    t_lift="$(path_now)"
+    pathfault_mode "$ctl_a" rst
+    pathfault_mode "$ctl_b" rst
+    sleep 0.3
+    pathfault_mode "$ctl_a" pass
+    pathfault_mode "$ctl_b" pass
+    if wait_until 5 path_join_hello_since "$session" "$t_lift"; then
+        rejoin_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_lift')))")"
+        ok "[PATH-22] PATHGRACE(b) the Mac re-dialed a join with the same session id ${rejoin_dt}s after the route came back (limit 5.0)"
+    else
+        bad "[PATH-22] PATHGRACE(b) no rejoin named the session within 5.0 s: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
+    fi
+    wait_until 10 path_joined_up_since "$t_lift" \
+        && ok "[PATH-22] PATHGRACE(b) the phone attached the rejoined path to the same session" \
+        || bad "[PATH-6] PATHGRACE(b) no path attached after the route came back"
+    wait_until 5 chrome_online "$WORK/chrome-grace2.txt" \
+        && ok "[PATH-17] PATHGRACE(b) the window left reconnecting" \
+        || bad "[PATH-17] PATHGRACE(b) the window still says the link is down"
+    wait_until 10 path_video_since "$t_lift" \
+        && ok "[PATH-5] PATHGRACE(b) the picture resumed after the rejoin" \
+        || bad "[PATH-5] PATHGRACE(b) no video frame after the rejoin"
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+plain = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "hello" and event.get("plain"):
+        plain += 1
+print("plain=%d" % plain)
+sys.exit(0 if plain == 1 else 1)
+PY
+    [ $? -eq 0 ] \
+        && ok "[PATH-22] PATHGRACE(b) the rejoin started no new session (one plain hello)" \
+        || bad "[PATH-3] PATHGRACE(b) a second session started"
+    stop_app
+    path_stream_stop
+    stop_fakephone
+    pathfault_stop_all
 }
 
 # pathrejoin (D-3, R-3): the only path dies and the route comes back inside the
