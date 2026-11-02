@@ -6,6 +6,10 @@ import Foundation
 enum DockMessage {
     /// Shim → host: open or focus this app's window. userInfo: deviceId, pkg, pid.
     static let open = Notification.Name("dev.pocketdeck.dock.open")
+    /// Shim → host (automatic path): the shim is listening and its window is
+    /// already open. userInfo: deviceId, pkg, pid, token. The host answers a
+    /// bound pid with `opened`; an unbound one is answered by its own bind.
+    static let ready = Notification.Name("dev.pocketdeck.dock.ready")
     /// Host → shim: the request arrived. userInfo: pid.
     static let opened = Notification.Name("dev.pocketdeck.dock.opened")
     /// Host → shim: the window is gone; the shim exits. userInfo: pid.
@@ -27,6 +31,14 @@ enum DockMessage {
     static let plistHostPath = "PDHostPath"
     /// A random per-bundle token, written when the bundle is built.
     static let plistToken = "PDToken"
+    /// e2e only: hold the shim's observer registration back that many seconds,
+    /// the way a slow launch does. Written only when the host is given
+    /// `--dock-debug-listen-delay` in a build with the test hooks.
+    static let plistListenDelay = "PDListenDelay"
+    /// SHA-256 of the shim executable this bundle was built from. The copy is
+    /// re-signed per bundle id, so its bytes never equal the app's shim; the
+    /// refresh compares this hash and rebuilds a bundle from an older build.
+    static let plistShimHash = "PDShimHash"
     /// Why the bundle exists (docs/design/dock.md §Shortcuts): an array of
     /// `dock`, `manual`, `all`, `window`. Written by every current build.
     static let plistOrigins = "PDOrigins"
@@ -71,5 +83,138 @@ enum DockToken {
         var diff = 0
         for (a, b) in zip(Array(message.utf8), Array(stored.utf8)) { diff |= Int(a ^ b) }
         return diff == 0
+    }
+}
+
+// MARK: - The shim's lifecycle (docs/design/dock.md §Launch → window)
+
+/// The shim's handshake (DockApps.swift owns the origin events, so these live
+/// under the machine). Pure, so K2 runs every transition.
+enum DockShimMachine {
+    /// What the shim is waiting for: a person's launch (`open`) or the host's
+    /// answer to an automatic launch's `ready`.
+    enum WaitKind: Equatable {
+        case open
+        case ready
+    }
+
+    /// The shim's whole state: one enum, not a set of flags (CONV-PD-08).
+    enum State: Equatable {
+        /// Observers are not registered yet: a slow launch (e2e) or the instant
+        /// between `init` and `applicationDidFinishLaunching`.
+        case starting
+        case waiting(kind: WaitKind, since: Date, hostLaunched: Bool)
+        case bound
+        case quitting
+
+        /// A closed set of labels for the transition log.
+        var label: String {
+            switch self {
+            case .starting: return "starting"
+            case .waiting(let kind, _, let hostLaunched):
+                return "waiting(\(kind == .open ? "open" : "ready"), hostLaunched: \(hostLaunched))"
+            case .bound: return "bound"
+            case .quitting: return "quitting"
+            }
+        }
+    }
+
+    enum Event: Equatable {
+        /// Observers are registered: an automatic launch waits for `opened`, a
+        /// manual one asks for the window.
+        case launch(automatic: Bool, now: Date)
+        case tick(now: Date)
+        case opened
+        case closed
+        /// Dock click, ⌘-Tab or reopen.
+        case activate
+        case reopen(now: Date)
+        case terminate
+
+        var label: String {
+            switch self {
+            case .launch(let automatic, _): return automatic ? "launch(auto)" : "launch(open)"
+            case .tick: return "tick"
+            case .opened: return "opened"
+            case .closed: return "closed"
+            case .activate: return "activate"
+            case .reopen: return "reopen"
+            case .terminate: return "terminate"
+            }
+        }
+    }
+
+    /// What the shim sends the host.
+    enum Message: Equatable {
+        case open
+        case ready
+        case quit
+    }
+
+    /// Side effects the driver (Shim/main.swift) performs, never the transition.
+    enum Action: Equatable {
+        case post(Message)
+        case launchHost
+        case startRetry
+        case stopRetry
+        case terminate
+        case exit
+    }
+
+    /// No answer for this long means no host: the shim quits, so a lost host
+    /// never leaves a Dock tile behind. A bound shim never reaches it.
+    static let noAnswerQuitAfter: TimeInterval = 30
+    /// An `open` with no host running starts the host after this.
+    static let launchHostAfter: TimeInterval = 2
+
+    /// The one transition function: every event in every state.
+    static func transition(_ state: State, _ event: Event) -> (State, [Action]) {
+        switch event {
+        case .launch(let automatic, let now):
+            guard case .starting = state else { return (state, []) }
+            let kind: WaitKind = automatic ? .ready : .open
+            return (.waiting(kind: kind, since: now, hostLaunched: false),
+                    [.post(kind == .open ? .open : .ready), .startRetry])
+
+        case .tick(let now):
+            guard case .waiting(let kind, let since, let hostLaunched) = state else { return (state, []) }
+            let waited = now.timeIntervalSince(since)
+            if waited > noAnswerQuitAfter {
+                // Quit first, then terminate: the self-quit keeps the Quit ↔
+                // close rule, and applicationWillTerminate has nothing to add.
+                return (.quitting, [.post(.quit), .terminate])
+            }
+            var next = state
+            var actions: [Action] = []
+            if kind == .open, !hostLaunched, waited >= launchHostAfter {
+                next = .waiting(kind: kind, since: since, hostLaunched: true)
+                actions.append(.launchHost)
+            }
+            actions.append(.post(kind == .open ? .open : .ready))
+            return (next, actions)
+
+        case .opened:
+            // Starting means the answer arrived before our own launch event:
+            // the host has bound us, so the window is ours now.
+            if case .starting = state { return (.bound, [.stopRetry]) }
+            guard case .waiting = state else { return (state, []) }
+            return (.bound, [.stopRetry])
+
+        case .closed:
+            return (.quitting, [.exit])
+
+        case .activate:
+            guard case .bound = state else { return (state, []) }
+            return (state, [.post(.open)])
+
+        case .reopen(let now):
+            if case .quitting = state { return (state, []) }
+            return (.waiting(kind: .open, since: now, hostLaunched: false),
+                    [.post(.open), .startRetry])
+
+        case .terminate:
+            if case .quitting = state { return (state, []) }
+            return (.quitting, [.post(.quit)])
+        }
     }
 }

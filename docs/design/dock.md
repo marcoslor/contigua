@@ -11,7 +11,8 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
   Info.plist           CFBundleIdentifier dev.pocketdeck.dock.<profile.>?<deviceId>.<pkg>
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
                        PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it),
-                       PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts)
+                       PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts),
+                       PDShimHash (the shim executable it was built from; §Lifecycle)
   MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
   Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
@@ -129,15 +130,26 @@ Mac has no `actool` either (it ships with Xcode). So the shim keeps a shape-perf
 
 ## Launch → window (IPC)
 
-The shim is a regular AppKit app with no windows. On launch, on a Dock click (reopen) and
-when it is activated (⌘-Tab) it posts the distributed notification
-`dev.pocketdeck.dock.open` (object = profile name; userInfo deviceId, pkg, pid). The host
-answers `dev.pocketdeck.dock.opened` (pid) and opens the window, or brings an open one to
-the front. Until that answer arrives the shim re-posts every second; after 2 s with no host
-running from PDHostPath it launches that bundle (`--profile <profile>`); after 30 s it quits.
-A shim started by the automatic path (`--no-open`) skips the first `open`: its window is
-already open, so the host binds it or stops it, and only a person's later Dock click asks
-for a window.
+The shim is a regular AppKit app with no windows. It registers its observers before
+`NSApp.run`. On a manual launch, on a Dock click (reopen) and when it is activated (⌘-Tab)
+it posts the distributed notification `dev.pocketdeck.dock.open` (object = profile name;
+userInfo deviceId, pkg, pid, token). The host answers `dev.pocketdeck.dock.opened` (pid) and
+opens the window, or brings an open one to the front. Until that answer arrives the shim
+re-posts every second; after 2 s with no host running from PDHostPath it launches that
+bundle (`--profile <profile>`); after 30 s with no answer it quits.
+
+A shim started by the automatic path (`--no-open`) has its window already open, so it does
+not ask for one: it posts `dev.pocketdeck.dock.ready` at once, and again every second until
+answered. The host answers `ready` from a pid it has bound with `opened`, and only when the
+message carries the bundle's token; a pid that is not bound yet gets no answer, because its
+bind posts `opened` itself — either order reaches a shim that is listening. A bound shim
+never quits on its own: only a wait with no answer ends in the 30 s self-quit, so a lost
+host still never leaves a Dock tile behind. Only a person's later Dock click asks for a
+window.
+
+The e2e harness can write `PDListenDelay` into a bundle (only with
+`--dock-debug-listen-delay`) to start the observers late, and so make the race
+deterministic: the bind's one `opened` lands before the shim listens.
 
 Why distributed notifications: both sides are unsandboxed, they need no registration or
 entitlement, and the profile name as `object` keeps a test copy from ever reaching the
@@ -228,6 +240,10 @@ missing, the old default) → `dock`, unpinned → `window`.
   `closed` when the window closes, and while two windows of one app are open the
   identity follows the one that is left. The bundles stay on disk, so a later
   window only launches the identity again.
+- Updating PocketDeck updates the shims: a bundle records the SHA-256 of the
+  `PocketDeckShim` it was built from, and the next app-list refresh — or the
+  relaunch of an idle bundle — rebuilds one whose hash differs. A running shim
+  is left alone; it is replaced on a later refresh after it exits.
 - One set per phone: the id and file name include the phone, so the same app on two phones
   gets two shims; re-adding replaces the bundle in place.
 - Cleanup: when a phone's app list arrives, an uninstalled app loses the `all` and `manual`

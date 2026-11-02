@@ -1,8 +1,13 @@
 // A Dock app's executable (docs/design/dock.md): a windowless regular app whose
 // only job is to be one phone app's Dock/⌘-Tab identity. It asks PocketDeck to
-// open the window and exits when the window closes.
+// open the window and exits when the window closes. The lifecycle itself is
+// DockShimMachine (DockMessages.swift), which is also unit-tested by K2: this
+// file only reads the bundle, drives the machine and performs its actions.
 
 import AppKit
+import os
+
+private let shimLog = Logger(subsystem: "dev.pocketdeck.mac", category: "shim")
 
 final class ShimDelegate: NSObject, NSApplicationDelegate {
     private let center = DistributedNotificationCenter.default()
@@ -12,12 +17,13 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private let profile: String
     private let token: String
     private let hostURL: URL?
-    private var acknowledged = false
-    private var startedAt = Date()
-    private var launchedHost = false
-    private var retry: Timer?
     /// An automatic launch does not ask for a window (`--no-open`).
-    private var asksForWindow = true
+    private let automatic = CommandLine.arguments.contains("--no-open")
+    private var state = DockShimMachine.State.starting
+    private var retry: Timer?
+    private var listening = false
+    /// When the observers were registered: the host's answer is measured from it.
+    private var listenStartedAt: Date?
 
     override init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -27,67 +33,97 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         token = info[DockMessage.plistToken] as? String ?? ""
         hostURL = (info[DockMessage.plistHostPath] as? String).map { URL(fileURLWithPath: $0) }
         super.init()
+        guard !deviceId.isEmpty, !pkg.isEmpty else { return }
+        // As early as possible: the bind answers once, and a late registration
+        // misses it. --dock-debug-listen-delay (e2e) holds this back on purpose.
+        let delay = info[DockMessage.plistListenDelay] as? Double ?? 0
+        if delay > 0 {
+            Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.startListening() }
+            }
+        } else {
+            startListening()
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !deviceId.isEmpty, !pkg.isEmpty else { NSApp.terminate(nil); return }
-        center.addObserver(self, selector: #selector(opened(_:)), name: DockMessage.opened,
-                           object: profile, suspensionBehavior: .deliverImmediately)
-        center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,
-                           object: profile, suspensionBehavior: .deliverImmediately)
-        // An automatic launch stands for a window that is already open: the host
-        // binds it and answers `opened`, so asking for a window would only open a
-        // second one (or bring a closed one back). It still quits if nobody
-        // answers, so a lost host never leaves a Dock tile behind.
-        if CommandLine.arguments.contains("--no-open") {
-            asksForWindow = false
-            startedAt = Date()
-            startRetry()
-        } else {
-            requestOpen()
-        }
     }
 
     /// Dock click while running.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        requestOpen()
+        apply(.reopen(now: Date()))
         return false
     }
 
     /// ⌘-Tab to the shim: the window it stands for comes forward.
     func applicationDidBecomeActive(_ notification: Notification) {
-        if acknowledged { post(DockMessage.open) }
+        apply(.activate)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        post(DockMessage.quit)
+        apply(.terminate)
     }
 
-    private func requestOpen() {
-        acknowledged = false
-        startedAt = Date()
-        post(DockMessage.open)
-        startRetry()
+    private func startListening() {
+        guard !listening else { return }
+        listening = true
+        listenStartedAt = Date()
+        center.addObserver(self, selector: #selector(opened(_:)), name: DockMessage.opened,
+                           object: profile, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,
+                           object: profile, suspensionBehavior: .deliverImmediately)
+        shimLog.notice("dock shim \(self.pid, privacy: .public) listening")
+        // An automatic launch stands for a window that is already open: it
+        // posts `ready` until the host answers, so a bind that happened before
+        // this moment is not a lost answer. A manual launch asks for the window.
+        apply(.launch(automatic: automatic, now: Date()))
+    }
+
+    private func apply(_ event: DockShimMachine.Event) {
+        let before = state
+        let (next, actions) = DockShimMachine.transition(state, event)
+        state = next
+        if next != before {
+            shimLog.notice("dock shim \(self.pid, privacy: .public): \(before.label, privacy: .public) --\(event.label, privacy: .public)--> \(next.label, privacy: .public)")
+        }
+        if case .bound = next, before != .bound, let started = listenStartedAt {
+            let milliseconds = Int(Date().timeIntervalSince(started) * 1000)
+            shimLog.notice("dock shim \(self.pid, privacy: .public) bound, \(milliseconds, privacy: .public) ms after listening")
+        }
+        for action in actions { perform(action) }
+    }
+
+    private func perform(_ action: DockShimMachine.Action) {
+        switch action {
+        case .post(let message):
+            switch message {
+            case .open: post(DockMessage.open)
+            case .ready: post(DockMessage.ready)
+            case .quit: post(DockMessage.quit)
+            }
+        case .launchHost:
+            launchHostIfNeeded()
+        case .startRetry:
+            startRetry()
+        case .stopRetry:
+            retry?.invalidate()
+            retry = nil
+        case .terminate:
+            NSApp.terminate(nil)
+        case .exit:
+            exit(0)
+        }
     }
 
     private func startRetry() {
         retry?.invalidate()
         retry = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.retryOpen() }
+            MainActor.assumeIsolated { self?.apply(.tick(now: Date())) }
         }
     }
 
-    private func retryOpen() {
-        guard !acknowledged else { retry?.invalidate(); return }
-        let waited = Date().timeIntervalSince(startedAt)
-        if waited > 30 { NSApp.terminate(nil); return }
-        guard asksForWindow else { return }
-        if waited >= 2, !launchedHost { launchHostIfNeeded() }
-        post(DockMessage.open)
-    }
-
     private func launchHostIfNeeded() {
-        launchedHost = true
         guard let hostURL else { return }
         let running = NSWorkspace.shared.runningApplications.contains {
             $0.bundleURL?.standardizedFileURL == hostURL.standardizedFileURL
@@ -112,13 +148,12 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func opened(_ notification: Notification) {
         guard isMine(notification) else { return }
-        acknowledged = true
-        retry?.invalidate()
+        apply(.opened)
     }
 
     @objc private func closed(_ notification: Notification) {
         guard isMine(notification) else { return }
-        exit(0)
+        apply(.closed)
     }
 }
 
