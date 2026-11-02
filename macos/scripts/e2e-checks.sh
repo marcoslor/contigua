@@ -1116,15 +1116,34 @@ pathrestart_phase() {
     [ "$new_session" != "$session" ] \
         && ok "[PATH-22] PATHRESTART($label) the restarted phone minted a new session (not $session)" \
         || bad "[PATH-22] PATHRESTART($label) the session id did not change"
-    grep -q -- 'session failed: no_session' "$WORK/app-stream.log" 2>/dev/null \
-        && ok "[PATH-22] PATHRESTART($label) the orphan join was refused no_session and ended the old session at once" \
-        || bad "[PATH-22] PATHRESTART($label) no no_session in the app log: $(grep 'session failed' "$WORK/app-stream.log" 2>/dev/null | tail -2)"
+    local t_no_session="none"
+    if grep -q -- 'session failed: no_session' "$WORK/app-stream.log" 2>/dev/null; then
+        t_no_session="$(python3 - "$WORK/app-stream.log" <<'PY'
+import datetime, re, sys
+for line in open(sys.argv[1], errors="replace"):
+    if "session failed: no_session" not in line:
+        continue
+    match = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)", line)
+    if not match:
+        continue
+    try:
+        print("%.3f" % datetime.datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S.%f").timestamp())
+        break
+    except ValueError:
+        continue
+PY
+)"
+        [ -n "$t_no_session" ] || t_no_session="none"
+        ok "[PATH-22] PATHRESTART($label) the orphan join was refused no_session and ended the old session at once"
+    else
+        bad "[PATH-22] PATHRESTART($label) no no_session in the app log: $(grep 'session failed' "$WORK/app-stream.log" 2>/dev/null | tail -2)"
+    fi
     if python3 -c "import sys; sys.exit(0 if float('$t_welcome') - float('$t_listen') <= 5.0 else 1)"; then
         ok "[PATH-22] PATHRESTART($label) the Mac was online $(python3 -c "print('%.2f' % (float('$t_welcome') - float('$t_listen')))")s after the new fake listened (limit 5.0)"
     else
         bad "[PATH-22] PATHRESTART($label) the Mac was online $(python3 -c "print('%.2f' % (float('$t_welcome') - float('$t_listen')))")s after the new fake listened (limit 5.0)"
     fi
-    ok "[PATH-22] PATHRESTART($label) times: kill=$t_kill listen=$t_listen join=$t_join no_session=see-log hello=$t_hello welcome=$t_welcome"
+    ok "[PATH-22] PATHRESTART($label) times: kill=$t_kill listen=$t_listen join=$t_join no_session=$t_no_session hello=$t_hello welcome=$t_welcome"
     wait_until 10 chrome_online "$chrome" \
         && ok "[PATH-17] PATHRESTART($label) the window left Reconnecting" \
         || bad "[PATH-17] PATHRESTART($label) the window still says the link is down: $(cat "$chrome" 2>/dev/null)"
