@@ -5,13 +5,17 @@ Sits between the Mac and the phone so a check can break a path exactly as a
 person's Wi-Fi would, without touching the other paths:
 
     pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
-                   --mode pass|delay|blackhole|rst|throttle \
+                   --mode pass|delay|blackhole|pass-new|rst|throttle \
                    [--delay-ms 120] [--rate-mbit 2] [--ctl-file /tmp/pdpathfault.ctl]
 
 Modes (docs/design/paths.md §10.3):
     pass       bytes both ways, unmodified (the default)
     delay      each direction delayed by --delay-ms, in order
     blackhole  reads and drops, writes nothing (a dead radio, socket open)
+    pass-new   connections already open keep dropping (a socket in TCP's
+               retransmission backoff after the radio came back); connections
+               accepted after the change pass, so a fresh path can carry the
+               session while the old one stays silent
     rst        closes both sides with a reset at once
     throttle   caps each direction at --rate-mbit
 
@@ -34,7 +38,7 @@ import sys
 import threading
 import time
 
-MODES = ("pass", "delay", "blackhole", "rst", "throttle")
+MODES = ("pass", "delay", "blackhole", "pass-new", "rst", "throttle")
 CHUNK = 65536
 # Read at most this much ahead of the forwarder per direction: a real socket's
 # receive buffer is bounded, and a proxy with an unbounded queue would hide the
@@ -53,6 +57,9 @@ class Proxy(object):
         self.events_lock = threading.Lock()
         self.events_fp = open(args.events, "a") if args.events else None
         self.conn_seq = 0
+        # `pass-new`: connections with an id at or below this were already
+        # open when the lift happened and keep the black hole (a stale socket).
+        self.split_at = 0
         self._ctl_mtime = None
 
     # -- events --
@@ -73,6 +80,8 @@ class Proxy(object):
         with self.lock:
             if mode == self.mode:
                 return True
+            if mode == "pass-new":
+                self.split_at = self.conn_seq
             self.mode = mode
             self.event({"ev": "mode", "mode": mode})
             connections = list(self.connections)
@@ -84,6 +93,13 @@ class Proxy(object):
     def get_mode(self):
         with self.lock:
             return self.mode
+
+    def effective_mode(self, conn):
+        """`pass-new` splits by connection age; every other mode is global."""
+        with self.lock:
+            if self.mode != "pass-new":
+                return self.mode
+            return "pass" if conn.id > self.split_at else "blackhole"
 
     def watch_ctl(self):
         path = self.args.ctl_file
@@ -300,7 +316,7 @@ class Connection(object):
                     pass
                 return
             enqueued, data = item
-            mode = self.proxy.get_mode()
+            mode = self.proxy.effective_mode(self)
             if mode == "rst":
                 self.reset()
                 return
