@@ -448,9 +448,11 @@ schedule for a new session after the grace ends.
 | any | `welcomed` | `idle` (the backoff restarts) |
 | any | `stop` | `idle` |
 
-The cost is one round every ~2 s while the grace runs (faster when a dial is
-refused), and a phone that comes back 10 s into the grace meets a dial within
-about a second instead of waiting out an 8 s backoff step.
+The cost is one rejoin round per in-flight dial — about every 2 s while the
+dial hangs, every 0.25 s tick while it is refused — and a phone that comes
+back 10 s into the grace meets a dial within a tick when the refusal clears,
+or within about 2 s when the black hole was swallowing the handshake, instead
+of waiting out an 8 s backoff step.
 
 When the probe welcomes, the session has two paths, so PATH-7's pings start.
 If the old path is **still silent** the session switches to the probe at once
