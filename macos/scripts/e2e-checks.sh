@@ -1079,7 +1079,7 @@ gaps = ",".join("%.2f" % (b - a) for a, b in zip(times, times[1:])) or "-"
 print("dials=%d gaps=%s" % (len(times), gaps))
 PY
 )"
-    ok "[PATH-6] PATHGRACE(c) rejoin dials during the 15 s black-out: ${dials:-none}"
+    ok "[PATH-6] PATHGRACE(c) rejoin dials during the 15 s no-route window: ${dials:-none}"
     stop_app
     path_stream_stop
     stop_fakephone
