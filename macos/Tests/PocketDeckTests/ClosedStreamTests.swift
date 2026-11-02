@@ -36,8 +36,7 @@ final class ClosedStreamTests: XCTestCase {
     /// RR-9: an open stream is the session's "activity" while the phone's
     /// screen is off; the close ends it. RRR-5: only an accepted open counts,
     /// and the phone's own close forgets it.
-    func testAnOpenStreamCountsAsActivityUntilItCloses() {
-        var streams = ClosedStreams()
+    func testAnOpenStreamCountsAsActivityUntilItCloses() {        var streams = ClosedStreams()
         XCTAssertFalse(streams.hasOpenStream)
         XCTAssertEqual(streams.decide(type: "window.open", stream: 1), .send)
         streams.opened(1)
@@ -48,6 +47,29 @@ final class ClosedStreamTests: XCTestCase {
         XCTAssertTrue(streams.hasOpenStream, "stream 2 is still open")
         XCTAssertEqual(streams.decide(type: "window.close", stream: 2), .send)
         XCTAssertFalse(streams.hasOpenStream)
+    }
+
+    /// PATH-24/E-11: a paused or covered stream is open but sends no picture
+    /// by design, so its silence proves nothing; a resume or a close moves it
+    /// back into (or out of) the live set.
+    func testAPausedOrCoveredStreamIsNotALiveStream() {
+        var streams = ClosedStreams()
+        XCTAssertFalse(streams.hasLiveStream)
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 3), .send)
+        streams.opened(3)
+        XCTAssertTrue(streams.hasLiveStream)
+        streams.pause(3)
+        XCTAssertTrue(streams.hasOpenStream)
+        XCTAssertFalse(streams.hasLiveStream)
+        streams.resume(3)
+        XCTAssertTrue(streams.hasLiveStream)
+        streams.pause(3)
+        streams.forget(3)
+        XCTAssertFalse(streams.hasOpenStream)
+        XCTAssertFalse(streams.hasLiveStream)
+        // A pause for a stream that is not open is not a state.
+        streams.pause(9)
+        XCTAssertTrue(streams.paused.isEmpty)
     }
 
     /// RRR-5: the phone ended a stream (`window.closed`, or `error no_stream`

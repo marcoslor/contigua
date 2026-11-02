@@ -30,10 +30,18 @@ struct ClosedStreams: Equatable {
     /// The streams the Mac has open right now: a mirrored app window runs
     /// with the phone's screen off, and that counts as activity (RR-9).
     private(set) var open: Set<UInt32> = []
+    /// Open streams whose picture is paused or covered on the Mac: their
+    /// silence is expected, so PATH-24 never probes for them.
+    private(set) var paused: Set<UInt32> = []
 
     /// True while any stream the Mac opened is not closed: D-1's "a stream
     /// runs" half of the fast-ping rule.
     var hasOpenStream: Bool { !open.isEmpty }
+
+    /// True while a stream is open and its picture is expected to move: the
+    /// silence probe's other half (PATH-24). A paused or covered stream sends
+    /// no frames by design, so its silence proves nothing.
+    var hasLiveStream: Bool { !open.subtracting(paused).isEmpty }
 
     /// Decide one per-stream message. `type` is its protocol name
     /// (`window.pause`, `hover`, …), `stream` the id it carries.
@@ -58,6 +66,18 @@ struct ClosedStreams: Equatable {
     /// The opener's send was accepted: the stream is open (RRR-5).
     mutating func opened(_ stream: UInt32) {
         open.insert(stream)
+        paused.remove(stream)
+    }
+
+    /// The Mac paused or covered the stream's picture; only an open stream
+    /// counts, so a late pause for a closed id changes nothing.
+    mutating func pause(_ stream: UInt32) {
+        guard open.contains(stream) else { return }
+        paused.insert(stream)
+    }
+
+    mutating func resume(_ stream: UInt32) {
+        paused.remove(stream)
     }
 
     /// The phone ended the stream (`window.closed`, or `error no_stream` for
@@ -65,6 +85,7 @@ struct ClosedStreams: Equatable {
     /// message for it is dropped as before.
     mutating func forget(_ stream: UInt32) {
         open.remove(stream)
+        paused.remove(stream)
         ids.insert(stream)
     }
 

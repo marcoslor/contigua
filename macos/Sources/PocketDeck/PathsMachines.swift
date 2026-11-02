@@ -39,6 +39,7 @@ extension PathSessionEvent {
         case .currentFailed: return "failed"
         case .pongLost: return "pong-lost"
         case .peerSwitch: return "switch"
+        case .probeWelcomed: return "probe"
         case .close: return "close"
         case .graceExpired: return "grace"
         case .drainExpired: return "drain"
@@ -57,6 +58,9 @@ enum PathSessionEvent: Equatable {
     case pongLost(id: String)
     /// The peer's marker arrived on `arrivedOn`; `id` is the path being moved to.
     case peerSwitch(id: String, seq: UInt64, arrivedOn: String)
+    /// A single-path silence probe (PATH-24) welcomed as a second path;
+    /// `oldSilent` says whether the current path had still delivered nothing.
+    case probeWelcomed(id: String, oldSilent: Bool)
     case close(reason: String)
     /// The 30 s orphan grace passed (the caller's clock says so).
     case graceExpired
@@ -156,7 +160,7 @@ struct PathSessionMachine {
                 live.remove(id)
                 standby.remove(id)
                 return []
-            case .peerSwitch, .graceExpired, .drainExpired:
+            case .peerSwitch, .graceExpired, .drainExpired, .probeWelcomed:
                 return []
             }
 
@@ -182,6 +186,17 @@ struct PathSessionMachine {
                 standby.remove(current)
                 return [.closePath(path: current), .stopPing(path: current),
                         .startPing(path: id), .ranking(.externalSwitch(id))]
+            case .probeWelcomed(let id, let oldSilent):
+                // PATH-24/E-11: the probe is only there to carry a silent
+                // single path. Still silent means switch now rather than wait
+                // for its first lost pong; either way the old path stays
+                // attached as a standby and is never failed or closed here.
+                guard live.contains(id), id != current else { return [.ignore] }
+                guard oldSilent else { return [] }
+                standby.insert(current)
+                state = .live(current: id)
+                return [.switchTo(path: id), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch(id))]
             case .currentFailed(let id):
                 guard id == current else { return [] }
                 live.remove(id)
@@ -324,7 +339,7 @@ struct PathSessionMachine {
                 standby.remove(id)
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
-            case .graceExpired:
+            case .graceExpired, .probeWelcomed:
                 return []
             }
 
@@ -357,6 +372,8 @@ struct PathSessionMachine {
                 standby.remove(id)
                 return []
             case .peerSwitch:
+                return [.ignore]
+            case .probeWelcomed:
                 return [.ignore]
             case .close(let reason):
                 state = .ended(reason: reason)
@@ -585,6 +602,123 @@ struct PathRanking {
             register(id: id)
             state = .steady(current: id)
             return []
+        }
+    }
+}
+
+// MARK: - The single-path silence probe (PATH-24, E-11)
+
+/// A session with one path cannot notice a radio that died but whose socket
+/// is still open: PATH-21 keeps that path live on a lost pong, and the old TCP
+/// connection may sit in retransmission backoff for seconds after the network
+/// returns. While a stream is open, 2 s without ANY inbound frame is the one
+/// cheap signal that the path is silent, so the Mac dials one join beside it
+/// and keeps trying on a 1, 2, 4 s backoff. It never fails or closes the live
+/// path; the session decides the switch when the probe welcomes.
+enum PathProbeState: Equatable {
+    case idle
+    /// One dial is out; `failures` counts the ones before it.
+    case inFlight(failures: Int)
+    /// The probe failed; the next one is due at `nextAt`.
+    case waiting(nextAt: TimeInterval, failures: Int)
+}
+
+enum PathProbeEvent: Equatable {
+    /// The session's 0.25 s tick. `silentFor` is the current path's own
+    /// inbound silence; only the machine decides whether it is a trigger.
+    case tick(pathCount: Int, streamLive: Bool, silentFor: TimeInterval)
+    /// The probe's path welcomed: the session has two paths now.
+    case welcomed
+    /// The probe's dial failed before a welcome.
+    case failed
+    /// Any inbound frame arrived on a live path: the silence is over.
+    case inbound
+    /// The stream closed or the session ended.
+    case stop
+}
+
+enum PathProbeAction: Equatable {
+    case dial
+    case cancel
+    case ignore
+}
+
+struct PathProbeMachine {
+    /// E-11: frames, `window.still`, JSON or anything else count as inbound.
+    static let silence: TimeInterval = 2.0
+
+    private(set) var state: PathProbeState = .idle
+
+    /// E-11's steps: 1 s, then 2 s, then 4 s, capped at 4 s.
+    static func backoff(afterFailures failures: Int) -> TimeInterval {
+        switch failures {
+        case ..<1: return 0
+        case 1: return 1
+        case 2: return 2
+        default: return 4
+        }
+    }
+
+    /// `(state, event) -> (state, actions)`; the session owns the dial.
+    mutating func handle(_ event: PathProbeEvent, now: TimeInterval) -> [PathProbeAction] {
+        switch event {
+        case .tick(let pathCount, let streamLive, let silentFor):
+            let trigger = pathCount == 1 && streamLive && silentFor >= Self.silence
+            switch state {
+            case .idle:
+                guard trigger else { return [.ignore] }
+                state = .inFlight(failures: 0)
+                return [.dial]
+            case .inFlight:
+                // One probe in flight is the most the rule allows. A tick with
+                // frames back means the silence ended: drop the dial.
+                guard !trigger else { return [.ignore] }
+                state = .idle
+                return [.cancel]
+            case .waiting(let nextAt, let failures):
+                guard trigger else {
+                    state = .idle
+                    return [.ignore]
+                }
+                guard now >= nextAt else { return [.ignore] }
+                state = .inFlight(failures: failures)
+                return [.dial]
+            }
+
+        case .welcomed:
+            state = .idle
+            return [.ignore]
+
+        case .failed:
+            switch state {
+            case .idle:
+                return [.ignore]
+            case .inFlight(let failures), .waiting(_, let failures):
+                let next = failures + 1
+                state = .waiting(nextAt: now + Self.backoff(afterFailures: next),
+                                 failures: next)
+                return [.ignore]
+            }
+
+        case .inbound:
+            switch state {
+            case .inFlight:
+                state = .idle
+                return [.cancel]
+            case .idle, .waiting:
+                state = .idle
+                return [.ignore]
+            }
+
+        case .stop:
+            switch state {
+            case .inFlight:
+                state = .idle
+                return [.cancel]
+            case .idle, .waiting:
+                state = .idle
+                return [.ignore]
+            }
         }
     }
 }
