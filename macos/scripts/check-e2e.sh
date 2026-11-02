@@ -8284,6 +8284,10 @@ check_dock() {
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$adaptive" --quit-after 60
     wait_until 30 eval '[ -d "$chrome" ]' \
         || { bad "DOCK icon: no shim for $adaptive"; stop_app; stop_fakephone; return 1; }
+    # The bundle's folder exists a moment before its .icns is written (the
+    # same gap the flat icons below wait out): stopping the app here would
+    # leave the shim iconless and fail a check the app never finished.
+    wait_until 30 eval '[ -f "$chrome/Contents/Resources/AppIcon.icns" ]'
     stop_app
     version="$(/usr/libexec/PlistBuddy -c 'Print :PDIconVersion' "$chrome/Contents/Info.plist" 2>/dev/null)"
     case "$version" in
