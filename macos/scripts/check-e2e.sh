@@ -7957,9 +7957,24 @@ PY
     files_list
     local root; root="$(files_domain_path)"
     files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
-    wait_until "$FILES_SWITCH_WAIT_S" files_root_lists "$root" \
+    # The domain becomes "PocketDeck (<phone>)" once the session knows the
+    # phone, and its CloudStorage folder is renamed under the URL cached at add.
+    # The first run waited its whole window on the old name (the folder was
+    # already "PocketDeck-PocketDeck(FakePhone)" and the extension listed fine).
+    # Re-read the URL on every try, and take the folder the rename left.
+    domain_root_lists() {
+        if [ ! -d "$root" ]; then
+            files_list
+            local fresh; fresh="$(files_domain_path)"
+            [ -n "$fresh" ] && root="$fresh"
+            [ -d "$root" ] \
+                || root="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+        fi
+        files_root_lists "$root"
+    }
+    wait_until "$FILES_SWITCH_WAIT_S" domain_root_lists \
         && ok "FILES-THUMBS-SCALE the extension is enabled and the domain enumerates" \
-        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch"; stop_app; stop_fakephone; return 1; }
+        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch (folder $(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1))"; stop_app; stop_fakephone; return 1; }
 
     # -- The listing's weight ------------------------------------------------
     local bulk="$root/bulk" t0 t1 names listing_ms
