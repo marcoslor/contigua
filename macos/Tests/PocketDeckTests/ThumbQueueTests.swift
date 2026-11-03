@@ -131,14 +131,14 @@ final class ThumbQueueTests: XCTestCase {
     func testACancelLeavesTheQueue() {
         for id in 1...3 { ask(UInt32(id)) }
         ask(4)
-        XCTAssertTrue(queue.cancel(id: 4))
+        XCTAssertTrue(queue.cancel(id: 4, client: ObjectIdentifier(host)))
         XCTAssertEqual(.failure(code: "cancelled"), answers[4]?.first)
         XCTAssertEqual(3, host.calls.count, "a cancelled queued ask reached the phone")
     }
 
     func testACancelOfARunningOneSendsFsCancel() {
         ask(1)
-        XCTAssertTrue(queue.cancel(id: 1))
+        XCTAssertTrue(queue.cancel(id: 1, client: ObjectIdentifier(host)))
         XCTAssertEqual([1], host.cancels)
         XCTAssertEqual(.failure(code: "cancelled"), answers[1]?.first)
     }
@@ -175,12 +175,21 @@ final class ThumbQueueTests: XCTestCase {
         XCTAssertNil(answers[2])
     }
 
+    func testTwoClientsMayUseTheSameRequestId() {
+        ask(2, item: "ino:1", client: ObjectIdentifier(host))
+        ask(2, item: "ino:2", client: ObjectIdentifier(queue))
+        XCTAssertEqual(2, host.calls.count, "a second connection's id 2 was dropped")
+        host.finish(0, .success(thumbBytes))
+        host.finish(1, .success(thumbBytes))
+        XCTAssertEqual(2, answers.values.reduce(0) { $0 + $1.count })
+    }
+
     func testOneAnswerPerRequest() {
         ask(1)
         guard host.calls.count == 1 else { return }
         host.finish(0, .success(thumbBytes))
-        queue.cancel(id: 1)
-        queue.cancel(id: 1)
+        queue.cancel(id: 1, client: ObjectIdentifier(host))
+        queue.cancel(id: 1, client: ObjectIdentifier(host))
         XCTAssertEqual(1, answers[1]?.count)
         XCTAssertEqual([], host.cancels, "a finished request was cancelled on the phone")
     }
