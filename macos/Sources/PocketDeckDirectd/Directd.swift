@@ -630,25 +630,29 @@ private func directFrameCallback(_ context: UnsafeMutableRawPointer?,
         .frameReceived(frame, length)
 }
 
-private func directConnectedCallback(_ context: UnsafeMutableRawPointer?) {
+func directConnectedCallback(_ context: UnsafeMutableRawPointer?) {
     guard let context else { return }
     Unmanaged<Link>.fromOpaque(context).takeUnretainedValue().connected()
 }
 
-private func directRecvCallback(_ context: UnsafeMutableRawPointer?,
-                                _ data: UnsafePointer<UInt8>?,
-                                _ length: UInt16) -> UInt16 {
-    guard let context, let data else { return 0 }
-    return Unmanaged<Link>.fromOpaque(context).takeUnretainedValue()
-        .receivedFromStack(data, Int(length))
+func directRecvCallback(_ context: UnsafeMutableRawPointer?,
+                        _ data: UnsafePointer<UInt8>?,
+                        _ length: UInt16) -> UInt16 {
+    guard let context else { return 0 }
+    let link = Unmanaged<Link>.fromOpaque(context).takeUnretainedValue()
+    guard let data else {
+        link.peerClosed()
+        return 0
+    }
+    return link.receivedFromStack(data, Int(length))
 }
 
-private func directSentCallback(_ context: UnsafeMutableRawPointer?, _ free: UInt16) {
+func directSentCallback(_ context: UnsafeMutableRawPointer?, _ free: UInt16) {
     guard let context else { return }
     Unmanaged<Link>.fromOpaque(context).takeUnretainedValue().sentToStack(free: free)
 }
 
-private func directErrorCallback(_ context: UnsafeMutableRawPointer?, _ code: Int32) {
+func directErrorCallback(_ context: UnsafeMutableRawPointer?, _ code: Int32) {
     guard let context else { return }
     Unmanaged<Link>.fromOpaque(context).takeUnretainedValue().connectionFailed(code: code)
 }

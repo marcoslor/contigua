@@ -335,6 +335,17 @@ static void conn_died(struct pdl_conn *c, int code)
     }
 }
 
+/* A clean FIN is not an error: mark the record dead without calling err_cb. */
+static void conn_closed(struct pdl_conn *c)
+{
+    if (c->dead) {
+        return;
+    }
+    c->dead = 1;
+    c->pcb = NULL;
+    unlink_conn(c);
+}
+
 static void on_error(void *arg, err_t err)
 {
     struct pdl_conn *c = (struct pdl_conn *)arg;
@@ -374,7 +385,9 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         return ERR_OK;
     }
     if (p == NULL) {
-        /* The peer sent FIN: the app sees EOF, the link is down. */
+        /* The peer sent FIN. lwIP's contract is recv(data == NULL), so pass it
+         * through: the link machine turns it into peerClosed and gives the app
+         * EOF. This is a clean close, not an error callback. */
         tcp_arg(pcb, NULL);
         tcp_recv(pcb, NULL);
         tcp_sent(pcb, NULL);
@@ -382,7 +395,10 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         if (tcp_close(pcb) != ERR_OK) {
             tcp_abort(pcb);
         }
-        conn_died(c, 0);
+        conn_closed(c);
+        if (c->recv_cb != NULL) {
+            (void)c->recv_cb(c->ctx, NULL, 0);
+        }
         return ERR_OK;
     }
     if (p->tot_len > 0 && c->recv_cb != NULL) {

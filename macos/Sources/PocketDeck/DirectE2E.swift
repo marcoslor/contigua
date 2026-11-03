@@ -17,6 +17,10 @@ enum DirectE2E {
 
     static func run(mode: String, arguments: [String]) -> Never {
         setvbuf(stdout, nil, _IOLBF, 0)
+        // The helper closes this fd when the peer closes or resets. Without
+        // this, the next write raises SIGPIPE and kills the app before the
+        // close step can ask the helper for the link's state (boot 7).
+        signal(SIGPIPE, SIG_IGN)
         alarm(600)
         let options = LaunchOptions.parse(arguments)
         if let refusal = options.launchRefusal(releaseBuild: false) {
@@ -124,7 +128,7 @@ enum DirectE2E {
     }
 
     /// The peer closes 1 s after accept; the helper must report the link down
-    /// within 5 s of the app seeing EOF, not hang.
+    /// within 2 s of the app seeing EOF, not hang.
     private static func runClose() throws {
         let client = try HelperClient(path: socketPath())
         try helloAndPeer(client)

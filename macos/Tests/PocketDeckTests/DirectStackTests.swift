@@ -146,6 +146,7 @@ final class DirectStackTests: XCTestCase {
 
         var pair = [Int32](repeating: 0, count: 2)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        _ = fcntl(pair[0], F_SETFL, O_NONBLOCK)
         let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
                         port: 47_990, remote: "fe80::1")
         defer {
@@ -220,16 +221,158 @@ final class DirectStackTests: XCTestCase {
                        "bytes already queued must leave before a later segment")
     }
 
+    func testPeerFinReachesRecvCallbackWithNoData() throws {
+        let fake = try FakeLink(ownMAC: ownMAC, ownLL: ownLL)
+        pdl_set_peer(fake.stack, peerLL, peerMAC)
+        resetCallbacks()
+        let conn = try XCTUnwrap(fake.connect(to: peerLL, port: 47_990))
+        defer { pdl_release(conn) }
+        let syn = try XCTUnwrap(fake.drainFrames().first)
+        let serverSequence: UInt32 = 0x1122_3344
+        fake.send(fake.synAck(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                              clientPort: fake.tcpSourcePort(syn),
+                              serverPort: fake.tcpDestinationPort(syn),
+                              sequence: serverSequence,
+                              acknowledgement: fake.tcpSequence(syn) &+ 1))
+        _ = fake.drainFrames()
+
+        fake.send(fake.fin(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                           clientPort: fake.tcpSourcePort(syn),
+                           serverPort: fake.tcpDestinationPort(syn),
+                           sequence: serverSequence &+ 1,
+                           acknowledgement: fake.tcpSequence(syn) &+ 1))
+
+        XCTAssertEqual(directTestRecvClosed, 1, "a FIN reaches the recv callback with no data")
+        XCTAssertTrue(directTestErrors.isEmpty, "a clean FIN is not an error")
+        XCTAssertEqual(pdl_conn_alive(conn), 0, "a FIN retires the connection")
+    }
+
+    func testPeerFinTakesTheLinkDownAndGivesTheAppEOF() throws {
+        let fake = try FakeLink(ownMAC: ownMAC, ownLL: ownLL)
+        pdl_set_peer(fake.stack, peerLL, peerMAC)
+        var pair = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        _ = fcntl(pair[0], F_SETFL, O_NONBLOCK)
+        let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
+                        port: 47_990, remote: "fe80::1")
+        defer {
+            link.releaseConnection()
+            close(pair[0])
+            close(pair[1])
+        }
+        let conn = try XCTUnwrap(fake.connect(
+            to: peerLL, port: 47_990,
+            context: Unmanaged.passUnretained(link).toOpaque()))
+        link.attach(conn)
+        let syn = try XCTUnwrap(fake.drainFrames().first)
+        let serverSequence: UInt32 = 0x1122_3344
+        fake.send(fake.synAck(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                              clientPort: fake.tcpSourcePort(syn),
+                              serverPort: fake.tcpDestinationPort(syn),
+                              sequence: serverSequence,
+                              acknowledgement: fake.tcpSequence(syn) &+ 1))
+        XCTAssertEqual(link.state, .up)
+        _ = fake.drainFrames()
+
+        fake.send(fake.fin(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                           clientPort: fake.tcpSourcePort(syn),
+                           serverPort: fake.tcpDestinationPort(syn),
+                           sequence: serverSequence &+ 1,
+                           acknowledgement: fake.tcpSequence(syn) &+ 1))
+
+        XCTAssertEqual(link.state, .down, "the peer's FIN must take the link down")
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(pair[0], &byte, 1), 0, "the app's fd must read EOF")
+        let frames = fake.drainFrames()
+        XCTAssertTrue(frames.contains { $0[67] & 0x01 != 0 },
+                      "the helper must answer the peer's FIN")
+    }
+
+    func testPeerResetTakesTheLinkDown() throws {
+        let fake = try FakeLink(ownMAC: ownMAC, ownLL: ownLL)
+        pdl_set_peer(fake.stack, peerLL, peerMAC)
+        var pair = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        _ = fcntl(pair[0], F_SETFL, O_NONBLOCK)
+        let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
+                        port: 47_990, remote: "fe80::1")
+        defer {
+            link.releaseConnection()
+            close(pair[0])
+            close(pair[1])
+        }
+        let conn = try XCTUnwrap(fake.connect(
+            to: peerLL, port: 47_990,
+            context: Unmanaged.passUnretained(link).toOpaque()))
+        link.attach(conn)
+        let syn = try XCTUnwrap(fake.drainFrames().first)
+        let serverSequence: UInt32 = 0x1122_3344
+        fake.send(fake.synAck(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                              clientPort: fake.tcpSourcePort(syn),
+                              serverPort: fake.tcpDestinationPort(syn),
+                              sequence: serverSequence,
+                              acknowledgement: fake.tcpSequence(syn) &+ 1))
+        XCTAssertEqual(link.state, .up)
+        _ = fake.drainFrames()
+
+        fake.send(fake.reset(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                             clientPort: fake.tcpSourcePort(syn),
+                             serverPort: fake.tcpDestinationPort(syn),
+                             sequence: serverSequence &+ 1))
+
+        XCTAssertEqual(link.state, .down, "a RST must take the link down")
+        XCTAssertEqual(link.sock, -1, "a RST must close the app's socket")
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(pair[0], &byte, 1), 0, "the app's fd must read EOF")
+    }
+
+    func testAppCloseOnUpLinkIsAccepted() throws {
+        let fake = try FakeLink(ownMAC: ownMAC, ownLL: ownLL)
+        pdl_set_peer(fake.stack, peerLL, peerMAC)
+        resetCallbacks()
+        let conn = try XCTUnwrap(fake.connect(to: peerLL, port: 47_990))
+        let syn = try XCTUnwrap(fake.drainFrames().first)
+        fake.send(fake.synAck(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                              clientPort: fake.tcpSourcePort(syn),
+                              serverPort: fake.tcpDestinationPort(syn),
+                              sequence: 0x1122_3344,
+                              acknowledgement: fake.tcpSequence(syn) &+ 1))
+        _ = fake.drainFrames()
+
+        var pair = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        _ = fcntl(pair[0], F_SETFL, O_NONBLOCK)
+        let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
+                        port: 47_990, remote: "fe80::1")
+        defer {
+            link.releaseConnection()
+            close(pair[0])
+            close(pair[1])
+        }
+        link.attach(conn)
+        link.connected()
+        XCTAssertEqual(link.state, .up)
+
+        link.closeByApp()
+
+        XCTAssertEqual(link.state, .down, "close on an up link must be accepted")
+        XCTAssertEqual(pdl_conn_alive(conn), 0, "close must free the TCP control block")
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(pair[0], &byte, 1), 0, "the app's fd must read EOF")
+    }
+
     // MARK: callbacks
 
     private func resetCallbacks() {
         directTestConnected = 0
         directTestErrors = []
+        directTestRecvClosed = 0
     }
 }
 
 private var directTestConnected = 0
 private var directTestErrors: [Int32] = []
+private var directTestRecvClosed = 0
 
 private func directTestConnectedCallback(_ context: UnsafeMutableRawPointer?) {
     _ = context
@@ -240,8 +383,8 @@ private func directTestRecvCallback(_ context: UnsafeMutableRawPointer?,
                                     _ data: UnsafePointer<UInt8>?,
                                     _ length: UInt16) -> UInt16 {
     _ = context
-    _ = data
     _ = length
+    if data == nil { directTestRecvClosed += 1 }
     return 0
 }
 
@@ -302,6 +445,17 @@ private final class FakeLink {
             pdl_connect(stack, address.baseAddress, port, nil,
                         directTestConnectedCallback, directTestRecvCallback,
                         directTestSentCallback, directTestErrorCallback)
+        }
+    }
+
+    /// Connect with the helper's own callbacks and a `Link` as the context, so
+    /// the test covers the wiring in Directd.swift, not just pdlwip.c.
+    func connect(to peer: [UInt8], port: UInt16,
+                 context: UnsafeMutableRawPointer) -> OpaquePointer? {
+        peer.withUnsafeBufferPointer { address in
+            pdl_connect(stack, address.baseAddress, port, context,
+                        directConnectedCallback, directRecvCallback,
+                        directSentCallback, directErrorCallback)
         }
     }
 
@@ -368,6 +522,38 @@ private final class FakeLink {
         tcp[20] = 2 // MSS option
         tcp[21] = 4
         put16(&tcp, 22, 1400)
+        setChecksum(&tcp, at: 16, pseudo: pseudoHeader(source: source, destination: destination,
+                                                       nextHeader: 6, payload: tcp))
+        return ethernet(destination: ownMAC, source: mac, nextHeader: 6,
+                        sourceAddress: source, destinationAddress: destination, payload: tcp)
+    }
+
+    func fin(from source: [UInt8], fromMAC mac: [UInt8], to destination: [UInt8],
+             clientPort: UInt16, serverPort: UInt16,
+             sequence: UInt32, acknowledgement: UInt32) -> [UInt8] {
+        var tcp = [UInt8](repeating: 0, count: 20)
+        put16(&tcp, 0, serverPort)
+        put16(&tcp, 2, clientPort)
+        put32(&tcp, 4, sequence)
+        put32(&tcp, 8, acknowledgement)
+        tcp[12] = 5 << 4
+        tcp[13] = 0x11 // FIN | ACK
+        put16(&tcp, 14, 65_535)
+        setChecksum(&tcp, at: 16, pseudo: pseudoHeader(source: source, destination: destination,
+                                                       nextHeader: 6, payload: tcp))
+        return ethernet(destination: ownMAC, source: mac, nextHeader: 6,
+                        sourceAddress: source, destinationAddress: destination, payload: tcp)
+    }
+
+    func reset(from source: [UInt8], fromMAC mac: [UInt8], to destination: [UInt8],
+               clientPort: UInt16, serverPort: UInt16, sequence: UInt32) -> [UInt8] {
+        var tcp = [UInt8](repeating: 0, count: 20)
+        put16(&tcp, 0, serverPort)
+        put16(&tcp, 2, clientPort)
+        put32(&tcp, 4, sequence)
+        tcp[12] = 5 << 4
+        tcp[13] = 0x04 // RST
+        put16(&tcp, 14, 0)
         setChecksum(&tcp, at: 16, pseudo: pseudoHeader(source: source, destination: destination,
                                                        nextHeader: 6, payload: tcp))
         return ethernet(destination: ownMAC, source: mac, nextHeader: 6,

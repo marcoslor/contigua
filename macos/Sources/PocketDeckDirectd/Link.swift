@@ -179,6 +179,12 @@ final class Link {
         fail(.connectFailed)
     }
 
+    /// lwIP calls the receive callback with no data on the peer's FIN.
+    func peerClosed() {
+        DirectLog.line("link \(id) peer closed")
+        fail(.peerClosed)
+    }
+
     func closeByApp() {
         guard state != .down else { return }
         if let conn {
