@@ -87,9 +87,13 @@ def main():
         context.options |= ssl.OP_NO_TICKET
         context.minimum_version = ssl.TLSVersion.TLSv1_3
 
+    host, _, zone = args.address.partition("%")
+    scope = socket.if_nametoindex(zone) if zone else 0
     listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind((args.address, args.port))
+    # A link-local needs sin6_scope_id; the "fe80::1%if" string form fails with
+    # EADDRNOTAVAIL on macOS, so bind the 4-tuple.
+    listener.bind((host, args.port, 0, scope))
     listener.listen(4)
     print("feth_phone listening %s %d mode=%s tls=%d"
           % (args.address, args.port, args.mode, 1 if args.tls else 0), flush=True)

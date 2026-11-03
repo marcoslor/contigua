@@ -242,7 +242,7 @@ feth_start_server() {
     local mode="$1" port="$2"
     shift 2
     "$FAKE_PY" "$ROOT/tools/fakephone/feth_phone.py" \
-        --address "fe80::1%feth1" --port "$port" --mode "$mode" \
+        --address "$FETH_LL1%feth1" --port "$port" --mode "$mode" \
         --stats "$WORK/feth-count-$port.txt" "$@" \
         > "$WORK/feth-server-$port.log" 2>&1 &
     FETH_SERVER_PIDS+=("$!")
@@ -267,7 +267,7 @@ feth_stop_servers() {
 feth_run_e2e() {
     local mode="$1" limit="$2" log="$WORK/direct-e2e-$1.log"
     PD_DIRECT_SOCK="$FETH_SOCK" PD_DIRECT_PEER_MAC="$FETH_MAC1" \
-        PD_DIRECT_PEER_LL="fe80::1" PD_DIRECT_PORT="$FETH_PORT" \
+        PD_DIRECT_PEER_LL="$FETH_LL1" PD_DIRECT_PORT="$FETH_PORT" \
         PD_DIRECT_TLS_PORT="$FETH_TLS_PORT" PD_DIRECT_SECS="${FETH_BENCH_SECS:-30}" \
         perl -e 'alarm shift; exec @ARGV' "$limit" \
         "$APP" --profile "$PROFILE" --direct-e2e "$mode" >"$log" 2>&1
@@ -13612,94 +13612,6 @@ newer_than() {
 APP_SOURCES=("$MACOS/Sources" "$MACOS/Shim" "$MACOS/Extensions" "$MACOS/Package.swift"
              "$MACOS/Package.resolved" "$MACOS/scripts/bundle.sh")
 
-# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app, once per
-# run and only when a source changed since the bundle was made (bundle.sh's
-# `swift build` costs half a minute of CPU even when it has nothing to do).
-# PD_E2E_REBUILD=1 bundles anyway. PD_E2E_PREBUILT names a bundle built
-# elsewhere (vm-e2e.sh builds it on the host and copies it into the guest);
-# then nothing is rebuilt here.
-build_e2e_app() {
-    [ -z "${PD_E2E_PREBUILT:-}" ] || return 0
-    if [ "${PD_E2E_REBUILD:-0}" != "1" ] && ! newer_than "$APP" "${APP_SOURCES[@]}"; then
-        say "bundle: $E2E_BUNDLE is newer than its sources; not rebuilt (PD_E2E_REBUILD=1 does)"
-        return 0
-    fi
-    if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" --variant e2e > "$WORK/bundle.log" 2>&1; then
-        say "could not bundle $E2E_BUNDLE:"; tail -20 "$WORK/bundle.log"; return 1
-    fi
-}
-
-# shellcheck source=e2e-checks.sh
-. "$MACOS/scripts/e2e-checks.sh"
-
-usage() {
-    say "usage: check-e2e.sh [$(check_list)|all [--shard N/M]]"
-    exit 2
-}
-
-which_check="${1:-all}"
-if [ "$which_check" = "all" ]; then
-    CHECKS=("${ALL_CHECKS[@]}")
-elif valid_check "$which_check"; then
-    CHECKS=("$which_check")
-else
-    usage
-fi
-# `all --shard N/M`: the Nth of M consecutive slices of `all` (with C9 at the
-# end of each), so a full run can be spread over several idle periods.
-if [ "${2:-}" = "--shard" ]; then
-    [ "$which_check" = "all" ] || usage
-    case "${3:-}" in
-        [1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;;
-        *) usage ;;
-    esac
-    shard="${3%/*}" shards="${3#*/}"
-    [ "$shard" -le "$shards" ] || usage
-    from=$(( (shard - 1) * ${#ALL_CHECKS[@]} / shards ))
-    to=$(( shard * ${#ALL_CHECKS[@]} / shards ))
-    CHECKS=("${ALL_CHECKS[@]:$from:$((to - from))}")
-elif [ $# -gt 1 ]; then
-    usage
-fi
-acquire_lock
-wait_for_other_runs
-pick_run
-mkdir -p "$WORK"
-# The run's screenshots: one directory for the whole run, so a check's shots
-# outlive the phases (and the checks) that follow it.
-rm -rf "$SHOTS"
-mkdir -p "$SHOTS"
-# The window the hotkey check (C17) reads back: from here to the end of the run.
-RUN_START="$(date "+%Y-%m-%d %H:%M:%S")"
-say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
-[ "$which_check" = "all" ] && say "checks: ${CHECKS[*]}"
-build_e2e_app || exit 1
-build_cgevent || exit 1
-build_menubar_item || exit 1
-build_ax_dump || exit 1
-build_share_driver || exit 1
-build_watch || exit 1
-build_vdisplay || exit 1
-build_load || exit 1
-init_watchdog
-start_load
-start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" || exit 1
-start_watch
-for check in "${CHECKS[@]}"; do
-    # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
-    [ -n "${PD_E2E_MARKS:-}" ] && echo "$(date +%s) $check" >> "$PD_E2E_MARKS"
-    ensure_vdisplay "$check" || exit 1
-    "check_${check//-/_}"
-done
-[ "$which_check" = "all" ] && check_orphans
-
-hotkey_report
-quiet_report
-watchdog_report
-load_report
-say ""
-say "passed=$PASS failed=$FAIL"
-[ "$FAIL" = "0" ]
 
 # --- feth-path (direct-link P2, docs/design/direct-link.md §7) --------------
 # The guest's kernel is the phone: a feth pair, a plain/TLS server bound to
@@ -13732,8 +13644,8 @@ check_feth_path() {
         FETH_PAIR=1
         feth_root ifconfig feth0 up >/dev/null 2>&1
         feth_root ifconfig feth1 up >/dev/null 2>&1
-        FETH_MAC0="$(feth_root ifconfig feth0 ether 2>/dev/null | awk '{print $2}')"
-        FETH_MAC1="$(feth_root ifconfig feth1 ether 2>/dev/null | awk '{print $2}')"
+        FETH_MAC0="$(feth_root ifconfig feth0 ether 2>/dev/null | awk '/ether/ {print $2; exit}')"
+        FETH_MAC1="$(feth_root ifconfig feth1 ether 2>/dev/null | awk '/ether/ {print $2; exit}')"
         ok "[DIRECT-P2] harness=feth pair up ($FETH_MAC0 <-> $FETH_MAC1)"
     else
         # No feth in this kernel. A bridge needs two ports and the guest has
@@ -13750,14 +13662,23 @@ check_feth_path() {
         return
     fi
 
-    # The phone side: one link-local, DAD off so the server binds at once.
+    # The phone side: one link-local, DAD off so the server can bind at once.
+    # The manual address is preferred; when the kernel refuses it, the
+    # interface's own autoconf address serves just as well, so read back what
+    # feth1 actually has instead of assuming.
     feth_root ifconfig feth1 inet6 fe80::1/64 -dad >/dev/null 2>&1 \
         || feth_root ifconfig feth1 inet6 fe80::1/64 >/dev/null 2>&1
-    sleep 1
-    if feth_root ifconfig feth1 inet6 2>/dev/null | grep -q "inet6 fe80::1"; then
-        ok "[DIRECT-P2] feth1 has fe80::1"
+    FETH_LL1=""
+    for _ in $(seq 1 100); do
+        FETH_LL1="$(feth_root ifconfig feth1 inet6 2>/dev/null \
+            | awk '/inet6 fe80::/ && !/tentative/ {print $2; exit}' | cut -d% -f1)"
+        [ -n "$FETH_LL1" ] && break
+        sleep 0.1
+    done
+    if [ -n "$FETH_LL1" ]; then
+        ok "[DIRECT-P2] feth1 has $FETH_LL1"
     else
-        bad "[DIRECT-P2] feth1 did not take fe80::1"
+        bad "[DIRECT-P2] feth1 has no usable link-local"
         stop_feth
         return
     fi
@@ -13792,7 +13713,7 @@ check_feth_path() {
             bad "[DIRECT-P2] the path run failed"
         fi
     else
-        bad "[DIRECT-P2] the echo server did not bind fe80::1"
+        bad "[DIRECT-P2] the echo server did not bind $FETH_LL1"
     fi
     grep -q "^DIRECT echo ok bytes=1048576" "$WORK/direct-e2e-path.log" 2>/dev/null \
         && ok "[DIRECT-P2] 1 MiB echoed and compared byte for byte" \
@@ -13905,3 +13826,92 @@ check_feth_path() {
     feth_stop_servers
     stop_feth
 }
+
+# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app, once per
+# run and only when a source changed since the bundle was made (bundle.sh's
+# `swift build` costs half a minute of CPU even when it has nothing to do).
+# PD_E2E_REBUILD=1 bundles anyway. PD_E2E_PREBUILT names a bundle built
+# elsewhere (vm-e2e.sh builds it on the host and copies it into the guest);
+# then nothing is rebuilt here.
+build_e2e_app() {
+    [ -z "${PD_E2E_PREBUILT:-}" ] || return 0
+    if [ "${PD_E2E_REBUILD:-0}" != "1" ] && ! newer_than "$APP" "${APP_SOURCES[@]}"; then
+        say "bundle: $E2E_BUNDLE is newer than its sources; not rebuilt (PD_E2E_REBUILD=1 does)"
+        return 0
+    fi
+    if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" --variant e2e > "$WORK/bundle.log" 2>&1; then
+        say "could not bundle $E2E_BUNDLE:"; tail -20 "$WORK/bundle.log"; return 1
+    fi
+}
+
+# shellcheck source=e2e-checks.sh
+. "$MACOS/scripts/e2e-checks.sh"
+
+usage() {
+    say "usage: check-e2e.sh [$(check_list)|all [--shard N/M]]"
+    exit 2
+}
+
+which_check="${1:-all}"
+if [ "$which_check" = "all" ]; then
+    CHECKS=("${ALL_CHECKS[@]}")
+elif valid_check "$which_check"; then
+    CHECKS=("$which_check")
+else
+    usage
+fi
+# `all --shard N/M`: the Nth of M consecutive slices of `all` (with C9 at the
+# end of each), so a full run can be spread over several idle periods.
+if [ "${2:-}" = "--shard" ]; then
+    [ "$which_check" = "all" ] || usage
+    case "${3:-}" in
+        [1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;;
+        *) usage ;;
+    esac
+    shard="${3%/*}" shards="${3#*/}"
+    [ "$shard" -le "$shards" ] || usage
+    from=$(( (shard - 1) * ${#ALL_CHECKS[@]} / shards ))
+    to=$(( shard * ${#ALL_CHECKS[@]} / shards ))
+    CHECKS=("${ALL_CHECKS[@]:$from:$((to - from))}")
+elif [ $# -gt 1 ]; then
+    usage
+fi
+acquire_lock
+wait_for_other_runs
+pick_run
+mkdir -p "$WORK"
+# The run's screenshots: one directory for the whole run, so a check's shots
+# outlive the phases (and the checks) that follow it.
+rm -rf "$SHOTS"
+mkdir -p "$SHOTS"
+# The window the hotkey check (C17) reads back: from here to the end of the run.
+RUN_START="$(date "+%Y-%m-%d %H:%M:%S")"
+say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
+[ "$which_check" = "all" ] && say "checks: ${CHECKS[*]}"
+build_e2e_app || exit 1
+build_cgevent || exit 1
+build_menubar_item || exit 1
+build_ax_dump || exit 1
+build_share_driver || exit 1
+build_watch || exit 1
+build_vdisplay || exit 1
+build_load || exit 1
+init_watchdog
+start_load
+start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" || exit 1
+start_watch
+for check in "${CHECKS[@]}"; do
+    # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
+    [ -n "${PD_E2E_MARKS:-}" ] && echo "$(date +%s) $check" >> "$PD_E2E_MARKS"
+    ensure_vdisplay "$check" || exit 1
+    "check_${check//-/_}"
+done
+[ "$which_check" = "all" ] && check_orphans
+
+hotkey_report
+quiet_report
+watchdog_report
+load_report
+say ""
+say "passed=$PASS failed=$FAIL"
+[ "$FAIL" = "0" ]
