@@ -99,7 +99,7 @@ final class FilesThumbQueue {
     /// Where a transition line goes. Production logs it to the files category;
     /// tests capture it, so both ends of the arrow are pinned (AGENTS.md).
     var logTransition: (String) -> Void = { line in
-        Log.files.notice("\(line, privacy: .public)")
+        Log.files.notice("\(line, privacy: .public)")  // log-ok: closed state and event tokens, never a value from the wire
     }
 
     /// Accepts one ask; it starts now or waits its turn. The deadline is

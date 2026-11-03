@@ -74,7 +74,7 @@ final class ThumbSchedulerLoadTests: XCTestCase {
         for index in 0..<batches {
             let due = start + Double(index) * interval
             let now = Date().timeIntervalSince1970
-            if due > now { Thread.sleep(forTimeInterval: due - now) }
+            if due > now { Thread.sleep(forTimeInterval: due - now) }  // real-time: the NFR's phone turn and scroll interval are the measurement
             if index > 0 {
                 let previous = index - 1
                 cancelled.with { $0[previous] = Date().timeIntervalSince1970 }
@@ -94,7 +94,7 @@ final class ThumbSchedulerLoadTests: XCTestCase {
         // The last batch is not cancelled: it drains through the pool.
         let deadline = Date().addingTimeInterval(60)
         while doneCounts.with({ $0.count }) < batches && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
+            Thread.sleep(forTimeInterval: 0.05)  // real-time: the last batch drains at the fake phone's 300 ms pace
         }
 
         let snapshot = phone.snapshot()
