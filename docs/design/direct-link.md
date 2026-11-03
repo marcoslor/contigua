@@ -49,10 +49,14 @@ only ever be a self-build.
 
 ### 1.2 Android: one Gradle property
 
-- `-Ppocketdeck.direct=true` adds `app/src/direct/java` to the main source set
-  and `app/src/direct/AndroidManifest.xml` to the manifest merge, using the
-  variant API (`androidComponents.onVariants { variant.sources.manifests
-  .addStaticSourceDirectory("src/direct") }`; AGP 8.7 already has it).
+- `-Ppocketdeck.direct=true` adds `app/src/direct/java` to the main source set,
+  `app/src/direct/AndroidManifest.xml` to the manifest merge and
+  `app/src/directTest/java` to the unit tests, using the variant API:
+  `variant.sources.java.addStaticSourceDirectory("src/direct/java")` and
+  `variant.sources.manifests.addStaticManifestFile("src/direct/AndroidManifest.xml")`
+  (AGP 8.7's manifest API takes the file, not a directory). Debug variants also
+  get `src/directDebug` for the reviewer's control. `BuildConfig.DIRECT` is the
+  one flag the code reads.
 - Without the property, `src/direct/` is not a compile input and the merged
   manifest has no `NEARBY_WIFI_DEVICES`: the public APK has no Aware code and no
   extra permission.
@@ -395,12 +399,14 @@ and the helper's `Info.plist` declares it.
    `.setPskPassphrase(passphrase).setPort(P)` (`.setTransportProtocol(6)` — TCP)
    and `connectivityManager.requestNetwork(NetworkRequest with
    TRANSPORT_WIFI_AWARE, callback, handler, 30_000)`.
-2. On `onAvailable(network)`: create the `ServerSocket`, `network.bindSocket(ss)`
-   so it is bound to the Aware network, `ss.bind(InetSocketAddress(P))`, and
-   accept — in the **app** process, because the network belongs to the uid that
-   asked for it (§4.5). `WifiAwareNetworkInfo` gives the peer's IPv6 (the Mac's)
-   and the link's bandwidth estimate, which is logged as a number and nothing
-   else. A connection can arrive at any time the NDP is up: as a path of a live
+2. On `onAvailable(network)`: create the `ServerSocket`, put it on the Aware
+   network before binding it (`Network.bindSocket` has no `ServerSocket`
+   overload, so `PlatformAwarePort` passes the listener's descriptor through the
+   guarded `getImpl().getFileDescriptor$()` reflection), `ss.bind(InetSocketAddress(P))`,
+   and accept — in the **app** process, because the network belongs to the uid
+   that asked for it (§4.5). `WifiAwareNetworkInfo` gives the peer's IPv6 (the
+   Mac's) and the channel width, which is logged as a number and nothing else.
+   A connection can arrive at any time the NDP is up: as a path of a live
    session, or as the first path that founds one.
 3. Each accepted socket is handed to the shell service (§4.5) and then goes
    through the **existing** server path: the same TLS wrap, the same gates, the
@@ -486,8 +492,11 @@ for it**, and only the app process has a `WifiAwareManager`. The shell service
   same `SessionSlot` and the same `Session` as a LAN socket. TLS still
   terminates in the shell, exactly as for the LAN, and a handed-over socket can
   be a session's *first* path as readily as a later one (§4.3).
-- **The key never goes to the shell.** The app stores it Keystore-wrapped and
-  decrypts it only for its own `publish` and `requestNetwork` calls (§5).
+- **The key never goes from the app back to the shell.** TLS terminates in the
+  shell, so the Mac's `direct.key` arrives there and crosses AIDL once
+  (shell→app, `onDirectKey`); the app stores it Keystore-wrapped and decrypts it
+  only for its own `publish` and `requestNetwork` calls (§5). The stored,
+  wrapped key never crosses AIDL in either direction.
 
 **The named risk**: using an accepted socket's descriptor from another UID. On
 Android a socket descriptor is not UID-bound once it is duplicated into another
@@ -532,9 +541,10 @@ session, the NDP and the key.
   than read by it.
 - **Storage, phone**: `AES-256-GCM` with a non-exportable key in the Android
   Keystore (alias `pocketdeck-direct-psk`); the ciphertext (`iv ‖ ct`, base64)
-  lives in the app's private prefs as `direct.psk.<clientId>`. The app decrypts
-  it only for its own `publish` and `requestNetwork` calls (§4.5); it never
-  crosses AIDL and the shell service never receives it.
+  lives in the app's private prefs as `direct.psk.<clientId>`. The Mac's stored
+  switch is `direct.enable.<clientId>` and the phone's own is `direct.switch`.
+  The app decrypts the key only for its own `publish` and `requestNetwork`
+  calls (§4.5); it never crosses AIDL back to the shell.
 - **Rotation**: deleting the pairing deletes the key on both sides — the Mac on
   Forget This Phone… (and on a pin mismatch that forces a re-pair), the phone
   on Forget / Forget All Macs… (Forget All rotates the phone's identity, so the
@@ -701,25 +711,44 @@ back returning to LAN, and the throughput figure against the mirror's need.
 The Aware API is a platform surface the JVM cannot run, so the logic sits behind
 a port and the port has a fake:
 
-- `AwarePort` (interface): `available()`, `attach(onAttached)`, `publish(ssi,
-  passphrase, onStarted)`, `updateSsi(ssi)`, `requestNetwork(passphrase, port,
-  onAvailable(Network), onLost)`, `unpublish()`. The real adapter
-  (`PlatformAwarePort`) is thin: it maps the platform callbacks one-to-one.
-- `AwareLink` (the machine): `Off → Attaching → Publishing`, then
-  `NdpPending → Up` while a session is live, plus `Lost` and `Blocked(code)`.
-  Events: `SwitchOn`, `SwitchOff`, `KeyStored`, `KeyForgotten`, `Attached`,
-  `PublishStarted`, `SessionLive(directOn)`, `SessionEnded`,
-  `NdpAvailable(network)`, `NdpLost`, `AwareStateChanged`, `PermissionDenied`,
-  `SsiTick(window)`. `Attaching` needs the switch, the permission and a stored
-  key — **not** a session; `NdpPending` needs a live session and the Mac's
-  `direct.enable`, and it returns to `Publishing` when the session ends.
+- `AwarePort` (interface): `available()`, `attach(onAttached, onFailed)`,
+  `publish(ssi, passphrase, onStarted, onFailed)`, `updateSsi(ssi)`,
+  `requestNetwork(passphrase, port, onAvailable(AwareNetwork), onLost)`,
+  `releaseNetwork()`, `unpublish()`, `detach()`. `AwareNetwork` is the phone's
+  own two-method view of the NDP (`bindSocket(ServerSocket)`, `bandwidthKbps()`),
+  so the platform's `Network` never reaches the machine and K1 can fake it. The
+  real adapter (`PlatformAwarePort`) is thin: it maps the platform callbacks
+  one-to-one and keeps a publish generation, so a callback after `unpublish` is
+  dropped.
+- `AwareLink` (the machine), one per active Mac: `Off → Attaching → Publishing`,
+  then `NdpPending → Up` while a session is live, plus `Lost` and `Blocked(code)`.
+  Events: `SwitchOn`, `SwitchOff`, `PermissionChanged(granted)`,
+  `PermissionDenied`, `KeyStored`, `KeyForgotten`, `MacDirectEnable(on)`,
+  `Attached`, `PublishStarted`, `PublishFailed(reason)`, `PlatformBlocked(reason)`,
+  `SessionLive(directOn)`, `SessionEnded`, `NdpAvailable(network)`, `NdpLost`,
+  `AwareStateChanged`, `SsiTick(window)`. The four publish gates are the switch,
+  the permission, a stored key and the Mac's stored `direct.enable` — **not** a
+  session; `NdpPending` needs a live session and the Mac's `direct.enable`, and
+  it returns to `Publishing` when the session ends. `MacDirectEnable` exists
+  because DIRECT-1's idle publish reads a stored value, which the original
+  event list could not express.
 - K1 tests every transition, including the ignored ones (a publish callback
-  after `SwitchOff` is dropped; an `NdpAvailable` with no publish is closed at
-  once; two `SsiTick`s in one window do nothing).
-- The listener binding is tested with a fake `Network`
-  (`bindSocket` called before `bind`, the port from the specifier, one accept
-  loop per publish session).
-- `DirectGateTest` (§1.3) lives here too.
+  after `SwitchOff` is dropped; an `NdpAvailable` with no NDP request is
+  released at once; two `SsiTick`s in one window do nothing; a late `Attached`
+  after `SwitchOff` does not publish).
+- The listener binding is tested with a fake `AwareNetwork`: `bindSocket` runs
+  while the `ServerSocket` is still unbound, then the specifier's port, then one
+  accept loop per publish session.
+- The key (`DirectKeyTest`, `DirectLogHygieneTest`), the SSI (`SsiTest`), the
+  state message (`DirectStateTest`) and the hand-off's choice of descriptor vs
+  bridge (`DirectHandoffTest`) have their own K1 tests. The shell's half is
+  `ServerTest.aHandedOverSocketRunsTheSameTlsAndSlot`: a socket handed to
+  `Server.adoptSocket` runs the same TLS, gate, hello and slot as the LAN
+  acceptor.
+- `DirectGateTest` (§1.3), the Gradle `verifyPublicBuildHasNoDirect`, and
+  `DirectSwitchTest` (DIRECT-1's four gates) live here too.
+- The reviewer's control (§8.3) is `DirectDebugActivity`, debug+direct only:
+  `op` is `on`, `off`, `permission` or `state` (`DirectDebugArgsTest`).
 
 ### 8.2 Does the Android emulator support Wi-Fi Aware?
 
@@ -745,6 +774,22 @@ listener bound to the Aware network, the pinned TLS handshake over it, the
 standby path while a mirror is live on the LAN, and a switch to direct and back.
 The battery figure (a 10-minute idle standby's drain) is recorded there too,
 because it is the price the settings text promises.
+
+Until P4 draws the Settings row, the reviewer's control is the debug activity:
+
+```
+adb shell am start -n dev.pocketdeck/.direct.DirectDebugActivity --es op on
+adb shell am start -n dev.pocketdeck/.direct.DirectDebugActivity --es op state
+adb shell am start -n dev.pocketdeck/.direct.DirectDebugActivity --es op off
+```
+
+The first asks the runtime permission, turns the switch on and starts the
+provider; `state` prints the machine's token. `adb logcat -s PocketDeckDirect`
+shows `aware: <from> --<event>--> <to>` (closed tokens only), `direct state:
+<token>`, `direct key: stored key=<8 hex> len=32` and `path-bridge` when the
+descriptor wrap failed. The Mac dials `DirectConfig.PORT` (47800) for the shell
+TLS handshake; P3's own proof stops at the NDP because the app-side direct
+provider is P4's.
 
 ## 9. Risks
 
