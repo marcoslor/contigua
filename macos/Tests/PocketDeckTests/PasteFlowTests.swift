@@ -182,8 +182,8 @@ final class PasteFlowTests: XCTestCase {
 
     func testTheThreePillCopies() {
         XCTAssertEqual("Pasting…", PastePillState.pasting.text)
-        XCTAssertEqual("Image pasted. Nothing there? Share instead", PastePillState.pasted.text)
-        XCTAssertEqual("Nothing pasted. Share instead", PastePillState.failed.text)
+        XCTAssertEqual("Image pasted. Nothing there?", PastePillState.pasted.text)
+        XCTAssertEqual("Nothing pasted.", PastePillState.failed.text)
         XCTAssertTrue(PastePillState.pasting.showsProgress)
         XCTAssertFalse(PastePillState.pasted.showsProgress)
     }
