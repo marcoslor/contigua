@@ -11,6 +11,14 @@ object DropPolicy {
     /** 200 MiB, counted while the data arrives (docs/PROTOCOL.md "Drop Mac → phone"). */
     const val MAX_FILE_BYTES = 200L * 1024 * 1024
 
+    /**
+     * The real path of /sdcard (files.md §4). The uid-2000 service process
+     * cannot ask Environment or StorageManager for it: both refuse a caller
+     * that is not the app's own uid, which is what made the clipboard image and
+     * the drop's SEND step fail on the emulator (boots 3/4).
+     */
+    const val STORAGE_ROOT = "/storage/emulated/0"
+
     /** Writes land in this folder and nowhere else (the brief's one path). */
     var DIRECTORY = "/sdcard/Download/PocketDeck"
 

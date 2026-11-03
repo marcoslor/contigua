@@ -169,7 +169,7 @@ class DeckService(private val appContext: Context?) :
                 // asks StorageManager, which refuses a caller that is not the
                 // app's own uid; the shell service is uid 2000. This is the real
                 // path of /sdcard (docs/design/files.md §4).
-                filesRoot = File("/storage/emulated/0"),
+                filesRoot = File(DropPolicy.STORAGE_ROOT),
                 fsStats = AndroidFsStats,
                 fsPlatform = AndroidFsPlatform(appContext, ::log),
                 fsWatch = AndroidFsWatchSource(appContext, ::log),
