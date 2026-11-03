@@ -14,6 +14,8 @@ import androidx.core.app.NotificationCompat
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
+import dev.pocketdeck.e2ee.IdentityPin
+import dev.pocketdeck.e2ee.PhoneIdentity
 import dev.pocketdeck.server.failureClasses
 import java.util.concurrent.Executors
 
@@ -206,9 +208,14 @@ class DeckForegroundService : Service() {
 
     // ------------------------------------------------------------------
 
-    private fun onServiceReady(svc: IDeckService) {
+    /** The shell service bound: push the app's vouches, then start listening. */
+    internal fun onServiceReady(svc: IDeckService) {
         try {
             svc.setCallback(callback)
+            // ISS-15: the server starts with the phone's identity, so it has
+            // to exist here, in this client callback path, before the push and
+            // the start. The app owns it; this is the one generator and store.
+            ensureIdentity()
             svc.setPairedClients(Prefs.serviceStateJson(this))
             // Before startServer: a server that has not received the gates
             // refuses everything, so this order has no permissive window.
@@ -242,6 +249,19 @@ class DeckForegroundService : Service() {
             Log.i(TAG, "startServer failed: ${failureClasses(e)}")  // log-ok: class names only
         }
     }
+
+    /**
+     * ISS-15: the service start's identity step. A fresh app has no
+     * `identity_v2.json`; this makes one before the server can read it from the
+     * pushed state, through `PhoneIdentity.ensure` (the same generator and store
+     * every other path uses). An existing identity is loaded, never replaced.
+     * The log carries a fingerprint prefix, never key material.
+     */
+    private fun ensureIdentity(): PhoneIdentity.Identity? =
+        runCatching { PhoneIdentity.ensure(this) }
+            .onSuccess { Log.i(TAG, "identity: ready fp=${IdentityPin.of(it.certPem).orEmpty().take(8)}") } // log-ok: hash prefix only
+            .onFailure { Log.i(TAG, "identity: generation failed: ${failureClasses(it)}") } // log-ok: class names only
+            .getOrNull()
 
     private fun syncListenerAccess() {
         val granted = NotifyAccess.isGranted(this)
