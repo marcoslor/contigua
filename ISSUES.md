@@ -30,7 +30,18 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 ## 2. Bugs you can see
 
-- **ISS-3 Streams flicker on lock and unlock.** Locking or unlocking the phone makes the open stream windows flicker briefly. It predates the 2026-11-01 locked-phone fixes; the person rates it minor.
+- **ISS-3 An app window fades to black when the phone wakes.** Root-caused on the real phone (2026-11-03): [docs/research/lock-fade.md](docs/research/lock-fade.md).
+  - One UI keeps PocketDeck's virtual displays in the panel's display group. So while a window is open on a locked phone, PocketDeck keeps that group awake with the panel blacked out, and Android counts the phone as awake.
+  - A wake press is then a sleep press to Android: it runs its screen-off fade (ColorFade, about 330 ms) on the window's virtual display too, turns the display off, and PocketDeck's hand-back wakes everything again about 0.65 s after the press. The Mac shows the fade, a dark moment, then the picture, together with the phone's screen.
+  - A lock press shows nothing: PocketDeck re-wakes the group within about 20 ms, before the fade draws.
+  - **Tried, not merged:** `fix/flicker`'s phone-side gate. It released on the first key frame after the edge, and that frame was itself black (the display turns on before the app draws).
+  - **DeX never fades:** its screen sits in display group 2. One UI's group mapper hands out groups by its own rules (DeX, CarLife, per virtual device) and ignores `FLAG_OWN_DISPLAY_GROUP` for ours (lock-fade.md § Why DeX never fades).
+  - **Next, needs the person's OK to run on the phone:**
+    - a group probe: short-lived virtual displays with each Samsung flag (`REMOTE_APP`, `BACKGROUND_DISPLAY`, `CARLIFE`, `SPEG_DISPLAY`), reading their group; nothing stays;
+    - then, if none works, the virtual device path (the shell holds `CREATE_VIRTUAL_DEVICE`; it needs a companion-device association);
+    - the fallbacks: hold the Mac's picture from the press until the app has redrawn, or live with it.
+- **ISS-24 Waking the phone sometimes takes two presses while a window is open.** PocketDeck's relight after a lock press runs a panel-off step of about 2.5 s (`relight … +2521ms panel off returned`). A wake press inside it is slept by Android (with the fade), and PocketDeck never hands the panel back, so the phone's screen and the Mac window stay dark until a second press. Seen twice on 2026-11-03, 2.0 s and 2.5 s after a lock press (lock-fade.md § The two-press wake). Fix: hand the panel back on a press seen during the relight's own panel-off step. Test first. **On hold (the person, 2026-11-03):** if the group probe (ISS-3) finds an own display group, the relight goes away and this bug with it.
+- **ISS-25 Dock items churn right after connecting.** The Mac logged `dock: created` / `dock: removed` alternating eight times in 4 s, starting 5 s after the session came up (2026-11-03 16:38:51–55, v131 with Mac 8f3a6f4f), before any window was open. Re-check, then find which shim it is and why.
 - **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced as multi-window phase 2: WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`.
   - **The phone half** is on `main` (2026-10-28): `multi`, `newInstance`, `taskId`, `maxWindows`, task labels and closing one task.
   - **The Mac half** (⌘N, File/Dock/Deck menus, titles per task, the cap, offline) is built on `epic/mw-mac` (K2 and e2e `multiwin` green on 10-28) and was never merged; it waited on its VM screenshots. Being brought up to `main` (2026-11-03).
@@ -49,9 +60,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 - **ISS-11 Battery cost of keep-alive pings.** Measure on a real phone what the paths layer's ping policy costs (`docs/design/paths.md`), idle and with one window open.
 - **ISS-12 The phone can't tell that every path went silent.** Only the Mac detects it, through its pong rule. The phone waits for the Mac to rejoin.
-- **ISS-13 Clipboard sync can drop after a fast re-adopt.** `SessionDropper.drop` frees the slot before the old session's teardown, and the shared `ShellClipboard` listen/stop isn't owner-scoped, so the old teardown can stop the new session's listener. Fix: `listen` returns a registration, and only `stop(registration)` from its owner stops it. Low risk today (pairing waits up to 2 s for the teardown).
 - **ISS-14 Untested requirements.** WIN-16: no input reaches the phone after a drop, and `window.open` after a reconnect. Also two or more phones in the waiting line.
-- **ISS-15 Missing identity on service start.** `DeckForegroundService.onServiceReady` should generate the keys on the client callback when the identity is missing.
 
 ## 4. Test setup (no product change)
 

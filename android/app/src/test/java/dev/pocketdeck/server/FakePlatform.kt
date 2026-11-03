@@ -311,7 +311,16 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     /** The system's sensitive mark on the phone's current clip. */
     @Volatile var clipSensitive = false
     val clipWrites = CopyOnWriteArrayList<String>()
-    @Volatile private var clipListener: ((ClipText) -> Unit)? = null
+    @Volatile private var clipRegistration: ClipRegistration? = null
+
+    /** Every clipboard stop call that finished, live or stale (ISS-13). */
+    val clipStopsDone = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Every [listen] call: a re-adopt makes the second one (ISS-13). */
+    val clipListenCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Stops of a replaced or already stopped handle (ISS-13). */
+    val staleClipStops = java.util.concurrent.atomic.AtomicInteger(0)
 
     override fun getText(): ClipText? = clipText?.let { ClipText(it, clipSensitive) }
 
@@ -323,30 +332,40 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     override fun setText(text: String) {
         clipText = text
         clipSensitive = false
-        clipListener?.invoke(ClipText(text, false))
+        clipRegistration?.onChange?.invoke(ClipText(text, false))
         clipWrites.add(text)
     }
 
-    override fun listen(onChange: (ClipText) -> Unit) {
-        clipListener = onChange
+    override fun listen(onChange: (ClipText) -> Unit): ClipRegistration {
+        val reg = ClipRegistration(onChange)
+        clipRegistration = reg
+        clipListenCalls.incrementAndGet()
+        return reg
     }
 
-    override fun stop() {
+    /**
+     * Like the shared port: only the live registration stops delivery; a stale
+     * handle changes nothing. [onClipStop] parks a slow teardown before the
+     * ownership check, so the world can change while it runs (ISS-13).
+     */
+    override fun stop(registration: ClipRegistration?) {
+        val reg = registration ?: return
         onClipStop?.invoke()
-        clipListener = null
+        if (clipRegistration !== reg) staleClipStops.incrementAndGet() else clipRegistration = null
+        clipStopsDone.incrementAndGet()
     }
 
-    /** Runs inside the session's shutdown, before the listener goes: a slow teardown. */
+    /** Runs inside the session's shutdown, before the ownership check: a slow teardown. */
     var onClipStop: (() -> Unit)? = null
 
-    /** Whether the session has started listening; it does so just after `welcome` is queued. */
-    val clipListening: Boolean get() = clipListener != null
+    /** Whether a session is listening; it does so just after `welcome` is queued. */
+    val clipListening: Boolean get() = clipRegistration != null
 
     /** Simulates the person copying [text] on the phone. */
     fun changeClip(text: String, sensitive: Boolean = false) {
         clipText = text
         clipSensitive = sensitive
-        clipListener?.invoke(ClipText(text, sensitive))
+        clipRegistration?.onChange?.invoke(ClipText(text, sensitive))
     }
 
     // ---- PairingStore -------------------------------------------------
