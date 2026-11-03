@@ -173,6 +173,7 @@ class DeckService(private val appContext: Context?) :
                 fsStats = AndroidFsStats,
                 fsPlatform = AndroidFsPlatform(appContext, ::log),
                 fsWatch = AndroidFsWatchSource(appContext, ::log),
+                fsThumb = AndroidThumbSource(),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 // Read when this session starts, never cached: the property can

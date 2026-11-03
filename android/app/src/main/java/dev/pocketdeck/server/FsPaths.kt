@@ -106,6 +106,8 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         fun notADir() = FsFailure("fs_not_a_dir", "not a directory")
         fun stale() = FsFailure("fs_stale", "the file changed")
         fun busy() = FsFailure("fs_busy", "too many reads")
+        /** The platform made no picture, or the answer did not fit the cap. */
+        fun noThumb() = FsFailure("fs_no_thumb", "no thumbnail of this file")
 
         /** Canonical path, or the absolute one when the platform refuses to resolve it. */
         private fun canonical(file: File): String = try {
