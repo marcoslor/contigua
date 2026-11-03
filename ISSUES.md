@@ -9,8 +9,12 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## 1. High QoL, next up
 
 - **ISS-1 Paste and drop into phone apps.** Clipboard sync for text and images already exists (opt-in, both directions; `docs/specs/share-clipboard.md`). What's missing:
-  - **Built on `fix/paste-drop` 2026-11-03 (SHARE-16/17, awaiting review):** ⌘V pastes an image into the focused field (clipboard image, `clip.image.done`, one `KEYCODE_PASTE`) and Finder-copied files go through the drop path; a drop or ⌘V on an app window shares straight to that window's app, once per gesture, and only falls back to the chooser. Still missing: images dragged from a browser (image data or a URL) and from Photos (file promises) — V3, SHARE-18.
-  - **Unverified on a device:** the emulator run's image write answered `clip.image.done ok:false`, and the targeted drop saved the file but showed no share (`ask.md`); the real-phone spike below owns both.
+  - **V1 and V2 merged to main 2026-11-03 (SHARE-16/17, db23e133):**
+    - ⌘V pastes an image into the focused field: the app sets the clip, the phone answers `clip.image.done`, and the Mac sends one `KEYCODE_PASTE`.
+    - Finder-copied files go through the drop path.
+    - A drop or ⌘V on an app window shares straight to that window's app, once per gesture, and falls back to the chooser only when that app can't take it.
+    - **Proven on the emulator** (boot 7): the image clip was written with the app in the background; a plain field pastes nothing and an image field gets the exact bytes; a targeted drop opens Messages with no chooser; an untargeted drop shows the chooser; a 3-file batch is one share.
+    - **Still missing:** images dragged from a browser (image data or a URL) and from Photos (file promises): V3, SHARE-18.
   - **Bug (the person, 2026-11-02):** copy a file in Finder, paste in a messaging app on the phone, and the file's *name* is pasted as text. Finder puts the name on the pasteboard next to the file URL, and clipboard sync sends the name. A Finder file copy must never reach the phone as its name; it pastes the file (V2) or nothing. Test first. The app may be at fault too, but ours is the name we send.
     **Fixed on main 2026-11-03 (98f5f8f4, 0732a79a):** neither clipboard sync nor ⌘V sends the name; one copied image file (≤ 8 MiB) goes as the image, HEIC re-encoded as JPEG. Waiting on the person's real-phone check (copy a photo and a PDF in Finder, paste in a messaging app).
 
@@ -18,7 +22,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **V1.** ⌘V with an image: set the phone clipboard to it and send a paste key to the focused field. If the field refuses an image, share it to that window's app.
   - **V2.** ⌘V with Finder-copied files: transfer them like a drop, then share straight to the window's app. The chooser is only the fallback.
   - **V3.** Drop images from anywhere (image data, web image URLs, file promises); a drop on an app's window goes straight to that app.
-  - **Spec (2026-11-03):** `docs/specs/share-clipboard.md` SHARE-16–18 and `docs/design/dragdrop.md` § "Paste and drop into an app"; the file-copy half of the bug is fixed in SHARE-2. V1–V2 are built and awaiting review; V3 is SHARE-18, round 3.
+  - **Spec (2026-11-03):** `docs/specs/share-clipboard.md` SHARE-16–18 and `docs/design/dragdrop.md` § "Paste and drop into an app"; the file-copy half of the bug is fixed in SHARE-2. V1–V2 are merged; V3 is SHARE-18, next.
 
   First, a real-phone spike: which apps accept a pasted image from a shell clip (messaging and mail apps), and whether a share aimed at one app works per app.
 - **ISS-2 Finder thumbnails for phone photos and videos.** **Merged to main 2026-11-03** (FILES-22…29, `fs.thumb`; 1bd0ce9c). Proven on the emulator (HEIC/JPEG/MP4 in 0.5–0.7 s, 512 px, no held wake locks) and in the VM (Finder draws the phone's picture; a PDF keeps its icon). Finder never asks again after a lost thumbnail until the file changes (FILES-26), so the queue never expires an ask (FILES-29). Waiting on the real-phone check: a camera folder in Finder's icon view fills with pictures, and the cost on the phone (time per thumbnail, battery).
@@ -35,7 +39,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **ISS-23 Clipboard images may never reach the phone.** On the emulator (2026-11-03, paste-drop r2), the phone's `ShellClipboard.writeImage` failed: `clip.image.done ok=False` and no clip was set. That's the Mac → phone direction of clipboard image sync (SHARE-2), which has no end-to-end image test, so it is likely broken on real phones too. Being fixed on `fix/paste-drop` (test first, emulator proof).
   - **Cause (emulator boot 5, 2026-11-03):** the phone's helper runs as the shell user (uid 2000). The clipboard service refuses a clip whose URI points into PocketDeck's own file provider (`setPrimaryClip` threw), and the app process can't open files the helper wrote on shared storage (`share refused: cannot copy`).
   - **The same second cause probably breaks a drop's share step on `main`:** the file lands in Downloads, but the share sheet never opens.
-  - **Fix in progress (r3):** the helper hands the app an open file descriptor and the app serves its own copy; the app sets image clips itself.
+  - **Fixed and merged 2026-11-03 (db23e133):** the helper hands the app an open file descriptor (`openStaged`), and the app serves its own copy. The app sets image clips itself (`onClipImage` / `clipImageDone`). Proven on the emulator (boot 7). Waiting on the real-phone check: copy an image on the Mac and paste it in a messaging app on the phone; drop a photo on a messaging app's window.
 
 ## 3. Under the hood
 
