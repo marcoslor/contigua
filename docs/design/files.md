@@ -963,18 +963,24 @@ materializes a file just to draw its icon.
 `public.image` or `public.movie` (`UTType(filenameExtension:)`, the same call
 `FilesMap.contentTypeIdentifier` already makes for `ProviderItem.contentType`).
 Everything else — a `.pdf`, a folder, a name with no type — is answered with
-nil data at once, with no bridge request, so the system draws its type icon. A
-wrong answer here costs a phone round trip per icon.
+nil data at once, with no phone request, so the system draws its type icon. The
+extension cannot map an identifier to a name, so it sends one `thumb` request
+for every id in the batch and the app makes the decision from the mapped path
+(`FilesThumbPolicy.pathIsMedia`, the same `UTType` call) before any phone
+traffic; a wrong answer here costs a phone round trip per icon.
 
 **The path (T2).** The extension adopts `NSFileProviderThumbnailing`:
 `fetchThumbnails(for:requestedSize:perThumbnailCompletionHandler:completionHandler:)`
 arrives as a batch. Each media item becomes one `thumb` bridge request —
-`{t:"thumb", id, item, size, etag}` (the item's identifier, the batch's long
-side clamped to the wire's 1–4096, the item's etag) — on its own
-`BridgeConnection`, the bridge's one request per connection habit, so the
-extension needs no demultiplexer and never holds more than 3 connections (the
-bridge's 6-client cap). The app turns it into one `fs.thumb {id, path, size,
-etag?}` on the session; the phone answers with
+`{t:"thumb", id, item, size}` (the item's identifier, the batch's long side
+clamped to the wire's 1–4096) — on its own `BridgeConnection`, the bridge's one
+request per connection habit, so the extension needs no demultiplexer and never
+holds more than 3 connections (the bridge's 6-client cap). The app turns it
+into one `fs.thumb {id, path, size}` on the session. No etag goes with it: the
+id map keeps ids and paths, not etags, and a `thumb` of a version the phone has
+already replaced is corrected by the next listing (a picture of the wrong
+version is still only a picture, while a stat per icon would cost more); the
+phone's `etag` field stays optional for any other caller. the phone answers with
 `FS_DATA` frames (`stream` = the phone id), then `fs.thumb.end {id, mime, size,
 sha256}`, or one `fs_*` failure. The extension hands the bytes to the system as
 `Data` — `perThumbnailCompletionHandler` takes no type, and the system sniffs
@@ -982,6 +988,19 @@ JPEG/PNG — checks the end's `size` and `sha256` against what it received (the
 read's rule) and answers nil on a mismatch, and calls the batch's completion
 once. The bridge's own version goes 3 → 4 (new request and reply cases); the
 phone's wire version stays 4 (new `t` values only).
+
+**Lost or missing (R-1).** The system may remember a nil answer as "this version
+has no thumbnail" and not ask again until the item's version changes, so a
+picture lost to a timeout or a disconnected phone would never appear. The
+per-thumbnail handler therefore answers a **transient** failure — the session
+down, the 8 s deadline, `fs_busy` (the app's `offline`, `timeout`, `fs_busy`,
+`busy`, `closed`) — with `NSFileProviderError(.serverUnreachable)`, which the
+system retries, and a **permanent** one — not a media type, `fs_no_thumb`,
+`fs_not_found`, `fs_denied`, `fs_not_a_dir`, `fs_stale`, a size/sha256 mismatch
+— with nil data. Neither is shown to the person: a thumbnail error is not an
+alert, and the type icon is what either answer leaves behind. `FilesThumbPolicy`
+holds both decisions, so K2 pins them even though the extension object itself is
+compiled only by `bundle.sh`.
 
 **The phone's generator (T3).** `FsThumbnailer` mirrors `FsReader`: a request
 parses the id, path, `size` (1–4096, else `fs_denied`), resolves the path,
@@ -1029,11 +1048,13 @@ FILES-29 and the bridge's own constant.
   missing-file refusals, no call at all without a request, and log lines that
   carry no name.
 - **K2 — the extension's routing with a fake bridge** (`FilesThumbTests`, plus
-  `FilesBridgeTests` and `FilesCoreTests`): an image asks and a `.pdf` does not,
-  a folder is answered at once, the request carries the long side and the etag,
-  3 in flight and the fourth queued, cancel before and during the phone call,
-  offline/`fs_no_thumb`/deadline → nil with no error, and the bridge's deadline
-  (a 50 ms deadline in the test) answers `timeout` and sends one `fs.cancel`.
+  `FilesBridgeTests` and `FilesCoreTests`): an image is media and a `.pdf` is
+  not, a document path asks the phone nothing, the request carries the long
+  side, 3 in flight and the fourth queued in arrival order, cancel before and
+  during the phone call, a transient failure (offline/timeout/`fs_busy`) →
+  `serverUnreachable`, a permanent one (`fs_no_thumb`, `not_media`) → nil data,
+  and the bridge's deadline (a 50 ms deadline in the test) answers `timeout` and
+  sends one `fs.cancel`.
 - **Fake phone:** `fs.thumb` serves a fixed JPEG for a fixture name, with a mode
   that never answers and a mode that answers `fs_no_thumb`; host e2e
   `files-bridge` grows a `thumb` phase through the real bridge: bytes then

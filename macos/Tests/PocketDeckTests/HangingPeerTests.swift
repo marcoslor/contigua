@@ -105,6 +105,12 @@ private final class AnsweringHost: FilesBridgeHost {
         completion(.success(makeItem(name: "a.txt")))
     }
 
+    func thumb(item: String, size: Int,
+               onStart: @escaping (UInt32) -> Void,
+               completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
+        completion(.failure(FsError(code: "not_media")))
+    }
+
     func streamRead(item: String, offset: Int, length: Int, etag: String?,
                     onStart: @escaping (UInt32) -> Void,
                     chunk: @escaping ([UInt8]) -> Bool,

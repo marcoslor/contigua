@@ -82,7 +82,7 @@ final class ThumbQueueTests: XCTestCase {
             .running: [
                 .slotFree: (.running, []),
                 .end(thumb): (.done, [.answer(.success(thumb))]),
-                .failure(code: "fs_no_thumb"): (.done, [.answer(.failure(code: "fs_no_thumb"))]),
+                .failure(code: "x"): (.done, [.answer(.failure(code: "x"))]),
                 .cancel: (.cancelled, [.sendCancel, .answer(.failure(code: "cancelled"))]),
                 .deadline: (.expired, [.sendCancel, .answer(.failure(code: "timeout"))]),
                 .drop: (.cancelled, [.answer(.failure(code: "offline"))]),
@@ -131,14 +131,14 @@ final class ThumbQueueTests: XCTestCase {
     func testACancelLeavesTheQueue() {
         for id in 1...3 { ask(UInt32(id)) }
         ask(4)
-        XCTAssertTrue(queue.cancel(id: 4, host: host))
+        XCTAssertTrue(queue.cancel(id: 4))
         XCTAssertEqual(.failure(code: "cancelled"), answers[4]?.first)
         XCTAssertEqual(3, host.calls.count, "a cancelled queued ask reached the phone")
     }
 
     func testACancelOfARunningOneSendsFsCancel() {
         ask(1)
-        XCTAssertTrue(queue.cancel(id: 1, host: host))
+        XCTAssertTrue(queue.cancel(id: 1))
         XCTAssertEqual([1], host.cancels)
         XCTAssertEqual(.failure(code: "cancelled"), answers[1]?.first)
     }
@@ -160,7 +160,7 @@ final class ThumbQueueTests: XCTestCase {
 
     func testADropAnswersOfflineWithoutAPhoneCancel() {
         ask(1)
-        queue.reset(host: host)
+        queue.reset()
         XCTAssertEqual([.failure(code: "offline")], answers[1])
         XCTAssertEqual([], host.cancels)
     }
@@ -170,7 +170,7 @@ final class ThumbQueueTests: XCTestCase {
         let other = ObjectIdentifier(queue)
         ask(1, client: one)
         ask(2, client: other)
-        queue.cancel(client: one, host: host)
+        queue.cancel(client: one)
         XCTAssertEqual(.failure(code: "cancelled"), answers[1]?.first)
         XCTAssertNil(answers[2])
     }
@@ -179,8 +179,8 @@ final class ThumbQueueTests: XCTestCase {
         ask(1)
         guard host.calls.count == 1 else { return }
         host.finish(0, .success(thumbBytes))
-        queue.cancel(id: 1, host: host)
-        queue.cancel(id: 1, host: host)
+        queue.cancel(id: 1)
+        queue.cancel(id: 1)
         XCTAssertEqual(1, answers[1]?.count)
         XCTAssertEqual([], host.cancels, "a finished request was cancelled on the phone")
     }

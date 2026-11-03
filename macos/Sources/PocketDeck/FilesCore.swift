@@ -470,6 +470,17 @@ struct BridgeDecoder {
             return .request(.anchor(id: id, item: item))
         case "cancel":
             return .request(.cancel(id: id))
+        case "thumb":
+            if let mime = object["mime"] as? String,
+               let size = (object["size"] as? NSNumber)?.intValue,
+               let sha256 = object["sha256"] as? String {
+                return .reply(.thumb(id: id, mime: mime, size: size, sha256: sha256))
+            }
+            guard let item = object["item"] as? String,
+                  let size = (object["size"] as? NSNumber)?.intValue else {
+                return .invalid("bad_request")
+            }
+            return .request(.thumb(id: id, item: item, size: size))
         case "items":
             let items = (object["items"] as? [[String: Any]])?.compactMap(FileItem.init(json:)) ?? []
             return .reply(.items(id: id, page: object["page"] as? String, items: items))
