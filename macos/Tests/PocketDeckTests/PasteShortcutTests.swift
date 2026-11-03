@@ -79,6 +79,18 @@ final class PasteShortcutTests: XCTestCase {
         XCTAssertEqual(sent(), [], "an image is pasted as a clip image, not typed")
     }
 
+    func testCommandVWithTextNextToAnImageTypesTheText() {
+        let board = StubPasteboard()
+        board.value = "pasted text"
+        board.picture = (Data([1, 2, 3]), "image/png")
+        let (map, sent) = mapper(board)
+        var pasted: PasteboardPaste?
+        map.onPaste = { pasted = $0; return true }
+        map.keyDown(keyEvent(9, "v", flags: [.command]))
+        XCTAssertNil(pasted, "a text item always takes the text path (SHARE-2)")
+        XCTAssertEqual(sent(), [.text("pasted text")])
+    }
+
     func testShiftCommandVSharesInsteadOfPasting() {
         let board = StubPasteboard()
         board.picture = (Data([1, 2, 3]), "image/png")
