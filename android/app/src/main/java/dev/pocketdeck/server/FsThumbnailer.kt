@@ -138,7 +138,8 @@ class FsThumbnailer(
     /** One encode, then the single q60 retry past the cap; null means no picture. */
     private fun render(job: Job): ThumbBytes? {
         val longSide = minOf(job.size, longSideCap)
-        val first = source.render(job.file, job.video, longSide, QUALITY, allowPng = true, cancel = job)
+        val first = source.render(job.file, job.video, longSide, QUALITY,
+                                  allowPng = !job.video, cancel = job)
             ?: return null
         if (first.bytes.size <= maxBytes) return first
         if (job.isCancelled()) return null

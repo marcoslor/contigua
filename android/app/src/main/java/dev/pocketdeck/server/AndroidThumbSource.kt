@@ -57,6 +57,8 @@ class AndroidThumbSource : ThumbSource {
                     bitmap = scaled
                 }
             }
+            // A video frame is opaque even when the bitmap reports alpha;
+            // FsThumbnailer passes allowPng = false for video (FILES-24).
             val png = allowPng && bitmap.hasAlpha()
             val format = if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
             val stream = ByteArrayOutputStream()

@@ -1017,8 +1017,10 @@ prefix is `image/` or `video/`, and enqueues the job. One worker thread runs the
 queue; each job calls a `ThumbSource` seam, whose Android implementation
 (`AndroidThumbSource`) is `ThumbnailUtils.createImageThumbnail(File, Size,
 CancellationSignal)` or `createVideoThumbnail(...)` (API 29+; minSdk is 30),
-then `Bitmap.compress` — JPEG at quality 80, PNG when the bitmap has alpha —
-with the long side `min(size, 512)`. Over 256 KiB it re-encodes once as JPEG at
+then `Bitmap.compress` — JPEG at quality 80, or PNG when the bitmap has alpha
+and the item is an image (a video frame is opaque even when its bitmap reports
+alpha, so video is always JPEG) — with the long side `min(size, 512)`. Over
+256 KiB it re-encodes once as JPEG at
 quality 60 (a PNG over the cap loses its alpha; it is a thumbnail), and if that
 is still over, `fs_no_thumb` with no bytes. The seam is what the JVM tests fake:
 `FsThumbnailer` owns the cap, the re-encode decision, the queue, cancel and the
@@ -1068,7 +1070,8 @@ the bridge's own constant.
 ### Round-2 test plan
 
 - **K1 — the generator behind the seam** (`FsThumbnailerTest`, a fake
-  `ThumbSource`): the 512 long-side cap, JPEG 80 and the alpha → PNG choice, the
+  `ThumbSource`): the 512 long-side cap, JPEG 80, the alpha → PNG choice for an
+  image and JPEG for a video, the
   single re-encode and `fs_no_thumb`, the 256 KiB cap, cancel of a queued and a
   running job, one worker and FIFO order, `fs_busy` past 3 ids, the etag and
   missing-file refusals, no call at all without a request, and log lines that
