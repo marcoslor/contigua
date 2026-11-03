@@ -182,9 +182,9 @@ final class ClipboardSync {
             return FileCopyImage.encode(data, type: type)
         }
         guard offMain else { return done(read()) }
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async {  // gcd: a file read and decode must not block the main run loop
             let image = read()
-            DispatchQueue.main.async { done(image) }
+            DispatchQueue.main.async { done(image) }  // gcd: the send stays on main like every poll result
         }
     }
 
