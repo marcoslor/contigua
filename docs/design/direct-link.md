@@ -571,13 +571,12 @@ Yes — from the sources, not from a boot:
   since 10.13 and is used by VM tooling for exactly this job.
 - Nothing about it needs SIP, AMFI or the radio, so it works in the stock
   `macos-tahoe` guest the e2e VM uses.
-- What is *not* known from the sources: whether the guest image's kernel has the
-  interface compiled in, and the maximum frame a BPF `write` accepts on `feth`
-  (field reports put the injection limit at 2048 bytes even with a larger MTU).
-  Both get one command at the start of the P2 run, not a boot now:
-  `ifconfig feth0 create && ifconfig feth1 create && ifconfig feth0 peer feth1`
-  and one max-size frame each way. If either fails, the plan falls back to a
-  `bridge` + `vlan` pair, and the doc records which one ran.
+- What the sources could not say, the guest answered on 2026-11-03: the stock
+  `macos-tahoe` kernel has it (the pair came up as `66:65:74:68:00:00` ↔
+  `66:65:74:68:00:01`), and a **1514-byte frame crossed through BPF in both
+  directions** (`feth0`→`feth1` and back, each read by a second BPF tap). The
+  `bridge` + `vlan` fallback was not needed. Every run repeats the check first,
+  so a guest image without `feth` fails one line instead of the whole suite.
 
 ### 7.1.1 The address lwIP uses
 
