@@ -31,6 +31,14 @@ internal class ShellClipboard(
     /** The one live registration; only its handle may stop it (ISS-13). */
     @Volatile private var live: ClipRegistration? = null
 
+    /**
+     * Guards every read-then-write of [live]. Without it, an old session's
+     * `stop` could pass its "still live" check, lose the CPU to the new
+     * session's `listen`, and then clear the new registration (the ISS-13 race
+     * in a smaller window). The binder calls stay outside the lock.
+     */
+    private val liveLock = Any()
+
     override fun getText(): ClipText? {
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
@@ -85,10 +93,9 @@ internal class ShellClipboard(
 
     override fun listen(onChange: (ClipText) -> Unit): ClipRegistration {
         val reg = ClipRegistration(onChange)
-        val previous = live
         // The new registration is live before the old one is removed: a
         // dispatch in flight from the old listener must not reach it.
-        live = reg
+        val previous = synchronized(liveLock) { live.also { live = reg } }
         if (previous != null) remove(previous)
         val svc = service ?: run {
             log("clipboard: no clipboard service; sync off")
@@ -126,13 +133,20 @@ internal class ShellClipboard(
 
     override fun stop(registration: ClipRegistration?) {
         val reg = registration ?: return
-        if (live !== reg) {
+        val owned = synchronized(liveLock) {
+            if (live === reg) {
+                live = null
+                true
+            } else {
+                false
+            }
+        }
+        if (!owned) {
             // A replaced or already stopped handle: the live session keeps its
             // listener (ISS-13). Never prints a clip.
             log("clipboard: stale stop ignored")
             return
         }
-        live = null
         remove(reg)
     }
 
