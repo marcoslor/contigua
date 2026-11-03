@@ -1,13 +1,18 @@
 package dev.pocketdeck.direct
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.wifi.aware.WifiAwareManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.core.content.ContextCompat
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.app.DeckState
 import dev.pocketdeck.app.PhoneDirect
@@ -43,6 +48,16 @@ object DirectRuntime : PhoneDirectPort {
     private var activeClient: String? = null
     private var running = false
     private var tick: Runnable? = null
+    private var ndpRetry: Runnable? = null
+    private var awareStateRegistered = false
+
+    /** DIRECT-14: the platform's own "Aware became unavailable/available" rule. */
+    private val awareState = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val provider = port ?: return
+            main.post { feed(AwareLinkEvent.AwareStateChanged(provider.available())) }
+        }
+    }
 
     private val onDeckState: () -> Unit = { main.post { refresh() } }
 
@@ -81,6 +96,7 @@ object DirectRuntime : PhoneDirectPort {
             )
             PhoneDirect.port = this
             DeckState.addListener(onDeckState)
+            registerAwareState(ctx)
         }
         refresh()
     }
@@ -91,6 +107,9 @@ object DirectRuntime : PhoneDirectPort {
         running = false
         tick?.let { main.removeCallbacks(it) }
         tick = null
+        ndpRetry?.let { main.removeCallbacks(it) }
+        ndpRetry = null
+        app?.let { unregisterAwareState(it) }
         DeckState.removeListener(onDeckState)
         listener?.close()
         listener = null
@@ -197,7 +216,12 @@ object DirectRuntime : PhoneDirectPort {
         val provider = port ?: return
         when (action) {
             AwareLinkAction.Attach -> provider.attach(
-                onAttached = { main.post { feed(AwareLinkEvent.Attached) } },
+                onAttached = {
+                    main.post {
+                        feed(AwareLinkEvent.Attached)
+                        maybeStartNdp()
+                    }
+                },
                 onFailed = { reason -> main.post { feed(AwareLinkEvent.PublishFailed(reason)) } },
             )
             AwareLinkAction.Detach -> provider.detach()
@@ -237,7 +261,12 @@ object DirectRuntime : PhoneDirectPort {
         provider.publish(
             ssi = Ssi.bytes(key, window),
             passphrase = DirectKey.passphrase(key),
-            onStarted = { main.post { feed(AwareLinkEvent.PublishStarted) } },
+            onStarted = {
+                main.post {
+                    feed(AwareLinkEvent.PublishStarted)
+                    maybeStartNdp()
+                }
+            },
             onFailed = { reason -> main.post { feed(AwareLinkEvent.PublishFailed(reason)) } },
         )
     }
@@ -258,7 +287,12 @@ object DirectRuntime : PhoneDirectPort {
                     feed(AwareLinkEvent.NdpAvailable(available))
                 }
             },
-            onLost = { main.post { feed(AwareLinkEvent.NdpLost) } },
+            onLost = {
+                main.post {
+                    feed(AwareLinkEvent.NdpLost)
+                    scheduleNdpRetry()
+                }
+            },
         )
     }
 
@@ -277,6 +311,48 @@ object DirectRuntime : PhoneDirectPort {
     }
 
     private fun activeKey(): ByteArray? = activeClient?.let { keys?.key(it) }
+
+    /** A session that went live before the publish did still needs its standby. */
+    private fun maybeStartNdp() {
+        val ctx = app ?: return
+        val client = activeClient ?: return
+        if (DeckState.connectedClientId != null) {
+            feed(AwareLinkEvent.SessionLive(Prefs.directEnabled(ctx, client)))
+        }
+    }
+
+    /** One retry two seconds after a lost NDP, while a session is still live. */
+    private fun scheduleNdpRetry() {
+        if (DeckState.connectedClientId == null) return
+        ndpRetry?.let { main.removeCallbacks(it) }
+        val runnable = Runnable {
+            ndpRetry = null
+            if (link?.state is AwareLinkState.Publishing && DeckState.connectedClientId != null) {
+                maybeStartNdp()
+            }
+        }
+        ndpRetry = runnable
+        main.postDelayed(runnable, NDP_RETRY_MS)
+    }
+
+    private fun registerAwareState(ctx: Context) {
+        if (awareStateRegistered) return
+        awareStateRegistered = true
+        runCatching {
+            ContextCompat.registerReceiver(
+                ctx,
+                awareState,
+                IntentFilter(WifiAwareManager.ACTION_WIFI_AWARE_STATE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }.onFailure { awareStateRegistered = false }
+    }
+
+    private fun unregisterAwareState(ctx: Context) {
+        if (!awareStateRegistered) return
+        awareStateRegistered = false
+        runCatching { ctx.unregisterReceiver(awareState) }
+    }
 
     /** Report the phone's state as `direct.state`; the shell forwards it. */
     private fun report() {
@@ -321,6 +397,8 @@ object DirectRuntime : PhoneDirectPort {
     private fun log(message: String) {
         Log.i(TAG, message)
     }
+
+    private const val NDP_RETRY_MS = 2_000L
 }
 
 /**
