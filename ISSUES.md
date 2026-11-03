@@ -13,6 +13,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - Drops accept only file URLs (`VideoLayerView.swift`, `DeckViews.swift`). Images dragged from a browser (image data or a URL) and from Photos (file promises) are refused.
   - A drop always ends in the phone's share chooser, even when the target is the app in that window.
   - **Bug (the person, 2026-11-02):** copy a file in Finder, paste in a messaging app on the phone, and the file's *name* is pasted as text. Finder puts the name on the pasteboard next to the file URL, and clipboard sync sends the name. A Finder file copy must never reach the phone as its name; it pastes the file (V2) or nothing. Test first. The app may be at fault too, but ours is the name we send.
+    **Fixed on main 2026-11-03 (98f5f8f4, 0732a79a):** neither clipboard sync nor ⌘V sends the name; one copied image file (≤ 8 MiB) goes as the image, HEIC re-encoded as JPEG. Waiting on the person's real-phone check (copy a photo and a PDF in Finder, paste in a messaging app).
 
   Plan (one surface spec through the requirements gate):
   - **V1.** ⌘V with an image: set the phone clipboard to it and send a paste key to the focused field. If the field refuses an image, share it to that window's app.
