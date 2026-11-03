@@ -410,6 +410,9 @@ final class WriteState: @unchecked Sendable {
 final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     let domain: NSFileProviderDomain
     private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
+    /// One thumbnail pool for this extension process, shared by every Finder
+    /// batch it is asked for (FILES-25).
+    private let thumbs = FilesThumbScheduler()
     /// The anchor S3 answers with: no changes are reported (S5 adds them).
     let anchor = NSFileProviderSyncAnchor(Data("files-s3".utf8))
 
@@ -1158,63 +1161,47 @@ extension FilesExtension {
         progress.isCancellable = true
         let long = max(requestedSize.width, requestedSize.height)
         let size = min(FilesThumbPolicy.maxLongSide, max(1, Int(long.rounded(.up))))
-        work.async {
-            self.thumbBatch(ids: itemIdentifiers, size: size, progress: progress,
-                            per: perThumbnailCompletionHandler, done: completionHandler)
+        guard !itemIdentifiers.isEmpty else {
+            completionHandler(nil)
+            return progress
         }
-        return progress
-    }
-
-    /// At most three thumbnails run, one bridge connection each; every id gets
-    /// exactly one answer and the batch completes once.
-    private func thumbBatch(ids: [NSFileProviderItemIdentifier], size: Int, progress: Progress,
-                            per: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
-                            done: @escaping (Error?) -> Void) {
-        guard !ids.isEmpty else { return done(nil) }
-        let lock = NSLock()
-        var index = 0
-        var running = 0
-        var finished = 0
-        var stopped = false
-
-        func launchNext() {
-            lock.lock()
-            while !stopped && !progress.isCancelled && running < FilesThumbPolicy.inFlightLimit
-                    && index < ids.count {
-                let item = ids[index]
-                index += 1
-                running += 1
-                lock.unlock()
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    guard let self else { return }
-                    let answer = self.thumb(item: item.rawValue, size: size, progress: progress)
-                    lock.lock()
-                    running -= 1
-                    finished += 1
-                    let complete = finished == ids.count
-                    lock.unlock()
-                    progress.completedUnitCount = Int64(finished)
-                    per(item, answer.data, answer.error)
-                    if complete { done(nil) } else { launchNext() }
+        let started = Date()
+        // One pool for every batch: the scheduler decides what runs when, so
+        // several Finder batches cannot put 3 x N asks on the bridge, and a
+        // cancelled batch answers all of its ids and completes once.
+        let batchID = thumbs.open(
+            items: itemIdentifiers.map(\.rawValue),
+            start: { [weak self] item, isCancelled, completion in
+                DispatchQueue.global(qos: .utility).async {
+                    guard let self else {
+                        completion(nil, FilesThumbPolicy.error(for: "closed"))
+                        return
+                    }
+                    let answer = self.thumb(item: item, size: size, isCancelled: isCancelled)
+                    completion(answer.data, answer.error)
                 }
-                lock.lock()
-            }
-            lock.unlock()
+            },
+            per: { item, data, error in
+                perThumbnailCompletionHandler(NSFileProviderItemIdentifier(item), data, error)
+            },
+            done: { error in
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                log.notice("thumb batch done n=\(itemIdentifiers.count, privacy: .public) ms=\(ms, privacy: .public)")
+                completionHandler(error)
+            })
+        progress.cancellationHandler = { [weak self] in
+            log.notice("thumb batch cancel id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public)")
+            self?.thumbs.cancel(batchID)
         }
-
-        progress.cancellationHandler = {
-            lock.lock()
-            stopped = true
-            lock.unlock()
-        }
-        launchNext()
+        log.notice("thumb batch open id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public) size=\(size, privacy: .public)")
+        return progress
     }
 
     /// One item's thumbnail: one request, its data frames, its answer. The
     /// connection waits 120 s (FILES-29): the ask may sit in the app's queue
     /// behind a camera folder, and the socket must not time it out first.
     private func thumb(item: String, size: Int,
-                       progress: Progress) -> (data: Data?, error: Error?) {
+                       isCancelled: @escaping () -> Bool) -> (data: Data?, error: Error?) {
         guard case .success(let connection) = connect(readTimeout: FilesThumbPolicy.bridgeReadTimeout),
               hello(connection) else {
             log.notice("thumb failed code=offline")
@@ -1229,7 +1216,7 @@ extension FilesExtension {
         }
         var data = Data()
         while let frame = connection.next() {
-            if progress.isCancelled {
+            if isCancelled() {
                 state.cancel()
                 return (nil, nil)
             }
