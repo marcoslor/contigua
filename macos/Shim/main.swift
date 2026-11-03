@@ -77,7 +77,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         // An automatic launch stands for a window that is already open: it
         // posts `ready` until the host answers, so a bind that happened before
         // this moment is not a lost answer. A manual launch asks for the window.
-        apply(.launch(automatic: automatic, now: Date()))
+        apply(.launch(automatic: automatic, hostSeen: false, now: Date()))
     }
 
     private func apply(_ event: DockShimMachine.Event) {

@@ -14,9 +14,9 @@ final class DockShimAckTests: XCTestCase {
     /// The automatic path after its observers are registered.
     private func automatic() -> DockShimMachine.State {
         let (state, actions) = DockShimMachine.transition(
-            .starting, .launch(automatic: true, now: t0))
+            .starting, .launch(automatic: true, hostSeen: false, now: t0))
         XCTAssertEqual(actions, [.post(.ready), .startRetry])
-        XCTAssertEqual(state, .waiting(kind: .ready, since: t0, hostLaunched: false))
+        XCTAssertEqual(state, .waiting(kind: .ready, since: t0, hostSeen: false))
         return state
     }
 
@@ -38,8 +38,8 @@ final class DockShimAckTests: XCTestCase {
 
     func testManualLaunchIsUnchanged() {
         let (waiting, posted) = DockShimMachine.transition(
-            .starting, .launch(automatic: false, now: t0))
-        XCTAssertEqual(waiting, .waiting(kind: .open, since: t0, hostLaunched: false))
+            .starting, .launch(automatic: false, hostSeen: false, now: t0))
+        XCTAssertEqual(waiting, .waiting(kind: .open, since: t0, hostSeen: false))
         XCTAssertEqual(posted, [.post(.open), .startRetry])
 
         let (early, earlyActions) = DockShimMachine.transition(waiting, .tick(now: at(1)))
@@ -47,7 +47,7 @@ final class DockShimAckTests: XCTestCase {
         XCTAssertEqual(earlyActions, [.post(.open)], "no host launch before 2 s")
 
         let (launched, launchActions) = DockShimMachine.transition(early, .tick(now: at(2)))
-        XCTAssertEqual(launched, .waiting(kind: .open, since: t0, hostLaunched: true))
+        XCTAssertEqual(launched, .waiting(kind: .open, since: t0, hostSeen: true))
         XCTAssertEqual(launchActions, [.launchHost, .post(.open)], "2 s with no host: launch it")
 
         let (again, againActions) = DockShimMachine.transition(launched, .tick(now: at(3)))
@@ -57,7 +57,7 @@ final class DockShimAckTests: XCTestCase {
 
     func testNoAnswerQuitsAfterThirtySecondsForBothWaits() {
         for kind in [DockShimMachine.WaitKind.open, .ready] {
-            let state = DockShimMachine.State.waiting(kind: kind, since: t0, hostLaunched: true)
+            let state = DockShimMachine.State.waiting(kind: kind, since: t0, hostSeen: true)
             let (still, actions) = DockShimMachine.transition(state, .tick(now: at(30)))
             XCTAssertEqual(still, state, "30 s is not past the limit yet (\(kind))")
             XCTAssertEqual(actions, [kind == .open ? .post(.open) : .post(.ready)])
@@ -72,8 +72,8 @@ final class DockShimAckTests: XCTestCase {
     func testClosedExitsFromEveryState() {
         let states: [DockShimMachine.State] = [
             .starting,
-            .waiting(kind: .open, since: t0, hostLaunched: false),
-            .waiting(kind: .ready, since: t0, hostLaunched: true),
+            .waiting(kind: .open, since: t0, hostSeen: false),
+            .waiting(kind: .ready, since: t0, hostSeen: true),
             .bound,
             .quitting,
         ]
@@ -87,19 +87,19 @@ final class DockShimAckTests: XCTestCase {
     func testActivateRaisesTheWindowOnlyWhenBound() {
         XCTAssertEqual(DockShimMachine.transition(.bound, .activate).1, [.post(.open)])
         XCTAssertEqual(DockShimMachine.transition(
-            .waiting(kind: .ready, since: t0, hostLaunched: false), .activate).1, [])
+            .waiting(kind: .ready, since: t0, hostSeen: false), .activate).1, [])
         XCTAssertEqual(DockShimMachine.transition(.starting, .activate).1, [])
         XCTAssertEqual(DockShimMachine.transition(.quitting, .activate).1, [])
     }
 
     func testAReopenStartsTheManualWaitAgain() {
         let (state, actions) = DockShimMachine.transition(.bound, .reopen(now: at(40)))
-        XCTAssertEqual(state, .waiting(kind: .open, since: at(40), hostLaunched: false))
+        XCTAssertEqual(state, .waiting(kind: .open, since: at(40), hostSeen: false))
         XCTAssertEqual(actions, [.post(.open), .startRetry])
     }
 
     func testQuittingPostsQuitOnce() {
-        let waiting = DockShimMachine.State.waiting(kind: .ready, since: t0, hostLaunched: false)
+        let waiting = DockShimMachine.State.waiting(kind: .ready, since: t0, hostSeen: false)
         let (quitting, actions) = DockShimMachine.transition(waiting, .terminate)
         XCTAssertEqual(quitting, .quitting)
         XCTAssertEqual(actions, [.post(.quit)])
@@ -110,9 +110,64 @@ final class DockShimAckTests: XCTestCase {
     func testADuplicateLaunchDoesNotRestartTheWait() {
         let state = automatic()
         let (next, actions) = DockShimMachine.transition(
-            state, .launch(automatic: true, now: at(5)))
+            state, .launch(automatic: true, hostSeen: false, now: at(5)))
         XCTAssertEqual(next, state)
         XCTAssertEqual(actions, [])
+    }
+
+    /// DOCK-19 (ISS-6): a bound shim quits when the host process ends, so its
+    /// Dock icon never outlives PocketDeck. The host is gone, so nothing is
+    /// posted; the same `[.exit]` a `closed` takes ends the process.
+    func testAHostExitQuitsABoundShim() {
+        let (next, actions) = DockShimMachine.transition(.bound, .hostExited)
+        XCTAssertEqual(next, .quitting)
+        XCTAssertEqual(actions, [.exit], "there is no host left to post to")
+    }
+
+    /// A shim still waiting for its first window quits too, once it has seen
+    /// the host running: a crash before the bind would otherwise leave it for
+    /// the 30 s self-quit.
+    func testAHostExitQuitsAWaitingShimThatHadSeenTheHost() {
+        for kind in [DockShimMachine.WaitKind.open, .ready] {
+            let state = DockShimMachine.State.waiting(kind: kind, since: t0, hostSeen: true)
+            let (next, actions) = DockShimMachine.transition(state, .hostExited)
+            XCTAssertEqual(next, .quitting, "\(kind)")
+            XCTAssertEqual(actions, [.exit], "\(kind)")
+        }
+    }
+
+    /// Before the host was seen a termination cannot be its own, and a quitting
+    /// shim is already on its way out: both ignore it.
+    func testAHostExitIsIgnoredBeforeTheHostWasSeenAndAfterQuitting() {
+        let ignored: [DockShimMachine.State] = [
+            .starting,
+            .waiting(kind: .open, since: t0, hostSeen: false),
+            .waiting(kind: .ready, since: t0, hostSeen: false),
+            .quitting,
+        ]
+        for state in ignored {
+            let (next, actions) = DockShimMachine.transition(state, .hostExited)
+            XCTAssertEqual(next, state)
+            XCTAssertEqual(actions, [], "\(state.label)")
+        }
+    }
+
+    /// The driver logs the event by its label, like every other transition.
+    func testTheHostExitEventIsLoggedLikeTheOthers() {
+        XCTAssertEqual(DockShimMachine.Event.hostExited.label, "hostExited")
+        XCTAssertEqual(DockShimMachine.State.waiting(kind: .open, since: t0, hostSeen: true).label,
+                       "waiting(open, hostSeen: true)")
+    }
+
+    /// A host already running when the shim starts listening is not launched
+    /// again at 2 s; `hostSeen` carries that fact.
+    func testAHostSeenAtListenIsNotLaunchedAgain() {
+        let (state, _) = DockShimMachine.transition(
+            .starting, .launch(automatic: false, hostSeen: true, now: t0))
+        XCTAssertEqual(state, .waiting(kind: .open, since: t0, hostSeen: true))
+        let (next, actions) = DockShimMachine.transition(state, .tick(now: at(2)))
+        XCTAssertEqual(next, state)
+        XCTAssertEqual(actions, [.post(.open)], "no second host launch")
     }
 
     // The host's answer to `ready`: only a bound pid with the bundle's token.
