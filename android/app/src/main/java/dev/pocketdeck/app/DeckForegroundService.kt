@@ -8,12 +8,14 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
 import dev.pocketdeck.server.failureClasses
+import java.util.concurrent.Executors
 
 /**
  * Keeps the deck reachable: binds the shell user service, starts the TCP server,
@@ -87,9 +89,53 @@ class DeckForegroundService : Service() {
         override fun onNotifyDismiss(id: String?) {
             PdNotificationBridge.dismissSink?.invoke(id ?: return)
         }
+
+        /**
+         * A Mac clipboard image (SHARE-2/16). The app owns the provider, so it
+         * copies the pipe into `cacheDir/clip`, sets A2's URI-only item and
+         * answers the shell; the copy runs off the binder thread.
+         */
+        override fun onClipImage(id: String?, mime: String?, data: ParcelFileDescriptor?) {
+            val key = id
+            if (key == null) {
+                runCatching { data?.close() }
+                return
+            }
+            val type = mime
+            val descriptor = data
+            if (type == null || descriptor == null) {
+                runCatching { descriptor?.close() }
+                answerClip(key, false)
+                return
+            }
+            try {
+                clipWriter.execute {
+                    val ok = runCatching {
+                        ParcelFileDescriptor.AutoCloseInputStream(descriptor).use {
+                            ClipImageWriter.write(this@DeckForegroundService, type, it)
+                        }
+                    }.onFailure {
+                        Log.i(TAG, "clip image: ${failureClasses(it)}")  // log-ok: class names only
+                    }.getOrDefault(false)
+                    answerClip(key, ok)
+                }
+            } catch (e: Throwable) {
+                Log.i(TAG, "clip image: queue failed: ${failureClasses(e)}")  // log-ok: class names only
+                runCatching { descriptor.close() }
+                answerClip(key, false)
+            }
+        }
+    }
+
+    /** The app's answer to the shell's `onClipImage` (SHARE-2/16). */
+    private fun answerClip(id: String, ok: Boolean) {
+        runCatching { ShizukuClient.current()?.clipImageDone(id, ok) }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
+    private val clipWriter = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "pocketdeck-clip-write").apply { isDaemon = true }
+    }
     private var serviceReady = false
     private val clientListener: (IDeckService?) -> Unit = { svc ->
         if (svc != null) onServiceReady(svc) else onServiceLost()
@@ -146,6 +192,7 @@ class DeckForegroundService : Service() {
         // Stop listening before the process keeps a binder nobody serves: with
         // the deck off, nothing may be bound (PHONE-7).
         ShizukuClient.detach()
+        clipWriter.shutdownNow()
         nsd.stop()
         super.onDestroy()
     }

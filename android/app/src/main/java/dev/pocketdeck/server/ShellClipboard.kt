@@ -9,7 +9,6 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
-import java.io.File
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
@@ -72,6 +71,8 @@ internal class ShellClipboard(
         if (item.text != null) return null
         if (isSensitive(clip.description)) return null
         val contentUri = item.uri ?: return null
+        // The app's own clip (SHARE-2/16): never sync our write back to the Mac.
+        if (isOurClip(contentUri)) return null
         // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
         // later call than this code's floor).
         val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: return null
@@ -80,44 +81,6 @@ internal class ShellClipboard(
             .onFailure { log("clipboard: unreadable clip image ($mime): ${failureClasses(it)}") }
             .getOrNull() ?: return null
         return ClipImage(bytes, mime.lowercase())
-    }
-
-    /**
-     * Puts an image file of [DIRECTORY] on the clipboard through a FileProvider
-     * URI of the app, which survives the paste into any app that ClipboardService
-     * grants the URI to (the provider is public and keyed by the grant flag).
-     */
-    override fun writeImage(file: File, mime: String, label: String): Boolean {
-        // State only: the UID tells whether Shizuku's shell process is the one
-        // writing, and the size/kind tell whether the file is really there.
-        log("clipboard: image write uid=${Process.myUid()} " +
-            "exists=${file.isFile} size=${file.length()} mime=$mime")
-        // The URI is built here, not by FileProvider.getUriForFile: that static
-        // helper asks PackageManager for the app's resources, and this process
-        // is uid 2000 with the app's Context, so the system refuses the pair
-        // ("package does not match caller's uid"; emulator boot 3).
-        val uri = imageUri(file) ?: run {
-            log("clipboard: image outside the drop folder")
-            return false
-        }
-        log("clipboard: image uri scheme=${uri.scheme} own=${uri.authority == AUTHORITY}")
-        val clip = imageClip(uri, mime)
-        log("clipboard: image clip items=${clip.itemCount} " +
-            "mime=${clip.description.getMimeType(0)}")
-        val svc = service ?: run {
-            log("clipboard: no clipboard service for an image")
-            return false
-        }
-        val set = ClipboardApi.calls(log).set ?: run {
-            log("clipboard: no setPrimaryClip for an image")
-            return false
-        }
-        val attempt = runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-        attempt.exceptionOrNull()?.let {
-            log("clipboard: setPrimaryClip(image) failed: ${failureClasses(it)}")
-        }
-        if (attempt.isSuccess) log("clipboard: image clip ($mime)")
-        return attempt.isSuccess
     }
 
     override fun listen(onChange: (ClipText) -> Unit) {
@@ -186,31 +149,6 @@ internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item(uri)
 internal fun imageClip(uri: Uri, mime: String): ClipData =
     ClipData(ClipDescription(CLIP_LABEL, arrayOf(mime)), imageClipItem(uri))
 
-/**
- * The FileProvider URI for an image in the drop folder, exactly as
- * `<external-path name="downloads" path="Download/PocketDeck"/>` maps it.
- *
- * Built by hand, and from [DropPolicy.DIRECTORY] alone, because this runs in
- * the shell service process (uid 2000) with the app's Context:
- * `FileProvider.getUriForFile` asks PackageManager for the app's resources and
- * `Environment.getExternalStorageDirectory()` asks StorageManager, and both
- * refuse the package/uid pair (emulator boots 3/4; files.md §4). The path
- * comparison stays lexical, too: `/sdcard` and `/storage/emulated/0` are the
- * same folder, but their canonical forms need not spell it the same way.
- * [ShellClipboardImageTest] pins the mapping.
- */
-internal fun imageUri(file: File): Uri? {
-    val drop = File(DropPolicy.DIRECTORY).absoluteFile.normalize()
-    val image = file.absoluteFile.normalize()
-    if (image.parentFile != drop) return null
-    return Uri.Builder()
-        .scheme(ContentResolver.SCHEME_CONTENT)
-        .authority(FILE_PROVIDER_AUTHORITY)
-        .appendPath("downloads")
-        .appendPath(image.name)
-        .build()
-}
-
 private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
 private const val SHELL_PACKAGE = "com.android.shell"
@@ -228,7 +166,6 @@ private val SENSITIVE_KEYS = setOf(
 
 /** The app's FileProvider: a shell-written file is served through the app's provider. */
 const val FILE_PROVIDER_AUTHORITY = "dev.pocketdeck.fileprovider"
-private const val AUTHORITY = FILE_PROVIDER_AUTHORITY
 
 /**
  * The hidden calls, probed once per process. The chosen signatures are logged
@@ -317,4 +254,4 @@ private fun argsFor(m: Method, valueType: Class<*>?, value: Any?): Array<Any?> {
  * our own provider is the app's own write, never something to sync back to the
  * Mac.
  */
-internal fun isOurClip(uri: Uri?): Boolean = false
+internal fun isOurClip(uri: Uri?): Boolean = uri?.authority == FILE_PROVIDER_AUTHORITY

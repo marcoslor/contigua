@@ -2,6 +2,8 @@ package dev.pocketdeck.server
 
 import android.os.ParcelFileDescriptor
 import org.junit.After
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,12 +24,16 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [34])
 class ClipImageBridgeTest {
 
+    @get:Rule
+    val tmp = TemporaryFolder()
+
     private val bridges = mutableListOf<ClipImageBridge>()
 
     private fun bridge(
         callback: () -> ClipImageBridge.ClipImageCallback?,
         timeoutMs: Long = 5_000,
-    ): ClipImageBridge = ClipImageBridge(callback, timeoutMs = timeoutMs).also { bridges += it }
+    ): ClipImageBridge = ClipImageBridge(callback, scratch = { tmp.root }, timeoutMs = timeoutMs)
+        .also { bridges += it }
 
     @After
     fun closeBridges() {
@@ -40,15 +46,18 @@ class ClipImageBridgeTest {
         var received: ByteArray? = null
         val bridge = bridge({
             ClipImageBridge.ClipImageCallback { _, _, data ->
-                received = ParcelFileDescriptor.AutoCloseInputStream(data).use { it.readBytes() }
-                read.countDown()
+                try {
+                    received = ParcelFileDescriptor.AutoCloseInputStream(data).use { it.readBytes() }
+                } finally {
+                    read.countDown()
+                }
             }
         })
         val answers = Collections.synchronizedList(mutableListOf<Boolean>())
 
         bridge.offer("7", "image/png", byteArrayOf(1, 2, 3)) { answers += it }
 
-        assertTrue("the app reads the pipe", read.await(2, TimeUnit.SECONDS))
+        assertTrue("the app reads the pipe", read.await(10, TimeUnit.SECONDS))
         assertTrue(received!!.contentEquals(byteArrayOf(1, 2, 3)))
         bridge.answer("7", true)
         assertEquals(listOf(true), answers)

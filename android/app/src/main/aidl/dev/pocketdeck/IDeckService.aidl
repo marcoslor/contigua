@@ -105,4 +105,11 @@ interface IDeckService {
      * else. The app cannot open the staged path itself.
      */
     ParcelFileDescriptor openStaged(String name) = 17;
+
+    /**
+     * The app's answer to `onClipImage` (SHARE-2/16): true only when its own
+     * clipboard now holds the image. The server sends `clip.image.done` from it,
+     * and answers false when no app is registered or none answers in 3 s.
+     */
+    void clipImageDone(String id, boolean ok) = 18;
 }

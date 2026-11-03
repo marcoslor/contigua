@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Paths the app may hand out as dev.pocketdeck.fileprovider URIs
-     (docs/design/dragdrop.md). A drop's SEND shares the copy the trampoline made
-     in the app's own share cache — nothing else is served from there — and the
-     clipboard image path still shares the file it wrote in Downloads/PocketDeck.
+     (docs/design/dragdrop.md). Both a drop's SEND and a clipboard image share
+     only app-owned copies under cache/: the shell never serves a path it wrote.
      The card at large is never addressable. -->
 <paths>
     <cache-path name="shared" path="shared/" />
-    <external-path name="downloads" path="Download/PocketDeck" />
+    <cache-path name="clip" path="clip/" />
 </paths>

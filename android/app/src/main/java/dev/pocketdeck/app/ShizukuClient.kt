@@ -36,7 +36,7 @@ object ShizukuClient {
     private var context: Context? = null
     private var listening = false
 
-    private var service: IDeckService? = null
+    @Volatile private var service: IDeckService? = null
     private val pending = CopyOnWriteArrayList<(IDeckService?) -> Unit>()
     private val listeners = CopyOnWriteArrayList<(IDeckService?) -> Unit>()
 

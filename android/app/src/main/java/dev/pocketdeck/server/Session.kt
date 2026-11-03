@@ -79,8 +79,10 @@ class Session(
     private val fsWatch: FsWatchSource = FsWatchSource.None,
     /** Decode/encode seam for `fs.thumb` (docs/design/files.md "Thumbnails (S6)"); tests fake it. */
     private val fsThumb: ThumbSource = ThumbSource.None,
-    /** Clipboard image port (read + write); null leaves images unsynced. */
+    /** Clipboard image read port (the phone -> Mac poll); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
+    /** The app-owned clipboard write (Mac -> phone); null answers ok=false. */
+    private val clipImageHost: ClipImageHost? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -255,7 +257,7 @@ class Session(
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
     private val clipImageReceiver = ClipImageReceiver(
-        ClipImageLand(clipImages, log), log,
+        ClipImageLand(clipImageHost, log), log,
         done = { id, ok -> sendJson(mapOf("t" to "clip.image.done", "id" to id, "ok" to ok)) },
     )
     private var clipImagePoll: Thread? = null

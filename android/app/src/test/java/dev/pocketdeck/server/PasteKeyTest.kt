@@ -8,6 +8,7 @@ import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.KeyPayload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -56,7 +57,7 @@ class PasteKeyTest {
     fun aWrittenImageAnswersDone() {
         val bytes = byteArrayOf(9, 8, 7)
         val answers = mutableListOf<Pair<Int, Boolean>>()
-        val receiver = ClipImageReceiver(sink = { true }, done = { id, ok -> answers += id to ok })
+        val receiver = ClipImageReceiver(sink = { _, _, done -> done(true) }, done = { id, ok -> answers += id to ok })
         receiver.begin(7, "image/png", bytes.size.toLong())
         receiver.data(7, bytes)
         receiver.end(7, bytes.size.toLong(), sha(bytes))
@@ -67,7 +68,7 @@ class PasteKeyTest {
     fun aRefusedImageAnswersDoneFalse() {
         val bytes = byteArrayOf(1, 2, 3)
         val answers = mutableListOf<Pair<Int, Boolean>>()
-        val receiver = ClipImageReceiver(sink = { false }, done = { id, ok -> answers += id to ok })
+        val receiver = ClipImageReceiver(sink = { _, _, done -> done(false) }, done = { id, ok -> answers += id to ok })
         receiver.begin(7, "image/png", bytes.size.toLong())
         receiver.data(7, bytes)
         receiver.end(7, bytes.size.toLong(), sha(bytes))
@@ -78,10 +79,56 @@ class PasteKeyTest {
     fun aChecksumMismatchAnswersDoneFalse() {
         val bytes = byteArrayOf(4, 5, 6)
         val answers = mutableListOf<Pair<Int, Boolean>>()
-        val receiver = ClipImageReceiver(sink = { true }, done = { id, ok -> answers += id to ok })
+        val receiver = ClipImageReceiver(sink = { _, _, done -> done(true) }, done = { id, ok -> answers += id to ok })
         receiver.begin(7, "image/png", bytes.size.toLong())
         receiver.data(7, bytes)
         receiver.end(7, bytes.size.toLong(), "0".repeat(64))
+        assertEquals(listOf(7 to false), answers)
+    }
+
+    /**
+     * The shell no longer sets an image clip: the bytes go to the app, and the
+     * Mac's `clip.image.done` is sent only from the app's answer, even when it
+     * arrives after the read returns.
+     */
+    @Test
+    fun anImageGoesToTheAppAndItsLateAnswerIsTheDone() {
+        var offered: Triple<Int, String, ByteArray>? = null
+        var appAnswer: ((Boolean) -> Unit)? = null
+        val answers = mutableListOf<Pair<Int, Boolean>>()
+        val host = ClipImageHost { id, mime, bytes, done ->
+            offered = Triple(id, mime, bytes)
+            appAnswer = done
+        }
+        val receiver = ClipImageReceiver(sink = ClipImageLand(host),
+                                          done = { id, ok -> answers += id to ok })
+        val bytes = byteArrayOf(8, 9)
+
+        receiver.begin(7, "image/png", bytes.size.toLong())
+        receiver.data(7, bytes)
+        receiver.end(7, bytes.size.toLong(), sha(bytes))
+
+        assertEquals(7, offered!!.first)
+        assertEquals("image/png", offered!!.second)
+        assertTrue(offered!!.third.contentEquals(bytes))
+        assertEquals("no answer until the app answers", emptyList<Pair<Int, Boolean>>(), answers)
+        appAnswer!!(true)
+        assertEquals(listOf(7 to true), answers)
+        appAnswer!!(false)
+        assertEquals("the answer is delivered once", listOf(7 to true), answers)
+    }
+
+    @Test
+    fun withoutAnAppWriterTheAnswerIsFalse() {
+        val answers = mutableListOf<Pair<Int, Boolean>>()
+        val receiver = ClipImageReceiver(sink = ClipImageLand(null),
+                                          done = { id, ok -> answers += id to ok })
+        val bytes = byteArrayOf(1)
+
+        receiver.begin(7, "image/png", bytes.size.toLong())
+        receiver.data(7, bytes)
+        receiver.end(7, bytes.size.toLong(), sha(bytes))
+
         assertEquals(listOf(7 to false), answers)
     }
 }
