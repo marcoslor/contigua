@@ -138,7 +138,52 @@ dlopen("/System/Library/PrivateFrameworks/WiFiPeerToPeer.framework/Versions/A/Wi
    MAC (`WiFiAwareDataPathState`, `WiFiAwareNDIInfo`, `WiFiAwareDataPath-
    SessionInfo`, `WiFiAwareNDISessionCounters` in the toolkit's class list).
    The helper needs nothing else: from here the peer is "one MAC and one
-   link-local address on `nan0`".
+   link-local address on `nan0`". The adapter reads the MAC and the address
+   from the report object itself or from its `ndiInfo` / `sessionInfo` /
+   `state` child, through the property selectors `macAddress`,
+   `peerMacAddress`, `mac` and `linkLocalAddress`, `ipv6Address`,
+   `peerAddress`, `address`, `linkLocal`; a report that yields neither is not
+   guessed at: the attempt ends as `ndp_refused`. The exact property names are
+   the one thing only the reviewer's real run can confirm.
+
+**The machine.** The helper does not keep loose flags: one enum of states and
+one pure transition function:
+
+```
+idle --start--> subscribing --discovered(match)--> discovered
+     --data_session(starting)--> dataSessionStarting --data_session(up)--> up
+     --data_session(lost)--> lost
+any attempt state --ndp_timeout / toolkit refusal--> blocked(code)
+```
+
+- Events: a dial/discover (`start` with the service, the accepted SSI windows
+  and the passphrase), the window tick (`ssiWindows`), discovery results
+  (matching or not), data-session state reports, the 20 s timer (`ndpTimeout`),
+  `stop`, and the toolkit's three refusals (`unavailable`, `subscribeFailed`,
+  `dataSessionFailed`).
+- A discovery result whose 8 bytes match neither accepted window is ignored in
+  `subscribing`; a second match while one is being started is ignored too.
+- `up` carries `DirectPeerSpec` — the interface, the peer's MAC and its
+  link-local — which is the exact shape the test-only `peer` op takes, so the
+  data session and the feth harness reach lwIP by the same path.
+- `lost` is quiet: the data session, its subscription and the peer are already
+  gone, and the next dial subscribes again.
+- `blocked(code)` is terminal for the attempt; the waiting `dial`/`discover`
+  gets that code and the LAN path is untouched.
+- One NDP at a time per helper. A `discover` while one is up answers `ok`
+  without touching it; a different phone or key needs a `stop` first.
+
+**The forwarding delegate.** Swift cannot name `NSInvocation` or
+`NSMethodSignature`, so the adapter adds `forwardInvocation:` and
+`methodSignatureForSelector:` to its delegate class with `class_addMethod` and
+drives the invocation through the runtime exactly as `sub.m` does. The real
+callback selectors come from `proto.m`'s `objc_getProtocol` /
+`protocol_copyMethodDescriptionList` when the protocol is registered; the
+prefixes `subscri`, `dataSession` and `datapath` are the fallback, so a
+renamed private selector still reaches the machine. The discovery result's
+service-specific info is read through `serviceSpecificInfo` (or
+`serviceSpecificInfoData`); a result that carries none is ignored, never
+matched.
 
 The **publish** side is documented only for completeness — in this product the
 phone publishes and the Mac subscribes (`pub.m` is the reference if a Mac-side
@@ -218,24 +263,40 @@ plus one file descriptor where a link is handed over.
 
 | Request | Reply |
 |---|---|
-| `{"op":"hello","v":1}` | `{"ok":true,"v":1,"toolkit":{"publish":true,"subscribe":true,"dataLinks":16}}` |
+| `{"op":"hello","v":1}` | `{"ok":true,"v":1,"toolkit":{"publish":false,"subscribe":true,"dataLinks":8}}` |
 | `{"op":"probe"}` | `{"ok":true,"ready":false,"codes":["amfi_enabled"],"detail":"…"}` |
+| `{"op":"discover","svc":"_pocketdeck-nan._tcp","psk":"<64 hex>"}` | `{"ok":true}` when the NDP is up, else that code |
 | `{"op":"dial","peer":"<32 hex>","svc":"_pocketdeck-nan._tcp","psk":"<64 hex>","port":<u16>}` | `{"ok":true,"link":"<16 hex>","mtu":1500}` **+ one fd** |
 | `{"op":"peer","if":"feth0","mac":"<17>","ll":"<ipv6>"}` | `{"ok":true}` — **test only**, see below |
 | `{"op":"close","link":"<16 hex>"}` | `{"ok":true}` |
+| `{"op":"stop"}` | `{"ok":true}` — stops the NDP, its subscription and its links |
 | `{"op":"links"}` | `{"ok":true,"links":[{"link":"<16 hex>","peer":"<32 hex>","state":"up","rttMs":11}]}` |
 | `{"op":"stats"}` | `{"ok":true}` — **test only**, lwIP's counters go to stderr |
 | anything else | `{"ok":false,"code":"bad_request","message":"…"}` |
 
+- `hello` tells the truth: `subscribe` is true only when the private toolkit
+  loaded, `publish` is false (the phone publishes), and `dataLinks` is the
+  helper's own link cap. It is not a promise about the radio's policy; that is
+  the probe's answer.
+- `dial`'s three NAN fields travel together or not at all; all three absent is
+  the test-only static peer (§7.2). A partial request is `bad_request`.
+  `discover` starts the NDP alone and answers when it is up, so the app can
+  pre-warm the standby path; a following `dial` may then omit `psk` and `svc`.
+  One attempt runs at a time: a second `discover`/`dial` while one is pending
+  is `busy`.
 - The `dial` reply's fd is a connected `socketpair` end sent with `sendmsg` and
   `SCM_RIGHTS` (one `cmsghdr`, `SOL_SOCKET`, `SCM_RIGHTS`, one `int`). The app
   reads and writes it as an ordinary socket; **TLS lives in the app**, so the
   helper only ever moves ciphertext (D2). The helper bridges it to one lwIP
   `tcp_pcb` connected to the peer's link-local on `port`.
-- The `dial` reply is held until lwIP's connected callback, not until
-  `tcp_connect` returns (that only queues the SYN). If the handshake fails, or
-  does not complete within **10 s**, the reply is
-  `{"ok":false,"code":"connect_failed"}` and carries no fd; the link is `down`.
+- The `dial` reply is held until the NDP is up and then until lwIP's connected
+  callback, not until `tcp_connect` returns (that only queues the SYN). The NDP
+  has **20 s** from the dial (§2.2); the TCP handshake has **10 s**. Either
+  failure answers `ndp_timeout` / `ndp_refused` / `connect_failed` with no fd.
+- `discover` and `stop` are idempotent at the edges: a `discover` while the NDP
+  is up answers `ok` without touching it, and a `stop` with no session answers
+  `ok`. `stop` closes every link carried by the stopped NDP and clears the peer
+  from lwIP and the route, exactly as a peer FIN would.
 - A peer FIN (lwIP's recv callback with no data) and a peer RST both put the
   link in `down` and close the app's fd: a read returns EOF and the next write
   fails. A clean FIN is reported as `peerClosed`, not as a connect failure. In
@@ -245,20 +306,22 @@ plus one file descriptor where a link is handed over.
   puts the link `down`, and the app's fd reads EOF. Repeating `close` while the
   link is still remembered also answers `ok`; an id the daemon has forgotten
   answers `link_unknown`.
-- **`peer` is the test-only static peer** (P2; §7.2). There is no data session
-  in this round, so the harness tells the helper what the NAN data session
-  would have: the peer's MAC and link-local on the interface named by `if`.
-  It is accepted only with `POCKETDECK_DIRECT_TEST=1`; anywhere else it answers
-  `not_ready`. Round 2's NAN code fills the same fields from the data session
-  and the request never comes from the app. In test mode a `dial` may omit
-  `peer`, `svc` and `psk` — the static peer supplies the address — while a
-  normal dial carries all three for the NDP.
+- **`peer` is the test-only static peer** (§7.2). The NAN session now fills
+  the same fields from the data session; the op remains for the feth harness
+  and is never sent by the app. It is accepted only with
+  `POCKETDECK_DIRECT_TEST=1`; anywhere else it answers `not_ready`. In a test
+  run a `dial` may omit `peer`, `svc` and `psk` — the static peer supplies the
+  address — while a normal dial carries all three for the NDP.
 - `psk` is the 32-byte NDP key as 64 hex; the helper derives the passphrase
-  (§5), uses it for the NDP and wipes both buffers at once. It never appears in
-  a log, an error message or the reply.
+  (§5) and uses it for the NDP. It never appears in a log, an error message or
+  the reply: the one line carries `key=<8 hex of SHA-256>` and `len=32`. The
+  attempt's passphrase lives in the machine's state until the attempt ends and
+  `lost`/`blocked` drop it; Swift cannot promise a zeroed buffer, so the log
+  boundary, not wiping, is what R-PRIV-1 relies on.
 - Error codes: `bad_request`, `not_ready`, `not_console_user`, `busy`,
-  `no_key`, `ndp_timeout`, `ndp_refused`, `connect_failed`, `link_unknown`,
-  `too_many_links`.
+  `no_key` (reserved for the app's own "no stored key" state; the helper does
+  not emit it), `ndp_timeout`, `ndp_refused`, `connect_failed`,
+  `link_unknown`, `too_many_links`.
 - **Access control**: on every `accept`, `getpeereid(fd, &uid, &gid)` must equal
   the console user's uid (`SCDynamicStoreCopyConsoleUser`); the socket's mode
   is `0660 root:staff` and the peer check is the real gate. A mismatch replies
@@ -278,18 +341,42 @@ same order, and prints one JSON line:
 |---|---|---|
 | `ok` | every check passed | "Direct link is ready." |
 | `sip_enabled` | `csrutil status` is enabled | "System Integrity Protection is on. The installer prints the Recovery step." |
-| `amfi_enabled` | `amfi_get_out_of_my_way=1` is not in `nvram boot-args` | "Code-signing checks are on. The installer prints the boot argument." |
-| `allowlist_enabled` | `wifiaware_allowlist=0` is not in `nvram boot-args` | same sentence, naming that argument |
-| `entitlement_denied` | the toolkit refused the entitlement (the binary died with 137) | "macOS refused the Wi-Fi Aware entitlement. See the installer's last step." |
+| `amfi_enabled` | `amfi_get_out_of_my_way=1` is not in `nvram boot-args` | "Code-signing checks are on. The installer prints the boot argument (`amfi_get_out_of_my_way=1`)." |
+| `allowlist_enabled` | `wifiaware_allowlist=0` is not in `nvram boot-args` | "The Wi-Fi Aware allowlist is on. The installer prints the boot argument (`wifiaware_allowlist=0`)." |
+| `entitlement_denied` | the helper's own signature has no `com.apple.developer.wifi-aware` | "macOS refused the Wi-Fi Aware entitlement. See the installer's last step." |
 | `nan0_absent` | `if_nametoindex("nan0")` is 0 | "This Mac has no Wi-Fi Aware interface." |
-| `wifip2pd_unreachable` | `com.apple.wifip2pd` did not answer within 2 s | "The Wi-Fi Aware service is not answering. Restart the Mac." |
+| `wifip2pd_unreachable` | the launchd job `com.apple.wifip2pd` is not loaded (or did not answer in 2 s) | "The Wi-Fi Aware service is not answering. Restart the Mac." |
 | `directd_not_running` | the app cannot reach the socket | "The direct link helper is not running. Run the installer again." |
-| `socket_permissions` | the socket exists but the peer check failed | "The direct link helper refused this app." |
+| `socket_permissions` | the socket exists but the peer check failed | "The direct link helper refused this app. Run the installer again." |
 
-- The daemon re-runs the probe at launch **and after every wake of the Wi-Fi
-  stack** (a data-session failure re-probes once). It never caches "it worked
-  last time": a macOS update may move any of these gates, and the research's
-  whole point is that they are policy, not capability.
+The check is a pure decision over eight injectable values in that order, so K2
+can prove every code and the order without reading SIP, nvram or an
+entitlement. Each step is a prerequisite of the one after, so only the first
+failure is reported. The real checks are read-only:
+
+- `csrutil status` and `nvram boot-args` are read, never written; an
+  unreadable `csrutil` answer counts as enabled (fail closed).
+- `if_nametoindex("nan0")` is a call, not a `nan0` open.
+- `wifip2pd` is read through `launchctl print system/com.apple.wifip2pd`
+  within 2 s. That is the loaded job, not a Mach round trip; only an entitled
+  client can make the round trip, and that is the NDP itself.
+- the entitlement is read from the helper's own signature
+  (`SecTaskCopyValueForEntitlement`). A helper that Apple killed for the
+  entitlement never reaches the probe, so the app's `directd_not_running`
+  covers that case; `entitlement_denied` means the signature lost the
+  entitlement (an unsigned development build is the common one).
+- `directd_not_running` and `socket_permissions` are filled by the **app**,
+  not the helper: a running helper cannot see its own absence. The helper's
+  `--probe` and the socket's `probe` op always pass those two.
+- The line is `{"codes":[…],"detail":"…","ok":true,"ready":false}`:
+  `ok` means the probe ran, `ready` means every check passed. `--probe` prints
+  it and exits 0 either way; a non-zero exit would be a crash, not a verdict.
+
+- The **app** runs the probe at launch **and after every wake of the Wi-Fi
+  stack**, and once after a data-session failure (P4 wires the call sites). The
+  helper answers `{"op":"probe"}` and `--probe` on every request and never
+  caches an answer: a macOS update may move any of these gates, and the
+  research's whole point is that they are policy, not capability.
 - A failed probe means there is **no `direct` provider at all** for that
   session: the app offers only `lan`, and the settings row for direct is
   disabled with the code's sentence (honest settings, CONV-PD-09).
@@ -697,12 +784,72 @@ dying on SIGPIPE before it could report the peer close. Both are fixed
 ### 7.4 The NAN proof — the reviewer's, on real hardware
 
 Never an agent, never in a VM: the reviewer's Mac with the boot arguments, the
-real phone, and `--probe` saying `ok`. Then: publish on the phone, discovery on
-the Mac whose SSI matches, an NDP with the PSK, the fd from the helper, a pinned
-TLS handshake, and a 30 s `path.ping` run whose p50/p95/loss are written down
-next to the research's numbers (10–16 ms, 0.2–1%). The real-hardware proof in
-P4 adds: different LANs, the LAN cut mid-mirror continuing over direct, the LAN
-back returning to LAN, and the throughput figure against the mirror's need.
+real phone, and `--probe` saying `ok`. The helper's own session part ends at
+"the peer is in lwIP"; the fd, the pinned TLS and the 30 s `path.ping` are the
+app's (P4). Run the steps in this order and keep the log beside the result.
+
+1. The machine, read-only:
+   ```sh
+   sudo "/Library/Application Support/PocketDeck/pocketdeck-directd" --probe
+   sudo launchctl print system/dev.pocketdeck.directd | head -20
+   ```
+   The probe must print one line:
+   `{"codes":[],"detail":"Direct link is ready.","ok":true,"ready":true}`.
+   Any other code is the first row of §2.6 to fix; the installer prints that
+   step. `launchctl` must say `state = running`.
+2. Watch the helper in a second terminal:
+   ```sh
+   sudo tail -f /var/log/pocketdeck-directd.log
+   ```
+3. On the phone: the Direct link switch on, the Nearby devices permission
+   granted, a stored key for this Mac, and this Mac's switch on (P4's UI; the
+   P3 debug control does the same on a debug direct build). The phone publishes
+   `_pocketdeck-nan._tcp` with the current window's SSI.
+4. Start discovery with the phone's key for this Mac:
+   ```sh
+   printf '%s\n' '{"op":"discover","svc":"_pocketdeck-nan._tcp","psk":"<64 hex>"}' \
+     | nc -U /var/run/pocketdeck-directd.sock
+   ```
+   Expect `{"ok":true}` and, in the log, in this order:
+   - `nan key=<8 hex> len=32` (the fingerprint, never the key);
+   - `toolkit: subscribed windows=3`;
+   - `nan: idle --start--> subscribing`;
+   - `nan: subscribing --discovered:<token>--> discovered` (a stranger's SSI
+     logs nothing: the event is ignored);
+   - `toolkit: data session starting`;
+   - `nan: discovered --data_session:starting--> data_session_starting`;
+   - `nan: data_session_starting --data_session:up--> up`;
+   - `peer nan0 mac <mac> ll <link-local>`.
+
+   `ndp_timeout` after 20 s means the phone published no SSI in the accepted
+   windows (current and its two neighbours): check the key is the one the
+   phone stored and that its clock is within ten minutes. `ndp_refused` means
+   the toolkit refused the subscription or the data session; the last log line
+   names which. `toolkit: discovery without service-specific info` means the
+   discovery result had no readable SSI; that is a field name to fix, not a
+   radio failure.
+5. A `dial` with the same `peer`, `svc` and `psk` (the app's direct provider)
+   now answers `{"ok":true,"link":…,"mtu":1500}` and the fd; the log adds
+   `link <id> dialing <link-local> port <port>` and `route add <link-local> ok`.
+   The app's pinned TLS handshake and its 30 s `path.ping` then give p50/p95
+   and loss, written next to the research's numbers (10–16 ms, 0.2–1%).
+6. End it:
+   ```sh
+   printf '%s\n' '{"op":"stop"}' | nc -U /var/run/pocketdeck-directd.sock
+   ```
+   Expect `{"ok":true}`, `nan: up --stop--> idle`, the route removed, and
+   `links` empty. A second `stop` answers `ok` too.
+
+The one thing only this run can settle is the toolkit's own report shape: the
+adapter reads the peer from `macAddress`/`linkLocalAddress` (and the plausible
+neighbours named in §2.2). If `data_session:up` never appears although the
+phone says the NDP is up, the helper log says which object it saw; fix the
+property names there, add them to the adapter and its string table, and keep
+the rest of the machine unchanged.
+
+The real-hardware proof in P4 adds: different LANs, the LAN cut mid-mirror
+continuing over direct, the LAN back returning to LAN, and the throughput
+figure against the mirror's need.
 
 ## 8. The P3 test plan (phone provider)
 
