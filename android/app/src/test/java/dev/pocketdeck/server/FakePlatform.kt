@@ -313,6 +313,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val clipWrites = CopyOnWriteArrayList<String>()
     @Volatile private var clipListener: ((ClipText) -> Unit)? = null
 
+    /** Every clipboard stop call that finished, live or stale (ISS-13). */
+    val clipStopsDone = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Every [listen] call: a re-adopt makes the second one (ISS-13). */
+    val clipListenCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
     override fun getText(): ClipText? = clipText?.let { ClipText(it, clipSensitive) }
 
     /**
@@ -329,11 +335,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun listen(onChange: (ClipText) -> Unit) {
         clipListener = onChange
+        clipListenCalls.incrementAndGet()
     }
 
     override fun stop() {
         onClipStop?.invoke()
         clipListener = null
+        clipStopsDone.incrementAndGet()
     }
 
     /** Runs inside the session's shutdown, before the listener goes: a slow teardown. */

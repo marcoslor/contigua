@@ -329,6 +329,39 @@ class SessionDropperTest {
         gate.countDown()
     }
 
+    /**
+     * ISS-13: a drop frees the slot at once, so the next session can listen
+     * before the dropped one's teardown reaches its clipboard stop.
+     */
+    @Test
+    fun aDroppedSessionsLateClipboardStopDoesNotSilenceTheNextSession() {
+        val platform = FakePlatform()
+        val stopEntered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        platform.onClipStop = {
+            stopEntered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+        val old = FakeLiveSession(onClosed = { platform.stop() })
+        val dropper = SessionDropper(log = {}, closer = behind())
+        dropper.adopt(macA, pinned = true) { old }
+        platform.listen { } // the old session's sync
+        assertTrue("a live session was not dropped", dropper.drop())
+        assertTrue("the dropped session never reached its clipboard stop",
+            stopEntered.await(1, TimeUnit.SECONDS))
+
+        val next = FakeLiveSession()
+        assertSame(next, dropper.adopt(macA, pinned = true) { next })
+        val heard = java.util.concurrent.atomic.AtomicInteger(0)
+        platform.listen { heard.incrementAndGet() } // the new session's sync
+
+        release.countDown()
+        awaitTrue("the dropped session's stop never finished") { platform.clipStopsDone.get() == 1 }
+        platform.changeClip("after the hand-over")
+
+        assertEquals("the new session lost its listener to the dropped one", 1, heard.get())
+    }
+
     @Test
     fun aClosedSessionsTeardownStillOwnsTheSlot() {
         val dead = FakeLiveSession()
@@ -351,6 +384,16 @@ class SessionDropperTest {
     /** An executor that runs the close on another thread, like the dropper's own. */
     private fun behind() = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "drop-test-behind").apply { isDaemon = true }
+    }
+
+    /** Polls [condition] for up to two seconds, then asserts it. */
+    private fun awaitTrue(what: String, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(5) // real-time: the teardown runs on the dropper's own thread
+        }
+        assertTrue(what, condition())
     }
 
     private fun thread(work: () -> Unit): Thread = Thread(work).apply { isDaemon = true; start() }
