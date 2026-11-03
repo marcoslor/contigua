@@ -750,6 +750,18 @@ windows() {
     if [ -n "${APP_PID:-}" ]; then "$CGBIN" list --pid "$APP_PID"; else "$CGBIN" list; fi
 }
 
+# popup_windows — menu and other popup windows on screen (layer >= 100), of any
+# app: a check uses it to prove that the menu it opened is closed again. The
+# Window Server's menu-bar window sits at a giant layer and is not a popup.
+popup_windows() {
+    "$CGBIN" all 2>/dev/null | awk '
+        $0 !~ /owner=Window Server/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "=")
+                    if (part[2] >= 100 && part[2] < 10000) n++ } } }
+        END { print n + 0 }'
+}
+
 # window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
 # line. A pid pins this run's app: other checkouts run their own PocketDeck.
 window_titles() { if [ -n "$1" ]; then "$CGBIN" titles --pid "$1"; else "$CGBIN" titles; fi; }
@@ -3606,6 +3618,15 @@ if not any(path.startswith("View/Density") for path in report.get("tracking_at_e
 print("; ".join(problems))
 sys.exit(1 if problems else 0)
 PY
+
+    # The same 10 s cap closes it (cancelTracking). The report is written while
+    # the menu is still open (that is what `tracking_at_end` measures), so a
+    # popup left on screen here is the round-3 wedge: the next step's menu
+    # would be refused as "a menu track is already running".
+    wait_until 10 eval '[ "$(popup_windows)" -eq 0 ]' \
+        && ok "[MENU-17] the tracked menu closed by its own cap" \
+        || { bad "[MENU-17] the menu the check opened was still tracking after its cap"
+             "$CGBIN" all 2>/dev/null | awk '$0 ~ /layer=[0-9]+/ { for (i = 1; i <= NF; i++) if ($i ~ /^layer=/) { split($i, p, "="); if (p[2] >= 100) print "  popup: " $0 } }'; }
 
 
     # A relaunch: the same bar, built once from scratch. The shared app is
@@ -9410,7 +9431,13 @@ check_multiwin() {
             cg_input key --keycode 53 >/dev/null 2>&1 || true
             return 1
         fi
-        sleep 0.4
+        # The check closes its own menu before the next step: the report is
+        # written by the timer that also cancels tracking, so this is the proof
+        # the bar is free again (a popup is a layer-100 window of its own).
+        wait_until 8 eval '[ "$(popup_windows)" -eq 0 ]' \
+            || { bad "MULTIWIN the $menu menu was still open after its track"
+                 cg_input key --keycode 53 >/dev/null 2>&1 || true; }
+        sleep 0.2
     }
     # The app's windows at menu level: a popup menu is its own window (layer
     # 101), which is how a check sees that a right click opened one.
@@ -9421,13 +9448,8 @@ check_multiwin() {
             END { print n + 0 }'
     }
     # Any process's popup window (a menu tracks in one, layer >= 100): the
-    # check waits for zero before it opens the next menu.
-    popup_windows() {
-        "$CGBIN" all 2>/dev/null | awk '
-            { for (i = 1; i <= NF; i++) {
-                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
-            END { print n + 0 }'
-    }
+    # check waits for zero before it opens the next menu. See `popup_windows`
+    # at the top of the file.
 
     # The count of window.open the phone saw, and of the ones asking for an
     # extra task; `window.open` is logged verbatim by the fake.
