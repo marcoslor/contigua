@@ -266,7 +266,8 @@ final class NanSessionTests: XCTestCase {
         let step = session.handle(start)
         XCTAssertEqual(step.state, .blocked(.notReady))
         XCTAssertEqual(step.actions, [.unsubscribe, .failed(.notReady)])
-        XCTAssertEqual(port.calls, [.subscribe(attempt.service, attempt.windows)])
+        XCTAssertEqual(port.calls, [.subscribe(attempt.service, attempt.windows),
+                                    .unsubscribe])
     }
 
     func testAFailedDataSessionIsReportedAsNdpRefused() {
@@ -286,11 +287,10 @@ final class NanSessionTests: XCTestCase {
         XCTAssertTrue(port.calls.isEmpty)
     }
 
-    // MARK: fixtures
+}
 
-    private func ssi(_ byte: UInt8) -> NanSsi {
-        NanSsi(Array(repeating: byte, count: 8))
-    }
+private func ssi(_ byte: UInt8) -> NanSsi {
+    NanSsi(Array(repeating: byte, count: 8))
 }
 
 /// The port's test double: every call in order, with one injected failure.
