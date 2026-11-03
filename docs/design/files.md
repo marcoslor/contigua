@@ -1093,11 +1093,15 @@ the bridge's own constant.
   ask the phone never sees, the deadline's one `fs.cancel`, and 12 asks against
   a phone that takes 1 s each all answering with bytes (the last waits past 8 s
   before it starts).
-- **One VM boot:** `files-thumbs` — Finder's icon view shows the fake phone's
-  thumbnail for a fixture JPEG while the item stays undownloaded (`isDownloaded`
-  false), the PDF shows its type icon, and the fake phone's log has no
-  `fs.thumb` for the PDF. The screenshot is
-  `.agent/finder-thumbs/after-files-thumbs.png`.
+- **One VM boot:** `files-thumbs` — in this order: (a) Finder's icon view shows
+  the fake phone's green thumbnail for `photo.jpg` (the screenshot, taken
+  first, is `.agent/finder-thumbs/after-files-thumbs.png`) while the item stays
+  undownloaded; (b) the PDF shows its type icon and the fake phone's log has no
+  `fs.thumb` for it; (c) a second JPEG (`lost.jpg`) is held past the deadline:
+  one timeout and one `fs.cancel`, and the system's re-ask is recorded, never
+  required (FILES-26); (d) with the phone away, the cached picture stays, the
+  rest keep type icons, and there is no alert — Finder does not ask again, so
+  there is no offline line.
 - **One emulator boot:** `thumbs` — push a JPEG, a HEIC and an MP4 into the
   emulator's `DCIM/Camera`, ask `fs.thumb` for each through `deckctl`, and print
   the mime, the long side, the byte count and the time each took; assert ≤ 256
