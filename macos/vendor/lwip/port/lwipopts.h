@@ -35,7 +35,8 @@
 #define LWIP_NETIF_STATUS_CALLBACK 0
 #define LWIP_NETIF_LINK_CALLBACK 0
 #define LWIP_NETIF_EXT_STATUS_CALLBACK 0
-#define LWIP_STATS 0
+/* The boot harness reads these counters (link/IPv6/ND/TCP/heap) on SIGTERM. */
+#define LWIP_STATS 1
 #define LWIP_DEBUG 0
 #define LWIP_TCP_SACK_OUT 0
 #define LWIP_TCP_TIMESTAMPS 0

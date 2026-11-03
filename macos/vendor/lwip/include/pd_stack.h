@@ -80,6 +80,10 @@ uint16_t pdl_mtu(void);
  * to tell a valid link-local from one still in duplicate detection. */
 uint8_t pdl_address_state(const pdl *stack);
 
+/* Prints lwIP's counters (link, IPv6, ND, TCP, heap) to stderr. The harness
+ * calls it on SIGTERM and through the test-only {"op":"stats"} request. */
+void pdl_print_stats(const pdl *stack);
+
 #ifdef __cplusplus
 }
 #endif

@@ -9,6 +9,10 @@ import SystemConfiguration
 // one BPF descriptor and the links' socketpair ends (docs/design/direct-link.md
 // §2.1–§2.5). One owner of the stack, so there are no locks in the datapath.
 
+/// Set by the SIGTERM handler; the loop notices within one 200 ms tick, prints
+/// lwIP's counters and exits, so the VM check gets them without a second run.
+private var directTerminateRequested = false
+
 struct DirectConfig {
     var interface: String
     var socketPath: String
@@ -84,6 +88,7 @@ final class DirectDaemon {
     init(config: DirectConfig) throws {
         self.config = config
         signal(SIGPIPE, SIG_IGN)
+        signal(SIGTERM) { _ in directTerminateRequested = true }
 
         guard let console = DirectDaemon.consoleUser() else {
             throw DaemonError.noConsoleUser
@@ -195,8 +200,8 @@ final class DirectDaemon {
     // MARK: the loop
 
     /// 200 ms tick for lwIP's timers, then whatever is ready.
-    func run() -> Never {
-        while true {
+    func run() {
+        while !directTerminateRequested {
             let wanted = wantedFilters()
             let ready: [Kqueue.Ready]
             do {
@@ -213,6 +218,8 @@ final class DirectDaemon {
             pdl_poll(stack)
             expire()
         }
+        pdl_print_stats(stack)
+        DirectLog.line("stopping on SIGTERM")
     }
 
     private func wantedFilters() -> (reads: Set<Int32>, writes: Set<Int32>) {
@@ -441,6 +448,13 @@ final class DirectDaemon {
                 .map { DirectLinkReport(link: $0.id, peer: $0.peer,
                                         state: $0.state.rawValue) }
             sendReply(.links(reports), to: client)
+        case .stats:
+            guard config.testMode else {
+                sendReply(.error(.notReady, message: "stats is a test-only request"), to: client)
+                return
+            }
+            pdl_print_stats(stack)
+            sendReply(.ok, to: client)
         }
     }
 

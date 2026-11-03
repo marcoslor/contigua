@@ -220,6 +220,7 @@ plus one file descriptor where a link is handed over.
 | `{"op":"peer","if":"feth0","mac":"<17>","ll":"<ipv6>"}` | `{"ok":true}` — **test only**, see below |
 | `{"op":"close","link":"<16 hex>"}` | `{"ok":true}` |
 | `{"op":"links"}` | `{"ok":true,"links":[{"link":"<16 hex>","peer":"<32 hex>","state":"up","rttMs":11}]}` |
+| `{"op":"stats"}` | `{"ok":true}` — **test only**, lwIP's counters go to stderr |
 | anything else | `{"ok":false,"code":"bad_request","message":"…"}` |
 
 - The `dial` reply's fd is a connected `socketpair` end sent with `sendmsg` and
@@ -623,6 +624,13 @@ drives the helper and runs the app's own `TlsV2` over the fd.
   1 MiB echo with every byte compared, a 1400-byte MSS boundary run, a frame
    that arrives fragmented (two writes), and a peer that closes mid-transfer
    (the helper must report `link` down, not hang).
+5. Every run keeps the evidence that says where a frame was lost:
+   `tcpdump -i feth1` for the whole run (`work/feth1.pcap`, rendered as
+   `work/feth1.txt`), `ndp -an` before and after, `netstat -s -p tcp` and
+   `-p ip6` before and after, and lwIP's counters (`LWIP_STATS=1`) printed by
+   the helper on SIGTERM and by the test-only `{"op":"stats"}`. A PASS that is
+   not measured is a harness bug: the address experiment only passes when its
+   own echo line says so.
 
 ### 7.3 The throughput benchmark
 

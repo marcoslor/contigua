@@ -44,6 +44,7 @@ final class DirectAPITests: XCTestCase {
                        .close(link: "0123456789abcdef"))
         XCTAssertThrowsError(try parse(#"{"op":"close","link":"0123"}"#))
         XCTAssertEqual(try parse(#"{"op":"links"}"#), .links)
+        XCTAssertEqual(try parse(#"{"op":"stats"}"#), .stats)
     }
 
     func testUnknownAndMalformed() {

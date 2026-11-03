@@ -174,11 +174,70 @@ FETH_SERVER_PIDS=()
 FETH_PAIR=0
 FETH_SOCK=""
 FETH_APP_PID=""
+FETH_TCPDUMP_PID=""
+FETH_TCPDUMP_SUDO=""
+FETH_PCAP=""
+FETH_TXT=""
+FETH_DIAG_ACTIVE=0
 
 feth_root() { sudo -n "$@"; }
 
+# feth_stop_capture — stop tcpdump, then render its pcap as text for the host.
+feth_stop_capture() {
+    if [ -n "$FETH_TCPDUMP_PID" ]; then
+        feth_root kill "$FETH_TCPDUMP_PID" >/dev/null 2>&1 || true
+        FETH_TCPDUMP_PID=""
+    fi
+    if [ -n "$FETH_TCPDUMP_SUDO" ]; then
+        kill "$FETH_TCPDUMP_SUDO" >/dev/null 2>&1 || true
+        wait "$FETH_TCPDUMP_SUDO" >/dev/null 2>&1 || true
+        FETH_TCPDUMP_SUDO=""
+    fi
+    if [ -n "$FETH_PCAP" ] && [ -s "$FETH_PCAP" ]; then
+        feth_root /usr/sbin/tcpdump -nn -r "$FETH_PCAP" >"$FETH_TXT" 2>&1 || true
+    fi
+    FETH_PCAP=""
+    FETH_TXT=""
+}
+
+# feth_diagnostics_start — the guest-side capture and the kernel's before
+# counters (docs/design/direct-link.md §7.2).
+feth_diagnostics_start() {
+    FETH_PCAP="$WORK/feth1.pcap"
+    FETH_TXT="$WORK/feth1.txt"
+    rm -f "$FETH_PCAP" "$FETH_TXT" "$WORK/tcpdump.log"
+    : >"$WORK/lwip-stats.log"
+    feth_root /usr/sbin/tcpdump -i feth1 -s 0 -n -U -w "$FETH_PCAP" \
+        >"$WORK/tcpdump.log" 2>&1 &
+    FETH_TCPDUMP_SUDO=$!
+    local i
+    for i in $(seq 1 50); do
+        [ -s "$FETH_PCAP" ] && break
+        kill -0 "$FETH_TCPDUMP_SUDO" 2>/dev/null || break
+        sleep 0.1
+    done
+    FETH_TCPDUMP_PID="$(feth_root pgrep -P "$FETH_TCPDUMP_SUDO" 2>/dev/null | head -1)"
+    [ -n "$FETH_TCPDUMP_PID" ] || return 1
+    feth_root ndp -an >"$WORK/ndp-before.txt" 2>&1 || true
+    feth_root netstat -s -p tcp >"$WORK/netstat-tcp-before.txt" 2>&1 || true
+    feth_root netstat -s -p ip6 >"$WORK/netstat-ip6-before.txt" 2>&1 || true
+    FETH_DIAG_ACTIVE=1
+    return 0
+}
+
+# feth_diagnostics_end — the kernel's after counters, while the pair still exists.
+feth_diagnostics_end() {
+    [ "$FETH_DIAG_ACTIVE" = 1 ] || return 0
+    FETH_DIAG_ACTIVE=0
+    feth_root ndp -an >"$WORK/ndp-after.txt" 2>&1 || true
+    feth_root netstat -s -p tcp >"$WORK/netstat-tcp-after.txt" 2>&1 || true
+    feth_root netstat -s -p ip6 >"$WORK/netstat-ip6-after.txt" 2>&1 || true
+    return 0
+}
+
 stop_feth() {
     local pid
+    feth_diagnostics_end
     if [ -n "$FETH_APP_PID" ]; then
         kill "$FETH_APP_PID" >/dev/null 2>&1 || true
         FETH_APP_PID=""
@@ -196,6 +255,8 @@ stop_feth() {
         wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
         FETH_HELPER_SUDO=""
     fi
+    feth_keep_stats
+    feth_stop_capture
     if [ "$FETH_PAIR" = 1 ]; then
         feth_root ifconfig feth0 destroy >/dev/null 2>&1 || true
         feth_root ifconfig feth1 destroy >/dev/null 2>&1 || true
@@ -233,7 +294,16 @@ feth_stop_helper() {
         wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
         FETH_HELPER_SUDO=""
     fi
+    feth_keep_stats
     [ -n "$FETH_SOCK" ] && rm -f "$FETH_SOCK"
+    return 0
+}
+
+# feth_keep_stats — the helper prints lwIP's counters on SIGTERM; keep every
+# helper generation's lines even though the next start truncates directd.log.
+feth_keep_stats() {
+    [ -f "$WORK/directd.log" ] || return 0
+    grep 'lwip stats' "$WORK/directd.log" >>"$WORK/lwip-stats.log" 2>/dev/null || true
     return 0
 }
 
@@ -13683,6 +13753,16 @@ check_feth_path() {
         return
     fi
 
+    # Diagnostics for the whole run: the pcap is the ground truth when a step
+    # fails, and the before/after counters show whether the kernel even saw us.
+    if feth_diagnostics_start; then
+        ok "[DIRECT-P2] tcpdump capture started on feth1"
+    else
+        bad "[DIRECT-P2] tcpdump could not start on feth1"
+        stop_feth
+        return
+    fi
+
     # 2. §7.1: one maximum-size frame each way, through BPF.
     if ! clang -O2 -o "$WORK/bpf-frame-test" "$MACOS/scripts/direct/bpf-frame-test.c" 2>"$WORK/bpf-build.log"; then
         bad "[DIRECT-P2] bpf-frame-test did not compile"
@@ -13755,7 +13835,11 @@ check_feth_path() {
             elif grep -q "^DIRECT shared-echo fail" "$WORK/direct-e2e-shared.log" 2>/dev/null; then
                 shared_outcome="echo failed"
             fi
-            ok "[DIRECT-P2] address experiment: shared with feth0's kernel link-local -> $shared_outcome; separate address -> passed"
+            if grep -q "^DIRECT echo ok bytes=1048576" "$WORK/direct-e2e-path.log" 2>/dev/null; then
+                ok "[DIRECT-P2] address experiment: shared with feth0's kernel link-local -> $shared_outcome; separate address -> 1 MiB echo measured"
+            else
+                bad "[DIRECT-P2] address experiment: separate address has no measured echo ($shared_outcome for shared)"
+            fi
         else
             bad "[DIRECT-P2] the echo server did not start for the shared-address run"
         fi

@@ -39,6 +39,8 @@ public enum DirectRequest: Sendable, Equatable {
     case dial(port: UInt16)
     case close(link: String)
     case links
+    /// Test-only: print lwIP's counters to the helper's stderr.
+    case stats
 }
 
 public enum DirectRequestError: Error, Sendable, Equatable {
@@ -128,6 +130,8 @@ public enum DirectRequestParser {
             return .close(link: link)
         case "links":
             return .links
+        case "stats":
+            return .stats
         default:
             throw DirectRequestError.unknownOp(op)
         }

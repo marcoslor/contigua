@@ -18,6 +18,7 @@
 #include "lwip/ethip6.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/stats.h"
 #include "lwip/tcp.h"
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
@@ -45,6 +46,15 @@ struct pdl_conn {
 
 static int lwip_started;
 static struct pdl_conn *conns;
+
+/* The vendored subset has no upstream stats.c, so the port owns the store the
+ * LWIP_STATS macros count into. */
+struct stats_ lwip_stats;
+
+void stats_init(void)
+{
+    memset(&lwip_stats, 0, sizeof lwip_stats);
+}
 
 /* lwIP's clock when NO_SYS=1: monotonic milliseconds. */
 u32_t sys_now(void)
@@ -267,6 +277,29 @@ uint16_t pdl_mtu(void)
 uint8_t pdl_address_state(const pdl *s)
 {
     return netif_ip6_addr_state(&s->netif, 0);
+}
+
+void pdl_print_stats(const pdl *s)
+{
+    (void)s;
+    pdl_diag("lwip stats link xmit=%u recv=%u drop=%u\n",
+             (unsigned)lwip_stats.link.xmit, (unsigned)lwip_stats.link.recv,
+             (unsigned)lwip_stats.link.drop);
+    pdl_diag("lwip stats ip6 xmit=%u recv=%u drop=%u chkerr=%u lenerr=%u proterr=%u\n",
+             (unsigned)lwip_stats.ip6.xmit, (unsigned)lwip_stats.ip6.recv,
+             (unsigned)lwip_stats.ip6.drop, (unsigned)lwip_stats.ip6.chkerr,
+             (unsigned)lwip_stats.ip6.lenerr, (unsigned)lwip_stats.ip6.proterr);
+    pdl_diag("lwip stats nd6 xmit=%u recv=%u drop=%u\n",
+             (unsigned)lwip_stats.nd6.xmit, (unsigned)lwip_stats.nd6.recv,
+             (unsigned)lwip_stats.nd6.drop);
+    pdl_diag("lwip stats tcp xmit=%u recv=%u drop=%u chkerr=%u lenerr=%u memerr=%u err=%u\n",
+             (unsigned)lwip_stats.tcp.xmit, (unsigned)lwip_stats.tcp.recv,
+             (unsigned)lwip_stats.tcp.drop, (unsigned)lwip_stats.tcp.chkerr,
+             (unsigned)lwip_stats.tcp.lenerr, (unsigned)lwip_stats.tcp.memerr,
+             (unsigned)lwip_stats.tcp.err);
+    pdl_diag("lwip stats mem used=%u max=%u err=%u\n",
+             (unsigned)lwip_stats.mem.used, (unsigned)lwip_stats.mem.max,
+             (unsigned)lwip_stats.mem.err);
 }
 
 /* --- connections ------------------------------------------------------- */
