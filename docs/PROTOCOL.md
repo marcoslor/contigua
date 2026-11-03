@@ -989,9 +989,10 @@ the sender may be either side:
   verify **and** its clipboard holds the image; `{"ok":false}` when it refuses (a checksum
   mismatch, no clipboard to write to, or over the cap). The Mac sends nothing else on that id,
   and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16). The phone writes
-  an image as one clipboard item with empty text, a null intent and the image URI: a plain field
-  pastes nothing (the empty text is coerced, never the URI), while a field that accepts image
-  content still gets the URI (SHARE-2's A2 rule).
+  an image as one clipboard item carrying only the image URI (no text, no intent): a plain field
+  pastes nothing (a content URI that cannot serve text coerces to null, never to its
+  `content://` string), while a field that accepts image content still gets the URI (SHARE-2's
+  A2 rule, measured on the emulator).
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and

@@ -26,7 +26,11 @@ available — the SEND step, whose URI grant must come from the UID that owns `d
 Shell (UID 2000) does not own it, so an `am start -a SEND --grant-read-uri-permission` from shell has the grant
 silently dropped and the receiver crashes on a URI it cannot open. Instead the shell process stages the finished
 file in the app's external media folder (`Android/media/dev.pocketdeck/shared/`; the app reads what shell writes
-there, while the same file under `Android/data/<pkg>` stays unreadable to it) and starts the exported, UI-less
+there, while the same file under `Android/data/<pkg>` stays unreadable to it). The folder is
+`/storage/emulated/0/Android/media/<pkg>/shared`: in the uid-2000 process both
+`getExternalMediaDirs()` and `Environment.getExternalStorageDirectory()` are refused (boots 3/4),
+so it is computed from the real root and the app's package. The shell then starts the exported,
+UI-less
 `dev.pocketdeck.drop.ShareTrampoline` with the bare name. The trampoline accepts only a name its own sanitiser
 leaves alone, copies the file into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB) and shows the SEND chooser for that
 copy, `FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` set — the grant therefore comes from the app's own UID.
@@ -51,13 +55,17 @@ a file over 1 MiB is read and decoded off the main thread. Everything else sends
 - Mac: the text poll also picks up an image item (PNG verbatim, TIFF converted) when the item has
   no text; received images are written back as PNG. A hash of the bytes prevents echo like
   `syncedHash`; secret/concealed items are still never sent.
-- Phone: `ShellClipboard` gains image read (first item's stream) and write (one item with empty
-  text and a FileProvider URI under Downloads/PocketDeck, media-scanned). The empty text is A2:
-  a plain field coerces it to nothing, and a field whose content listener takes image types still
-  gets the URI. Risk: another app pasting a shell-made clip depends on ClipboardService URI grants
-  — the r2 emulator run did not verify it (`clip.image.done ok:false`, no clipboard write line;
-  `ask.md`), so it stays unproven until the real-phone spike; worst case the image still exists in
-  the folder.
+- Phone: `ShellClipboard` gains image read (first item's stream) and write (one item carrying
+  only a FileProvider URI under Downloads/PocketDeck, media-scanned). A2, measured on the
+  emulator: a URI-only item pastes nothing in a plain field (a content URI that cannot serve text
+  coerces to null; `plain text length=0`) and reaches a field whose content listener takes image
+  types (`rich image bytes=98`; boots 3/4). The URI is built from the drop folder by hand, and
+  the storage root is `/storage/emulated/0`, because both `FileProvider.getUriForFile` and
+  `Environment.getExternalStorageDirectory()` are refused for uid 2000 (boots 3/4; files.md §4).
+  Risk: another app pasting a shell-made clip depends on ClipboardService URI grants — the r2
+  boots stopped at the write (`clip.image.done ok:false`), and the fixed write was not re-run
+  (no boot left), so it stays unproven until the real-phone spike; worst case the image still
+  exists in the folder.
 
 ## Paste and drop into an app (SHARE-16–17 built; SHARE-18 planned)
 
@@ -67,11 +75,12 @@ clipboard-image path and then a paste key; plain text keeps today's `text` frame
 
 **V1, an image.** The Mac sends the image as `clip.image.*` with `"paste":true` — a person's ⌘V
 is explicit like a drop, so the phone applies it even while "Share clipboard with your phone" is
-off (A1; the switch governs the background sync). The phone writes one clipboard item with empty
-text and the image URI (A2) and answers `{"t":"clip.image.done","id":N,"ok":true}` (PROTOCOL.md
+off (A1; the switch governs the background sync). The phone writes one URI-only clipboard
+item (the image's URI, no text; A2) and answers
+`{"t":"clip.image.done","id":N,"ok":true}` (PROTOCOL.md
 "Clipboard images"); only then does the Mac send one `KEY` frame with keycode 279
 (`KEYCODE_PASTE`) and `metaState` 0 to the window's stream. The wait is 3 s; a refusal, a
-disconnect or the timeout sends no key and shows "Nothing pasted. Share instead".
+disconnect or the timeout sends no key and shows "Nothing pasted."
 
 The paste key comes from AOSP, read on 2026-11-03: `TextView.onKeyDown` handles
 `case KeyEvent.KEYCODE_PASTE` when `event.hasNoModifiers()` and calls
@@ -84,8 +93,8 @@ and a WebView do not use `TextView.onKeyDown`, an app may swallow the key, and t
 may not be the one the person means. `[NEEDS CLARIFICATION]` per app, as above.
 
 The phone cannot see a field refuse the image, so the fallback is the person's own action: after
-the key the Mac shows a 5 s pill, "Image pasted. Nothing there? Share instead"; a refusal or a
-timeout says "Nothing pasted. Share instead". Both have a button whose help tag and VoiceOver
+the key the Mac shows a 5 s pill, "Image pasted. Nothing there?"; a refusal or a
+timeout says "Nothing pasted." Both have a button whose help tag and VoiceOver
 label name ⇧⌘V. ⇧⌘V writes the same image to a temp PNG and sends it through the drop path to
 the window's app, so the app receives it as a shared attachment.
 
@@ -124,8 +133,8 @@ name or path is logged.
 
 Visual items for prototypes: the drop target's highlight for the new types, the refusal line
 for a non-image URL, and the paste pills (A4: the existing glass pill component with new copy and
-one button — "Pasting…", "Image pasted. Nothing there? Share instead", "Nothing pasted. Share
-instead" — light and dark, Reduce Motion and Reduce Transparency; the six captures are in
+one button — "Pasting…", "Image pasted. Nothing there?", "Nothing pasted." — light and dark,
+Reduce Motion and Reduce Transparency; the six captures are in
 `.agent/paste-drop/`).
 
 ## Drag out (design only, not built)
