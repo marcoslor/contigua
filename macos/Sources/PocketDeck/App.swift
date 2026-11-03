@@ -629,6 +629,14 @@ enum PocketDeckMain {
             }
         }
         #endif
+        #if POCKETDECK_DIRECT
+        // The direct-link e2e client (docs/design/direct-link.md §7.2): runs
+        // the app's own TLS code over the helper's fd inside the VM and exits
+        // before AppKit builds anything. Only the direct build has it.
+        if let mode = DirectE2E.requestedMode(CommandLine.arguments) {
+            DirectE2E.run(mode: mode, arguments: CommandLine.arguments)
+        }
+        #endif
         // Window state saved by an older build (or by a copy started without a
         // window) must never leave the app without its Deck. Registered, not
         // written: nothing lands in the user's defaults.

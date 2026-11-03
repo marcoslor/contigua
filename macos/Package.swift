@@ -37,6 +37,11 @@ let package = Package(
             // define for an e2e bundle (sec L-6).
             swiftSettings: [.define("PD_TEST_HOOKS", .when(configuration: .debug))]
         ),
+        // The helper's pure parts: line framing, request parsing, the reply
+        // shapes and the link machine. Everything is inside #if
+        // POCKETDECK_DIRECT, so a public build compiles an empty module and
+        // only the direct test run sees it (docs/design/direct-link.md §2.5).
+        .target(name: "PocketDeckDirectCore", path: "Sources/PocketDeckDirectCore"),
         // lwIP 2.2.1 from upstream (macos/vendor/lwip/VENDORED.md), with the
         // netif/BPF glue §2.4 asks for. Linked only into the helper; a plain
         // build still type-checks it.
@@ -75,11 +80,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "pocketdeck-directd",
-            dependencies: ["PDLWIP"],
+            dependencies: ["PocketDeckDirectCore", "PDLWIP"],
             path: "Sources/PocketDeckDirectd"
         ),
         .testTarget(name: "PocketDeckTests",
-                    dependencies: ["PocketDeck"],
+                    dependencies: ["PocketDeck", "PocketDeckDirectCore"],
                     path: "Tests/PocketDeckTests"),
     ]
 )

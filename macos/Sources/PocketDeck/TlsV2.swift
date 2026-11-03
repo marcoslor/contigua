@@ -574,6 +574,75 @@ final class TlsConnectorV2: @unchecked Sendable {
             throw TlsV2Error.dialFailed(String(message.prefix(180)))
         }
     }
+
+#if POCKETDECK_DIRECT
+    /// The same connection over an already-connected descriptor: the direct
+    /// link's helper hands one end of a socketpair over (design §2.5), and TLS
+    /// is the app's either way. Takes ownership of `socket` (NIO closes it
+    /// with the channel).
+    func connect(socket: CInt,
+                 onFrame: @escaping @Sendable (Frame) -> Void,
+                 onError: @escaping @Sendable (String) -> Void,
+                 onPeerPin: (@Sendable (String) -> Void)? = nil,
+                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil,
+                 onWritableChange: (@Sendable (Bool) -> Void)? = nil,
+                 handshakeTimeout: TimeAmount = .seconds(6)) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void, isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void) {
+        let tlsConfig = try configuration()
+        let context = try NIOSSLContext(configuration: tlsConfig)
+        let capture = keyLog
+        let sslHandler = try Self.makeClientHandler(context: context,
+                                                    pinnedPinHex: pinnedPhone?.phoneFingerprintHex)
+        let learn = onPeerPin
+        let learnCert = onPeerCert
+        let handshake = group.next().makePromise(of: Void.self)
+        let handshakeDeadline = group.next().scheduleTask(in: handshakeTimeout) {
+            handshake.fail(TlsV2Error.handshakeTimeout)
+        }
+        do {
+            let channel = try ClientBootstrap(group: group)
+                .channelOption(ChannelOptions.writeBufferWaterMark,
+                               value: WriteBufferWaterMark(low: 256 << 10, high: 1 << 20))
+                .withConnectedSocket(socket)
+                .flatMap { ch -> EventLoopFuture<Channel> in
+                    do {
+                        try ch.pipeline.syncOperations.addHandler(sslHandler)
+                        try ch.pipeline.syncOperations.addHandler(
+                            HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
+                                                  peerCertificate: { cert in learnCert?(cert) },
+                                                  handshakePromise: handshake))
+                        if let onWritableChange {
+                            try ch.pipeline.syncOperations.addHandler(WritabilityHandler(onChange: onWritableChange))
+                        }
+                    } catch {
+                        return ch.eventLoop.makeFailedFuture(error)
+                    }
+                    return ch.eventLoop.makeSucceededFuture(ch)
+                }
+                .flatMap { ch -> EventLoopFuture<Channel> in
+                    ch.pipeline.addHandler(FrameDeliveryHandler(onFrame: onFrame, onError: onError)).map { _ in ch }
+                }
+                .wait()
+            do {
+                try handshake.futureResult.wait()
+            } catch {
+                handshakeDeadline.cancel()
+                channel.close(promise: nil)
+                throw error
+            }
+            handshakeDeadline.cancel()
+            return (channel, { capture.only.flatMap { ExporterV2.derive(exporterSecret: $0) } }, { frame in
+                var buffer = channel.allocator.buffer(capacity: frame.encoded.count)
+                buffer.writeBytes(frame.encoded)
+                _ = channel.writeAndFlush(buffer)
+            }, { channel.isWritable }, { reading in
+                _ = channel.setOption(ChannelOptions.autoRead, value: reading)
+            })
+        } catch {
+            handshakeDeadline.cancel()
+            throw TlsV2Error.dialFailed(String(String(describing: error).prefix(180)))
+        }
+    }
+#endif
 }
 
 /// Reports NIO's writability so the path layer can feed bulk only while the

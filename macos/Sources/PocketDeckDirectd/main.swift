@@ -1,11 +1,19 @@
 #if POCKETDECK_DIRECT
+import Darwin
 import Foundation
 
-// The helper's network stack and daemon land in the commits that follow; the
-// product exists now so the product name, the define and the public gate are
-// real from the first commit (docs/design/direct-link.md §1.1).
-FileHandle.standardError.write(Data("pocketdeck-directd: no network stack yet\n".utf8))
-exit(2)
+// The real helper (docs/design/direct-link.md §2). Only
+// macos/scripts/direct/build.sh defines POCKETDECK_DIRECT; every other build
+// compiles the stub below, so a public build carries no direct-link code.
+setvbuf(stdout, nil, _IOLBF, 0)
+
+do {
+    let daemon = try DirectDaemon(config: DirectConfig.fromEnvironment())
+    daemon.run()
+} catch {
+    FileHandle.standardError.write(Data("pocketdeck-directd: \(error)\n".utf8))
+    exit(1)
+}
 #else
 import Foundation
 
