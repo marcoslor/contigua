@@ -255,6 +255,9 @@ class Session(
     private var clientId = ""
     private var clientName = "Mac"
 
+    /** The phone's latest direct state from the app (direct builds only). */
+    @Volatile private var phoneDirectState: dev.pocketdeck.proto.PhoneDirectState? = null
+
     // ---- paths (docs/design/paths.md §3) ------------------------------
     private val hub = PathHub(
         log = log,
@@ -454,6 +457,19 @@ class Session(
 
     override fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
         if (isReady) share.file(name, mime, input) else ShareStatus.NO_SESSION
+
+    override fun updateDirectState(state: dev.pocketdeck.proto.PhoneDirectState?) {
+        phoneDirectState = state
+        if (state != null && isReady) sendDirectState()
+    }
+
+    override fun directKeyStored(ok: Boolean) {
+        if (ok && isReady) sendJson(mapOf("t" to "direct.key.ok"))
+    }
+
+    private fun sendDirectState() {
+        phoneDirectState?.let { sendJson(it.message()) }
+    }
 
     /**
      * A gate changed in the app process. The master switch drops every live
@@ -1430,6 +1446,9 @@ class Session(
         // silent for long stretches (static content, no input).
         runCatching { socket.soTimeout = 0 }
         pathMachine.startLive(firstPathId)
+        // The phone's own direct state (a direct build only) follows the
+        // welcome, so the Mac's row shows the real switch/permission.
+        sendDirectState()
         log("session ${sessionId.take(8)}: welcome (protocol ${dev.pocketdeck.proto.PathVersion.CURRENT})")
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStateWatch()
@@ -1470,6 +1489,8 @@ class Session(
         try {
             when (t) {
                 "ping" -> sendJson(mapOf("t" to "pong", "ts" to obj["ts"]))
+                "direct.enable" -> onDirectEnable(obj)
+                "direct.key" -> onDirectKey(obj)
                 "apps.list" -> onAppsList()
                 "apps.icon" -> onAppsIcon(obj)
                 "window.open" -> onWindowOpen(obj, frame)
@@ -1947,6 +1968,28 @@ class Session(
         val next = clipGate(clipGateState, ClipGateEvent.MacSaid(on))
         if (next != clipGateState) log("clip gate: ${clipGateState.name.lowercase()} -> ${next.name.lowercase()}")
         clipGateState = next
+    }
+
+    /**
+     * `direct.enable`: the Mac's stored switch for this phone
+     * (docs/PROTOCOL.md "Direct link"). The app persists it; the phone's publish
+     * gates read that stored value, not a session fact.
+     */
+    private fun onDirectEnable(obj: Map<String, Any?>) {
+        val on = Json.bool(obj["on"]) ?: run {
+            sendError("bad_request", "direct.enable needs a boolean on", 0)
+            return
+        }
+        runCatching { callback.onDirectEnable(clientId, on) }
+    }
+
+    /** `direct.key`: stored by the app, acknowledged only after it is on disk. */
+    private fun onDirectKey(obj: Map<String, Any?>) {
+        val key = Json.str(obj["key"]) ?: run {
+            sendError("bad_request", "direct.key needs a key", 0)
+            return
+        }
+        runCatching { callback.onDirectKey(clientId, key) }
     }
 
     private fun stopClipboardSync() {

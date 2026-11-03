@@ -536,6 +536,12 @@ interface DeckCallback {
      * to update until a session succeeds.
      */
     fun onVersionRefused(macV: Int?) {}
+
+    /** `direct.enable`: the Mac's stored switch for this phone (direct builds). */
+    fun onDirectEnable(clientId: String, on: Boolean) {}
+
+    /** `direct.key`: the 64-hex NDP key, stored by the app before an ok. */
+    fun onDirectKey(clientId: String, keyHex: String) {}
 }
 
 /**

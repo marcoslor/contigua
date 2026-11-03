@@ -17,6 +17,9 @@ object Prefs {
     private const val KEY_PENDING_QR = "pending_qr"
     private const val KEY_ONBOARDING_DONE = "onboarding_done"
     private const val KEY_BATTERY_REQUESTED = "battery_requested"
+    private const val KEY_DIRECT_SWITCH = "direct.switch"
+    private const val DIRECT_ENABLE_PREFIX = "direct.enable."
+    private const val DIRECT_PSK_PREFIX = "direct.psk."
     /**
      * A scanned Mac QR (review R2): the phone pins the Mac by `f` and answers
      * the Mac over TLS with `pair.qr` HMAC of `s`. Kept only until it is served
@@ -128,6 +131,7 @@ object Prefs {
 
     fun forget(ctx: Context, clientId: String) {
         save(ctx, paired(ctx).filterNot { it.clientId == clientId })
+        clearDirectFor(ctx, clientId)
     }
 
     /** The scanned-but-unanswered QR; null when none or expired. */
@@ -208,6 +212,42 @@ object Prefs {
      */
     fun forgetAll(ctx: Context) {
         dev.pocketdeck.e2ee.PhoneIdentity.rotate(ctx)
-        sp(ctx).edit().remove(KEY_PAIRED).remove(KEY_PENDING_QR).apply()
+        val sp = sp(ctx)
+        val direct = sp.all.keys.filter {
+            it.startsWith(DIRECT_PSK_PREFIX) || it.startsWith(DIRECT_ENABLE_PREFIX)
+        }
+        sp.edit().remove(KEY_PAIRED).remove(KEY_PENDING_QR).apply {
+            direct.forEach { remove(it) }
+        }.apply()
+    }
+
+    /** The phone's own direct switch (off on a fresh install). */
+    fun directSwitch(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_DIRECT_SWITCH, false)
+
+    fun setDirectSwitch(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_DIRECT_SWITCH, value).apply()
+
+    /** The Mac's stored `direct.enable` (a per-Mac value, not a session fact). */
+    fun directEnabled(ctx: Context, clientId: String): Boolean =
+        sp(ctx).getBoolean(DIRECT_ENABLE_PREFIX + clientId, false)
+
+    fun setDirectEnabled(ctx: Context, clientId: String, value: Boolean) =
+        sp(ctx).edit().putBoolean(DIRECT_ENABLE_PREFIX + clientId, value).apply()
+
+    /** The sealed 32-byte NDP key: base64(iv ‖ ciphertext), never the key. */
+    fun directKeyCiphertext(ctx: Context, clientId: String): String? =
+        sp(ctx).getString(DIRECT_PSK_PREFIX + clientId, null)
+
+    fun setDirectKeyCiphertext(ctx: Context, clientId: String, sealed: String) =
+        sp(ctx).edit().putString(DIRECT_PSK_PREFIX + clientId, sealed).apply()
+
+    fun removeDirectKey(ctx: Context, clientId: String) =
+        sp(ctx).edit().remove(DIRECT_PSK_PREFIX + clientId).apply()
+
+    private fun clearDirectFor(ctx: Context, clientId: String) {
+        sp(ctx).edit()
+            .remove(DIRECT_PSK_PREFIX + clientId)
+            .remove(DIRECT_ENABLE_PREFIX + clientId)
+            .apply()
     }
 }

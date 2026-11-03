@@ -33,6 +33,12 @@ interface LiveSession {
 
     fun shareFile(name: String, mime: String, input: InputStream): Int
 
+    /** `direct.state` pushed from the app (direct builds); a no-op elsewhere. */
+    fun updateDirectState(state: dev.pocketdeck.proto.PhoneDirectState?) {}
+
+    /** The app stored the key the Mac just sent: answer `direct.key.ok`. */
+    fun directKeyStored(ok: Boolean) {}
+
     fun listenerAccessChanged(granted: Boolean)
 
     fun onDeviceEvent(t: String, obj: Map<String, Any?>)

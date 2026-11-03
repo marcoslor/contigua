@@ -83,6 +83,14 @@ class DeckForegroundService : Service() {
         override fun onNotifyDismiss(id: String?) {
             PdNotificationBridge.dismissSink?.invoke(id ?: return)
         }
+
+        override fun onDirectEnable(clientId: String?, on: Boolean) {
+            PhoneDirect.port?.onMacEnable(clientId ?: return, on)
+        }
+
+        override fun onDirectKey(clientId: String?, keyHex: String?) {
+            PhoneDirect.port?.onMacKey(clientId ?: return, keyHex ?: return)
+        }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
@@ -187,6 +195,9 @@ class DeckForegroundService : Service() {
             // The listener grant lives in the system, not the app: hand the
             // current value over so the session can answer `notify.state`.
             syncListenerAccess()
+            // A direct build's state is the app's, not the shell's: re-push it
+            // so a restarted service answers `direct.state` after welcome.
+            PhoneDirect.push(svc)
         } catch (e: Throwable) {
             Log.i(TAG, "startServer failed: ${e.message}")
         }

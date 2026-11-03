@@ -65,4 +65,10 @@ oneway interface IDeckCallback {
 
     /** A Mac cleared the forwarded notification `id` (`notify.dismiss`). */
     void onNotifyDismiss(String id);
+
+    /** `direct.enable`: the Mac's stored switch for this phone (direct builds). */
+    void onDirectEnable(String clientId, boolean on);
+
+    /** `direct.key`: 64 hex, stored by the app before it answers `direct.key.ok`. */
+    void onDirectKey(String clientId, String keyHex);
 }

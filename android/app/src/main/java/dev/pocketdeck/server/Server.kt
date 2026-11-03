@@ -153,6 +153,37 @@ class Server(
     fun shareText(text: String): Int =
         sessions.current()?.takeIf { it.isReady }?.shareText(text) ?: ShareStatus.NO_SESSION
 
+    /** The app stored the Mac's `direct.key`; answer `direct.key.ok`. */
+    fun directKeyStored(ok: Boolean) {
+        sessions.current()?.takeIf { it.isReady }?.directKeyStored(ok)
+    }
+
+    /** The app's direct switch/permission changed; the live Mac hears it. */
+    fun setDirectState(state: dev.pocketdeck.proto.PhoneDirectState?) {
+        sessions.current()?.updateDirectState(state)
+    }
+
+    /**
+     * DIRECT-17: a socket the app accepted on the Aware network. The shell owns
+     * it from here and runs exactly the acceptor's pipeline (TLS, gate, hello,
+     * slot). False means the descriptor could not be used; the app bridges.
+     */
+    fun adoptSocket(socket: Socket): Boolean {
+        if (!running.get()) {
+            runCatching { socket.close() }
+            return false
+        }
+        runCatching { socket.tcpNoDelay = true }
+        runCatching { socket.soTimeout = ACCEPT_TIMEOUT_MS }
+        return try {
+            handshakes.execute { serve(socket) }
+            true
+        } catch (_: RejectedExecutionException) {
+            runCatching { socket.close() }
+            false
+        }
+    }
+
     fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
         sessions.current()?.takeIf { it.isReady }?.shareFile(name, mime, input) ?: ShareStatus.NO_SESSION
 

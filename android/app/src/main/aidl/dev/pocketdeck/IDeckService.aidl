@@ -1,6 +1,7 @@
 package dev.pocketdeck;
 
 import android.app.PendingIntent;
+import android.os.ParcelFileDescriptor;
 import dev.pocketdeck.IDeckCallback;
 
 /**
@@ -97,4 +98,17 @@ interface IDeckService {
      * activities from the background (docs/design/notify.md).
      */
     void openNotification(String id, int displayId, in PendingIntent intent) = 15;
+
+    /**
+     * DIRECT-17: a socket the app accepted on the Wi-Fi Aware network. The shell
+     * wraps it as an ordinary socket and runs the same TLS pipeline as the LAN
+     * listener; false asks the app to bridge bytes instead.
+     */
+    boolean adoptDirectSocket(in ParcelFileDescriptor fd) = 16;
+
+    /** The app stored the Mac's `direct.key`; true sends `direct.key.ok`. */
+    void directKeyStored(boolean ok) = 17;
+
+    /** The app's direct switch and permission state, sent as `direct.state`. */
+    void setDirectState(boolean on, String reason) = 18;
 }

@@ -61,7 +61,28 @@ object TestTls {
     }
 
     /** The MAC side of the harness: presents its identity, trusts the fake phone. */
-    fun clientSocket(id: Identity, trustServerCertPem: String, host: String, port: Int): SSLSocket {
+    fun clientSocket(id: Identity, trustServerCertPem: String, host: String, port: Int): SSLSocket =
+        clientOver(Socket(host, port).apply { tcpNoDelay = true }, id, trustServerCertPem)
+
+    /**
+     * TLS over a socket the test already connected (the handed-over path,
+     * DIRECT-17): the server's fd never came from its own acceptor.
+     */
+    fun clientOver(raw: Socket, id: Identity, trustServerCertPem: String): SSLSocket {
+        val context = clientContext(id, trustServerCertPem)
+        val ssl = context.socketFactory.createSocket(
+            raw,
+            raw.inetAddress.hostAddress,
+            raw.port,
+            true,
+        ) as SSLSocket
+        ssl.enabledProtocols = arrayOf("TLSv1.3")
+        ssl.tcpNoDelay = true
+        ssl.soTimeout = 5_000
+        return ssl
+    }
+
+    private fun clientContext(id: Identity, trustServerCertPem: String): SSLContext {
         val store = KeyStore.getInstance("PKCS12")
         store.load(null, PASSWORD.toCharArray())
         store.setKeyEntry("self", id.privateKey, PASSWORD.toCharArray(), arrayOf(id.cert))
@@ -78,11 +99,7 @@ object TestTls {
 
         val context = SSLContext.getInstance("TLS")
         context.init(kmf.keyManagers, tmf.trustManagers, SecureRandom())
-        val ssl = context.socketFactory.createSocket(host, port) as SSLSocket
-        ssl.enabledProtocols = arrayOf("TLSv1.3")
-        ssl.tcpNoDelay = true
-        ssl.soTimeout = 5_000
-        return ssl
+        return context
     }
 
     private const val PASSWORD = "pocketdeck-test-memory-only"

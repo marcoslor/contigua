@@ -46,6 +46,7 @@ data class AwareGates(
         is AwareLinkEvent.PublishFailed, is AwareLinkEvent.SessionLive,
         AwareLinkEvent.SessionEnded, is AwareLinkEvent.NdpAvailable,
         AwareLinkEvent.NdpLost, is AwareLinkEvent.AwareStateChanged,
+        is AwareLinkEvent.PlatformBlocked,
         is AwareLinkEvent.SsiTick -> this
     }
 }
@@ -61,6 +62,9 @@ sealed interface AwareLinkEvent {
     data object Attached : AwareLinkEvent
     data object PublishStarted : AwareLinkEvent
     data class PublishFailed(val reason: String) : AwareLinkEvent
+
+    /** The phone itself cannot publish (no feature, location off) or the app refused. */
+    data class PlatformBlocked(val reason: String) : AwareLinkEvent
     data class SessionLive(val directOn: Boolean) : AwareLinkEvent
     data object SessionEnded : AwareLinkEvent
     data class NdpAvailable(val network: AwareNetwork) : AwareLinkEvent
@@ -131,6 +135,7 @@ class AwareLink(
             is AwareLinkEvent.AwareStateChanged ->
                 if (event.available) attachIfReady() else stay()
             is AwareLinkEvent.NdpAvailable -> release()
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.Attached, AwareLinkEvent.PublishStarted,
             is AwareLinkEvent.PublishFailed, is AwareLinkEvent.SessionLive,
             AwareLinkEvent.SessionEnded, AwareLinkEvent.NdpLost,
@@ -151,6 +156,7 @@ class AwareLink(
                 if (event.available) attachIfReady() else step(AwareLinkState.Lost, listOf(AwareLinkAction.Detach))
             is AwareLinkEvent.PublishFailed -> blocked(event.reason, listOf(AwareLinkAction.Detach))
             is AwareLinkEvent.NdpAvailable -> release()
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.SwitchOn, AwareLinkEvent.KeyStored, AwareLinkEvent.PublishStarted,
             is AwareLinkEvent.SessionLive, AwareLinkEvent.SessionEnded,
             AwareLinkEvent.NdpLost, is AwareLinkEvent.SsiTick -> stay()
@@ -173,6 +179,7 @@ class AwareLink(
                 else step(AwareLinkState.Lost, listOf(AwareLinkAction.Unpublish, AwareLinkAction.Detach))
             is AwareLinkEvent.PublishFailed ->
                 blocked(event.reason, listOf(AwareLinkAction.Unpublish, AwareLinkAction.Detach))
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.Attached, AwareLinkEvent.PublishStarted,
             AwareLinkEvent.SessionEnded, AwareLinkEvent.NdpLost,
             AwareLinkEvent.SwitchOn, AwareLinkEvent.KeyStored -> stay()
@@ -205,6 +212,7 @@ class AwareLink(
                 event.reason,
                 listOf(AwareLinkAction.ReleaseNetwork, AwareLinkAction.Unpublish, AwareLinkAction.Detach),
             )
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.Attached, AwareLinkEvent.PublishStarted,
             AwareLinkEvent.SwitchOn, AwareLinkEvent.KeyStored -> stay()
         }
@@ -252,6 +260,7 @@ class AwareLink(
                     AwareLinkAction.Unpublish, AwareLinkAction.Detach,
                 ),
             )
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.Attached, AwareLinkEvent.PublishStarted,
             AwareLinkEvent.SwitchOn, AwareLinkEvent.KeyStored -> stay()
         }
@@ -264,6 +273,7 @@ class AwareLink(
             is AwareLinkEvent.PermissionChanged ->
                 if (event.granted) attachIfReady() else blocked(AwareReason.NO_PERMISSION, emptyList())
             is AwareLinkEvent.NdpAvailable -> release()
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.SwitchOn, AwareLinkEvent.KeyStored, AwareLinkEvent.Attached,
             AwareLinkEvent.PublishStarted, is AwareLinkEvent.PublishFailed,
             is AwareLinkEvent.SessionLive, AwareLinkEvent.SessionEnded,
@@ -278,6 +288,7 @@ class AwareLink(
             AwareLinkEvent.PermissionDenied -> blocked(AwareReason.NO_PERMISSION, emptyList())
             is AwareLinkEvent.AwareStateChanged ->
                 if (event.available) attachIfReady() else stay()
+            is AwareLinkEvent.PlatformBlocked -> blockedFrom(state, event.reason)
             AwareLinkEvent.Attached, AwareLinkEvent.PublishStarted,
             is AwareLinkEvent.PublishFailed, is AwareLinkEvent.SessionLive,
             AwareLinkEvent.SessionEnded, AwareLinkEvent.NdpLost,
@@ -300,6 +311,22 @@ class AwareLink(
             else -> state
         }
         return AwareLinkStep(next, listOf(AwareLinkAction.UpdateSsi(window)))
+    }
+
+    private fun blockedFrom(state: AwareLinkState, reason: String): AwareLinkStep {
+        val teardown = when (state) {
+            AwareLinkState.Off, AwareLinkState.Lost, is AwareLinkState.Blocked -> emptyList()
+            AwareLinkState.Attaching -> listOf(AwareLinkAction.Detach)
+            is AwareLinkState.Publishing -> listOf(AwareLinkAction.Unpublish, AwareLinkAction.Detach)
+            is AwareLinkState.NdpPending -> listOf(
+                AwareLinkAction.ReleaseNetwork, AwareLinkAction.Unpublish, AwareLinkAction.Detach,
+            )
+            is AwareLinkState.Up -> listOf(
+                AwareLinkAction.ReleaseNetwork, AwareLinkAction.StopListener,
+                AwareLinkAction.Unpublish, AwareLinkAction.Detach,
+            )
+        }
+        return blocked(reason, teardown)
     }
 
     private fun attachIfReady(): AwareLinkStep =
@@ -347,6 +374,7 @@ class AwareLink(
             AwareLinkEvent.Attached -> "attached"
             AwareLinkEvent.PublishStarted -> "publish_started"
             is AwareLinkEvent.PublishFailed -> "publish_failed:${AwareReason.closed(event.reason)}"
+            is AwareLinkEvent.PlatformBlocked -> "platform_blocked:${AwareReason.closed(event.reason)}"
             is AwareLinkEvent.SessionLive -> "connected"
             AwareLinkEvent.SessionEnded -> "disconnected"
             is AwareLinkEvent.NdpAvailable -> "ndp_available"

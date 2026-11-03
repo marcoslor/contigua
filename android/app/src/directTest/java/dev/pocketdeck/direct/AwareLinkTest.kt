@@ -354,6 +354,29 @@ class AwareLinkTest {
         assertStep(AwareLinkState.Blocked("aware_busy"), emptyList(), machine.transition(AwareLinkEvent.SsiTick(2)))
     }
 
+    // ----------------------------------------------------- platform refusal
+
+    @Test
+    fun thePhoneWithoutTheFeatureBlocksEvenWithEveryGate() {
+        assertStep(
+            AwareLinkState.Blocked("no_feature"), emptyList(),
+            machineIn(AwareLinkState.Off).transition(AwareLinkEvent.PlatformBlocked("no_feature")),
+        )
+        assertStep(
+            AwareLinkState.Blocked("location_off"),
+            publishTeardown,
+            machineIn(AwareLinkState.Publishing()).transition(AwareLinkEvent.PlatformBlocked("location_off")),
+        )
+        assertStep(
+            AwareLinkState.Blocked("aware_busy"),
+            listOf(
+                AwareLinkAction.ReleaseNetwork, AwareLinkAction.StopListener,
+                AwareLinkAction.Unpublish, AwareLinkAction.Detach,
+            ),
+            machineIn(AwareLinkState.Up()).transition(AwareLinkEvent.PlatformBlocked("aware_busy")),
+        )
+    }
+
     // -------------------------------------------------------------- logging
 
     @Test

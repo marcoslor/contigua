@@ -16,6 +16,7 @@ import dev.pocketdeck.e2ee.IdentityPin
 import dev.pocketdeck.e2ee.TlsExporter
 import dev.pocketdeck.proto.Json
 import java.io.File
+import java.net.Socket
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLSocket
 
@@ -85,6 +86,9 @@ class DeckService(private val appContext: Context?) :
     /** Last battery reading relayed by the app process (this process cannot receive it). */
     @Volatile private var batteryPercent = 0
     @Volatile private var batteryCharging = false
+
+    /** The phone's direct state from the app (direct builds); sent after welcome. */
+    @Volatile private var directState: dev.pocketdeck.proto.PhoneDirectState? = null
 
     /** The phone's DND, shared by every session (docs/design/focus.md). */
     private var zen: ZenControl? = null
@@ -220,7 +224,7 @@ class DeckService(private val appContext: Context?) :
                             else "v2 exporter sha256: " + TlsExporter.toHex(TlsExporter.sha256(exporter)))
                     }
                 },
-            )
+            ).also { it.updateDirectState(directState) }
         }
         val srv = Server(factory, ::log, ::servedCertPem, ::servedKeyP8, { gates },
             { servedClients().map { it.macFpHex } },
@@ -508,6 +512,54 @@ class DeckService(private val appContext: Context?) :
     /** R-8/D-4: a refused hello's version reaches the app's status card. */
     override fun onVersionRefused(macV: Int?) =
         sendToApp { it.onVersionRefused(macV ?: -1) }
+
+    override fun onDirectEnable(clientId: String, on: Boolean) =
+        sendToApp { it.onDirectEnable(clientId, on) }
+
+    override fun onDirectKey(clientId: String, keyHex: String) =
+        sendToApp { it.onDirectKey(clientId, keyHex) }
+
+    // ---- direct build (docs/design/direct-link.md §4.5) ---------------
+
+    /**
+     * DIRECT-17: take the app's accepted Aware socket. `detachFd` gives the
+     * shell sole ownership; the package-private `Socket(FileDescriptor)` wrap
+     * is the same guarded reflection the design names, and a failure answers
+     * false so the app bridges bytes (TLS still ends here).
+     */
+    override fun adoptDirectSocket(fd: ParcelFileDescriptor?): Boolean {
+        val own = fd ?: return false
+        val target = server ?: return false
+        val socket = socketFor(own) ?: return false
+        return target.adoptSocket(socket)
+    }
+
+    override fun directKeyStored(ok: Boolean) {
+        server?.directKeyStored(ok)
+    }
+
+    override fun setDirectState(on: Boolean, reason: String?) {
+        directState = dev.pocketdeck.proto.PhoneDirectState.of(on, reason)
+        server?.setDirectState(directState)
+    }
+
+    private fun socketFor(fd: ParcelFileDescriptor): Socket? {
+        var detached = -1
+        return runCatching {
+            detached = fd.detachFd()
+            val file = java.io.FileDescriptor()
+            java.io.FileDescriptor::class.java
+                .getDeclaredMethod("setInt$", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+                .invoke(file, detached)
+            Socket::class.java.getDeclaredConstructor(java.io.FileDescriptor::class.java)
+                .apply { isAccessible = true }
+                .newInstance(file) as Socket
+        }.getOrElse {
+            if (detached >= 0) runCatching { ParcelFileDescriptor.adoptFd(detached).close() }
+            null
+        }
+    }
 
     // ------------------------------------------------------------------
 

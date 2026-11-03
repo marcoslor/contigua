@@ -669,6 +669,54 @@ class ServerTest {
         }
     }
 
+    /**
+     * DIRECT-17: a socket the app accepted on the Aware network runs exactly
+     * the LAN pipeline — TLS first, the gate, the hello and the slot — when it
+     * is handed to [Server.adoptSocket] instead of arriving on the acceptor.
+     */
+    @Test
+    fun aHandedOverSocketRunsTheSameTlsAndSlot() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (handoff test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (handoff test)")
+        val server = Server(
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello) },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+        )
+        server.start()
+        val acceptor = java.net.ServerSocket(0)
+        try {
+            val rawClient = Socket("127.0.0.1", acceptor.localPort)
+            val accepted = acceptor.accept()
+            assertTrue("the shell wraps the handed descriptor", server.adoptSocket(accepted))
+            TestTls.clientOver(rawClient, macIdentity, phoneIdentity.certPem).use { tls ->
+                val reader = FrameReader(tls.getInputStream())
+                tls.getOutputStream().write(
+                    Frames.encodeJson(
+                        0,
+                        Json.encode(
+                            mapOf(
+                                "t" to "hello", "v" to 4, "path" to "a1b2c3d4",
+                                "clientId" to "c1", "name" to "MacBook",
+                            ),
+                        ),
+                    ),
+                )
+                tls.getOutputStream().flush()
+                val welcome = readJson(reader)
+                assertEquals("welcome", welcome["t"])
+                assertEquals(32, (welcome["session"] as String).length)
+            }
+        } finally {
+            acceptor.close()
+            server.stop()
+        }
+    }
+
     private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
         dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
     )
