@@ -70,9 +70,11 @@ enum MenuTrack {
         }
         schedule(after: 0.4 + wait) {
             openedSubmenu = trackingPaths.contains(itemPath)
+            // write() invalidates every scheduled timer, so the close must run
+            // in this same closure: the round-3 split pair had the write timer
+            // invalidate the cancel timer before it fired, and the menu stayed
+            // tracking into the next step.
             write()
-        }
-        schedule(after: 0.4 + wait) {
             submenu.cancelTracking()
             NSApp.mainMenu?.cancelTracking()
         }
