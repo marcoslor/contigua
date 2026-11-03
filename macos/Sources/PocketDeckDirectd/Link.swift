@@ -30,6 +30,8 @@ final class Link {
     private(set) var reading = true
     private let dialDeadline = Date().addingTimeInterval(TimeInterval(DirectLimits.dialTimeoutSeconds))
     private var released = false
+    /// The dial reply is held until lwIP reports the handshake complete.
+    var onUp: (() -> Void)?
     var onDown: (() -> Void)?
 
     init(id: String, peer: String, sock: Int32, port: UInt16, remote: String) {
@@ -139,8 +141,13 @@ final class Link {
     // MARK: events
 
     func connected() {
+        guard state == .connecting else {
+            transition(.connected)
+            return
+        }
         transition(.connected)
         DirectLog.line("link \(id) connected in \(Int(Date().timeIntervalSince(createdAt) * 1000)) ms")
+        onUp?()
         pumpToStack()
     }
 

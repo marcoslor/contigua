@@ -41,7 +41,9 @@ public enum DirectLinkMachine {
             // rather than move a live link.
             return (.up, [])
         case (.up, .connectFailed):
-            return (.up, [])
+            // A late failure on an established link still ends it: the app
+            // must not keep a socket the helper will never carry bytes for.
+            return (.down, [.closeAppSocket, .stopReadingApp])
         case (.down, _):
             return (.down, [])
         }

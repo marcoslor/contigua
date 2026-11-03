@@ -469,21 +469,51 @@ final class DirectDaemon {
         links[id] = link
         DirectLog.line("link \(id) dialing \(spec.linkLocal) port \(port)")
 
-        link.onDown = { [weak self] in self?.linkWentDown() }
+        // Exactly one answer, and only when lwIP has completed the handshake.
+        // `tcp_connect` returning means the SYN is queued, not that the link
+        // is up; boot 5 answered success 0 ms after the request.
+        var answered = false
+        link.onUp = { [weak self] in
+            guard !answered else { return }
+            answered = true
+            guard let self, self.clients[client.fd] === client else {
+                close(appEnd)
+                link.closeByApp()
+                return
+            }
+            self.sendReply(.dial(link: id, mtu: Int(pdl_mtu())), to: client, fd: appEnd)
+            close(appEnd)
+        }
+        link.onDown = { [weak self] in
+            if !answered {
+                answered = true
+                if let self, self.clients[client.fd] === client {
+                    self.sendReply(.error(.connectFailed,
+                                          message: "the peer did not complete the TCP handshake"),
+                                   to: client)
+                }
+                close(appEnd)
+            }
+            self?.linkWentDown()
+        }
         let alive = withExtendedLifetime(link) {
             pdl_connect(stack, peerLL, port, Unmanaged.passUnretained(link).toOpaque(),
                         directConnectedCallback, directRecvCallback, directSentCallback,
                         directErrorCallback) != nil
         }
         guard alive else {
+            // pdl_connect may already have run the error callback; fail() is
+            // idempotent once the link is down.
+            link.fail(.connectFailed)
+            link.releaseConnection()
             links[id] = nil
             close(helperEnd)
-            close(appEnd)
-            sendReply(.error(.ndpRefused, message: "no TCP control block"), to: client)
+            if !answered {
+                close(appEnd)
+                sendReply(.error(.ndpRefused, message: "no TCP control block"), to: client)
+            }
             return
         }
-        sendReply(.dial(link: id, mtu: Int(pdl_mtu())), to: client, fd: appEnd)
-        close(appEnd)
     }
 
     private static func randomLinkID() -> String {

@@ -227,6 +227,10 @@ plus one file descriptor where a link is handed over.
   reads and writes it as an ordinary socket; **TLS lives in the app**, so the
   helper only ever moves ciphertext (D2). The helper bridges it to one lwIP
   `tcp_pcb` connected to the peer's link-local on `port`.
+- The `dial` reply is held until lwIP's connected callback, not until
+  `tcp_connect` returns (that only queues the SYN). If the handshake fails, or
+  does not complete within **10 s**, the reply is
+  `{"ok":false,"code":"connect_failed"}` and carries no fd; the link is `down`.
 - **`peer` is the test-only static peer** (P2; §7.2). There is no data session
   in this round, so the harness tells the helper what the NAN data session
   would have: the peer's MAC and link-local on the interface named by `if`.
@@ -239,7 +243,8 @@ plus one file descriptor where a link is handed over.
   (§5), uses it for the NDP and wipes both buffers at once. It never appears in
   a log, an error message or the reply.
 - Error codes: `bad_request`, `not_ready`, `not_console_user`, `busy`,
-  `no_key`, `ndp_timeout`, `ndp_refused`, `link_unknown`, `too_many_links`.
+  `no_key`, `ndp_timeout`, `ndp_refused`, `connect_failed`, `link_unknown`,
+  `too_many_links`.
 - **Access control**: on every `accept`, `getpeereid(fd, &uid, &gid)` must equal
   the console user's uid (`SCDynamicStoreCopyConsoleUser`); the socket's mode
   is `0660 root:staff` and the peer check is the real gate. A mismatch replies

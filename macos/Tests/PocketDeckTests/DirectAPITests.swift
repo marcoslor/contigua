@@ -106,18 +106,36 @@ final class DirectAPITests: XCTestCase {
         XCTAssertNil(IPv6Address.parse("fe80::1::2"))
     }
 
-    func testLinkMachineTransitions() {
-        XCTAssertEqual(DirectLinkMachine.step(.connecting, .connected).0, .up)
-        XCTAssertEqual(DirectLinkMachine.step(.connecting, .connectFailed).0, .down)
-        XCTAssertEqual(DirectLinkMachine.step(.up, .peerClosed).0, .down)
-        XCTAssertEqual(DirectLinkMachine.step(.up, .appClosed).0, .down)
-        XCTAssertEqual(DirectLinkMachine.step(.down, .connected).0, .down)
-        XCTAssertEqual(DirectLinkMachine.step(.down, .peerClosed).0, .down)
-        // The closing actions always close the app's socket, so the app never
-        // waits on a link that ended.
-        XCTAssertTrue(DirectLinkMachine.step(.up, .peerClosed).1.contains(.closeAppSocket))
-        XCTAssertTrue(DirectLinkMachine.step(.connecting, .connectFailed).1.contains(.closeAppSocket))
-        XCTAssertEqual(DirectLinkMachine.step(.up, .connected).1, [])
+    func testEveryLinkTransitionAndIgnoredEvent() {
+        let closing: [DirectLinkAction] = [.closeAppSocket, .stopReadingApp]
+        let cases: [(DirectLinkState, DirectLinkEvent, DirectLinkState, [DirectLinkAction])] = [
+            (.connecting, .connected, .up, []),
+            (.connecting, .connectFailed, .down, closing),
+            (.connecting, .peerClosed, .down, closing),
+            (.connecting, .appClosed, .down, closing),
+            (.up, .connected, .up, []),
+            (.up, .connectFailed, .down, closing),
+            (.up, .peerClosed, .down, closing),
+            (.up, .appClosed, .down, closing),
+            (.down, .connected, .down, []),
+            (.down, .connectFailed, .down, []),
+            (.down, .peerClosed, .down, []),
+            (.down, .appClosed, .down, [])
+        ]
+        for (state, event, next, actions) in cases {
+            XCTAssertEqual(DirectLinkMachine.step(state, event).0, next,
+                           "\(state) --\(event)-->")
+            XCTAssertEqual(DirectLinkMachine.step(state, event).1, actions,
+                           "\(state) --\(event)-->")
+        }
+    }
+
+    func testDialWaitsTenSecondsAndNamesConnectFailure() {
+        XCTAssertEqual(DirectLimits.dialTimeoutSeconds, 10)
+        let reply = DirectReply.error(.connectFailed, message: "no handshake").encoded()
+        let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any]
+        XCTAssertEqual(object?["ok"] as? Bool, false)
+        XCTAssertEqual(object?["code"] as? String, "connect_failed")
     }
 }
 #endif

@@ -11,6 +11,7 @@ public enum DirectWireCode: String, Sendable, Equatable {
     case noKey = "no_key"
     case ndpTimeout = "ndp_timeout"
     case ndpRefused = "ndp_refused"
+    case connectFailed = "connect_failed"
     case linkUnknown = "link_unknown"
     case tooManyLinks = "too_many_links"
 }
@@ -66,7 +67,7 @@ public enum DirectLimits {
     public static let readChunkBytes = 64 * 1024
     public static let writeChunkBytes = 32 * 1024
     public static let maxLinks = 8
-    public static let dialTimeoutSeconds = 20
+    public static let dialTimeoutSeconds = 10
 }
 
 public enum DirectRequestParser {
