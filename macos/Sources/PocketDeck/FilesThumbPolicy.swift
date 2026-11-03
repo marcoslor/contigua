@@ -14,6 +14,12 @@ enum FilesThumbPolicy {
     static let maxBytes = 256 * 1024
     /// The wire's own bound for the wanted long side.
     static let maxLongSide = 4096
+    /// How long the extension's thumbnail connection waits for one answer
+    /// (FILES-29). A queued ask waits for its turn, and the app's queue runs
+    /// three at a time against a phone that generates one at a time, so this
+    /// must outlive the queue: 120 s is about 170 photos at 0.7 s each — a
+    /// full Finder icon grid — while still bounding a bridge that died.
+    static let bridgeReadTimeout = 120
 
     /// True only for a type conforming to an image or a movie (FILES-22).
     static func isMedia(contentTypeIdentifier: String) -> Bool {

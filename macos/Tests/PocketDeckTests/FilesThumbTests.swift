@@ -62,4 +62,12 @@ final class FilesThumbTests: XCTestCase {
     func testTheLimitIsThree() {
         XCTAssertEqual(3, FilesThumbPolicy.inFlightLimit)
     }
+
+    func testTheBridgeWaitForOneThumbnailIsLongEnoughForTheQueue() {
+        // FILES-29: a queued ask waits for its turn, so the extension's socket
+        // must outlive a camera folder's queue — but a dead bridge is still
+        // bounded. The cap is 120 s (about 170 photos at 0.7 s each).
+        XCTAssertEqual(120, FilesThumbPolicy.bridgeReadTimeout)
+        XCTAssertLessThanOrEqual(FilesThumbPolicy.bridgeReadTimeout, 120)
+    }
 }

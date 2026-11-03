@@ -6854,6 +6854,16 @@ THUMBCOUNT
         || { bad "BRIDGE THUMB the app never re-authenticated (timeout)"; stop_app; stop_fakephone; return 1; }
     BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-timeout
     cp "$WORK/fake.err" "$WORK/fake-thumb-timeout.err" 2>/dev/null || true
+    # A slow phone: one generator at 1 s a picture, 12 asks queued three at a
+    # time. The last waits ~9 s before it starts — past the old 8 s measured
+    # from the ask — and still answers: queue time is not the phone's work.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-delay-ms 1000" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (slow)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-slow --thumb-fixture "$WORK/thumb.jpg"
+    cp "$WORK/fake.err" "$WORK/fake-thumb-slow.err" 2>/dev/null || true
     log show --last 6m --info \
         --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
         | grep -oE 'thumb: .*|fs: cancel.*|bridge: fs cancel|session: fs.cancel sent.*' > "$WORK/thumb-log.txt" 2>/dev/null || true

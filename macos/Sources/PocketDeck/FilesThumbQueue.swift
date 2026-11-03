@@ -1,6 +1,7 @@
 // One thumbnail at a time per request, at most three in flight, each bounded by
-// an 8 s deadline measured from the ask (docs/specs/files.md FILES-25/29,
-// docs/design/files.md "Thumbnails (S6)").
+// an 8 s deadline measured from the `fs.thumb` send — a queued ask waits for
+// its turn, because queue time is not the phone's work (docs/specs/files.md
+// FILES-25/29, docs/design/files.md "Thumbnails (S6)").
 //
 // The queue is a small state machine per request: one closed set of phases, one
 // pure transition, and the side effects (send, cancel, answer) run from the
@@ -60,6 +61,7 @@ final class FilesThumbQueue {
         let client: ObjectIdentifier
         let item: String
         let size: Int
+        let deadline: TimeInterval
         let host: any FilesThumbHost
         let answer: (ThumbAnswer) -> Void
         var phase: ThumbPhase = .queued
@@ -70,11 +72,13 @@ final class FilesThumbQueue {
         var timer: DispatchWorkItem?  // gcd: one deadline timer per request
 
         init(id: UInt32, client: ObjectIdentifier, item: String, size: Int,
-             host: any FilesThumbHost, answer: @escaping (ThumbAnswer) -> Void) {
+             deadline: TimeInterval, host: any FilesThumbHost,
+             answer: @escaping (ThumbAnswer) -> Void) {
             self.id = id
             self.client = client
             self.item = item
             self.size = size
+            self.deadline = deadline
             self.host = host
             self.answer = answer
         }
@@ -92,22 +96,18 @@ final class FilesThumbQueue {
     private var running = 0
     private var scheduling = false
 
-    /// Accepts one ask; it starts now or waits its turn.
+    /// Accepts one ask; it starts now or waits its turn. The deadline is
+    /// armed only when `fs.thumb` goes to the phone (FILES-29): a queued ask
+    /// waits until it runs, Finder cancels it, or the session ends.
     func request(id: UInt32, client: ObjectIdentifier, item: String, size: Int,
                  deadline: TimeInterval, host: any FilesThumbHost,
                  answer: @escaping (ThumbAnswer) -> Void) {
         let key = Key(client: client, id: id)
         guard jobs[key] == nil else { return }
-        let job = Job(id: id, client: client, item: item, size: size, host: host, answer: answer)
+        let job = Job(id: id, client: client, item: item, size: size,
+                      deadline: deadline, host: host, answer: answer)
         jobs[key] = job
         order.append(key)
-        // From the ask, queue time included: a person sees the type icon
-        // meanwhile, so a request that misses its turn is answered, not kept.
-        let timer = DispatchWorkItem { [weak self] in  // gcd: a deadline timer
-            MainActor.assumeIsolated { self?.advance(key, .deadline) }
-        }
-        job.timer = timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(deadline, 0.001), execute: timer)  // gcd: a deadline hops back to the main actor
         startNext()
     }
 
@@ -151,6 +151,12 @@ final class FilesThumbQueue {
             job.started = true
             running += 1
             let key = Key(client: job.client, id: job.id)
+            // The deadline starts here, at the phone's work, not at the ask.
+            let timer = DispatchWorkItem { [weak self] in  // gcd: a deadline timer
+                MainActor.assumeIsolated { self?.advance(key, .deadline) }
+            }
+            job.timer = timer
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(job.deadline, 0.001), execute: timer)  // gcd: a deadline hops back to the main actor
             job.host.thumb(item: job.item, size: job.size, onStart: { [weak job] fsID in
                 job?.fsID = fsID
             }, completion: { [weak self] result in
@@ -205,7 +211,9 @@ final class FilesThumbQueue {
         case (.queued, .cancel):
             return (.cancelled, [.answer(.failure(code: "cancelled"))])
         case (.queued, .deadline):
-            return (.expired, [.answer(.failure(code: "timeout"))])
+            // Queue time is not the phone's work: a queued ask waits for its
+            // turn, Finder's cancel, or the session's end (FILES-29).
+            return (.queued, [])
         case (.queued, .drop):
             return (.cancelled, [.answer(.failure(code: "offline"))])
         case (.queued, .end(_)), (.queued, .failure(_)):
