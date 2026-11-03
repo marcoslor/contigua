@@ -615,6 +615,10 @@ final class InputMapper {
                 flushText()
                 send?(.nav("back"))
             case "v":
+                // A Finder copy puts the file's name on the pasteboard as text;
+                // typing it into the app pastes the name, not the file
+                // (SHARE-2). The file itself goes through a drop (SHARE-17).
+                guard !pasteboard.isFileCopy() else { return }
                 if let text = pasteboard.text(), !text.isEmpty {
                     flushText()
                     send?(.text(text))

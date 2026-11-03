@@ -545,6 +545,11 @@ Plain text only, in both directions, while a session is ready
   side neither sends nor applies `clip.set` or a clipboard image — the bytes
   stay on the phone, and the Mac's own side reads the setting for its sends
   and its applies.
+- A pasteboard item that carries `public.file-url` is a file copy, not text:
+  its text is the file's name and is never sent as `clip.set`. The Mac sends a
+  file copy of exactly one image file at or under 8 MiB as a clipboard image;
+  any other file copy (not an image, several files, over the cap, unreadable)
+  sends nothing (docs/specs/share-clipboard.md SHARE-2).
 
 ## Links
 
@@ -908,9 +913,11 @@ the sender may be either side:
   session end discards it.
 - The Mac sends an image when the general pasteboard changes to an item with image data and no
   text (PNG verbatim, TIFF converted to PNG) and it is not marked concealed by a password
-  manager. From the phone the image is read out of the clipboard's first item when its bytes
-  are readable. The receiver keeps the SHA-256 of the bytes it last sent or received, so images
-  are never echoed back, like `clip.set`.
+  manager. It also sends a Finder copy of exactly one image file this way: PNG and JPEG
+  verbatim, any other image type converted to PNG, at or under the cap; the file's name is
+  never sent as text (SHARE-2). From the phone the image is read out of the clipboard's first
+  item when its bytes are readable. The receiver keeps the SHA-256 of the bytes it last sent
+  or received, so images are never echoed back, like `clip.set`.
 
 ## Ring
 

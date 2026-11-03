@@ -5970,7 +5970,7 @@ check_clip() {
     done
     grep -q "listening" "$WORK/fake.log" || { bad "CLIP fakephone did not start"; return 1; }
 
-    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
     wait_until 20 events_have '"dir":"gate","on":true' \
         && ok "[SHARE-13] CLIP turning the switch on tells the phone again" \
         || bad "[SHARE-13] CLIP the phone never heard the switch turn on"
@@ -5986,6 +5986,27 @@ check_clip() {
     wait_until 30 events_have '"dir":"rx","text":"pd-clip-2"' \
         && ok "[SHARE-1] CLIP Mac -> phone: fakephone logs clip.set pd-clip-2" \
         || bad "[SHARE-1] CLIP fakephone did not log clip.set pd-clip-2"
+
+    # A Finder copy carries the file's name as text next to its URL (SHARE-2).
+    # The name must never reach the phone; a non-image file sends nothing.
+    printf 'PocketDeck e2e fixture' > "$WORK/pd-finder-copy.txt"
+    PD_PB_PATH="$WORK/pd-finder-copy.txt" xcrun swift -e '
+import AppKit
+let path = ProcessInfo.processInfo.environment["PD_PB_PATH"]!
+let board = NSPasteboard.general
+board.clearContents()
+let item = NSPasteboardItem()
+item.setString((path as NSString).lastPathComponent, forType: .string)
+item.setString(URL(fileURLWithPath: path).absoluteString, forType: .fileURL)
+board.writeObjects([item])
+' >/dev/null 2>&1 \
+        && ok "[SHARE-2] CLIP wrote a Finder-style file copy" \
+        || bad "[SHARE-2] CLIP could not write a Finder-style file copy"
+    sleep 3
+    ! events_have '"dir":"rx","text":"pd-finder-copy.txt"' \
+        && ok "[SHARE-2] CLIP a Finder file copy never sends its name as text" \
+        || bad "[SHARE-2] CLIP a Finder file copy sent its name to the phone"
+
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
