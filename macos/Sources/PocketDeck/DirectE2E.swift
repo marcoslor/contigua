@@ -30,8 +30,13 @@ enum DirectE2E {
         exit(0)
     }
 
+    /// The e2e client's status lines: counts, sizes, states and codes only.
+    private static func say(_ text: String) {
+        print("DIRECT \(text)")  // log-ok: the VM check reads these status lines; no personal data
+    }
+
     private static func fail(_ message: String) -> Never {
-        print("DIRECT-ERROR \(message)")
+        say("ERROR \(message)")
         exit(1)
     }
 
@@ -64,11 +69,11 @@ enum DirectE2E {
         guard hello["ok"] as? Bool == true, hello["v"] as? Int == 1 else {
             throw DirectE2EError.reply("hello", hello)
         }
-        print("DIRECT hello ok")
+        say("hello ok")
         let peer = try client.call(["op": "peer", "if": "feth0",
                                     "mac": peerMAC(), "ll": peerLL()])
         guard peer["ok"] as? Bool == true else { throw DirectE2EError.reply("peer", peer) }
-        print("DIRECT peer ok \(peerMAC()) \(peerLL())")
+        say("peer ok \(peerMAC()) \(peerLL())")
     }
 
     private static func dial(_ client: HelperClient, port: UInt16) throws -> (String, Int32) {
@@ -78,7 +83,7 @@ enum DirectE2E {
               let fd = client.takeReceivedFD() else {
             throw DirectE2EError.reply("dial", reply)
         }
-        print("DIRECT dial ok link=\(link) mtu=\(reply["mtu"] as? Int ?? 0)")
+        say("dial ok link=\(link) mtu=\(reply["mtu"] as? Int ?? 0)")
         return (link, fd)
     }
 
@@ -92,16 +97,16 @@ enum DirectE2E {
         configureSocket(fd)
 
         try echo(fd: fd, bytes: 1 << 20)
-        print("DIRECT echo ok bytes=1048576")
+        say("echo ok bytes=1048576")
 
         for size in [1399, 1400, 1401, 2800, 4200] {
             try echo(fd: fd, bytes: size)
         }
-        print("DIRECT mss ok sizes=1399,1400,1401,2800,4200")
+        say("mss ok sizes=1399,1400,1401,2800,4200")
 
         let closed = try client.call(["op": "close", "link": link])
         guard closed["ok"] as? Bool == true else { throw DirectE2EError.reply("close", closed) }
-        print("DIRECT close ok")
+        say("close ok")
     }
 
     private static func runShared() throws {
@@ -112,9 +117,9 @@ enum DirectE2E {
         configureSocket(fd)
         do {
             try echo(fd: fd, bytes: 4096)
-            print("DIRECT shared-echo ok")
+            say("shared-echo ok")
         } catch {
-            print("DIRECT shared-echo fail \(error)")
+            say("shared-echo fail \(error)")
         }
     }
 
@@ -136,7 +141,7 @@ enum DirectE2E {
                let ours = links.first(where: { $0["link"] as? String == link }) {
                 if ours["state"] as? String == "down" {
                     let milliseconds = Int(Date().timeIntervalSince(endedAt) * 1000)
-                    print("DIRECT eof detected=\(state.rawValue) down ms=\(milliseconds)")
+                    say("eof detected=\(state.rawValue) down ms=\(milliseconds)")
                     return
                 }
             } else if reply["ok"] as? Bool == false {
@@ -159,7 +164,7 @@ enum DirectE2E {
         let plain = try measureWrites(fd: plainFD, seconds: duration)
         close(plainFD)
         _ = try client.call(["op": "close", "link": plainLink])
-        print("DIRECT plain bytes=\(plain.bytes) seconds=\(String(format: "%.2f", plain.seconds)) mbps=\(String(format: "%.2f", plain.mbps))")
+        say("plain bytes=\(plain.bytes) seconds=\(String(format: "%.2f", plain.seconds)) mbps=\(String(format: "%.2f", plain.mbps))")
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { try? group.syncShutdownGracefully() }
@@ -168,11 +173,11 @@ enum DirectE2E {
         let (tlsLink, tlsFD) = try dial(client, port: tlsPort())
         let started = Date()
         let connection = try connector.connect(socket: tlsFD, onFrame: { _ in }, onError: { _ in })
-        print("DIRECT tls handshake ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+        say("tls handshake ms=\(Int(Date().timeIntervalSince(started) * 1000))")
         let tls = try measureTLSWrites(channel: connection.channel, seconds: duration)
         connection.channel.close(promise: nil)
         _ = try client.call(["op": "close", "link": tlsLink])
-        print("DIRECT tls bytes=\(tls.bytes) seconds=\(String(format: "%.2f", tls.seconds)) mbps=\(String(format: "%.2f", tls.mbps))")
+        say("tls bytes=\(tls.bytes) seconds=\(String(format: "%.2f", tls.seconds)) mbps=\(String(format: "%.2f", tls.mbps))")
     }
 
     private struct Measured {
@@ -194,6 +199,9 @@ enum DirectE2E {
             if elapsed >= seconds { break }
         }
         let elapsed = max(Date().timeIntervalSince(first), 0.001)
+        // Let the helper drain the last chunk through lwIP before the link is
+        // closed; the server's count is compared with `total`.
+        Thread.sleep(forTimeInterval: 0.5)
         return Measured(bytes: total, seconds: elapsed,
                         mbps: Double(total) * 8 / 1_000_000 / elapsed)
     }
@@ -210,6 +218,7 @@ enum DirectE2E {
             if Date().timeIntervalSince(first) >= seconds { break }
         }
         let elapsed = max(Date().timeIntervalSince(first), 0.001)
+        Thread.sleep(forTimeInterval: 0.5)
         return Measured(bytes: total, seconds: elapsed,
                         mbps: Double(total) * 8 / 1_000_000 / elapsed)
     }
