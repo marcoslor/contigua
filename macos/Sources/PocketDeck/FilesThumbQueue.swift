@@ -80,8 +80,15 @@ final class FilesThumbQueue {
         }
     }
 
-    private var jobs: [UInt32: Job] = [:]
-    private var order: [UInt32] = []
+    /// The id space is each bridge connection's own: two extensions may both
+    /// ask for id 2, and they are different requests.
+    private struct Key: Hashable {
+        let client: ObjectIdentifier
+        let id: UInt32
+    }
+
+    private var jobs: [Key: Job] = [:]
+    private var order: [Key] = []
     private var running = 0
     private var scheduling = false
 
@@ -89,14 +96,15 @@ final class FilesThumbQueue {
     func request(id: UInt32, client: ObjectIdentifier, item: String, size: Int,
                  deadline: TimeInterval, host: any FilesThumbHost,
                  answer: @escaping (ThumbAnswer) -> Void) {
-        guard jobs[id] == nil else { return }
+        let key = Key(client: client, id: id)
+        guard jobs[key] == nil else { return }
         let job = Job(id: id, client: client, item: item, size: size, host: host, answer: answer)
-        jobs[id] = job
-        order.append(id)
+        jobs[key] = job
+        order.append(key)
         // From the ask, queue time included: a person sees the type icon
         // meanwhile, so a request that misses its turn is answered, not kept.
         let timer = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.advance(id, .deadline) }
+            MainActor.assumeIsolated { self?.advance(key, .deadline) }
         }
         job.timer = timer
         DispatchQueue.main.asyncAfter(deadline: .now() + max(deadline, 0.001), execute: timer)
@@ -104,28 +112,29 @@ final class FilesThumbQueue {
     }
 
     @discardableResult
-    func cancel(id: UInt32) -> Bool {
-        guard jobs[id] != nil else { return false }
-        advance(id, .cancel)
+    func cancel(id: UInt32, client: ObjectIdentifier) -> Bool {
+        let key = Key(client: client, id: id)
+        guard jobs[key] != nil else { return false }
+        advance(key, .cancel)
         return true
     }
 
     /// The extension client went away: its slots free at once.
     func cancel(client: ObjectIdentifier) {
-        for job in Array(jobs.values) where job.client == client {
-            advance(job.id, .cancel)
+        for key in Array(jobs.keys) where key.client == client {
+            advance(key, .cancel)
         }
     }
 
     /// The session went away; nothing left can be asked or cancelled.
     func reset() {
-        for id in Array(jobs.keys) {
-            advance(id, .drop)
+        for key in Array(jobs.keys) {
+            advance(key, .drop)
         }
     }
 
-    private func advance(_ id: UInt32, _ event: ThumbEvent) {
-        guard let job = jobs[id], !job.settled else { return }
+    private func advance(_ key: Key, _ event: ThumbEvent) {
+        guard let job = jobs[key], !job.settled else { return }
         let (next, actions) = Self.transition(job.phase, event)
         guard next != job.phase else { return }
         job.phase = next
@@ -141,13 +150,14 @@ final class FilesThumbQueue {
         case .sendRequest:
             job.started = true
             running += 1
+            let key = Key(client: job.client, id: job.id)
             job.host.thumb(item: job.item, size: job.size, onStart: { [weak job] fsID in
                 job?.fsID = fsID
             }, completion: { [weak self] result in
                 MainActor.assumeIsolated {
                     switch result {
-                    case .success(let thumb): self?.advance(job.id, .end(thumb))
-                    case .failure(let error): self?.advance(job.id, .failure(code: error.code))
+                    case .success(let thumb): self?.advance(key, .end(thumb))
+                    case .failure(let error): self?.advance(key, .failure(code: error.code))
                     }
                 }
             })
@@ -165,8 +175,9 @@ final class FilesThumbQueue {
         job.settled = true
         job.timer?.cancel()
         if job.started { running -= 1 }
-        jobs[job.id] = nil
-        order.removeAll { $0 == job.id }
+        let key = Key(client: job.client, id: job.id)
+        jobs[key] = nil
+        order.removeAll { $0 == key }
         startNext()
     }
 

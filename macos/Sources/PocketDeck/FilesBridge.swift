@@ -1429,7 +1429,7 @@ final class FilesBridge {
                 }
             }
         case .cancel(let id):
-            if thumbQueue.cancel(id: id) { return }
+            if thumbQueue.cancel(id: id, client: slot) { return }
             if let fsID = readIDs[slot]?[id] {
                 readIDs[slot]?[id] = nil
                 end(id, client)
