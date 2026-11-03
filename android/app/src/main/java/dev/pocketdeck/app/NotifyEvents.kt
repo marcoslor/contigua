@@ -21,6 +21,9 @@ object NotifyEvents {
     /** The Live Update chip's own cap (docs/design/notify.md). */
     const val MAX_CHIP = 16
 
+    /** Ids one `notify.snapshot` may name; the Mac keeps at most 200 banners. */
+    const val MAX_SNAPSHOT_IDS = 200
+
     /**
      * `Notification.FLAG_PROMOTED_ONGOING`: the system promoted this ongoing
      * notification into an Android 16 Live Update. Kept as a literal so the
@@ -275,6 +278,22 @@ object NotifyEvents {
 
     fun removedEvent(id: String): Map<String, Any?>? =
         if (id.isEmpty() || id.length > 64 || id.any { !it.isLetterOrDigit() && it !in "-._" }) null else mapOf("t" to "notify.remove", "id" to id)
+
+    /**
+     * `notify.snapshot` (NOTIFY-1/PATH-6): the ids the phone's active set still
+     * holds, sent once after the snapshot's own posts. The Mac drops every row
+     * and banner this list does not name. Ids are bounded and each one is the
+     * opaque token a `notify.post` carried, never content.
+     */
+    fun snapshotEvent(ids: List<String>): Map<String, Any?> = mapOf(
+        "t" to "notify.snapshot",
+        "ids" to ids.asSequence()
+            .filter { it.isNotEmpty() && it.length <= 64 }
+            .filter { id -> id.all { it.isLetterOrDigit() || it in "-._" } }
+            .distinct()
+            .take(MAX_SNAPSHOT_IDS)
+            .toList(),
+    )
 
     /**
      * The chosen session's state; null clears Now Playing. `positionMs` is the

@@ -116,6 +116,9 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.chooseSink = { key -> deliverChoose(key) }
         PdNotificationBridge.actionSink = { id, index, text -> deliverAction(id, index, text) }
         PdNotificationBridge.dismissSink = { id -> deliverDismiss(id) }
+        // A repeated notify.enable after a rejoin asks for the active set
+        // (NOTIFY-1/PATH-6); the shell answers every enable while forwarding.
+        PdNotificationBridge.resyncSink = { mediaHandler.post { sendSnapshot() } }
         // The gate can open long after the stack was read (the Mac opts in on
         // its own schedule), and everything pushed before it is dropped.
         DeckState.addListener(gateObserver)
@@ -127,6 +130,7 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.chooseSink = null
         PdNotificationBridge.actionSink = null
         PdNotificationBridge.dismissSink = null
+        PdNotificationBridge.resyncSink = null
         NotifyIntents.clear()
         // The live state belongs to the worker thread; quitSafely still runs this.
         mediaHandler.post {
@@ -410,8 +414,45 @@ class PdNotificationListener : NotificationListenerService() {
     // ---- notification events ----------------------------------------------
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val notification = sbn.notification ?: return
-        val extras = notification.extras ?: return
+        postNotification(sbn, snapshot = false)
+    }
+
+    /**
+     * NOTIFY-1/PATH-6 (ISS-5): the Mac's opt-in arrived — a fresh session or,
+     * after an outage, a same-session rejoin. One quiet post per notification
+     * still active (the same shape a post has, never alerting), then
+     * `notify.snapshot` naming the ids that actually went out, so the Mac
+     * updates in place and drops what the phone no longer holds.
+     */
+    private fun sendSnapshot() {
+        if (!bridge.gate()) return
+        val active = runCatching { activeNotifications }.getOrNull()
+        if (active == null) {
+            Log.i(TAG, "notify snapshot skipped: no read")
+            return
+        }
+        val ids = ArrayList<String>(active.size)
+        for (sbn in active) {
+            val id = postNotification(sbn, snapshot = true)
+            if (id != null && id !in ids) ids += id
+        }
+        // The posts' deliveries are queued on this handler; the marker must
+        // follow them, so it is queued too.
+        mediaHandler.post {
+            bridge.post(NotifyEvents.snapshotEvent(ids))
+            Log.i(TAG, "notify snapshot ids=${ids.size}")
+        }
+    }
+
+    /**
+     * Reads one notification into a post (row rules, group machine, intents).
+     * Returns the forwarded id, or null when this notification is not the
+     * Mac's. A snapshot post carries `alert:false`: the Mac is reconciling an
+     * active set, never showing a notification for the first time (NOTIFY-1).
+     */
+    private fun postNotification(sbn: StatusBarNotification, snapshot: Boolean): String? {
+        val notification = sbn.notification ?: return null
+        val extras = notification.extras ?: return null
         val debugPoster = NotifyEvents.debugPoster(
             sbn.packageName,
             extras.getBoolean(NotifyEvents.DEBUG_POSTER_EXTRA, false),
@@ -423,15 +464,15 @@ class PdNotificationListener : NotificationListenerService() {
         // its progress is the point (docs/design/notify.md). The debug poster's
         // own ongoing notification stays forwardable so the rules are testable.
         val promoted = NotifyEvents.promoted(notification.flags, sbn.isOngoing)
-        if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
-        if (sbn.isOngoing && !promoted && !debugPoster) return
+        if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return null
+        if (sbn.isOngoing && !promoted && !debugPoster) return null
         val id = forwardId(sbn)
         // Row 16: a media session's notification is Now Playing's, not a banner
         // (a paused player stops being ongoing and would otherwise banner).
         if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) {
             skipped.put(id, true)
             Log.i(TAG, "notify skip media id=$id")
-            return
+            return null
         }
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
@@ -455,15 +496,18 @@ class PdNotificationListener : NotificationListenerService() {
         // Row 6: a bar that only moves is not news, even when its text moves.
         val hadBar = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) ||
             extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
-        // Rows 5/20: the channel's importance can only make a post quieter.
-        val importance = importanceOf(sbn)
-        // A number, or the closed token; never a channel name (privacy).
-        if (importance == null) {
-            Log.i(TAG, "notify importance=unknown id=$id") // log-ok: closed token, never a channel name
-        } else {
-            Log.i(TAG, "notify importance=$importance id=$id") // log-ok: a number 1..5, never a channel name
+        // Rows 5/20: the channel's importance can only make a post quieter. A
+        // snapshot's post is quiet by definition, so it reads no ranking.
+        val importance = if (snapshot) null else importanceOf(sbn)
+        if (!snapshot) {
+            // A number, or the closed token; never a channel name (privacy).
+            if (importance == null) {
+                Log.i(TAG, "notify importance=unknown id=$id") // log-ok: closed token, never a channel name
+            } else {
+                Log.i(TAG, "notify importance=$importance id=$id") // log-ok: a number 1..5, never a channel name
+            }
         }
-        val alert = NotifyEvents.alerts(
+        val alert = !snapshot && NotifyEvents.alerts(
             firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
             contentChanged = lastContent.get(id) != contentHash,
@@ -488,7 +532,7 @@ class PdNotificationListener : NotificationListenerService() {
             debugPoster = debugPoster,
             live = live,
             group = groupKey?.let { NotifyEvents.groupHash(sbn.packageName, it) },
-        ) ?: return
+        ) ?: return null
         // NOTIFY-20: a group summary never lands on top of its children.
         if (groupKey != null) {
             val groupActions = groupEvent(
@@ -520,7 +564,7 @@ class PdNotificationListener : NotificationListenerService() {
             if (skip) {
                 skipped.put(id, true)
                 Log.i(TAG, "notify group summary skipped: children active")
-                return
+                return null
             }
             groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
             // A notification forwarded after earlier being kept is announced
@@ -555,7 +599,9 @@ class PdNotificationListener : NotificationListenerService() {
                 noClear = notification.flags and Notification.FLAG_NO_CLEAR != 0,
             ),
         )
-        deliver(id, event, live, if (live == null) notification else null)
+        deliver(id, event, live, if (live == null || snapshot) null else notification,
+                coalesce = !snapshot)
+        return id
     }
 
     /**
@@ -681,10 +727,14 @@ class PdNotificationListener : NotificationListenerService() {
         event: Map<String, Any?>,
         live: Map<String, Any?>?,
         picture: Notification?,
+        coalesce: Boolean = true,
     ) {
         mediaHandler.post {
             if (live != null) {
                 val now = SystemClock.uptimeMillis()
+                // A snapshot's row is the current state, not a tick behind: it
+                // bypasses the one-per-second window and opens a new one.
+                if (!coalesce) throttle.forget(id)
                 if (!throttle.due(id, now)) {
                     pendingLive[id] = event
                     scheduleLiveFlush()

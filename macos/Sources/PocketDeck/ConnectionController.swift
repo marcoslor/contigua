@@ -2479,6 +2479,10 @@ final class ConnectionController {
             notifyCenter.image(id: id, mime: mime, width: w, height: h, data: data)
         case .notifyRemoved(let id):
             notifyCenter.remove(id: id)
+        case .notifySnapshot(let ids):
+            // NOTIFY-1: the active set after a rejoin. The posts before it
+            // already added or updated the rows; this drops what it lacks.
+            notifyCenter.snapshot(ids: ids)
         case .mediaState(let media):
             nowPlaying.apply(media)
         case .mediaSessions(let rows, let chosen):

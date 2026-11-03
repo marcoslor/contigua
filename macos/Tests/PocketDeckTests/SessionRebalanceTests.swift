@@ -116,7 +116,6 @@ final class SessionRebalanceTests: XCTestCase {
     /// elects the founder first and then challenges it with the faster path.
     func testAPlannedSwitchRedialsTheDrainedPath() throws {
         server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
-        server.answerPings = false
         let lock = NSLock()
         var foundingSession: String?
         var plain = 0
@@ -125,10 +124,15 @@ final class SessionRebalanceTests: XCTestCase {
         var markers = 0
         var enables = 0
         var founderPath: String?
-        var joinedPath: String?
-        let start = Date()
-        // The founder is the slow path; the join is withheld until the founder
-        // has two pongs (the ranking's own election), then answers fast.
+        // The founder is the slow path; the join answers at once (so its score
+        // beats the founder's and the margin rule switches to it). The founder
+        // is elected structurally: it is the session's first path. Nothing here
+        // may drop pongs: a pong loss would orphan the session and turn this
+        // planned switch into the outage case (ISS-5).
+        server.pongDelay = { _, path in
+            lock.lock(); defer { lock.unlock() }
+            return path == founderPath ? 0.15 : 0
+        }
         server.onFrame = { connection, frame in
             guard frame.type == MessageType.json.rawValue,
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
@@ -142,7 +146,7 @@ final class SessionRebalanceTests: XCTestCase {
                 if let join = message.string("join") {
                     lock.lock(); let session = foundingSession; lock.unlock()
                     guard join == session else { return }
-                    lock.lock(); joinedPath = message.string("path"); joins.append(connection)
+                    lock.lock(); joins.append(connection)
                     welcomes += 1; lock.unlock()
                     connection.sendJSON(Self.welcomeJSON(session: join))
                 } else {
@@ -167,23 +171,6 @@ final class SessionRebalanceTests: XCTestCase {
                     connection.send(frame)
                 }
                 return
-            }
-            guard message.t == "path.ping", let path = message.string("path"),
-                  let ts = message.int("ts") else { return }
-            lock.lock()
-            let isFounder = path == founderPath
-            let joinedAt = joinedPath == path ? start : nil
-            lock.unlock()
-            var delay: TimeInterval = 0
-            if isFounder {
-                delay = 0.15
-            } else if let joinedAt {
-                // Withhold the first two rounds so the founder is elected;
-                // after the join the first ping comes from the second round.
-                delay = Date().timeIntervalSince(joinedAt) < 4.5 ? 30 : 0
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                connection.sendJSON(["t": "path.pong", "path": path, "ts": ts])
             }
         }
         let session = makeSession(port: server.port)

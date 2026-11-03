@@ -75,6 +75,9 @@ final class FakeServer {
     var onClosed: ((Connection) -> Void)?
     /// False models a Mac whose ping this phone never answers (liveness tests).
     var answerPings = true
+    /// How long a `path.pong` waits before it goes back, per path: a slow
+    /// founder and a fast join make the ranking's margin switch happen.
+    var pongDelay: ((Connection, String) -> TimeInterval)?
 
     /// The scripted phone brain; when set, frames go to it first and only
     /// unhandled ones reach the test's raw `onFrame`.
@@ -192,8 +195,16 @@ final class FakeServer {
         if frame.type == MessageType.json.rawValue,
            let message = JSONFrame.decode(payload: frame.payload), message.t == "path.ping" {
             if answerPings {
-                connection.sendJSON(["t": "path.pong", "path": message.string("path") ?? "",
-                                     "ts": message.int("ts") ?? 0])
+                let path = message.string("path") ?? ""
+                let pong: () -> Void = {
+                    connection.sendJSON(["t": "path.pong", "path": path,
+                                         "ts": message.int("ts") ?? 0])
+                }
+                if let delay = pongDelay?(connection, path), delay > 0 {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: pong)
+                } else {
+                    pong()
+                }
             }
             return
         }

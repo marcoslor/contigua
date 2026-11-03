@@ -788,7 +788,7 @@ Mac → phone:
 
 | t | fields | meaning |
 |---|---|---|
-| `notify.enable` | `on` | the Mac's per-phone opt-in (the only notification switch); the phone answers `notify.state` |
+| `notify.enable` | `on` | the Mac's per-phone opt-in (the only notification switch); the phone answers `notify.state`, and every `on:true` while forwarding also answers with the active set (`notify.snapshot`) |
 | `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
 | `notify.action` | `id`, `i`, `text`? | press that forwarded notification's advertised action; `text` only for a reply action |
 | `notify.dismiss` | `id` | clear that forwarded notification on the phone |
@@ -803,6 +803,7 @@ Phone → Mac:
 | `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `group`?, `ongoing`?, `actions`?, `live`? — the shell server re-validates each field and forwards every one of them |
 | `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) — re-validated by the shell server and forwarded unchanged |
 | `notify.remove` | `id` |
+| `notify.snapshot` | `ids`: the active set — up to 200 opaque ids the phone still holds, sent once after the quiet `notify.post` for each |
 | `media.state` | `playing`, `pkg`?, `key`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate`, `canSeek`?, `volume`?, `volumeMax`? |
 | `media.sessions` | `list`: `[{key, pkg, app, playing}]` in the system's order, `chosen` (`key`?) |
 | `media.art` | `key`, `mime`?, `w`?, `h`?, `data`? (base64) — no data clears the picture |
@@ -841,6 +842,17 @@ phone, which logs the value it used. `media.choose {key}` sets which session the
 phone describes: an unknown key changes nothing and logs it. Older phones ignore
 `media.choose` and `media.art` like any unknown `t`; older Macs ignore the new
 `media.state` fields and `media.sessions`.
+
+The **active set** answers `notify.enable {on:true}`: at session start and again when the
+Mac repeats the opt-in after a same-session rejoin that followed an outage (NOTIFY-1/PATH-6).
+The phone re-posts every notification it still holds with `alert:false` (the same shape as
+the original post, no picture), then sends one `notify.snapshot {ids}` naming exactly the ids
+that went out. The Mac updates a known row/banner in place, presents nothing, and drops every
+row, banner and waiting post the set does not name — so a notification the phone ended
+during the outage leaves the Mac. `ids` is bounded (at most 200, each ≤ 64 characters of
+`A-Za-z0-9-._`, deduped); a malformed entry is dropped and the rest still go out. The ids are
+opaque tokens the phone issued in `notify.post`, never content. A repeated enable with the
+same value is not ignored: while forwarding it asks for the set again.
 
 `alert` is required on every `notify.post` and is Android's own decision: `true` for the
 first post of an id and for an update the app did not silence, `false` for an update that

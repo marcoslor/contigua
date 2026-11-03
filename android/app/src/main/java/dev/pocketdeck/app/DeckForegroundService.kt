@@ -49,6 +49,9 @@ class DeckForegroundService : Service() {
             DeckState.notifyForward = forwarding
             DeckState.notifyNoAccess = reason == "no_access"
             DeckState.notifyChanged()
+            // Every answered enable while forwarding is an active-set request
+            // (NOTIFY-1/PATH-6): one resend, even when the gate did not move.
+            if (forwarding) PdNotificationBridge.resyncSink?.invoke()
         }
 
         override fun onMediaCommand(json: String?) {
