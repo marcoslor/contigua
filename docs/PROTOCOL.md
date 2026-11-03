@@ -1,12 +1,15 @@
-# PocketDeck wire protocol — v2
+# PocketDeck wire protocol — v4
 
 The single source of truth for Mac ⇄ phone traffic. Both sides MUST implement
 exactly this. Change it here first, then in code.
 
 ## Transport
 
-- **LAN only.** The phone listens on TCP (ephemeral port) and advertises it
-  over mDNS/DNS-SD as service type `_pocketdeck._tcp.` with TXT records:
+- **LAN, and optionally a direct path.** The default transport is the LAN; a
+  build compiled with the direct provider can also carry the session over
+  Wi-Fi Aware (see "Paths"). The phone always listens on TCP (ephemeral port)
+  on the LAN and advertises it over mDNS/DNS-SD as service type
+  `_pocketdeck._tcp.` with TXT records:
   `v=1` (the discovery record's generation), `id=<deviceId>` (stable random
   hex, 16 chars), `name=<device name>`, `model=<Build.MODEL>`. No fingerprint
   or other tracking identifier rides in the TXT. While the phone's "Allow
@@ -20,9 +23,14 @@ exactly this. Change it here first, then in code.
   certificate pinned (the phone pins the Mac's certificate fingerprint, the
   Mac pins the phone's). There is no plaintext phase and no v1 fallback: a
   client that does not complete the handshake is closed without a byte.
-- The Mac connects **one TCP connection per phone** (the "session"). Everything
-  — control, input and every video stream — is multiplexed on it.
-- Both ends set `TCP_NODELAY`. Byte order is **big-endian** everywhere.
+- The Mac connects **one or more TCP connections per phone**: each connection is
+  a **path**, and **the session spans the paths** ("Paths"). At first there is
+  one path, and everything — control, input and every video stream — is
+  multiplexed on it, exactly as before. A later path can be added to the same
+  session, and the session survives the loss of any one of them. Every path does
+  its own full TLS handshake; TLS is never resumed across paths.
+- Both ends set `TCP_NODELAY` on every path. Byte order is **big-endian**
+  everywhere.
 
 ## Framing
 
@@ -55,6 +63,8 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x22` | DROP_DATA | mac→phone | the next bytes (≤ 1 MiB) of a file dropped on a window; `stream` = the drop `id`; see "Drop Mac → phone" |
 | `0x23` | CLIP_DATA | both | the next bytes (≤ 1 MiB) of a clipboard image; `stream` = the image `id`; see "Clipboard images" |
 | `0x24` | FS_DATA | both | the next bytes (≤ 256 KiB) of an `fs.read` or `fs.write`; `stream` = the request `id`; see "Phone files" |
+| `0x30` | RELIABLE | both | one reliable frame, wrapped: `u64 seq` · `u8 innerType` · `u32 innerStream` · `u8[] innerPayload`; `len` = 18 + innerPayload, the outer `stream` mirrors `innerStream`; see "Paths" |
+| `0x31` | ACK | both | `u64 ack` = the next seq this side expects; `stream` 0; `len` = 13 |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -93,11 +103,17 @@ display id on every injected event.
   refused resize) does not hold the window: the Mac counts the request settled
   when the ack or CONFIG arrives, or when the resize stall limit passes
   (`density_burst_stall_ms`, NFR.md).
-- The display content being static is not silence: the encoder repeats its
-  last frame at least every 500 ms (`KEY_REPEAT_PREVIOUS_FRAME_AFTER`) while a
-  stream is open, so a live stream is never quiet for long. That heartbeat is
-  what lets the Mac tell a static picture from a stalled encoder (it says "Not
-  responding" after 1.5 s without frames).
+- The display content being static is not silence. Two mechanisms say so, and
+  neither changes the picture: repeat-previous where the encoder honours it —
+  `KEY_REPEAT_PREVIOUS_FRAME_AFTER` repeats the last frame at least every
+  500 ms while a stream is open — and `window.still` where it does not. After
+  1000 ms without an encoder output buffer a live stream sends
+  `{"t":"window.still","stream":N}` from its own drain loop, and sends it
+  again once a second while the silence lasts; a backlogged socket produces no
+  `still`, so backpressure cannot hide a real stall. A live stream is
+  therefore never quiet for long, which lets the Mac tell a static picture
+  from a stalled encoder (it says "Not responding" after 1.5 s without frames
+  or a `still`).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops non-key frames for that stream until the
   next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).
@@ -135,8 +151,16 @@ display id on every injected event.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":3,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
-   A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
+2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>"}`,
+   plus `"pair":true` when the person asked this attempt to pair (a user-driven
+   pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
+   believes it is already paired. `path` names this connection (its path id,
+   8 lowercase hex, unique among the session's live paths) and is on every
+   hello. A hello on a **later** connection for the same session also carries
+   `"join":"<32 hex>"`, the session id from `welcome` — see "Paths".
+   A `v` other than 4 gets `{"t":"error","code":"version","v":4}` and a close:
+   `v` is the version that refused, so the Mac can name which app to update
+   (see "Versioning").
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
    paired or not, with `{"t":"error","code":"connections_off"}` and a close —
@@ -144,23 +168,168 @@ display id on every injected event.
    message; any other peer is closed without a reply once TLS completes. The
    TLS handshake runs under a 10 s read timeout on a small worker pool, so one
    silent TCP peer never blocks the next connection.
-   "Allow new pairings" off refuses an unpaired Mac the same way with
-   `{"t":"error","code":"pairing_off"}` before any code exists; paired Macs
-   continue. If the phone cannot read the switches it refuses like
-   `connections_off` (fail closed). Otherwise:
+   "Allow new pairings" off refuses an unpaired Mac that asked to pair the
+   same way with `{"t":"error","code":"pairing_off"}` before any code exists;
+   paired Macs continue, and an unpaired Mac that did not ask to pair is
+   closed at once without a reply. If the phone cannot read the switches it
+   refuses like `connections_off` (fail closed). Otherwise:
    - **Paired**: its pinned fingerprint must equal the TLS peer's fingerprint;
      then the phone sends `welcome` and the session is ready.
-   - **Unpaired**: the phone waits in the pairing phase (next section). The
-     Mac asks for the code flow with `{"t":"pair.request"}`; a scanned QR is
-     answered by the phone itself with `pair.qr` (see Pairing).
-4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
-   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. The phone allows
-   exactly one session at a time: a second connection gets
-   `{"t":"error","code":"busy","message":"one session at a time"}` and a close.
+   - **Unpaired, asked to pair**: the phone waits in the pairing phase (next
+     section). The Mac asks for the code flow with `{"t":"pair.request"}`; a
+     scanned QR is answered by the phone itself with `pair.qr` (see Pairing).
+   - **Unpaired, no pairing intent**: the Mac believes it is paired and the
+     phone pins nothing for it. The phone answers
+     `{"t":"error","code":"not_paired"}` at once and closes, never after its
+     handshake timeout.
+4. Phone → `{"t":"welcome","session":"<32 hex>","device":{"id":..,"name":..,"model":..,"sdk":36,
+   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. `session` is this
+   session's id: 128 random bits as 32 lowercase hex, a new one for every new
+   session, never reused and never derived from a device or peer id; a phone
+   answers the id it was asked to join with. The phone allows exactly one
+   session at a time:
+   - a hello carrying `"join"` for that live session's id, from the live
+     session's own pinned Mac, is a **join**: the connection becomes one more
+     path of the running session. The session is not dropped, nothing is
+     re-paired, and the phone answers `welcome` with the same `session` on it;
+   - a hello carrying `"join"` for an id the phone does not serve answers
+     `{"t":"error","code":"no_session"}` and closes (the Mac then starts a new
+     session); only the live session's own pinned Mac ever hears that code;
+   - a second connection without `join` gets
+     `{"t":"error","code":"busy","message":"one session at a time"}` and a close —
+     unless it is the live session's own pinned Mac (a network drop the phone has
+     not noticed yet): the phone drops the stale session, waits for its teardown
+     to release the phone's shared state (at most 2 s) and adopts the new
+     connection; at the bound it answers `busy`. A different Mac, an unpinned
+     peer and a peer that has not authenticated always get `busy`.
+   A session has at most 3 paths; a join past that answers
+   `{"t":"error","code":"too_many_paths"}` and closes.
+5. Every accepted path socket carries TCP keepalive (`SO_KEEPALIVE`,
+   `TCP_KEEPIDLE` 20 s, `TCP_KEEPINTVL` 5 s, `TCP_KEEPCNT` 4) and
+   `TCP_USER_TIMEOUT` 40 000 ms. A Mac that vanished without a FIN is therefore
+   ended by the kernel in about 40 s instead of at the retransmit give-up
+   (~15 min), and a healthy Mac is never dropped: its kernel answers the probes
+   while the Mac app sleeps. A live session has no app-level read deadline.
 
 Nothing but `hello`, `pair.request`, `pair.nonce` and `pair.ok` is accepted
 before `welcome`; anything else is `{"t":"error","code":"protocol"}` and a
 close.
+
+## Paths
+
+A **session** is what the person sees; a **path** is one TLS connection carrying
+it. A session starts with one path and can grow to three, so a dropped
+connection does not end it (`docs/design/paths.md`).
+
+### Reliable and lossy frames
+
+Each direction numbers its **reliable** frames with one `u64` seq per session,
+starting at 1:
+
+- reliable, sent wrapped in a `RELIABLE` (`0x30`) frame: `JSON` (`0x01`), `TOUCH`,
+  `SCROLL`, `KEY`, `APK_DATA`, `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`;
+- lossy, sent bare: `VIDEO_CONFIG`, `VIDEO_FRAME`, `AUDIO_CONFIG`, `AUDIO_FRAME`,
+  `HOVER`. They are never replayed, and a new frame type is lossy unless it is
+  listed above.
+
+```
+RELIABLE (0x30):  len = 18 + n; type 0x30; stream = innerStream
+                  payload: u64 seq | u8 innerType | u32 innerStream | n bytes
+ACK (0x31):       len = 13;      type 0x31; stream = 0
+                  payload: u64 ack      // the next seq this side expects
+```
+
+- The ACK is cumulative: every seq below `ack` was received, in order. It is
+  sent at most every 10 ms and at least once per 16 received frames, on any live
+  path.
+- A duplicate (`seq < ack`) is dropped and acked at once. A frame above the next
+  expected seq waits in a reorder window of at most 64 frames and 4 MiB; when it
+  is full the receiver **stops reading that path** until the gap fills (TCP
+  backpressure) — it never drops a frame and never ends the session.
+- A receiver acks and drops an unknown `innerType`, so a new message never
+  stalls the stream. A `RELIABLE` whose outer `stream` differs from
+  `innerStream` is a protocol error.
+- The sender keeps unacked reliable frames in a replay buffer of at most
+  **16 MiB** per direction, and it is **credit-based**: before reading the next
+  chunk of its source a producer checks that the frame fits, and waits for an ACK
+  if it does not. So the buffer never overflows, no frame is dropped, and the
+  session is never ended for a full buffer. Bulk frames (`APK_DATA`,
+  `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`) may hold at most **12 MiB**,
+  which keeps **4 MiB** free so a `JSON`, `TOUCH`, `SCROLL` or `KEY` frame never
+  waits behind a file (`docs/design/paths.md` §8).
+
+Example bytes, `ACK` with `ack` 42:
+
+```
+00 00 00 0d 31 00 00 00 00 00 00 00 00 00 00 00 2a
+```
+
+### The path messages
+
+| t | fields | meaning |
+|---|---|---|
+| `path.ping` | `path`, `ts` | on that path only, every **2 s**; sent **bare** (not wrapped, not seq'd, not replayed) |
+| `path.pong` | `path`, `ts` | the answer, on the same path, at once; RTT is measured with the receiver's own monotonic clock |
+| `path.switch` | `path`, `seq` | "my next reliable frame is `seq` and it goes on `path`" |
+
+- `path.ping`/`path.pong` are the only JSON frames that travel bare; they are
+  per-path liveness and mean nothing after a switch. A ping with no pong within
+  **1.5 s** is one lost sample.
+- A **planned** switch is make-before-break: the new path is up and joined, then
+  the Mac sends `path.switch` as the last frame on the old path (TCP order means
+  everything before it has arrived), then continues on the new one. An
+  **unplanned** one sends `path.switch` first on the new path, after the old one
+  failed.
+- On receiving `path.switch{path, seq}` a side sends its own later frames on
+  `path`, and the phone answers with its own `path.switch` marker for its
+  direction. The old path is closed once both markers are in, or after 2 s.
+- After every switch the Mac sends `window.keyframe` for each open video stream
+  (the phone may answer with a fresh `VIDEO_CONFIG` first, as it always may),
+  and the phone repeats its current `AUDIO_CONFIG` before its next
+  `AUDIO_FRAME` when audio is running.
+
+### Ranking and the switch
+
+Every path, the standby included, is pinged every 2 s; each side keeps RTT
+p50/p95 and loss over the last **30 s** and scores a path from those numbers
+plus its provider's throughput class (the formula is in
+`docs/design/paths.md` §7). Only the **Mac** decides:
+
+- the current path fails (a socket error, or no pong within 1.5 s) → switch at
+  once to the best live path;
+- another path beats the current one by at least 100 points for **5 s** → switch
+  to it;
+- a path with fewer than 2 pongs in its window never wins on margin.
+
+### The grace
+
+If no path is usable the session stays live for **30 s** waiting for a join,
+replays reliable frames from the peer's last ack when one arrives, and ends at
+30 s. The join may arrive on a path of any provider, including one that was
+never part of the session before (the phone is published with no session open,
+so the next connection can found a new one too). A frame in a `VIDEO_*`, `AUDIO_*` or `HOVER` frame that was in flight is
+lost; the keyframe request above repairs the picture.
+
+## Direct link
+
+Only a build compiled with the direct provider offers this
+(`docs/design/direct-link.md`); a public build never dials it and never sends
+these messages. The path itself is ordinary: one more TLS connection, pinned the
+same way, ranked like any other. The phone publishes the Wi-Fi Aware service
+`_pocketdeck-nan._tcp` and listens on the Aware network; the Mac dials it.
+
+| t | dir | fields | meaning |
+|---|---|---|---|
+| `direct.enable` | mac→phone | `on` | this Mac's switch for this phone; sent at `welcome` and on change, and **stored** by the phone (so `on: false` keeps it from being published for even with no session open). The phone publishes and keeps a standby only while it is on, its own switch is on, its permission is granted and it holds a key |
+| `direct.key` | mac→phone | `key` (64 hex) | the data-path key for the Wi-Fi Aware data path, 32 random bytes; sent once, inside TLS, on the first LAN session in which both switches are on |
+| `direct.key.ok` | phone→mac | — | the key is stored; an unacknowledged key is regenerated on the next LAN session |
+| `direct.state` | phone→mac | `on`, `reason`? | the phone's switch and permission state; `reason` is `no_permission`, `no_feature`, `location_off` or `aware_busy` |
+
+- The key is never logged on either side, and its only wire form is this
+  message. It is used as the Wi-Fi Aware data path's passphrase (base64 of the
+  32 bytes) and for the service-specific info the phone publishes:
+  `HMAC-SHA256(key, "pd-nan-v1" ‖ u64_be(window))[0..8]` for a 10-minute window,
+  which is all the air carries — no device id, name, model or fingerprint.
 
 ## Pairing (first contact)
 
@@ -236,11 +405,16 @@ Mac → phone (after `welcome`):
 | t | fields | meaning |
 |---|---|---|
 | `ping` | `ts` | phone replies `pong` with same `ts` |
+| `path.ping` | `path`, `ts` | a path's own liveness probe, sent bare on that path every 2 s; see "Paths" |
+| `path.pong` | `path`, `ts` | the answer, on the same path; either side sends it |
+| `path.switch` | `path`, `seq` | "my next reliable frame is `seq` and it goes on `path`"; see "Paths" |
+| `direct.enable` | `on` | this Mac's direct-link switch for this phone (direct builds); the phone publishes only while it is on; see "Direct link" |
+| `direct.key` | `key` | the Wi-Fi Aware data-path key, 64 hex, sent inside TLS once; see "Direct link" |
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` before a display exists (see "Several windows of one app") |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG); one the phone cannot apply answers `refused` |
-| `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up |
+| `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up. It is the last message the Mac sends for that stream: anything later is answered `error no_stream` (the Mac gates it out, WIN-38) |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
 | `window.keyframe` | `stream` | request IDR (decoder error recovery) |
@@ -251,12 +425,12 @@ Mac → phone (after `welcome`):
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents (HOME / APP_SWITCH on display 0) only in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
-| `clip.enable` | `on` | the Mac's clipboard switch: the phone sends and applies no `clip.set` or `clip.image.*` while it is off; see "Clipboard sync" |
+| `clip.enable` | `on` | the Mac's clipboard switch for the background sync: while it is off the phone sends and applies no `clip.set` or unprompted `clip.image.*`; a `clip.image.start` with `paste:true` still applies (a person's ⌘V); see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
 | `apk.cancel` | `id` | abandon that install |
-| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; see "Drop Mac → phone" |
+| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume`, optional `target`, optional `index`, optional `count` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; `target` is the package of the window's app, so the finished batch is shared straight to it; `index`/`count` place this file in one gesture's batch; see "Drop Mac → phone" |
 | `drop.cancel` | `id` | abandon that drop |
-| `clip.image.start` | `id`, `mime`, `size` | a clipboard image follows in `CLIP_DATA` frames; see "Clipboard images" |
+| `clip.image.start` | `id`, `mime`, `size`, optional `paste` | a clipboard image follows in `CLIP_DATA` frames; `paste:true` is a person's own ⌘V in a window and bypasses `clip.enable`; see "Clipboard images" |
 | `clip.image.end` | `id`, `size`, `sha256` | the image is complete |
 | `clip.image.abort` | `id` | the sender gave up; discard what arrived |
 | `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
@@ -278,12 +452,18 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `pong` | `ts` |
+| `path.ping` | `path`, `ts` | the same probe from the phone's side |
+| `path.pong` | `path`, `ts` | its answer |
+| `path.switch` | `path`, `seq` | the phone's own marker when the Mac switches the session ("Paths") |
+| `direct.key.ok` | — | the key in `direct.key` is stored ("Direct link") |
+| `direct.state` | `on`, `reason`? | the phone's direct-link switch and permission state; `reason` is `no_permission`, `no_feature`, `location_off` or `aware_busy` |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apps` | `apps`: `[{"pkg","label","activity","multi"}]` — launchable activities, sorted by label; `multi` says whether a second instance can run (WIN-24): the launcher activity declares `android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` (read per component with `PackageManager.getProperty`, API 35+, false on older phones) **and** its `launchMode` is not `singleTask`/`singleInstance` **and** its `documentLaunchMode` is not `never`; an allow-list covers apps found to work without the property (empty today) |
 | `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
 | `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
+| `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's top app; every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
@@ -298,7 +478,8 @@ Phone → Mac:
 | `share.abort` | `id` — the phone gave up on that file; the Mac discards it |
 | `drop.progress` | `id`, `bytes` — bytes written of a file drop |
 | `drop.result` | `id`, `ok`; success: `path`; failure: `code`, `message` |
-| `clip.image.start` | `id`, `mime`, `size` — sent by either side |
+| `clip.image.start` | `id`, `mime`, `size`, `paste`? — sent by either side; `paste:true` only by the Mac |
+| `clip.image.done` | `id`, `ok` — the phone finished a Mac image: `ok:true` means the bytes verified and its clipboard holds the image, and only then may a paste follow; `ok:false` means it was refused (see "Clipboard images") |
 | `fs.items` | `id`, `page` (null = last), `items`: `[{"name","dir","size","mtime","ino","etag"}]` — no path per item; the parent is implicit |
 | `fs.item` | `id`, `item` (same shape) |
 | `fs.read.end` | `id`, `size`, `sha256` — the requested range is complete and correct |
@@ -362,9 +543,16 @@ Plain text only, in both directions, while a session is ready
   off on a fresh profile. The Mac sends `{"t":"clip.enable","on":bool}` at
   every `welcome` and whenever the person changes it; the phone starts with
   sync off, so a phone that is not told sends nothing. While it is off that
-  side neither sends nor applies `clip.set` or a clipboard image — the bytes
-  stay on the phone, and the Mac's own side reads the setting for its sends
-  and its applies.
+  side neither sends nor applies `clip.set` or a background clipboard image —
+  the bytes stay on the phone, and the Mac's own side reads the setting for
+  its sends and its applies. The exception is a person's own ⌘V in a window:
+  a `clip.image.start` with `"paste":true` is explicit like a drop and the
+  phone applies it even while the switch is off (SHARE-16).
+- A pasteboard item that carries `public.file-url` is a file copy, not text:
+  its text is the file's name and is never sent as `clip.set`. The Mac sends a
+  file copy of exactly one image file at or under 8 MiB as a clipboard image;
+  any other file copy (not an image, several files, over the cap, unreadable)
+  sends nothing (docs/specs/share-clipboard.md SHARE-2).
 
 ## Links
 
@@ -428,11 +616,18 @@ Only the phone sends these; the Mac never answers them.
 What a Finder drag onto a phone window delivers (docs/design/dragdrop.md). Only the Mac sends
 these; the phone never answers `drop.*` other than below.
 
-1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>"}`,
-   `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3). One drop per phone:
-   while one is running a new `drop.start` answers `{"t":"drop.result","ok":false,"code":"busy"}`.
-   The phone validates (`name` `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB
-   (209 715 200 bytes), `mime` non-empty UTF-8, `sha256` 64 lowercase hex) and answers
+1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>","index":i,"count":n}`,
+   `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3) and optional
+   `"target":"<package>"` (the app of the window the drop landed on; absent on the Deck, a
+   phone-mode window and a link window). `index` (1-based) and `count` place this file in one
+   gesture's batch: one ⌘V or one drop of several files sends `count` drops of one file each,
+   one at a time, with `index` 1…`count` in order; both default to 1 (a single file). One drop
+   per phone: while one is running a new `drop.start` answers
+   `{"t":"drop.result","ok":false,"code":"busy"}`. The phone validates (`name`
+   `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB (209 715 200 bytes), `mime` non-empty
+   UTF-8, `sha256` 64 lowercase hex, `target` when present a package name
+   `[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+` of at most 255 bytes, `index` and `count`
+   integers with 1 ≤ `index` ≤ `count` ≤ 1000) and answers
    `{"t":"drop.result","id":N,"ok":false,"code":"bad_request","message":...}` anything else.
 2. Mac → `DROP_DATA` frames with `stream` = `id` (each ≤ 1 MiB). The phone counts bytes against
    the announced `size`; more, or a stalled sender, fails the drop.
@@ -448,8 +643,15 @@ these; the phone never answers `drop.*` other than below.
    `drop.result` `cancelled`. A session that ends abandons its drop.
 
 The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDeck/`, renames
-only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
-activity with the app's FileProvider content URI (docs/design/dragdrop.md).
+only after the SHA-256 matches, and media-scans the file. A gesture's files are collected as
+they land; after the **last** one (`index` = `count`) the phone offers one SEND for the batch
+with the app's FileProvider content URIs (docs/design/dragdrop.md): `ACTION_SEND` for one file,
+`ACTION_SEND_MULTIPLE` for 2–5, with `FLAG_GRANT_READ_URI_PERMISSION` and the ClipData grant on
+every URI. With more than 5 files it saves all of them and offers no SEND. When `target` is
+present and that package resolves the SEND intent for the batch's MIME the SEND is aimed at it
+with `setPackage` and shows no chooser; a package that is absent, not installed or has no
+matching activity gets today's chooser. A new target, a repeated `index` 1 or a different
+`count` starts a new batch, so a lost file can never block the next gesture.
 
 ## Phone files
 
@@ -481,7 +683,7 @@ running transfers.
   `fs_not_found`; a directory is `fs_not_a_dir`. With `etag` present and
   different from the file's current one, the answer is `fs_stale` and no data
   is sent.
-- **`fs.cancel`** stops that read: the phone sends no further `FS_DATA` for the
+- **`fs.cancel`** stops that read (or that thumbnail, below): the phone sends no further `FS_DATA` for the
   id (queued chunks are dropped), and the Mac discards what it already has.
   Frames for a cancelled or unknown `id` are dropped. A session that ends
   abandons every running read.
@@ -490,6 +692,54 @@ running transfers.
   that. Every reply carries its `id`; fs failures are the ordinary `error`
   message with an `id` field.
 - **Logs carry no names**: counts, lengths, depths and codes only, both sides.
+
+### Thumbnails
+
+Finder's icon grid asks for a picture before the file is downloaded (docs/design/files.md "Thumbnails (S6)"): the phone makes one from the media file itself, with no cache and no prefetch.
+
+| t | fields | meaning |
+|---|---|---|
+| `fs.thumb` | `id`, `path`, `size`, `etag`? | one thumbnail of the file at `path`; `size` is the long side in pixels the Mac wants (1–4096) and `etag` is checked exactly as `fs.read`'s |
+
+`fs.thumb`'s `size` is pixels, the one place the wire uses that name for
+something other than a byte count; `fs.thumb.end`'s `size` is bytes, as
+everywhere else. The answer is the image's bytes as `FS_DATA` frames (`stream`
+= `id`, each ≤ 256 KiB; the whole answer is at most 256 KiB, so one frame in
+practice), then:
+
+| t | fields |
+|---|---|
+| `fs.thumb.end` | `id`, `mime`, `size`, `sha256` — `mime` is `image/jpeg` or `image/png`, `size` the byte count, `sha256` its digest |
+
+Rules:
+
+- The phone makes the picture at shell uid with the platform's own image/video
+  thumbnail generator, long side `min(size, 512)`, JPEG at quality 80, or PNG
+  when the bitmap has alpha and the item is an image (a video frame is always
+  JPEG). The whole answer is at most 256 KiB (262 144
+  bytes): a larger first encode is re-encoded once at quality 60 (a PNG over
+  the cap becomes a flattened JPEG), and if that is still larger the answer is
+  `fs_no_thumb` with no bytes sent.
+- One at a time: the phone accepts at most 3 live `fs.thumb` ids and answers
+  `fs_busy` past that; the accepted ids wait in a FIFO and the phone generates
+  **one** at a time. The frames and `fs.thumb.end` ride the **bulk lane**
+  `fs.read` uses (the session's lowest send priority, below video deltas; at
+  most 1 MiB queued, so the producer blocks instead of buffering), so a
+  thumbnail never overtakes a reply and never delays a stream.
+- Refusals: a path the shape rules reject is `fs_denied`, a missing file
+  `fs_not_found`, a directory `fs_not_a_dir`, an `etag` that no longer matches
+  `fs_stale` (no bytes sent), a `size` outside 1–4096 `fs_denied`, and a file
+  the phone cannot make a picture of `fs_no_thumb`.
+- `fs.cancel` stops one: a queued id is dropped before it generates anything, a
+  running one is cancelled through the platform's cancellation signal, and the
+  Mac drops frames for a cancelled id (as for a read).
+- Nothing runs unless a Mac asks: no thumbnail is made at session start or on a
+  listing, and a folder never gets one. A thumbnail never wakes the phone's
+  screen, takes no wake lock and never starts a stream.
+- No version bump: `fs.thumb` and `fs.thumb.end` are new `t` values and
+  `fs_no_thumb` a new code; nothing existing changes shape. A peer that does
+  not serve the request simply never answers, which the Mac's 8 s deadline
+  bounds (a `fs.cancel` follows).
 
 ### Writing
 
@@ -603,7 +853,7 @@ Mac → phone:
 
 | t | fields | meaning |
 |---|---|---|
-| `notify.enable` | `on` | the Mac's per-phone opt-in (the only notification switch); the phone answers `notify.state` |
+| `notify.enable` | `on` | the Mac's per-phone opt-in (the only notification switch); the phone answers `notify.state`, and every `on:true` while forwarding also answers with the active set (`notify.snapshot`) |
 | `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
 | `notify.action` | `id`, `i`, `text`? | press that forwarded notification's advertised action; `text` only for a reply action |
 | `notify.dismiss` | `id` | clear that forwarded notification on the phone |
@@ -615,9 +865,10 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `notify.state` | `on` — forwarding is live; `reason` — `no_access` when the Mac asked but the phone's listener grant is missing |
-| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`?, `live`? |
-| `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `group`?, `ongoing`?, `actions`?, `live`? — the shell server re-validates each field and forwards every one of them |
+| `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) — re-validated by the shell server and forwarded unchanged |
 | `notify.remove` | `id` |
+| `notify.snapshot` | `ids`: the active set — up to 200 opaque ids the phone still holds, sent once after the quiet `notify.post` for each |
 | `media.state` | `playing`, `pkg`?, `key`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate`, `canSeek`?, `volume`?, `volumeMax`? |
 | `media.sessions` | `list`: `[{key, pkg, app, playing}]` in the system's order, `chosen` (`key`?) |
 | `media.art` | `key`, `mime`?, `w`?, `h`?, `data`? (base64) — no data clears the picture |
@@ -657,8 +908,35 @@ phone describes: an unknown key changes nothing and logs it. Older phones ignore
 `media.choose` and `media.art` like any unknown `t`; older Macs ignore the new
 `media.state` fields and `media.sessions`.
 
-`actions` is an array of up to 3 `{"i": <index in the phone's Notification.actions>,
-"title": "≤ 64 chars", "reply": true?}`; `reply` marks an action with a free-form RemoteInput.
+The **active set** answers `notify.enable {on:true}`: at session start and again when the
+Mac repeats the opt-in after a same-session rejoin that followed an outage (NOTIFY-1/PATH-6).
+The phone re-posts every notification it still holds with `alert:false` (the same shape as
+the original post, no picture), then sends one `notify.snapshot {ids}` naming exactly the ids
+that went out. The Mac updates a known row/banner in place, presents nothing, and drops every
+row, banner and waiting post the set does not name — so a notification the phone ended
+during the outage leaves the Mac. `ids` is bounded (at most 200, each ≤ 64 characters of
+`A-Za-z0-9-._`, deduped); a malformed entry is dropped and the rest still go out. The ids are
+opaque tokens the phone issued in `notify.post`, never content. A repeated enable with the
+same value is not ignored: while forwarding it asks for the set again.
+
+`alert` is required on every `notify.post` and is Android's own decision: `true` for the
+first post of an id and for an update the app did not silence, `false` for an update that
+carries `FLAG_ONLY_ALERT_ONCE` or whose title and text did not change since the last
+forwarded post (the phone compares hashes kept in memory, never the text). The Mac presents
+an alerting post as a banner and replaces a delivered banner for a non-alerting one with
+`interruptionLevel = .passive`, so nothing is presented again. A post without `alert` is
+malformed and is ignored; there is no older-peer mode (AGENTS.md).
+
+`group` is present only when the Android notification belongs to a group, and is 16 lowercase
+hex characters: 64 bits of SHA-256 over the package and the Android group key, never the key
+itself (apps put chat or folder names in it). The phone leaves a `FLAG_GROUP_SUMMARY`
+notification on the phone while a forwarded child of its group is active, sends
+`notify.remove` for a forwarded summary when a child of that group supersedes it, and forwards
+a summary only while its group has no forwarded child. The Mac threads the banner under
+`<phone id>.<group>` when `group` is present and under the phone id otherwise; a value that
+is not that 16-hex shape is ignored and the banner joins the phone's thread.
+
+`actions` is an array of up to 3 `{"i": <index in the phone's Notification.actions>, "title": "≤ 64 chars", "reply": true?}`; `reply` marks an action with a free-form RemoteInput.
 A Mac that does not know the field ignores it. `notify.action` names only an id the phone
 issued and an advertised index (0–2); its `text` is at most 4 KiB and is refused on a
 non-reply action or over the cap. The phone answers nothing: the app's own update/removal
@@ -705,16 +983,33 @@ the sender may be either side:
 - `{"t":"clip.image.start","id":N,"mime":"image/jpeg"|"image/png","size":S}`, then
   `CLIP_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
   `{"t":"clip.image.end","id":N,"size","sha256":"<64 hex>"}` — or `{"t":"clip.image.abort","id":N}`.
-  Ids are per direction, from 1.
+  Ids are per direction, from 1. The Mac may add `"paste":true`: the image is a person's own ⌘V in
+  a window, so it applies even while `clip.enable` is off (SHARE-16); nothing else changes.
+- The phone answers a Mac image with `{"t":"clip.image.done","id":N,"ok":true}` after the bytes
+  verify **and** its clipboard holds the image; `{"ok":false}` when it refuses (a checksum
+  mismatch, no clipboard to write to, or over the cap). The Mac sends nothing else on that id,
+  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16). The bytes are
+  copied by the **app process**, which owns the provider and the clipboard: the shell hands it
+  the already-open fd (`onClipImage`) and waits at most 3 s for `clipImageDone`; no answer is
+  `ok:false`. The app writes one clipboard item carrying only the image URI (no text, no
+  intent): a plain field pastes nothing (a content URI that cannot serve text coerces to null,
+  never to its `content://` string), while a field that accepts image content still gets the URI
+  (SHARE-2's A2 rule, measured on the emulator). The shell never sets an image clip itself.
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
   session end discards it.
 - The Mac sends an image when the general pasteboard changes to an item with image data and no
   text (PNG verbatim, TIFF converted to PNG) and it is not marked concealed by a password
-  manager. From the phone the image is read out of the clipboard's first item when its bytes
-  are readable. The receiver keeps the SHA-256 of the bytes it last sent or received, so images
-  are never echoed back, like `clip.set`.
+  manager. It also sends a Finder copy of exactly one image file this way: PNG and JPEG
+  verbatim, any other image type re-encoded (PNG with alpha, JPEG at quality 0.9 when
+  opaque), the result at or under the cap; the file's name is
+  never sent as text (SHARE-2). From the phone the image is read out of the clipboard's first
+  item when its bytes are readable. The receiver keeps the SHA-256 of the bytes it last sent
+  or received, so images are never echoed back, like `clip.set`.
+- A paste into the phone's focused field follows a confirmed image: after `clip.image.done`
+  with `ok:true` the Mac sends one `KEY` frame with keycode 279 (`KEYCODE_PASTE`) and
+  `metaState` 0 for that stream (docs/specs/share-clipboard.md SHARE-16).
 
 ## Ring
 
@@ -845,12 +1140,20 @@ mode (docs/design/focus.md):
 
 ## Error codes
 
-`{"t":"error","code":...}` codes: `busy` (another session is active), `bad_pin` (the
+`{"t":"error","code":...}` codes: `busy` (another session is active), `no_session`
+(a `hello`'s `join` names a session this phone does not serve: the Mac starts a new
+session), `too_many_paths` (a join past the session's 3 paths), `bad_pin` (the
 peer's certificate fingerprint is not the pinned one — the Mac shows "This phone's
-identity changed. Pair again."), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
-not match the commit), `version`, `protocol` (message not allowed in the current state;
+identity changed. Pair again."), `not_paired` (the phone pins nothing for this Mac
+and the Mac did not ask to pair — the Mac shows "<phone name> no longer trusts this
+Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
+not match the commit), `version` (this side's protocol version differs; `v` carries the
+version that refused, so the other side can say which app to update), `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
-`no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
+`no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
+the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
+window still opening is refused on its cover, a live one closes as on `window.closed`),
+`launch_failed`, `bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
 (the phone would not write the ringer setting or the music volume), `connections_off` (the phone's
@@ -861,8 +1164,10 @@ this Mac is not paired: "<phone name> isn't accepting new pairings."),
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
 foreground is our app, the launcher/home or SystemUI), `fs_not_found`,
 `fs_denied` (a path outside the readable rules, or a range outside the file),
-`fs_not_a_dir`, `fs_stale` (the `fs.read` etag no longer matches the file) and
-`fs_busy` (more than 8 reads in flight), `too_many_windows` (a `window.open` past
+`fs_not_a_dir`, `fs_stale` (the `fs.read`/`fs.thumb` etag no longer matches the file),
+`fs_no_thumb` (the phone cannot make a thumbnail of that file: not an image or
+video, an unreadable or unsupported codec, or the answer did not fit 256 KiB)
+and `fs_busy` (more than 8 reads, or more than 3 thumbnail ids, in flight), `too_many_windows` (a `window.open` past
 the phone's `maxWindows`; no display is created).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before
@@ -870,9 +1175,18 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 
 ## Versioning
 
-`v` = **3** in `hello` is the protocol version (3 added `window.content`, which every
-VIDEO_CONFIG now needs). The mDNS TXT `v` is the
-discovery record's own generation (`1`), a Mac ignores records with another
-value. A phone that can't serve the Mac's protocol version replies
-`{"t":"error","code":"version"}` and closes; there is no v1 negotiation and
-no plaintext fallback (v2 is TLS-only).
+`v` = **4** in `hello` is the protocol version (4 added the paths layer — session
+ids, joins, `RELIABLE`/`ACK`, `path.*` — and the direct-link messages; 3 added
+`window.content`, which every VIDEO_CONFIG needs). `window.still` is an ordinary
+phone→Mac JSON message under v4: it travels as a reliable, seq'd frame like every
+other JSON frame, and an unknown `t` is still ignored. Both apps ship together and
+there is no older-peer mode: a peer that does not serve 4 replies
+`{"t":"error","code":"version","v":4}` and closes, in both directions.
+`v` is the refusing side's own version, so the other side can compare it with
+its own and say which app to update: the phone's `v` below the Mac's (or absent,
+as from a v3 phone) means "Update PocketDeck on your phone."; above means
+"Update PocketDeck on this Mac.". The Mac stops retrying. The phone's own screen
+names the Mac's side the same way from the `hello`'s `v`. There is no v1
+negotiation, no plaintext fallback and no reduced transport (v2 and v3 are
+TLS-only). The mDNS TXT `v` is the discovery record's own generation (`1`), a
+Mac ignores records with another value.

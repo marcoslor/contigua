@@ -7,6 +7,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application>
+        <!-- A2's two fields (SHARE-16): a plain EditText and one whose
+             OnReceiveContentListener takes image/*. Debug builds only; the
+             checks drive it from adb, so it is exported. -->
+        <activity
+            android:name="dev.pocketdeck.app.PasteDebugActivity"
+            android:exported="true"
+            android:theme="@style/Theme.PocketDeck" />
         <receiver
             android:name="dev.pocketdeck.app.NotifyDebugPoster"
             android:exported="true"

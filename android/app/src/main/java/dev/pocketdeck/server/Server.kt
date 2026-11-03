@@ -1,8 +1,10 @@
 package dev.pocketdeck.server
 
 import dev.pocketdeck.proto.Crypto
+import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
+import dev.pocketdeck.proto.PathVersion
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -20,7 +22,7 @@ fun interface SessionFactory {
      * [socket] is the TLS session socket; [plain] is the accepted TCP socket
      * under it, which a drop shuts down first (docs/specs/pairing.md PAIR-20).
      */
-    fun create(socket: Socket, plain: Socket): Session
+    fun create(socket: Socket, plain: Socket, hello: Map<String, Any?>?): Session
 }
 
 /**
@@ -45,7 +47,14 @@ class Server(
      * instead of running it on the caller's thread (PAIR-20). Injected so a
      * test can hold a session whose close blocks.
      */
-    private val sessions: SessionDropper = SessionDropper(),
+    private val sessions: SessionDropper = SessionDropper(log),
+    /**
+     * Builds the TLS context from the pushed identity. Null (production) uses
+     * [ShellTls]; the JVM harness substitutes Conscrypt to match Android.
+     */
+    private val tlsContextBuilder: ((String, String) -> SSLContext?)? = null,
+    /** R-8/D-4: the app shows the version sentence; null = the hello had no v. */
+    private val onVersionRefused: (Int?) -> Unit = {},
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -75,7 +84,11 @@ class Server(
         synchronized(contextLock) {
             if (identity != cachedContext || cachedTlsContext == null) {
                 val built = try {
-                    ShellTls.serverContext(cert, key, null)
+                    if (tlsContextBuilder != null) {
+                        tlsContextBuilder.invoke(cert, key)
+                    } else {
+                        ShellTls.serverContext(cert, key, null)
+                    }
                 } catch (t: Throwable) {
                     // Class and message only: never the key or certificate bytes.
                     // This separates "identity missing" from "identity broken".
@@ -194,7 +207,84 @@ class Server(
                 refuseConnectionsOff(socket)
                 return
             }
-            val session = sessions.adopt { factory.create(socket, rawSocket) }
+            // PAIR-22: the kernel ends a peer that vanished without a FIN, so the
+            // slot frees in seconds instead of at the retransmit give-up. A
+            // failure never fails the session.
+            val keepalive = TcpKeepalive.apply(rawSocket)
+            log(if (keepalive == 0) "keepalive on" else "keepalive failed errno=$keepalive")
+            // E-1/RRR-2: every path socket — the founder's and every join's —
+            // gets the same send buffer. Without it a joined path keeps the
+            // kernel's autotuned MiBs, so the lossy cap fires seconds late and
+            // video sits ahead of window.content after a failover.
+            val sendBuffer = runCatching {
+                rawSocket.sendBufferSize = Session.SEND_BUFFER_BYTES
+                rawSocket.sendBufferSize
+            }.getOrDefault(0)
+            log("send buffer $sendBuffer bytes")
+            val peerMac = peerMacHex(socket)
+            val pinned = isPinned(peerMac)
+            // The hello decides a join (PATH-3): TLS is the only authentication,
+            // and the slot is the only record of who owns the phone. The frame
+            // reader reads exactly one frame, so the session's reader sees the
+            // next byte untouched. The accept timeout bounds a silent peer.
+            runCatching { socket.soTimeout = ACCEPT_TIMEOUT_MS }
+            val first = try {
+                FrameReader(socket.getInputStream()).readFrame()
+            } catch (e: Throwable) {
+                reject(socket, "protocol", "unreadable hello")
+                return
+            }
+            if (first == null) {
+                runCatching { socket.close() }
+                return
+            }
+            val hello = if (first.type == Frames.TYPE_JSON) {
+                runCatching { Json.parseObject(String(first.payload)) }.getOrNull()
+            } else null
+            if (hello == null || hello["t"] != "hello") {
+                reject(socket, "protocol", "expected hello")
+                return
+            }
+            val v = Json.int(hello["v"])
+            if (PathVersion.refused(v)) {
+                log("version: ${PathVersion.phoneSentence(v)}")
+                // RR-13: only a Mac the phone pins, and only while no live
+                // session owns the slot, may put the sentence on the card. A
+                // stray peer, or another Mac's old app, must not replace a
+                // connected session's card.
+                if (pinned && sessions.current() == null) runCatching { onVersionRefused(v) }
+                reject(socket, "version", "this phone speaks protocol ${PathVersion.CURRENT}",
+                    mapOf("v" to PathVersion.CURRENT))
+                return
+            }
+            val pathId = Json.str(hello["path"])
+            if (pathId == null || !isHex(pathId, 8)) {
+                reject(socket, "protocol", "bad path id")
+                return
+            }
+            val join = Json.str(hello["join"])
+            if (join != null) {
+                if (!isHex(join, 32)) {
+                    reject(socket, "protocol", "bad session id")
+                    return
+                }
+                when (sessions.attach(peerMac, pinned, join, pathId, socket, rawSocket)) {
+                    AttachResult.ATTACHED -> return
+                    AttachResult.NO_SESSION -> {
+                        reject(socket, "no_session", "no such session")
+                        return
+                    }
+                    AttachResult.TOO_MANY -> {
+                        reject(socket, "too_many_paths", "at most three paths")
+                        return
+                    }
+                    AttachResult.BUSY -> {
+                        rejectBusy(socket)
+                        return
+                    }
+                }
+            }
+            val session = sessions.adopt(peerMac, pinned) { factory.create(socket, rawSocket, hello) }
             if (session == null) {
                 rejectBusy(socket)
                 return
@@ -239,8 +329,9 @@ class Server(
             runCatching { ssl.close() }
             return null
         }
-        // The session sets its own read timeout in run(); hand it over clean.
-        runCatching { ssl.soTimeout = 0 }
+        // The first frame is the hello: keep the accept timeout until it is
+        // read, then the session sets its own (PATH-3, review H-1).
+        runCatching { ssl.soTimeout = ACCEPT_TIMEOUT_MS }
         return ssl
     }
 
@@ -296,13 +387,29 @@ class Server(
     private fun rejectBusy(socket: Socket) =
         reject(socket, "busy", "one session at a time")
 
-    private fun reject(socket: Socket, code: String, message: String) {
+    /** The peer's TLS fingerprint hex, or null when the socket reports none (PAIR-21). */
+    private fun peerMacHex(socket: Socket): String? {
+        val peer = runCatching { Session.TlsView.from(socket).peerFingerprint() }.getOrNull()
+        return if (peer != null && peer.size == 32) Crypto.toHex(peer) else null
+    }
+
+    /** True when the app vouches for this fingerprint as one of its stored pins. */
+    private fun isPinned(hex: String?): Boolean =
+        hex != null && pinnedPeerFpsProvider().any { it.length == 64 && it.equals(hex, ignoreCase = true) }
+
+    private fun reject(socket: Socket, code: String, message: String, extra: Map<String, Any?> = emptyMap()) {
         try {
+            val fields = linkedMapOf<String, Any?>("t" to "error", "code" to code, "message" to message)
+            fields.putAll(extra)
             val out = socket.getOutputStream()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "error", "code" to code, "message" to message))))
+            out.write(Frames.encodeJson(0, Json.encode(fields)))
             out.flush()
         } catch (_: Throwable) {
         }
         runCatching { socket.close() }
     }
+
+    /** 8 or 32 lowercase hex, as the contract names ids. */
+    private fun isHex(text: String, length: Int): Boolean =
+        text.length == length && text.all { it in '0'..'9' || it in 'a'..'f' }
 }

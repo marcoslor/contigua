@@ -36,6 +36,15 @@
 //   dropfile PATH                  the Finder drag that would land here: the absolute
 //                                  file path (the drag destination's own handler runs;
 //                                  an .apk keeps its install route)
+//   deckdrop PATH                  the same drag, but fed to the Deck's drop
+//                                  handler: no app window, so no share target
+//   dropimage PATH                 a drag carrying the file's image data
+//   dropurl URL                    a drag carrying one http(s) link
+//   deckdropimage PATH             the same image data on the Deck
+//   deckdropurl URL                the same link on the Deck
+//   pastefiles PATH...             a Finder file copy on the pasteboard (the
+//                                  paths, plus the first one's name as text)
+//   pasteimage PATH                an image on the pasteboard, no text
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
 //                                  in the dwell pill's hot zone); over the video it is
 //                                  a mouse hover on the phone
@@ -57,6 +66,8 @@
 //                                  dragging its bar upward pins it)
 //   waitfile PATH [SECONDS]        wait until PATH exists (default 30 s): the check script
 //                                  says when the next step may run
+//   stamp PATH                     write this moment's epoch seconds to PATH: the next
+//                                  action's latency is measured from it (e.g. a key)
 //   notifyclick ID           the same routing a click on that phone notification runs
 //                            (opens the app's window); not a stream action
 //   notifyaction ID I [TEXT] the same routing a banner button (or reply, with TEXT)
@@ -82,9 +93,13 @@
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
+//   keyraw [cmd+][shift+][ctrl+][opt+]NAME   the key straight to the stream's
+//                                  view: an inactive quiet run's menu can eat a
+//                                  modified key before it ever gets there
 // NX/NY are video-space coordinates in 0...1 with a top-left origin.
 
 import AppKit
+import UniformTypeIdentifiers
 
 struct NormalizedPoint: Equatable {
     var nx: Double
@@ -115,6 +130,9 @@ enum DebugInputAction: Equatable {
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
     case dockApps(Bool)
+    /// `shortcutsall on|off`: the phone page's "Save all apps as shortcuts"
+    /// for the phone in use, through the same write-then-apply path (e2e).
+    case shortcutsAll(Bool)
     case windowStyle(String)
     /// View ▸ Immersive's pick (the reveal choice and the immersive style).
     case immersive(ImmersiveMenuItem)
@@ -123,9 +141,24 @@ enum DebugInputAction: Equatable {
     /// Open the Settings window (⌘,).
     case openSettings
     case fullScreen
+    /// A key sent straight to the video view (the menu is skipped).
+    case rawKey(KeyStroke)
     /// An app's density override; nil is "Default" (clear it).
     case density(pkg: String, value: Double?)
     case dropFile(String)
+    /// The same file fed to the Deck's drop handler (no app-window target).
+    case deckDrop(String)
+    /// A drag carrying image data read from this file (SHARE-18).
+    case dropImage(String)
+    /// A drag carrying one http(s) link (SHARE-18).
+    case dropURL(URL)
+    /// The same two sources on the Deck.
+    case deckDropImage(String)
+    case deckDropURL(URL)
+    /// The pasteboard as a Finder file copy of these files.
+    case pasteFiles([URL])
+    /// The pasteboard as one image file (PNG or JPEG, no text).
+    case pasteImage(URL)
     case hover(NormalizedPoint)
     case hoverOut
     case hoverSetting(Bool)
@@ -141,6 +174,8 @@ enum DebugInputAction: Equatable {
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
     case windowTop
     case waitFile(String, timeout: Double)
+    /// The moment (epoch seconds) an e2e check measures the next action from.
+    case stamp(String)
     case notifyClick(String)
     case notifyAction(String, Int, String?)
     case notifyDismiss(String)
@@ -244,6 +279,12 @@ enum DebugInputScript {
             case "off" where args.count == 1: return .dockApps(false)
             default: throw LineError(message: "dockapps needs on or off")
             }
+        case "shortcutsall":
+            switch args.first {
+            case "on" where args.count == 1: return .shortcutsAll(true)
+            case "off" where args.count == 1: return .shortcutsAll(false)
+            default: throw LineError(message: "shortcutsall needs on or off")
+            }
         case "windowstyle":
             switch args.first {
             case "framed" where args.count == 1: return .windowStyle("framed")
@@ -323,6 +364,11 @@ enum DebugInputScript {
         case "windowtop":
             guard args.isEmpty else { throw LineError(message: "windowtop takes no arguments") }
             return .windowTop
+        case "stamp":
+            guard args.count == 1, args[0].hasPrefix("/") else {
+                throw LineError(message: "stamp needs an absolute PATH")
+            }
+            return .stamp(args[0])
         case "waitfile":
             guard (1...2).contains(args.count), args[0].hasPrefix("/") else {
                 throw LineError(message: "waitfile needs an absolute PATH and optionally SECONDS")
@@ -352,6 +398,68 @@ enum DebugInputScript {
                 throw LineError(message: "dropfile: no such file: \(path)")
             }
             return .dropFile(path)
+        case "pasteimage":
+            guard args.count == 1, !args[0].isEmpty else {
+                throw LineError(message: "pasteimage needs an absolute PATH")
+            }
+            var path = args[0]
+            if path.hasPrefix("~") {
+                path = String(path.dropFirst(1))
+                path = FileManager.default.homeDirectoryForCurrentUser.path + path
+            }
+            guard path.hasPrefix("/") else {
+                throw LineError(message: "pasteimage needs an absolute PATH (got relative '\(args[0])')")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw LineError(message: "pasteimage: no such file: \(path)")
+            }
+            return .pasteImage(URL(fileURLWithPath: path))
+        case "pastefiles":
+            guard !args.isEmpty else {
+                throw LineError(message: "pastefiles needs at least one absolute PATH")
+            }
+            var urls: [URL] = []
+            for arg in args {
+                var path = arg
+                if path.hasPrefix("~") {
+                    path = String(path.dropFirst(1))
+                    path = FileManager.default.homeDirectoryForCurrentUser.path + path
+                }
+                guard path.hasPrefix("/") else {
+                    throw LineError(message: "pastefiles needs absolute PATHs (got relative '\(arg)')")
+                }
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw LineError(message: "pastefiles: no such file: \(path)")
+                }
+                urls.append(URL(fileURLWithPath: path))
+            }
+            return .pasteFiles(urls)
+        case "deckdrop":
+            guard args.count == 1, !args[0].isEmpty else {
+                throw LineError(message: "deckdrop needs an absolute PATH")
+            }
+            var path = args[0]
+            if path.hasPrefix("~") {
+                path = String(path.dropFirst(1))
+                path = FileManager.default.homeDirectoryForCurrentUser.path + path
+            }
+            guard path.hasPrefix("/") else {
+                throw LineError(message: "deckdrop needs an absolute PATH (got relative '\(args[0])')")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw LineError(message: "deckdrop: no such file: \(path)")
+            }
+            return .deckDrop(path)
+        case "dropimage":
+            let path = try absoluteFilePath(args, verb: "dropimage")
+            return .dropImage(path)
+        case "deckdropimage":
+            let path = try absoluteFilePath(args, verb: "deckdropimage")
+            return .deckDropImage(path)
+        case "dropurl":
+            return .dropURL(try httpURL(args, verb: "dropurl"))
+        case "deckdropurl":
+            return .deckDropURL(try httpURL(args, verb: "deckdropurl"))
         case "notifyclick":
             guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifyclick needs an id") }
             return .notifyClick(args[0])
@@ -423,10 +531,40 @@ enum DebugInputScript {
         case "key":
             guard args.count == 1 else { throw LineError(message: "key needs one key name") }
             return .key(try keyStroke(args[0].lowercased()))
+        case "keyraw":
+            guard args.count == 1 else { throw LineError(message: "keyraw needs one key name") }
+            return .rawKey(try keyStroke(args[0].lowercased()))
         default:
             throw LineError(message: "unknown action '\(verb)'")
         }
     }
+
+    /// One absolute path, expanded and checked, for the `*image`/`dropfile` verbs.
+    private static func absoluteFilePath(_ args: [String], verb: String) throws -> String {
+        guard args.count == 1, !args[0].isEmpty else {
+            throw LineError(message: "\(verb) needs an absolute PATH")
+        }
+        var path = args[0]
+        if path.hasPrefix("~") {
+            path = FileManager.default.homeDirectoryForCurrentUser.path + path.dropFirst()
+        }
+        guard path.hasPrefix("/") else {
+            throw LineError(message: "\(verb) needs an absolute PATH (got relative '\(args[0])')")
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw LineError(message: "\(verb): no such file: \(path)")
+        }
+        return path
+    }
+
+    /// One http(s) link for `dropurl`/`deckdropurl`.
+    private static func httpURL(_ args: [String], verb: String) throws -> URL {
+        guard args.count == 1, let url = URL(string: args[0]), DropDownloadPolicy.allows(url) else {
+            throw LineError(message: "\(verb) needs one http(s) URL")
+        }
+        return url
+    }
+
 
     private static func hold(_ args: [String], index: Int) throws -> Double {
         guard args.count > index else { return 0 }
@@ -509,6 +647,14 @@ enum DebugInputScript {
 /// The size arrives only after the phone has accepted the window, so the
 /// session is ready and the view has a layout to aim at.
 final class DebugInputDriver {
+    /// The image data a real drag would carry, read from a fixture file.
+    static func imageDrag(_ path: String) -> DropDrag? {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        let type = UTType(filenameExtension: url.pathExtension) ?? .png
+        return DropDrag(image: DropImage(data: data, type: type))
+    }
+
     static let dragSteps = 20
     /// Changed events per gesture. They are paced one display refresh apart so
     /// the coalesced moves (InputMapper) reach the phone.
@@ -549,9 +695,16 @@ final class DebugInputDriver {
     var mediaVolume: ((Int) -> Void)?
     /// `mediacmd choose KEY`: `media.choose`.
     var mediaChoose: ((String) -> Void)?
+    /// `deckdrop PATH`: the Deck's drop handler.
+    var deckDrop: (([URL]) -> Void)?
+    /// `deckdropimage`/`deckdropurl`: the Deck's source handler (SHARE-18).
+    var deckDropDrag: ((DropDrag) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
+    /// `shortcutsall on|off`: the phone page's Save all switch for the phone
+    /// in use (e2e).
+    var shortcutsAll: ((Bool) -> Void)?
     /// `panelopen` / `panelclose`: the menu bar panel's debug host window.
     var panelOpen: (() -> Void)?
     var panelClose: (() -> Void)?
@@ -661,6 +814,8 @@ final class DebugInputDriver {
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
         case .dockApps(let on):
             dockApps?(on)
+        case .shortcutsAll(let on):
+            shortcutsAll?(on)
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             switch target {
@@ -696,6 +851,39 @@ final class DebugInputDriver {
             controller.manager.setDensity(value, forPackage: pkg)
         case .dropFile(let path):
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
+        case .deckDrop(let path):
+            deckDrop?([URL(fileURLWithPath: path)])
+        case .dropImage(let path):
+            guard let drag = Self.imageDrag(path) else { return }
+            view.onDroppedDrag?(drag)
+        case .dropURL(let url):
+            view.onDroppedDrag?(DropDrag(remote: url))
+        case .deckDropImage(let path):
+            guard let drag = Self.imageDrag(path) else { return }
+            deckDropDrag?(drag)
+        case .deckDropURL(let url):
+            deckDropDrag?(DropDrag(remote: url))
+        case .pasteImage(let url):
+            guard let data = try? Data(contentsOf: url) else { return }
+            let item = NSPasteboardItem()
+            let ext = url.pathExtension.lowercased()
+            if ext == "jpg" || ext == "jpeg" {
+                item.setData(data, forType: NSPasteboard.PasteboardType("public.jpeg"))
+            } else {
+                item.setData(data, forType: .png)
+            }
+            let board = NSPasteboard.general
+            board.clearContents()
+            _ = board.writeObjects([item])
+        case .pasteFiles(let urls):
+            let board = NSPasteboard.general
+            board.clearContents()
+            _ = board.writeObjects(urls as [NSURL])
+            // A Finder copy also puts the file's name on the pasteboard as
+            // text; the path under test must ignore it (SHARE-2).
+            if let name = urls.first?.lastPathComponent {
+                board.setString(name, forType: .string)
+            }
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
@@ -739,6 +927,9 @@ final class DebugInputDriver {
             while !cancelled, !FileManager.default.fileExists(atPath: path), Date() < deadline {
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
             }
+        case .stamp(let path):
+            let now = String(Date().timeIntervalSince1970)
+            try? now.write(toFile: path, atomically: true, encoding: .utf8)
         case .notifyClick(let id):
             waitForNotify { self.notifyClick?(id) == true }
         case .notifyAction(let id, let index, let text):
@@ -813,6 +1004,18 @@ final class DebugInputDriver {
             // a lowercased one would match ⌘H (Hide) in the menu instead.
             press(keyCode: stroke.keyCode, characters: stroke.characters,
                   ignoring: stroke.characters, flags: flags, in: view)
+        case .rawKey(let stroke):
+            guard let window = view.window else { return }
+            focus(window)
+            var flags: NSEvent.ModifierFlags = []
+            if stroke.command { flags.insert(.command) }
+            if stroke.shift { flags.insert(.shift) }
+            if stroke.control { flags.insert(.control) }
+            if stroke.option { flags.insert(.option) }
+            // No menu bar: an inactive quiet run has no validated Edit menu, so
+            // its Paste equivalent can eat ⌘V before the view ever sees it.
+            press(keyCode: stroke.keyCode, characters: stroke.characters,
+                  ignoring: stroke.characters, flags: flags, in: view, menu: false)
         }
     }
 
@@ -1035,7 +1238,8 @@ final class DebugInputDriver {
     }
 
     private func press(keyCode: UInt16, characters: String, ignoring: String,
-                       flags: NSEvent.ModifierFlags, in view: VideoLayerView) {
+                       flags: NSEvent.ModifierFlags, in view: VideoLayerView,
+                       menu: Bool = true) {
         let windowNumber = view.window?.windowNumber ?? 0
         var menuAte = false
         for type in [NSEvent.EventType.keyDown, .keyUp] {
@@ -1049,7 +1253,7 @@ final class DebugInputDriver {
                 // equivalents (⌥⌘F's Toggle Window Style) are AppKit's own
                 // dispatch. An equivalent, not matched by any menu, goes on to
                 // the view as before.
-                if !flags.isEmpty, NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                if menu, !flags.isEmpty, NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
                     menuAte = true
                     continue
                 }

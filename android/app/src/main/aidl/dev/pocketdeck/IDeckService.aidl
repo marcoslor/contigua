@@ -1,6 +1,7 @@
 package dev.pocketdeck;
 
 import android.app.PendingIntent;
+import android.os.ParcelFileDescriptor;
 import dev.pocketdeck.IDeckCallback;
 
 /**
@@ -97,4 +98,18 @@ interface IDeckService {
      * activities from the background (docs/design/notify.md).
      */
     void openNotification(String id, int displayId, in PendingIntent intent) = 15;
+
+    /**
+     * A staged drop's bytes for the trampoline (SHARE-17): an fd opened by the
+     * shell for a bare name it staged for a pending SEND, or null for anything
+     * else. The app cannot open the staged path itself.
+     */
+    ParcelFileDescriptor openStaged(String name) = 17;
+
+    /**
+     * The app's answer to `onClipImage` (SHARE-2/16): true only when its own
+     * clipboard now holds the image. The server sends `clip.image.done` from it,
+     * and answers false when no app is registered or none answers in 3 s.
+     */
+    void clipImageDone(String id, boolean ok) = 18;
 }

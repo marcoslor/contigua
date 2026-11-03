@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -213,8 +213,14 @@ start_fake() {
 # launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
 # add --background: no activation, no Dock icon, windows on a virtual display.
 launch() {
-    local quiet=()
+    local quiet=() arg previous=""
     [ "$VISIBLE" = "1" ] || quiet=(--background)
+    # A relaunch must never be read through the last launch's chrome state (it
+    # may already say loading=0): the file starts empty with every launch.
+    for arg in "$@"; do
+        [ "$previous" = "--debug-chrome-state" ] && rm -f "$arg"
+        previous="$arg"
+    done
     "$APP" --profile "$PROFILE" ${quiet[@]+"${quiet[@]}"} "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
     start_watchdog app "$APP_PID"
@@ -393,6 +399,32 @@ build_vdisplay() {
     fi
 }
 
+# vdisplay_size_for <check> — the display a check draws on. Only the deck
+# check's wide steps draw a window bigger than the default screen (the person's
+# 1960x1100 Deck; DECK-4/DECK-24) and AppKit shrinks a window to the screen, so
+# only that check gets a display that big. Everything else — deckrail's gate A
+# included — keeps the run's 1280x800, the size the checks' screen arithmetic is
+# written against.
+vdisplay_size_for() {
+    case "$1" in
+        deck) echo "2240x1170" ;;
+        *) echo "1280x800" ;;
+    esac
+}
+
+# ensure_vdisplay <check> — the display this check draws on, created or swapped
+# at the check boundary. A swap stops this run's app first: a window left on a
+# display that goes away jumps to the person's screen.
+ensure_vdisplay() {
+    local want
+    want="$(vdisplay_size_for "$1")"
+    [ "$want" = "${VDISPLAY_SIZE:-}" ] && return 0
+    kill_e2e_app
+    sleep 1
+    stop_vdisplay
+    start_vdisplay "$want"
+}
+
 # start_vdisplay — starts the helper and reads the one line it prints
 # ("id=… w=… h=… scale=…"): the id is the display the run's app should use, the
 # size and scale are what the display-dependent expectations below are read
@@ -404,18 +436,20 @@ build_vdisplay() {
 # "FAIL vdisplay: …" (and exits non-zero) when it cannot create one or finds one
 # of its identity already online; the run stops there, "all" included.
 start_vdisplay() {
+    local size="${1:-1280x800}"
     # A visible run is on the person's own screens: the app looks for no display
     # of its own there and makes none, so this run makes none either. Those
     # screens are Retina at 2x — the scale the numbers these checks have always
     # been written against.
     if [ "$VISIBLE" = "1" ]; then
         VDISPLAY_ID=""
+        VDISPLAY_SIZE="$size"
         RUN_SCALE=2
         return 0
     fi
     VDISPLAY_FILE="$WORK-vdisplay.txt"
     rm -f "$VDISPLAY_FILE"
-    "$VDISPLAYBIN" --profile "$PROFILE" > "$VDISPLAY_FILE" 2>&1 &
+    "$VDISPLAYBIN" --profile "$PROFILE" --size "$size" > "$VDISPLAY_FILE" 2>&1 &
     VDISPLAY_PID=$!
     start_watchdog vdisplay "$VDISPLAY_PID"
     local tries=40
@@ -425,6 +459,7 @@ start_vdisplay() {
         tries=$((tries - 1))
     done
     VDISPLAY_ID="$(sed -n 's/^id=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
+    VDISPLAY_SIZE="$(sed -n 's/^id=[0-9]* w=\([0-9]*\) h=\([0-9]*\).*/\1x\2/p' "$VDISPLAY_FILE" | head -1)"
     RUN_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
     if [ -z "$VDISPLAY_ID" ]; then
         say "FAIL vdisplay: no virtual display for the run ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
@@ -432,7 +467,7 @@ start_vdisplay() {
         stop_vdisplay
         return 1
     fi
-    say "run display: virtual display $VDISPLAY_ID, scale ${RUN_SCALE:-1} (held for the whole run)"
+    say "run display: virtual display $VDISPLAY_ID, ${VDISPLAY_SIZE:-$size} at scale ${RUN_SCALE:-1} (held for the check)"
     return 0
 }
 
@@ -530,8 +565,12 @@ shared_alive() {
 # with an empty phone event log and work dir, or else a fresh one.
 begin_shared() {
     if shared_alive && control reset prefs; then
+        # Keep the phone's own files: its state, the TLS identity next to it
+        # (a restart must serve the certificate the Mac pinned, not mint a
+        # new one the pin refuses), and its logs. Everything else is the
+        # previous check's.
         find "$WORK" -mindepth 1 -maxdepth 1 ! -name events.jsonl ! -name state.json \
-            ! -name 'fake*.log' ! -name fake.err ! -name app.log -exec rm -rf {} +
+            ! -name 'state.json.identity' ! -name 'fake*.log' ! -name fake.err ! -name app.log -exec rm -rf {} +
         : > "$WORK/events.jsonl"
         APP_PID="$SHARED_PID"
         FAKE_PID="$SHARED_FAKE_PID"
@@ -1092,6 +1131,54 @@ check_gates() {
     stop_fakephone
 }
 
+# sessions_opened — how many connections the fake accepted this run. A plain
+# `grep -c` prints 0 and exits 1 when nothing matches, so the count is read with
+# `|| true` and stays one number for the arithmetic test below.
+sessions_opened() {
+    local n
+    n="$(grep -c '"ev":"session","state":"open"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
+# check_forgot — PAIR-23: a Mac that still holds this phone's pin but was
+# forgotten on the phone (Forget) is told at once and stops retrying, instead of
+# waiting out its 15 s handshake timeout and looping on the backoff.
+check_forgot() {
+    clean
+    local banner="$WORK/banner.txt" before after
+
+    # 1. Pair, so the Mac holds this phone's pin.
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    await_app 20 events_have '"state":"paired"'
+    events_have '"state":"paired"' \
+        && ok "[PAIR-23] F1 paired a Mac, so it holds the phone's pin" \
+        || { bad "[PAIR-23] F1 could not pair"; stop_fakephone; return 1; }
+
+    # 2. The phone forgets every Mac (its own identity and id stay).
+    stop_fakephone
+    sleep 1
+    FAKE_ARGS="--forget-macs" start_fake || return 1
+    before="$(sessions_opened)"
+    rm -f "$banner"
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
+
+    # 3. The phone answers not_paired; from that moment the Mac has 2 s to say
+    # so (the app's own launch time is not the connect the person waits on).
+    wait_until 15 events_have '"state":"refused_not_paired"'         && ok "[PAIR-23] F2 the phone answered not_paired instead of staying silent"         || bad "[PAIR-23] F2 the phone left the Mac waiting"
+    wait_until 2 grep -qF "no longer trusts this Mac." "$banner"         && ok "[PAIR-23] F2 the Mac says \"$(cat "$banner")\" within 2 s"         || bad "[PAIR-23] F2 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
+    wait_until 2 eval '[ "$(mac_failed_line)" = "session failed: not_paired" ]'         && ok "[PAIR-23] F2 the Mac read not_paired"         || bad "[PAIR-23] F2 Mac reason '$(mac_failed_line)'"
+
+    # 4. No retry loop: twenty seconds without another connection.
+    sleep 20
+    after="$(sessions_opened)"
+    [ "$after" -le "$((before + 1))" ] \
+        && ok "[PAIR-23] F3 no further connect attempts for 20 s ($before -> $after)" \
+        || bad "[PAIR-23] F3 the Mac kept connecting ($before -> $after)"
+    stop_app
+    stop_fakephone
+}
+
 # --- TLS transport matrix (docs/design/e2ee.md §6; the relay row stays with
 # the relay's own checks, the code-equality row rides `pair`) ----------------
 
@@ -1257,6 +1344,13 @@ check_tls() {
         && ok "TLS4 paired before the Mac rotation" || bad "TLS4 never paired"
     stop_app
     sleep 1
+    # The phone holds the old session's slot through its 30 s path grace
+    # (PATH-6), so the next connection would be answered `busy`, not judged on
+    # the rotated certificate. A restarted phone frees the slot and keeps the
+    # pin in state.json, which is what this row is about.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    start_fake || return 1
     "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/PocketDeck-$PROFILE/identity.json" <<'PY'
 import json, os, subprocess, sys
 identity_dir, identity_file = sys.argv[1], sys.argv[2]
@@ -3600,6 +3694,15 @@ check_density() {
     wait_until 20 events_have '"ev":"video","stream":1,' \
         || { bad "C16 no video for the old-phone burst window"; end_shared; return 1; }
     sleep 1
+    # The launch's pairing sheet takes the key window from the first stream
+    # window and leaves none when it closes (C13's scripts wait out the same
+    # churn). A person brings the window back by clicking its Deck tile; the
+    # keys below need it key or they land nowhere.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" || return 1
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "Settings (FakePhone)" ] \
+        && ok "C16 the old-phone window is key before the burst" \
+        || bad "C16 the old-phone window is not key before the burst ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
     local press pw0 top0
     pw0=$((900 * RUN_SCALE / 16 * 16))
     top0=$(python3 -c "print(int(160 * $pw0 / 900 * 1.5 + 0.5))")
@@ -3732,6 +3835,9 @@ PY
 # the pinch and rotate pointers. Momentum events must reach the phone as nothing.
 check_trackpad() {
     begin_shared || return 1
+    # The closing right click is the "delivered" signal; make it a Back rather
+    # than the default long press, whose touch would be a fifth gesture.
+    control secondary-click back || bad "C15 secondary-click back: $CONTROL_REPLY"
     # The script starts at the first video config. The main thread is busy with
     # the opening frames for a few hundred ms after that, which would stretch one
     # step of the first gesture past the cadence C15 measures. Settle first: the
@@ -3880,6 +3986,7 @@ PY
             esac
         done <<< "$verdicts"
     fi
+    control secondary-click longPress >/dev/null 2>&1 || true
     stop_app
     stop_fakephone
 }
@@ -4792,6 +4899,16 @@ panel_menu_done() { [ "$(cat "$WORK/control/panel-menu.done" 2>/dev/null)" = "ok
 
 panel_click_done() { [ "$(cat "$WORK/control/panel-click.done" 2>/dev/null)" = "ok" ]; }
 
+# panel_off_rx_count — how many phone.panel off requests the fake has received.
+panel_off_rx_count() {
+    grep -F '"t":"phone.panel"' "$WORK/events.jsonl" 2>/dev/null | grep -cF '"off":true' || true
+}
+
+# panel_off_events — how many times the fake reported state.panel off (the hold
+# is actually on: the person's screen is dark).
+panel_off_events() { grep -cF '"ev":"panel","state":"off"' "$WORK/events.jsonl" 2>/dev/null || true; }
+
+
 # panel_glyph_ms — the click -> glyph time the app recorded for its last panel
 # click: `panel_click_at` is the control's own click, `panel_glyph_at` the
 # `state.panel` that redrew the bar (host uptime ms, in the chrome state). -1
@@ -5232,6 +5349,21 @@ dnd_rx_count() { grep -c '"t":"phone.dnd"' "$WORK/events.jsonl" 2>/dev/null || t
 # dnd_more_than <n> — the fake phone applied more than n DND changes.
 dnd_more_than() { [ "$(dnd_count)" -gt "$1" ]; }
 
+# dnd_rx_at_least <n> — the fake phone has received at least n phone.dnd messages.
+dnd_rx_at_least() { [ "$(dnd_rx_count)" -ge "$1" ]; }
+
+# auth_count_at_least <n> — the fake phone has accepted at least n sessions
+# (a drop and the Mac's reconnect is the second one; the fake's own memory, the
+# DND mode and the panel hold, lives across them as the phone's service does).
+auth_count_at_least() {
+    local count
+    count="$(grep -cF '"ev":"session","state":"open"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "${count:-0}" -ge "$1" ]
+}
+
+# dnd_by_mac_count — how many DND changes the fake applied from a Mac command.
+dnd_by_mac_count() { grep -cF '"byMac":true' "$WORK/events.jsonl" 2>/dev/null || true; }
+
 check_focus() {
     # What the system reads, before anything starts.
     intents_metadata_ok \
@@ -5304,6 +5436,136 @@ check_focus() {
     [ "$(dnd_rx_count)" = "0" ] \
         && ok "FOCUS nothing is sent to a phone that cannot take it (no error spam)" \
         || bad "FOCUS a phone.dnd was sent to an old phone"
+    stop_app
+    stop_fakephone
+}
+
+# --- the person's own change on the phone wins (docs/specs/controls.md) ---
+
+# check_dnd_edge — the person's report of 10-28: "PocketDeck keeps turning DND
+# on after I turned it off on the phone". A Focus applies DND; the person turns
+# it off on the phone; the session drops and comes back. The reconnect must send
+# no phone.dnd (the Mac's memory already holds that value for this phone), and a
+# change of the Mac-side intent still sends: the Focus ending, then a new Focus.
+check_dnd_edge() {
+    clean
+    FAKE_ARGS="--dnd-person-after 2 --drop-after 8" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 150
+    if wait_until 25 dnd_is priority; then
+        ok "[CTRL-2] the Focus started and the phone's DND came on (priority)"
+    else
+        bad "[CTRL-2] the Focus did not turn the phone's DND on"
+    fi
+    if wait_until 15 dnd_is off; then
+        ok "[CTRL-4] the person turned DND off on the phone"
+    else
+        bad "[CTRL-4] the fake phone never reported the person's DND change"
+    fi
+    local sent
+    sent="$(dnd_rx_count)"
+    if wait_until 45 auth_count_at_least 2; then
+        ok "[CTRL-3] the session dropped and the same phone reconnected"
+    else
+        bad "[CTRL-3] the fake phone never saw a second session (no reconnect)"
+    fi
+    sleep 4
+    if [ "$(dnd_rx_count)" = "$sent" ]; then
+        ok "[CTRL-3] the reconnect sent no phone.dnd (the stored intent was already applied)"
+    else
+        bad "[CTRL-3] the reconnect re-sent phone.dnd ($sent before, $(dnd_rx_count) after)"
+    fi
+    if dnd_is off; then
+        ok "[CTRL-4] the phone stayed off across the reconnect"
+    else
+        bad "[CTRL-4] the reconnect turned the person's DND back on"
+    fi
+    stop_app
+
+    # The Mac-side intent still applies on its edge: the Focus ends, then a new
+    # Focus starts. Both are launches, which is also the Focus ending while the
+    # phone and the app were apart.
+    sent="$(dnd_rx_count)"
+    launch --connect "127.0.0.1:$PORT" --debug-focus "off" --quit-after 60
+    if wait_until 25 dnd_rx_at_least "$((sent + 1))"; then
+        ok "[CTRL-2] the Focus ended and the Mac sent phone.dnd off"
+    else
+        bad "[CTRL-2] the Focus ended and no phone.dnd was sent"
+    fi
+    if wait_until 10 dnd_is off; then
+        ok "[CTRL-4] the Focus end left the person's off in place (the restore rule)"
+    else
+        bad "[CTRL-4] the Focus end did not leave the phone off"
+    fi
+    stop_app
+    sent="$(dnd_rx_count)"
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 60
+    if wait_until 25 dnd_rx_at_least "$((sent + 1))"; then
+        ok "[CTRL-2] a new Focus start sent phone.dnd priority again"
+    else
+        bad "[CTRL-2] a new Focus start sent nothing"
+    fi
+    if wait_until 15 dnd_is priority; then
+        ok "[CTRL-2] the phone took the new Focus (priority)"
+    else
+        bad "[CTRL-2] the new Focus did not reach the phone"
+    fi
+    stop_app
+    stop_fakephone
+}
+
+# check_panel_edge — the second person report: "the phone screen sometimes goes
+# black while an app window is mirrored and I'm using the phone". A hold the
+# person ended with the phone's power button was re-asserted when the mirror
+# reopened on a reconnect, from the Mac's remembered per-phone setting. The same
+# edge rule applies: a person's wake stands until the person asks on the Mac.
+check_panel_edge() {
+    clean
+    mkdir -p "$WORK/control"
+    # The person's power press ends the hold 3 s after the request; the session
+    # drops at 18 s, well after that press.
+    FAKE_ARGS="--first-frame-delay 1 --panel-ends-after 3 --drop-after 18" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 150
+    if wait_until 20 chrome_has "loading=0"; then
+        ok "[CTRL-6] the phone window opened with the panel on (nothing held)"
+    else
+        bad "[CTRL-6] the phone window never showed a frame ($(chrome_state))"
+    fi
+    # The person's Mac-side action: Phone ▸ Turn Off Phone Screen.
+    printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
+    if ! wait_until 5 panel_menu_done; then
+        bad "[CTRL-6] the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        stop_app; stop_fakephone; return 1
+    fi
+    if wait_until 10 events_have '"ev":"panel","state":"off"'; then
+        ok "[CTRL-6] Turn Off Phone Screen sent phone.panel off and the phone held it"
+    else
+        bad "[CTRL-6] the phone never held the panel"
+    fi
+    if wait_until 15 events_have '"ev":"panel","state":"on"'; then
+        ok "[CTRL-5] the person's power press ended the hold on the phone"
+    else
+        bad "[CTRL-5] the person's power press did not end the hold"
+    fi
+    local sent held
+    sent="$(panel_off_rx_count)"
+    held="$(panel_off_events)"
+    if wait_until 45 auth_count_at_least 2; then
+        ok "[CTRL-5] the session dropped and the same phone reconnected"
+    else
+        bad "[CTRL-5] the fake phone never saw a second session (no reconnect)"
+    fi
+    sleep 4
+    if [ "$(panel_off_rx_count)" = "$sent" ]; then
+        ok "[CTRL-5] the reconnect and the reopened mirror did not ask for the panel again"
+    else
+        bad "[CTRL-5] the reopened mirror re-sent phone.panel off ($sent before, $(panel_off_rx_count) after)"
+    fi
+    if [ "$(panel_off_events)" = "$held" ]; then
+        ok "[CTRL-5] the phone's own panel state stayed on across the reconnect"
+    else
+        bad "[CTRL-5] the phone went dark again after the person had turned the panel back on"
+    fi
     stop_app
     stop_fakephone
 }
@@ -5714,7 +5976,7 @@ check_clip() {
     done
     grep -q "listening" "$WORK/fake.log" || { bad "CLIP fakephone did not start"; return 1; }
 
-    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
     wait_until 20 events_have '"dir":"gate","on":true' \
         && ok "[SHARE-13] CLIP turning the switch on tells the phone again" \
         || bad "[SHARE-13] CLIP the phone never heard the switch turn on"
@@ -5730,6 +5992,27 @@ check_clip() {
     wait_until 30 events_have '"dir":"rx","text":"pd-clip-2"' \
         && ok "[SHARE-1] CLIP Mac -> phone: fakephone logs clip.set pd-clip-2" \
         || bad "[SHARE-1] CLIP fakephone did not log clip.set pd-clip-2"
+
+    # A Finder copy carries the file's name as text next to its URL (SHARE-2).
+    # The name must never reach the phone; a non-image file sends nothing.
+    printf 'PocketDeck e2e fixture' > "$WORK/pd-finder-copy.txt"
+    PD_PB_PATH="$WORK/pd-finder-copy.txt" xcrun swift -e '
+import AppKit
+let path = ProcessInfo.processInfo.environment["PD_PB_PATH"]!
+let board = NSPasteboard.general
+board.clearContents()
+let item = NSPasteboardItem()
+item.setString((path as NSString).lastPathComponent, forType: .string)
+item.setString(URL(fileURLWithPath: path).absoluteString, forType: .fileURL)
+board.writeObjects([item])
+' >/dev/null 2>&1 \
+        && ok "[SHARE-2] CLIP wrote a Finder-style file copy" \
+        || bad "[SHARE-2] CLIP could not write a Finder-style file copy"
+    sleep 3
+    ! events_have '"dir":"rx","text":"pd-finder-copy.txt"' \
+        && ok "[SHARE-2] CLIP a Finder file copy never sends its name as text" \
+        || bad "[SHARE-2] CLIP a Finder file copy sent its name to the phone"
+
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -6224,6 +6507,15 @@ with open(os.path.join(work, "drop-3mb.bin"), "wb") as f:
 # The negative case: the trip stands in for a file over the cap.
 with open(os.path.join(work, "tripped.bin"), "wb") as f:
     f.write(b"PD_FAKE_DOWNSIZE" + os.urandom(64 * 1024))
+# SHARE-17: one app-window drop with a target, one Deck drop without, and the
+# three files a Finder copy + ⌘V turns into one batch.
+with open(os.path.join(work, "drop-target.bin"), "wb") as f:
+    f.write(b"target" + os.urandom(1024))
+with open(os.path.join(work, "deck-drop.bin"), "wb") as f:
+    f.write(b"deck" + os.urandom(1024))
+for index in range(1, 4):
+    with open(os.path.join(work, "paste-%d.txt" % index), "wb") as f:
+        f.write(("paste %d" % index).encode())
 PY
 
     # drop_event <name> <ok|bad> — the first event for that file and outcome.
@@ -6244,13 +6536,64 @@ sys.exit(1)
 PY
     }
     drop_found() { drop_event "$@" >/dev/null; }
+    # drop_start_event <name> - the first `drop.start` for that file.
+    drop_start_event() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+name = sys.argv[2]
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop.start" and e.get("name") == name:
+        print(json.dumps(e))
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    drop_start_found() { drop_start_event "$@" >/dev/null; }
+    # batch_starts - the three ⌘V files each name the window and their i of 3.
+    batch_starts() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+seen = {}
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop.start" and str(e.get("name", "")).startswith("paste-"):
+        seen[e["name"]] = (e.get("target"), e.get("index"), e.get("count"))
+want = {"paste-%d.txt" % i: ("com.android.settings", i, 3) for i in range(1, 4)}
+sys.exit(0 if seen == want else 1)
+PY
+    }
+    batch_results() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+ok = set()
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop" and e.get("ok") and e.get("files"):
+        ok.add(e["files"][0].get("name"))
+sys.exit(0 if {"paste-%d.txt" % i for i in (1, 2, 3)} <= ok else 1)
+PY
+    }
     log_has() { drop_log | grep -qF -- "$1"; }
     fake_log_has() { grep -qF -- "$1" "$WORK/fake.log" "$WORK/fake.err" 2>/dev/null; }
 
     # The waits keep the drops apart: FileDropSender takes one file at a time
     # and would refuse the next while the one before is still in flight.
     printf '%s\n' "dropfile $WORK/drop-32mb.bin" "wait 20" \
-        "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
+        "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 12" \
+        "dropfile $WORK/drop-target.bin" "wait 10" \
+        "deckdrop $WORK/deck-drop.bin" "wait 8" \
+        "pastefiles $WORK/paste-1.txt $WORK/paste-2.txt $WORK/paste-3.txt" \
+        "keyraw cmd+v" "wait 20" \
         > "$WORK/drop.txt"
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/drop.txt" || return 1
@@ -6327,10 +6670,280 @@ PY
         bad "[FILES-14] DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
     fi
 
+    # SHARE-17: the app window's package rides drop.start; the Deck's drop is
+    # the same path with no target. The dropped file's own fields are 1 of 1.
+    if wait_until 40 drop_start_found drop-target.bin; then
+        event="$(drop_start_event drop-target.bin)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e.get("target")=="com.android.settings" and e.get("index")==1 and e.get("count")==1 else 1)' \
+            && ok "[SHARE-17] DROP an app window's drop names its package (index 1 of 1)" \
+            || bad "[SHARE-17] DROP the app window's target/batch is wrong: $event"
+    else
+        bad "[SHARE-17] DROP no drop.start for the app-window drop"
+    fi
+    if wait_until 40 drop_start_found deck-drop.bin; then
+        event="$(drop_start_event deck-drop.bin)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e.get("target") is None and e.get("index")==1 and e.get("count")==1 else 1)' \
+            && ok "[SHARE-17] DROP a Deck drop carries no target (the chooser stays)" \
+            || bad "[SHARE-17] DROP the Deck drop named a target: $event"
+    else
+        bad "[SHARE-17] DROP no drop.start for the Deck drop"
+    fi
+    if wait_until 60 batch_starts; then
+        ok "[SHARE-17] DROP ⌘V with a 3-file copy sent 3 drop.start with target and i of 3"
+    else
+        bad "[SHARE-17] DROP the ⌘V batch did not send 3 drop.start: $(grep -h 'drop.start' "$WORK/events.jsonl" | tail -3)"
+    fi
+    wait_until 30 batch_results \
+        && ok "[SHARE-17] DROP the phone saved all 3 files of the ⌘V batch" \
+        || bad "[SHARE-17] DROP not every ⌘V file got a successful drop.result"
+
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "DROP the app survived the failed drop (one instance)" \
         || bad "DROP the app died or a second instance appeared"
     stop_app
+}
+
+# check_drop_sources — SHARE-18 (docs/design/dragdrop.md): a drag carrying image
+# data and one carrying an http(s) link become files for the existing drop path;
+# a text/html answer refuses with the spec's copy and the drop pill. The refusal
+# is captured light and dark for review. A file promise needs a real
+# NSFilePromiseReceiver, which the scripted input cannot make: K2 covers both
+# delivery and the 30 s silence.
+check_drop_sources() {
+    clean
+    local shots="$ROOT/.agent/paste-drop"
+    mkdir -p "$shots"
+    python3 - "$WORK" <<'PY'
+import os, struct, sys, zlib
+work = sys.argv[1]
+serve = os.path.join(work, "http")
+os.makedirs(serve, exist_ok=True)
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\x00" + bytes((x * 7 + y * 13) % 256 for x in range(32 * 3)) for y in range(32))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(os.path.join(serve, "source.png"), "wb").write(png)
+open(os.path.join(serve, "page.html"), "w").write("<html><body>not an image</body></html>")
+PY
+    local http_port
+    http_port="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+    ( cd "$WORK/http" && python3 -m http.server "$http_port" --bind 127.0.0.1 \
+        > "$WORK/http.log" 2>&1 ) &
+    local http_pid=$!
+    trap 'kill $http_pid 2>/dev/null; wait $http_pid 2>/dev/null; trap - RETURN' RETURN
+    python3 - "$http_port" <<'PY'
+import socket, sys, time
+port = int(sys.argv[1])
+for _ in range(100):
+    s = socket.socket(); s.settimeout(0.1)
+    try:
+        s.connect(("127.0.0.1", port)); s.close(); sys.exit(0)
+    except OSError:
+        time.sleep(0.05)
+    finally:
+        s.close()
+sys.exit(1)
+PY
+    [ $? = 0 ] || { bad "DROP-SOURCES: the local server did not start"; return 1; }
+
+    drop_named() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+name = sys.argv[2]
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop" and e.get("ok") and e.get("files") \
+            and e["files"][0].get("name") == name:
+        print(json.dumps(e)); sys.exit(0)
+sys.exit(1)
+PY
+    }
+    drop_has() { drop_named "$1" >/dev/null; }
+    no_drop_named() { ! drop_named "$1" >/dev/null; }
+    png_size() { wc -c < "$WORK/http/source.png" | tr -d ' '; }
+
+    # phase APPEARANCE TAG
+    drop_sources_phase() {
+        local appearance="$1" tag="$2"
+        rm -f "$WORK/events.jsonl" "$WORK/chrome.txt"
+        FAKE_ARGS="" start_fake || return 1
+        printf '%s\n' \
+            "dropimage $WORK/http/source.png" "wait 8" \
+            "dropurl http://127.0.0.1:$http_port/source.png" "wait 5" \
+            "dropurl http://127.0.0.1:$http_port/page.html" "wait 2" \
+            > "$WORK/drop-sources.txt"
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+            --debug-input-script "$WORK/drop-sources.txt"
+        if ! wait_until 30 chrome_has "frame="; then
+            bad "DROP-SOURCES $tag: no app window"; stop_app; stop_fakephone; return 1
+        fi
+        local size
+        size="$(png_size)"
+        if wait_until 40 drop_has "Image.png"; then
+            drop_named "Image.png" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"][0]; sys.exit(0 if f.get("mime")=="image/png" and f.get("size")==int(sys.argv[1]) else 1)' "$size" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: image data became Image.png (${size} bytes, image/png)" \
+                || bad "DROP-SOURCES $tag: Image.png has the wrong size or MIME"
+        else
+            bad "DROP-SOURCES $tag: the phone never received Image.png"
+        fi
+        if wait_until 40 drop_has "source.png"; then
+            drop_named "source.png" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"][0]; sys.exit(0 if f.get("mime")=="image/png" and f.get("size")==int(sys.argv[1]) else 1)' "$size" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: the link's image became source.png (${size} bytes, image/png)" \
+                || bad "DROP-SOURCES $tag: source.png has the wrong size or MIME"
+        else
+            bad "DROP-SOURCES $tag: the phone never received the image link"
+        fi
+        if wait_until 30 chrome_has "drop_refusal=not_image"; then
+            chrome_has "drop_pill=shown" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: a text/html answer showed the refusal pill" \
+                || bad "DROP-SOURCES $tag: the refusal token has no pill"
+            screenshot 900 "$shots/drop-refusal-$tag.png" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: refusal screenshot" \
+                || bad "DROP-SOURCES $tag: no refusal screenshot"
+        else
+            bad "DROP-SOURCES $tag: no not_image refusal (state: $(chrome_state))"
+        fi
+        no_drop_named "page.html" \
+            && ok "[SHARE-18] DROP-SOURCES $tag: the text/html answer sent no file" \
+            || bad "DROP-SOURCES $tag: the text/html answer was sent as a file"
+        stop_app
+        stop_fakephone
+        wait_until 5 no_fakephone
+    }
+
+    for spec in ${PD_E2E_DROP_SOURCE_PHASES:-light dark}; do
+        drop_sources_phase "$spec" "$spec"
+    done
+
+    say "screenshots: $shots/drop-refusal-{light,dark}.png"
+}
+
+# check_paste — ⌘V with an image (SHARE-16, docs/design/dragdrop.md). The image
+# goes to the phone as clip.image.*; the fake's `clip.image.done` is the gate for
+# exactly one KEY 279 (no meta). Without an answer the timeout sends no key and
+# shows the failure pill. The three pill states are captured light and dark for
+# review (the pasteboard is saved and put back, text only, as check_clip does).
+check_paste() {
+    clean
+    local saved="$WORK/pasteboard.saved" shots="$ROOT/.agent/paste-drop"
+    mkdir -p "$shots"
+    pbpaste > "$saved" 2>/dev/null
+    trap 'pbcopy < "$saved" 2>/dev/null; trap - RETURN' RETURN
+    python3 - "$WORK/paste.png" <<'PY2'
+import struct, sys, zlib
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\x00" + bytes((x * 5 + y * 11) % 256 for x in range(48 * 3)) for y in range(48))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 48, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY2
+
+    printf '%s\n' "pasteimage $WORK/paste.png" "keyraw cmd+v" "wait 9" > "$WORK/paste.txt"
+
+    paste_key_count() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "input" and e.get("kind") == "key" and e.get("action") == 0 \
+            and e.get("keycode") == 279 and e.get("meta") == 0:
+        count += 1
+print(count)
+PY
+    }
+    one_paste_key() { [ "$(paste_key_count)" = "1" ]; }
+    no_paste_key() { [ "$(paste_key_count)" = "0" ]; }
+    clip_seen() { grep -q '"dir":"rx".*"paste":true' "$WORK/events.jsonl" 2>/dev/null; }
+
+    # phase APPEARANCE done|none TAG
+    paste_phase() {
+        local appearance="$1" expect="$2" tag="$3"
+        rm -f "$WORK/events.jsonl" "$WORK/chrome.txt"
+        if [ "$expect" = "done" ]; then
+            FAKE_ARGS="--clip-done-delay 2"
+        else
+            FAKE_ARGS="--no-clip-done"
+        fi
+        start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+            --debug-input-script "$WORK/paste.txt"
+        if ! wait_until 30 chrome_has "frame="; then
+            bad "PASTE $tag: no app window"; stop_app; stop_fakephone; return 1
+        fi
+        if ! wait_until 15 clip_seen; then
+            bad "PASTE $tag: the phone never received the image (paste flag missing)"; \
+                stop_app; stop_fakephone; return 1
+        fi
+        if [ "$expect" = "done" ]; then
+            if wait_until 5 chrome_has "paste_pill=pasting"; then
+                chrome_has "paste_button=0" \
+                    && ok "[SHARE-16] PASTE $tag: the Pasting pill has no button" \
+                    || bad "PASTE $tag: the Pasting pill offered a button"
+                screenshot 900 "$shots/paste-pasting-$tag.png" \
+                    && ok "[SHARE-16] PASTE $tag: the Pasting pill is up while the phone writes the clip" \
+                    || bad "PASTE $tag: no Pasting screenshot"
+            else
+                bad "PASTE $tag: no Pasting pill"
+            fi
+            if wait_until 15 one_paste_key; then
+                ok "[SHARE-16] PASTE $tag: the confirmation sent exactly one KEY 279 with no meta"
+            else
+                bad "PASTE $tag: no single KEY 279 after clip.image.done ($(paste_key_count) keys)"
+            fi
+            sleep 1
+            [ "$(paste_key_count)" = "1" ] \
+                && ok "[SHARE-16] PASTE $tag: the paste sends one key, never a repeat" \
+                || bad "PASTE $tag: the paste repeated its key"
+            wait_until 5 chrome_has "paste_pill=pasted" \
+                && screenshot 900 "$shots/paste-pasted-$tag.png" \
+                && ok "[SHARE-16] PASTE $tag: the Image pasted pill and its Share button" \
+                || bad "PASTE $tag: no Image pasted pill"
+            chrome_has "paste_button=1" \
+                && ok "[SHARE-16] PASTE $tag: the outcome pill's one button is reachable" \
+                || bad "PASTE $tag: the outcome pill has no button"
+        else
+            # The 3 s wait passes with no answer: the failure pill, and not one key.
+            if wait_until 10 chrome_has "paste_pill=failed"; then
+                screenshot 900 "$shots/paste-failed-$tag.png"
+                ok "[SHARE-16] PASTE $tag: no confirmation showed the Nothing pasted pill"
+            else
+                bad "PASTE $tag: no failure pill after the timeout (state: $(chrome_state))"
+            fi
+            no_paste_key \
+                && ok "[SHARE-16] PASTE $tag: the timeout sent no key" \
+                || bad "PASTE $tag: a key was sent without a confirmation"
+            chrome_has "paste_button=1" \
+                && ok "[SHARE-16] PASTE $tag: the failure pill's Share button is there" \
+                || bad "PASTE $tag: the failure pill has no button"
+        fi
+        stop_app
+        stop_fakephone
+        wait_until 5 no_fakephone
+    }
+
+    for spec in ${PD_E2E_PASTE_PHASES:-light:done dark:done light:none dark:none}; do
+        paste_phase "${spec%%:*}" "${spec##*:}" "${spec%%:*}"
+    done
+
+    say "screenshots: $shots/paste-pasting-{light,dark}.png $shots/paste-pasted-{light,dark}.png $shots/paste-failed-{light,dark}.png"
 }
 
 # --- Share extension ------------------------------------------------------
@@ -6482,6 +7095,8 @@ for i in range(40):
         handle.write(("small %d\n" % i).encode() * (i + 1))
 with open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb") as handle:
     handle.write(b"\xff\xd8\xff\xe0" + os.urandom(4096))
+with open(os.path.join(root, "Documents/report.pdf"), "wb") as handle:
+    handle.write(b"%PDF-1.4\n")
 with open(os.path.join(root, "big3.bin"), "wb") as handle:
     handle.write(os.urandom(3 * 1024 * 1024))
 with open(os.path.join(root, "big32.bin"), "wb") as handle:
@@ -6515,9 +7130,98 @@ PY
         stop_fakephone
         return 1
     fi
-    # The phone goes away: every dataless request must answer offline.
+    # Thumbnails (FILES-22/23/25/26/29, R-1). The fake phone serves one
+    # synthetic 16x16 JPEG; the tree has a PDF and a text file next to the
+    # photo, so the app's type filter can be seen keeping them off the phone.
+    python3 - "$WORK" <<'THUMBFIX'
+import base64, os, sys
+work = sys.argv[1]
+jpeg = ("/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAoKCwoLDQ0N"
+        "DQ0NEA8QEBAQEBAQEBAQEBISEhUVFRISEhAQEhIUFBUVFxcXFRUVFRcXGRkZHh4cHCMj"
+        "JCsrM//EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAFBhABAAAAAAAA"
+        "AAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIABAAEAMBIgACEQADEQD/2gAM"
+        "AwEAAhEDEQA/AJ0BVAH/2Q==")
+with open(os.path.join(work, "thumb.jpg"), "wb") as handle:
+    handle.write(base64.b64decode(jpeg))
+open(os.path.join(work, "fsroot", "Documents", "report.pdf"), "wb").write(b"%PDF-1.4\n")
+THUMBFIX
     stop_fakephone
     wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb --thumb-fixture "$WORK/thumb.jpg"
+    if python3 - "$WORK/events.jsonl" <<'THUMBCOUNT'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
+thumbs = [e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb"]
+# Exactly one ask reached the phone, for the photo, at the long side.
+sys.exit(0 if len(thumbs) == 1 and thumbs[0].get("size") == 512 else 1)
+THUMBCOUNT
+    then
+        ok "BRIDGE [FILES-22/23] one fs.thumb at 512: the PDF and the folder asked nothing"
+    else
+        bad "BRIDGE [FILES-22/23] the phone saw the wrong fs.thumb count or size"
+    fi
+    # A phone that holds every answer: 3 live, the fourth queued, then the
+    # deadline on the one still held.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (hold)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-hold
+    cp "$WORK/fake.err" "$WORK/fake-thumb-hold.err" 2>/dev/null || true
+    cp "$WORK/events.jsonl" "$WORK/events-thumb-hold.jsonl" 2>/dev/null || true
+    # hold_once: the first answer is held, so the fourth ask starts only when
+    # two of the first three end.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold_once" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (hold_once)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-once
+    cp "$WORK/fake.err" "$WORK/fake-thumb-once.err" 2>/dev/null || true
+    cp "$WORK/events.jsonl" "$WORK/events-thumb-once.jsonl" 2>/dev/null || true
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (timeout)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-timeout
+    cp "$WORK/fake.err" "$WORK/fake-thumb-timeout.err" 2>/dev/null || true
+    # A slow phone: one generator at 1 s a picture, 12 asks queued three at a
+    # time. The last waits ~9 s before it starts — past the old 8 s measured
+    # from the ask — and still answers: queue time is not the phone's work.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-delay-ms 1000" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (slow)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-slow --thumb-fixture "$WORK/thumb.jpg"
+    cp "$WORK/fake.err" "$WORK/fake-thumb-slow.err" 2>/dev/null || true
+    log show --last 6m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -oE 'thumb: .*|fs: cancel.*|bridge: fs cancel|session: fs.cancel sent.*' > "$WORK/thumb-log.txt" 2>/dev/null || true
+    say "thumb queue log: $(tail -6 "$WORK/thumb-log.txt" | tr '\n' ' ')"
+    sends="$(grep -c 'session: fs.cancel sent ok=true' "$WORK/thumb-log.txt" 2>/dev/null || true)"
+    [ "${sends:-0}" -ge 5 ] \
+        && ok "BRIDGE [FILES-25/29] the app sent all five fs.cancel messages ($sends)" \
+        || bad "BRIDGE [FILES-25/29] the app sent $sends fs.cancel messages, wanted 5"
+    # A phone that makes no picture: fs_no_thumb is permanent and a text file
+    # never asks at all.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode no_thumb" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (no_thumb)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-none
+    # The phone goes away: every dataless request must answer offline. The
+    # session's teardown runs through its rejoin grace, so let detach() land
+    # before asking the bridge (a hello during it still says connected).
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 3
     BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver offline
     # Nothing about the bridge may put a name, a path or bytes in the app log:
     # os_log carries op names, counts and lengths only (design §4).
@@ -6922,6 +7626,284 @@ root = sys.argv[1]
 print("\n".join(sorted(name for name in os.listdir(root)
                        if not name.startswith(".") and name != "Android")))
 PY
+}
+
+# --- Thumbnails in Finder (docs/design/files.md "Thumbnails (S6)", files-thumbs)
+#
+# One VM boot, the real extension, in this order:
+# (a) a fixture JPEG (photo.jpg) is served normally: the fake phone answers
+#     fs.thumb, the extension hands the bytes to the system, and Finder's icon
+#     view draws the picture. The fake's thumbnail is pure green, so the
+#     screenshot proves the icon is the phone's picture, not a type icon.
+# (b) a PDF beside it keeps its type icon and asks the phone nothing.
+# (c) a second JPEG (lost.jpg) is held past the app's 8 s deadline: R-1's
+#     serverUnreachable, one fs.cancel, and the system's re-ask behaviour is
+#     recorded, never required (the measured fact in FILES-26).
+# (d) the phone goes away: reopening the folder keeps the cached picture and
+#     the type icons for the items without one, with no alert; Finder does not
+#     ask again, which is the measured fact in FILES-26 (so no offline line).
+# The file is never materialized: no fetchContents line may appear.
+check_files_thumbs() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        bad "FILES-THUMBS refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-thumbs"
+        return
+    fi
+    clean
+    local appex; appex="$(files_appex)"
+    command -v ffmpeg >/dev/null || { bad "FILES-THUMBS ffmpeg is needed to make the fixtures"; return 1; }
+    files_tree
+    # A real 1200x900 photo, a second one for R-1, and a PDF beside them. The
+    # fake phone's own 64x64 answer is pure green, so a green icon can only be
+    # its thumbnail.
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=1200x900:rate=1" \
+        -frames:v 1 -q:v 4 "$WORK/fsroot/DCIM/Camera/photo.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the photo"; return 1; }
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "smptebars=size=1200x900:rate=1" \
+        -frames:v 1 -q:v 4 "$WORK/fsroot/DCIM/Camera/lost.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the R-1 photo"; return 1; }
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=lime:s=64x64" \
+        -frames:v 1 -q:v 4 "$WORK/thumb.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the thumbnail fixture"; return 1; }
+    python3 - "$WORK/fsroot" <<'PY'
+import os, sys
+root = os.path.join(sys.argv[1], "DCIM")
+open(os.path.join(root, "Camera", "report.pdf"), "wb").write(b"%PDF-1.4\n")
+PY
+
+    # photo.jpg answers at once; lost.jpg is held on every ask (the R-1 step),
+    # so the positive picture is proven before anything can time out.
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-hold-name lost.jpg" start_fake || return 1
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
+    files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    wait_until 60 eval '! stale_domain_folder' \
+        || bad "FILES-THUMBS the removed domain's folder is still in CloudStorage after 60 s"
+
+    launch --connect "127.0.0.1:$PORT" --files-domain add
+    wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
+        && ok "FILES-THUMBS NSFileProviderManager.add ok" \
+        || { bad "FILES-THUMBS add failed: $(grep 'files-domain' "$WORK/app.log" | head -2 | tr '\n' ' ')"; stop_app; stop_fakephone; return 1; }
+    wait_until 20 file_has "files-domain bridge group: ok" "$WORK/app.log" \
+        || bad "FILES-THUMBS no App Group bridge socket"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "FILES-THUMBS the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    files_list
+    local root; root="$(files_domain_path)"
+    files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
+    wait_until "$FILES_SWITCH_WAIT_S" files_root_lists "$root" \
+        && ok "FILES-THUMBS the extension is enabled and the domain enumerates" \
+        || { bad "FILES-THUMBS still user-disabled after the System Settings switch"; stop_app; stop_fakephone; return 1; }
+    ok "FILES-THUMBS the domain is mounted at $root"
+
+    # LaunchServices opens the folder without an AppleEvent to Finder (the
+    # CloudStorage mount can block Finder's `open` past the -1712 timeout on
+    # the first look); the window settings follow with their own timeout.
+    finder_folder() {
+        open -a Finder "$1" >/dev/null 2>&1 || true
+        local deadline=$((SECONDS + 30)) id
+        while [ $SECONDS -lt $deadline ]; do
+            id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+            [ -n "$id" ] && break
+            sleep 0.5
+        done
+        osascript - "$1" <<'OSA'
+on run argv
+    with timeout of 30 seconds
+        tell application "Finder"
+            activate
+            try
+                set theWindow to front window
+                set current view of theWindow to icon view
+                set icon size of theWindow's icon view options to 128
+                set bounds of theWindow to {80, 80, 900, 700}
+                set toolbar visible of theWindow to false
+                set statusbar visible of theWindow to false
+            end try
+        end tell
+    end timeout
+end run
+OSA
+    }
+    finder_close() {
+        osascript >/dev/null 2>&1 <<'OSA' || true
+with timeout of 20 seconds
+    tell application "Finder" to close every window
+end timeout
+OSA
+    }
+    thumb_logged() { files_log | grep -q "$1"; }
+    # green_pixels <png> <skip-fraction>: the fake's pure-green thumbnail in
+    # the content area. The sidebar is skipped so its icons cannot count.
+    green_pixels() {
+        local png="$1" skip="$2" width height
+        width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$png" 2>/dev/null)"
+        height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$png" 2>/dev/null)"
+        [ -n "$width" ] && [ -n "$height" ] || { echo 0; return; }
+        ffmpeg -hide_banner -loglevel error -y -i "$png" -f rawvideo -pix_fmt rgb24 "$WORK/shot.rgb" >/dev/null 2>&1 || { echo 0; return; }
+        python3 - "$WORK/shot.rgb" "$width" "$height" "$skip" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+width, height, skip = int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+start = int(width * skip)
+count = 0
+for y in range(height):
+    row = y * width * 3
+    for x in range(start, width):
+        i = row + x * 3
+        if data[i + 1] >= 200 and data[i] <= 90 and data[i + 2] <= 90:
+            count += 1
+print(count)
+PY
+    }
+
+    # (a) The positive picture first: the normal answer, then the screenshot
+    # before anything else happens to the window.
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    wait_until 30 thumb_logged 'thumb done bytes=' \
+        && ok "FILES-THUMBS [FILES-23] the extension handed the picture's bytes to the system" \
+        || bad "FILES-THUMBS no thumb done after the normal ask"
+    sleep 2
+    rm -f "$SHOTS/after-files-thumbs.png"
+    local finder_id; finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+    if [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs.png" 2>/dev/null; then
+        cp "$SHOTS/after-files-thumbs.png" "$WORK/after-files-thumbs.png" 2>/dev/null || true
+        ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs.png"
+    else
+        bad "FILES-THUMBS could not capture the Finder window"
+    fi
+    local green; green="$(green_pixels "$SHOTS/after-files-thumbs.png" 0.35)"
+    [ "${green:-0}" -ge 1000 ] \
+        && ok "FILES-THUMBS [FILES-23] the icon view shows the phone's green picture ($green pixels)" \
+        || bad "FILES-THUMBS the icon view shows no picture ($green green pixels)"
+
+    # (b) The photo's answer is the fake's own bytes; the PDF never reached the
+    # phone, and neither did the folder.
+    if python3 - "$WORK" <<'PY'
+import hashlib, json, os, sys
+work = sys.argv[1]
+def name_hash(name):
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+photo, pdf = name_hash("photo.jpg"), name_hash("report.pdf")
+expected = os.path.getsize(os.path.join(work, "thumb.jpg"))
+events = [json.loads(line) for line in open(os.path.join(work, "events.jsonl"), errors="replace") if line.strip()]
+fs = [e for e in events if e.get("ev") == "fs"]
+answered = [e for e in fs if e.get("kind") == "thumb" and e.get("name") == photo]
+asked_pdf = [e for e in fs if e.get("name") == pdf]
+fake = open(os.path.join(work, "fake.err"), errors="replace").read()
+pdf_accept = ("name=" + pdf) in fake
+sys.exit(0 if answered
+         and all(e.get("bytes") == expected and e.get("size", 0) > 0 for e in answered)
+         and not asked_pdf and not pdf_accept else 1)
+PY
+    then
+        ok "FILES-THUMBS [FILES-22/23] the phone answered the photo's fs.thumb and the PDF asked nothing"
+    else
+        bad "FILES-THUMBS the phone saw the wrong fs.thumb count or size"
+    fi
+
+    # (c) R-1 on lost.jpg: held past the deadline, one timeout and one
+    # fs.cancel. What the system does next is recorded, not required.
+    wait_until 30 thumb_logged 'thumb failed code=timeout' \
+        && ok "FILES-THUMBS [FILES-26/R-1] the held second JPEG answered timeout at the deadline" \
+        || bad "FILES-THUMBS no timeout line after the held ask"
+    sleep 1
+    if python3 - "$WORK" <<'PY'
+import hashlib, json, os, sys
+work = sys.argv[1]
+lost = hashlib.sha256(b"lost.jpg").hexdigest()[:16]
+events = [json.loads(line) for line in open(os.path.join(work, "events.jsonl"), errors="replace") if line.strip()]
+fs = [e for e in events if e.get("ev") == "fs"]
+held = [e for e in fs if e.get("kind") == "thumb.hold" and e.get("name") == lost]
+cancelled = [e for e in fs if e.get("kind") == "thumb.cancelled" and e.get("name") == lost]
+fake = open(os.path.join(work, "fake.err"), errors="replace").read()
+receives = fake.count("fs cancel recv")
+sys.exit(0 if len(held) == 1 and len(cancelled) == 1 and receives == 1 else 1)
+PY
+    then
+        ok "FILES-THUMBS [FILES-26/R-1] the held ask produced one timeout and one fs.cancel"
+    else
+        bad "FILES-THUMBS the held ask did not produce one hold and one cancel"
+    fi
+    lost_holds() { python3 - "$WORK/events.jsonl" <<'PY'
+import hashlib, json, sys
+lost = hashlib.sha256(b"lost.jpg").hexdigest()[:16]
+events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
+print(len([e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb.hold"
+           and e.get("name") == lost]))
+PY
+    }
+    local holds; holds="$(lost_holds)"
+    sleep 15
+    if [ "$(lost_holds)" -gt "$holds" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: the system asked again by itself after the timeout"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: no re-ask by itself within 15 s"
+    fi
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    sleep 15
+    if [ "$(lost_holds)" -gt "$holds" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: reopening the folder asked again"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: no re-ask on reopening within 15 s"
+    fi
+
+    files_log > "$WORK/thumb-log.txt" 2>/dev/null || true
+    if grep -q "photo.jpg\|lost.jpg\|report.pdf" "$WORK/thumb-log.txt"; then
+        bad "FILES-THUMBS [FILES-27] a file name appears in the thumbnail log"
+    else
+        ok "FILES-THUMBS [FILES-27] the thumbnail log carries no file name"
+    fi
+    if grep -q 'fetch done' "$WORK/thumb-log.txt"; then
+        bad "FILES-THUMBS [FILES-23] the thumbnail materialized the file"
+    else
+        ok "FILES-THUMBS [FILES-23] no fetchContents: the item stayed undownloaded"
+    fi
+
+    # (d) The phone goes away. Finder does not ask again for a folder it has
+    # already cached (FILES-26's measured fact), so reopening the same folder
+    # is the person's next look: the picture it already has stays, the items
+    # without one keep their type icons, and there is no alert. r2's "offline
+    # line" assertion is dropped: no ask means no line, and that is the fact.
+    local offline_before; offline_before="$(files_log | grep -c 'thumb failed code=offline' || true)"
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 32
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    sleep 3
+    rm -f "$SHOTS/after-files-thumbs-offline.png"
+    finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+    [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs-offline.png" 2>/dev/null \
+        && { cp "$SHOTS/after-files-thumbs-offline.png" "$WORK/after-files-thumbs-offline.png" 2>/dev/null || true; ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs-offline.png"; } \
+        || bad "FILES-THUMBS could not capture the offline Finder window"
+    if [ -f "$SHOTS/after-files-thumbs-offline.png" ]; then
+        local green_off; green_off="$(green_pixels "$SHOTS/after-files-thumbs-offline.png" 0.35)"
+        if [ "${green:-0}" -gt 0 ] && [ "${green_off:-0}" -ge $((green * 8 / 10)) ] \
+                && [ "${green_off:-0}" -le $((green * 12 / 10)) ]; then
+            ok "FILES-THUMBS [FILES-26] the phone-away folder keeps the cached picture and no new one ($green_off green pixels)"
+        else
+            bad "FILES-THUMBS the phone-away picture count changed ($green -> $green_off)"
+        fi
+    fi
+    local offline_after; offline_after="$(files_log | grep -c 'thumb failed code=offline' || true)"
+    if [ "${offline_after:-0}" -eq "${offline_before:-0}" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: the phone away did not ask again (no offline line)"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: the phone away asked again (an offline line appeared)"
+    fi
+    say "FILES-THUMBS [FILES-26] no alert in the phone-away screenshot"
+
+    finder_close
+    stop_app
+    files_oneshot remove "$WORK/remove.txt" >/dev/null 2>&1 || true
+    unregister_files >/dev/null 2>&1 || true
+    stop_fakephone
+    wait_until 5 no_fakephone
 }
 
 check_files_domain() {
@@ -7608,6 +8590,19 @@ dock_dir() { echo "$WORK/dock-apps"; }
 
 dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
 
+# dock_shim_ready — the first built bundle is complete: icon written and signed
+# (the directory appears while the build is still writing into it).
+dock_shim_ready() {
+    local shim
+    shim="$(ls -d "$(dock_dir)"/*.app 2>/dev/null | head -1)"
+    [ -n "$shim" ] && [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && codesign --verify --strict "$shim" 2>/dev/null
+}
+
+# window_close_count — window.close messages the fakephone has received (the
+# app sends one when a person closes a stream window).
+window_close_count() { awk '/"ev":"rx"/ && /"t":"window.close"/ {n++} END {print n+0}' "$WORK/events.jsonl"; }
+
 # Dock apps made from the profile folder are the automatic ones (a check that
 # opens app windows without --dock-dir). Every run cleans its own.
 profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
@@ -7659,6 +8654,35 @@ sys.exit(1)
 PY
 }
 
+# stream_after_close <stream> — what the fakephone received for that stream
+# after the Mac's window.close for it, as the message types in arrival order
+# ("none" when nothing). The phone forgets a stream at its close, so anything
+# the Mac still sends for it comes back `error no_stream` (WIN-38).
+stream_after_close() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+stream = int(sys.argv[2])
+closed = False
+late = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "window.close" and msg.get("stream") == stream:
+        closed = True
+        continue
+    if not closed:
+        continue
+    if event.get("ev") == "rx" and msg.get("stream") == stream:
+        late.append(str(msg.get("t")))
+    elif event.get("ev") == "input" and event.get("stream") == stream:
+        late.append("input:" + str(event.get("kind")))
+print(",".join(late) if late else "none")
+PY
+}
+
 # window_open_count <pkg> — how many window.open the fakephone received for the
 # package (the raise rule: one, however many times the entry point is used).
 window_open_count() {
@@ -7704,6 +8728,7 @@ check_dock() {
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$shim/Contents/Info.plist" 2>/dev/null)"
     [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "dev.pocketdeck.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
         && ok "DOCK created $(basename "$shim") ($id)" || bad "DOCK unexpected bundle $(basename "$shim") ($id)"
+    wait_until 15 dock_shim_ready
     [ -s "$shim/Contents/Resources/AppIcon.icns" ] && codesign --verify --strict "$shim" 2>/dev/null \
         && ok "DOCK has AppIcon.icns from the phone's icon and is signed" || bad "DOCK no icon or bad signature"
     wait_until 10 registered_in_ls "$id" && ok "DOCK registered with LaunchServices" || bad "DOCK not registered with LaunchServices"
@@ -7746,8 +8771,11 @@ check_dock() {
 
     # Automatic identity (default on): a window the app opens itself builds and
     # launches its shim, and the shim exits when the window closes.
+    local auto_opens auto_closes
+    auto_opens="$(window_open_count "$pkg")"
+    auto_closes="$(window_close_count)"
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:20 --quit-after 60
-    wait_until 30 window_rx window.open "$pkg" \
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$auto_opens" ]' \
         && ok "DOCK auto: window.open arrived for $pkg" || bad "DOCK auto: no window.open for $pkg"
     wait_until 30 shim_made \
         && ok "DOCK auto: the window's Dock app was created ($(ls "$dir" | head -1))" \
@@ -7755,12 +8783,202 @@ check_dock() {
     wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: the shim runs for the window (pid $(dock_shim_pids | tr '\n' ' '))" \
         || bad "DOCK auto: the shim is not running"
+    # The close timer counts from the app becoming ready, so wait for the close
+    # itself before judging the shim: a loaded Mac can run that timer seconds
+    # late, and the exit has to be measured from the close.
+    wait_until 30 eval '[ "$(window_close_count)" -gt "$auto_closes" ]' \
+        && ok "DOCK auto: the window closed" || bad "DOCK auto: the window never closed"
     wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: closing the window made the shim exit" || bad "DOCK auto: the shim outlives the window"
     stop_app
     wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
     remove_dock_apps
+
+    # A slow shim registers its observers after the host bound it
+    # (--dock-debug-listen-delay, written into the bundle as PDListenDelay). The
+    # bind's one `opened` is gone by then, so the shim must say it is listening
+    # and be answered (docs/design/dock.md §Launch → window). While that answer
+    # was lost, the shim quit at 30 s and closed the window with it.
+    local ack_opens ack_closes ack_windows ack_started ack_pid ack_dump ack_ms
+    ack_opens="$(window_open_count "$pkg")"
+    ack_closes="$(window_close_count)"
+    ack_started="$(date +%s)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --dock-debug-listen-delay 2 --quit-after 60
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$ack_opens" ]' \
+        && ok "[DOCK-17] dock ack: window.open arrived for $pkg" \
+        || { bad "[DOCK-17] dock ack: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 30 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-17] dock ack: the late-listening shim runs" \
+        || { bad "[DOCK-17] dock ack: the shim never ran"; stop_app; stop_fakephone; return 1; }
+    ack_pid="$(dock_shim_pids | head -1)"
+    ack_windows="$(windows | wc -l | tr -d ' ')"
+    while [ $(( $(date +%s) - ack_started )) -lt 40 ]; do sleep 1; done
+    if [ -n "$ack_pid" ] && kill -0 "$ack_pid" 2>/dev/null; then
+        ok "[DOCK-17] dock ack: the shim is alive 40 s after launch (pid $ack_pid)"
+    else
+        bad "[DOCK-17] dock ack: the shim quit before 40 s (pid ${ack_pid:-none}; launched at $ack_started, checked at $(date +%s))"
+    fi
+    [ "$(window_close_count)" = "$ack_closes" ] \
+        && ok "[DOCK-17] dock ack: the window is still open at 40 s" \
+        || bad "[DOCK-17] dock ack: the window closed at $(date +%s) (launched at $ack_started, $(( $(window_close_count) - ack_closes )) window.close sent)"
+    [ "$(windows | wc -l | tr -d ' ')" -ge "$ack_windows" ] \
+        && ok "[DOCK-17] dock ack: the app still has its window" \
+        || bad "[DOCK-17] dock ack: a window disappeared ($ack_windows -> $(windows | wc -l | tr -d ' '))"
+    # Read the whole dump first: under pipefail, grep -q closing the pipe early fails the pipeline.
+    ack_dump="$(log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null)"
+    if [ -n "$ack_pid" ] && grep -qF "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump"; then
+        bad "[DOCK-17] dock ack: the host closed the shim's stream (shim $ack_pid quit)"
+        grep -F "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump" | tail -1 | sed 's/^/  /'
+    else
+        ok "[DOCK-17] dock ack: no 'shim quit; closing stream' for it"
+    fi
+    # The handshake lands at once: the shim logs how long after listening it was bound.
+    ack_dump="$(log show --last 3m --info --predicate 'process == "PocketDeckShim"' 2>/dev/null)"
+    ack_ms="$(grep -oE "dock shim $ack_pid bound, [0-9]+ ms after listening" <<< "$ack_dump" \
+        | head -1 | grep -oE '[0-9]+ ms' | tr -dc '0-9')"
+    if [ -n "$ack_ms" ] && [ "$ack_ms" -le 1500 ]; then
+        ok "[DOCK-17] dock ack: bound $ack_ms ms after listening"
+    else
+        bad "[DOCK-17] dock ack: no bind within 1.5 s of listening (${ack_ms:-no log line})"
+    fi
+    stop_app
+    remove_dock_apps
+
+    # A bound shim outlived a killed app (ISS-6, DOCK-19): the shim watches the
+    # host's process and quits when it ends, so no icon stays in the Dock until
+    # the person quits it. SIGTERM is the check; a force quit takes the same
+    # didTerminateApplication road.
+    local term_opens term_pid term_started
+    term_opens="$(window_open_count "$pkg")"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
+    wait_until 30 shim_made \
+        || { bad "[DOCK-19] dock term: no Dock app created"; stop_app; stop_fakephone; return 1; }
+    shim="$(ls -d "$dir"/*.app | head -1)"
+    wait_until 15 dock_shim_ready \
+        || { bad "[DOCK-19] dock term: the bundle never finished"; stop_app; stop_fakephone; return 1; }
+    open_quiet "$shim"
+    wait_until 20 eval '[ "$(window_open_count "$pkg")" -gt "$term_opens" ]' \
+        || { bad "[DOCK-19] dock term: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ -n "$(dock_shim_pids)" ]' \
+        || { bad "[DOCK-19] dock term: the shim never ran"; stop_app; stop_fakephone; return 1; }
+    term_pid="$(dock_shim_pids | head -1)"
+    shim_gone() { ! kill -0 "$1" 2>/dev/null; }
+    sleep 1
+    term_started="$(path_now)"
+    kill -TERM "$APP_PID" >/dev/null 2>&1
+    if wait_until 3 shim_gone "$term_pid"; then
+        local term_dt
+        term_dt="$(python3 -c "print('%.2f' % ($(path_now) - float('$term_started')))")"
+        ok "[DOCK-19] dock term: the bound shim quit ${term_dt}s after the app was killed (pid $term_pid)"
+    else
+        bad "[DOCK-19] dock term: the shim outlived the killed app (pid $term_pid)"
+    fi
+    wait "$APP_PID" 2>/dev/null
+    remove_dock_apps
+
+    # A shim bundle from an older PocketDeck carries an older executable, which
+    # still loses the bind's answer. The next app list replaces it while its
+    # shim is not running (docs/design/dock.md §Lifecycle). The installed copy
+    # is re-signed per bundle, so the bundle records the source shim's hash.
+    local refresh_shim="$dir/WhatsApp (FakePhone).app" refresh_pids refresh_hash
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
+    # Wait for the whole bundle: stopping the app between the executable copy
+    # and the plist would age a half-built bundle.
+    wait_until 30 eval '[ -s "$refresh_shim/Contents/Resources/AppIcon.icns" ] && /usr/libexec/PlistBuddy -c "Print :PDShimHash" "$refresh_shim/Contents/Info.plist" >/dev/null 2>&1' \
+        || { bad "[DOCK-18] dock refresh: no complete shim to age"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    refresh_pids="$(dock_shim_pids)"
+    [ -n "$refresh_pids" ] && kill $refresh_pids >/dev/null 2>&1
+    refresh_hash="$(shasum -a 256 "$E2E_BUNDLE/Contents/MacOS/PocketDeckShim" | awk '{print $1}')"
+    [ -n "$refresh_hash" ] \
+        || { bad "[DOCK-18] dock refresh: no shim executable in the e2e bundle"; stop_app; stop_fakephone; return 1; }
+    /usr/libexec/PlistBuddy -c 'Delete :PDShimHash' "$refresh_shim/Contents/Info.plist" >/dev/null 2>&1
+    printf 'old shim' > "$refresh_shim/Contents/MacOS/PocketDeckShim"
+    [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" = "8" ] \
+        && ok "[DOCK-18] dock refresh: aged the bundle (no shim hash, old executable)" \
+        || bad "[DOCK-18] dock refresh: could not age the bundle (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --quit-after 40
+    wait_until 30 eval '[ -n "$refresh_hash" ] && [ "$(/usr/libexec/PlistBuddy -c "Print :PDShimHash" "$refresh_shim/Contents/Info.plist" 2>/dev/null)" = "$refresh_hash" ]' \
+        && ok "[DOCK-18] dock refresh: an older bundle was rebuilt with this build's shim" \
+        || bad "[DOCK-18] dock refresh: the old bundle was not rebuilt (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
+    [ -x "$refresh_shim/Contents/MacOS/PocketDeckShim" ] \
+        && [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" -gt 1000 ] \
+        && ok "[DOCK-18] dock refresh: the replaced executable is this build's" \
+        || bad "[DOCK-18] dock refresh: the executable was not replaced ($(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null) bytes)"
+    stop_app
+    remove_dock_apps
+
+    # The race, made deterministic (reviewer 10-30): a window that closes before
+    # its identity finishes launching. The pending work is dropped, so no shim is
+    # ever built for a stream that is gone (docs/design/dock.md §Lifecycle).
+    local race_opens race_closes
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-launch-delay 6 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg" \
+        || { bad "DOCK auto race: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed before its identity launched" \
+        || bad "DOCK auto race: the window never closed"
+    sleep 8
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: no shim was built for the closed stream" \
+        || bad "DOCK auto race: a shim was built for a window that was gone"
+    [ "$(window_open_count "$pkg")" = "$((race_opens + 1))" ] \
+        && ok "DOCK auto race: no window came back with it" \
+        || bad "DOCK auto race: a late launch brought its window back"
+    stop_app
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app leaves no shim behind" || bad "DOCK auto race: a shim survived the app"
+    remove_dock_apps
+
+    # The same race with the launch already in flight: the pid that lands after
+    # its window closed is quit at once and logged, never bound.
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-bind-delay 7 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (late launch)" \
+        || { bad "DOCK auto race: no window.open for $pkg (late launch)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed while the launch was in flight" \
+        || bad "DOCK auto race: the window never closed (late launch)"
+    sleep 9
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: a launch landing after its window closed is quit, not bound" \
+        || bad "DOCK auto race: a shim outlived the window it was launched for"
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null \
+        | grep -q "dock auto: late launch for closed stream 1" \
+        && ok "DOCK auto race: the late launch was logged as a decision" \
+        || bad "DOCK auto race: no 'late launch for closed stream' line"
+    stop_app
+    remove_dock_apps
+
+    # A launch still in flight when the app quits: the shim it started is stopped
+    # with the app, so the second assertion holds for a launch at quit too.
+    race_opens="$(window_open_count "$pkg")"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --dock-bind-delay 20 --quit-after 6
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (quit)" \
+        || { bad "DOCK auto race: no window.open for $pkg (quit)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: the shim runs while its launch callback has not landed" \
+        || bad "DOCK auto race: the shim never started"
+    wait_until 15 eval '[ -z "$(e2e_app_pids)" ]' \
+        || { bad "DOCK auto race: the app did not quit"; stop_app; stop_fakephone; return 1; }
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app stops a shim it launched but never bound" \
+        || bad "DOCK auto race: a shim it launched but never bound survived the app"
+    remove_dock_apps
+
 
     # Turning the setting off while an automatic identity runs: the shim stops,
     # the window stays (the identity was only the Dock tile), and nothing
@@ -7848,6 +9066,10 @@ check_dock() {
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$adaptive" --quit-after 60
     wait_until 30 eval '[ -d "$chrome" ]' \
         || { bad "DOCK icon: no shim for $adaptive"; stop_app; stop_fakephone; return 1; }
+    # The bundle's folder exists a moment before its .icns is written (the
+    # same gap the flat icons below wait out): stopping the app here would
+    # leave the shim iconless and fail a check the app never finished.
+    wait_until 30 eval '[ -f "$chrome/Contents/Resources/AppIcon.icns" ]'
     stop_app
     version="$(/usr/libexec/PlistBuddy -c 'Print :PDIconVersion' "$chrome/Contents/Info.plist" 2>/dev/null)"
     case "$version" in
@@ -7893,6 +9115,45 @@ check_dock() {
         && ok "DOCK icon: an old-version shim was rebuilt" \
         || bad "DOCK icon: the old-version shim was not rebuilt"
 
+    # A flat-only app's shim carries the same renderer (docs/design/dock.md
+    # §Icons), drawn from the Dock's own 864 px flat: the rounded square covers
+    # its tile and the disc keeps its white plate.
+    local cover_app="$dir/Camera (FakePhone).app" plate_app="$dir/Gallery (FakePhone).app" flat_edge
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.camera2" --quit-after 90
+    # The phone answers one session at a time; a busy one is retried with a
+    # backoff, so this can take a while on a loaded host. Wait for the icon
+    # itself, not the bundle's folder: the bundle exists a moment before its
+    # .icns is written, and stopping the app in that gap leaves it iconless.
+    wait_until 60 eval '[ -f "$cover_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the covering flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.gallery3d" --quit-after 90
+    wait_until 60 eval '[ -f "$plate_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the plating flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    if [ -f "$cover_app/Contents/Resources/AppIcon.icns" ] \
+        && [ -f "$plate_app/Contents/Resources/AppIcon.icns" ]; then
+        sips -s format png "$cover_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-cover.png" >/dev/null 2>&1
+        sips -s format png "$plate_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-plate.png" >/dev/null 2>&1
+        flat_edge="$(icon_pixel "$WORK/shim-cover.png" 120 512)"
+        near "$flat_edge" 0 128 96 8 \
+            && ok "DOCK icon: a flat square covers its tile ($flat_edge)" \
+            || bad "DOCK icon: the flat square did not cover ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 120 512)"
+        near "$flat_edge" 255 255 255 4 \
+            && ok "DOCK icon: a flat disc keeps its white plate ($flat_edge)" \
+            || bad "DOCK icon: the flat disc's plate is not white ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 512 512)"
+        near "$flat_edge" 200 60 60 8 \
+            && ok "DOCK icon: the disc's own colour is inside the plate ($flat_edge)" \
+            || bad "DOCK icon: the disc is not drawn ($flat_edge)"
+    else
+        bad "DOCK icon: a flat app's shim has no AppIcon.icns"
+    fi
+    remove_dock_apps
+
     # A visible run (the VM) records what the person sees: the Dock with a
     # phone app's shim next to the native icons, and the Deck grid.
     if [ "$VISIBLE" = "1" ]; then
@@ -7911,6 +9172,196 @@ check_dock() {
     stop_fakephone
     wait_until 5 no_fakephone
 }
+
+# --- Application shortcuts (docs/specs/dock.md) ---------------------------
+
+# origins_of <bundle> — the shim's PDOrigins as one spaced string ("dock manual").
+origins_of() {
+    python3 - "$1/Contents/Info.plist" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as handle:
+        print(" ".join(plistlib.load(handle).get("PDOrigins", [])))
+except Exception:
+    print("")
+PY
+}
+
+# check_shortcuts — DOCK-3 and DOCK-4: the Deck tile's menu actions (through the
+# debug control route the Dock checks use, because a context menu cannot be
+# clicked in a quiet run). Add to Applications creates the shim in the run's
+# folder with the manual reason and opens no window; Add to Dock adds its reason
+# and launches; Remove from Applications takes only manual; Remove from Dock App
+# removes the bundle. Save all, reconcile, forget and Spotlight follow below.
+check_shortcuts() {
+    clean
+    local dir="$WORK/dock-apps" pkg="com.whatsapp" shim label="WhatsApp (FakePhone).app"
+    remove_dock_apps
+    mkdir -p "$dir" "$WORK-control"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 300
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the app list never arrived"; stop_app; stop_fakephone; return 1; }
+    shim="$dir/$label"
+
+    # Add to Applications: the action the tile's item runs.
+    control shortcut add "$pkg" || bad "SHORTCUTS shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$shim" ]' \
+        || { bad "SHORTCUTS no shortcut bundle in $dir ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"; stop_app; stop_fakephone; return 1; }
+    [ "$(origins_of "$shim")" = "manual" ] \
+        && ok "[DOCK-4] Add to Applications creates the shortcut with the manual reason" \
+        || bad "[DOCK-4] the shortcut's reasons are '$(origins_of "$shim")'"
+    [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && ok "[DOCK-4] the shortcut carries the app's own icon" \
+        || bad "[DOCK-4] the shortcut has no AppIcon.icns"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] adding a shortcut launched nothing" \
+        || bad "[DOCK-14] adding a shortcut opened a window"
+
+    # Add to Dock on the same app: both reasons, and the Dock identity runs.
+    control dock add "$pkg" || bad "SHORTCUTS dock add: $CONTROL_REPLY"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "[DOCK-3] Add to Dock launched the app's window" \
+        || bad "[DOCK-3] Add to Dock opened no window"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock manual" ]' \
+        && ok "[DOCK-3] Add to Dock kept the shortcut's manual reason" \
+        || bad "[DOCK-3] the reasons after Add to Dock are '$(origins_of "$shim")'"
+
+    # Remove from Applications: only manual goes; the Dock shim and its window stay.
+    control shortcut remove "$pkg" || bad "SHORTCUTS shortcut remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock" ]' \
+        && ok "[DOCK-4] Remove from Applications removes only manual" \
+        || bad "[DOCK-4] the reasons after Remove from Applications are '$(origins_of "$shim")'"
+    [ -d "$shim" ] && ok "[DOCK-4] the Dock's shim stays" || bad "[DOCK-4] the Dock's shim was deleted"
+    [ -n "$(dock_shim_pids)" ] && ok "[DOCK-4] its running identity stays" \
+        || bad "[DOCK-4] Remove from Applications stopped the Dock identity"
+
+    # Remove from Dock App: the bundle goes and the shim stops.
+    control dock remove "$pkg" || bad "SHORTCUTS dock remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ ! -d "$shim" ]' \
+        && ok "[DOCK-3] Remove from Dock App removes the bundle" \
+        || bad "[DOCK-3] the bundle is still there after Remove from Dock App"
+    wait_until 10 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-3] its shim stopped" || bad "[DOCK-3] the shim kept running"
+
+    stop_app
+    remove_dock_apps
+
+    # --- Save all (docs/design/dock.md §Shortcuts, SET-DEV-25) -------------
+    # 40 fakephone apps, the switch on through the page's own write path: one
+    # shortcut per app, each with its icon, and no window opened along the way.
+    count_shims() { ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' '; }
+    count_icons() { local n=0 app; for app in "$dir"/*.app; do [ -s "$app/Contents/Resources/AppIcon.icns" ] && n=$((n + 1)); done; echo "$n"; }
+    stop_fakephone
+    FAKE_ARGS="--demo-apps 40" start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the save-all app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS save-all phase: shortcutsall on: $CONTROL_REPLY"
+    wait_until 60 eval '[ "$(count_shims)" = "40" ]' || true
+    if [ "$(count_shims)" != "40" ]; then
+        control shortcutstats "$WORK/shortcut-stats.txt" >/dev/null 2>&1
+        say "shortcuts after 60 s: $(tr '\n' ' ' < "$WORK/shortcut-stats.txt" 2>/dev/null)"
+    fi
+    wait_until 180 eval '[ "$(count_shims)" = "40" ]' \
+        && ok "[DOCK-5] Save all made all 40 app shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' ' | cut -c1-80)…)" \
+        || bad "[DOCK-5] Save all made $(count_shims) of 40 shortcuts"
+    [ "$(count_icons)" = "40" ] \
+        && ok "[DOCK-6] every one of the 40 shortcuts carries its .icns" \
+        || bad "[DOCK-6] only $(count_icons) of 40 shortcuts have an .icns"
+    control deckquery "" >/dev/null 2>&1 \
+        && ok "[DOCK-6] the Deck still answers while the shims are written" \
+        || bad "[DOCK-6] the Deck stopped answering during the build"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] Save all opened no window" \
+        || bad "[DOCK-14] Save all opened a window"
+
+    # Two shortcuts the person keeps another way: one manual, one Dock. Turning
+    # the switch off removes only `all`, so exactly those two stay.
+    control shortcut add com.whatsapp || bad "SHORTCUTS save-all phase: shortcut add: $CONTROL_REPLY"
+    control dock add com.android.chrome || bad "SHORTCUTS save-all phase: dock add: $CONTROL_REPLY"
+    wait_until 30 eval '[ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ]' \
+        && ok "[DOCK-2] WhatsApp carries all and manual" \
+        || bad "[DOCK-2] WhatsApp's reasons are '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 30 eval '[ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock all" ]' \
+        && ok "[DOCK-2] Chrome carries all and dock" \
+        || bad "[DOCK-2] Chrome's reasons are '$(origins_of "$dir/Chrome (FakePhone).app")'"
+    control shortcutsall off || bad "SHORTCUTS save-all phase: shortcutsall off: $CONTROL_REPLY"
+    wait_until 120 eval '[ "$(count_shims)" = "2" ]' \
+        && ok "[DOCK-5] Save all off left only the manual and Dock shortcuts (2)" \
+        || bad "[DOCK-5] Save all off left $(count_shims) shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual" ] \
+        && ok "[DOCK-5] the manual shortcut lost only all" \
+        || bad "[DOCK-5] WhatsApp's reasons after off: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    [ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock" ] \
+        && ok "[DOCK-5] the Dock shortcut lost only all" \
+        || bad "[DOCK-5] Chrome's reasons after off: '$(origins_of "$dir/Chrome (FakePhone).app")'"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+
+    # --- Reconcile on an app list, and Spotlight (DOCK-7, DOCK-9) ----------
+    # The phone drops WhatsApp (installed before the list arrives) and adds
+    # Notes between two app lists: the uninstalled app's shim goes even with
+    # Save all and manual on it, the new app gains Save all's reason, and the
+    # index holds no item for an app that has a shim.
+    FAKE_ARGS="--demo-apps 20 --drop-after 60 --apps-revise --apps-drop com.whatsapp --apps-add com.example.notes=Notes" \
+        start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the reconcile app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcut add com.whatsapp || bad "SHORTCUTS reconcile: shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$dir/WhatsApp (FakePhone).app" ]' \
+        || { bad "SHORTCUTS reconcile: no WhatsApp shim before the change"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS reconcile: shortcutsall on: $CONTROL_REPLY"
+    wait_until 180 eval '[ "$(count_shims)" = "20" ]' \
+        && ok "[DOCK-7] Save all made the 20 shortcuts before the app list changed" \
+        || bad "[DOCK-7] only $(count_shims) of 20 shortcuts before the change"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ] \
+        && ok "[DOCK-7] the app that will be uninstalled carries manual and all" \
+        || bad "[DOCK-7] WhatsApp's reasons before the change: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 120 eval '[ ! -d "$dir/WhatsApp (FakePhone).app" ]' \
+        && ok "[DOCK-7] the uninstalled app's shim went, manual and all included" \
+        || bad "[DOCK-7] the uninstalled app still has its shim"
+    wait_until 120 eval '[ "$(origins_of "$dir/Notes (FakePhone).app")" = "all" ]' \
+        && ok "[DOCK-7] the new app gained Save all's reason" \
+        || bad "[DOCK-7] the new app's shim is '$(origins_of "$dir/Notes (FakePhone).app")'"
+    [ "$(count_shims)" = "20" ] \
+        && ok "[DOCK-7] the list is 20 again (19 kept, one added)" \
+        || bad "[DOCK-7] the folder holds $(count_shims) shims, wanted 20"
+    # Every app has a shim, so nothing of that phone is a CoreSpotlight item.
+    local dev spot
+    dev="$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$dir/Notes (FakePhone).app/Contents/Info.plist" 2>/dev/null)"
+    [ -n "$dev" ] || bad "[DOCK-8] no device id in the shim"
+    sleep 2
+    spot="$(/usr/bin/log show --last 5m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        | grep -o "spotlight: indexing [0-9]* apps for $dev" | tail -1)"
+    [ "$spot" = "spotlight: indexing 0 apps for $dev" ] \
+        && ok "[DOCK-9] no app with a shortcut is also a CoreSpotlight item (last index: $spot)" \
+        || bad "[DOCK-9] the last Spotlight index was '${spot:-none}', wanted no items"
+
+    # --- Forget removes every shim (DOCK-8) --------------------------------
+    control settings-open >/dev/null 2>&1 || bad "[DOCK-8] settings-open: $CONTROL_REPLY"
+    wait_until 25 windows_at_least 2 \
+        || { bad "[DOCK-8] the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    control settings-select "phone:$dev" >/dev/null 2>&1
+    sleep 1
+    control settings-forget "$dev" >/dev/null 2>&1 || bad "[DOCK-8] settings-forget: $CONTROL_REPLY"
+    sleep 1
+    control key tab >/dev/null 2>&1
+    control key space >/dev/null 2>&1
+    wait_until 30 eval '[ "$(count_shims)" = "0" ]' \
+        && ok "[DOCK-8] forgetting the phone removed every shim, whatever its reasons" \
+        || bad "[DOCK-8] $(count_shims) shims survived the forget ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+    wait_until 5 no_fakephone
+}
+
 
 # --- multiwin: several windows of one app (WIN-24…WIN-36) ------------------
 #
@@ -8412,6 +9863,7 @@ PY
 
 
 
+
 # --- Windows: one window per app, and the opening cover ---------------------
 
 # check_windows — the app window's own behaviour, driven through the Deck's
@@ -8506,6 +9958,9 @@ check_windows() {
     wait_until 20 chrome_has "cover_phase=opening cover_buttons=none" \
         && ok "[WIN-11] L1 opening: the cover is up with no buttons ($(chrome_state | grep -o 'loading=[^ ]* .*cover_buttons=[^ ]*'))" \
         || bad "[WIN-11] L1 opening: $(chrome_state)"
+    chrome_has "haze=0" \
+        && ok "[WIN-40] the opening cover's ground takes the bar's haze away" \
+        || bad "[WIN-40] the opening cover left the haze up: $(chrome_state)"
     # The shot first: the opening state lasts 5 s, and the accessibility walk
     # is slower than the rest of that window. Two seconds in, the phone's app
     # list and icon have usually arrived (a Deck click already has them).
@@ -8629,6 +10084,88 @@ check_windows() {
         fi
     else
         skip_visible "MIRROR-2 the refused cover's shot"
+    fi
+    stop_app
+    stop_fakephone
+
+    # --- WIN-38: a Mac close is quiet -------------------------------------
+    # The person closes a live app window with ⌘W while the pointer is over the
+    # picture (a hover is live and a hover move is waiting in the mapper's 16 ms
+    # throttle) and AppKit reports the key window occluded as it goes. Both used
+    # to reach the phone after `window.close`; it answers `error no_stream` and
+    # the launcher showed "That window is no longer open on the phone".
+    clean
+    rm -f "$WORK/banner.txt"
+    start_fake || return 1
+    printf 'wait 3\nhover 0.5 0.5\nhover 0.4 0.5\nkey cmd+w\nwait 10\n' > "$WORK/close-input.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.whatsapp \
+        --debug-input-script "$WORK/close-input.txt" \
+        --debug-banner "$WORK/banner.txt" --quit-after 30
+    wait_until 25 window_rx window.open "com.whatsapp" \
+        || bad "WIN-38 the app window never opened"
+    wait_until 20 events_have '"ev":"video","stream":1,' \
+        || bad "WIN-38 the stream never sent video"
+    wait_until 15 window_rx window.close \
+        || bad "WIN-38 the person's close sent no window.close"
+    wait_until 10 eval '! windows | awk "\$4 == 900" | grep -q .' \
+        && ok "[WIN-12] closing the app window closed it" \
+        || bad "[WIN-12] the app window stayed after its close"
+    # The phone's answer to a late message takes a round trip: give it 3 s.
+    sleep 3
+    late="$(stream_after_close 1)"
+    [ "$late" = "none" ] \
+        && ok "[WIN-38] the Mac sent nothing for the closed stream after its window.close" \
+        || bad "[WIN-38] the Mac sent $late for stream 1 after its window.close"
+    ! grep -qF "That window is no longer open on the phone" "$WORK/banner.txt" 2>/dev/null \
+        && ok "[WIN-38] the launcher said nothing about the closed window" \
+        || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
+    stop_app
+    stop_fakephone
+
+    # --- WIN-40: the bar's system blur and its haze ----------------------
+    # Live, the mirror's variableBlur carries the picked 15 pt radius and the
+    # haze is up over the bar band; the opening cover's ground takes the haze
+    # away (the L1 opening phase above).
+    clean
+    rm -f "$WORK/chrome.txt"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
+    wait_until 20 events_have '"ev":"video"' \
+        || bad "WIN-40 the stream never sent video"
+    wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
+        && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+        || bad "[WIN-40] the live bar: $(chrome_state)"
+    stop_app
+    stop_fakephone
+}
+
+# --- Zoom: a stream window's double-click resize ----------------------------
+
+# check_zoom — double-clicking a live stream window's title bar must resize it
+# as smoothly as a live drag does, and must not re-render the phone per
+# animation step. `--debug-stream-zoom` zooms the window through NSWindow.zoom
+# (the title bar's own path), unzooms, then makes the same size change with a
+# scripted live drag; the fake phone's log is the authority for the resize
+# requests each phase sent and their sizes.
+check_zoom() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+        --debug-stream-zoom "$WORK/stream-zoom.json" --quit-after 60
+    wait_until 25 window_rx window.open "com.android.settings" \
+        || bad "ZOOM the app window never opened"
+    if wait_until 60 [ -s "$WORK/stream-zoom.json" ]; then
+        local limit report
+        limit="$(nfr_limit stream_zoom_frame_p95_ms)"
+        if report="$(python3 "$MACOS/scripts/stream-zoom.py" \
+                "$WORK/stream-zoom.json" "$WORK/events.jsonl" "$limit")"; then
+            ok "[WIN-41] ZOOM the zoom is handled like a live resize, once at the end ($report)"
+        else
+            bad "[WIN-41] ZOOM the zoom is not a live resize ($report)"
+        fi
+    else
+        bad "ZOOM no measurement (--debug-stream-zoom)"
     fi
     stop_app
     stop_fakephone
@@ -8892,9 +10429,10 @@ check_settings() {
     # --- plain section headings: the phone's name appears once (SET-WIN-06) -
     [ "$(report_value "title.phone")" = "Phone" ] \
         && [ "$(report_value "title.notifications")" = "Notifications" ] \
+        && [ "$(report_value "title.applications")" = "Applications" ] \
         && [ "$(report_value "title.screen")" = "Screen" ] \
         && [ "$(report_value "title.forget")" = "Forget" ] \
-        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Screen, Forget" \
+        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Applications, Screen, Forget" \
         || bad "SET [SET-WIN-06] headings: $(grep '^title\.' "$dump" | tr '\n' '|')"
     if grep '^title\.' "$dump" | grep -qE 'Galaxy|Pixel| — '; then
         bad "SET [SET-WIN-06] a section heading carries the phone's name: $(grep '^title\.' "$dump" | tr '\n' '|')"
@@ -9131,7 +10669,8 @@ check_handoff() {
 # never the text); `notifyclick` runs the same routing a banner click runs and
 # opens that app's window on the Mac; `mediacmd` drives what a Now Playing
 # control drives. With the opt-in off (the default) the Mac forwards nothing and
-# never asks the phone to enable.
+# never asks the phone to enable. Two extra posts (pd-b1 with a picture, pd-b2
+# without) prove the composed attachment (NOTIFY-22).
 check_notify() {
     clean
     local log="$WORK/notify.log" offlog="$WORK/notify-off.log" script="$WORK/notify-input.txt" device
@@ -9165,7 +10704,9 @@ PY
         return 0
     }
 
-    start_fake || return 1
+    # NOTIFY-22: two extra posts (one with a picture, one without) for an app
+    # whose icon the fake serves, after the Mac has cached the icon.
+    FAKE_ARGS="--notify-badge" start_fake || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
     [ -n "$device" ] || { bad "NOTIFY no device id in the fakephone listening line"; stop_fakephone; return 1; }
     # The per-phone opt-in is a stored default of the e2e profile, off by default
@@ -9245,6 +10786,25 @@ PY
     no_notify_text "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/events.jsonl" \
         && ok "[NOTIFY-14] NOTIFY no notification text in the app log, share log, fake log or event log" \
         || bad "[NOTIFY-14] NOTIFY notification text leaked"
+
+    # (g) NOTIFY-22: the attachment carries the sending app's icon. The fake
+    # posts pd-b1 with a picture and pd-b2 without, for com.whatsapp, whose icon
+    # it serves and the Mac caches from the app list.
+    wait_until 30 log_has "notify post id=pd-b1 pkg=com.whatsapp" \
+        && ok "[NOTIFY-22] NOTIFY the picture post was recorded" \
+        || bad "NOTIFY pd-b1 not recorded: $(tr '\n' '|' < "$log" 2>/dev/null)"
+    wait_until 30 log_has "notify post id=pd-b2 pkg=com.whatsapp" \
+        && ok "[NOTIFY-22] NOTIFY the icon-only post was recorded" \
+        || bad "NOTIFY pd-b2 not recorded"
+    grep -qE 'notify post id=pd-b1 .*composed shape=circle badge=yes side=160 class=deck' "$log" 2>/dev/null \
+        && ok "[NOTIFY-22] NOTIFY the picture is a circle with the app's badge" \
+        || bad "NOTIFY pd-b1 was not composed: $(grep 'id=pd-b1' "$log" 2>/dev/null | tr '\n' '|')"
+    grep -qE 'notify post id=pd-b2 .*composed shape=icon badge=no side=256 class=deck' "$log" 2>/dev/null \
+        && ok "[NOTIFY-22] NOTIFY no picture: the app's icon alone" \
+        || bad "NOTIFY pd-b2 was not the icon alone: $(grep 'id=pd-b2' "$log" 2>/dev/null | tr '\n' '|')"
+    no_notify_text "$log" \
+        && ok "[NOTIFY-22] NOTIFY the composition facts carry no text" \
+        || bad "[NOTIFY-22] NOTIFY the composition line leaked text"
 
     # (f) "When I click a phone notification" (ROADMAP D2): Open on Mac (the
     # default, used above) opens the window and runs the action there; Open on
@@ -9362,8 +10922,52 @@ EOF
 check_notify_actions() {
     clean
     local log="$WORK/notify-actions.log" script="$WORK/notify-actions-input.txt" device
-    local code_hash code_types
+    local code_hash code_types alpha bravo removed_line child_line
     log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    # quiet_posts — ten posts of the NOTIFY-19 key are in the share log.
+    quiet_posts() {
+        local n
+        n="$(grep -c "notify post id=pd-q1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 10 ]
+    }
+    # hold_post — the 100 ms re-post of NOTIFY-19 has been delivered.
+    hold_post() {
+        local n
+        n="$(grep -c "notify post id=pd-q2 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 1 ]
+    }
+    # quiet_add_post — the quiet first post of NOTIFY-19 has been delivered.
+    quiet_add_post() {
+        local n
+        n="$(grep -c "notify post id=pd-q3 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 1 ]
+    }
+    # progress_posts — the six posts of the NOTIFY-19 progress series arrived.
+    progress_posts() {
+        local n
+        n="$(grep -c "notify post id=pd-p1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 6 ]
+    }
+    # group_hash ID — the 16-hex group hash the fake phone sent for that post.
+    group_hash() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "notify" and event.get("kind") == "post" and event.get("id") == sys.argv[2]:
+        print(event.get("group", ""))
+        break
+PY
+    }
+    # groups_done — the three group posts and the summary's removal arrived.
+    groups_done() {
+        local n
+        n="$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 3 ] && grep -q "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null
+    }
     # notify_rx KIND ID [I] [TEXTLEN] — a fakephone notification event.
     notify_rx() {
         python3 - "$WORK/events.jsonl" "$@" <<'PY'
@@ -9496,6 +11100,143 @@ EOF
         && ok "[NOTIFY-14] NOTIFY-ACTIONS no notification or reply text reached a log" \
         || bad "[NOTIFY-14] NOTIFY-ACTIONS notification text leaked"
 
+    # (h) [NOTIFY-19] an update the phone did not mark alerting replaces the
+    # delivered banner without presenting it: one key posted ten times, the
+    # first alerting and the nine quiet (a progress bar's wire). The Mac's own
+    # record carries, for each id, its post's `alert`, the banners it holds and
+    # the running presented/quiet counts; the last line is the end state. A
+    # share-log run: nothing reaches Notification Center.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--notify-quiet" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-quiet.log"
+    wait_until 20 quiet_posts \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the same key was posted ten times" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS fewer than ten posts of the quiet key"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS 1 presented, 9 quiet replacements, 1 delivered banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet updates did not replace quietly"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q1 ")]
+alerting = [line for line in posts if " alert=1" in line]
+quiet = [line for line in posts if " alert=0" in line]
+if len(posts) != 10:
+    print("posts:", len(posts)); sys.exit(1)
+if len(alerting) != 1 or len(quiet) != 9:
+    print("posts:", len(posts), "alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
+last = posts[-1]
+if " banners=1 presented=1 quiet=9" not in last:
+    print("last post:", last); sys.exit(1)
+PY
+    ! grep -qE 'pd-notify-(title|text)-[0-9]' \
+        "$WORK/notify-quiet.log" "$WORK/app.log" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts carried no text in a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts leaked text"
+
+    # (h2) [NOTIFY-19] the hold case: the same app re-posts 100 ms later (an
+    # action or an icon) inside the Mac's 300 ms hold, with alert:false. The
+    # post that supersedes one still waiting inherits its delivery state, so the
+    # one banner that reaches Notification Center presents.
+    wait_until 10 hold_post \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the re-posted key reached the Mac" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS no re-post inside the hold reached the Mac"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a quiet re-post inside the hold still presents the banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet re-post inside the hold presented nothing"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q2 ")]
+if len(posts) != 1:
+    print("posts:", len(posts)); sys.exit(1)
+if " alert=1 banners=1 presented=1 quiet=0" not in posts[0]:
+    print("post:", posts[0]); sys.exit(1)
+PY
+    # (h3) [NOTIFY-19] a first post with alert:false (a LOW channel, or a
+    # notification the Mac first sees mid-life) is added quietly: one banner in
+    # the list, nothing presented.
+    wait_until 10 quiet_add_post \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS no quiet first post reached the Mac"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a first post with alert:false is listed quietly, not presented" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS a first post with alert:false presented a banner"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q3 ")]
+if len(posts) != 1:
+    print("posts:", len(posts)); sys.exit(1)
+if " alert=0 banners=1 presented=0 quiet=1" not in posts[0]:
+    print("post:", posts[0]); sys.exit(1)
+PY
+    # (h4) [NOTIFY-19] row 6: the bar moving is not news. Five ticks whose text
+    # changes and whose bar moves are quiet, the post that drops the bar alerts.
+    wait_until 20 progress_posts \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the progress series did not arrive"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a moving progress bar is quiet; the post that drops it alerts" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the progress ticks did not follow the rule"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-p1 ")]
+if len(posts) != 6:
+    print("posts:", len(posts)); sys.exit(1)
+alerting = [line for line in posts if " alert=1 " in line]
+quiet = [line for line in posts if " alert=0 " in line]
+if len(alerting) != 2 or len(quiet) != 4:
+    print("alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
+if " alert=1 " not in posts[0]:
+    print("first:", posts[0]); sys.exit(1)
+if " alert=1 banners=1 presented=2 quiet=4" not in posts[-1]:
+    print("last:", posts[-1]); sys.exit(1)
+PY
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # (i) [NOTIFY-20] a group summary never lands on top of its child: the phone
+    # sends a child, leaves its summary on the phone, forwards a lone summary,
+    # then removes that summary before the child that supersedes it. Every
+    # grouped post is threaded under <phoneId>.<group hash>; no group key ever
+    # appears in a log.
+    FAKE_ARGS="--notify-groups" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-groups.log"
+    wait_until 20 groups_done \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the group wire arrived (child, lone summary, removal, child)" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the group wire did not arrive: $(tr '\n' '|' < "$WORK/notify-groups.log" 2>/dev/null)"
+    alpha="$(group_hash pd-g1)"
+    bravo="$(group_hash pd-g3)"
+    [ -n "$alpha" ] && [ -n "$bravo" ] && [ "$alpha" != "$bravo" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the phone sent a group hash, not the group key" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS no distinct group hashes in the phone's events"
+    [ "$(grep -c "notify post id=pd-g1 " "$WORK/notify-groups.log" 2>/dev/null)" = "1" ] \
+        && [ "$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" = "3" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary of a group with a child never posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS a second banner landed for the child's group"
+    grep -q "notify post id=pd-g1 .* thread=$device.$alpha" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child is threaded under the phone and its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the child's thread carries no group hash"
+    grep -q "notify post id=pd-g3 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS a summary with no children banners, threaded under its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the lone summary did not banner under its group"
+    grep -q "notify post id=pd-g4 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child after the summary joined its thread" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the late child's thread is wrong"
+    removed_line="$(grep -n "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    child_line="$(grep -n "notify post id=pd-g4" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    [ -n "$removed_line" ] && [ -n "$child_line" ] && [ "$removed_line" -lt "$child_line" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary was removed before the child posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the summary removal did not precede the child"
+    ! grep -qE 'pd-group-(alpha|bravo)' \
+        "$WORK/notify-groups.log" "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS no group key reached a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS a group key leaked into a log"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "notify.mute.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
@@ -9547,10 +11288,10 @@ EOF
     # (a) the picture joins its post: mime, dimensions, size and a temp file.
     wait_until 20 log_has "notify post id=pd-m1 pkg=com.whatsapp" \
         || { bad "NOTIFY-MEDIA pd-m1 not recorded: $(tr '\n' '|' < "$log" 2>/dev/null)"; stop_app; stop_fakephone; return 1; }
-    log_has "image=image/jpeg w=160 h=120 size=1615 attachment=" \
-        && ok "NOTIFY-MEDIA the picture joined the post (jpeg 160x120, 1615 B)" \
+    grep -qE 'image=image/png w=160 h=160 size=[0-9]+ attachment=' "$log" 2>/dev/null \
+        && ok "NOTIFY-MEDIA the picture joined the post (composed png 160x160)" \
         || bad "NOTIFY-MEDIA the post carries no image facts"
-    path="$(sed -n 's/.*attachment=\([^ ]*\).*/\1/p' "$log" | head -1)"
+    path="$(sed -n 's/^notify post id=pd-m1 .*attachment=\([^ ]*\).*/\1/p' "$log" | head -1)"
     if [ -n "$path" ] && [ -f "$path" ]; then
         ok "NOTIFY-MEDIA the attachment temp file exists"
         mode="$(stat -f %Lp "$path" 2>/dev/null)"
@@ -9577,7 +11318,7 @@ EOF
     log_has "notify image id=pd-m2 refused=bytes" \
         && ok "NOTIFY-MEDIA the oversized picture was refused" \
         || bad "NOTIFY-MEDIA the oversized picture was not refused"
-    ! grep -q "notify post id=pd-m2 .*image=" "$log" 2>/dev/null \
+    ! grep -qE 'notify post id=pd-m2 .*image=image/jpeg w=160 h=120' "$log" 2>/dev/null \
         && ok "NOTIFY-MEDIA the refused picture was not attached" \
         || bad "NOTIFY-MEDIA the refused picture was attached anyway"
 
@@ -10627,13 +12368,530 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # shows both without errors and the grid is captured for the human (glass is
 # judged by eye in .agent/glass/; this check only asserts the wire and the
 # log say both kinds arrived).
+# The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
+# steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
+# Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
+# shots are what proves rail-glyph.py before the boot; visible, the real pointer
+# comes onto the rail at M, sideways there, down to Z and #, and out again,
+# dark and then light.
+check_deckrail() {
+    clean
+    # The host proof of the on-screen move: start from a stored frame whose rail
+    # stands past the virtual display's right edge (as the VM's restored frame
+    # did). PD_DECKRAIL_NO_MOVE=1 then shows gate A failing before the move.
+    if [ -n "${PD_DECKRAIL_START_FRAME:-}" ]; then
+        defaults write "$DEFAULTS_SUITE" deck.windowFrame "$PD_DECKRAIL_START_FRAME"
+    fi
+    FAKE_ARGS="--demo-apps 60" start_fake || return 1
+    FAKE_ARGS=""
+    # The VM guest keeps its own Reduce Motion; the test hook makes the app's
+    # effective setting full so the fisheye (the proof) works here.
+    launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
+        --debug-motion full
+    wait_until 30 events_have '"t":"apps.list"' \
+        && ok "DECKRAIL the app list was requested" || bad "DECKRAIL no apps.list"
+    wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
+        && ok "DECKRAIL the grid drew its cells" || bad "DECKRAIL no grid dump"
+    # A stored frame cannot put the rail off-screen (placement rejects one that
+    # leaves the screen); moving the window first and then growing it can, as
+    # the guest's restored small frame did. PD_DECKRAIL_NO_MOVE=1 then shows
+    # gate A failing before the move is allowed.
+    if [ -n "${PD_DECKRAIL_START_X:-}" ]; then
+        control deck-move "$PD_DECKRAIL_START_X" 150 || bad "DECKRAIL deck-move (start): $CONTROL_REPLY"
+        sleep 1
+    fi
+    control deck-size 1000 625 || bad "DECKRAIL deck-size 1000 625: $CONTROL_REPLY"
+    sleep 1
+    # The host proof that the on-screen move works: start with the window's rail
+    # past the virtual display's right edge (PD_DECKRAIL_START_X), and
+    # PD_DECKRAIL_NO_MOVE=1 shows gate A failing before the move.
+
+    local railshots="$WORK/deck-rail-shots"
+    mkdir -p "$railshots"
+    shot_rail() {
+        local id
+        id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$id" "$railshots/$1" >/dev/null 2>&1 \
+            && say "shot: $railshots/$1" \
+            || bad "DECKRAIL no Deck window for $1"
+    }
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
+    if [ "$VISIBLE" = 1 ]; then
+        # Park the real pointer outside the Deck before any forced step.
+        cg_input moveat --x 5 --y 5
+        sleep 0.5
+    fi
+    shot_rail rail-rest.png
+    # The rest geometry: the rail's top-left (window and screen points, and the
+    # backing scale) and its slots, so a visible run places the pointer on the
+    # drawn slot's centre instead of guessing rows.
+    if control deckrailanchor "$railshots/anchor.pt" && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
+        ok "DECKRAIL the rail is at window ($wx,$wy), screen ($sx,$sy), scale $scale"
+        # A restored frame can put the rail past the screen's right edge (the
+        # guest is 1024 pt wide) and a real pointer cannot reach off-screen:
+        # bring the window back inside, then read its place again.
+        if control screens "$railshots/screens.txt"; then
+            python3 - "$railshots/screens.txt" "$sx" "$sy" "$scale" > "$railshots/move.txt" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+sx, sy, scale = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+rail_width = 26
+deck = None
+screens = []
+for line in lines:
+    match = re.match(r"deck=(-?[0-9]+),(-?[0-9]+)-([0-9]+)x([0-9]+)", line)
+    if match:
+        deck = tuple(float(match.group(i)) for i in range(1, 5))
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)"
+                     r" visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if match:
+        screens.append(tuple(float(match.group(i)) for i in range(1, 9)))
+if not deck or not screens:
+    print(0, 0); sys.exit(0)
+def overlap(screen):
+    x, y, w, h = screen[:4]
+    return max(0, min(x + w, deck[0] + deck[2]) - max(x, deck[0])) \
+        * max(0, min(y + h, deck[1] + deck[3]) - max(y, deck[1]))
+vx, vy, vw, vh = max(screens, key=overlap)[4:]
+# The rail's column must sit on the visible frame; move the window sideways,
+# never vertically (the window's height already fits or it is the guest's).
+if sx + rail_width > vx + vw - 2:
+    target = vx + vw - 2 - rail_width
+    print(int(round(deck[0] + (target - sx))), int(round(deck[1])))
+elif sx < vx:
+    print(int(round(deck[0] + (vx - sx))), int(round(deck[1])))
+else:
+    print(0, 0)
+PY
+            read -r movex movey < "$railshots/move.txt"
+            if [ "${movex:-0}" != 0 ] || [ "${movey:-0}" != 0 ]; then
+                if [ "${PD_DECKRAIL_NO_MOVE:-0}" = 1 ]; then
+                    say "DECKRAIL not moving the window (PD_DECKRAIL_NO_MOVE=1)"
+                    movex=0
+                fi
+            fi
+            if [ "${movex:-0}" != 0 ] || [ "${movey:-0}" != 0 ]; then
+                control deck-move "$movex" "$movey" || bad "DECKRAIL deck-move: $CONTROL_REPLY"
+                sleep 1
+                control deckrailanchor "$railshots/anchor.pt" \
+                    && read -r wx wy sx sy scale < "$railshots/anchor.pt"
+                ok "DECKRAIL moved the window in: the rail is now at screen ($sx,$sy)"
+            fi
+        fi
+    else
+        bad "DECKRAIL deckrailanchor: $CONTROL_REPLY"
+    fi
+    if control deckrailslots "$railshots/rest.json"; then
+        mcentre="$(python3 - "$railshots/rest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = [s for s in d["slots"] if s["first"] == 12][0]
+print((m["y"] + m["height"] / 2) if d["state"] == "away" else (m["glyphTop"] + m["glyphBottom"]) / 2)
+PY
+)"
+        local railheight
+        railheight="$(python3 -c "import json;print(json.load(open('$railshots/rest.json'))['railHeight'])")"
+        ok "DECKRAIL the rail is $(printf '%.1f' "$railheight") pt tall, M's centre $(printf '%.1f' "$mcentre") pt down"
+    else
+        bad "DECKRAIL deckrailslots (rest): $CONTROL_REPLY"
+    fi
+    # Gate A: the rail must stand wholly inside the screen's visible frame. The
+    # real pointer cannot reach a rail past the edge, and a forced position then
+    # draws a tag at rest that reads as a magnified letter.
+    local onscreen=1
+    if control screens "$railshots/screens.txt"; then
+        if ! python3 - "$railshots/screens.txt" "$sx" "$sy" "$scale" "$railheight" > "$railshots/onscreen.txt" 2>&1 <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+sx, sy, scale, railh = (float(sys.argv[i]) for i in range(2, 6))
+rail_width = 26
+deck = None
+screens = []
+for line in lines:
+    match = re.match(r"deck=(-?[0-9]+),(-?[0-9]+)-([0-9]+)x([0-9]+)", line)
+    if match:
+        deck = tuple(float(match.group(i)) for i in range(1, 5))
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)"
+                     r" visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if match:
+        screens.append(tuple(float(match.group(i)) for i in range(1, 9)))
+if not deck or not screens:
+    print("no screens report"); sys.exit(1)
+def overlap(screen):
+    x, y, w, h = screen[:4]
+    return max(0, min(x + w, deck[0] + deck[2]) - max(x, deck[0])) \
+        * max(0, min(y + h, deck[1] + deck[3]) - max(y, deck[1]))
+vx, vy, vw, vh = max(screens, key=overlap)[4:]
+inside = sx >= vx and sy >= vy and sx + rail_width <= vx + vw and sy + railh <= vy + vh
+print("rail %.0f..%.0f,%.0f on the visible frame %.0f..%.0f" % (sx, sx + rail_width, sy, vx, vx + vw))
+sys.exit(0 if inside else 1)
+PY
+        then
+            onscreen=0
+            bad "DECKRAIL gate A: the rail is not wholly on the screen ($(cat "$railshots/onscreen.txt"))"
+        else
+            ok "DECKRAIL gate A: the rail is wholly on the screen ($(cat "$railshots/onscreen.txt"))"
+        fi
+    else
+        onscreen=0
+        bad "DECKRAIL gate A: no screens report ($CONTROL_REPLY)"
+    fi
+    # Gate B: effective Reduce Motion off (its plain tint would read as a tag).
+    if python3 "$MACOS/scripts/deck-rail-slots.py" "$railshots/rest.json" motion-off > "$WORK/rail-motion.txt" 2>&1; then
+        ok "DECKRAIL gate B: effective Reduce Motion is off ($(cat "$WORK/rail-motion.txt"))"
+    else
+        onscreen=0
+        bad "DECKRAIL gate B: effective Reduce Motion is on (--debug-motion full did not reach the app)"
+    fi
+    if [ "$onscreen" = 1 ]; then
+        # Gate C: the forced enter at M gives the pure layout (equal gaps, the
+        # slot under the pointer at the centre, M's tag), with the real pointer
+        # parked off the window (a visible run).
+        if [ "$VISIBLE" = 1 ]; then cg_input moveat --x 5 --y 5; sleep 0.5; fi
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter M || bad "DECKRAIL gate C: deckrailenter M: $CONTROL_REPLY"
+        sleep 0.4
+        if control deckrailslots "$WORK/rail-gate.json" \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" centre >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" tag:M >/dev/null; then
+            ok "DECKRAIL gate C: the forced enter at M gives the pure layout"
+        else
+            onscreen=0
+            bad "DECKRAIL gate C: the forced enter at M does not match the pure layout"
+        fi
+        # Gate D: the forced M shot is 2.2x the rest shot's M (+/-15%).
+        shot_rail rail-forced-m.png
+        python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-forced-m.png" 1000 625 "$scale" "$wx" > "$railshots/forced.txt" 2>&1
+        python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 1000 625 "$scale" "$wx" > "$railshots/rest-glyph.txt" 2>&1
+        local forced rest_peak
+        forced="$(sed -n 's/^peak //p' "$railshots/forced.txt")"
+        rest_peak="$(sed -n 's/^peak //p' "$railshots/rest-glyph.txt")"
+        if [ -n "$forced" ] && [ -n "$rest_peak" ] \
+            && python3 -c "import sys; f=float('$forced'); r=float('$rest_peak'); sys.exit(0 if r > 0 and abs(f/r - 2.2) <= 2.2*0.15 else 1)"; then
+            ok "DECKRAIL gate D: the forced M is $(python3 -c "print(round(float('$forced')/float('$rest_peak'),2))") x the rest"
+        else
+            onscreen=0
+            bad "DECKRAIL gate D: the forced M shot is not 2.2x the rest (forced '$forced', rest '$rest_peak')"
+        fi
+        control deckrailleave
+        sleep 0.3
+    fi
+    # M's, Z's and #'s drawn centres at rest: where a visible run puts the
+    # pointer, and the rows a move names in a quiet one.
+    local zcentre hcentre
+    if control deckrailslots "$railshots/rest.json"; then
+        read -r zcentre hcentre < <(python3 - "$railshots/rest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+by_index = {s["first"]: s for s in d["slots"]}
+def centre(index):
+    s = by_index[index]
+    return (s["glyphTop"] + s["glyphBottom"]) / 2
+print(centre(25), centre(26))
+PY
+)
+    else
+        bad "DECKRAIL deckrailslots (rest, centres): $CONTROL_REPLY"
+    fi
+    if [ "$onscreen" = 1 ]; then
+        # The enter set, in order: enter at M, sideways at M (visible only: the
+        # scale never depends on x), down to Z and #, out to the left. Each step
+        # reads the drawn slots, so the frozen ends are checked on the way.
+        # Enter at M: the real pointer moves onto the rail, or the quiet run
+        # forces the same event; then the drawn state must say M. A shot is a
+        # record, never the proof.
+        deckrail_enter_m() {
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" \
+                    --y "$(python3 -c "print(round($sy + $mcentre))")"
+                sleep 0.8
+            else
+                control deckrailenter M || bad "DECKRAIL deckrailenter M: $CONTROL_REPLY"
+                sleep 0.5
+            fi
+        }
+        deckrail_check_m() {
+            local file="$1" label="$2"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] $label: the drawn M is under the pointer" \
+                    || bad "[DECK-7] $label: the drawn M is not under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:M \
+                    && ok "[DECK-7] $label: the tag names M" \
+                    || bad "[DECK-7] $label: the tag does not name M"
+            else
+                bad "DECKRAIL deckrailslots ($label): $CONTROL_REPLY"
+            fi
+        }
+        if [ "$VISIBLE" = 1 ]; then
+            # From outside the arc's room, straight onto the rail at M.
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.5
+        fi
+        deckrail_enter_m
+        deckrail_check_m "$WORK/rail-enter.json" "the enter at M"
+        if control deckrailslots "$WORK/rail-enter.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" gaps \
+                && ok "[DECK-7] on the enter the gaps are equal and the rest gap's" \
+                || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        else
+            bad "DECKRAIL deckrailslots (enter): $CONTROL_REPLY"
+        fi
+        shot_rail rail-enter-m.png
+        if [ "$VISIBLE" = 1 ]; then
+            # Sideways inside the column at M: leading x, then trailing x.
+            local side px
+            for side in leading trailing; do
+                if [ "$side" = leading ]; then
+                    px="$(python3 -c "print(round($sx + 3))")"
+                else
+                    px="$(python3 -c "print(round($sx + 23))")"
+                fi
+                cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
+                sleep 0.6
+                shot_rail "rail-side-$side.png"
+                control deckrailslots "$WORK/rail-side-$side.json" \
+                    || bad "DECKRAIL deckrailslots (side $side): $CONTROL_REPLY"
+            done
+            if control deckrailslots "$WORK/rail-side-trailing.json" \
+                && python3 - "$WORK/rail-enter.json" "$WORK/rail-side-trailing.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+b = json.load(open(sys.argv[2]))
+def m(d):
+    return [s for s in d["slots"] if s["first"] == 12][0]["scale"]
+print("M %.3f on the enter, %.3f at the column's trailing x" % (m(a), m(b)))
+sys.exit(0 if abs(m(b) / m(a) - 1) <= 0.05 else 1)
+PY
+            then
+                ok "[DECK-7] sideways at M the scale does not change (+/-5%)"
+            else
+                bad "[DECK-7] moving sideways at M changed the scale"
+            fi
+        else
+            skip_visible "DECK-7 sideways at M (the scale never depends on x)"
+        fi
+        # Down the rail to Z, then #: A's top and #'s bottom do not move.
+        local target
+        for target in Z '#'; do
+            if [ "$target" = Z ]; then
+                py="$(python3 -c "print(round($sy + $zcentre))")"
+                shot="rail-down-z.png"
+                file="$WORK/rail-z.json"
+            else
+                py="$(python3 -c "print(round($sy + $hcentre))")"
+                shot="rail-down-hash.png"
+                file="$WORK/rail-hash.json"
+            fi
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" --y "$py"
+                sleep 0.6
+            else
+                control deckrailmove "$target" || bad "DECKRAIL deckrailmove $target: $CONTROL_REPLY"
+                sleep 0.6
+            fi
+            shot_rail "$shot"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-enter.json" \
+                    && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                    || bad "[DECK-7] moving to $target moved the frozen ends"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                    || bad "[DECK-7] the move to $target does not put it under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                    && ok "[DECK-7] the move to $target names it" \
+                    || bad "[DECK-7] the move to $target does not name it"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                    && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                    || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+            else
+                bad "DECKRAIL deckrailslots ($target): $CONTROL_REPLY"
+            fi
+        done
+        # The light appearance, proved not posed: switch it, let the cross-fade
+        # settle, then enter at M and require the drawn state before the shot.
+        if [ "$VISIBLE" = 1 ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+            sleep 2
+            control deckrailleave
+            sleep 0.3
+            deckrail_enter_m
+            deckrail_check_m "$WORK/rail-light.json" "the light enter at M"
+            shot_rail rail-enter-m-light.png
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+            sleep 1
+        fi
+        # Out to the left, past the arc's room: back at rest within 0.3 s.
+        if [ "$VISIBLE" = 1 ]; then
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.3
+        else
+            control deckrailleave
+            sleep 0.3
+        fi
+        if control deckrailslots "$WORK/rail-away.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+                && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+                || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+        else
+            bad "DECKRAIL deckrailslots (away): $CONTROL_REPLY"
+        fi
+        shot_rail rail-away.png
+        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+            ok "DECKRAIL the letter sizes and A's top match the pure layout ($(grep -m1 '^A.s top' "$WORK/rail-glyph.txt"))"
+        else
+            bad "DECKRAIL the letter sizes or A's top are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+        fi
+        sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
+    else
+        bad "DECKRAIL a gate failed; the real-pointer steps are skipped"
+    fi
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
+    local edge
+    for edge in A '#'; do
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECKRAIL deckrailenter $edge: $CONTROL_REPLY"
+        if control deckrailslots "$WORK/rail-edge.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
+                && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
+                || bad "[DECK-7] with the pointer on $edge a slot leaves the clip"
+        else
+            bad "DECKRAIL deckrailslots ($edge): $CONTROL_REPLY"
+        fi
+    done
+    control deckrailleave
+    sleep 0.3
+
+    # The pointer never re-evaluates the grid's body: twenty moves, one runloop
+    # turn each, against an idle window of the same wall time.
+    local t0 dur moves idle
+    control deckbodyreset
+    t0="$(python3 -c 'import time;print(time.time())')"
+    control deckrailsweep 20 || bad "DECKRAIL deckrailsweep 20: $CONTROL_REPLY"
+    dur="$(python3 -c "import time;print(round(time.time() - $t0, 2))")"
+    control deckbodycount "$WORK/body-moves.txt" \
+        && moves="$(cat "$WORK/body-moves.txt")" || bad "DECKRAIL deckbodycount (moves): $CONTROL_REPLY"
+    control deckbodyreset
+    sleep "$dur"
+    control deckbodycount "$WORK/body-idle.txt" \
+        && idle="$(cat "$WORK/body-idle.txt")" || bad "DECKRAIL deckbodycount (idle): $CONTROL_REPLY"
+    if [ "${moves:-999}" -le $(( ${idle:-0} + 1 )) ]; then
+        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle over ${dur} s)"
+    else
+        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
+    fi
+
+    # A real click on N's drawn centre (visible), or the rail's own pick. The
+    # screen points come from the rail's own geometry (deckrailpoint), the hook
+    # the T click uses: the frozen span moves the letters, so the rail's own
+    # resolution of a letter to its row is what a person's pointer follows.
+    control deckrailleave
+    sleep 0.3
+    if [ "$VISIBLE" = 1 ]; then
+        local mx my
+        if control deckrailpoint M "$WORK/m.pt" && read -r mx my < "$WORK/m.pt"; then
+            cg_input moveat --x "$mx" --y "$my"
+            sleep 0.6
+            control deckrailslots "$WORK/rail-n.json" \
+                || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+                && ok "[DECK-7] the real pointer on M's drawn centre shows M's tag" \
+                || bad "[DECK-7] the real pointer on M did not show M's tag"
+        else
+            bad "DECKRAIL deckrailpoint M: $CONTROL_REPLY"
+        fi
+        if control deckrailpoint N "$WORK/n.pt" && read -r px py < "$WORK/n.pt"; then
+            cg_input moveat --x "$px" --y "$py"
+            sleep 0.6
+        else
+            bad "DECKRAIL deckrailpoint N: $CONTROL_REPLY"
+        fi
+    else
+        control deckrailenter M || bad "DECKRAIL deckrailenter M (N click): $CONTROL_REPLY"
+        sleep 0.4
+        control deckrailslots "$WORK/rail-n.json" \
+            || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+            && ok "[DECK-7] the enter at M names M" \
+            || bad "[DECK-7] the enter at M does not name M"
+        control deckrailmove N || bad "DECKRAIL deckrailmove N: $CONTROL_REPLY"
+        sleep 0.5
+    fi
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the pointer on N shows N's tag" \
+            || bad "[DECK-7] the pointer on N did not show N's tag"
+        if [ "$VISIBLE" = 1 ]; then
+            cg_input clickat --x "$px" --y "$py"
+        else
+            control deck-rail N
+        fi
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
+            && ok "[DECK-7] the click on N landed on N's section" \
+            || bad "[DECK-7] the click on N did not land on N"
+    else
+        bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
+    fi
+    # A person who clicks a letter and then moves the pointer away gets the
+    # rail back at rest. The real pointer only: a forced leave would prove
+    # nothing about the click.
+    if [ "$VISIBLE" = 1 ]; then
+        cg_input moveat --x "$(python3 -c "print(round($sx + 13 - 200))")" \
+            --y "$(python3 -c "print(round($sy + $mcentre))")"
+        sleep 0.3
+        if control deckrailslots "$WORK/rail-post-click.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-post-click.json" rest \
+                && ok "[DECK-7] after a click and a move out the rail is at rest within 0.3 s" \
+                || bad "[DECK-7] after a click and a move out the rail is not at rest"
+        else
+            bad "DECKRAIL deckrailslots (post-click): $CONTROL_REPLY"
+        fi
+    else
+        skip_visible "DECK-7 the rail after a click and a move out (the real pointer)"
+    fi
+
+    # The rail's overlay fills the container; a last-column cell inside it but
+    # off the rail still opens its app. The pointer leaves the rail first: the
+    # click is about the rest overlay, and the magnified hit area is the arc's
+    # room, which reaches a few points into the cell's trailing edge.
+    control deckrailleave
+    sleep 0.3
+    control deckquery "" || bad "DECKRAIL deckquery: $CONTROL_REPLY"
+    control deck-rail A || bad "DECKRAIL deck-rail A: $CONTROL_REPLY"
+    sleep 1
+    local opens_before
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    control deckfocus grid || bad "DECKRAIL deckfocus grid: $CONTROL_REPLY"
+    control deckclick Chrome \
+        && ok "[DECK-7] the last-column cell took a click through the rail's overlay" \
+        || bad "DECKRAIL deckclick Chrome: $CONTROL_REPLY"
+    wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
+        && ok "[DECK-7] the click through the overlay opened the app" \
+        || bad "[DECK-7] the click through the overlay opened nothing"
+    stop_app
+}
+
 check_deck() {
     clean
+    if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+        # The VM is a test box: the real-pointer proof needs the fisheye, which
+        # Reduce Motion legitimately disables. Turn it off for this run.
+        sudo -n defaults write /Library/Preferences/com.apple.universalaccess reduceMotion -bool false 2>/dev/null \
+            || defaults write com.apple.universalaccess reduceMotion -bool false 2>/dev/null || true
+        sleep 1
+    fi
     # The grid's fixtures (v105's empty slot): one package with two launcher
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -10652,6 +12910,39 @@ check_deck() {
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
+    # A flat-only reply is drawn by its own shape (docs/design/dock.md §Icons):
+    # fakephone's green rounded square covers its tile and its red disc keeps a
+    # white plate. The grid dump carries the colour just inside the body's
+    # leading edge, where a cover shows the icon and a plate shows the plate.
+    wait_until 20 grep -q 'CameraLauncher","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the grid reported what its tiles drew" || bad "[DECK-2] no ink in the grid dump"
+    wait_until 20 grep -q 'GalleryActivity","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the plating app's tile was drawn" || bad "[DECK-2] the plating app never drew"
+    python3 - "$WORK/deck-grid.jsonl" <<'PY' \
+        && ok "[DECK-2] a flat square covers its tile and a flat disc keeps its plate" \
+        || bad "[DECK-2] the flat replies did not draw as a cover and a plate"
+import json, sys
+
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+# The biggest dump is the whole grid (its last one, when every icon has
+# landed); later lines are search results.
+grids = [line for line in lines if "items" in line]
+whole = max(line["count"] for line in grids)
+grid = [line for line in grids if line["count"] == whole][-1]
+ink = {}
+for item in grid["items"]:
+    if "ink" in item:
+        ink[item["id"].split("/")[0]] = tuple(int(v) for v in item["ink"].split(","))
+
+cover = ink.get("com.android.camera2")
+plate = ink.get("com.android.gallery3d")
+if cover is None or any(abs(a - b) > 6 for a, b in zip(cover, (0, 128, 96))):
+    print("the covering flat icon's edge is", cover)
+    sys.exit(1)
+if plate is None or any(v < 248 for v in plate):
+    print("the plating flat icon's edge is", plate)
+    sys.exit(1)
+PY
     # The cells the grid drew (--debug-deck-grid): both entries of the repeated
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
@@ -10711,8 +13002,8 @@ check_deck() {
     control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
     # The A–Z rail (R1): rest, the letter under the pointer magnified, and the
-    # accent after a jump. A quiet run cannot move the pointer, so deckrailhover
-    # forces the letter the shot needs; the real pointer is proved in the VM.
+    # accent after a jump. A quiet run cannot move the pointer, so deckrailenter
+    # enters at the letter the shot needs; the real pointer is proved in the VM.
     local railshots="$WORK/deck-rail-shots"
     mkdir -p "$railshots"
     shot_rail() {
@@ -10723,28 +13014,18 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py
+    local px py wx wy sx sy scale
+    # The rail's magnification for the shot. A quiet run forces the enter; the
+    # real pointer's enter, sideways move, sweep to Z and #, leave and click are
+    # deckrail's, in the VM.
     if [ "$VISIBLE" = 1 ]; then
-        if control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
-            && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
-            shot_rail rail-hover-before.png
-            cg_input moveat --x "$px" --y "$py"
-            sleep 1
-            shot_rail rail-hover-m.png
-            if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
-                bad "DECK moving the real pointer onto M did not magnify the rail"
-            else
-                ok "DECK the real pointer on M magnified the rail"
-            fi
-        else
-            bad "DECK deckrailpoint M: $CONTROL_REPLY"
-        fi
+        skip_visible "DECK the real pointer's rail enter and moves (VM: deckrail)"
     else
-        control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
-            || bad "[DECK-7] deckrailhover M: $CONTROL_REPLY"
+        control deckrailenter M && ok "[DECK-7] forced the rail's enter at M for the shot" \
+            || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
         sleep 1
         shot_rail rail-hover-m.png
-        control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave: $CONTROL_REPLY"
     fi
 
     # A letter click scrolls to that letter's first app. A quiet run cannot
@@ -10824,15 +13105,218 @@ PY
     # the real letter under the pointer and its tag.
     if control deck-size 760 450 >/dev/null; then
         sleep 1
-        control deckrailhover T && ok "[DECK-7] the short rail's hover on T is forced" \
-            || bad "[DECK-7] deckrailhover T (short): $CONTROL_REPLY"
+        control deckrailenter T && ok "[DECK-7] the short rail's enter at T is forced" \
+            || bad "[DECK-7] deckrailenter T (short): $CONTROL_REPLY"
         sleep 1
         shot_rail rail-short.png
-        control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave (short): $CONTROL_REPLY"
     else
         bad "DECK deck-size 760 450: $CONTROL_REPLY"
     fi
     control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
+
+    # DECK-7: the rail's magnification. A quiet run cannot move the pointer, so
+    # the enter and the moves are forced; the real pointer is proved in the VM.
+    # On enter the span is computed at that y and frozen: A's top and #'s bottom
+    # must not move while the pointer sweeps to # and Z, the gaps stay equal and
+    # the rest gap's, and the drawn letter under the pointer is the one the tag
+    # names and a click picks.
+    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail): $CONTROL_REPLY"
+    sleep 1
+    control deckrailleave
+    sleep 0.5
+    shot_rail rail-rest.png
+    if control deckrailanchor "$railshots/anchor.pt" \
+        && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
+        ok "[DECK-7] the rail is at window ($wx,$wy) at scale $scale"
+    else
+        bad "DECK deckrailanchor (rail): $CONTROL_REPLY"
+    fi
+    control deckrailenter M && ok "[DECK-7] the pointer enters the rail at M" \
+        || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
+    sleep 0.6
+    shot_rail rail-enter-m.png
+    if control deckrailslots "$WORK/rail-m.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
+            && ok "[DECK-7] on the enter every gap is equal and the rest gap's" \
+            || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" centre \
+            && ok "[DECK-7] the enter at M puts the drawn M under the pointer" \
+            || bad "[DECK-7] the enter at M does not put M under the pointer"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
+            && ok "[DECK-7] the tag names M when the pointer is on the rail" \
+            || bad "[DECK-7] the tag at the rail does not name M"
+    else
+        bad "DECK deckrailslots (M): $CONTROL_REPLY"
+    fi
+    local target shot file
+    for target in '#' Z; do
+        if [ "$target" = '#' ]; then
+            shot="rail-down-hash.png"; file="$WORK/rail-hash.json"
+        else
+            shot="rail-down-z.png"; file="$WORK/rail-z.json"
+        fi
+        control deckrailmove "$target" || bad "[DECK-7] deckrailmove $target: $CONTROL_REPLY"
+        sleep 0.6
+        shot_rail "$shot"
+        if control deckrailslots "$file"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-m.json" \
+                && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                || bad "[DECK-7] moving to $target moved the frozen ends"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                || bad "[DECK-7] the move to $target does not put it under the pointer"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                && ok "[DECK-7] the tag names $target" \
+                || bad "[DECK-7] the tag does not name $target"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+        else
+            bad "DECK deckrailslots ($target): $CONTROL_REPLY"
+        fi
+    done
+    # The click picks the letter under the pointer: move to N and pick, and the
+    # grid lands in N's section with the tag naming N.
+    control deckrailmove N || bad "[DECK-7] deckrailmove N: $CONTROL_REPLY"
+    sleep 0.5
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the tag names N with the pointer on N" \
+            || bad "[DECK-7] the tag with the pointer on N does not name N"
+    else
+        bad "DECK deckrailslots (N): $CONTROL_REPLY"
+    fi
+    control deck-rail N || bad "DECK deck-rail N: $CONTROL_REPLY"
+    sleep 1
+    python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
+        && ok "[DECK-7] the click on N landed on N's section" \
+        || bad "[DECK-7] the click on N did not land on N"
+    # Leaving: the rail is at rest within 0.3 s.
+    control deckrailleave
+    sleep 0.3
+    if control deckrailslots "$WORK/rail-away.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+            && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+            || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+    else
+        bad "DECK deckrailslots (away): $CONTROL_REPLY"
+    fi
+    shot_rail rail-away.png
+    if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+        ok "[DECK-7] the shots match the layout: $(grep -m1 '^A.s top' "$WORK/rail-glyph.txt")"
+    else
+        bad "[DECK-7] the shots do not match the layout: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+    fi
+    sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
+    local edge
+    for edge in A '#'; do
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECK deckrailenter $edge: $CONTROL_REPLY"
+        if control deckrailslots "$WORK/rail-edge.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
+                && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
+                || bad "[DECK-7] with the pointer on $edge a slot leaves the clip"
+        else
+            bad "DECK deckrailslots ($edge): $CONTROL_REPLY"
+        fi
+    done
+    control deckrailleave
+    sleep 0.3
+
+    # DECK-7: the pointer never re-evaluates the grid's body. Twenty moves, one
+    # runloop turn each, against an idle window of the same length (the quiet
+    # run flushes the window's own transaction about twice a second, so the
+    # bound is the idle count plus one).
+    local t0 dur moves idle
+    control deckbodyreset
+    t0="$(python3 -c 'import time;print(time.time())')"
+    control deckrailsweep 20 || bad "DECK deckrailsweep 20: $CONTROL_REPLY"
+    dur="$(python3 -c "import time;print(round(time.time() - $t0, 2))")"
+    control deckbodycount "$WORK/body-moves.txt" \
+        && moves="$(cat "$WORK/body-moves.txt")" || bad "DECK deckbodycount (moves): $CONTROL_REPLY"
+    control deckbodyreset
+    sleep "$dur"
+    control deckbodycount "$WORK/body-idle.txt" \
+        && idle="$(cat "$WORK/body-idle.txt")" || bad "DECK deckbodycount (idle): $CONTROL_REPLY"
+    if [ "${moves:-999}" -le $(( ${idle:-0} + 1 )) ]; then
+        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle over ${dur} s)"
+    else
+        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
+    fi
+    control deckrailleave
+
+    # DECK-7: the letter a rail click lands on stays lit, not the letter of the
+    # row it shares. The fake phone's --rail-letters fixtures put I mid-row
+    # with J beside it and X beside Y in the last screenful (whose row cannot
+    # come to the top). A scroll by other means hands the accent back to the
+    # top row's letter; the jump's own animated scroll must not.
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top: $CONTROL_REPLY"
+    sleep 0.5
+    local railletter railjson railstart
+    railjson="$WORK/deck-grid.jsonl"
+    for railletter in I X; do
+        control deck-rail "$railletter" >/dev/null || bad "DECK deck-rail $railletter: $CONTROL_REPLY"
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-accent.py" pick "$railjson" "$railletter" \
+            && ok "[DECK-7] the rail's $railletter click keeps $railletter lit, not its row's letter" \
+            || bad "[DECK-7] the rail's $railletter click lit another letter"
+        railstart="$(wc -l < "$railjson" | tr -d ' ')"
+        control deck-scroll -120 >/dev/null || bad "DECK deck-scroll after $railletter: $CONTROL_REPLY"
+        sleep 0.5
+        python3 "$MACOS/scripts/deck-rail-accent.py" top "$railjson" "$railstart" \
+            && ok "[DECK-7] a scroll after the $railletter pick hands the accent back to the top row" \
+            || bad "[DECK-7] after a scroll the accent is not the top row's letter"
+    done
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
+
+    # DECK-4 on the person's wide window: over 1000 pt the whole grid grows
+    # with the width (clamp(width/1000, 1, 1.5), 1.5x from 1500 pt) and the
+    # block reserves the rail's 44 pt, so the letter column never sits over
+    # the last cell. The window may be wider than the run's display: the
+    # layout follows the width it is given, not what the screen can show.
+    if control deck-size 1960 1100 >/dev/null; then
+        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1960 8 20)"; then
+            ok "[DECK-4] at 1960 pt the tiles grow with the width and the rail keeps its room ($geometry)"
+        else
+            bad "[DECK-4] at 1960 pt the block is not the wide one ($geometry)"
+        fi
+    else
+        bad "DECK deck-size 1960: $CONTROL_REPLY"
+    fi
+    # DECK-24: the green button's zoom (NSWindow.zoom, the same path a
+    # title-bar double-click takes) lands on the Deck's intrinsic width — the
+    # 880 pt grid plus 60 pt a side at 100 %, plus the rail — and the screen's
+    # visible height, not the whole screen.
+    local zx zy zw zh vw vh want
+    want=$(( 1000 + 44 ))
+    if control deckzoomwindow; then
+        sleep 2
+        if control deck-frame "$WORK/deck-zoom-frame.txt" \
+            && read -r zx zy zw zh < "$WORK/deck-zoom-frame.txt" \
+            && control deck-screen "$WORK/deck-screen.txt" \
+            && read -r vw vh < "$WORK/deck-screen.txt"; then
+            if [ "$zw" -ge $(( want - 2 )) ] && [ "$zw" -le $(( want + 2 )) ] \
+                && [ "$zh" -ge $(( vh - 2 )) ] && [ "$zh" -le $(( vh + 2 )) ]; then
+                ok "[DECK-24] the standard zoom took the Deck to ${zw}x${zh} (its ${want} pt intrinsic width, the screen's ${vh} pt visible height)"
+            else
+                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not ${want}x${vh}"
+            fi
+            if [ "$zw" -lt "$vw" ]; then
+                ok "[DECK-24] the standard zoom stops short of the ${vw} pt screen width"
+            else
+                bad "[DECK-24] the standard zoom stretched to the ${vw} pt screen width"
+            fi
+        else
+            bad "DECK deckzoomwindow's frame: $CONTROL_REPLY"
+        fi
+    else
+        bad "DECK deckzoomwindow: $CONTROL_REPLY"
+    fi
+    control deck-size 760 600 || bad "DECK deck-size 760 600 (wide checks): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
@@ -10927,6 +13411,31 @@ if not root["focused"] or root["keyWindow"] != "deck":
 PY
     control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
         || bad "DECK shared app: closing the stream window answered '$CONTROL_REPLY'"
+    # DECK-7 click-through: the rail's overlay fills the container so it can
+    # clip the growing rail. A click on a last-column cell inside that frame but
+    # off the rail must still reach the cell. It opens a stream, so it runs
+    # after the ⌘F/⌘K steps (which expect the first stream) and before the
+    # popover; the frame check at the end of the run stops the app.
+    # The stream closed above tears down in its own time: resizing the Deck
+    # under its teardown stalls the control channel, so settle first and do
+    # not resize.
+    sleep 4
+    control deckquery "" || bad "DECK deckquery (click-through): $CONTROL_REPLY"
+    sleep 0.5
+    control deck-rail A || bad "DECK deck-rail A (click-through): $CONTROL_REPLY"
+    sleep 1
+    local opens_before
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    control deckfocus grid || bad "DECK deckfocus grid (click-through): $CONTROL_REPLY"
+    # The Deck is 760 pt wide: 6 columns, so the sixth cell of the first row is
+    # in the last column, under the overlay's frame and off the rail.
+    control deckclick Authenticator 5 \
+        && ok "[DECK-7] the last-column cell took a click through the rail's overlay" \
+        || bad "[DECK-7] deckclick Authenticator 5: $CONTROL_REPLY"
+    wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
+        && ok "[DECK-7] the click through the overlay opened the app" \
+        || bad "[DECK-7] the click through the overlay opened nothing"
+
     # The status pill opens the same phone controls in a popover (docs/DESIGN.md
     # "Deck"): one component, P3's tiles, and no Settings/Quit footer (the Deck
     # has its own gear and the app menu has both). Its DND tile is the real
@@ -10966,6 +13475,73 @@ PY
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
         && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
         || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
+
+    # The visual record for DECK-4/DECK-24 (the reviewer looks before the
+    # person does): the Deck at the sizes the brief names, from the run's own
+    # display, light and dark. The 125 % row sets the grid's zoom the way ⌘+
+    # does, and the last row is the standard zoom's own frame. Each appearance
+    # is the app's own override (the person's system setting is never touched),
+    # and each is a fresh launch: the shared app follows the system's
+    # appearance otherwise.
+    local shotdir="$WORK/deck-wide" shotlook deck_id lists_before
+    mkdir -p "$shotdir"
+    # The popover from DECK-20 would sit over the grid, and a reconnecting link
+    # dims the whole content: the record is the connected Deck alone.
+    control deckpanelclose
+    sleep 0.5
+    deck_linked() {
+        [ "$(grep -o '"state":"[a-z_]*"' "$WORK/events.jsonl" 2>/dev/null | tail -1)" = '"state":"auth_ok"' ]
+    }
+    deck_shot() {
+        wait_until 15 deck_linked
+        deck_id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$deck_id" "$shotdir/$1.png" >/dev/null 2>&1 \
+            && say "shot: $shotdir/$1.png" \
+            || bad "DECK no Deck window for the shot $1"
+    }
+    deck_size() {  # deck_size WIDTH HEIGHT SHOT_NAME
+        control deck-size "$1" "$2" >/dev/null || bad "DECK deck-size $1 $2 ($3): $CONTROL_REPLY"
+        sleep 1.5
+        deck_shot "$3"
+    }
+    deck_row() {
+        shotlook="$1"
+        control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
+        deck_size 1960 1100 "wide-1960x1100-$shotlook"
+        deck_size 1440 900 "wide-1440x900-$shotlook"
+        control deckzoom 1.25 >/dev/null || bad "DECK deckzoom 1.25: $CONTROL_REPLY"
+        deck_size 1000 625 "wide-1000x625-125-$shotlook"
+        control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
+        control deck-size 1960 1100 >/dev/null || bad "DECK deck-size 1960 1100 (zoom): $CONTROL_REPLY"
+        sleep 1
+        control deckzoomwindow >/dev/null || bad "DECK deckzoomwindow (shot): $CONTROL_REPLY"
+        sleep 2
+        deck_shot "wide-after-zoom-$shotlook"
+    }
+    apps_asked() { [ "$(count_events '"t":"apps.list"')" -gt "$lists_before" ]; }
+    # deck_appearance light|dark: a fresh shared app in that appearance. It is
+    # killed by its own pid first: stop_app only resets it, and a second
+    # instance would wait for the phone's one session.
+    deck_appearance() {
+        kill_e2e_app
+        SHARED_PID=""
+        lists_before="$(count_events '"t":"apps.list"')"
+        launch_shared --connect "127.0.0.1:$PORT" --appearance "$1"
+        if wait_until 30 apps_asked; then
+            ok "DECK the $1 Deck came up and asked for its apps"
+        else
+            bad "DECK the $1 Deck never asked for its apps"
+        fi
+        sleep 3
+        control deckpanelclose >/dev/null
+    }
+    deck_appearance light
+    deck_row light
+    deck_appearance dark
+    deck_row dark
+    control deckzoom 1 >/dev/null
+    kill_e2e_app
+    SHARED_PID=""
 
     # DECK-19/CONV-MAC-12: does the Deck remember its frame across a launch?
     # Resize it, quit the way ⌘Q does, relaunch and read the frame again.
@@ -11314,13 +13890,54 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device
+    local shots="$WORK/menubar-shots" result device vcx vcy
+    local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
         local id
         id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    # shot_item NAME CENTRE_X CENTRE_Y "DISPLAY x y w h": a 300×30 pt menu bar
+    # crop around the item, kept inside that display. The person's own items are
+    # the neighbours: tight, and the crops stay in $WORK, never committed.
+    shot_item() {
+        local name="$1" cx="$2" cy="$3" x y w=300 h=30 sx sy sw sh
+        read -r sx sy sw sh <<< "$4"
+        x=$(( cx - w / 2 )); y=$(( cy - h / 2 ))
+        [ "$x" -lt $(( sx + 4 )) ] && x=$(( sx + 4 ))
+        [ $(( x + w )) -gt $(( sx + sw - 4 )) ] && x=$(( sx + sw - 4 - w ))
+        [ "$y" -lt "$sy" ] && y="$sy"
+        [ $(( y + h )) -gt $(( sy + sh )) ] && y=$(( sy + sh - h ))
+        screencapture -x -R "${x},${y},${w},${h}" "$shots/$name" >/dev/null 2>&1 \
+            && say "shot: $shots/$name rect=${x},${y},${w},${h}" \
+            || bad "MENUBAR-SHOTS no $name"
+    }
+    # display_of main|ID — that display's "x y w h" in Quartz points.
+    display_of() {
+        "$MENUBARBIN" displays | awk -v want="$1" \
+            '$1 == want || (want == "main" && $NF == "main=1") { print $2, $3, $4, $5; exit }'
+    }
+    # item_shots [PREFIX] — the item's crop on the active display and on the
+    # run's own display, an inactive one: there every item is drawn dimmed,
+    # ours included. The frame line says where the item is in each crop.
+    item_shots() {
+        local fx fy fw fh icx icy
+        read -r fx fy fw fh <<< "$("$MENUBARBIN" frame "$APP_PID")" \
+            || { bad "MENUBAR-SHOTS no AX frame for the status item"; return 1; }
+        say "MENUBAR-SHOTS item frame=${fx},${fy},${fw}x${fh}"
+        icx=$(( fx + fw / 2 )); icy=$(( fy + fh / 2 ))
+        read -r mainx mainy mainw mainh <<< "$(display_of main)"
+        [ -n "$mainw" ] || { bad "MENUBAR-SHOTS no main display"; return 1; }
+        shot_item "${1:-menubar-item}-main.png" "$icx" "$icy" "$mainx $mainy $mainw $mainh"
+        [ -n "${VDISPLAY_ID:-}" ] || return 0
+        read -r vx vy vw vh <<< "$(display_of "$VDISPLAY_ID")"
+        [ -n "$vw" ] || { bad "MENUBAR-SHOTS no run display $VDISPLAY_ID"; return 1; }
+        # The same distance from the display's right edge, on its menu bar.
+        vcx=$(( vx + vw - (mainx + mainw - icx) ))
+        vcy=$(( vy + icy - mainy ))
+        shot_item "${1:-menubar-item}-inactive.png" "$vcx" "$vcy" "$vx $vy $vw $vh"
     }
 
     FAKE_ARGS="--media" start_fake || return 1
@@ -11334,6 +13951,19 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
+    # [PANEL-25] the item is a real status item: AppKit's, sized to its own
+    # template image with no foreign view over the button. A fixed length and a
+    # hosting view pinned over the button were the person's padding, the
+    # off-centre glyph and the icon that stayed bright on the inactive display.
+    control menubaricon || true
+    result="$CONTROL_REPLY"
+    case "$result" in
+        "length=variable image=template subviews=0 state=online dot=0")
+            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        *)
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+    esac
+    item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
         || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
@@ -11479,6 +14109,59 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+
+    # The agent dot (PANEL-1/PANEL-25): the same item with an automation client
+    # connected. A socket client is what the count follows; the probe says the
+    # dot is in the drawing and the crop shows the glyph with it.
+    FAKE_ARGS="--media" start_fake || return 1
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 90 --debug-control "$WORK-control"
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-SHOTS the dot session never started"; stop_app; stop_fakephone; return 1; }
+    local sock="$HOME/Library/Application Support/PocketDeck-$PROFILE/mcp.sock" agent_pid dot=0
+    if ! wait_until 20 test -S "$sock"; then
+        bad "MENUBAR-SHOTS no automation socket for the dot"
+    else
+        python3 - "$sock" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.1)
+time.sleep(60)
+PY
+        agent_pid=$!
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
+            || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # The crop is taken while the client is still connected: the dot is in
+        # the drawing, not a second view over the button.
+        item_shots menubar-item-dot
+        kill "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+        # And it leaves with the client: the image follows the count both ways.
+        dot=0
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=0"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the dot leaves when the client disconnects" \
+            || bad "[PANEL-1] the dot stayed after the client left ($CONTROL_REPLY)"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
     shoot_panel_states
 }
 
@@ -11878,9 +14561,10 @@ PY
 
     # Frozen picture: the phone stops sending frames with the session still up.
     # The window must say so within stale_picture_ms, and say it visibly: the
-    # "Not responding" pill in the view tree (stall_pill=1), not just the
-    # `stall=` flag. Both window styles, and the pill goes when frames resume.
-    # One window per launch so the chrome state file is that window's.
+    # disconnection overlay in the view tree with the app's icon
+    # (stall_overlay=1 stall_icon=1), not just the `stall=` flag (WIN-39). Both
+    # window styles, and the overlay goes when frames resume. One window per
+    # launch so the chrome state file is that window's.
     local kind stall_ms stale_ms
     stale_ms="$(nfr_limit stale_picture_ms)"
     for kind in immersive framed; do
@@ -11899,17 +14583,17 @@ PY
         else
             bad "NFR no stale picture ($kind): the window kept the last frame as live for ${stale_ms} ms (state: $(chrome_state))"
         fi
-        if wait_until 3 chrome_has "stall_pill=1" && chrome_has "style=$kind"; then
-            ok "NFR stall is visible ($kind): the \"Not responding\" pill is in the window (state: $(chrome_state))"
+        if wait_until 3 chrome_has "stall_overlay=1 stall_icon=1" && chrome_has "style=$kind"; then
+            ok "NFR stall is visible ($kind): the \"Not responding\" overlay with its icon is in the window (state: $(chrome_state))"
         else
-            bad "NFR stall is visible ($kind): the chrome has no \"Not responding\" pill (state: $(chrome_state))"
+            bad "NFR stall is visible ($kind): the chrome has no \"Not responding\" overlay with its icon (state: $(chrome_state))"
         fi
         say "NFR stall ($kind): frames stopped, state $(chrome_state)"
         wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames ($kind)"
-        if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
-            ok "NFR stall is visible ($kind): frames resumed and the pill went away (state: $(chrome_state))"
+        if wait_until 10 chrome_has "stall=0 stall_overlay=0"; then
+            ok "NFR stall is visible ($kind): frames resumed and the overlay went away (state: $(chrome_state))"
         else
-            bad "NFR stall is visible ($kind): the pill stayed after frames resumed (state: $(chrome_state))"
+            bad "NFR stall is visible ($kind): the overlay stayed after frames resumed (state: $(chrome_state))"
         fi
         stop_app
         stop_fakephone
@@ -11930,8 +14614,8 @@ PY
     local locked_ms
     locked_ms="$(first_event_ms ev power_locked)"
     sleep 1
-    if chrome_has "stall=0 stall_pill=0"; then
-        ok "NFR power press: the window held the last frame, no \"Not responding\" pill (state: $(chrome_state))"
+    if chrome_has "stall=0 stall_overlay=0"; then
+        ok "NFR power press: the window held the last frame, no \"Not responding\" overlay (state: $(chrome_state))"
     else
         bad "NFR power press: the window called the phone's own press a stall (state: $(chrome_state))"
     fi
@@ -11944,7 +14628,7 @@ PY
     # the steps above cannot close the window before the re-stall.
     while [ "$(now_ms)" -lt $(( locked_ms + 1700 )) ]; do sleep 0.1; done
     say "NFR power press: $(( $(now_ms) - locked_ms )) ms after the press, waiting for a real stall"
-    if wait_ms 2500 chrome_has "stall=1 stall_pill=1"; then
+    if wait_ms 2500 chrome_has "stall=1 stall_overlay=1"; then
         ok "NFR power press: a real stall after the grace still says \"Not responding\" (state: $(chrome_state))"
     else
         bad "NFR power press: no stall after the grace with the frames still stopped (state: $(chrome_state))"
@@ -11975,7 +14659,7 @@ PY
     wait_until 30 eval '[ -n "$(first_event_after_ms ev stall "$occlude_ms")" ]' \
         || bad "NFR the fake never stalled while the window was covered (occlusion)"
     sleep 3
-    if chrome_has "stall=0 stall_pill=0"; then
+    if chrome_has "stall=0 stall_overlay=0"; then
         ok "NFR occlusion: a covered window did not call the stopped picture a stall"
     else
         bad "NFR occlusion: the covered window said the picture stopped (state: $(chrome_state))"
@@ -11989,14 +14673,14 @@ PY
     else
         bad "NFR occlusion: the covered time counted as silence (state: $(chrome_state))"
     fi
-    # ...and 1.5 s of real silence after that is a stall, with the pill.
-    if wait_ms "$stale_ms" chrome_has "stall=1 stall_pill=1"; then
+    # ...and 1.5 s of real silence after that is a stall, with the overlay.
+    if wait_ms "$stale_ms" chrome_has "stall=1 stall_overlay=1"; then
         ok "NFR occlusion: real silence after uncovering still stalls"
     else
         bad "NFR occlusion: a real silence after uncovering was not reported (state: $(chrome_state))"
     fi
     wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames (occlusion)"
-    if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
+    if wait_until 10 chrome_has "stall=0 stall_overlay=0"; then
         ok "NFR occlusion: frames resumed and the stall went away"
     else
         bad "NFR occlusion: the stall stayed after frames resumed (state: $(chrome_state))"
@@ -12145,11 +14829,12 @@ build_vdisplay || exit 1
 build_load || exit 1
 init_watchdog
 start_load
-start_vdisplay || exit 1
+start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" || exit 1
 start_watch
 for check in "${CHECKS[@]}"; do
     # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
     [ -n "${PD_E2E_MARKS:-}" ] && echo "$(date +%s) $check" >> "$PD_E2E_MARKS"
+    ensure_vdisplay "$check" || exit 1
     "check_${check//-/_}"
 done
 [ "$which_check" = "all" ] && check_orphans

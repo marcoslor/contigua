@@ -21,6 +21,7 @@ private final class FakeFsChannel: FsChannel {
     private(set) var lists: [(id: UInt32, path: String, page: String?)] = []
     private(set) var stats: [(id: UInt32, path: String)] = []
     private(set) var reads: [Read] = []
+    private(set) var thumbs: [(id: UInt32, path: String, size: Int, etag: String?)] = []
     private(set) var cancels: [UInt32] = []
     private(set) var writes: [(id: UInt32, path: String, size: Int, sha256: String, etag: String?, exclusive: Bool)] = []
     private(set) var writeData: [(id: UInt32, bytes: [UInt8])] = []
@@ -45,6 +46,11 @@ private final class FakeFsChannel: FsChannel {
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?) {
         lock.lock(); defer { lock.unlock() }
         reads.append(Read(id: id, path: path, offset: offset, length: length, etag: etag))
+    }
+
+    func fsThumb(id: UInt32, path: String, size: Int, etag: String?) {
+        lock.lock(); defer { lock.unlock() }
+        thumbs.append((id, path, size, etag))
     }
 
     func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,

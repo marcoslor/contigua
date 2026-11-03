@@ -1,0 +1,15 @@
+b -n _os_feature_enabled_impl
+br command add -o "p (char*)$x0" -o "p (char*)$x1" -o "finish" -o "p/x $x0" -o "c" 1
+b -n MGGetBoolAnswer
+br command add -o "po (id)$x0" -o "finish" -o "p/x $x0" -o "c" 2
+b -n MGCopyAnswer
+br command add -o "po (id)$x0" -o "c" 3
+b -n sysctlbyname
+br command add -o "p (char*)$x0" -o "c" 4
+b -n xpc_connection_create_mach_service
+br command add -o "p (char*)$x0" -o "c" 5
+b -n IOServiceMatching
+br command add -o "p (char*)$x0" -o "c" 6
+b -n IOServiceNameMatching
+br command add -o "p (char*)$x0" -o "c" 7
+run

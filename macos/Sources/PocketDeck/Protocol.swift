@@ -47,6 +47,15 @@ struct Frame: Equatable {
 
     var messageType: MessageType? { MessageType(rawValue: type) }
 
+    /// The inverse of [encoded] for the path layer, which sends encoded bytes.
+    init?(encoded bytes: [UInt8]) {
+        guard bytes.count >= 9 else { return nil }
+        self.type = bytes[4]
+        self.stream = UInt32(bytes[5]) << 24 | UInt32(bytes[6]) << 16
+            | UInt32(bytes[7]) << 8 | UInt32(bytes[8])
+        self.payload = Array(bytes[9...])
+    }
+
     /// len counts type + stream + payload, i.e. everything after the prefix.
     var encoded: [UInt8] {
         var out = [UInt8]()
@@ -476,9 +485,14 @@ struct JSONMessage {
 }
 
 enum JSONFrame {
-    static func encode(_ object: [String: Any]) -> [UInt8] {
+    /// The JSON payload bytes (without the frame header).
+    static func payload(_ object: [String: Any]) -> [UInt8] {
         let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
-        return Frame(type: .json, stream: 0, payload: [UInt8](data)).encoded
+        return [UInt8](data)
+    }
+
+    static func encode(_ object: [String: Any]) -> [UInt8] {
+        Frame(type: .json, stream: 0, payload: payload(object)).encoded
     }
 
     static func decode(payload: [UInt8]) -> JSONMessage? {

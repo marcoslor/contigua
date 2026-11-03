@@ -100,8 +100,8 @@ class BackpressureStallTest {
     private fun readUntil(t: String, timeoutMs: Int = 3_000): Map<String, Any?> {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            val frame = reader.readFrame() ?: error("connection closed while waiting for '$t'")
-            val msg = Json.parseObject(String(frame.payload))
+            val frame = readPathFrame(reader) ?: error("connection closed while waiting for '$t'")
+            val msg = pathJson(frame)
             if (msg["t"] == t) return msg
         }
         error("never received '$t'")
@@ -109,7 +109,7 @@ class BackpressureStallTest {
 
     private fun authenticate() {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))
+        send(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))
         readUntil("welcome", timeoutMs = 5_000)
         assertTrue("the session is ready", session!!.isReady)
     }

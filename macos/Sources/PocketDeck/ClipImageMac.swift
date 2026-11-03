@@ -78,13 +78,17 @@ final class ClipImageBuffer {
 /// Mac → phone clipboard images: one start, chunked `clip.image`_DATA, one end.
 /// The bytes never sit in the send queue (limits: 8 MiB, NW buffers take them).
 enum ClipImageSend {
-    static func run(_ data: Data, mime: String, session: Session) {
+    /// Sends one image; false when it cannot go (bad mime, empty or over the
+    /// cap). `id` is pre-allocated for the paste flow, whose answer rides it;
+    /// `paste` lets the phone's gate step aside for the person's own ⌘V.
+    @discardableResult
+    static func run(_ data: Data, mime: String, session: Session,
+                    id: UInt32 = ClipImageSend.nextId(), paste: Bool = false) -> Bool {
         guard ClipImagePolicy.valid(mime: mime), data.count <= ClipImagePolicy.maxBytes, !data.isEmpty else {
             Log.app.info("clip.image: not sending \(data.count) bytes (\(mime, privacy: .public))")
-            return
+            return false
         }
-        let id = Self.nextId()
-        session.clipImageStart(id: id, mime: mime, size: data.count)
+        session.clipImageStart(id: id, mime: mime, size: data.count, paste: paste)
         let sha = ClipImagePolicy.sha256(data)
         let bytes = [UInt8](data)
         // Frames are already ordered by NWConnection; the phone's bulk cap is
@@ -97,9 +101,12 @@ enum ClipImageSend {
         }
         session.clipImageEnd(id: id, size: bytes.count, sha256: sha)
         Log.app.notice("clip.image: sent \(bytes.count) bytes (\(mime, privacy: .public))")
+        return true
     }
 
-    private static func nextId() -> UInt32 {
+    /// The wire id for one image; the paste flow and the sync share it so two
+    /// images in flight can never wear the same id.
+    static func nextId() -> UInt32 {
         lock.lock()
         defer { lock.unlock() }
         counter += 1

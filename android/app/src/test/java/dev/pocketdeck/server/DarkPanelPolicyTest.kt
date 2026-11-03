@@ -2,6 +2,8 @@ package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,7 +74,135 @@ class DarkPanelPolicyTest {
         }
     }
 
-    // --- the user's power button wins --------------------------------
+    // --- an episode that starts while the group sleeps ----------------
+    // The 10-30 report: the VD starts OFF with the panel's group, the activity
+    // launch waits for the group to wake, and the take-over only ran after the
+    // launch and its task wait (23 s to the first frame). The take-over is now
+    // the episode start's own action, before the launch; the panel-off it owes
+    // is the first step's.
+
+    @Test
+    fun `an episode on a sleeping group is woken before the launch, panel off after`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertNotNull("the take-over must not wait for the launch", takeOver)
+        // The panel-off is armed before the wake and owed again to the first
+        // step: the platform answers the wake with its own ON either way.
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), takeOver)
+        assertTrue(
+            "the shared group is woken now",
+            DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver!!),
+        )
+        // The wake lights the lock screen: the first step still owes the
+        // panel-off, does not wake again, and keeps the transitional re-applies.
+        val step = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertEquals(PanelPlan(wake = false, panelOff = true, transitional = true), step)
+        // From there it is the existing steady dark path.
+        assertEquals(
+            PanelPlan(wake = true, panelOff = true, transitional = false),
+            p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK),
+        )
+    }
+
+    @Test
+    fun `a take-over in flight is not repeated when the step already decided`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK))
+    }
+
+    @Test
+    fun `no step after the take-over issues a group wake while the panel is owed off`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)!!
+        assertTrue(
+            "the take-over is the one wake of the episode",
+            DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver),
+        )
+        // The platform's display controller reports the panel on again after
+        // the wake; every following step still owes the panel off and must not
+        // ask for another group wake (the 11-01 step 2 line was a plan, not a
+        // physical flash: SurfaceFlinger stayed OFF).
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        repeat(3) {
+            val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+            assertTrue("the panel-off stays owed", plan.panelOff)
+            assertFalse(
+                "a shared-group step beside a dark panel never wakes the group",
+                DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, plan),
+            )
+        }
+    }
+
+    @Test
+    fun `an episode on a lit panel is never taken over`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        assertNull("the person's panel is not ours to take", p.episodeStarted(panelOn = true, strategy = PanelStrategy.PANEL_DARK))
+        val step = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(step.wake || step.panelOff || step.transitional)
+    }
+
+    @Test
+    fun `an own-group episode is woken before its launch without owing a panel-off`() {
+        val p = policy()
+        p.streamsStarted()
+        val takeOver = requireNotNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.GROUP_ONLY)) {
+            "its own group also starts asleep with a new VD"
+        }
+        assertTrue(takeOver.wake)
+        assertFalse(takeOver.panelOff)
+        assertTrue("the step's own-group wake stays a harmless repeat", p.step(panelOn = false, strategy = PanelStrategy.GROUP_ONLY).wake)
+    }
+
+    @Test
+    fun `a mirror is never woken before the launch`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        assertNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_ALONE))
+    }
+
+    @Test
+    fun `a close during the take-over hands the wake's panel back`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("the wake lit the panel: a failed launch must restore it", p.streamsStopped())
+    }
+
+    @Test
+    fun `a press during the take-over is the person's`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.ownWake(nowMs = 1_000)
+        assertEquals(
+            "our own wake's off edge is not a press",
+            PowerWatchAction.NONE,
+            p.interactiveOff(nowMs = 1_100, streamsUp = true),
+        )
+        assertEquals(
+            PowerWatchAction.HAND_BACK,
+            p.interactiveOff(nowMs = 3_000, streamsUp = true),
+        )
+    }
+
+    @Test
+    fun `a pause during the take-over keeps the owed panel-off`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("the panel is already ours", p.streamsPaused(nowMs = 1_000))
+        assertEquals(
+            PanelPlan(wake = false, panelOff = true, transitional = true),
+            p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK),
+        )
+    }
+
+    // --- the person's direct use wins (CTRL-11) -----------------------
 
     @Test
     fun `a power press while we own the panel hands the phone back`() {
@@ -81,13 +211,112 @@ class DarkPanelPolicyTest {
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // our forced-dark panel
 
-        val pressed = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
-        assertFalse("no wake after the user asked for the screen off", pressed.wake)
-        assertFalse(pressed.panelOff)
+        assertEquals(
+            "the press is the person's: one hand back",
+            PowerWatchAction.HAND_BACK,
+            p.interactiveOff(nowMs = 9_000, streamsUp = true),
+        )
+        // The hand back is the whole decision: no relight, and no later tick
+        // re-darkens the panel the person is now looking at.
+        repeat(3) {
+            val after = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+            assertFalse("no wake after the hand back", after.wake)
+            assertFalse("no panel-off after the hand back", after.panelOff)
+        }
+        assertFalse("the episode is the person's now", p.streamsStopped())
+    }
 
-        val stillAsleep = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
-        assertFalse(stillAsleep.wake)
-        assertFalse(stillAsleep.panelOff)
+    @Test
+    fun `a press while dark is not also a relight`() {
+        // The 16:33 race: the same press decided twice, once by a keep-alive
+        // tick (relight + transitional re-apply) and once by the watch (hand
+        // back). A tick now only reads the phase the watch decided.
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertEquals(PowerWatchAction.HAND_BACK, p.interactiveOff(nowMs = 9_000, streamsUp = true))
+        val plan = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("a press while dark never re-lights the streams", plan.wake)
+        assertFalse("and never re-applies the panel-off", plan.panelOff)
+        assertFalse(plan.transitional)
+    }
+
+    @Test
+    fun `an unlock while the panel is dark gives it back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // our forced-dark panel
+        assertTrue("the panel is ours to give back", p.personUsed(PanelYieldReason.UNLOCK))
+        val after = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(after.panelOff)
+        assertFalse(after.wake)
+    }
+
+    @Test
+    fun `a touch on display 0 while the panel is dark gives it back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(p.personUsed(PanelYieldReason.TOUCH))
+        assertFalse(p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK).panelOff)
+    }
+
+    @Test
+    fun `a key on display 0 while the panel is dark gives it back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("a panel that was already the person's is not ours to give", p.personUsed(PanelYieldReason.KEY))
+
+        val q = policy()
+        q.streamsStarted()
+        q.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(q.personUsed(PanelYieldReason.KEY))
+    }
+
+    @Test
+    fun `a second stream opening never darkens the panel the person is using`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // first stream: dark
+        assertTrue(p.personUsed(PanelYieldReason.TOUCH)) // the person touches display 0
+
+        // A second Mac window opens: the episode is already running, so the
+        // policy only steps. The panel stays the person's.
+        repeat(3) {
+            val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+            assertFalse(plan.panelOff)
+            assertFalse(plan.wake)
+            assertFalse(plan.transitional)
+        }
+    }
+
+    @Test
+    fun `the panel darkens again only once the phone goes idle by itself`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(p.personUsed(PanelYieldReason.UNLOCK))
+
+        // The person's screen times out (or they lock it) with the streams up:
+        // the watch takes the panel over again, once, at the edge.
+        assertEquals(
+            PowerWatchAction.RELIGHT,
+            p.interactiveOff(nowMs = 40_000, streamsUp = true),
+        )
+        val dark = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(dark.wake)
+        assertTrue(dark.panelOff)
+    }
+
+    @Test
+    fun `a yield while the panel is not ours changes nothing`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // the person's own screen
+        assertFalse(p.personUsed(PanelYieldReason.TOUCH))
     }
 
     @Test
@@ -96,7 +325,7 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
-        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // power press
+        p.interactiveOff(nowMs = 9_000, streamsUp = true) // power press
 
         val usersScreen = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
         assertFalse(usersScreen.wake)
@@ -109,10 +338,13 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
-        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // power press
-        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // user turned it on
-        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // and off again
+        assertEquals(PowerWatchAction.HAND_BACK, p.interactiveOff(nowMs = 9_000, streamsUp = true))
 
+        assertEquals(
+            "their own screen going off again re-lights the streams",
+            PowerWatchAction.RELIGHT,
+            p.interactiveOff(nowMs = 40_000, streamsUp = true),
+        )
         val resumed = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertTrue(resumed.wake)
         assertTrue(resumed.panelOff)
@@ -126,10 +358,14 @@ class DarkPanelPolicyTest {
         assertFalse(plan.wake)
         assertFalse(plan.panelOff)
 
+        // The screen going off is the watch's edge, never a tick's.
         val later = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
-        assertTrue("the screen went off: keep the VD lit", later.wake)
-        assertTrue(later.panelOff)
-        assertTrue(later.transitional)
+        assertFalse("a tick does not take over on an off edge", later.wake)
+        assertFalse(later.panelOff)
+        assertEquals(PowerWatchAction.RELIGHT, p.interactiveOff(nowMs = 5_000, streamsUp = true))
+        val dark = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("the watch's relight takes the panel over", dark.wake)
+        assertTrue(dark.panelOff)
     }
 
     // --- platform that never reports the panel on (forced path) -------
@@ -286,7 +522,7 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
-        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // power press
+        assertEquals(PowerWatchAction.HAND_BACK, p.interactiveOff(nowMs = 9_000, streamsUp = true))
         assertFalse(p.streamsStopped())
     }
 
@@ -435,19 +671,19 @@ class DarkPanelPolicyTest {
         val p = policy()
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
-        assertTrue(p.userPressedPower())
+        assertEquals(PowerWatchAction.HAND_BACK, p.interactiveOff(nowMs = 9_000, streamsUp = true))
         // The user is using the phone: never darken it, never wake it.
         repeat(3) {
             val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
             assertFalse(plan.panelOff)
             assertFalse(plan.wake)
         }
-        // Their own screen-off: resume keeping the stream lit.
+        // Their own screen-off (a timeout): the watch re-lights the stream.
+        assertEquals(PowerWatchAction.RELIGHT, p.interactiveOff(nowMs = 40_000, streamsUp = true))
         val off = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertTrue(off.panelOff)
-        assertTrue(off.transitional)
-        // The episode was the user's at the end: nothing of ours to restore.
-        assertFalse(policy().also { it.streamsStarted() }.userPressedPower())
+        // The phone is ours again after that relight, so the close restores it.
+        assertTrue(p.streamsStopped())
     }
 
     @Test
@@ -455,6 +691,6 @@ class DarkPanelPolicyTest {
         val p = policy()
         p.streamsStarted()
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // user already had it
-        assertFalse(p.userPressedPower())
+        assertFalse(p.personUsed(PanelYieldReason.POWER))
     }
 }

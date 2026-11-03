@@ -95,6 +95,7 @@ final class DebugInputTests: XCTestCase {
         windowtop
         waitfile /tmp/pd-step
         waitfile /tmp/pd-step 5
+        stamp /tmp/pd-step.ts
         """)
         XCTAssertEqual(actions, [
             .hoverAt(dx: 0, top: 200),
@@ -104,9 +105,11 @@ final class DebugInputTests: XCTestCase {
             .windowTop,
             .waitFile("/tmp/pd-step", timeout: 30),
             .waitFile("/tmp/pd-step", timeout: 5),
+            .stamp("/tmp/pd-step.ts"),
         ])
         for bad in ["hoverat 1", "clickat a b", "sidebutton", "sidebutton 1", "sidebutton 3 0.4 80",
-                    "windowtop now", "waitfile relative/path", "waitfile"] {
+                    "windowtop now", "waitfile relative/path", "waitfile",
+                    "stamp", "stamp relative/path"] {
             XCTAssertThrowsError(try DebugInputScript.parse(bad), bad)
         }
     }

@@ -95,6 +95,8 @@ enum BridgeRequest: Equatable {
     case list(id: UInt32, item: String, page: String?)
     case stat(id: UInt32, item: String)
     case read(id: UInt32, item: String, offset: Int, length: Int, etag: String?)
+    /// One thumbnail of `item`; the app answers `data` frames then `thumb`.
+    case thumb(id: UInt32, item: String, size: Int)
     /// A new file or folder under `parent`; a file's bytes follow once the app
     /// answers `ready`, as `data` frames on this id.
     case create(id: UInt32, request: BridgeCreate)
@@ -114,9 +116,9 @@ enum BridgeRequest: Equatable {
     var id: UInt32 {
         switch self {
         case .hello(let id, _), .list(let id, _, _), .stat(let id, _),
-             .read(let id, _, _, _, _), .create(let id, _), .modify(let id, _),
-             .delete(let id, _, _, _), .watch(let id, _, _), .changes(let id, _, _),
-             .anchor(let id, _), .cancel(let id):
+             .read(let id, _, _, _, _), .thumb(let id, _, _), .create(let id, _),
+             .modify(let id, _), .delete(let id, _, _, _), .watch(let id, _, _),
+             .changes(let id, _, _), .anchor(let id, _), .cancel(let id):
             return id
         }
     }
@@ -161,6 +163,8 @@ enum BridgeReply: Equatable {
     /// Announcement of `length` raw bytes that follow the newline.
     case data(id: UInt32, length: Int)
     case end(id: UInt32, size: Int, sha256: String)
+    /// A thumbnail: the data frames already went to the extension.
+    case thumb(id: UInt32, mime: String, size: Int, sha256: String)
     case error(id: UInt32, code: String)
     /// A container's deltas after an anchor; `expired` means the anchor is too
     /// old (or foreign) and the system must re-enumerate.
@@ -170,7 +174,7 @@ enum BridgeReply: Equatable {
 }
 
 /// The bridge protocol version. Both sides refuse anything else.
-let filesBridgeVersion = 3
+let filesBridgeVersion = 4
 
 enum BridgeWire {
     /// A request line is at most 64 KiB (design §3's cap, applied locally).
@@ -200,6 +204,10 @@ enum BridgeWire {
             object["offset"] = offset
             object["length"] = length
             if let etag { object["etag"] = etag }
+        case .thumb(_, let item, let size):
+            object["t"] = "thumb"
+            object["item"] = item
+            object["size"] = size
         case .create(_, let create):
             object["t"] = "create"
             object["parent"] = create.parent
@@ -263,6 +271,8 @@ enum BridgeWire {
             object = ["t": "data", "id": Int(id), "len": length]
         case .end(let id, let size, let sha256):
             object = ["t": "end", "id": Int(id), "size": size, "sha256": sha256]
+        case .thumb(let id, let mime, let size, let sha256):
+            object = ["t": "thumb", "id": Int(id), "mime": mime, "size": size, "sha256": sha256]
         case .error(let id, let code):
             object = ["t": "error", "id": Int(id), "code": code]
         case .changes(let id, let anchor, let items, let deleted, let expired):
@@ -460,6 +470,17 @@ struct BridgeDecoder {
             return .request(.anchor(id: id, item: item))
         case "cancel":
             return .request(.cancel(id: id))
+        case "thumb":
+            if let mime = object["mime"] as? String,
+               let size = (object["size"] as? NSNumber)?.intValue,
+               let sha256 = object["sha256"] as? String {
+                return .reply(.thumb(id: id, mime: mime, size: size, sha256: sha256))
+            }
+            guard let item = object["item"] as? String,
+                  let size = (object["size"] as? NSNumber)?.intValue else {
+                return .invalid("bad_request")
+            }
+            return .request(.thumb(id: id, item: item, size: size))
         case "items":
             let items = (object["items"] as? [[String: Any]])?.compactMap(FileItem.init(json:)) ?? []
             return .reply(.items(id: id, page: object["page"] as? String, items: items))

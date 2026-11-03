@@ -32,6 +32,36 @@ final class FrameWatchdogTests: XCTestCase {
         XCTAssertFalse(watchdog.stalled)
     }
 
+    /// `window.still` (PHONE-21): a vendor encoder that drops the 500 ms repeat
+    /// on a still screen has no frames to send, so the stream says in JSON that
+    /// it is alive. A still is a heartbeat: 30 s of silence stays live.
+    func testAStillKeepsTheWindowLiveThroughThirtySecondsOfSilence() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 0)
+        for second in 1...30 {
+            let at = Double(second)
+            for step in stride(from: at - 0.75, to: at, by: 0.25) {
+                XCTAssertFalse(watchdog.tick(at: step, expecting: true),
+                               "a still resets the 1.5 s clock every second")
+            }
+            XCTAssertFalse(watchdog.still(at: at), "the picture was never stalled")
+            watchdog.tick(at: at, expecting: true)
+        }
+        XCTAssertFalse(watchdog.stalled, "30 s of a still, live stream is not a stall")
+    }
+
+    /// A still ends a shown stall as a frame would: the phone has proved the
+    /// stream alive.
+    func testAStillEndsAShownStall() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 0)
+        XCTAssertTrue(watchdog.tick(at: 1.5, expecting: true))
+        XCTAssertTrue(watchdog.still(at: 1.6), "the still ended the stall")
+        XCTAssertFalse(watchdog.stalled)
+        XCTAssertFalse(watchdog.tick(at: 1.7, expecting: true))
+        XCTAssertFalse(watchdog.still(at: 1.5), "an older clock read is not a new still")
+    }
+
     func testTheNextFrameClearsTheStall() {
         var watchdog = FrameWatchdog()
         watchdog.frame(at: 0)

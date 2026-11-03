@@ -61,8 +61,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
 - **Grid (D):** `DeckGridLayout` places cells from the width of the pass that draws them. At 100 %: 96×108 cells,
   64×64 icons `.clipShape(.rect(cornerRadius: 13, style: .continuous))` inside a 16 pt hover corner, 8 pt icon-label
-  gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred and capped at 880 pt
-  (5 columns at 640, 8 at 1000+). Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
+  gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred, capped at 880 pt and
+  reserves the rail's 44 pt on its trailing side (5 columns at 640, 8 at 1000+). A window over 1000 pt scales cells,
+  icons, gaps, inset and cap by clamp(width/1000, 1, 1.5), so the tiles grow with it; a title-bar double-click or the
+  green button takes the intrinsic width (the 880 pt grid plus 60 pt a side at the person's zoom, plus the rail).
+  Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
   (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
   from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
@@ -75,12 +78,12 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   that letter's first app, and an empty letter skips forward. The current letter follows the first app in the top
   visible row.
 
-- **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each tile is the shared
-  `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS squircle (22.5 % corners), the adaptive
-  `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp canvas, or the flat icon at 78 % on a
-  white plate, with one small top light and a specular edge. Nothing is tinted or put under a material, so the tile
-  shows the phone's colours; hovering lifts the tile by 4 %. Off is the previous look exactly (the flat 96 px image,
-  radius 13). The Dock, Launchpad and Spotlight use the same renderer, so an app's icon is the same everywhere;
+- **App icons:** every tile is the shared `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS
+  squircle (22.5 % corners), the adaptive `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp
+  canvas, or the flat icon drawn by its own shape (covering the tile, or at 78 % on a plate tinted from its edge),
+  with one small top light and a specular edge. Nothing is tinted or put under a material, so the tile
+  shows the phone's colours; hovering lifts the tile by 4 %. The tile draws the render or the placeholder, never the
+  bare flat image. The Dock, Launchpad and Spotlight use the same renderer, so an app's icon is the same everywhere;
   placeholders and the generated tile are unchanged, and `mono` is stored for a later round.
 
 ### Pairing-code sheet (numeric comparison)
@@ -114,9 +117,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   container (every child paints square so the bar's seam stays straight); 16 pt continuous corners on the window; the virtual display is sized from the stream
   rect only, never the style.
   - **Framed bar.** An `NSBackgroundExtensionView` has the video view as its `contentView` and fills the whole window, so the band above the video is the
-    stream's own top 28 pt mirrored there — live, with the system's progressive blur (strongest at the window's top edge, sharp at the seam), no CPU
-    readback and no second decode. Nothing is drawn over the mirror: no material, tint, alpha ramp or scrim, so the bar keeps the stream's colours in light
-    and dark apps; the traffic lights ride it as standard controls.
+    stream's own top 28 pt mirrored there — live, with the system's progressive blur raised from its 5 pt radius to 15 (strongest at the window's top edge,
+    sharp at the seam), no CPU readback and no second decode. A white haze fades over the bar band alone, α 0.14 in dark and 0.30 in light at the window's
+    top edge to clear at the seam; it is hidden while the opening cover or the disconnection overlay is up and in Immersive or full screen. Nothing else is
+    drawn over the mirror: no material, tint or scrim, so the bar keeps the stream's colours in light and dark apps; the traffic lights ride it as standard
+    controls. A macOS whose backdrop has no such filter keeps the system's own radius and still gets the haze.
   - **Immersive.** A 72×32 pt hot zone at the stream's top-left. A click there before the dwell reaches the app as an ordinary touch (no added delay) and
     restarts the rest; a rest (moved < 3 pt) fades the pill in over 0.12 s — `NSGlassEffectView` in its clear style, corner 8, so it blurs the stream
     without a grey fill — with the window's traffic lights on its slots (8 pt in, 23 pt apart) and the kind's actions after them (app windows: none).
@@ -128,8 +133,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
     learns its package (link/handoff).
   - `DebugInput windowstyle framed|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|immersive lights=shown|hidden pill=shown|hidden clicks=N`
     (N = clicks the bar's or the pill's background received) there for the e2e check.
-- **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
-  fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
+- **Disconnection overlay (stall and link down):** the whole window — the 28 pt bar included — as one sheet: the last frame under one acrylic
+  (`NSVisualEffectView` `.hudWindow` with a black dim, 0.38 in dark and 0.50 in light so white ink keeps 4.5:1), with the window's icon (96 pt, corner 22),
+  the title "Not responding" / "Reconnecting…" / "Phone offline" (15 pt semibold) and "Waiting for <phone>…" (12.5 pt) centred in the body. No buttons; the
+  traffic lights and the bar's controls ride above it, and every other click is the overlay's (the stream is frozen). It comes with the picture's state: 1.5 s
+  of silence, or 1 s after the link drops ("Phone offline" at 15 s); a frame or the reconnect takes it away and the bar's mirror is live again.
 
 ### Trackpad input (stream windows)
 The phone is a touch screen, the Mac has a pointer and a trackpad. Everything reaches it as the touches, scroll and key frames of docs/PROTOCOL.md; the aim is that the trackpad feels like
@@ -254,7 +262,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed · one cell per launch target: a package with two launcher activities is two cells, each keyed by its activity, and a cell with no label falls back to the package's last part (a repeated key draws nothing).
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
+**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · the **disconnection overlay** above over the whole window while the picture is stalled or the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.

@@ -2,8 +2,8 @@ package dev.pocketdeck.server
 
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
-import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Clipboard images (docs/design/dragdrop.md): the byte-based counterpart of
@@ -94,19 +94,22 @@ internal class ClipImageSender(
 
 /**
  * Mac → phone: reassembles one image at a time in memory (the cap is the whole
- * point), verifies the digest and hands the image to [sink] — which puts it on
- * the clipboard. Unknown ids and junk are dropped with a log, never answered.
+ * point), verifies the digest and hands the image to [sink] — the app, which
+ * owns the provider and puts it on the clipboard. Unknown ids and junk are
+ * dropped with a log, never answered.
  */
 internal class ClipImageReceiver(
     private val sink: Sink,
     private val log: (String) -> Unit = {},
+    /** The phone's answer to the Mac (SHARE-16): the image is on the clipboard, or not. */
+    private val done: (id: Int, ok: Boolean) -> Unit = { _, _ -> },
 ) {
-    /** Consumes a finished image (the real one writes the file and sets the clip). */
+    /** Hands a finished image to the app; [done] receives its answer once. */
     fun interface Sink {
-        fun offer(image: ClipImage)
+        fun offer(id: Int, image: ClipImage, done: (Boolean) -> Unit)
     }
 
-    private class Transfer(var mimeType: String, val bytes: ByteArray, var size: Int = 0)
+    private class Transfer(val id: Int, var mimeType: String, val bytes: ByteArray, var size: Int = 0)
 
     private var transfer: Transfer? = null
 
@@ -116,11 +119,12 @@ internal class ClipImageReceiver(
             transfer = null
             return
         }
-        transfer = Transfer(mime!!, ByteArray(size.toInt()))
+        transfer = Transfer(id, mime!!, ByteArray(size.toInt()))
     }
 
     fun data(id: Int, payload: ByteArray) {
         val current = transfer ?: return
+        if (current.id != id) return
         if (current.size + payload.size > current.bytes.size) {
             log("clip image: more bytes than announced")
             transfer = null
@@ -130,63 +134,56 @@ internal class ClipImageReceiver(
         current.size += payload.size
     }
 
-    /** Validates and delivers; a mismatch is logged and dropped. */
+    /** Validates, delivers and answers the Mac; junk is refused, never answered with ok. */
     fun end(id: Int, size: Long, sha256: String?) {
-        val current = transfer ?: return
+        val current = transfer
+        if (current == null || current.id != id) {
+            done(id, false)
+            return
+        }
         transfer = null
         val hash = MessageDigest.getInstance("SHA-256").digest(current.bytes).joinToString("") { "%02x".format(it) }
         if (current.size.toLong() != size || hash != sha256?.lowercase()) {
             log("clip image: checksum failed (${current.size}/$size)")
+            done(id, false)
             return
         }
-        sink.offer(ClipImage(current.bytes, current.mimeType))
+        val answered = AtomicBoolean(false)
+        val answer: (Boolean) -> Unit = { ok ->
+            if (answered.compareAndSet(false, true)) {
+                log("clip image: app answered ok=$ok (${current.bytes.size} bytes)")
+                done(id, ok)
+            }
+        }
+        runCatching { sink.offer(id, ClipImage(current.bytes, current.mimeType), answer) }
+            .onFailure {
+                log("clip image: delivery failed: ${failureClasses(it)}")
+                answer(false)
+            }
     }
 
     fun abort(id: Int) {
-        transfer = null
+        if (transfer?.id == id) transfer = null
     }
 }
 
 /**
- * The one path a received image takes on the phone: the file in the shared
- * folder (the only path the shell process owns on the card), the media scan and
- * the clipboard. The Uri/name concerns live in [ShellClipboard]; this class only
- * picks names and files.
+ * The app-owned clip (SHARE-2/16): the shell no longer writes a URI clip; uid
+ * 2000's clip fails ClipboardService's owner check (boot 5, H1). The bytes go
+ * to the app, which builds the URI at its own uid, sets A2's URI-only item and
+ * answers `clip.image.done` through [ClipImageHost].
  */
 class ClipImageLand(
-    private val port: ClipboardImagePort?,
+    private val host: ClipImageHost?,
     private val log: (String) -> Unit = {},
 ) : ClipImageReceiver.Sink {
-    private val lock = Any()
 
-    override fun offer(image: ClipImage) {
-        val port = port ?: run { log("clip image: no clipboard port"); return }
-        if (!ClipImagePolicy.valid(image.mime)) return
-        val ext = if (image.mime.equals("image/jpeg", true)) "jpg" else "png"
-        val file = nextFile(ext) ?: run { log("clip image: no name"); return }
-        try {
-            File(DIRECTORY).mkdirs()
-            file.outputStream().use { it.write(image.bytes) }
-            port.writeImage(file, image.mime, file.nameWithoutExtension)
-            log("clip image: ${file.name} on the clipboard (${image.bytes.size} bytes)")
-        } catch (e: Exception) {
-            log("clip image failed: ${e.message}")
+    override fun offer(id: Int, image: ClipImage, done: (Boolean) -> Unit) {
+        if (!ClipImagePolicy.valid(image.mime)) return done(false)
+        val host = host ?: run {
+            log("clip image: no app writer")
+            return done(false)
         }
-    }
-
-    /** "Clipboard 1.png", "Clipboard 2.png"… the first name that is not on disk. */
-    private fun nextFile(ext: String): File? = synchronized(lock) {
-        while (true) {
-            clipCount += 1
-            val candidate = File(DIRECTORY, "Clipboard $clipCount.$ext")
-            if (!candidate.exists()) return candidate
-        }
-        @Suppress("NULLABILITY")
-        null
-    }
-
-    companion object {
-        var DIRECTORY = DropPolicy.DIRECTORY
-        private var clipCount = 0
+        host.offer(id, image.mime, image.bytes, done)
     }
 }

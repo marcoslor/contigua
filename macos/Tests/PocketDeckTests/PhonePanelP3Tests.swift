@@ -167,6 +167,30 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertEqual(PhonePanelItem.screen.shortReason(in: offline), "Connect phone first")
     }
 
+    /// PATH-17 + PANEL-12: a live session with no usable path is not
+    /// Connected. The panel says Reconnecting at once and Offline after the
+    /// windows' 15 s, so a path outage cannot leave its controls enabled
+    /// while every request would queue into the grace's dead session.
+    func testAPathOutageTakesThePanelOffline() {
+        let phone = PhoneRef(id: "aaa", name: "Pixel 9", model: "")
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .online(phone), pathsDown: false, pathsOffline: false), .online)
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .online(phone), pathsDown: true, pathsOffline: false), .reconnecting)
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .online(phone), pathsDown: true, pathsOffline: true), .offline)
+        // The controller's own `link` already reports the outage as Reconnecting.
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .reconnecting(phone), pathsDown: true, pathsOffline: false), .reconnecting)
+        XCTAssertEqual(PhoneControlsState.Connection.resolve(
+            link: .reconnecting(phone), pathsDown: true, pathsOffline: true), .offline)
+        var state = state(online: true, phoneWindow: true)
+        state.connection = .resolve(link: .reconnecting(phone), pathsDown: true, pathsOffline: true)
+        XCTAssertFalse(PhonePanelItem.screen.isEnabled(in: state),
+                       "Turn Off Screen was enabled with no usable path")
+        XCTAssertEqual(PhonePanelItem.screen.reason(in: state), "Connect your phone to use these.")
+    }
+
     /// The window button is the Phone Mirror, and the tile that opens it says
     /// so; the compact WINDOWS row may draw "Mirror" but VoiceOver reads this.
     func testTheWindowButtonIsNamedPhoneMirror() {

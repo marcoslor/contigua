@@ -37,6 +37,8 @@ TYPE_SHARE_DATA = 0x21
 TYPE_DROP_DATA = 0x22
 TYPE_CLIP_DATA = 0x23
 TYPE_FS_DATA = 0x24
+TYPE_RELIABLE = 0x30
+TYPE_ACK = 0x31
 
 TYPE_NAMES = {
     TYPE_JSON: "JSON",
@@ -53,10 +55,24 @@ TYPE_NAMES = {
     TYPE_DROP_DATA: "DROP_DATA",
     TYPE_CLIP_DATA: "CLIP_DATA",
     TYPE_FS_DATA: "FS_DATA",
+    TYPE_RELIABLE: "RELIABLE",
+    TYPE_ACK: "ACK",
 }
+
+RELIABLE_TYPES = frozenset([
+    TYPE_JSON, TYPE_TOUCH, TYPE_SCROLL, TYPE_KEY,
+    TYPE_APK_DATA, TYPE_SHARE_DATA, TYPE_DROP_DATA, TYPE_CLIP_DATA,
+    TYPE_FS_DATA,
+])
+BULK_TYPES = frozenset([
+    TYPE_APK_DATA, TYPE_SHARE_DATA, TYPE_DROP_DATA, TYPE_CLIP_DATA,
+    TYPE_FS_DATA,
+])
 
 HEADER = 5                 # type (1) + stream (4)
 MAX_FRAME = 8 * 1024 * 1024  # PROTOCOL.md: a larger len closes the session
+RELIABLE_WRAPPER = 13      # u64 seq | u8 innerType | u32 innerStream
+MAX_INNER_PAYLOAD = MAX_FRAME - 5 - RELIABLE_WRAPPER
 
 CODEC_H264 = 1
 CODEC_OPUS = 2
@@ -199,6 +215,50 @@ def unpack_json(frame):
     if frame.type != TYPE_JSON:
         raise ProtocolError("expected JSON frame, got %s" % frame.name)
     return json.loads(frame.payload.decode("utf-8"))
+
+
+# --- RELIABLE / ACK (docs/PROTOCOL.md "Paths") -----------------------------
+def is_reliable(type_):
+    return type_ in RELIABLE_TYPES
+
+
+def is_bulk(type_):
+    return type_ in BULK_TYPES
+
+
+def pack_reliable(seq, inner):
+    """Wrap one reliable frame; the outer stream repeats the inner one."""
+    if not is_reliable(inner.type):
+        raise ProtocolError("not a reliable type: 0x%02x" % inner.type)
+    if len(inner.payload) > MAX_INNER_PAYLOAD:
+        raise ProtocolError("inner payload of %d bytes exceeds %d"
+                            % (len(inner.payload), MAX_INNER_PAYLOAD))
+    payload = struct.pack(">QB I", seq & 0xFFFFFFFFFFFFFFFF, inner.type,
+                          inner.stream & 0xFFFFFFFF) + inner.payload
+    return pack_frame(TYPE_RELIABLE, inner.stream, payload)
+
+
+def unpack_reliable(frame):
+    """Return (seq, inner Frame); a mismatched outer stream is a protocol error."""
+    if frame.type != TYPE_RELIABLE:
+        raise ProtocolError("not a RELIABLE frame")
+    if len(frame.payload) < RELIABLE_WRAPPER:
+        raise ProtocolError("short RELIABLE payload")
+    seq, inner_type, inner_stream = struct.unpack_from(">QBI", frame.payload, 0)
+    if inner_stream != frame.stream:
+        raise ProtocolError("outer stream %d differs from inner %d"
+                            % (frame.stream, inner_stream))
+    return seq, Frame(inner_type, inner_stream, frame.payload[RELIABLE_WRAPPER:])
+
+
+def pack_ack(ack):
+    return pack_frame(TYPE_ACK, 0, struct.pack(">Q", ack & 0xFFFFFFFFFFFFFFFF))
+
+
+def unpack_ack(frame):
+    if frame.type != TYPE_ACK or frame.stream != 0 or len(frame.payload) != 8:
+        raise ProtocolError("bad ACK frame")
+    return struct.unpack(">Q", frame.payload)[0]
 
 
 # --- VIDEO_CONFIG ----------------------------------------------------------
@@ -486,6 +546,11 @@ class TlsServerSession(object):
         # Blocking: OpenSSL retries the syscall itself; SO_RCVTIMEO bounds a
         # client that never finishes.
         self._conn.do_handshake()
+        # SO_RCVTIMEO is a kernel option and socket.settimeout() does not clear
+        # it, so the handshake deadline would otherwise end a live path after
+        # 15 s of silence (the 20 s probe check black-holes one that long).
+        self._raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO,
+                             struct.pack("ll", 0, 0))
         from OpenSSL.crypto import FILETYPE_ASN1, dump_certificate
         leaf = self._capture.get("leaf")
         self.client_der = dump_certificate(FILETYPE_ASN1, leaf) if leaf else None

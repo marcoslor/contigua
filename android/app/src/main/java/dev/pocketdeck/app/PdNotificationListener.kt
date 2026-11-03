@@ -13,11 +13,19 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
+import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import android.app.Notification
 import android.app.RemoteInput
 import android.util.Log
 import dev.pocketdeck.proto.Json
+
+/**
+ * A JVM test's stand-in for the system's channel ranking (rows 5/20). The app
+ * leaves it null and reads `getCurrentRanking()` instead; nothing else touches it.
+ */
+@Volatile
+var notifyImportanceForTest: ((String) -> Int?)? = null
 
 /**
  * Reads notifications and the media session for a connected Mac (docs/design/
@@ -64,6 +72,31 @@ class PdNotificationListener : NotificationListenerService() {
     private val pendingLive = HashMap<String, Map<String, Any?>>()
     private var flushScheduled = false
 
+    /**
+     * The content hash of the last forwarded post per id (NOTIFY-19). Hashes,
+     * never the text, and never the notification itself. Bounded like the
+     * forwarded ids themselves: forgetting one only costs a louder update.
+     */
+    private val lastContent = BoundedIdMap<String>(MAX_TRACKED)
+
+    /** The last forwarded title hash and whether it carried a bar (row 6). */
+    private val lastTitle = BoundedIdMap<String>(MAX_TRACKED)
+    private val lastHadBar = BoundedIdMap<Boolean>(MAX_TRACKED)
+
+    /** The per-package-group forwarding states (NOTIFY-20), bounded like the rest. */
+    private val groupStates = BoundedIdMap<NotifyGroupState>(MAX_TRACKED)
+
+    /** Which forwarded ids belong to a group, so a removal updates its state. */
+    private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
+
+    /**
+     * The ids the phone deliberately did not forward — a summary kept while its
+     * children were (NOTIFY-20), a media session's notification (NOTIFY-3).
+     * Their removals are the only ones not announced: the Mac never saw them.
+     * Bounded, like the rest.
+     */
+    private val skipped = BoundedIdMap<Boolean>(MAX_TRACKED)
+
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
         override fun onMetadataChanged(metadata: MediaMetadata?) = scheduleMediaPush()
@@ -83,6 +116,9 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.chooseSink = { key -> deliverChoose(key) }
         PdNotificationBridge.actionSink = { id, index, text -> deliverAction(id, index, text) }
         PdNotificationBridge.dismissSink = { id -> deliverDismiss(id) }
+        // A repeated notify.enable after a rejoin asks for the active set
+        // (NOTIFY-1/PATH-6); the shell answers every enable while forwarding.
+        PdNotificationBridge.resyncSink = { mediaHandler.post { sendSnapshot() } }
         // The gate can open long after the stack was read (the Mac opts in on
         // its own schedule), and everything pushed before it is dropped.
         DeckState.addListener(gateObserver)
@@ -94,6 +130,7 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.chooseSink = null
         PdNotificationBridge.actionSink = null
         PdNotificationBridge.dismissSink = null
+        PdNotificationBridge.resyncSink = null
         NotifyIntents.clear()
         // The live state belongs to the worker thread; quitSafely still runs this.
         mediaHandler.post {
@@ -109,6 +146,12 @@ class PdNotificationListener : NotificationListenerService() {
         lastArtMetadata = null
         lastSessions = null
         sessionKeys.clear()
+        lastContent.clear()
+        lastTitle.clear()
+        lastHadBar.clear()
+        groupStates.clear()
+        groupOf.clear()
+        skipped.clear()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -371,8 +414,45 @@ class PdNotificationListener : NotificationListenerService() {
     // ---- notification events ----------------------------------------------
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val notification = sbn.notification ?: return
-        val extras = notification.extras ?: return
+        postNotification(sbn, snapshot = false)
+    }
+
+    /**
+     * NOTIFY-1/PATH-6 (ISS-5): the Mac's opt-in arrived — a fresh session or,
+     * after an outage, a same-session rejoin. One quiet post per notification
+     * still active (the same shape a post has, never alerting), then
+     * `notify.snapshot` naming the ids that actually went out, so the Mac
+     * updates in place and drops what the phone no longer holds.
+     */
+    private fun sendSnapshot() {
+        if (!bridge.gate()) return
+        val active = runCatching { activeNotifications }.getOrNull()
+        if (active == null) {
+            Log.i(TAG, "notify snapshot skipped: no read")
+            return
+        }
+        val ids = ArrayList<String>(active.size)
+        for (sbn in active) {
+            val id = postNotification(sbn, snapshot = true)
+            if (id != null && id !in ids) ids += id
+        }
+        // The posts' deliveries are queued on this handler; the marker must
+        // follow them, so it is queued too.
+        mediaHandler.post {
+            bridge.post(NotifyEvents.snapshotEvent(ids))
+            Log.i(TAG, "notify snapshot ids=${ids.size}")
+        }
+    }
+
+    /**
+     * Reads one notification into a post (row rules, group machine, intents).
+     * Returns the forwarded id, or null when this notification is not the
+     * Mac's. A snapshot post carries `alert:false`: the Mac is reconciling an
+     * active set, never showing a notification for the first time (NOTIFY-1).
+     */
+    private fun postNotification(sbn: StatusBarNotification, snapshot: Boolean): String? {
+        val notification = sbn.notification ?: return null
+        val extras = notification.extras ?: return null
         val debugPoster = NotifyEvents.debugPoster(
             sbn.packageName,
             extras.getBoolean(NotifyEvents.DEBUG_POSTER_EXTRA, false),
@@ -384,25 +464,116 @@ class PdNotificationListener : NotificationListenerService() {
         // its progress is the point (docs/design/notify.md). The debug poster's
         // own ongoing notification stays forwardable so the rules are testable.
         val promoted = NotifyEvents.promoted(notification.flags, sbn.isOngoing)
-        if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
-        if (sbn.isOngoing && !promoted && !debugPoster) return
+        if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return null
+        if (sbn.isOngoing && !promoted && !debugPoster) return null
         val id = forwardId(sbn)
+        // Row 16: a media session's notification is Now Playing's, not a banner
+        // (a paused player stops being ongoing and would otherwise banner).
+        if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) {
+            skipped.put(id, true)
+            Log.i(TAG, "notify skip media id=$id")
+            return null
+        }
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
         val live = liveFor(sbn, notification, promoted, debugPoster)
-        val event = NotifyEvents.notificationEvent(
+        val plainTitle = extras.getString(Notification.EXTRA_TITLE)
+            ?: extras.getString(Notification.EXTRA_TITLE_BIG)
+        val plainText = extras.getString(Notification.EXTRA_TEXT)
+            ?: extras.getString(Notification.EXTRA_BIG_TEXT)
+        // Row 14: a MessagingStyle conversation keeps its messages in
+        // EXTRA_MESSAGES and its name in EXTRA_CONVERSATION_TITLE, so a post
+        // without the plain fields is not contentless.
+        val message = if (plainText.isNullOrEmpty()) lastMessage(extras) else null
+        val title = plainTitle?.takeIf { it.isNotEmpty() }
+            ?: extras.getString(Notification.EXTRA_CONVERSATION_TITLE)?.takeIf { it.isNotEmpty() }
+            ?: message?.second?.takeIf { it.isNotEmpty() }
+        val text = plainText?.takeIf { it.isNotEmpty() } ?: message?.first
+        // NOTIFY-19: the same decision Android makes. The comparison is over
+        // content hashes kept in memory; the text never leaves this block.
+        val contentHash = NotifyEvents.contentHash(title, text)
+        val titleHash = NotifyEvents.titleHash(title)
+        // Row 6: a bar that only moves is not news, even when its text moves.
+        val hadBar = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) ||
+            extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
+        // Rows 5/20: the channel's importance can only make a post quieter. A
+        // snapshot's post is quiet by definition, so it reads no ranking.
+        val importance = if (snapshot) null else importanceOf(sbn)
+        if (!snapshot) {
+            // A number, or the closed token; never a channel name (privacy).
+            if (importance == null) {
+                Log.i(TAG, "notify importance=unknown id=$id") // log-ok: closed token, never a channel name
+            } else {
+                Log.i(TAG, "notify importance=$importance id=$id") // log-ok: a number 1..5, never a channel name
+            }
+        }
+        val alert = !snapshot && NotifyEvents.alerts(
+            firstPost = lastContent.get(id) == null,
+            onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
+            contentChanged = lastContent.get(id) != contentHash,
+            progressOnly = NotifyEvents.progressOnly(
+                previousHadBar = lastHadBar.get(id) == true,
+                hadBar = hadBar,
+                previousTitleHash = lastTitle.get(id),
+                titleHash = titleHash,
+            ),
+        ) && !NotifyEvents.quietByImportance(importance)
+        val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
+        val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
+        var event = NotifyEvents.notificationEvent(
             id = id,
             pkg = sbn.packageName,
-            title = extras.getString(Notification.EXTRA_TITLE)
-                ?: extras.getString(Notification.EXTRA_TITLE_BIG),
-            text = extras.getString(Notification.EXTRA_TEXT)
-                ?: extras.getString(Notification.EXTRA_BIG_TEXT),
+            title = title,
+            text = text,
             when_ = sbn.postTime,
+            alert = alert,
             actions = actions,
             ongoing = sbn.isOngoing,
             debugPoster = debugPoster,
             live = live,
-        ) ?: return
+            group = groupKey?.let { NotifyEvents.groupHash(sbn.packageName, it) },
+        ) ?: return null
+        // NOTIFY-20: a group summary never lands on top of its children.
+        if (groupKey != null) {
+            val groupActions = groupEvent(
+                sbn.packageName,
+                groupKey,
+                if (summary) NotifyGroupEvent.SummaryPosted(id) else NotifyGroupEvent.ChildPosted(id),
+            )
+            var skip = false
+            for (action in groupActions) when (action) {
+                NotifyGroupAction.Skip -> skip = true
+                is NotifyGroupAction.RemoveSummary -> {
+                    // The child arrives after a forwarded summary: take the
+                    // summary away first, so the Mac never shows both.
+                    lastContent.remove(action.id)
+                    groupOf.remove(action.id)
+                    NotifyIntents.remove(action.id)
+                    mediaHandler.post { NotifyEvents.removedEvent(action.id)?.let { bridge.post(it) } }
+                    Log.i(TAG, "notify group summary replaced id=${action.id}")
+                }
+                NotifyGroupAction.Forward -> Unit
+            }
+            if (!skip && summary &&
+                !NotifyEvents.summaryAlerts(notification.groupAlertBehavior)
+            ) {
+                // Row 13: a lone summary the app wanted quiet (children only)
+                // is listed, never presented.
+                event = event + ("alert" to false)
+            }
+            if (skip) {
+                skipped.put(id, true)
+                Log.i(TAG, "notify group summary skipped: children active")
+                return null
+            }
+            groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
+            // A notification forwarded after earlier being kept is announced
+            // on removal like any other.
+            skipped.remove(id)
+        }
+        lastContent.put(id, contentHash)
+        lastTitle.put(id, titleHash)
+        lastHadBar.put(id, hadBar)
         // The Mac can only ask for an id it received; the action stays here and
         // is never serialized onto the wire (docs/design/notify.md).
         val kept = actions.mapNotNull { candidate ->
@@ -428,8 +599,72 @@ class PdNotificationListener : NotificationListenerService() {
                 noClear = notification.flags and Notification.FLAG_NO_CLEAR != 0,
             ),
         )
-        deliver(id, event, live, if (live == null) notification else null)
+        deliver(id, event, live, if (live == null || snapshot) null else notification,
+                coalesce = !snapshot)
+        return id
     }
+
+    /**
+     * A MessagingStyle post's last message with text (row 14): its text and its
+     * sender, from `EXTRA_MESSAGES`. Null when there is none. The text is only
+     * ever handed to the event builder, never logged.
+     */
+    private fun lastMessage(extras: Bundle): Pair<String, String?>? {
+        // `EXTRA_MESSAGES` holds a Parcelable[] of Bundles; the typed accessor
+        // is API 33, and `get` keeps this one call site free of a suppression.
+        val messages = extras.get(Notification.EXTRA_MESSAGES) as? Array<*> ?: return null
+        for (index in messages.indices.reversed()) {
+            val message = messages[index] as? Bundle ?: continue
+            val text = message.getCharSequence("text")?.toString()?.takeIf { it.isNotEmpty() } ?: continue
+            val sender = message.getCharSequence("sender")?.toString()?.takeIf { it.isNotEmpty() }
+            return text to sender
+        }
+        return null
+    }
+
+    /**
+     * The channel's importance for this notification (rows 5/20), from the
+     * system's ranking of its key. Null when the system does not answer for it;
+     * today's alert rules then apply.
+     */
+    private fun importanceOf(sbn: StatusBarNotification): Int? {
+        notifyImportanceForTest?.let { return it(sbn.key ?: "") }
+        return runCatching {
+            val map = getCurrentRanking() ?: return@runCatching null
+            val ranking = Ranking()
+            if (map.getRanking(sbn.key, ranking)) ranking.importance else null
+        }.getOrNull()
+    }
+
+    /**
+     * Runs one group event through the machine (NOTIFY-20) and logs the
+     * transition with its state and action count only — never a group key.
+     */
+    private fun groupEvent(
+        pkg: String,
+        groupKey: String,
+        event: NotifyGroupEvent,
+    ): List<NotifyGroupAction> {
+        val key = "$pkg\u0000$groupKey"
+        val from = groupStates.get(key) ?: NotifyGroupState()
+        val (next, actions) = NotifyGroups.transition(from, event)
+        if (next.phase == NotifyGroupPhase.EMPTY) groupStates.remove(key) else groupStates.put(key, next)
+        val name = when (event) {
+            is NotifyGroupEvent.ChildPosted -> "child-post"
+            is NotifyGroupEvent.ChildGone -> "child-gone"
+            is NotifyGroupEvent.SummaryPosted -> "summary-post"
+            is NotifyGroupEvent.SummaryGone -> "summary-gone"
+        }
+        Log.i(
+            TAG,
+            "notify group $pkg: ${from.phase} --$name--> ${next.phase}"
+                + " children=${next.children.size} actions=${actions.size}",
+        )
+        return actions
+    }
+
+    /** A forwarded notification that belongs to a group (NOTIFY-20). */
+    private data class ForwardedGroup(val pkg: String, val groupKey: String, val summary: Boolean)
 
     /**
      * The `live` field for a promoted ongoing notification (docs/design/notify.md).
@@ -492,10 +727,14 @@ class PdNotificationListener : NotificationListenerService() {
         event: Map<String, Any?>,
         live: Map<String, Any?>?,
         picture: Notification?,
+        coalesce: Boolean = true,
     ) {
         mediaHandler.post {
             if (live != null) {
                 val now = SystemClock.uptimeMillis()
+                // A snapshot's row is the current state, not a tick behind: it
+                // bypasses the one-per-second window and opens a new one.
+                if (!coalesce) throttle.forget(id)
                 if (!throttle.due(id, now)) {
                     pendingLive[id] = event
                     scheduleLiveFlush()
@@ -554,6 +793,25 @@ class PdNotificationListener : NotificationListenerService() {
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         val id = forwardId(sbn)
         NotifyIntents.remove(id)
+        lastContent.remove(id)
+        lastTitle.remove(id)
+        lastHadBar.remove(id)
+        val grouped = groupOf.remove(id)
+        if (grouped != null) {
+            groupEvent(
+                grouped.pkg,
+                grouped.groupKey,
+                if (grouped.summary) NotifyGroupEvent.SummaryGone else NotifyGroupEvent.ChildGone(id),
+            )
+        }
+        // Every other removal is announced, even after the forwarded-id map
+        // forgot the id: the Mac still holds that banner, and swallowing the
+        // removal would leave a ghost (NOTIFY-20). Only an id the phone
+        // deliberately kept — a skipped summary — was never forwarded.
+        if (skipped.remove(id) != null) {
+            Log.i(TAG, "notify remove id=$id was not forwarded")
+            return
+        }
         // Posts leave through mediaHandler; the removal takes the same queue so
         // it can never overtake its own post (a ghost banner on the Mac), and
         // the live state is only ever touched on that one thread.
@@ -638,5 +896,9 @@ class PdNotificationListener : NotificationListenerService() {
     private companion object {
         const val TAG = "PocketDeckApp"
         const val MEDIA_MERGE_MS = 200L
+
+        /** Content hashes and group links kept in memory (NOTIFY-19, NOTIFY-20). */
+        const val MAX_TRACKED = 400
+
     }
 }

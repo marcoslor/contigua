@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Log
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
+import dev.pocketdeck.drop.ShareStaging
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.e2ee.IdentityPin
 import dev.pocketdeck.e2ee.TlsExporter
@@ -28,12 +29,31 @@ class DeckService(private val appContext: Context?) :
     IDeckService.Stub(),
     PairingStore,
     DeviceSource,
-    DeckCallback {
+    DeckCallback,
+    ClipImageHost {
 
     /** Shizuku may construct the service either with a Context or with nothing. */
     constructor() : this(null)
 
     @Volatile private var callback: IDeckCallback? = null
+
+    /** The staged names a pending SEND may still open (SHARE-17). */
+    private val staging = ShareStaging(log = ::log)
+
+    /** Mac -> phone clipboard images: the app owns the provider and the clip. */
+    private val clipBridge = ClipImageBridge(
+        callback = {
+            callback?.let { cb ->
+                ClipImageBridge.ClipImageCallback { id, mime, data -> cb.onClipImage(id, mime, data) }
+            }
+        },
+        scratch = {
+            appContext?.let {
+                File(DropPolicy.STORAGE_ROOT, "Android/media/${it.applicationInfo.packageName}/clip")
+            }
+        },
+        log = ::log,
+    )
     @Volatile private var deviceId: String = ""
     @Volatile private var deviceName: String = "Android"
 
@@ -104,6 +124,8 @@ class DeckService(private val appContext: Context?) :
         appBinder = null
         runCatching { power?.shutdown() }
         runCatching { stopServer() }
+        staging.close()
+        clipBridge.close()
         System.exit(0)
     }
 
@@ -146,7 +168,7 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
-        val factory = SessionFactory { socket, plain ->
+        val factory = SessionFactory { socket, plain, hello ->
             Session(
                 socket = socket,
                 plainSocket = plain,
@@ -162,17 +184,19 @@ class DeckService(private val appContext: Context?) :
                 taskPresence = titles,
                 clipboard = clip,
                 clipImages = clip,
+                clipImageHost = this,
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
-                dropLanding = ShellLanding(appContext, ::log),
+                dropLanding = ShellLanding(appContext, staging, ::log),
                 // The shared storage root. Environment.getExternalStorageDirectory()
                 // asks StorageManager, which refuses a caller that is not the
                 // app's own uid; the shell service is uid 2000. This is the real
                 // path of /sdcard (docs/design/files.md §4).
-                filesRoot = File("/storage/emulated/0"),
+                filesRoot = File(DropPolicy.STORAGE_ROOT),
                 fsStats = AndroidFsStats,
                 fsPlatform = AndroidFsPlatform(appContext, ::log),
                 fsWatch = AndroidFsWatchSource(appContext, ::log),
+                fsThumb = AndroidThumbSource(),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 // Read when this session starts, never cached: the property can
@@ -206,6 +230,7 @@ class DeckService(private val appContext: Context?) :
                 ringerMode = ringerControl,
                 volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
+                preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
@@ -222,7 +247,8 @@ class DeckService(private val appContext: Context?) :
             )
         }
         val srv = Server(factory, ::log, ::servedCertPem, ::servedKeyP8, { gates },
-            { servedClients().map { it.macFpHex } })
+            { servedClients().map { it.macFpHex } },
+            onVersionRefused = { v -> onVersionRefused(v) })
         server = srv
         return srv.start()
     }
@@ -231,6 +257,22 @@ class DeckService(private val appContext: Context?) :
     override fun stopServer() {
         server?.stop()
         server = null
+        staging.clear()
+    }
+
+    /**
+     * The trampoline's read side (SHARE-17): an fd for a bare name the shell
+     * staged for a pending SEND, or null. The app cannot open the staged path
+     * itself (boot 5); the fd crosses the binder so only the shell touches it.
+     */
+    override fun openStaged(name: String?): ParcelFileDescriptor? =
+        name?.let { staging.open(it) }
+
+    override fun offer(id: Int, mime: String, bytes: ByteArray, done: (Boolean) -> Unit) =
+        clipBridge.offer(id.toString(), mime, bytes, done)
+
+    override fun clipImageDone(id: String?, ok: Boolean) {
+        id?.let { clipBridge.answer(it, ok) }
     }
 
     override fun setCallback(cb: IDeckCallback?) {
@@ -502,6 +544,10 @@ class DeckService(private val appContext: Context?) :
 
     override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
         sendToApp { it.onSessionChanged(connected, clientId, macName, windows) }
+
+    /** R-8/D-4: a refused hello's version reaches the app's status card. */
+    override fun onVersionRefused(macV: Int?) =
+        sendToApp { it.onVersionRefused(macV ?: -1) }
 
     // ------------------------------------------------------------------
 

@@ -6,15 +6,15 @@ phone stays locked**. LAN only. Open source.
 
 ```
  macOS app (Swift)                             Android phone
-┌──────────────────────────────┐  1 TCP session ┌────────────────────────────────────┐
+┌──────────────────────────────┐ 1-3 paths (TLS)┌────────────────────────────────────┐
 │ ConnectionController ────────┼───────────────►│ App process (dev.pocketdeck)       │
-│ Session + Protocol (frames)  │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
-│ Discovery (Bonjour) / Direct │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
+│ Session (paths) + Protocol   │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
+│ Path providers: lan, direct  │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
 │ Deck (app grid, search)      │                │  PdNotificationListener, prefs     │
 │ AppWindow/StreamWindow +     │                │        │ AIDL (control only)       │
 │  WindowStyle chrome          │                │ Shell service (UID 2000, Shizuku)  │
 │  VideoLayerView              │                │  DeckService (IDeckService.aidl)   │
-│ InputMapper + gestures       │                │  Server → Session →                │
+│ InputMapper + gestures       │                │  Server → Session (paths) →        │
 │ AudioEngine (Opus/AAC)       │                │   WindowStream × N:                │
 │ NotifyCenter / NowPlaying    │                │    VirtualDisplay + MediaCodec     │
 │ ClipboardSync, FileDrop,     │                │   WindowStream.startMirror         │
@@ -38,10 +38,12 @@ The app binds the user service over Shizuku and talks to it over AIDL:
 
 - `IDeckService.aidl` (app → shell): growable transaction codes — `stopServer`,
   `setPairedClients`, `respondPairing`, `setBatteryState`, `setLockedState`,
-  `shareFile`, `setNotifyShared`, `pushDeviceEvent` (bumped per transaction; see
-  "Device lessons").
+  `shareFile`, `setNotifyShared`, `pushDeviceEvent`, `openStaged` (an fd for a staged
+  drop), `clipImageDone` (the app's answer to a clipboard image) (bumped per transaction;
+  see "Device lessons").
 - `IDeckCallback.aidl` (shell → app): `onPairingRequest`, `onPaired`,
-  `onSessionChanged`, `onNotifySession`, `onMediaCommand`.
+  `onSessionChanged`, `onNotifySession`, `onMediaCommand`, `onClipImage` (a clipboard
+  image's bytes for the app to set).
 
 The app pushes identity and per-feature gates in (`setPairedClients`, the
 notify opt-in), the shell calls back for pairing decisions and media actions.
@@ -130,15 +132,20 @@ system-privileged steps):
   resumable via `resume:bytes`, 200 MiB cap, one active drop per phone) → the
   phone lands the file in `Downloads/PocketDeck/`, media-scans it and offers a
   SEND chooser through `DropReceiver` + shell staging (`ShellLanding`,
-  `ShareTrampoline`): the app's own-uid SEND step picks the receiving app.
+  `ShareTrampoline`). The shell stages the file and opens it read-only through
+  `openStaged` (the app cannot open a shell-written path, boot 5); the app
+  copies from that fd into its own cache and its own-uid SEND step picks the
+  receiving app.
 - **APK install** reuses the same transport shape: `apk.install` + `APK_DATA`
   → `pm install-create/write/commit` at shell uid; `.apks`/`.xapk` bundles are
   parsed Mac-side first (docs/design/apk.md).
 - **Share phone → Mac**: `shareFile` (AIDL) hands bytes from the phone's SHARE
   to the shell; `share.text`/`share.file` drive the Mac (browser / clipboard /
   `~/Downloads/PocketDeck` + a Show-in-Finder notification).
-- Clipboard is read/written at shell uid (`ShellClipboard`), so it works while
-  the phone is locked; text and images, both directions.
+- Clipboard text is read/written at shell uid (`ShellClipboard`), so it works
+  while the phone is locked; images are read there too. A Mac image goes to the
+  app process over `onClipImage` because ClipboardService refuses the shell's
+  own URI clip (boot 5); the app sets it and answers `clipImageDone`.
 
 ## The Mac side
 
@@ -238,12 +245,28 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 
 - No session → no VD, no encoder, no wake lock, no polling; idle cost is one
   listening socket + NSD registration.
+- **Two exceptions, and only in a direct build** (the phone's switch on with a
+  key for a paired Mac):
+  1. an **idle publish** with no session, so a direct path can *start* a session
+     after the LAN is gone;
+  2. a **standby NDP** while a session is live, so a switch is instant.
+  Both end with the phone's switch (or the Mac's); the standby also ends with
+  the session. Neither exists in the public build, and the settings name the
+  battery cost in one sentence (docs/design/direct-link.md §4.3, `DIRECT-1`,
+  `DIRECT-7`, `DIRECT-16`).
+- A session outlives its connection: from protocol 4 one session has one to
+  three **paths** (each one TLS connection), and a path that dies is replaced
+  without a new session — up to the 30 s grace, then the session ends as above
+  (docs/design/paths.md).
 - Windows hidden/occluded → `window.pause` (encoder stopped, VD surface
   detached). Static content emits no frames. App-level ping every 15 s.
 - Keep-awake pokes the VD's display group (on stream open, throttled input,
   a ≤ 1/10 s timer while streams are visible) holding a PARTIAL wake lock only
   while ≥ 1 stream is unpaused; the panel is never forced on, the keyguard is
-  never dismissed.
+  never dismissed. The episode start's take-over (the group wake, then the
+  panel-off under it on a shared-group build) runs right after the VD exists
+  and *before* the activity launch: a VD created while the group sleeps starts
+  OFF, and Android does not launch onto it until it is awake.
 - A power press with app streams up is watched from the first second: on the
   not-interactive edge the streaming group is woken at once and the panel
   powered off under it (the same take-over an episode start uses), and the Mac

@@ -2,13 +2,13 @@ package dev.pocketdeck.server
 
 import android.content.ClipData
 import android.content.ClipDescription
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
-import androidx.core.content.FileProvider
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
-import java.io.File
+import android.os.Process
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
@@ -35,7 +35,7 @@ internal class ShellClipboard(
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
         val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
             .getOrNull() as? ClipData ?: return null
         if (clip.itemCount == 0) return null
         val text = clip.getItemAt(0).text?.toString() ?: return null
@@ -47,7 +47,7 @@ internal class ShellClipboard(
         val set = ClipboardApi.calls(log).set ?: return
         val clip = ClipData.newPlainText(CLIP_LABEL, text)
         runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-            .onFailure { log("clipboard: setPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: setPrimaryClip failed: ${failureClasses(it)}") }
     }
 
     // ---- images (docs/design/dragdrop.md): first image item only ---------------
@@ -64,41 +64,23 @@ internal class ShellClipboard(
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
         val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
             .getOrNull() as? ClipData ?: return null
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
         if (item.text != null) return null
         if (isSensitive(clip.description)) return null
         val contentUri = item.uri ?: return null
+        // The app's own clip (SHARE-2/16): never sync our write back to the Mac.
+        if (isOurClip(contentUri)) return null
         // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
         // later call than this code's floor).
         val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: return null
         val source = resolver ?: return null
         val bytes = runCatching { source.openInputStream(contentUri)?.use { s -> s.readBytes() } }
-            .onFailure { log("clipboard: unreadable clip image ($mime, $contentUri): $it") }
+            .onFailure { log("clipboard: unreadable clip image ($mime): ${failureClasses(it)}") }
             .getOrNull() ?: return null
         return ClipImage(bytes, mime.lowercase())
-    }
-
-    /**
-     * Puts an image file of [DIRECTORY] on the clipboard through a FileProvider
-     * URI of the app, which survives the paste into any app that ClipboardService
-     * grants the URI to (the provider is public and keyed by the grant flag).
-     */
-    override fun writeImage(file: File, mime: String, label: String) {
-        val context = ctx ?: run { log("clipboard: no context for an image clip"); return }
-        val uri = runCatching { FileProvider.getUriForFile(context, AUTHORITY, file) }
-            .onFailure { log("clipboard: fileprovider uri failed: ${it.message}") }
-            .getOrNull() ?: return
-        val clip = runCatching { ClipData.newUri(context.contentResolver, CLIP_LABEL, uri) }
-            .onFailure { log("clipboard: newUri failed: ${it.message}") }
-            .getOrNull() ?: return
-        val svc = service ?: return
-        val set = ClipboardApi.calls(log).set ?: return
-        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-            .onFailure { log("clipboard: setPrimaryClip(image) failed: $it") }
-        log("clipboard: image clip ${file.name} ($mime)")
     }
 
     override fun listen(onChange: (ClipText) -> Unit) {
@@ -128,7 +110,7 @@ internal class ShellClipboard(
         }
         val added = runCatching { add.invoke(svc, *argsFor(add, iface, proxy)) }
         added.exceptionOrNull()?.let {
-            log("clipboard: addPrimaryClipChangedListener failed: $it")
+            log("clipboard: addPrimaryClipChangedListener failed: ${failureClasses(it)}")
             this.onChange = null
             return
         }
@@ -144,7 +126,7 @@ internal class ShellClipboard(
         val remove = calls.remove ?: return
         val iface = calls.listenerIface ?: return
         runCatching { remove.invoke(svc, *argsFor(remove, iface, proxy)) }
-            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: $it") }
+            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: ${failureClasses(it)}") }
     }
 
     /** The system's own "this is a secret" mark on a clip's description. */
@@ -153,6 +135,19 @@ internal class ShellClipboard(
         return SENSITIVE_KEYS.any { key -> runCatching { extras.getBoolean(key, false) }.getOrDefault(false) }
     }
 }
+
+/**
+ * A2, measured on the emulator (boot 3): the URI-only item pastes nothing in a
+ * plain text field (a content URI that cannot serve text coerces to null, never
+ * to its `content://` string) and reaches a field whose OnReceiveContentListener
+ * accepts image types. So the item carries the URI alone; the empty-text
+ * variant is not needed.
+ */
+internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item(uri)
+
+/** The whole image clip: the image's own MIME type over the URI-only item. */
+internal fun imageClip(uri: Uri, mime: String): ClipData =
+    ClipData(ClipDescription(CLIP_LABEL, arrayOf(mime)), imageClipItem(uri))
 
 private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
@@ -171,7 +166,6 @@ private val SENSITIVE_KEYS = setOf(
 
 /** The app's FileProvider: a shell-written file is served through the app's provider. */
 const val FILE_PROVIDER_AUTHORITY = "dev.pocketdeck.fileprovider"
-private const val AUTHORITY = FILE_PROVIDER_AUTHORITY
 
 /**
  * The hidden calls, probed once per process. The chosen signatures are logged
@@ -254,3 +248,10 @@ private fun argsFor(m: Method, valueType: Class<*>?, value: Any?): Array<Any?> {
         }
     }
 }
+
+/**
+ * The echo rule for app-owned clipboard images (SHARE-2/16): a clip pointing at
+ * our own provider is the app's own write, never something to sync back to the
+ * Mac.
+ */
+internal fun isOurClip(uri: Uri?): Boolean = uri?.authority == FILE_PROVIDER_AUTHORITY

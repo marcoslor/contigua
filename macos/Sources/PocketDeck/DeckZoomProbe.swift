@@ -203,7 +203,8 @@ final class DeckZoomProbe {
         guard right - left > 1 else { return nil }
         let visible = CGRect(x: left, y: shot.viewport.minY, width: right - left,
                              height: shot.viewport.height)
-        return DeckFrameFit.measure(width: visible.width, visible: visible, cells: shot.cells)
+        return DeckFrameFit.measure(width: visible.width, visible: visible, cells: shot.cells,
+                                    zoom: DeckZoom.stored(in: Profile.active.defaults))
     }
 
     private var lastTick: Double = 0
@@ -288,9 +289,10 @@ final class DeckZoomProbe {
 }
 
 /// One drawn frame's horizontal fit, as the eye judges it: every cell inside
-/// the width it was drawn in, one inset on both sides, and the column count
-/// that width asks for. `width` is the width the grid was given that frame;
-/// `visible` is where the ScrollView clips it.
+/// the width it was drawn in, the block centred with the rail's room on its
+/// trailing side, and the column count that width asks for. `width` is the
+/// width the grid was given that frame; `visible` is where the ScrollView
+/// clips it.
 struct DeckFrameFit: Equatable {
     let width: CGFloat
     let cells: Int
@@ -307,7 +309,8 @@ struct DeckFrameFit: Equatable {
     /// the person's frames lose more than half a tile per side.
     static let tolerance: CGFloat = 1
 
-    static func measure(width: CGFloat, visible: CGRect, cells frames: [CGRect]) -> DeckFrameFit {
+    static func measure(width: CGFloat, visible: CGRect, cells frames: [CGRect],
+                        zoom: CGFloat) -> DeckFrameFit {
         guard width > 0, !frames.isEmpty else { return .empty }
         let minX = frames.map(\.minX).min() ?? visible.minX
         let maxX = frames.map(\.maxX).max() ?? visible.maxX
@@ -319,15 +322,19 @@ struct DeckFrameFit: Equatable {
         return DeckFrameFit(width: width,
                             cells: frames.count,
                             columns: edges.count,
-                            expectedColumns: GridMetrics.columns(forWidth: width),
+                            expectedColumns: DeckWide.block(width: width,
+                                                            metrics: DeckGridSize(zoom: zoom, width: width)).columns,
                             leftInset: minX - visible.minX,
                             rightInset: visible.maxX - maxX,
                             clipped: frames.filter { $0.minX < visible.minX - tolerance || $0.maxX > visible.maxX + tolerance }.count)
     }
 
-    /// The check's per-frame assertion.
+    /// The check's per-frame assertion: no clipped cell, the columns the width
+    /// asks for, and the block centred with the rail's room on its trailing
+    /// side (DECK-4).
     var ok: Bool {
-        cells > 0 && clipped == 0 && abs(leftInset - rightInset) <= Self.tolerance
+        cells > 0 && clipped == 0
+            && abs(leftInset + DeckWide.railSpace - rightInset) <= Self.tolerance
             && columns == expectedColumns
     }
 

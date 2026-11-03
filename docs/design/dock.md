@@ -10,7 +10,9 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
 <folder>/WhatsApp (Pixel).app/Contents/
   Info.plist           CFBundleIdentifier dev.pocketdeck.dock.<profile.>?<deviceId>.<pkg>
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
-                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it)
+                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it),
+                       PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts),
+                       PDShimHash (the shim executable it was built from; §Lifecycle)
   MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
   Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
@@ -42,8 +44,21 @@ every place.
   its 108 dp layer (the tile's `cropRect`/`zoomFactor` math, `zoomFactor` 3/2), clipped to
   the body. No tint, no material over the colours: this is what the phone's launcher draws,
   in Apple's shape.
-- Legacy (flat) icons: the flat image at 78 % of the body on a white plate, the way the
-  phone's launcher shows an icon with no adaptive layers.
+- Legacy (flat) icons are drawn by their own shape. The alpha is trimmed to its opaque
+  bounds (alpha > 0.5), and `PhoneAppIcon.flatFit` decides between cover and plate:
+  - **Cover** when the trimmed outline is a square or a rounded square: near square (ratio
+    ≤ 1.05), every edge's middle opaque, the four corner radii within 2 px or 6 % of the
+    side, and the measured coverage the one that radius explains — a rounded square loses
+    (4 − π)·r² of its bounds to its corners, ±0.03, and at least 0.8. The crop is 0.3 × the
+    measured corner radius in from each side (never more than 0.13 of the side), so the
+    icon's own rounded corners land outside the squircle and no transparency is left inside
+    it; the crop aspect-fills the body, clipped to the squircle. **No plate is drawn under
+    a cover**, so a cover has no plate colour to get wrong.
+  - **Plate** for everything else — a circle, a logo on transparency, an outline whose four
+    corners disagree (a baked soft shadow, a bitten corner): the flat image at 78 % of the
+    body. The plate is the median colour of the icon's outer opaque ring (the outer 5 % of
+    its bounds, at least 2 px), unless that colour is within ΔE 15 of the logo's own mean
+    colour — then it stays white, as before.
 - Finish: two constants only — a soft top light (white 0 → 5.5 % over the top 40 % of the
   body) and a thin inner specular edge (2 px at 8 % white, inset 1.5 % of the body). Neither
   changes the colour at the centre (unit test: ΔE below 2 against the layer's colour).
@@ -59,6 +74,13 @@ every place.
 - The Deck asks 432 and renders the 56 pt tile from a 224 px render; building a Dock shim
   asks 1296 and renders one 1024 px icon (its 864 px visible crop downscales into the
   824 px body, so nothing is upscaled), from which every `.icns` size is scaled.
+- A covered flat icon is the one source a render enlarges, because its crop is smaller than
+  the tile by design. The Deck's request gives a 288 px flat and stays under 1.0: 0.84× at
+  worst, a 38 % rounded square's 0.745 crop (a 10 % margin's 0.77 crop is 0.82×). The Dock's
+  gives 864 px and costs 1.28× at worst. No cover crops more than 0.13 of a side, which
+  keeps the rule's ceiling at 1.29×. The Dock shim therefore reads the flat of its own size
+  class, and `icon_covered_flat_scale` in docs/NFR.md holds the 1.3× bound: past it, the
+  shim drew a covered icon from the Deck's flat, or the crop rule was widened.
 - `IconCache` keeps one slot per size class (`deck` = 432, `dock` = 1296), so a 1296 render
   is never replaced by a 216 one; entries from before size classes are read as `deck`.
 - The shim's `Info.plist` carries `PDIconVersion`, bumped with the renderer. A shim with an
@@ -71,7 +93,8 @@ every place.
 A shape-perfect legacy `.icns` is **not** put in the grey plate: the shim's tile sits in
 the Dock at the same size and shape as the native icons around it, with its own white
 squircle and the phone's colours, and the Deck grid draws every app in one shape
-(adaptive layers at full opacity, legacy icons on the plate). The `.icns` carries a
+(adaptive layers at full opacity; flat icons covered by their own shape or on their
+edge-tinted plate). The `.icns` carries a
 1024 px representation, its canvas corners are transparent and its centre is the bg
 colour — the dock e2e asserts all three. The real Mac's Dock with the user's own apps is
 still unverified (test profiles only).
@@ -107,12 +130,26 @@ Mac has no `actool` either (it ships with Xcode). So the shim keeps a shape-perf
 
 ## Launch → window (IPC)
 
-The shim is a regular AppKit app with no windows. On launch, on a Dock click (reopen) and
-when it is activated (⌘-Tab) it posts the distributed notification
-`dev.pocketdeck.dock.open` (object = profile name; userInfo deviceId, pkg, pid). The host
-answers `dev.pocketdeck.dock.opened` (pid) and opens the window, or brings an open one to
-the front. Until that answer arrives the shim re-posts every second; after 2 s with no host
-running from PDHostPath it launches that bundle (`--profile <profile>`); after 30 s it quits.
+The shim is a regular AppKit app with no windows. It registers its observers before
+`NSApp.run`. On a manual launch, on a Dock click (reopen) and when it is activated (⌘-Tab)
+it posts the distributed notification `dev.pocketdeck.dock.open` (object = profile name;
+userInfo deviceId, pkg, pid, token). The host answers `dev.pocketdeck.dock.opened` (pid) and
+opens the window, or brings an open one to the front. Until that answer arrives the shim
+re-posts every second; after 2 s with no host running from PDHostPath it launches that
+bundle (`--profile <profile>`); after 30 s with no answer it quits.
+
+A shim started by the automatic path (`--no-open`) has its window already open, so it does
+not ask for one: it posts `dev.pocketdeck.dock.ready` at once, and again every second until
+answered. The host answers `ready` from a pid it has bound with `opened`, and only when the
+message carries the bundle's token; a pid that is not bound yet gets no answer, because its
+bind posts `opened` itself — either order reaches a shim that is listening. A bound shim
+never quits on its own: only a wait with no answer ends in the 30 s self-quit, so a lost
+host still never leaves a Dock tile behind. Only a person's later Dock click asks for a
+window.
+
+The e2e harness can write `PDListenDelay` into a bundle (only with
+`--dock-debug-listen-delay`) to start the observers late, and so make the race
+deterministic: the bind's one `opened` lands before the shim listens.
 
 Why distributed notifications: both sides are unsandboxed, they need no registration or
 entitlement, and the profile name as `object` keeps a test copy from ever reaching the
@@ -145,8 +182,19 @@ right-click a Dock icon); a person's click takes the same path.
 - Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `dev.pocketdeck.dock.quit`;
   the host also watches `NSWorkspace.didTerminateApplication` for the shim's pid, so a force
   quit or crash closes the window too.
+- The shim watches the host in return (DOCK-19): `NSWorkspace.didTerminateApplicationNotification`
+  matched on `PDHostPath`, plus a process source on the host pid because a host started by
+  exec (the e2e) gets no LaunchServices termination notice. When the host ends — quit, crash
+  or force quit — a bound shim, or one still waiting after it has seen the host running,
+  quits at once (`hostExited`), so no Dock icon outlives PocketDeck. A waiting shim that has
+  not seen the host keeps its 30 s self-quit; a host relaunch starts its own shims again.
 - Closing the window (or the phone closing the stream, forgetting the phone) posts
   `dev.pocketdeck.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
+- An automatic identity still building or launching when its window closes is dropped
+  (nothing built) or quit the moment its pid arrives, and is never bound: a shim bound to a
+  closed stream has no event left that would ever stop it. Quitting PocketDeck likewise
+  stops any automatic shim it launched that no window owns, including one whose launch is
+  in flight at quit.
 
 ## Dock and ⌘-Tab while the window is open
 
@@ -157,6 +205,47 @@ PocketDeck itself keeps its own Dock icon. Rejected: rendering the stream inside
 (a second session or frame forwarding, double the cost) and swapping the host's Dock tile per
 window (`NSApp.applicationIconImage` is per process, not per window).
 
+## Shortcuts (Launchpad, Spotlight and other launchers)
+
+A **shortcut** is the same shim bundle as a Dock identity: same folder, same
+icon, same "App (Phone)" name. A shortcut in an `~/Applications` subfolder is
+listed by Launchpad, Spotlight and other launchers; a CoreSpotlight item is not an app,
+so it never is. One mechanism, four reasons a bundle exists — its **origin set**:
+
+| Origin | Asked for by |
+|---|---|
+| `dock` | Add to Dock (today's `pinned`) |
+| `manual` | Add to Applications on one app |
+| `all` | the phone's "Save all apps as shortcuts" switch |
+| `window` | the automatic identity of an open window (today's unpinned) |
+
+The bundle stays while the set is non-empty, and removing an origin removes only
+that origin, so two features can never silently delete each other's shortcut. A
+record from before the set existed migrates its `PDPinned` marker: pinned (or
+missing, the old default) → `dock`, unpinned → `window`.
+
+- **Per phone: Save all.** Settings ▸ a phone ▸ Applications ▸ "Save all apps as
+  shortcuts", off by default, stored per phone id. On: every app of that phone
+  gains `all`. Off: `all` is removed from every shim of the phone; a shim another
+  origin keeps is rewritten, the rest are removed. A phone that is offline keeps
+  its shims.
+- **Per app: Add to Applications / Remove from Applications** in the Deck tile's
+  menu, next to Add to Dock (origin `manual`). Remove takes only `manual`; with
+  Save all on, the App already in Applications offers Add (which makes it stay
+  when Save all is turned off), never a silent delete of the `all` shim.
+- **Icons.** Save all may build ~230 bundles: the Dock's 1296 px icons are
+  requested at most four at a time, and each shim is built when its icon answers,
+  off the main thread. A shim is always drawn from the Dock's size class
+  (§Icons), never from the Deck's 288 px flat.
+- **Reconcile on every app list** (connect, refresh, nickname): an uninstalled app
+  loses `all` and `manual` — it keeps a shim only while `dock` or `window` holds
+  it; a new app gains `all` when Save all is on; a renamed app or phone rebuilds
+  its shims (the existing rule). Forget a phone: every shim of that phone goes,
+  whatever its origins.
+- **Spotlight duplicates.** An app with a shim is not also a CoreSpotlight item:
+  its item is removed when the shim appears, and the phone's list is indexed
+  again (without it) when the shim goes away.
+
 ## Lifecycle
 
 - Automatic: a phone app's window opening — from the Deck, Spotlight, a link,
@@ -166,9 +255,9 @@ window (`NSApp.applicationIconImage` is per process, not per window).
   phone says it has none — so the Dock never shows a blank tile. An identity already
   on disk (kept from Add to Dock) is simply launched. The phone mirror window gets
   none. With the setting off nothing runs automatically and the menu item below
-  still works; turning it off also stops the running automatic identities ("PDPinned"
-  false — their windows stay open, the bundles stay on disk), while ones added by
-  hand keep running with their windows.
+  still works; turning it off also stops the running automatic identities (the
+  ones whose origins hold only `window` — their windows stay open, the bundles
+  stay on disk), while ones added by hand keep running with their windows.
 - Manual: Deck → app context menu → **Add to Dock** creates and launches the shim
   regardless of the setting; the person chooses Options → Keep in Dock. PocketDeck
   never writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.
@@ -176,11 +265,16 @@ window (`NSApp.applicationIconImage` is per process, not per window).
   `closed` when the window closes, and while two windows of one app are open the
   identity follows the one that is left. The bundles stay on disk, so a later
   window only launches the identity again.
+- Updating PocketDeck updates the shims: a bundle records the SHA-256 of the
+  `PocketDeckShim` it was built from, and the next app-list refresh — or the
+  relaunch of an idle bundle — rebuilds one whose hash differs. A running shim
+  is left alone; it is replaced on a later refresh after it exits.
 - One set per phone: the id and file name include the phone, so the same app on two phones
   gets two shims; re-adding replaces the bundle in place.
-- Cleanup: when a phone's app list arrives, shims of packages no longer on it are removed and
-  shims whose name changed (phone renamed, app relabelled) are rebuilt — except shims of
-  open windows, which follow when their window is gone; forgetting a phone removes all of
-  its shims. Removal = `lsregister -u`, then delete. Decisions are a pure function of
-  (shims on disk, app list, phone name), unit-tested; so is whether a window's identity
-  is created, relaunched, skipped or waits for its icon.
+- Cleanup: when a phone's app list arrives, an uninstalled app loses the `all` and `manual`
+  reasons (its shim goes unless `dock` or `window` keep it), and shims whose name changed
+  (phone renamed, app relabelled) are rebuilt — except shims of open windows, which follow
+  when their window is gone; forgetting a phone removes all of its shims. Removal =
+  `lsregister -u`, then delete. Decisions are a pure function of (shims on disk, app list,
+  phone name, Save all), unit-tested; so is whether a window's identity is created,
+  relaunched, skipped or waits for its icon.

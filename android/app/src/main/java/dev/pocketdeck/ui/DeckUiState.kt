@@ -19,6 +19,8 @@ enum class AttentionKind {
     NOTIFY_ACCESS,
     /** A pairing prompt is waiting and this phone's notification permission is denied. */
     PAIR_NOTIFY,
+    /** R-8/D-4: the Mac app is another protocol version; update that side. */
+    VERSION,
     RETRY,
 }
 
@@ -42,6 +44,8 @@ data class StatusInput(
     val notifyNoAccess: Boolean = false,
     /** A pairing prompt is pending and POST_NOTIFICATIONS is denied: its notification cannot show. */
     val pairNotifyMissing: Boolean = false,
+    /** R-8/D-4: the sentence naming the other app to update; null until refused. */
+    val versionSentence: String? = null,
 )
 
 /**
@@ -58,7 +62,11 @@ fun mapStatus(input: StatusInput): DeckStatus = when {
     // A prompt the person cannot see anywhere but the foreground: the home
     // names the permission that would show it (PAIR-6, M8).
     input.pairNotifyMissing -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.PAIR_NOTIFY)
+    // R-8/D-4: a refused Mac version stays on the card until a session succeeds.
+    // RR-13: a connected Mac wins: another Mac's old app must not overwrite the
+    // card of the one serving right now.
     input.connectedMac != null -> DeckStatus(StatusState.CONNECTED, AttentionKind.NONE)
+    input.versionSentence != null -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.VERSION)
     !input.enabled -> DeckStatus(StatusState.READY, AttentionKind.NONE, untilTaskClosed = true)
     input.port > 0 -> DeckStatus(StatusState.READY, AttentionKind.NONE)
     else -> DeckStatus(StatusState.ERROR, AttentionKind.RETRY)
@@ -140,6 +148,8 @@ data class DeckUiState(
     val windows: Int = 0,
     val paired: List<PairedMacUi> = emptyList(),
     val pending: PendingPairingUi? = null,
+    /** R-8/D-4: the other app's update sentence while a version refusal stands. */
+    val versionSentence: String? = null,
     val notificationsGranted: Boolean = false,
     val batteryRequested: Boolean = false,
     val wifiName: String? = null,

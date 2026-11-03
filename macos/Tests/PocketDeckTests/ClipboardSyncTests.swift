@@ -1,6 +1,8 @@
 // Clipboard sync rules, on a fake pasteboard and a manual clock: what is sent,
 // what is skipped, what is written back without echo, and the toggle.
 
+import AppKit
+import ImageIO
 import XCTest
 @testable import PocketDeck
 
@@ -11,21 +13,34 @@ final class ClipboardSyncTests: XCTestCase {
         private(set) var changeCount = 0
         private var text: String?
         private var types: Set<String> = []
+        private var fileURLs: [URL] = []
         private(set) var writes: [String] = []
 
         /// Another app copies `text`, carrying `types`.
         func copy(_ text: String, types: Set<String> = []) {
             self.text = text
             self.types = types
+            fileURLs = []
+            changeCount += 1
+        }
+
+        /// A Finder copy: file URLs, plus the file's name as text.
+        func copyFiles(_ urls: [URL], text: String? = nil) {
+            fileURLs = urls
+            self.text = text
+            types = Set(["public.file-url"] + (text == nil ? [] : ["public.utf8-plain-text"]))
             changeCount += 1
         }
 
         func currentItem() -> (text: String?, types: Set<String>) { (text, types) }
 
+        func currentFileURLs() -> [URL] { fileURLs }
+
         func write(text: String) {
             writes.append(text)
             self.text = text
             types = []
+            fileURLs = []
             changeCount += 1
         }
 
@@ -36,6 +51,8 @@ final class ClipboardSyncTests: XCTestCase {
             imageWrites.append((data, mime))
             image = (data, mime)
             self.text = nil
+            types = []
+            fileURLs = []
             changeCount += 1
         }
 
@@ -62,18 +79,25 @@ final class ClipboardSyncTests: XCTestCase {
     private var pasteboard: FakePasteboard!
     private var clock: ManualClock!
     private var sent: [String] = []
+    private var imageSends: [(data: Data, mime: String)] = []
     private var enabled = true
     private var sync: ClipboardSync!
+    private var tempDir: URL!
 
     override func setUp() {
         super.setUp()
         pasteboard = FakePasteboard()
         clock = ManualClock()
         sent = []
+        imageSends = []
         enabled = true
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pastedrop-clipboard-tests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         sync = ClipboardSync(pasteboard: pasteboard,
                              isEnabled: { [unowned self] in self.enabled },
                              send: { [unowned self] in self.sent.append($0) },
+                             sendImage: { [unowned self] in self.imageSends.append(($0, $1)) },
                              clock: clock.schedule)
     }
 
@@ -82,7 +106,125 @@ final class ClipboardSyncTests: XCTestCase {
         sync = nil
         clock = nil
         pasteboard = nil
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+        tempDir = nil
         super.tearDown()
+    }
+
+    // MARK: File copies
+
+    /// A tiny image in `type`, written into the test's temp folder.
+    private func imageFile(_ name: String, type: NSBitmapImageRep.FileType) -> URL {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                   isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        let bytes = rep.bitmapData!
+        for i in 0..<(rep.bytesPerRow * rep.pixelsHigh) { bytes[i] = UInt8((i * 7) & 0xFF) }
+        let data = rep.representation(using: type, properties: [:])!
+        let url = tempDir.appendingPathComponent(name)
+        try! data.write(to: url)
+        return url
+    }
+
+    /// An opaque 64 x 64 HEIC file (a photo's shape), when this macOS can encode
+    /// one. The HEVC encoder refuses tiny images and alpha.
+    private func heicFile(_ name: String) -> URL? {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
+                                   bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+                                   isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        let bytes = rep.bitmapData!
+        for i in 0..<(rep.bytesPerRow * rep.pixelsHigh) { bytes[i] = UInt8((i * 13) & 0xFF) }
+        guard let image = rep.cgImage else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+                data as CFMutableData, "public.heic" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        let url = tempDir.appendingPathComponent(name)
+        try? (data as Data).write(to: url)
+        return url
+    }
+
+    private func file(_ name: String, bytes: Int) -> URL {
+        let url = tempDir.appendingPathComponent(name)
+        try! Data(repeating: 0x41, count: bytes).write(to: url)
+        return url
+    }
+
+    func testAFileCopyNeverSendsItsNameAsText() {
+        sync.start()
+        // The Mac may be unable to read the URL back; the type alone still
+        // says this is a Finder copy, so its text never travels.
+        pasteboard.copy("report.pdf", types: ["public.file-url", "public.utf8-plain-text"])
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 0)
+    }
+
+    func testASinglePNGFileCopySendsTheFile() {
+        let url = imageFile("photo.png", type: .png)
+        let bytes = try! Data(contentsOf: url)
+        sync.start()
+        pasteboard.copyFiles([url], text: "photo.png")
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 1)
+        XCTAssertEqual(imageSends.first?.data, bytes)
+        XCTAssertEqual(imageSends.first?.mime, "image/png")
+    }
+
+    func testATIFFFileCopyBecomesPNG() {
+        let url = imageFile("photo.tiff", type: .tiff)
+        sync.start()
+        pasteboard.copyFiles([url], text: "photo.tiff")
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 1)
+        XCTAssertEqual(imageSends.first?.mime, "image/png")
+        XCTAssertEqual(imageSends.first?.data.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]))
+    }
+
+    func testAnOpaqueHEICFileCopyBecomesJPEG() throws {
+        guard let url = heicFile("photo.heic") else {
+            throw XCTSkip("this macOS cannot encode HEIC in a test")
+        }
+        sync.start()
+        pasteboard.copyFiles([url], text: "photo.heic")
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 1)
+        XCTAssertEqual(imageSends.first?.mime, "image/jpeg")
+        XCTAssertEqual(imageSends.first?.data.prefix(3), Data([0xFF, 0xD8, 0xFF]))
+    }
+
+    func testTwoFilesSendNothing() {
+        let first = imageFile("one.png", type: .png)
+        let second = imageFile("two.png", type: .png)
+        sync.start()
+        pasteboard.copyFiles([first, second])
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 0)
+    }
+
+    func testANonImageFileSendsNothing() {
+        let url = file("report.pdf", bytes: 64)
+        sync.start()
+        pasteboard.copyFiles([url], text: "report.pdf")
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 0)
+    }
+
+    func testAnOversizedImageFileSendsNothing() {
+        let url = file("big.png", bytes: ClipboardSync.maxImageBytes + 1)
+        sync.start()
+        pasteboard.copyFiles([url], text: "big.png")
+        sync.poll()
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(imageSends.count, 0)
     }
 
     // MARK: Sending

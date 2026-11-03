@@ -28,6 +28,9 @@ private final class FakeDropChannel: @unchecked Sendable, DropChannel {
         var size: Int
         var sha256: String
         var resume: Int
+        var target: String?
+        var index: Int
+        var count: Int
     }
 
     private let lock = NSLock()
@@ -42,9 +45,11 @@ private final class FakeDropChannel: @unchecked Sendable, DropChannel {
     /// Fake responses when the dropdata is sent.
     var respond: @Sendable (Bool) -> Void = { _ in true }
 
-    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int) {
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String,
+                   resume: Int, target: String?, index: Int, count: Int) {
         lock.lock(); defer { lock.unlock() }
-        starts.append(Start(id: id, name: name, size: size, sha256: sha256, resume: resume))
+        starts.append(Start(id: id, name: name, size: size, sha256: sha256, resume: resume,
+                            target: target, index: index, count: count))
     }
 
     func cancelDrop(id: UInt32) {

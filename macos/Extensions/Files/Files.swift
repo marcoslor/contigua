@@ -286,9 +286,10 @@ func bridgeSocketPath(domain: NSFileProviderDomain) -> String? {
     return container.appendingPathComponent(name).path
 }
 
-private func bridgeConnection(for domain: NSFileProviderDomain) -> BridgeConnection? {
+private func bridgeConnection(for domain: NSFileProviderDomain,
+                              readTimeout: Int = 20) -> BridgeConnection? {
     guard let path = bridgeSocketPath(domain: domain) else { return nil }
-    return BridgeConnection(path: path)
+    return BridgeConnection(path: path, readTimeout: readTimeout)
 }
 
 // MARK: - Errors
@@ -406,7 +407,7 @@ final class WriteState: @unchecked Sendable {
 // MARK: - Extension
 
 @objc(FilesExtension)
-final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
+final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     let domain: NSFileProviderDomain
     private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
     /// The anchor S3 answers with: no changes are reported (S5 adds them).
@@ -433,8 +434,10 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
 
     // MARK: Bridge operations
 
-    private func connect() -> Result<BridgeConnection, FilesFailure> {
-        guard let connection = bridgeConnection(for: domain) else { return .failure(.offline) }
+    private func connect(readTimeout: Int = 20) -> Result<BridgeConnection, FilesFailure> {
+        guard let connection = bridgeConnection(for: domain, readTimeout: readTimeout) else {
+            return .failure(.offline)
+        }
         return .success(connection)
     }
 
@@ -1139,6 +1142,130 @@ final class ReadState {
         guard let id else { return }
         _ = connection.send(.cancel(id: id))
         log.notice("fetch cancelled")
+    }
+}
+
+// MARK: - Thumbnails
+
+/// Who gets a picture at all: `FilesThumbPolicy` decides the type and the R-1
+/// answer in FilesCore's companion file, so K2 pins both.
+extension FilesExtension {
+    func fetchThumbnails(for itemIdentifiers: [NSFileProviderItemIdentifier],
+                         requestedSize: CGSize,
+                         perThumbnailCompletionHandler: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
+                         completionHandler: @escaping (Error?) -> Void) -> Progress {
+        let progress = Progress(totalUnitCount: Int64(max(itemIdentifiers.count, 1)))
+        progress.isCancellable = true
+        let long = max(requestedSize.width, requestedSize.height)
+        let size = min(FilesThumbPolicy.maxLongSide, max(1, Int(long.rounded(.up))))
+        work.async {
+            self.thumbBatch(ids: itemIdentifiers, size: size, progress: progress,
+                            per: perThumbnailCompletionHandler, done: completionHandler)
+        }
+        return progress
+    }
+
+    /// At most three thumbnails run, one bridge connection each; every id gets
+    /// exactly one answer and the batch completes once.
+    private func thumbBatch(ids: [NSFileProviderItemIdentifier], size: Int, progress: Progress,
+                            per: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
+                            done: @escaping (Error?) -> Void) {
+        guard !ids.isEmpty else { return done(nil) }
+        let lock = NSLock()
+        var index = 0
+        var running = 0
+        var finished = 0
+        var stopped = false
+
+        func launchNext() {
+            lock.lock()
+            while !stopped && !progress.isCancelled && running < FilesThumbPolicy.inFlightLimit
+                    && index < ids.count {
+                let item = ids[index]
+                index += 1
+                running += 1
+                lock.unlock()
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    guard let self else { return }
+                    let answer = self.thumb(item: item.rawValue, size: size, progress: progress)
+                    lock.lock()
+                    running -= 1
+                    finished += 1
+                    let complete = finished == ids.count
+                    lock.unlock()
+                    progress.completedUnitCount = Int64(finished)
+                    per(item, answer.data, answer.error)
+                    if complete { done(nil) } else { launchNext() }
+                }
+                lock.lock()
+            }
+            lock.unlock()
+        }
+
+        progress.cancellationHandler = {
+            lock.lock()
+            stopped = true
+            lock.unlock()
+        }
+        launchNext()
+    }
+
+    /// One item's thumbnail: one request, its data frames, its answer. The
+    /// connection waits 120 s (FILES-29): the ask may sit in the app's queue
+    /// behind a camera folder, and the socket must not time it out first.
+    private func thumb(item: String, size: Int,
+                       progress: Progress) -> (data: Data?, error: Error?) {
+        guard case .success(let connection) = connect(readTimeout: FilesThumbPolicy.bridgeReadTimeout),
+              hello(connection) else {
+            log.notice("thumb failed code=offline")
+            return (nil, FilesThumbPolicy.error(for: "offline"))
+        }
+        let state = ReadState(connection: connection)
+        let id: UInt32 = 1
+        state.begin(id: id)
+        guard connection.send(.thumb(id: id, item: item, size: size)) else {
+            log.notice("thumb failed code=offline")
+            return (nil, FilesThumbPolicy.error(for: "offline"))
+        }
+        var data = Data()
+        while let frame = connection.next() {
+            if progress.isCancelled {
+                state.cancel()
+                return (nil, nil)
+            }
+            switch frame {
+            case .data(let bytes):
+                data.append(contentsOf: bytes)
+                if data.count > FilesThumbPolicy.maxBytes {
+                    // A corrupt or oversized answer is permanent: asking again
+                    // cannot fix it.
+                    state.cancel()
+                    log.notice("thumb failed code=too_large")
+                    return (nil, nil)
+                }
+            case .signal:
+                continue
+            case .reply(let reply):
+                switch reply {
+                case .thumb(_, _, let size, let sha256):
+                    let digest = SHA256.hash(data: data)
+                        .map { String(format: "%02x", $0) }.joined()
+                    guard Int(size) == data.count, sha256.lowercased() == digest else {
+                        log.notice("thumb failed code=checksum")
+                        return (nil, nil)
+                    }
+                    log.notice("thumb done bytes=\(data.count, privacy: .public)")
+                    return (data, nil)
+                case .error(_, let code):
+                    log.notice("thumb failed code=\(code, privacy: .public)")
+                    return (nil, FilesThumbPolicy.error(for: code))
+                default:
+                    continue
+                }
+            }
+        }
+        log.notice("thumb failed code=offline")
+        return (nil, FilesThumbPolicy.error(for: "offline"))
     }
 }
 

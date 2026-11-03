@@ -69,7 +69,16 @@ final class InputMapper {
     }
 
     let stream: UInt32
+    /// The protocol message sender.
     var send: ((Command) -> Void)?
+    /// ⌘V's source. Injected so a file copy can be tested without the person's
+    /// real pasteboard.
+    var pasteboard: PasteboardReader = SystemPasteboardReader()
+    /// ⌘V with files or one image is the window's flow (SHARE-16/17). Returns
+    /// true when the key was taken; a window without a flow leaves it to text.
+    var onPaste: ((PasteboardPaste) -> Bool)?
+    /// ⇧⌘V: share the same content instead of pasting it (SHARE-16's fallback).
+    var onShareInstead: ((PasteboardPaste) -> Void)?
     var videoRectProvider: () -> CGRect = { .zero }
     var locationProvider: (NSEvent) -> CGPoint = { _ in .zero }
     var viewIsFlipped: () -> Bool = { false }
@@ -123,6 +132,9 @@ final class InputMapper {
     /// The release of a key `barKey` took: consumed so the phone never sees an
     /// up without its down.
     var barKeyUp: ((NSEvent) -> Bool)?
+    /// A transient overlay's own key before the phone's (the paste pill's Esc):
+    /// true consumes it.
+    var overlayKey: ((NSEvent) -> Bool)?
 
     private var scrollMapping = ScrollMapping()
     private var gestures = TrackpadGestures()
@@ -576,6 +588,7 @@ final class InputMapper {
         // The bar's own keys first (MIRROR-13): ⌃Tab takes the keyboard to the
         // bar, and while it has it the bar's keys never reach the phone.
         if barKey?(event) == true { return }
+        if overlayKey?(event) == true { return }
         let flags = event.modifierFlags
         // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
         // ⌘F: a disabled menu item does not consume its key equivalent, so the
@@ -611,9 +624,34 @@ final class InputMapper {
                 flushText()
                 send?(.nav("back"))
             case "v":
-                if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
+                // A Finder copy puts the file's name on the pasteboard as text;
+                // typing it into the app pastes the name, not the file
+                // (SHARE-2). The file itself goes through a drop (SHARE-17).
+                if pasteboard.isFileCopy() {
+                    if flags.contains(.shift) {
+                        let files = pasteboard.fileURLs()
+                        if !files.isEmpty { onShareInstead?(.files(files)) }
+                    } else {
+                        let files = pasteboard.fileURLs()
+                        if !files.isEmpty { _ = onPaste?(.files(files)) }
+                    }
+                    return
+                }
+                if flags.contains(.shift) {
+                    // ⇧⌘V shares the image instead of pasting it (SHARE-16).
+                    if let image = pasteboard.image() {
+                        onShareInstead?(.image(image.data, image.mime))
+                    }
+                    return
+                }
+                if let text = pasteboard.text(), !text.isEmpty {
                     flushText()
                     send?(.text(text))
+                    return
+                }
+                if let image = pasteboard.image() {
+                    flushText()
+                    _ = onPaste?(.image(image.data, image.mime))
                 }
             case "a", "c", "f", "x", "z":
                 if let code = Self.metaKeyMap[event.keyCode] {

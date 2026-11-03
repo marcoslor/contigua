@@ -1,17 +1,21 @@
 {
   "app_list_ms": 1500,
+  "blip_recovery_ms": 3000,
   "connect_ms": 1500,
   "contrast_min": 3.0,
   "deck_zoom_frame_p95_ms": 40,
   "deck_drag_frame_p95_ms": 21,
+  "stream_zoom_frame_p95_ms": 40,
   "density_burst_first_frame_ms": 600,
   "density_burst_stall_ms": 1500,
   "fetch_small_ms": 3000,
   "first_frame_ms": 1500,
   "first_frame_phone_ms": 1500,
   "hanging_reply_ms": 100,
+  "icon_covered_flat_scale": 1.3,
   "icon_mean_tolerance": 3.0,
   "icon_min_source_scale": 1.0,
+  "input_latency_ms": 100,
   "layout_min_screen": [
     1280,
     800

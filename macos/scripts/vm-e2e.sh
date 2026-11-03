@@ -85,8 +85,10 @@ say "building build/e2e/PocketDeck.app on the host"
 files_flag=()
 controls_flag=()
 for c in "${CHECKS[@]}"; do
-    [ "$c" = files-domain ] && files_flag=(--with-files)
-    [ "$c" = controls ] && controls_flag=(--with-controls)
+    case "$c" in
+        files-domain|files-thumbs) files_flag=(--with-files) ;;
+        controls) controls_flag=(--with-controls) ;;
+    esac
 done
 if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e \
         ${files_flag[@]+"${files_flag[@]}"} ${controls_flag[@]+"${controls_flag[@]}"} > "$OUT/host-build.log" 2>&1; then

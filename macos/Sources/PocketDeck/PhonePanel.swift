@@ -261,20 +261,32 @@ struct PhoneControlsActions {
     }
 }
 
+extension PhoneControlsState.Connection {
+    /// The panel's connection. A live session with no usable path is not
+    /// Connected: it says Reconnecting at once and Offline after the windows'
+    /// 15 s, while the session itself keeps its 30 s grace (PATH-6/PATH-17).
+    static func resolve(link: Link, pathsDown: Bool, pathsOffline: Bool) -> Self {
+        switch link {
+        case .online: return pathsDown ? (pathsOffline ? .offline : .reconnecting) : .online
+        case .connecting, .pairing: return .connecting
+        // The controller reports a path outage as Reconnecting; the panel holds
+        // it for the windows' 15 s and then says Offline (PANEL-12).
+        case .reconnecting: return pathsDown && pathsOffline ? .offline : .reconnecting
+        case .offline: return .offline
+        case .needsPairing: return .needsPairing
+        case .idle: return .idle
+        }
+    }
+}
+
 extension PhoneControlsState {
     @MainActor
     init(controller: ConnectionController) {
         phoneName = controller.activePhone.map {
             controller.displayName(for: $0, fallback: "your phone")
         } ?? "your phone"
-        switch controller.link {
-        case .online: connection = .online
-        case .connecting, .pairing: connection = .connecting
-        case .reconnecting: connection = .reconnecting
-        case .offline: connection = .offline
-        case .needsPairing: connection = .needsPairing
-        case .idle: connection = .idle
-        }
+        connection = .resolve(link: controller.link, pathsDown: controller.pathsDown,
+                              pathsOffline: controller.pathsOffline)
         battery = controller.status?.battery
         charging = controller.status?.charging ?? false
         agentCount = controller.mcp.clientCount

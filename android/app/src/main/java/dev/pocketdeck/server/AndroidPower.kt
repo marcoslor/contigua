@@ -25,8 +25,9 @@ import java.lang.reflect.Method
  * lock screen, which is what [DarkPanelPolicy] handles: the group is woken as
  * before and the physical panel is then powered off through SurfaceFlinger, so
  * the VD renders while the phone shows nothing. The override is lifted when the
- * last stream goes away (`POWER_MODE_NORMAL` + `goToSleep`), when the user
- * presses the power button, and by the platform itself on its next state change.
+ * last stream goes away (`POWER_MODE_NORMAL`, plus `goToSleep` only while the
+ * wake is still ours — [WakeOwnershipMachine]), when the user presses the power
+ * button, and by the platform itself on its next state change.
  * While the override is live, [Watchdog] holds a marker file so a server crash
  * cannot leave the panel dark.
  *
@@ -46,7 +47,8 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     private val lock = Object()
     private val policyLock = Object()
-    private val activeDisplays = ArrayList<Int>()
+    /** The open app displays of the episode: a covered window is still a window. */
+    private val episode = StreamEpisode(log)
     private var lastActivityMs = 0L
     private var timerRunning = false
     private var timerThread: Thread? = null
@@ -60,8 +62,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** Set from the keep-alive step: only safe to wake on input when the panel is not shared. */
     @Volatile private var groupOnly = false
 
-    /** `debug.pocketdeck.keepalive_ms`: fixed cadence for on-device A/B tests. */
-    private val intervalOverrideMs: Long? = Hidden.systemProperty(KEEPALIVE_MS)?.toLongOrNull()?.takeIf { it > 0 }
+    /**
+     * `debug.pocketdeck.keepalive_ms`: fixed cadence for on-device A/B tests.
+     * Debug builds only: a release APK must not take any of these test knobs.
+     */
+    private val intervalOverrideMs: Long? =
+        if (dev.pocketdeck.BuildConfig.DEBUG) {
+            Hidden.systemProperty(KEEPALIVE_MS)?.toLongOrNull()?.takeIf { it > 0 }
+        } else {
+            null
+        }
 
     private var powerWatch: Thread? = null
 
@@ -94,15 +104,32 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     override val panelHeldOff: Boolean get() = hold.holdsPanel
 
-    /** True when this episode woke the phone's own group: handing back then sleeps it. */
-    @Volatile private var episodeWokeGroup = false
+    /** Who woke the panel's group for this episode, and whether it is still ours (docs/specs/controls.md CTRL-7). */
+    private val wakeOwner = WakeOwnershipMachine(log)
 
     /** True while a panel override we applied is live: the watchdog has work to do if we die. */
     @Volatile private var overrideLive = false
 
     private val panel = PanelPower(log)
-    private val policy = DarkPanelPolicy(forced = Hidden.systemProperty(FORCE_PANEL_OFF) == "1")
+    private val policy = DarkPanelPolicy(
+        forced = dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(FORCE_PANEL_OFF) == "1",
+    )
     private val watchdog = Watchdog(ctx, log)
+
+    /**
+     * Serialises every panel power-mode write with [darkEpisode]. A keep-alive
+     * step that decided to re-assert the panel-off before the person took the
+     * phone must not land that write after the hand back's NORMAL: the person's
+     * screen would go black again under their finger (the 16:33:14 race).
+     */
+    private val panelWrites = Any()
+
+    /** The panel's own input devices, read only while the panel is dark (CTRL-11). */
+    private val panelInputLock = Any()
+    @Volatile private var panelInputRunning = false
+    private var panelInputThread: Thread? = null
+    @Volatile private var panelInputStreams: List<java.io.FileInputStream> = emptyList()
+    private var loggedNoInputDevices = false
 
     private val powerManager: Any? = Hidden.proxy("android.os.IPowerManager", "power")
     private val powerManagerClass = Hidden.iface("android.os.IPowerManager")
@@ -137,7 +164,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * display's power group on.
      */
     private val displayWakeLockMethod: Method? =
-        if (Hidden.systemProperty(FORCE_TIMER) == "1") null
+        if (dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(FORCE_TIMER) == "1") null
         else Hidden.method(PowerManager::class.java, "newWakeLock", Hidden.T_INT, String::class.java, Hidden.T_INT)
 
     init {
@@ -187,68 +214,117 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         mirroring: Boolean,
         phoneWindowOpen: Boolean,
     ) {
-        var started = false
-        var stopped = false
-        var paused = false
-        var graceHandBack = false
         // The hold follows the phone window before anything else: a close ends
         // the request and restores the panel even when app streams are still
         // running, and a pause only suspends it.
         onMirrorWindow(phoneWindowOpen, mirroring)
-        synchronized(lock) {
-            val wasActive = activeDisplays.isNotEmpty()
-            if (displayIds.isEmpty() && wasActive && allPaused) {
-                // Every window is only paused (covered, minimised): keep the
-                // keep-alive, the locks and the panel state exactly as they
-                // are. The keep-alive loop hands the panel back once the grace
-                // period runs out (DarkPanelPolicy.PAUSE_GRACE_MS); an unpause
-                // in between is then no new episode at all.
-                paused = true
-                started = false
-            } else {
-                activeDisplays.clear()
-                activeDisplays.addAll(displayIds)
-                val isActive = activeDisplays.isNotEmpty()
-                if (isActive && !wasActive) {
-                    acquireWakeLockLocked()
-                    startTimerLocked()
-                    started = true
-                } else if (!isActive && wasActive) {
-                    releaseWakeLockLocked()
-                    stopTimerLocked()
-                    stopped = true
-                }
-                syncDisplayLocksLocked(activeDisplays)
-            }
+        val actions = synchronized(lock) {
+            episode.dispatch(EpisodeEvent.Streams(displayIds.toSet(), allPaused))
         }
-        if (paused) {
-            val now = SystemClock.uptimeMillis()
-            val nothingOfOurs = synchronized(policyLock) { policy.streamsPaused(now) }
-            if (nothingOfOurs) {
-                // The person has the phone: there is nothing to keep.
-                synchronized(lock) {
-                    activeDisplays.clear()
-                    releaseWakeLockLocked()
-                    stopTimerLocked()
-                }
-                graceHandBack = true
-            }
-        }
-        if (started) {
-            synchronized(policyLock) { policy.streamsStarted() }
-            episodeWokeGroup = false
-            // Watch the person's power press from the episode's first second:
-            // one UI puts our VDs in the panel's group, so the press sleeps
-            // them until we take the panel over.
-            startPowerWatch()
-        }
-        if (!paused && displayIds.isNotEmpty()) synchronized(policyLock) { policy.streamsResumed() }
-        if (stopped) restoreAfterStop()
-        if (graceHandBack) restoreAfterStop()
+        performEpisode(actions, mirroring)
         // A window just opened or paused: the keep-alive thread runs a step right
         // away, so the wake (and the panel-off after it) never blocks the session
         // thread.
         synchronized(lock) { lock.notifyAll() }
+    }
+
+    /**
+     * Runs one event's actions. [EpisodeAction.Start] is the episode's first
+     * action and must stay before the caller's activity launch: on a phone whose
+     * VD shares the panel's sleeping group the launch waits for the display to
+     * wake (the 10-30 report: 11 s inside the launch, 23 s to the first frame,
+     * and the activity's input sink had no channel meanwhile).
+     */
+    private fun performEpisode(actions: List<EpisodeAction>, mirroring: Boolean) {
+        for (action in actions) {
+            when (action) {
+                EpisodeAction.Start -> {
+                    synchronized(lock) { acquireWakeLockLocked() }
+                    takeOverBeforeLaunch(mirroring)
+                    synchronized(lock) { startTimerLocked() }
+                    startPowerWatch()
+                }
+                is EpisodeAction.Hold -> synchronized(lock) { holdDisplayLockLocked(action.display) }
+                is EpisodeAction.Drop -> synchronized(lock) { releaseDisplayLockLocked(action.display) }
+                EpisodeAction.Pause -> {
+                    val now = SystemClock.uptimeMillis()
+                    val nothingOfOurs = synchronized(policyLock) { policy.streamsPaused(now) }
+                    if (nothingOfOurs) {
+                        // The person has the phone: there is nothing to keep.
+                        val expired = synchronized(lock) { episode.dispatch(EpisodeEvent.GraceExpired) }
+                        performEpisode(expired, mirroring)
+                    }
+                }
+                EpisodeAction.Resume -> synchronized(policyLock) { policy.streamsResumed() }
+                EpisodeAction.End -> {
+                    synchronized(lock) {
+                        releaseWakeLockLocked()
+                        stopTimerLocked()
+                    }
+                    restoreAfterStop()
+                }
+            }
+        }
+    }
+
+    /**
+     * The episode start's take-over, before its first activity is launched.
+     *
+     * A virtual display created while the panel's power group sleeps starts OFF
+     * (the 10-30 log: `Changing state of virtual display pocketdeck-1 from
+     * UNKNOWN to OFF`), and the platform does not launch onto it until the
+     * group is awake: the launch sat 11 s before its transition. Waking from
+     * the keep-alive step, which only runs after `window.open` has launched and
+     * awaited its task, therefore costs the whole first-frame budget. So the
+     * group is woken here, on the session thread, and [DarkPanelPolicy] leaves
+     * the panel-off owed to the first step (that one sleeps through the
+     * transitional re-applies and must not delay the launch).
+     *
+     * The wake and the decision are one critical section against the keep-alive
+     * step: a step that slipped in between could power the panel off before the
+     * wake and the wake would light it again.
+     */
+    private fun takeOverBeforeLaunch(mirroring: Boolean) {
+        val ids = synchronized(lock) { episode.state.displays.toList() }
+        if (ids.isEmpty()) return
+        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        synchronized(policyLock) {
+            policy.streamsStarted()
+            val strategy = policy.strategy(ids.map { DisplayProbe.displayGroupId(it) }, mirroring = mirroring)
+            val plan = policy.episodeStarted(panelOn, strategy) ?: return
+            if (!DarkPanelPolicy.wakesGroup(strategy, plan)) return
+            val now = SystemClock.uptimeMillis()
+            policy.ownWake(now)
+            if (strategy == PanelStrategy.PANEL_DARK) wakeOwner.dispatch(WakeEvent.OurWake(now))
+            // Arm the override before the wake: the first panel-off write is
+            // already on its way when the platform's display controller answers
+            // the wake, which is what keeps the lit window short (notes.md).
+            if (plan.panelOff) armPanelOff()
+            for (id in ids) {
+                userActivity(id)
+                wakeDisplay(id)
+            }
+            keepLit = true
+            log("power: episode take-over: display ${ids.joinToString(",")} woken before the launch; panel off owed")
+        }
+    }
+
+    /**
+     * The take-over's panel-off, before the wake. One write, no re-applies: the
+     * first keep-alive step owns those and must not delay the launch.
+     */
+    private fun armPanelOff() {
+        darkEpisode = true
+        keepLit = true
+        startPowerWatch()
+        watchdog.ensure()
+        watchdog.markPanelForced()
+        overrideLive = true
+        val applied = synchronized(panelWrites) { darkEpisode && panel.panelOff() }
+        if (!applied && !loggedNoPanelControl) {
+            loggedNoPanelControl = true
+            log("panel off unavailable: the locked phone will show its lock screen while streaming")
+        }
     }
 
     /**
@@ -298,7 +374,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 PanelHoldAction.StopKeepAlive -> synchronized(lock) {
                     // App windows keep their own keep-alive: only a mirror-only
                     // session loses it with the hold.
-                    if (activeDisplays.isEmpty()) {
+                    if (episode.state.displays.isEmpty()) {
                         releaseWakeLockLocked()
                         stopTimerLocked()
                     }
@@ -326,6 +402,24 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         return if (awaitInteractive(pm)) WakeResult.FALLBACK else WakeResult.FAILED
     }
 
+    /**
+     * The person unlocked the phone (`state.locked` false): the phone is theirs
+     * for this episode (CTRL-7), and a panel we forced dark comes back at once
+     * (CTRL-11). Nothing is dismissed, unlocked or woken here: the platform is
+     * already showing the screen the person unlocked.
+     */
+    override fun onPersonUnlocked() {
+        wakeOwner.dispatch(WakeEvent.PersonUnlocked)
+        if (synchronized(policyLock) { policy.personUsed(PanelYieldReason.UNLOCK) }) {
+            panelYielded(PanelYieldReason.UNLOCK, wake = false)
+        }
+    }
+
+    /** `state.screen`: a screen-on edge outside our own wake is the person's. */
+    override fun onPersonScreen(on: Boolean) {
+        wakeOwner.dispatch(WakeEvent.ScreenReported(on, SystemClock.uptimeMillis()))
+    }
+
     private fun awaitInteractive(pm: PowerManager): Boolean {
         val deadline = SystemClock.uptimeMillis() + WAKE_WAIT_MS
         while (SystemClock.uptimeMillis() < deadline) {
@@ -345,6 +439,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     /** The service is going away: hand the panel back and stop the crash guard. */
     fun shutdown() {
+        stopPanelInput()
         performHold(hold.dispatch(PanelHoldEvent.SessionEnded))
         setActiveStreams(emptyList())
         watchdog.stopCleanly()
@@ -358,7 +453,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * the wake is what turns the panel on.
      */
     private fun keepAliveStep() {
-        var ids = synchronized(lock) { activeDisplays.toIntArray() }
+        var ids = synchronized(lock) { episode.state.displays.toIntArray() }
         // Nothing of ours is open except possibly the person's phone window: with
         // "Turn Off Phone Screen" only the mirror's own panel group has to stay
         // up, so the step names display 0 and there is no virtual display.
@@ -378,14 +473,24 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
         if (plan != lastPlan || panelOn != lastPanelOn) {
-            log("power: panel ${DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))} -> $plan")
+            // While our override is live the platform's own state is not the
+            // panel's: the display controller still believes the group is on
+            // (that is what the wake did), while SurfaceFlinger shows OFF. Say
+            // which one this line is, so a field log does not read as a flash.
+            val shown = if (darkEpisode) "held off" else DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))
+            log("power: panel $shown -> $plan")
             lastPlan = plan
             lastPanelOn = panelOn
         }
-        keepLit = plan.wake
+        // A take-over in flight (the episode start woke the group before its
+        // launch) keeps the group lit even though this step issues no wake.
+        keepLit = plan.wake || plan.panelOff
         val wasDark = darkEpisode
         darkEpisode = plan.panelOff
         if (plan.panelOff) startPowerWatch()
+        // The person's own devices are only worth reading while our override is
+        // live: an event there is a finger or a key on the panel (CTRL-11).
+        if (plan.panelOff) startPanelInput() else if (wasDark) stopPanelInput()
         if (wasDark && !plan.panelOff) {
             // Leaving a dark episode (the person opened the mirror, or the
             // strategy changed): the platform does not always rewrite the
@@ -393,11 +498,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             // panel is only restored when the platform believes it is on (our
             // override is masking it); otherwise its own mode is already right
             // and re-writing NORMAL would flash the panel.
-            if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
+            synchronized(panelWrites) {
+                if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
+            }
             // The panel is the platform's again, so the crash guard is done.
             if (overrideLive) standDownOverride()
         }
-        if (!plan.wake) return
+        if (!plan.wake) {
+            // The episode start already woke the group before its launch; the
+            // panel-off it owes is all this step has left to do.
+            if (plan.panelOff && !holding) applyPanelOff(plan.transitional)
+            return
+        }
         // On the panel's group a wake is a full phone wake: it overrides a power
         // press the user just made and starts the keyguard's face unlock, which
         // unlocks the phone if the user is in front of it. So the shared group
@@ -406,10 +518,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // and a poke cannot wake a group the user put to sleep.
         val wake = DarkPanelPolicy.wakesGroup(strategy, plan)
         if (wake) {
-            episodeWokeGroup = true
             // Our own wake lands with an off edge of its own (the panel-off
             // right after it): the watch must not read that as a press.
             synchronized(policyLock) { policy.ownWake(SystemClock.uptimeMillis()) }
+            // Only a wake of the panel's own group can make a later sleep ours.
+            // A virtual display with its own group never wakes the phone.
+            if (strategy == PanelStrategy.PANEL_DARK) {
+                wakeOwner.dispatch(WakeEvent.OurWake(SystemClock.uptimeMillis()))
+            }
         }
         // While the panel is held, the platform must keep believing the screen
         // is on. A step beside an app window names that window's display only,
@@ -447,7 +563,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
         try {
             var wasInteractive = pm.isInteractive
-            while (darkEpisode || hold.holdsPanel || synchronized(lock) { activeDisplays.isNotEmpty() }) {
+            while (darkEpisode || hold.holdsPanel || synchronized(lock) { episode.state.active }) {
                 val interactive = pm.isInteractive
                 if (wasInteractive && !interactive) onPowerEdge()
                 wasInteractive = interactive
@@ -474,11 +590,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             performHold(hold.dispatch(PanelHoldEvent.PowerPress))
             return
         }
-        val streamsUp = synchronized(lock) { activeDisplays.isNotEmpty() }
+        val streamsUp = synchronized(lock) { episode.state.active }
         when (synchronized(policyLock) { policy.interactiveOff(now, streamsUp) }) {
             PowerWatchAction.NONE -> {}
-            // The panel is ours and dark: the person gets the phone back.
-            PowerWatchAction.HAND_BACK -> handBackPanel(wake = true)
+            // The panel is ours and dark: the press is the person's. One hand
+            // back, and nothing re-darkens the panel after it (the decision was
+            // made once, here).
+            PowerWatchAction.HAND_BACK -> {
+                wakeOwner.dispatch(WakeEvent.PersonUsed)
+                panelYielded(PanelYieldReason.POWER, wake = true)
+            }
             PowerWatchAction.RELIGHT -> relightStreams(now)
         }
     }
@@ -490,11 +611,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * it a stall. The keyguard stays: the press still locks the phone.
      */
     private fun relightStreams(edgeMs: Long) {
-        val ids = synchronized(lock) { activeDisplays.toIntArray() }
+        val ids = synchronized(lock) { episode.state.displays.toIntArray() }
         if (ids.isEmpty()) return
         gapDisplay = ids.first()
         gaps.markEdge(edgeMs)
-        episodeWokeGroup = true
+        // The phone went idle by itself: the person is done, so the ownership
+        // ends here and our relight starts a new baseline (CTRL-7). Without
+        // this, `person` would survive into a close that must not sleep the
+        // phone, or an own wake would wrongly move `person` back to ours.
+        wakeOwner.dispatch(WakeEvent.PersonIdle)
+        wakeOwner.dispatch(WakeEvent.OurWake(SystemClock.uptimeMillis()))
         darkEpisode = true
         keepLit = true
         // Our wake's own off edge (the panel-off below) is not a press.
@@ -543,11 +669,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         watchdog.ensure()
         watchdog.markPanelForced()
         overrideLive = true
-        val applied = panel.panelOff()
+        val applied = synchronized(panelWrites) { hold.holdsPanel && panel.panelOff() }
         // The hold may have ended while this write was in flight (the person's
         // power press): their screen must win.
         if (!hold.holdsPanel) {
-            panel.panelNormal()
+            synchronized(panelWrites) { panel.panelNormal() }
             return
         }
         if (!applied && !loggedNoPanelControl) {
@@ -556,26 +682,40 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
     }
 
+    /** The person took the phone back from a dark panel: log why and hand it over (CTRL-11). */
+    private fun panelYielded(reason: PanelYieldReason, wake: Boolean) {
+        log("panel_yield reason=${reason.wire}")
+        stopPanelInput()
+        handBackPanel(wake)
+    }
+
     /**
-     * The hold ended: the panel is the platform's again. [wake] is the person's
-     * power press — the platform thinks the screen was on and is putting it to
-     * sleep, so let that finish, hand the panel back and light the screen. The
-     * lock screen stays; nothing is unlocked.
+     * The hold ended or the person took the panel back: the panel is the
+     * platform's again. [wake] is a power press — the platform thinks the screen
+     * was on and is putting it to sleep, so let that finish, hand the panel back
+     * and light the screen. The lock screen stays; nothing is unlocked.
      */
     private fun handBackPanel(wake: Boolean) {
-        darkEpisode = false
-        keepLit = false
+        // The decision lands before anything is written, and inside the write
+        // lock: a keep-alive step already inside [applyPanelOff] can no longer
+        // put its panel-off on top of this hand back.
+        synchronized(panelWrites) {
+            darkEpisode = false
+            keepLit = false
+        }
+        stopPanelInput()
         if (wake) {
             val off = waitForPanelOff()
-            panel.panelNormal()
+            synchronized(panelWrites) { panel.panelNormal() }
             wakeDisplay(PANEL_DISPLAY_ID)
-            log("power: user pressed power while the panel was dark; panel given back" +
-                if (off) "" else " (display 0 never reported off)")
-        } else if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) {
+            log("power: panel given back" + if (off) "" else " (display 0 never reported off)")
+        } else {
             // Only when the platform believes the panel is on (our override is
             // masking it); otherwise its own mode is already right and NORMAL
             // would flash the panel.
-            panel.panelNormal()
+            synchronized(panelWrites) {
+                if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
+            }
         }
         // The panel is the platform's again, so the crash guard is done.
         if (overrideLive) standDownOverride()
@@ -590,13 +730,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         watchdog.ensure()
         watchdog.markPanelForced()
         overrideLive = true
-        val applied = panel.panelOff()
-        // The power watch may have handed the panel back while this write was
-        // in flight: the user's screen must win.
-        if (!darkEpisode) {
-            panel.panelNormal()
-            return
-        }
+        val applied = synchronized(panelWrites) { darkEpisode && panel.panelOff() }
+        // The person may have taken the panel back while this write was in
+        // flight: the hand back's NORMAL is the last word.
+        if (!darkEpisode) return
         if (!applied) {
             if (!loggedNoPanelControl) {
                 loggedNoPanelControl = true
@@ -610,12 +747,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // re-applies make sure a transitional wake cannot leave the panel lit.
         for (delay in REAPPLY_DELAYS_MS) {
             runCatching { Thread.sleep(delay) }
-            if (!darkEpisode || synchronized(lock) { activeDisplays.isEmpty() }) return
-            panel.panelOff()
-            if (!darkEpisode) {
-                panel.panelNormal()
-                return
-            }
+            if (synchronized(lock) { episode.state.displays.isEmpty() }) return
+            val stillDark = synchronized(panelWrites) { if (darkEpisode) { panel.panelOff(); true } else false }
+            if (!stillDark) return
         }
     }
 
@@ -625,27 +759,42 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * platform believes the panel is on (our override is masking it); otherwise
      * the platform's own mode is already the right one and re-writing NORMAL
      * would flash the panel.
+     *
+     * The phone is only put back to sleep while PocketDeck's own wake still owns
+     * it (CTRL-7): a person who unlocked, used or woke the phone since keeps
+     * their screen, and the close logs the closed reason instead.
      */
     private fun restoreAfterStop() {
+        stopPanelInput()
         val owned = synchronized(policyLock) { policy.streamsStopped() }
+        // The wake machine hears every close, whatever the panel policy owned:
+        // a stale "ours" must never survive into the next episode.
+        val wake = wakeOwner.dispatch(WakeEvent.StreamsStopped)
         if (!owned) {
-            episodeWokeGroup = false
+            logWakeClose(wake)
             if (overrideLive) standDownOverride()
             return
         }
         // Stop any in-flight apply before handing the panel back.
-        darkEpisode = false
-        if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) {
-            panel.panelNormal()
+        synchronized(panelWrites) { darkEpisode = false }
+        synchronized(panelWrites) {
+            if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
         }
         // goToSleep lets the platform re-apply its own power mode for the
-        // transition and leaves the phone asleep and locked. Only ever called
-        // when we were the ones who woke the group: a mirror-only episode never
-        // woke it (its panel was on already), so the phone keeps its own state.
-        if (episodeWokeGroup && SystemSleep.goToSleep()) log("phone back to sleep after the last stream")
-        episodeWokeGroup = false
+        // transition. Only ever called while the wake is ours: a mirror-only
+        // episode never woke the panel's group, and a person who used the phone
+        // since our wake owns it.
+        if (wake.actions.contains(WakeAction.SLEEP_PHONE) && SystemSleep.goToSleep()) {
+            log("phone back to sleep after the last stream")
+        }
+        logWakeClose(wake)
         // The panel is the platform's again, so the crash guard's job is done.
         standDownOverride()
+    }
+
+    /** A close that left the phone awake says why, with a closed reason. */
+    private fun logWakeClose(wake: WakeStep) {
+        wake.closeReason?.let { log("power: left the phone awake after the last stream (${it.wire})") }
     }
 
     /** The platform owns the panel again: no override for the watchdog to restore. */
@@ -653,6 +802,100 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         overrideLive = false
         watchdog.clearPanelForced()
         watchdog.stopCleanly()
+    }
+
+    // --- the panel's own input devices (CTRL-11) ------------------------
+
+    /**
+     * Starts reading the phone's own input devices, which is how a touch or a
+     * key on display 0 reaches a shell-UID process. Only the kernel nodes are
+     * read: our keep-alive pokes are `IPowerManager.userActivity` calls and the
+     * session's input is `InputManager.injectInputEvent`, so neither ever shows
+     * up here and the person can never be faked by PocketDeck itself.
+     *
+     * Idempotent, and only called while the panel is dark. A device node that
+     * cannot be read is skipped; when none can be read the hand back still
+     * works from an unlock or a power press, and the gap is logged once.
+     */
+    private fun startPanelInput() {
+        synchronized(panelInputLock) {
+            if (panelInputRunning) return
+            val text = runCatching { java.io.File(INPUT_DEVICES).readText() }.getOrNull()
+            val nodes = text?.let { inputEventNodes(it) }.orEmpty()
+            val opened = ArrayList<Pair<InputEventNode, java.io.FileInputStream>>(nodes.size)
+            for (node in nodes) {
+                val stream = runCatching { java.io.FileInputStream(node.path) }.getOrNull() ?: continue
+                opened.add(node to stream)
+            }
+            if (opened.isEmpty()) {
+                if (!loggedNoInputDevices) {
+                    loggedNoInputDevices = true
+                    log("power: no readable panel input device (${nodes.size} found); a touch cannot hand the panel back")
+                }
+                return
+            }
+            panelInputRunning = true
+            panelInputStreams = opened.map { it.second }
+            panelInputThread = Thread({ panelInputLoop(opened) }, "pocketdeck-panelinput").also {
+                it.isDaemon = true
+                it.start()
+            }
+        }
+    }
+
+    /** Stops the input read: the panel is not ours any more. */
+    private fun stopPanelInput() {
+        synchronized(panelInputLock) {
+            panelInputRunning = false
+            val streams = panelInputStreams
+            panelInputStreams = emptyList()
+            panelInputThread = null
+            for (stream in streams) runCatching { stream.close() }
+        }
+    }
+
+    /**
+     * Reads whole `struct input_event`s, one device node at a time, until the
+     * first finger or key of the person's. `available()` keeps the stop clean:
+     * a blocked `read` on an evdev node is not woken by `close()`.
+     */
+    private fun panelInputLoop(nodes: List<Pair<InputEventNode, java.io.FileInputStream>>) {
+        val event = ByteArray(INPUT_EVENT_BYTES)
+        try {
+            while (panelInputRunning) {
+                var use: PanelInput? = null
+                for ((_, stream) in nodes) {
+                    while (runCatching { stream.available() }.getOrDefault(0) >= INPUT_EVENT_BYTES) {
+                        val read = runCatching { stream.read(event, 0, INPUT_EVENT_BYTES) }.getOrDefault(-1)
+                        if (read != INPUT_EVENT_BYTES) break
+                        val raw = decodeInputEvent(event)
+                        val input = panelInput(raw.type, raw.code, raw.value) ?: continue
+                        // The power key is the power watch's edge: it has to wake
+                        // the screen as well as hand the panel back.
+                        if (input == PanelInput.POWER) continue
+                        use = input
+                        break
+                    }
+                    if (use != null) break
+                }
+                if (use != null) {
+                    onPanelInput(use)
+                    return
+                }
+                Thread.sleep(INPUT_POLL_MS)
+            }
+        } catch (_: InterruptedException) {
+        } finally {
+            stopPanelInput()
+        }
+    }
+
+    /** A touch or key on the panel while it was ours: the person gets it back. */
+    private fun onPanelInput(input: PanelInput) {
+        val reason = if (input == PanelInput.TOUCH) PanelYieldReason.TOUCH else PanelYieldReason.KEY
+        if (!synchronized(policyLock) { policy.personUsed(reason) }) return
+        wakeOwner.dispatch(WakeEvent.PersonUsed)
+        panelYielded(reason, wake = false)
     }
 
     private fun userActivity(displayId: Int) {
@@ -721,7 +964,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             runCatching { keepAliveStep() }
             // A "Turn Off Phone Screen" request on a lone phone window is the
             // only reason the timer can run with no stream of ours left.
-            val idle = synchronized(lock) { activeDisplays.isEmpty() } && !hold.holdsPanel
+            val idle = synchronized(lock) { episode.state.displays.isEmpty() } && !hold.holdsPanel
             if (idle) {
                 synchronized(lock) {
                     releaseWakeLockLocked()
@@ -739,13 +982,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * down the crash guard), just later.
      */
     private fun handBackAfterPause() {
-        synchronized(lock) {
-            activeDisplays.clear()
-            releaseWakeLockLocked()
-            stopTimerLocked()
-        }
         log("power: all windows paused for ${DarkPanelPolicy.PAUSE_GRACE_MS / 1000}s; handing the phone back")
-        restoreAfterStop()
+        val expired = synchronized(lock) { episode.dispatch(EpisodeEvent.GraceExpired) }
+        performEpisode(expired, mirroring = false)
     }
 
     private fun acquireWakeLockLocked() {
@@ -769,38 +1008,36 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     }
 
     /**
-     * Keeps one display-scoped wake lock per unpaused stream, so the display
-     * group stays awake without the 10 s timer pokes. The first wake of an
-     * episode still comes from `wakeUpWithDisplayId` (a wake lock does not wake
-     * a sleeping group); after that the lock holds it.
+     * Gives one open stream's display its scoped wake lock, so that display's
+     * group stays awake without the 2 s timer pokes. A covered window keeps
+     * its lock: it is still open, and only its own close drops it.
      */
-    private fun syncDisplayLocksLocked(ids: List<Int>) {
+    private fun holdDisplayLockLocked(id: Int) {
         val method = displayWakeLockMethod ?: return
         if (displayWakeLocksUnsupported) return
-        for (id in displayWakeLocks.keys.toList()) {
-            if (id in ids) continue
-            val wl = displayWakeLocks.remove(id) ?: continue
-            runCatching { wl.release() }
-            log("display wake lock released (display $id)")
+        if (displayWakeLocks.containsKey(id)) return
+        val wl = runCatching {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+            (method.invoke(pm, PowerManager.SCREEN_BRIGHT_WAKE_LOCK, DISPLAY_WAKE_TAG, id) as? PowerManager.WakeLock)
+                ?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+        }.getOrNull()
+        if (wl == null) {
+            displayWakeLocksUnsupported = true
+            log("display wake locks refused; keep-alive timer stays at ${KEEPALIVE_INTERVAL_MS / 1000}s")
+            return
         }
-        for (id in ids) {
-            if (displayWakeLocks.containsKey(id)) continue
-            val wl = runCatching {
-                val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-                (method.invoke(pm, PowerManager.SCREEN_BRIGHT_WAKE_LOCK, DISPLAY_WAKE_TAG, id) as? PowerManager.WakeLock)
-                    ?.apply {
-                        setReferenceCounted(false)
-                        acquire()
-                    }
-            }.getOrNull()
-            if (wl == null) {
-                displayWakeLocksUnsupported = true
-                log("display wake locks refused; keep-alive timer stays at ${KEEPALIVE_INTERVAL_MS / 1000}s")
-                return
-            }
-            displayWakeLocks[id] = wl
-            log("display wake lock held (display $id, SCREEN_BRIGHT, display-scoped)")
-        }
+        displayWakeLocks[id] = wl
+        log("display wake lock held (display $id, SCREEN_BRIGHT, display-scoped)")
+    }
+
+    /** One stream's display closed: only that display's wake goes away. */
+    private fun releaseDisplayLockLocked(id: Int) {
+        val wl = displayWakeLocks.remove(id) ?: return
+        runCatching { wl.release() }
+        log("display wake lock released (display $id)")
     }
 
     private fun releaseDisplayLocksLocked() {
@@ -817,8 +1054,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         /** Timer path: shorter than any screen-off timeout, so a streaming group stays on. */
         const val KEEPALIVE_INTERVAL_MS = DarkPanelPolicy.TIMER_INTERVAL_MS
 
-        /** Re-applies after a transitional wake, so a fresh lock screen cannot stay. */
-        val REAPPLY_DELAYS_MS = longArrayOf(500, 1_500)
+        /**
+         * Re-applies after a transitional wake, so a fresh lock screen cannot
+         * stay. The first two are early on purpose: the platform's display
+         * controller answers our wake with its own ON write a few tens of ms
+         * after our first off, and the next one here must beat it (the 11-01
+         * field log: 639 ms lit with a 500 ms first re-apply).
+         */
+        val REAPPLY_DELAYS_MS = longArrayOf(100, 250, 500, 1_500)
 
         const val FORCE_PANEL_OFF = "debug.pocketdeck.force_panel_off"
         const val FORCE_TIMER = "debug.pocketdeck.force_timer_keepalive"
@@ -838,6 +1081,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         const val PANEL_DISPLAY_ID = 0
 
         const val DISPLAY_WAKE_TAG = "pocketdeck:vd"
+
+        /** Every input device, named by the kernel. */
+        const val INPUT_DEVICES = "/proc/bus/input/devices"
+
+        /**
+         * How often the panel's input nodes are read while the panel is dark.
+         * A poll, not a blocking read: closing an evdev fd does not wake a
+         * blocked read. 25 ms keeps the hand back well inside the 300 ms bound.
+         */
+        const val INPUT_POLL_MS = 25L
     }
 }
 

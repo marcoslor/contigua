@@ -18,6 +18,7 @@ protocol FsChannel: AnyObject {
     func fsList(id: UInt32, path: String, page: String?)
     func fsStat(id: UInt32, path: String)
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?)
+    func fsThumb(id: UInt32, path: String, size: Int, etag: String?)
     func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
                  exclusive: Bool)
     func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
@@ -147,6 +148,7 @@ final class FsClient {
         case list((Result<FsPage, FsError>) -> Void)
         case stat((Result<FsItem, FsError>) -> Void)
         case read(Read)
+        case thumb(Thumb)
         case write(FsWrite)
         case mutation((Result<FsItem?, FsError>) -> Void)
     }
@@ -159,13 +161,28 @@ final class FsClient {
         case stream(([UInt8]) -> Bool)
     }
 
+    /// One thumbnail: at most 256 KiB, so it is held whole and checked against
+    /// the phone's end before the bridge answers (FILES-23).
+    private final class Thumb {
+        let path: String
+        var received: [UInt8] = []
+        var hasher = SHA256()
+        var cancelTimer: DispatchWorkItem?  // gcd: one deadline timer per thumb
+        var completion: ((Result<FilesThumb, FsError>) -> Void)?
+
+        init(path: String, completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
+            self.path = path
+            self.completion = completion
+        }
+    }
+
     private final class Read {
         let path: String
         let expected: Int
         let sink: ReadSink
         var received = 0
         var hasher = SHA256()
-        var cancelTimer: DispatchWorkItem?
+        var cancelTimer: DispatchWorkItem?  // gcd: one deadline timer per thumb
         var completion: ((Result<FsReadResult, FsError>) -> Void)?
 
         init(path: String, expected: Int, sink: ReadSink,
@@ -266,6 +283,17 @@ final class FsClient {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(cancelAfterMs), execute: timer)
         }
         channel?.fsRead(id: id, path: path, offset: offset, length: length, etag: etag)
+    }
+
+    /// One thumbnail: the phone answers `data` frames then `fs.thumb.end`.
+    /// `onStart` carries the phone-level id, which is what `cancel(id:)` takes.
+    func streamThumb(path: String, size: Int, etag: String?,
+                     onStart: @escaping (UInt32) -> Void,
+                     completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
+        guard let id = freshID() else { return completion(.failure(FsError(code: "busy"))) }
+        pending[id] = .thumb(Thumb(path: path, completion: completion))
+        onStart(id)
+        channel?.fsThumb(id: id, path: path, size: size, etag: etag)
     }
 
     /// Reads into a consumer instead of a file: every FS_DATA chunk is handed
@@ -371,6 +399,9 @@ final class FsClient {
             job.cancelTimer?.cancel()
             job.discard()
             finish(job, .failure(FsError(code: "cancelled")))
+        case .thumb(let job):
+            job.cancelTimer?.cancel()
+            finishThumb(job, .failure(FsError(code: "cancelled")))
         case .write(let job):
             job.cancel()
         case .list(let completion): completion(.failure(FsError(code: "cancelled")))
@@ -404,6 +435,19 @@ final class FsClient {
     }
 
     func data(id: UInt32, bytes: [UInt8]) {
+        if case .thumb(let job)? = pending[id] {
+            guard !bytes.isEmpty else { return }
+            if job.received.count + bytes.count > FilesThumbPolicy.maxBytes {
+                pending.removeValue(forKey: id)
+                channel?.fsCancel(id: id)
+                job.cancelTimer?.cancel()
+                finishThumb(job, .failure(FsError(code: "checksum", message: "thumbnail too large")))
+                return
+            }
+            job.received.append(contentsOf: bytes)
+            job.hasher.update(data: Data(bytes))
+            return
+        }
         guard case .read(let job)? = pending[id] else { return unknown(id) }
         guard !bytes.isEmpty else { return }
         job.received += bytes.count
@@ -445,6 +489,19 @@ final class FsClient {
         finish(job, .success(FsReadResult(bytes: job.received, sha256: digest)))
     }
 
+    /// `fs.thumb.end`: the answer is complete and correct.
+    func thumbEnd(id: UInt32, mime: String, size: Int, sha256: String) {
+        guard case .thumb(let job)? = pending.removeValue(forKey: id) else {
+            return unknown(id)
+        }
+        job.cancelTimer?.cancel()
+        let digest = job.hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard size == job.received.count, digest == sha256.lowercased() else {
+            return finishThumb(job, .failure(FsError(code: "checksum", message: "thumbnail differs")))
+        }
+        finishThumb(job, .success(FilesThumb(data: job.received, mime: mime, sha256: digest)))
+    }
+
     /// `fs.progress`: the phone's confirmed bytes, at most four a second.
     func progress(id: UInt32, bytes: Int) {
         guard case .write(let job)? = pending[id] else { return }
@@ -470,6 +527,8 @@ final class FsClient {
         case .read(let job):
             job.discard()
             finish(job, .failure(error))
+        case .thumb(let job):
+            finishThumb(job, .failure(error))
         }
     }
 
@@ -484,6 +543,9 @@ final class FsClient {
             job.cancelTimer?.cancel()
             job.discard()
             finish(job, .failure(error))
+        case .thumb(let job):
+            job.cancelTimer?.cancel()
+            finishThumb(job, .failure(error))
         case .write(let job): job.result(.failure(error))
         case .mutation(let completion): completion(.failure(error))
         }
@@ -502,6 +564,9 @@ final class FsClient {
                 job.cancelTimer?.cancel()
                 job.discard()
                 finish(job, .failure(error))
+            case .thumb(let job):
+                job.cancelTimer?.cancel()
+                finishThumb(job, .failure(error))
             case .write(let job): job.result(.failure(error))
             case .mutation(let completion): completion(.failure(error))
             }
@@ -509,6 +574,12 @@ final class FsClient {
     }
 
     // MARK: Internals
+
+    private func finishThumb(_ job: Thumb, _ result: Result<FilesThumb, FsError>) {
+        let completion = job.completion
+        job.completion = nil
+        completion?(result)
+    }
 
     private func finish(_ job: Read, _ result: Result<FsReadResult, FsError>) {
         let completion = job.completion

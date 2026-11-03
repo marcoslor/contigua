@@ -15,7 +15,7 @@ android {
         // Shizuku user-service version: it is the daemon's version marker, so it
         // must be bumped on every install or the previously-bound service keeps
         // running instead of being replaced.
-        versionCode = 117
+        versionCode = 131
         versionName = "0.1.0"
     }
 
@@ -81,6 +81,10 @@ dependencies {
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
     testImplementation("junit:junit:4.13.2")
+
+    // Android's TLS provider on the JVM: the boot-5 pairing failure only shows
+    // on Conscrypt, not on the JVM's SunJSSE (PathTlsJoinTest).
+    testImplementation("org.conscrypt:conscrypt-openjdk-uber:2.5.2")
 
     // JVM screenshot tests: Robolectric + Roborazzi.
     testImplementation("org.robolectric:robolectric:4.14.1")

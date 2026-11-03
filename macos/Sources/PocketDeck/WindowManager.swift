@@ -51,9 +51,19 @@ final class WindowManager {
     /// Test hook (`--dump-video`): the streams' H.264 written to disk.
     var videoDump: VideoDump?
 
+    /// Test hook (`--debug-frame-log`): one line per frame a window received,
+    /// with the path it arrived on.
+    var frameLog: DebugFrameLog?
+
     /// Files a Finder drag dropped on a stream window (docs/design/dragdrop.md).
-    /// The owner (ConnectionController) routes them; an .apk keeps its own route.
-    var onFilesDropped: (([URL]) -> Void)?
+    /// The second argument is the app window's package (SHARE-17); the Deck, a
+    /// phone-mode window and a link window pass nil. The owner
+    /// (ConnectionController) routes them; an .apk keeps its own route.
+    var onFilesDropped: (([URL], String?) -> Void)?
+
+    /// A drag carrying SHARE-18's sources (image data, a promise, a link) or
+    /// files; the owner resolves it before the file-drop sender runs.
+    var onDropDrag: ((DropDrag, String?) -> Void)?
 
     /// Set while the app is terminating so windows stop emitting pause/resume.
     private(set) var shuttingDown = false
@@ -140,6 +150,25 @@ final class WindowManager {
     }
 
     private var dropPill: (text: String, showsProgress: Bool)?
+    /// The last source refusal's closed token, written into the chrome state so
+    /// the e2e can name it without ever logging a message (SHARE-18).
+    private var dropFailure: String?
+
+    func setDropFailure(_ token: String?) {
+        dropFailure = token
+        for controller in allControllers() { controller.setDropFailure(token) }
+    }
+
+    /// The phone wrote a clipboard image (SHARE-16): the window whose paste
+    /// flow owns that id sends its one key, or shows the fallback pill.
+    func clipImageDone(id: UInt32, ok: Bool) {
+        for controller in allControllers() { controller.clipImageDone(id: id, ok: ok) }
+    }
+
+    /// Every window's paste flow stops waiting when the session goes.
+    func pasteSessionEnded() {
+        for controller in allControllers() { controller.pasteSessionEnded() }
+    }
 
     private let frames: UserDefaults
     private var cascadePoint = NSPoint.zero
@@ -368,6 +397,7 @@ final class WindowManager {
         // A window opened while a drop runs or its outcome is up shows the pill.
         controller.setDropPill(dropPill)
         if linkIsDown { controller.setLinkDown(true) }
+        controller.setDropFailure(dropFailure)
         controller.present()
         controller.sendOpen()
         noteFront(stream)
@@ -825,6 +855,13 @@ final class WindowManager {
         }
     }
 
+    /// PATH-5: after a switch every open video stream asks for one keyframe
+    /// (and a fresh config where the phone needs one), so the picture is live
+    /// again within stale_picture_ms.
+    func requestKeyframes(from session: Session) {
+        for controller in allControllers() { session.requestKeyframe(stream: controller.stream) }
+    }
+
     /// Apply labels to app windows once `apps` arrives (they may open before it).
     func applyLabels() {
         for controller in allControllers() {
@@ -886,7 +923,8 @@ final class WindowManager {
                 self?.controller(for: stream)?.resizeSettled()
             }
             controller(for: stream)?.videoView.configure(config, picture: picture)
-        case .frame(let stream, let frame):
+        case .frame(let stream, let frame, let path):
+            frameLog?.note(stream: stream, path: path)
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
@@ -908,6 +946,33 @@ final class WindowManager {
                 }
             }
         }
+    }
+
+    /// What the phone's `error no_stream` meant for the windows (WIN-38).
+    enum NoStreamOutcome: Equatable {
+        /// Nothing is open on that stream: the expected case after a close,
+        /// and only the log says so.
+        case noWindow
+        /// The window is still opening: the cover refuses it (WIN-11).
+        case refusedOpening
+        /// A live window whose stream the phone lost: it closes as if the
+        /// phone had sent `window.closed` (WIN-12).
+        case closedWindow
+    }
+
+    /// The phone answered `no_stream` for a stream: it has forgotten it. A
+    /// window still opening wears the cover's refusal; a live one closes
+    /// without echoing a close back to a phone that no longer has it; no
+    /// window means nothing visible at all — never a launcher notice.
+    @discardableResult
+    func phoneAnsweredNoStream(_ stream: UInt32) -> NoStreamOutcome {
+        guard let controller = controller(for: stream) else { return .noWindow }
+        if controller.isOpening {
+            controller.refuseOpening("no_stream")
+            return .refusedOpening
+        }
+        controller.closeFromRemote()
+        return .closedWindow
     }
 
     func handle(_ event: SessionEvent) {
@@ -938,6 +1003,10 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
+        case .windowStill(let stream):
+            // A heartbeat for that stream's picture rule only: another stream's
+            // still says nothing about this window.
+            controller(for: stream)?.noteStill()
         case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private))")
             controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
@@ -960,9 +1029,22 @@ final class WindowManager {
                 onTooManyWindows?(NewWindowBlocker.atCap.sentence(app: app) ?? "")
                 return
             }
-            // A phone that refuses an open answers it itself: that window's
-            // cover says why and offers Close only (MIRROR-2, WIN-11).
-            controller(for: stream)?.refuseOpening(code)
+            if code == "no_stream" {
+                // The phone has forgotten the stream (WIN-38). What to do
+                // depends on the window, never on a launcher notice.
+                switch phoneAnsweredNoStream(stream) {
+                case .noWindow:
+                    Log.session.notice("no_stream for stream \(stream, privacy: .public): no window")
+                case .refusedOpening:
+                    Log.app.info("no_stream for stream \(stream, privacy: .public): opening refused")
+                case .closedWindow:
+                    Log.app.info("phone lost stream \(stream, privacy: .public): window closed")
+                }
+            } else {
+                // A phone that refuses an open answers it itself: that
+                // window's cover says why and offers Close only (MIRROR-2, WIN-11).
+                controller(for: stream)?.refuseOpening(code)
+            }
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:

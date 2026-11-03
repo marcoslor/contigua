@@ -8,12 +8,14 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
-import rikka.shizuku.Shizuku
+import dev.pocketdeck.server.failureClasses
+import java.util.concurrent.Executors
 
 /**
  * Keeps the deck reachable: binds the shell user service, starts the TCP server,
@@ -38,10 +40,21 @@ class DeckForegroundService : Service() {
         override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
             handleSessionChanged(connected, clientId, macName, windows)
 
+        override fun onVersionRefused(macV: Int) {
+            // R-8/D-4: the status card shows the sentence until a session succeeds.
+            DeckState.versionSentence = dev.pocketdeck.proto.PathVersion.phoneSentence(
+                if (macV < 0) null else macV,
+            )
+            DeckState.notifyChanged()
+        }
+
         override fun onNotifyState(forwarding: Boolean, reason: String?) {
             DeckState.notifyForward = forwarding
             DeckState.notifyNoAccess = reason == "no_access"
             DeckState.notifyChanged()
+            // Every answered enable while forwarding is an active-set request
+            // (NOTIFY-1/PATH-6): one resend, even when the gate did not move.
+            if (forwarding) PdNotificationBridge.resyncSink?.invoke()
         }
 
         override fun onMediaCommand(json: String?) {
@@ -76,9 +89,53 @@ class DeckForegroundService : Service() {
         override fun onNotifyDismiss(id: String?) {
             PdNotificationBridge.dismissSink?.invoke(id ?: return)
         }
+
+        /**
+         * A Mac clipboard image (SHARE-2/16). The app owns the provider, so it
+         * copies the pipe into `cacheDir/clip`, sets A2's URI-only item and
+         * answers the shell; the copy runs off the binder thread.
+         */
+        override fun onClipImage(id: String?, mime: String?, data: ParcelFileDescriptor?) {
+            val key = id
+            if (key == null) {
+                runCatching { data?.close() }
+                return
+            }
+            val type = mime
+            val descriptor = data
+            if (type == null || descriptor == null) {
+                runCatching { descriptor?.close() }
+                answerClip(key, false)
+                return
+            }
+            try {
+                clipWriter.execute {
+                    val ok = runCatching {
+                        ParcelFileDescriptor.AutoCloseInputStream(descriptor).use {
+                            ClipImageWriter.write(this@DeckForegroundService, type, it)
+                        }
+                    }.onFailure {
+                        Log.i(TAG, "clip image: ${failureClasses(it)}")  // log-ok: class names only
+                    }.getOrDefault(false)
+                    answerClip(key, ok)
+                }
+            } catch (e: Throwable) {
+                Log.i(TAG, "clip image: queue failed: ${failureClasses(e)}")  // log-ok: class names only
+                runCatching { descriptor.close() }
+                answerClip(key, false)
+            }
+        }
+    }
+
+    /** The app's answer to the shell's `onClipImage` (SHARE-2/16). */
+    private fun answerClip(id: String, ok: Boolean) {
+        runCatching { ShizukuClient.current()?.clipImageDone(id, ok) }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
+    private val clipWriter = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "pocketdeck-clip-write").apply { isDaemon = true }
+    }
     private var serviceReady = false
     private val clientListener: (IDeckService?) -> Unit = { svc ->
         if (svc != null) onServiceReady(svc) else onServiceLost()
@@ -93,7 +150,9 @@ class DeckForegroundService : Service() {
         updateShizukuState()
         DeviceStateRelay.start(this)
         ShizukuClient.addListener(clientListener)
-        ShizukuClient.ensureBound(this)
+        // Bind now and keep listening: Shizuku's server can die and come back
+        // while this service runs (PHONE-20), and the machine rebinds by itself.
+        ShizukuClient.attach(this)
         startForeground(NOTIF_ONGOING, ongoingNotification("Starting…"))
     }
 
@@ -130,6 +189,10 @@ class DeckForegroundService : Service() {
     override fun onDestroy() {
         DeckState.serviceRunning = false
         ShizukuClient.removeListener(clientListener)
+        // Stop listening before the process keeps a binder nobody serves: with
+        // the deck off, nothing may be bound (PHONE-7).
+        ShizukuClient.detach()
+        clipWriter.shutdownNow()
         nsd.stop()
         super.onDestroy()
     }
@@ -154,7 +217,7 @@ class DeckForegroundService : Service() {
             try {
                 svc.setGates(Prefs.isAllowConnections(this), Prefs.isAllowPairings(this))
             } catch (e: Throwable) {
-                Log.i(TAG, "setGates unavailable; stopping the un-gated server: ${e.message}")
+                Log.i(TAG, "setGates unavailable; stopping the un-gated server: ${failureClasses(e)}")  // log-ok: class names only
                 runCatching { svc.stopServer() }
                 serviceReady = false
                 DeckState.port = -1
@@ -176,7 +239,7 @@ class DeckForegroundService : Service() {
             // current value over so the session can answer `notify.state`.
             syncListenerAccess()
         } catch (e: Throwable) {
-            Log.i(TAG, "startServer failed: ${e.message}")
+            Log.i(TAG, "startServer failed: ${failureClasses(e)}")  // log-ok: class names only
         }
     }
 
@@ -192,6 +255,8 @@ class DeckForegroundService : Service() {
         DeckState.port = -1
         DeckState.connectedMac = null
         DeckState.connectedClientId = null
+        DeckState.versionSentence = null
+        updateShizukuState()
         nsd.stop()
         updateOngoing()
         DeckState.notifyChanged()
@@ -237,10 +302,11 @@ class DeckForegroundService : Service() {
     }
 
     private fun updateShizukuState() {
-        DeckState.shizukuRunning = Shizuku.pingBinder()
-        DeckState.shizukuGranted = runCatching {
-            Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
-        }.getOrDefault(false)
+        DeckState.shizukuRunning = ShizukuClient.hasBinder()
+        // Shizuku keeps the grant across a restart of its server, so a check it
+        // cannot answer (no binder, not attached yet) is not a denial: keep the
+        // last answer instead of asking the person to allow PocketDeck again.
+        DeckState.shizukuGranted = ShizukuClient.permission() ?: DeckState.shizukuGranted
     }
 
     // ---- IDeckCallback ------------------------------------------------
@@ -278,6 +344,8 @@ class DeckForegroundService : Service() {
         }
         DeckState.connectedMac = if (connected) macName else null
         DeckState.connectedClientId = if (connected) clientId else null
+        // A live session is the way out of the version card (R-8/D-4).
+        if (connected) DeckState.versionSentence = null
         DeckState.windows = windows
         updateOngoing()
         DeckState.notifyChanged()

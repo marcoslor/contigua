@@ -29,9 +29,12 @@ class DropReceiver(
     private val wallClock: () -> Long = { System.currentTimeMillis() },
     private val stallTimeoutMs: Long = 60_000,
 ) {
-    /** What happens once the file is renamed in place (the real one scans + offers SEND). */
+    /**
+     * What happens once the file is renamed in place (the real one scans, then
+     * collects the batch and offers one SEND after its last file).
+     */
     fun interface Landing {
-        fun land(file: File, mime: String)
+        fun land(file: File, mime: String, target: String?, index: Int, count: Int)
     }
 
     private class Job(
@@ -181,7 +184,10 @@ class DropReceiver(
             if (!temp.renameTo(File(target))) {
                 return finish(job, temp, keep = false, "failed", "could not name the file in the folder")
             }
-            runCatching { landing.land(File(target), job.desk.mime) }
+            runCatching {
+                landing.land(File(target), job.desk.mime, job.desk.target,
+                             job.desk.index, job.desk.count)
+            }
             log("drop ${job.id}: saved $target")
             send(mapOf("t" to "drop.result", "id" to job.id, "ok" to true, "path" to target))
             synchronized(lock) { if (this.job === job) this.job = null }
