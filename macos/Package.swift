@@ -4,6 +4,12 @@ import PackageDescription
 let package = Package(
     name: "PocketDeck",
     platforms: [.macOS("26.0")],
+    products: [
+        // The direct-link helper (docs/design/direct-link.md §1.1). A plain
+        // build compiles a stub; only macos/scripts/direct/build.sh passes
+        // POCKETDECK_DIRECT, so the public app never links this.
+        .executable(name: "pocketdeck-directd", targets: ["pocketdeck-directd"]),
+    ],
     dependencies: [
         // v2 TLS transport (docs/design/e2ee.md §1): SwiftNIO-SSL vendoring
         // BoringSSL in-memory, same major line the spikes proved.
@@ -31,6 +37,12 @@ let package = Package(
             // define for an e2e bundle (sec L-6).
             swiftSettings: [.define("PD_TEST_HOOKS", .when(configuration: .debug))]
         ),
-        .testTarget(name: "PocketDeckTests", dependencies: ["PocketDeck"], path: "Tests/PocketDeckTests"),
+        .executableTarget(
+            name: "pocketdeck-directd",
+            path: "Sources/PocketDeckDirectd"
+        ),
+        .testTarget(name: "PocketDeckTests",
+                    dependencies: ["PocketDeck"],
+                    path: "Tests/PocketDeckTests"),
     ]
 )

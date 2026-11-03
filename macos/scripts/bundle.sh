@@ -2,6 +2,7 @@
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
 #
 #   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls]
+#                        [--define SYMBOL]...
 #
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
@@ -22,11 +23,15 @@ APP="build/PocketDeck.app"
 VARIANT="dev"
 WITH_FILES=0
 WITH_CONTROLS=0
+DEFINES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --variant) VARIANT="${2:?--variant needs a name}"; shift 2 ;;
         --with-files) WITH_FILES=1; shift ;;
         --with-controls) WITH_CONTROLS=1; shift ;;
+        # Only scripts/direct/build.sh passes a define; the public paths never
+        # do, so a plain build has none of the direct-link code (design §1.1).
+        --define) DEFINES+=(-Xswiftc "-D${2:?--define needs a symbol}"); shift 2 ;;
         *) APP="$1"; shift ;;
     esac
 done
@@ -46,6 +51,7 @@ esac
 # passed here so `build_e2e_app` and vm-e2e.sh's host build both get it.
 BUILD_FLAGS=()
 [ "$VARIANT" = "release" ] || BUILD_FLAGS=(-Xswiftc -DPD_TEST_HOOKS)
+BUILD_FLAGS+=(${DEFINES[@]+"${DEFINES[@]}"})
 
 # App Intents metadata (docs/design/intents.md). Xcode's
 # ExtractAppIntentsMetadata phase is two halves, and SwiftPM runs neither:
