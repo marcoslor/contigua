@@ -72,7 +72,7 @@ a file over 1 MiB is read and decoded off the main thread. Everything else sends
   (`rich image bytes=592`, the fixture's exact size), with `clip.image.done ok=True` and the app
   logging its own write while in the background.
 
-## Paste and drop into an app (SHARE-16–17 built; SHARE-18 planned)
+## Paste and drop into an app (SHARE-16–18 built)
 
 ⌘V in an app's window stops being a text-only key. The pasteboard is classified once, in this
 order: a file copy (`public.file-url`) takes the drop path; an image with no text takes the
@@ -120,10 +120,12 @@ the shell-written path, boot 5), copies them into `cacheDir/shared`, and its `of
 calls `setPackage(pkg)`, and shows the intent only when `resolveActivity` returns a component for
 it; otherwise it clears the package and shows today's chooser. No paste key is sent for files.
 
-**V3, sources.** `VideoLayerView.registerForDraggedTypes` gains `.URL`, the image types
-(`public.png`, `public.tiff`, `public.jpeg`, `public.image`) and
-`NSFilePromiseReceiver.readableDraggedTypes`; the Deck's `.dropDestination(for: URL.self)` is
-replaced by a drop view that reads the same sources (SwiftUI's URL-only destination cannot see
+**V3, sources.** `DropDragReader` (`DropSources.swift`) reads a pasteboard in D1's order — a file
+URL > a file promise > image data > an `http(s)` link — and only the winner is materialised, so a
+browser drag carrying a file URL, a promise and image data never downloads. `VideoLayerView`
+registers `.fileURL`, `.URL`, the image types and `NSFilePromiseReceiver.readableDraggedTypes`;
+the Deck's URL-only `.dropDestination` is replaced by `DeckDropCatcher`, an AppKit drop view
+behind the SwiftUI content that reads the same order (SwiftUI's URL-only destination cannot see
 image data or promises). Each source becomes a temp file for the drop path:
 
 - image data: the first `NSImage` is encoded as PNG (the existing `NSImage.pngData()`);
@@ -136,7 +138,22 @@ image data or promises). Each source becomes a temp file for the drop path:
 Temp files live in `FileManager.default.temporaryDirectory/PocketDeck-drop-<uuid>/`, one folder
 per gesture. The folder is deleted when every file of that gesture has its `drop.result`, on a
 cancel, and on session end; folders older than 24 h are swept at launch. Nothing about a file's
-name or path is logged.
+name, path or URL is logged: the source kind and byte count only.
+
+`DropSourceResolver` turns the winner into files: image data is written as it came (PNG and JPEG
+verbatim, TIFF and any other image type through `FileCopyImage.encode`'s alpha → PNG / opaque →
+JPEG 0.9 rule), named `Image.png`/`Image.jpg`; a promise delivers into the gesture's folder under
+its own name (30 s); a link goes through an ephemeral `URLSession` (no cookies, cache or
+credentials) that allows only `http(s)` redirects and stops at 8 MiB or 10 s. An answer is an
+image only when its `Content-Type` is `image/*` and its first bytes sniff as PNG, JPEG, GIF, HEIC
+or WebP; otherwise a stream window shows the refusal pill's "That link isn't an image. Drop the
+link itself to open it." and the Deck opens the link (SHARE-8/11). `DropResolveMachine` is the
+closed set resolving → ready | refused | timedOut | cancelled, with a session end handled in
+every state; the graph is driven by `DropSourceFlow`, which owns the gesture's folder. The
+existing drop pill shows "Sending…" while a promise or download is pending, and the outcome
+otherwise (D5). The debug input's `dropimage`/`dropurl` and `deckdropimage`/`deckdropurl` feed the
+same destination a real drag reaches; a real `NSFilePromiseReceiver` cannot be scripted, so a
+promise is covered by K2.
 
 Visual items for prototypes: the drop target's highlight for the new types, the refusal line
 for a non-image URL, and the paste pills (A4: the existing glass pill component with new copy and
