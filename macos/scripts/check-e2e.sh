@@ -8142,6 +8142,38 @@ check_dock() {
     stop_app
     remove_dock_apps
 
+    # A bound shim outlived a killed app (ISS-6, DOCK-19): the shim watches the
+    # host's process and quits when it ends, so no icon stays in the Dock until
+    # the person quits it. SIGTERM is the check; a force quit takes the same
+    # didTerminateApplication road.
+    local term_opens term_pid term_started
+    term_opens="$(window_open_count "$pkg")"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
+    wait_until 30 shim_made \
+        || { bad "[DOCK-19] dock term: no Dock app created"; stop_app; stop_fakephone; return 1; }
+    shim="$(ls -d "$dir"/*.app | head -1)"
+    wait_until 15 dock_shim_ready \
+        || { bad "[DOCK-19] dock term: the bundle never finished"; stop_app; stop_fakephone; return 1; }
+    open_quiet "$shim"
+    wait_until 20 eval '[ "$(window_open_count "$pkg")" -gt "$term_opens" ]' \
+        || { bad "[DOCK-19] dock term: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ -n "$(dock_shim_pids)" ]' \
+        || { bad "[DOCK-19] dock term: the shim never ran"; stop_app; stop_fakephone; return 1; }
+    term_pid="$(dock_shim_pids | head -1)"
+    shim_gone() { ! kill -0 "$1" 2>/dev/null; }
+    sleep 1
+    term_started="$(path_now)"
+    kill -TERM "$APP_PID" >/dev/null 2>&1
+    if wait_until 3 shim_gone "$term_pid"; then
+        local term_dt
+        term_dt="$(python3 -c "print('%.2f' % ($(path_now) - float('$term_started')))")"
+        ok "[DOCK-19] dock term: the bound shim quit ${term_dt}s after the app was killed (pid $term_pid)"
+    else
+        bad "[DOCK-19] dock term: the shim outlived the killed app (pid $term_pid)"
+    fi
+    wait "$APP_PID" 2>/dev/null
+    remove_dock_apps
+
     # A shim bundle from an older PocketDeck carries an older executable, which
     # still loses the bind's answer. The next app list replaces it while its
     # shim is not running (docs/design/dock.md §Lifecycle). The installed copy

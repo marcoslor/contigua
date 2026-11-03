@@ -103,7 +103,10 @@ enum DockShimMachine {
         /// Observers are not registered yet: a slow launch (e2e) or the instant
         /// between `init` and `applicationDidFinishLaunching`.
         case starting
-        case waiting(kind: WaitKind, since: Date, hostLaunched: Bool)
+        /// `hostSeen` means the shim has seen the host running: at listen time,
+        /// or when its own `launchHost` action ran. A host exit is only news
+        /// once it was seen (DOCK-19).
+        case waiting(kind: WaitKind, since: Date, hostSeen: Bool)
         case bound
         case quitting
 
@@ -111,8 +114,8 @@ enum DockShimMachine {
         var label: String {
             switch self {
             case .starting: return "starting"
-            case .waiting(let kind, _, let hostLaunched):
-                return "waiting(\(kind == .open ? "open" : "ready"), hostLaunched: \(hostLaunched))"
+            case .waiting(let kind, _, let hostSeen):
+                return "waiting(\(kind == .open ? "open" : "ready"), hostSeen: \(hostSeen))"
             case .bound: return "bound"
             case .quitting: return "quitting"
             }
@@ -121,8 +124,9 @@ enum DockShimMachine {
 
     enum Event: Equatable {
         /// Observers are registered: an automatic launch waits for `opened`, a
-        /// manual one asks for the window.
-        case launch(automatic: Bool, now: Date)
+        /// manual one asks for the window. `hostSeen` is whether the host was
+        /// already running when the shim started listening.
+        case launch(automatic: Bool, hostSeen: Bool, now: Date)
         case tick(now: Date)
         case opened
         case closed
@@ -130,16 +134,19 @@ enum DockShimMachine {
         case activate
         case reopen(now: Date)
         case terminate
+        /// `NSWorkspace` says the host process ended (quit, crash or force quit).
+        case hostExited
 
         var label: String {
             switch self {
-            case .launch(let automatic, _): return automatic ? "launch(auto)" : "launch(open)"
+            case .launch(let automatic, _, _): return automatic ? "launch(auto)" : "launch(open)"
             case .tick: return "tick"
             case .opened: return "opened"
             case .closed: return "closed"
             case .activate: return "activate"
             case .reopen: return "reopen"
             case .terminate: return "terminate"
+            case .hostExited: return "hostExited"
             }
         }
     }
@@ -170,14 +177,14 @@ enum DockShimMachine {
     /// The one transition function: every event in every state.
     static func transition(_ state: State, _ event: Event) -> (State, [Action]) {
         switch event {
-        case .launch(let automatic, let now):
+        case .launch(let automatic, let hostSeen, let now):
             guard case .starting = state else { return (state, []) }
             let kind: WaitKind = automatic ? .ready : .open
-            return (.waiting(kind: kind, since: now, hostLaunched: false),
+            return (.waiting(kind: kind, since: now, hostSeen: hostSeen),
                     [.post(kind == .open ? .open : .ready), .startRetry])
 
         case .tick(let now):
-            guard case .waiting(let kind, let since, let hostLaunched) = state else { return (state, []) }
+            guard case .waiting(let kind, let since, let hostSeen) = state else { return (state, []) }
             let waited = now.timeIntervalSince(since)
             if waited > noAnswerQuitAfter {
                 // Quit first, then terminate: the self-quit keeps the Quit ↔
@@ -186,8 +193,8 @@ enum DockShimMachine {
             }
             var next = state
             var actions: [Action] = []
-            if kind == .open, !hostLaunched, waited >= launchHostAfter {
-                next = .waiting(kind: kind, since: since, hostLaunched: true)
+            if kind == .open, !hostSeen, waited >= launchHostAfter {
+                next = .waiting(kind: kind, since: since, hostSeen: true)
                 actions.append(.launchHost)
             }
             actions.append(.post(kind == .open ? .open : .ready))
@@ -209,12 +216,16 @@ enum DockShimMachine {
 
         case .reopen(let now):
             if case .quitting = state { return (state, []) }
-            return (.waiting(kind: .open, since: now, hostLaunched: false),
+            return (.waiting(kind: .open, since: now, hostSeen: false),
                     [.post(.open), .startRetry])
 
         case .terminate:
             if case .quitting = state { return (state, []) }
             return (.quitting, [.post(.quit)])
+
+        case .hostExited:
+            // Scaffold: the transition lands with the fix; the tests fail here.
+            return (state, [])
         }
     }
 }
