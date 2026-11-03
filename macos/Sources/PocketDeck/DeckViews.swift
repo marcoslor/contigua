@@ -60,7 +60,7 @@ struct DeckRoot: View {
             let files = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) == nil }
             if let app = apps.first { controller.installApk(app) }
             for link in links { controller.openLink(OpenLinkRequest(url: link)) }
-            if !files.isEmpty { controller.dropFiles(files) }
+            if !files.isEmpty { controller.dropFiles(files, target: nil) }
             return !links.isEmpty || !apps.isEmpty || !files.isEmpty
         }
         .task {

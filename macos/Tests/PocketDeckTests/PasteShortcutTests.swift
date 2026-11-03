@@ -10,8 +10,12 @@ final class PasteShortcutTests: XCTestCase {
     private final class StubPasteboard: PasteboardReader {
         var value: String?
         var fileCopy = false
+        var files: [URL] = []
+        var picture: (data: Data, mime: String)?
         func text() -> String? { value }
         func isFileCopy() -> Bool { fileCopy }
+        func fileURLs() -> [URL] { files }
+        func image() -> (data: Data, mime: String)? { picture }
     }
 
     private enum Sent: Equatable {
@@ -51,12 +55,41 @@ final class PasteShortcutTests: XCTestCase {
         XCTAssertEqual(sent(), [.text("pasted text")])
     }
 
-    func testCommandVWithAFileCopySendsNothing() {
+    func testCommandVWithAFileCopyGoesToTheDropPath() {
         let board = StubPasteboard()
         board.value = "report.pdf"
         board.fileCopy = true
+        board.files = [URL(fileURLWithPath: "/tmp/report.pdf")]
         let (map, sent) = mapper(board)
+        var pasted: PasteboardPaste?
+        map.onPaste = { paste in pasted = paste; return true }
         map.keyDown(keyEvent(9, "v", flags: [.command]))
+        XCTAssertEqual(pasted, .files([URL(fileURLWithPath: "/tmp/report.pdf")]))
         XCTAssertEqual(sent(), [], "a Finder copy must not type its file's name into the phone")
+    }
+
+    func testCommandVWithAnImageGoesToThePasteFlow() {
+        let board = StubPasteboard()
+        board.picture = (Data([0x89, 0x50, 0x4E, 0x47]), "image/png")
+        let (map, sent) = mapper(board)
+        var pasted: PasteboardPaste?
+        map.onPaste = { paste in pasted = paste; return true }
+        map.keyDown(keyEvent(9, "v", flags: [.command]))
+        XCTAssertEqual(pasted, .image(Data([0x89, 0x50, 0x4E, 0x47]), "image/png"))
+        XCTAssertEqual(sent(), [], "an image is pasted as a clip image, not typed")
+    }
+
+    func testShiftCommandVSharesInsteadOfPasting() {
+        let board = StubPasteboard()
+        board.picture = (Data([1, 2, 3]), "image/png")
+        let (map, sent) = mapper(board)
+        var shared: PasteboardPaste?
+        var pasted: PasteboardPaste?
+        map.onShareInstead = { shared = $0 }
+        map.onPaste = { pasted = $0; return true }
+        map.keyDown(keyEvent(9, "v", flags: [.command, .shift]))
+        XCTAssertEqual(shared, .image(Data([1, 2, 3]), "image/png"))
+        XCTAssertNil(pasted)
+        XCTAssertEqual(sent(), [])
     }
 }
