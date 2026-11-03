@@ -77,6 +77,8 @@ class Session(
     private val fsPlatform: FsPlatform = FsPlatform.None,
     /** Change source for `fs.watch` (docs/design/files.md §5); tests fake it. */
     private val fsWatch: FsWatchSource = FsWatchSource.None,
+    /** Decode/encode seam for `fs.thumb` (docs/design/files.md "Thumbnails (S6)"); tests fake it. */
+    private val fsThumb: ThumbSource = ThumbSource.None,
     /** Clipboard image port (read + write); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
@@ -244,6 +246,9 @@ class Session(
     private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
     private val fsWriter = files?.let { FsWriter(it.paths, fsPlatform, ::sendJson, log) }
     private val fsOps = files?.let { FsMutations(it.paths, fsPlatform, log) }
+    private val fsThumbnailer = files?.let {
+        FsThumbnailer(it.paths, fsThumb, queue::enqueueBulk, ::sendJson, log)
+    }
     private val fsWatcher = files?.let {
         FsWatcher(it.paths, fsWatch, ::sendJson, log = log)
     }
@@ -968,6 +973,7 @@ class Session(
         runCatching { drop?.close() }
         runCatching { fsReader?.close() }
         runCatching { fsWriter?.close() }
+        runCatching { fsThumbnailer?.close() }
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
@@ -1493,6 +1499,7 @@ class Session(
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
                 "fs.read" -> onFsRead(obj)
+                "fs.thumb" -> onFsThumb(obj)
                 "fs.write" -> fsWriter?.begin(obj)
                 "fs.move" -> onFsMove(obj)
                 "fs.delete" -> onFsDelete(obj)
@@ -1503,6 +1510,7 @@ class Session(
                 "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let {
                     fsReader?.cancel(it)
                     fsWriter?.cancel(it)
+                    fsThumbnailer?.cancel(it)
                 }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
@@ -2689,6 +2697,15 @@ class Session(
             return
         }
         reader.begin(obj)
+    }
+
+    private fun onFsThumb(obj: Map<String, Any?>) {
+        val thumbs = fsThumbnailer
+        if (thumbs == null) {
+            fsId(obj)?.let { fsError(it, FsPaths.denied("files are not served")) }
+            return
+        }
+        thumbs.begin(obj)
     }
 
     private fun onFsStat(obj: Map<String, Any?>) {
