@@ -988,11 +988,13 @@ the sender may be either side:
 - The phone answers a Mac image with `{"t":"clip.image.done","id":N,"ok":true}` after the bytes
   verify **and** its clipboard holds the image; `{"ok":false}` when it refuses (a checksum
   mismatch, no clipboard to write to, or over the cap). The Mac sends nothing else on that id,
-  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16). The phone writes
-  an image as one clipboard item carrying only the image URI (no text, no intent): a plain field
-  pastes nothing (a content URI that cannot serve text coerces to null, never to its
-  `content://` string), while a field that accepts image content still gets the URI (SHARE-2's
-  A2 rule, measured on the emulator).
+  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16). The bytes are
+  copied by the **app process**, which owns the provider and the clipboard: the shell hands it
+  the already-open fd (`onClipImage`) and waits at most 3 s for `clipImageDone`; no answer is
+  `ok:false`. The app writes one clipboard item carrying only the image URI (no text, no
+  intent): a plain field pastes nothing (a content URI that cannot serve text coerces to null,
+  never to its `content://` string), while a field that accepts image content still gets the URI
+  (SHARE-2's A2 rule, measured on the emulator). The shell never sets an image clip itself.
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
