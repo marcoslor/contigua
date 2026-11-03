@@ -232,6 +232,15 @@ plus one file descriptor where a link is handed over.
   `tcp_connect` returns (that only queues the SYN). If the handshake fails, or
   does not complete within **10 s**, the reply is
   `{"ok":false,"code":"connect_failed"}` and carries no fd; the link is `down`.
+- A peer FIN (lwIP's recv callback with no data) and a peer RST both put the
+  link in `down` and close the app's fd: a read returns EOF and the next write
+  fails. A clean FIN is reported as `peerClosed`, not as a connect failure. In
+  the guest the app sees EOF and `links` reports `down` within 2 s (boot 9:
+  64 ms after the peer's FIN).
+- `close` from the app on an `up` link is accepted: the helper sends its FIN,
+  puts the link `down`, and the app's fd reads EOF. Repeating `close` while the
+  link is still remembered also answers `ok`; an id the daemon has forgotten
+  answers `link_unknown`.
 - **`peer` is the test-only static peer** (P2; §7.2). There is no data session
   in this round, so the harness tells the helper what the NAN data session
   would have: the peer's MAC and link-local on the interface named by `if`.
@@ -603,17 +612,18 @@ separate address needed no kernel configuration and no shared state.
 
 Sharing is the case not to default to: the kernel owns that address, has no
 connection for the peer's SYN-ACK, and can answer it (and lwIP's own segments)
-with a RST. `POCKETDECK_DIRECT_LL=shared` is the guest experiment: boot 7 ran
-it and its 4 KiB echo passed (`DIRECT shared-echo ok`), so `feth` did not
-reproduce the RST. That does not settle `nan0`: the network policy there drops
-the kernel's own output, so the kernel's RST may never reach the peer and a
-shared address could work. The reviewer's P4 run must check which case the
-radio needs; the helper's default, and the one the feth harness exercises
-first, is its own address.
+with a RST. `POCKETDECK_DIRECT_LL=shared` is the guest experiment: boots 7, 8
+and 9 ran it and its 4 KiB echo passed (`DIRECT shared-echo ok`) each time,
+so `feth` did not reproduce the RST. That does not settle `nan0`: the network
+policy there drops the kernel's own output, so the kernel's RST may never
+reach the peer and a shared address could work. The reviewer's P4 run must
+check which case the radio needs; the helper's default, and the one the feth
+harness exercises first, is its own address. Boots 8 and 9 also measured the
+separate address's 1 MiB echo before the harness would print that PASS.
 
 ### 7.2 The harness
 
-The check is `feth-path` in `macos/scripts/e2e-checks.sh`; `vm-e2e.sh` builds
+The check is `feth-path` in `macos/scripts/check-e2e.sh`; `vm-e2e.sh` builds
 the bundle with the define and pushes `pocketdeck-directd` beside it for that
 check only. The app side is `--direct-e2e`, a direct-build launch hook that
 drives the helper and runs the app's own `TlsV2` over the fd.
@@ -631,43 +641,48 @@ drives the helper and runs the app's own `TlsV2` over the fd.
 4. The `feth` path is also where **lwIP's own correctness** is proven: a
   1 MiB echo with every byte compared, a 1400-byte MSS boundary run, a frame
    that arrives fragmented (two writes), and a peer that closes mid-transfer
-   (the helper must report `link` down, not hang).
+   (the helper must report `link` down within 2 s, not hang).
 5. Every run keeps the evidence that says where a frame was lost:
    `tcpdump -i feth1` for the whole run (`work/feth1.pcap`, rendered as
    `work/feth1.txt`), `ndp -an` before and after, `netstat -s -p tcp` and
-   `-p ip6` before and after, and lwIP's counters (`LWIP_STATS=1`) printed by
-   the helper on SIGTERM and by the test-only `{"op":"stats"}`. A PASS that is
-   not measured is a harness bug: the address experiment only passes when its
-   own echo line says so.
+   `-p ip6` before and after, and lwIP's counters (`LWIP_STATS=1`, 32-bit)
+   printed by the helper on SIGTERM and by the test-only `{"op":"stats"}`.
+   Each helper generation writes `work/directd-<step>.log` (`path`, `close`,
+   `shared`, `bench`), so a later start cannot hide an earlier step. A PASS
+   that is not measured is a harness bug: the address experiment only passes
+   when both its echo lines say so, and the CPU line is read from the daemon's
+   own `pocketdeck-directd` pid, never from its `sudo` wrapper.
 
 ### 7.3 The throughput benchmark
 
-Three numbers, all in the guest. Boot 7 measured them (2026-11-03, `feth-path`
-under `PD_VM_SWAP_MAX_MB=4096 PD_VM_FREE_MIN=30`):
+Three numbers, all in the guest. Boots 8 and 9 measured them (2026-11-03,
+`feth-path` under `PD_VM_SWAP_MAX_MB=4096 PD_VM_FREE_MIN=30`), each a full
+16/16 PASS:
 
-| Figure | How | Measured (boot 7) |
-|---|---|---|
-| lwIP TCP, plaintext | 64 KiB writes, 30 s, `fakephone` reading | **320.17 Mbit/s**, 1,200,685,056 bytes |
-| TLS over it | the app's `TlsV2` client over the helper's fd | **344.22 Mbit/s**, 1,290,862,592 bytes |
-| helper CPU | `ps -o %cpu` sampled each second | mean **0.0%**, max **0.6%** of one core |
+| Figure | How | Boot 9 | Boot 8 |
+|---|---|---|---|
+| lwIP TCP, plaintext | 64 KiB writes, 30 s, `fakephone` reading | **323.29 Mbit/s**, 1,212,350,464 bytes | 282.17 Mbit/s, 1,058,209,792 bytes |
+| TLS over it | the app's `TlsV2` client over the helper's fd | **351.35 Mbit/s**, 1,317,601,280 bytes | 355.84 Mbit/s, 1,334,444,032 bytes |
+| helper CPU | `ps -o %cpu` on the daemon's own pid, each second | mean **26.1%**, max **29.9%**, 61 samples | mean 25.5%, max 33.4%, 61 samples |
 
 Both runs are 30.00 s and the server's byte count matched the app's exactly
 (`PASS plaintext/TLS: every byte accounted for`), so neither number hides a
 retransmission or a dropped tail. The two runs are separate links, so the
-320/344 difference is run-to-run variation, not an effect of TLS.
+plain/TLS difference is run-to-run variation, not an effect of TLS. Boot 9
+against the accepted r2 numbers is +1.0% plain and +2.1% TLS; boot 8 is
+−11.9% and +3.4%, both inside the ±25% repeat window. The r2 CPU line
+(0.0%/0.6%) was measured on the `sudo` wrapper and is discarded; the numbers
+above come from `pgrep -x pocketdeck-directd` and its own pid.
 
 Pass/fail against the product's need: **≥ 8 Mbit/s with TLS** (one 1080p60
-mirror, ARCHITECTURE's number). The measured TLS run is **43× the bar**
-(344.22 / 8), so the stack is not the limit in this VM; the number is the
+mirror, ARCHITECTURE's number). The measured TLS run is **44× the bar**
+(351.35 / 8), so the stack is not the limit in this VM; the number is the
 stack's, not the radio's.
 
-Caveat: boot 7's *correctness* steps (1 MiB echo, MSS boundary, close) failed
-even though the benchmark passed. The app read back the echoed 1 MiB with a
-block out of place, while `feth1.pcap` showed the on-wire stream in order: the
-fault was in the bridge, where `receivedFromStack` wrote a newer segment while
-older bytes were still queued for the app. That is fixed in `c5bd4eb3` and
-covered by `testLinkKeepsQueuedBytesAheadOfNewData` (direct 40/0). There is no
-boot 8, so the fix is host-tested but not re-run in the guest.
+The r2 boot-7 correctness failures were the app-bridge reorder and the app
+dying on SIGPIPE before it could report the peer close. Both are fixed
+(`c5bd4eb3`, `02b436ae`) and re-run in boots 8 and 9: 1 MiB echo, MSS, app
+`close`, and the peer FIN taking the link down in **70 ms / 64 ms**.
 
 ### 7.4 The NAN proof — the reviewer's, on real hardware
 
