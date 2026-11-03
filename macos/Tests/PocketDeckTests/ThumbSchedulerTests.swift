@@ -147,4 +147,19 @@ final class ThumbSchedulerTests: XCTestCase {
         XCTAssertEqual(0, phone.asks.count)
         XCTAssertEqual(1, recorder.doneCount)
     }
+
+    /// The newest Finder batch is what the person is looking at: when a slot
+    /// frees, its unstarted ids go before an older batch's queued ones.
+    func testANewerBatchGoesAheadOfAnOlderBatchesUnstartedIds() {
+        let scheduler = FilesThumbScheduler()
+        let phone = FakePhone()
+        let recorder = Recorder()
+        _ = recorder.open(scheduler, ids: (1...10).map { "old\($0)" }, phone: phone)
+        _ = recorder.open(scheduler, ids: (1...10).map { "new\($0)" }, phone: phone)
+        XCTAssertEqual(["old1", "old2", "old3"], phone.asks.map(\.item))
+
+        phone.finish(0)
+        XCTAssertEqual("new1", phone.asks.last?.item,
+                       "a newer batch's first id waited behind the older batch")
+    }
 }

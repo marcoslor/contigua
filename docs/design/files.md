@@ -1031,14 +1031,22 @@ this path touches `PowerManager` or the display.
 **Limits (T4).** At most 3 thumbnails in flight per session on the Mac
 (`FilesThumbQueue` in the app: FIFO, 3 slots, an 8 s deadline per request
 measured from the `fs.thumb` send — a queued ask waits its turn; cancel either
-leaves the queue or sends one `fs.cancel`); the extension keeps its own 3 per
-batch so it never leans on the app's queue for pacing. The phone generates one
-at a time, accepts at most 3 live thumb ids (`fs_busy` past that) and puts the
-frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session writer's
-lowest-priority queue, drained after JSON, control, audio and video deltas with
-at most 1 MiB queued; the same `FS_DATA` type the paths layer counts as bulk
-(12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a grid
-of icons can never overtake a reply, delay a stream, or starve a drop.
+leaves the queue or sends one `fs.cancel`); the extension runs one 3-ask pool
+across all its Finder batches (`FilesThumbScheduler`): the newest batch's
+unstarted ids first, index order within a batch, a cancelled batch answering its
+unstarted ids and completing once. So what the person is looking at is asked
+next, the app's queue never holds more than 3 asks per extension, and several
+open batches cannot put 3 x N asks on the bridge. MEASURED (K2
+`ThumbSchedulerLoadTests.testTheScrollLoad`, 2026-11-03): 3,000 ids in 60
+batches of 50 against a 300 ms phone, a new batch opening and the previous one
+cancelling every 2 s → first ask of a new batch p50 149 ms, p95 289 ms, max
+318 ms; the pending set peaked at 53 (3 in flight + one batch of 50). The phone
+generates one at a time, accepts at most 3 live thumb ids (`fs_busy` past that)
+and puts the frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session
+writer's lowest-priority queue, drained after JSON, control, audio and video
+deltas with at most 1 MiB queued; the same `FS_DATA` type the paths layer counts
+as bulk (12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a
+grid of icons can never overtake a reply, delay a stream, or starve a drop.
 
 The queue's one request, by state (`FilesThumbQueue.transition`):
 
