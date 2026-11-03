@@ -666,7 +666,7 @@ running transfers.
   `fs_not_found`; a directory is `fs_not_a_dir`. With `etag` present and
   different from the file's current one, the answer is `fs_stale` and no data
   is sent.
-- **`fs.cancel`** stops that read: the phone sends no further `FS_DATA` for the
+- **`fs.cancel`** stops that read (or that thumbnail, below): the phone sends no further `FS_DATA` for the
   id (queued chunks are dropped), and the Mac discards what it already has.
   Frames for a cancelled or unknown `id` are dropped. A session that ends
   abandons every running read.
@@ -675,6 +675,53 @@ running transfers.
   that. Every reply carries its `id`; fs failures are the ordinary `error`
   message with an `id` field.
 - **Logs carry no names**: counts, lengths, depths and codes only, both sides.
+
+### Thumbnails
+
+Finder's icon grid asks for a picture before the file is downloaded (docs/design/files.md "Thumbnails (S6)"): the phone makes one from the media file itself, with no cache and no prefetch.
+
+| t | fields | meaning |
+|---|---|---|
+| `fs.thumb` | `id`, `path`, `size`, `etag`? | one thumbnail of the file at `path`; `size` is the long side in pixels the Mac wants (1–4096) and `etag` is checked exactly as `fs.read`'s |
+
+`fs.thumb`'s `size` is pixels, the one place the wire uses that name for
+something other than a byte count; `fs.thumb.end`'s `size` is bytes, as
+everywhere else. The answer is the image's bytes as `FS_DATA` frames (`stream`
+= `id`, each ≤ 256 KiB; the whole answer is at most 256 KiB, so one frame in
+practice), then:
+
+| t | fields |
+|---|---|
+| `fs.thumb.end` | `id`, `mime`, `size`, `sha256` — `mime` is `image/jpeg` or `image/png`, `size` the byte count, `sha256` its digest |
+
+Rules:
+
+- The phone makes the picture at shell uid with the platform's own image/video
+  thumbnail generator, long side `min(size, 512)`, JPEG at quality 80, or PNG
+  when the bitmap has alpha. The whole answer is at most 256 KiB (262 144
+  bytes): a larger first encode is re-encoded once at quality 60 (a PNG over
+  the cap becomes a flattened JPEG), and if that is still larger the answer is
+  `fs_no_thumb` with no bytes sent.
+- One at a time: the phone accepts at most 3 live `fs.thumb` ids and answers
+  `fs_busy` past that; the accepted ids wait in a FIFO and the phone generates
+  **one** at a time. The frames and `fs.thumb.end` ride the **bulk lane**
+  `fs.read` uses (the session's lowest send priority, below video deltas; at
+  most 1 MiB queued, so the producer blocks instead of buffering), so a
+  thumbnail never overtakes a reply and never delays a stream.
+- Refusals: a path the shape rules reject is `fs_denied`, a missing file
+  `fs_not_found`, a directory `fs_not_a_dir`, an `etag` that no longer matches
+  `fs_stale` (no bytes sent), a `size` outside 1–4096 `fs_denied`, and a file
+  the phone cannot make a picture of `fs_no_thumb`.
+- `fs.cancel` stops one: a queued id is dropped before it generates anything, a
+  running one is cancelled through the platform's cancellation signal, and the
+  Mac drops frames for a cancelled id (as for a read).
+- Nothing runs unless a Mac asks: no thumbnail is made at session start or on a
+  listing, and a folder never gets one. A thumbnail never wakes the phone's
+  screen, takes no wake lock and never starts a stream.
+- No version bump: `fs.thumb` and `fs.thumb.end` are new `t` values and
+  `fs_no_thumb` a new code; nothing existing changes shape. A peer that does
+  not serve the request simply never answers, which the Mac's 8 s deadline
+  bounds (a `fs.cancel` follows).
 
 ### Writing
 
@@ -1085,8 +1132,10 @@ this Mac is not paired: "<phone name> isn't accepting new pairings."),
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
 foreground is our app, the launcher/home or SystemUI), `fs_not_found`,
 `fs_denied` (a path outside the readable rules, or a range outside the file),
-`fs_not_a_dir`, `fs_stale` (the `fs.read` etag no longer matches the file) and
-`fs_busy` (more than 8 reads in flight), `too_many_windows` (a `window.open` past
+`fs_not_a_dir`, `fs_stale` (the `fs.read`/`fs.thumb` etag no longer matches the file),
+`fs_no_thumb` (the phone cannot make a thumbnail of that file: not an image or
+video, an unreadable or unsupported codec, or the answer did not fit 256 KiB)
+and `fs_busy` (more than 8 reads, or more than 3 thumbnail ids, in flight), `too_many_windows` (a `window.open` past
 the phone's `maxWindows`; no display is created).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before
