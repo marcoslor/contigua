@@ -1071,6 +1071,7 @@ FS_MAX_COMPONENTS = 32
 FS_PAGE_ITEMS = 1000
 FS_PAGE_BYTES = 1 << 20
 FS_CHUNK = 256 * 1024
+MAX_THUMB_BYTES = 256 * 1024
 FS_MAX_WRITE = 1 << 30
 FS_TEMP_PREFIX = ".pocketdeck-"
 FS_TEMP_SUFFIX = ".part"
@@ -1079,6 +1080,21 @@ FS_TEMP_SUFFIX = ".part"
 def fs_temp_name(name):
     return name.startswith(FS_TEMP_PREFIX) and name.endswith(FS_TEMP_SUFFIX) \
         and len(name) > len(FS_TEMP_PREFIX) + len(FS_TEMP_SUFFIX)
+
+
+# fs.thumb's own type check (docs/PROTOCOL.md "Thumbnails"): the fake serves a
+# fixture for an image or a video name and refuses everything else.
+FS_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif", "dng"}
+FS_VIDEO_EXTS = {"mp4", "m4v", "mov", "mkv", "webm", "3gp", "avi"}
+
+
+def fs_media_kind(path):
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext in FS_IMAGE_EXTS:
+        return "image"
+    if ext in FS_VIDEO_EXTS:
+        return "video"
+    return None
 
 
 class FsError(Exception):
@@ -2147,6 +2163,12 @@ class Session(object):
         self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
         self._fs_write = None           # the one fs.write in flight
         self._fs_lock = threading.Lock()
+        # fs.thumb: at most three accepted ids, one generator at a time. The
+        # one worker is enforced by _thumb_lock, which the check reads back
+        # through the events' `active` field.
+        self._fs_thumbs = {}            # id -> {"cancel": Event, "held": bool, "thread": Thread}
+        self._thumb_lock = threading.Lock()
+        self._thumb_held_once = False
         # The folders the Mac has open (docs/PROTOCOL.md "Watching"); nothing
         # is watched before fs.watch and everything stops with the session.
         self._watcher = FsWatchFake(phone.fs) if phone.fs is not None else None
@@ -2826,6 +2848,7 @@ class Session(object):
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
             "fs.read": self._on_fs_read,
+            "fs.thumb": self._on_fs_thumb,
             "fs.write": self._on_fs_write,
             "fs.move": self._on_fs_move,
             "fs.delete": self._on_fs_delete,
@@ -3272,6 +3295,90 @@ class Session(object):
         job["thread"] = thread
         thread.start()
 
+    def _on_fs_thumb(self, msg):
+        thumb_id = _fs_id(msg)
+        if thumb_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_error(thumb_id, FsError("fs_denied", "files are not served"))
+        try:
+            path = fs.resolve(msg.get("path"))
+            meta = fs.meta(path)
+            if meta["dir"]:
+                raise FsError("fs_not_a_dir", "not a file")
+            etag = msg.get("etag")
+            if isinstance(etag, str) and etag != meta["etag"]:
+                raise FsError("fs_stale", "the file changed")
+            size = msg.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 1 or size > 4096:
+                raise FsError("fs_denied", "size outside 1-4096")
+            kind = fs_media_kind(path)
+            if kind is None:
+                raise FsError("fs_no_thumb", "not an image or a video")
+            mode = self.phone.args.fs_thumb_mode
+            fixture = self.phone.args.fs_thumb
+            if mode == "no_thumb" or not fixture:
+                raise FsError("fs_no_thumb", "no thumbnail")
+            hold = mode == "hold"
+            if mode == "hold_once" and not self._thumb_held_once:
+                self._thumb_held_once = True
+                hold = True
+        except FsError as exc:
+            return self._fs_error(thumb_id, exc)
+        job = {"cancel": threading.Event(), "held": hold, "thread": None}
+        with self._fs_lock:
+            if len(self._fs_thumbs) >= 3 or thumb_id in self._fs_thumbs:
+                return self._fs_error(thumb_id, FsError("fs_busy", "too many thumbnails"))
+            self._fs_thumbs[thumb_id] = job
+        thread = threading.Thread(target=self._run_fs_thumb,
+                                  args=(thumb_id, job, path, size, kind), daemon=True)
+        job["thread"] = thread
+        sys.stderr.write("fakephone: fs thumb accept id=%d\n" % thumb_id)
+        sys.stderr.flush()
+        thread.start()
+
+    def _run_fs_thumb(self, thumb_id, job, path, size, kind):
+        try:
+            if job["held"]:
+                self.phone.events.fs("thumb.hold", id=thumb_id)
+                job["cancel"].wait(60)
+                if job["cancel"].is_set():
+                    self.phone.events.fs("thumb.cancelled", id=thumb_id, held=True)
+                    return
+            with self._thumb_lock:
+                fixture = self.phone.args.fs_thumb
+                if not fixture:
+                    raise FsError("fs_no_thumb", "no thumbnail")
+                with open(fixture, "rb") as handle:
+                    data = handle.read(MAX_THUMB_BYTES + 1)
+                if len(data) > MAX_THUMB_BYTES:
+                    raise FsError("fs_no_thumb", "the answer did not fit")
+                active = 1
+                self.phone.events.fs("thumb", id=thumb_id, size=size, bytes=len(data),
+                                     active=active, mime="image/jpeg")
+                if not self.sender.send_bulk(thumb_id,
+                                             proto.pack_frame(proto.TYPE_FS_DATA, thumb_id, data)):
+                    return
+                end = {"t": "fs.thumb.end", "id": thumb_id, "mime": "image/jpeg",
+                       "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                self.sender.send_bulk(0, proto.pack_json(end))
+                self.phone.events.fs("thumb.done", id=thumb_id, bytes=len(data),
+                                     mime="image/jpeg")
+                sys.stderr.write("fakephone: fs thumb id=%d %d bytes\n"
+                                 % (thumb_id, len(data)))
+                sys.stderr.flush()
+        except FsError as exc:
+            self._fs_error(thumb_id, exc)
+        except Exception as exc:  # a thumb that dies is a failed request
+            sys.stderr.write("fakephone: fs thumb id=%d failed: %s\n"
+                             % (thumb_id, type(exc).__name__))
+            sys.stderr.flush()
+            self._fs_error(thumb_id, FsError("fs_denied", "the thumbnail failed"))
+        finally:
+            with self._fs_lock:
+                self._fs_thumbs.pop(thumb_id, None)
+
     def _run_fs_read(self, read_id, path, offset, length, job):
         digest = hashlib.sha256()
         done = 0
@@ -3313,7 +3420,11 @@ class Session(object):
     def _on_fs_cancel(self, msg):
         read_id = _fs_id(msg)
         if read_id is None:
+            sys.stderr.write("fakephone: fs cancel with no id\n")
+            sys.stderr.flush()
             return
+        sys.stderr.write("fakephone: fs cancel recv id=%d\n" % read_id)
+        sys.stderr.flush()
         write = self._fs_write
         if write is not None and write["id"] == read_id:
             # A cancelled write leaves nothing: the temp goes, no reply follows.
@@ -3322,6 +3433,15 @@ class Session(object):
             return
         with self._fs_lock:
             job = self._fs_jobs.get(read_id)
+            thumb = self._fs_thumbs.get(read_id)
+        if thumb is not None:
+            thumb["cancel"].set()
+            if self.sender:
+                self.sender.cancel_bulk(read_id)
+            self.phone.events.fs("cancel", id=read_id, kind="thumb")
+            sys.stderr.write("fakephone: fs thumb cancel id=%d\n" % read_id)
+            sys.stderr.flush()
+            return
         if job is None:
             return
         job["cancel"].set()
@@ -3545,10 +3665,15 @@ class Session(object):
             self._fail_write(self._fs_write, "closed", "the session ended", silent=True)
         with self._fs_lock:
             jobs = list(self._fs_jobs.items())
+            thumbs = list(self._fs_thumbs.items())
         for read_id, job in jobs:
             job["cancel"].set()
             if self.sender:
                 self.sender.cancel_bulk(read_id)
+        for thumb_id, thumb in thumbs:
+            thumb["cancel"].set()
+            if self.sender:
+                self.sender.cancel_bulk(thumb_id)
 
     # -- clipboard images (docs/design/dragdrop.md): the fake receives like the
     # shell does (cap 8 MiB, one per direction) and logs the outcome.
@@ -5133,6 +5258,15 @@ def build_parser():
                    metavar="DIR",
                    help="serve read-only phone files from DIR (default: PD_FAKE_FS_ROOT, "
                         "else fs.* is refused)")
+    p.add_argument("--fs-thumb", default=os.environ.get("PD_FAKE_FS_THUMB"),
+                   metavar="FILE",
+                   help="serve this JPEG for every fs.thumb (default: "
+                        "PD_FAKE_FS_THUMB, else fs_no_thumb)")
+    p.add_argument("--fs-thumb-mode", choices=["normal", "no_thumb", "hold", "hold_once"],
+                   default="normal",
+                   help="normal answers at once; no_thumb refuses; hold answers nothing "
+                        "until fs.cancel; hold_once holds only the first thumb (the R-1 "
+                        "retry check)")
     p.add_argument("--fs-chunk-delay-ms", type=int, default=0, metavar="MS",
                    help="pause after each FS_DATA chunk (a slow phone, so a cancel "
                         "can land mid-file in the e2e check)")

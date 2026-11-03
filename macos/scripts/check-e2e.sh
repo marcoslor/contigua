@@ -6759,6 +6759,8 @@ for i in range(40):
         handle.write(("small %d\n" % i).encode() * (i + 1))
 with open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb") as handle:
     handle.write(b"\xff\xd8\xff\xe0" + os.urandom(4096))
+with open(os.path.join(root, "Documents/report.pdf"), "wb") as handle:
+    handle.write(b"%PDF-1.4\n")
 with open(os.path.join(root, "big3.bin"), "wb") as handle:
     handle.write(os.urandom(3 * 1024 * 1024))
 with open(os.path.join(root, "big32.bin"), "wb") as handle:
@@ -6792,9 +6794,88 @@ PY
         stop_fakephone
         return 1
     fi
-    # The phone goes away: every dataless request must answer offline.
+    # Thumbnails (FILES-22/23/25/26/29, R-1). The fake phone serves one
+    # synthetic 16x16 JPEG; the tree has a PDF and a text file next to the
+    # photo, so the app's type filter can be seen keeping them off the phone.
+    python3 - "$WORK" <<'THUMBFIX'
+import base64, os, sys
+work = sys.argv[1]
+jpeg = ("/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAyAP/bAEMACAoKCwoLDQ0N"
+        "DQ0NEA8QEBAQEBAQEBAQEBISEhUVFRISEhAQEhIUFBUVFxcXFRUVFRcXGRkZHh4cHCMj"
+        "JCsrM//EAEwAAQEAAAAAAAAAAAAAAAAAAAAGAQEBAAAAAAAAAAAAAAAAAAAFBhABAAAAAAAA"
+        "AAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIABAAEAMBIgACEQADEQD/2gAM"
+        "AwEAAhEDEQA/AJ0BVAH/2Q==")
+with open(os.path.join(work, "thumb.jpg"), "wb") as handle:
+    handle.write(base64.b64decode(jpeg))
+open(os.path.join(work, "fsroot", "Documents", "report.pdf"), "wb").write(b"%PDF-1.4\n")
+THUMBFIX
     stop_fakephone
     wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb --thumb-fixture "$WORK/thumb.jpg"
+    if python3 - "$WORK/events.jsonl" <<'THUMBCOUNT'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
+thumbs = [e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb"]
+# Exactly one ask reached the phone, for the photo, at the long side.
+sys.exit(0 if len(thumbs) == 1 and thumbs[0].get("size") == 512 else 1)
+THUMBCOUNT
+    then
+        ok "BRIDGE [FILES-22/23] one fs.thumb at 512: the PDF and the folder asked nothing"
+    else
+        bad "BRIDGE [FILES-22/23] the phone saw the wrong fs.thumb count or size"
+    fi
+    # A phone that holds every answer: 3 live, the fourth queued, then the
+    # deadline on the one still held.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (hold)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-hold
+    cp "$WORK/fake.err" "$WORK/fake-thumb-hold.err" 2>/dev/null || true
+    cp "$WORK/events.jsonl" "$WORK/events-thumb-hold.jsonl" 2>/dev/null || true
+    # hold_once: the first answer is held, so the fourth ask starts only when
+    # two of the first three end.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold_once" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (hold_once)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-once
+    cp "$WORK/fake.err" "$WORK/fake-thumb-once.err" 2>/dev/null || true
+    cp "$WORK/events.jsonl" "$WORK/events-thumb-once.jsonl" 2>/dev/null || true
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (timeout)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-timeout
+    cp "$WORK/fake.err" "$WORK/fake-thumb-timeout.err" 2>/dev/null || true
+    log show --last 6m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -oE 'thumb: .*|fs: cancel.*|bridge: fs cancel|session: fs.cancel sent.*' > "$WORK/thumb-log.txt" 2>/dev/null || true
+    say "thumb queue log: $(tail -6 "$WORK/thumb-log.txt" | tr '\n' ' ')"
+    sends="$(grep -c 'session: fs.cancel sent ok=true' "$WORK/thumb-log.txt" 2>/dev/null || true)"
+    [ "${sends:-0}" -ge 5 ] \
+        && ok "BRIDGE [FILES-25/29] the app sent all five fs.cancel messages ($sends)" \
+        || bad "BRIDGE [FILES-25/29] the app sent $sends fs.cancel messages, wanted 5"
+    # A phone that makes no picture: fs_no_thumb is permanent and a text file
+    # never asks at all.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode no_thumb" start_fake || return 1
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE THUMB the app never re-authenticated (no_thumb)"; stop_app; stop_fakephone; return 1; }
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-none
+    # The phone goes away: every dataless request must answer offline. The
+    # session's teardown runs through its rejoin grace, so let detach() land
+    # before asking the bridge (a hello during it still says connected).
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 3
     BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver offline
     # Nothing about the bridge may put a name, a path or bytes in the app log:
     # os_log carries op names, counts and lengths only (design §4).

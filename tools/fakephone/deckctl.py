@@ -2530,6 +2530,44 @@ def _fs_result(client, request, timeout=120.0):
         return 0
 
 
+def _fs_thumb(client, path, out, size):
+    """`fs.thumb` (docs/PROTOCOL.md "Phone files" > "Thumbnails"): the bytes go
+    to OUT, the reply's mime/size/hash and the duration are printed as JSON."""
+    fs_id = _fs_id()
+    started = time.time()
+    client.send_json({"t": "fs.thumb", "id": fs_id, "path": path, "size": size})
+    data = bytearray()
+    while True:
+        frame = client.recv(90)
+        if frame is TIMEOUT:
+            raise DeckError("no answer for fs thumb id %d (timeout)" % fs_id)
+        if frame is None:
+            raise DeckError("phone closed the connection during fs thumb id %d" % fs_id)
+        if frame.type == proto.TYPE_FS_DATA:
+            if frame.stream == fs_id:
+                data.extend(frame.payload)
+            continue
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("id") != fs_id:
+            continue
+        if msg.get("t") == "error":
+            raise DeckError("fs error: %s (%s)" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") != "fs.thumb.end":
+            continue
+        digest = hashlib.sha256(bytes(data)).hexdigest()
+        if msg.get("size") != len(data) or (msg.get("sha256") or "").lower() != digest:
+            raise DeckError("thumbnail differs from its fs.thumb.end")
+        if out:
+            with open(out, "wb") as handle:
+                handle.write(data)
+        elapsed = int((time.time() - started) * 1000)
+        print(json.dumps({"mime": msg.get("mime"), "bytes": len(data),
+                          "sha256": digest, "ms": elapsed}, sort_keys=True))
+        return 0
+
+
 def _fs_write(client, path, local):
     with open(local, "rb") as handle:
         data = handle.read()
@@ -2567,6 +2605,8 @@ def cmd_fs(client, args):
     write side (write/mkdir/move/delete/setattrs)."""
     if args.action == "write":
         return _fs_write(client, args.path, args.out)
+    if args.action == "thumb":
+        return _fs_thumb(client, args.path, args.out, args.size)
     if args.action == "mkdir":
         return _fs_result(client, {"t": "fs.mkdir", "id": _fs_id(), "path": args.path})
     if args.action == "move":
@@ -2955,8 +2995,8 @@ def build_parser():
     sp.add_argument("--interval", type=float, default=2.5)
     sp.add_argument("--launch-settle", type=float, default=2.0)
 
-    sp = sub.add_parser("fs", help="phone files: list/stat/read/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
-    sp.add_argument("action", choices=["list", "stat", "read", "write", "mkdir", "move",
+    sp = sub.add_parser("fs", help="phone files: list/stat/read/thumb/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
+    sp.add_argument("action", choices=["list", "stat", "read", "thumb", "write", "mkdir", "move",
                                        "delete", "setattrs", "watch", "unwatch", "changes"])
     sp.add_argument("path", nargs="?", help="path relative to the phone's shared storage ('' = the root)")
     sp.add_argument("out", nargs="?", help="read: write the range here; write: the local file")
@@ -2966,6 +3006,8 @@ def build_parser():
     sp.add_argument("--offset", type=int, default=0, help="read: first byte (default 0)")
     sp.add_argument("--length", type=int, default=None, help="read: byte count (default: offset..EOF via stat)")
     sp.add_argument("--etag", help="read: the version the Mac believes (fs_stale on mismatch)")
+    sp.add_argument("--size", type=int, default=512,
+                    help="thumb: the wanted long side in pixels (1-4096, default 512)")
     sp.add_argument("--paths", nargs="+", help="watch/unwatch: the folders (relative)")
     sp.add_argument("--timeout", type=float, default=10.0,
                     help="changes: seconds to wait for a change (default 10)")
