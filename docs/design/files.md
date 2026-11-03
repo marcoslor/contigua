@@ -994,13 +994,21 @@ has no thumbnail" and not ask again until the item's version changes, so a
 picture lost to a timeout or a disconnected phone would never appear. The
 per-thumbnail handler therefore answers a **transient** failure — the session
 down, the 8 s deadline, `fs_busy` (the app's `offline`, `timeout`, `fs_busy`,
-`busy`, `closed`) — with `NSFileProviderError(.serverUnreachable)`, which the
-system retries, and a **permanent** one — not a media type, `fs_no_thumb`,
+`busy`, `closed`) — with `NSFileProviderError(.serverUnreachable)` (a transient
+error, so the answer is not remembered as final), and a **permanent** one — not
+a media type, `fs_no_thumb`,
 `fs_not_found`, `fs_denied`, `fs_not_a_dir`, `fs_stale`, a size/sha256 mismatch
 — with nil data. Neither is shown to the person: a thumbnail error is not an
 alert, and the type icon is what either answer leaves behind. `FilesThumbPolicy`
 holds both decisions, so K2 pins them even though the extension object itself is
 compiled only by `bundle.sh`.
+
+**Measured (VM `files-thumbs`, 2026-11-03).** The system did not ask again after
+either answer: not by itself within 45 s, not on close and reopen within 30 s,
+and not at all with the phone away. `serverUnreachable` is therefore harmless
+but cannot be relied on to bring a lost picture back — a lost thumbnail returns
+only when the item's version changes. That is why a queued ask must not expire
+while it waits (FILES-29).
 
 **The phone's generator (T3).** `FsThumbnailer` mirrors `FsReader`: a request
 parses the id, path, `size` (1–4096, else `fs_denied`), resolves the path,
