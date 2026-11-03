@@ -60,9 +60,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 - **ISS-11 Battery cost of keep-alive pings.** Measure on a real phone what the paths layer's ping policy costs (`docs/design/paths.md`), idle and with one window open.
 - **ISS-12 The phone can't tell that every path went silent.** Only the Mac detects it, through its pong rule. The phone waits for the Mac to rejoin.
-- **ISS-13 Clipboard sync can drop after a fast re-adopt.** `SessionDropper.drop` frees the slot before the old session's teardown, and the shared `ShellClipboard` listen/stop isn't owner-scoped, so the old teardown can stop the new session's listener. Fix: `listen` returns a registration, and only `stop(registration)` from its owner stops it. Low risk today (pairing waits up to 2 s for the teardown).
 - **ISS-14 Untested requirements.** WIN-16: no input reaches the phone after a drop, and `window.open` after a reconnect. Also two or more phones in the waiting line.
-- **ISS-15 Missing identity on service start.** `DeckForegroundService.onServiceReady` should generate the keys on the client callback when the identity is missing.
 
 ## 4. Test setup (no product change)
 
