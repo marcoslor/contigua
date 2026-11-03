@@ -9632,6 +9632,91 @@ check_windows() {
     stop_fakephone
 }
 
+# --- Cover bar: WIN-11's opening cover in the immersive geometry ------------
+#
+# The visual record for the person's 11-03 report: a framed window with no
+# first frame looks exactly as the same window does in immersive — one sheet
+# over the whole window, the bar's band included — and the framed bar returns
+# with the first frame. A quiet run captures the run's own virtual display;
+# the record the reviewer sees is the VM's visible run. The two check names are
+# the two appearances.
+
+check_cover_bar() {
+    local appearance="$1" shots="$SHOTS/cover-bar" id
+    clean
+    mkdir -p "$shots"
+
+    # The framed window while opening: the fake holds the first frame, so the
+    # opening state and the 5 s slow one last long enough for their shots.
+    FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    wait_until 20 chrome_has "loading=1 cover_phase=opening" \
+        || bad "COVER-BAR $appearance no framed opening state: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no framed window"
+    sleep 0.6
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-opening-$appearance.png" \
+            && ok "COVER-BAR $appearance framed opening shot: $shots/framed-opening-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed opening shot"
+    fi
+    wait_until 8 chrome_has "cover_phase=slow cover_buttons=cancel" \
+        || bad "COVER-BAR $appearance no slow state: $(chrome_state)"
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-slow-$appearance.png" \
+            && ok "COVER-BAR $appearance framed slow shot: $shots/framed-slow-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed slow shot"
+    fi
+    stop_app
+
+    # The same app in immersive while opening: the style is stored per package.
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    # The chrome state's fields are not adjacent: test them one at a time.
+    wait_until 20 chrome_has "style=immersive" \
+        || bad "COVER-BAR $appearance no immersive opening state: $(chrome_state)"
+    wait_until 5 chrome_has "loading=1" \
+        || bad "COVER-BAR $appearance the cover is not up: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 600')" || bad "COVER-BAR $appearance no immersive window"
+    sleep 0.6
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/immersive-opening-$appearance.png" \
+            && ok "COVER-BAR $appearance immersive opening shot: $shots/immersive-opening-$appearance.png" \
+            || bad "COVER-BAR $appearance no immersive opening shot"
+    fi
+    stop_app
+    stop_fakephone
+
+    # The first frame: the framed bar is back, its mirror and haze over it.
+    clean
+    mkdir -p "$shots"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    wait_until 20 events_have '"ev":"video"' || bad "COVER-BAR $appearance no video"
+    cover_bar_live() { chrome_has "loading=0" && chrome_has "haze=1"; }
+    wait_until 15 cover_bar_live \
+        || bad "COVER-BAR $appearance the first frame did not restore the framed bar: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no live framed window"
+    sleep 0.5
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-live-$appearance.png" \
+            && ok "COVER-BAR $appearance framed first-frame shot: $shots/framed-live-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed first-frame shot"
+    fi
+    stop_app
+    stop_fakephone
+
+    # The VM run copies $WORK back to the host, not the run's shot dir.
+    mkdir -p "$WORK/cover-bar"
+    cp -R "$shots/." "$WORK/cover-bar/"
+    say "shots: $WORK/cover-bar ($appearance)"
+}
+
+check_cover_bar_dark() { check_cover_bar dark; }
+check_cover_bar_light() { check_cover_bar light; }
+
 # --- Zoom: a stream window's double-click resize ----------------------------
 
 # check_zoom — double-clicking a live stream window's title bar must resize it

@@ -8,7 +8,7 @@ ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links 
             deck deckrail windows zoom render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
             pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
             dnd-edge panel-edge
-            files-domain files-thumbs nfr menubar-shots)
+            files-domain files-thumbs nfr menubar-shots cover-bar-dark cover-bar-light)
 
 # True when $1 is one of ALL_CHECKS.
 valid_check() {
