@@ -32,13 +32,13 @@ leaves alone, copies the file into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB) 
 copy, `FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` set — the grant therefore comes from the app's own UID.
 The phone never trusts payload or name beyond `sha256` and the sanitised name.
 
-## Finder file copies (round 1)
+## Finder file copies
 A copy in Finder carries `public.file-url` next to `public.utf8-plain-text`, which holds the
 file's name. Any pasteboard item with the file type is a **file copy**: `ClipboardSync.poll`
 reads its URLs (`ClipboardPasteboard.currentFileURLs`, `readObjects` with file URLs only) and
 never sends its text, and ⌘V in a stream window consumes it instead of typing the name
 (`PasteboardReader.isFileCopy`). Exactly one file whose type conforms to `public.image` at
-8 MiB or under becomes a clipboard image (PNG and JPEG verbatim, any other image type as PNG);
+8 MiB or under becomes a clipboard image (PNG and JPEG verbatim; any other image type re-encoded, as PNG with alpha and as JPEG at quality 0.9 when opaque, so a HEIC photo fits the cap);
 a file over 1 MiB is read and decoded off the main thread. Everything else sends nothing
 (SHARE-2). The planned drop path turns ⌘V into a transfer instead (SHARE-17).
 
