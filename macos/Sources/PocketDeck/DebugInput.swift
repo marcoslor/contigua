@@ -38,6 +38,10 @@
 //                                  an .apk keeps its install route)
 //   deckdrop PATH                  the same drag, but fed to the Deck's drop
 //                                  handler: no app window, so no share target
+//   dropimage PATH                 a drag carrying the file's image data
+//   dropurl URL                    a drag carrying one http(s) link
+//   deckdropimage PATH             the same image data on the Deck
+//   deckdropurl URL                the same link on the Deck
 //   pastefiles PATH...             a Finder file copy on the pasteboard (the
 //                                  paths, plus the first one's name as text)
 //   pasteimage PATH                an image on the pasteboard, no text
@@ -95,6 +99,7 @@
 // NX/NY are video-space coordinates in 0...1 with a top-left origin.
 
 import AppKit
+import UniformTypeIdentifiers
 
 struct NormalizedPoint: Equatable {
     var nx: Double
@@ -143,6 +148,13 @@ enum DebugInputAction: Equatable {
     case dropFile(String)
     /// The same file fed to the Deck's drop handler (no app-window target).
     case deckDrop(String)
+    /// A drag carrying image data read from this file (SHARE-18).
+    case dropImage(String)
+    /// A drag carrying one http(s) link (SHARE-18).
+    case dropURL(URL)
+    /// The same two sources on the Deck.
+    case deckDropImage(String)
+    case deckDropURL(URL)
     /// The pasteboard as a Finder file copy of these files.
     case pasteFiles([URL])
     /// The pasteboard as one image file (PNG or JPEG, no text).
@@ -438,6 +450,16 @@ enum DebugInputScript {
                 throw LineError(message: "deckdrop: no such file: \(path)")
             }
             return .deckDrop(path)
+        case "dropimage":
+            let path = try absoluteFilePath(args, verb: "dropimage")
+            return .dropImage(path)
+        case "deckdropimage":
+            let path = try absoluteFilePath(args, verb: "deckdropimage")
+            return .deckDropImage(path)
+        case "dropurl":
+            return .dropURL(try httpURL(args, verb: "dropurl"))
+        case "deckdropurl":
+            return .deckDropURL(try httpURL(args, verb: "deckdropurl"))
         case "notifyclick":
             guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifyclick needs an id") }
             return .notifyClick(args[0])
@@ -516,6 +538,33 @@ enum DebugInputScript {
             throw LineError(message: "unknown action '\(verb)'")
         }
     }
+
+    /// One absolute path, expanded and checked, for the `*image`/`dropfile` verbs.
+    private static func absoluteFilePath(_ args: [String], verb: String) throws -> String {
+        guard args.count == 1, !args[0].isEmpty else {
+            throw LineError(message: "\(verb) needs an absolute PATH")
+        }
+        var path = args[0]
+        if path.hasPrefix("~") {
+            path = FileManager.default.homeDirectoryForCurrentUser.path + path.dropFirst()
+        }
+        guard path.hasPrefix("/") else {
+            throw LineError(message: "\(verb) needs an absolute PATH (got relative '\(args[0])')")
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw LineError(message: "\(verb): no such file: \(path)")
+        }
+        return path
+    }
+
+    /// One http(s) link for `dropurl`/`deckdropurl`.
+    private static func httpURL(_ args: [String], verb: String) throws -> URL {
+        guard args.count == 1, let url = URL(string: args[0]), DropDownloadPolicy.allows(url) else {
+            throw LineError(message: "\(verb) needs one http(s) URL")
+        }
+        return url
+    }
+
 
     private static func hold(_ args: [String], index: Int) throws -> Double {
         guard args.count > index else { return 0 }
@@ -598,6 +647,14 @@ enum DebugInputScript {
 /// The size arrives only after the phone has accepted the window, so the
 /// session is ready and the view has a layout to aim at.
 final class DebugInputDriver {
+    /// The image data a real drag would carry, read from a fixture file.
+    static func imageDrag(_ path: String) -> DropDrag? {
+        let url = URL(fileURLWithPath: path)
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        let type = UTType(filenameExtension: url.pathExtension) ?? .png
+        return DropDrag(image: DropImage(data: data, type: type))
+    }
+
     static let dragSteps = 20
     /// Changed events per gesture. They are paced one display refresh apart so
     /// the coalesced moves (InputMapper) reach the phone.
@@ -640,6 +697,8 @@ final class DebugInputDriver {
     var mediaChoose: ((String) -> Void)?
     /// `deckdrop PATH`: the Deck's drop handler.
     var deckDrop: (([URL]) -> Void)?
+    /// `deckdropimage`/`deckdropurl`: the Deck's source handler (SHARE-18).
+    var deckDropDrag: ((DropDrag) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
@@ -794,6 +853,16 @@ final class DebugInputDriver {
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .deckDrop(let path):
             deckDrop?([URL(fileURLWithPath: path)])
+        case .dropImage(let path):
+            guard let drag = Self.imageDrag(path) else { return }
+            view.onDroppedDrag?(drag)
+        case .dropURL(let url):
+            view.onDroppedDrag?(DropDrag(remote: url))
+        case .deckDropImage(let path):
+            guard let drag = Self.imageDrag(path) else { return }
+            deckDropDrag?(drag)
+        case .deckDropURL(let url):
+            deckDropDrag?(DropDrag(remote: url))
         case .pasteImage(let url):
             guard let data = try? Data(contentsOf: url) else { return }
             let item = NSPasteboardItem()

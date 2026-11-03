@@ -168,6 +168,9 @@ final class FileDropSender {
     /// Every phase change, the outcome's timeout included: the pill's owner is
     /// this sender, so nothing else schedules a hide.
     @ObservationIgnored var onPhase: ((Phase) -> Void)?
+    /// The gesture is over (saved, refused, cancelled or lost): a source's temp
+    /// folder can go. Not called while a batch moves to its next file.
+    @ObservationIgnored var onSettled: (() -> Void)?
 
     /// How long an outcome stays up, and the sleep it waits on (a test's own).
     private let finishedHold: Duration
@@ -212,10 +215,19 @@ final class FileDropSender {
     /// How many files this gesture carries, for the batch fields.
     private var batchCount = 0
 
+    /// A second drop while one runs: keep the running pill and its transfer.
+    func busy() {
+        finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
+    }
+
+    /// A source that never became files (SHARE-18): the same pill, the same
+    /// five-second hide, and a closed outcome token for the log.
+    func refuse(_ text: String, outcome: Outcome = .nothing) {
+        finish(text, ok: false, outcome: outcome)
+    }
+
     func send(_ urls: [URL], session: any DropChannel, target: String? = nil) {
-        guard !isBusy else {
-            return finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
-        }
+        guard !isBusy else { return busy() }
         clearTask?.cancel()
         self.session = session
         self.target = target
@@ -396,7 +408,11 @@ final class FileDropSender {
         inFlight = 0
         offset = 0
         cursor = 0
+        // A previous outcome's five seconds must not hide this one (a source
+        // refusal can land as the last transfer's timer fires).
+        clearTask?.cancel()
         setPhase(.finished(text, ok: ok))
+        onSettled?()
         clearTask = Task { [weak self] in
             guard let self else { return }
             await self.sleep(self.finishedHold)
