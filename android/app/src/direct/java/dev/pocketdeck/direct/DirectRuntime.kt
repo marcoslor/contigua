@@ -1,6 +1,5 @@
 package dev.pocketdeck.direct
 
-import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -309,12 +308,8 @@ object DirectRuntime : PhoneDirectPort {
     }
 
     private fun permissionGranted(ctx: Context): Boolean =
-        if (Build.VERSION.SDK_INT >= 33) {
-            ctx.checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
+        DirectPermissions.granted(Build.VERSION.SDK_INT) { permission ->
+            ctx.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
         }
 
     private fun locationEnabled(ctx: Context): Boolean = runCatching {

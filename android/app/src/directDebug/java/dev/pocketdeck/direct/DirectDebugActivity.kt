@@ -1,6 +1,5 @@
 package dev.pocketdeck.direct
 
-import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
@@ -46,12 +45,7 @@ class DirectDebugActivity : Activity() {
     }
 
     private fun ask() {
-        val permission = if (Build.VERSION.SDK_INT >= 33) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        requestPermissions(arrayOf(permission), REQUEST)
+        requestPermissions(arrayOf(DirectPermissions.required(Build.VERSION.SDK_INT)), REQUEST)
     }
 
     override fun onRequestPermissionsResult(
@@ -72,14 +66,9 @@ class DirectDebugActivity : Activity() {
         finish()
     }
 
-    private fun granted(): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= 33) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-    }
+    private fun granted(): Boolean =
+        checkSelfPermission(DirectPermissions.required(Build.VERSION.SDK_INT)) ==
+            PackageManager.PERMISSION_GRANTED
 
     /** States only: the log is the reviewer's proof trail (R-PRIV-1). */
     private fun printState() {
