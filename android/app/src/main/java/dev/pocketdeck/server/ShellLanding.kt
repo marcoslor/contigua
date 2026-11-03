@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import android.content.Context
 import dev.pocketdeck.drop.ShareRequest
+import dev.pocketdeck.drop.ShareStaging
 import java.io.File
 
 /**
@@ -16,6 +17,8 @@ import java.io.File
 class ShellLanding(
     /** The app's context (Shizuku hands it in): the external folder and the scanner. */
     private val app: Context?,
+    /** The names staged for the pending SEND; `openStaged` reads this set. */
+    private val staging: ShareStaging,
     private val log: (String) -> Unit = {},
 ) : DropReceiver.Landing {
 
@@ -52,11 +55,13 @@ class ShellLanding(
             return
         }
         dir.mkdirs()
+        staging.sweep()
         sweep(dir)
         val names = mutableListOf<String>()
         val mimes = mutableListOf<String>()
         for ((file, mime) in files) {
             val name = stage(dir, file, mime) ?: return
+            staging.expect(name, File(dir, name))
             names += name
             mimes += mime
         }
@@ -115,7 +120,7 @@ class ShellLanding(
         /** The app's exported trampoline, started as the app's own UID. */
         const val TRAMPOLINE = "dev.pocketdeck/.drop.ShareTrampoline"
 
-        /** Staged leftovers: long enough for a hand-off, short enough not to accumulate. */
-        const val STAGED_TTL_MS = 5 * 60_000L
+        /** Staged leftovers: the same deadline the pending set enforces. */
+        const val STAGED_TTL_MS = ShareStaging.TTL_MS
     }
 }

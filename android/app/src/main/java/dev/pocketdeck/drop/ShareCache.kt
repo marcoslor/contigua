@@ -2,6 +2,7 @@ package dev.pocketdeck.drop
 
 import dev.pocketdeck.server.failureClasses
 import java.io.File
+import java.io.InputStream
 
 /**
  * The app-owned folder behind the provider URI (docs/design/dragdrop.md). The
@@ -16,15 +17,24 @@ object ShareCache {
     const val MAX_BYTES = 500L * 1024 * 1024
 
     /** Copies [source] into [dir] under its own name; null when the copy fails. */
-    fun put(dir: File, source: File, log: (String) -> Unit = {}): File? = runCatching {
-        dir.mkdirs()
-        val copy = File(dir, source.name)
-        source.inputStream().use { input ->
+    fun put(dir: File, source: File, log: (String) -> Unit = {}): File? =
+        runCatching { source.inputStream() }
+            .onFailure { log("share cache: copy failed: ${failureClasses(it)}") }
+            .getOrNull()?.use { put(dir, source.name, it, log) }
+
+    /**
+     * Copies a stream the shell opened for us (the staged drop's fd) under
+     * [name]; null when the copy fails. [name] must be a bare file name.
+     */
+    fun put(dir: File, name: String, input: InputStream, log: (String) -> Unit = {}): File? =
+        runCatching {
+            if (File(name).name != name) return null
+            dir.mkdirs()
+            val copy = File(dir, name)
             copy.outputStream().use { output -> input.copyTo(output) }
-        }
-        evict(dir, keep = copy)
-        copy
-    }.onFailure { log("share cache: copy failed: ${failureClasses(it)}") }.getOrNull()
+            evict(dir, keep = copy)
+            copy
+        }.onFailure { log("share cache: copy failed: ${failureClasses(it)}") }.getOrNull()
 
     /**
      * Deletes the oldest entries until the folder holds ≤ [MAX_FILES] files and

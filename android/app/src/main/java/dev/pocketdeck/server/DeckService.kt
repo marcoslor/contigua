@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Log
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
+import dev.pocketdeck.drop.ShareStaging
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.e2ee.IdentityPin
 import dev.pocketdeck.e2ee.TlsExporter
@@ -34,6 +35,9 @@ class DeckService(private val appContext: Context?) :
     constructor() : this(null)
 
     @Volatile private var callback: IDeckCallback? = null
+
+    /** The staged names a pending SEND may still open (SHARE-17). */
+    private val staging = ShareStaging(log = ::log)
     @Volatile private var deviceId: String = ""
     @Volatile private var deviceName: String = "Android"
 
@@ -104,6 +108,7 @@ class DeckService(private val appContext: Context?) :
         appBinder = null
         runCatching { power?.shutdown() }
         runCatching { stopServer() }
+        staging.close()
         System.exit(0)
     }
 
@@ -164,7 +169,7 @@ class DeckService(private val appContext: Context?) :
                 clipImages = clip,
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
-                dropLanding = ShellLanding(appContext, ::log),
+                dropLanding = ShellLanding(appContext, staging, ::log),
                 // The shared storage root. Environment.getExternalStorageDirectory()
                 // asks StorageManager, which refuses a caller that is not the
                 // app's own uid; the shell service is uid 2000. This is the real
@@ -234,7 +239,16 @@ class DeckService(private val appContext: Context?) :
     override fun stopServer() {
         server?.stop()
         server = null
+        staging.clear()
     }
+
+    /**
+     * The trampoline's read side (SHARE-17): an fd for a bare name the shell
+     * staged for a pending SEND, or null. The app cannot open the staged path
+     * itself (boot 5); the fd crosses the binder so only the shell touches it.
+     */
+    override fun openStaged(name: String?): ParcelFileDescriptor? =
+        name?.let { staging.open(it) }
 
     override fun setCallback(cb: IDeckCallback?) {
         val previous = appBinder
