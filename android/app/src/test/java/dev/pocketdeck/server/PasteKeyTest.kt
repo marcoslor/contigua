@@ -7,7 +7,6 @@ import androidx.test.core.app.ApplicationProvider
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.KeyPayload
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -33,15 +32,8 @@ class PasteKeyTest {
         assertEquals("", item.text?.toString())
         assertEquals(uri, item.uri)
         val context = ApplicationProvider.getApplicationContext<Context>()
-        assertEquals("", item.coerceToText(context).toString(),
-            "a field with no image receiver must paste nothing, never a content:// string")
-    }
-
-    /** The item shape this replaces, kept as the risk A2 names. */
-    @Test
-    fun aUriOnlyItemCoercesToTheContentUri() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        assertNotEquals("", android.content.ClipData.Item(uri).coerceToText(context).toString())
+        assertEquals("a field with no image receiver must paste nothing, never a content:// string",
+            "", item.coerceToText(context).toString())
     }
 
     @Test

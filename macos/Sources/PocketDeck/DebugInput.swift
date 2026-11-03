@@ -40,6 +40,7 @@
 //                                  handler: no app window, so no share target
 //   pastefiles PATH...             a Finder file copy on the pasteboard (the
 //                                  paths, plus the first one's name as text)
+//   pasteimage PATH                an image on the pasteboard, no text
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
 //                                  in the dwell pill's hot zone); over the video it is
 //                                  a mouse hover on the phone
@@ -144,6 +145,8 @@ enum DebugInputAction: Equatable {
     case deckDrop(String)
     /// The pasteboard as a Finder file copy of these files.
     case pasteFiles([URL])
+    /// The pasteboard as one image file (PNG or JPEG, no text).
+    case pasteImage(URL)
     case hover(NormalizedPoint)
     case hoverOut
     case hoverSetting(Bool)
@@ -383,6 +386,22 @@ enum DebugInputScript {
                 throw LineError(message: "dropfile: no such file: \(path)")
             }
             return .dropFile(path)
+        case "pasteimage":
+            guard args.count == 1, !args[0].isEmpty else {
+                throw LineError(message: "pasteimage needs an absolute PATH")
+            }
+            var path = args[0]
+            if path.hasPrefix("~") {
+                path = String(path.dropFirst(1))
+                path = FileManager.default.homeDirectoryForCurrentUser.path + path
+            }
+            guard path.hasPrefix("/") else {
+                throw LineError(message: "pasteimage needs an absolute PATH (got relative '\(args[0])')")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw LineError(message: "pasteimage: no such file: \(path)")
+            }
+            return .pasteImage(URL(fileURLWithPath: path))
         case "pastefiles":
             guard !args.isEmpty else {
                 throw LineError(message: "pastefiles needs at least one absolute PATH")
@@ -775,6 +794,18 @@ final class DebugInputDriver {
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .deckDrop(let path):
             deckDrop?([URL(fileURLWithPath: path)])
+        case .pasteImage(let url):
+            guard let data = try? Data(contentsOf: url) else { return }
+            let item = NSPasteboardItem()
+            let ext = url.pathExtension.lowercased()
+            if ext == "jpg" || ext == "jpeg" {
+                item.setData(data, forType: NSPasteboard.PasteboardType("public.jpeg"))
+            } else {
+                item.setData(data, forType: .png)
+            }
+            let board = NSPasteboard.general
+            board.clearContents()
+            _ = board.writeObjects([item])
         case .pasteFiles(let urls):
             let board = NSPasteboard.general
             board.clearContents()

@@ -132,6 +132,9 @@ final class InputMapper {
     /// The release of a key `barKey` took: consumed so the phone never sees an
     /// up without its down.
     var barKeyUp: ((NSEvent) -> Bool)?
+    /// A transient overlay's own key before the phone's (the paste pill's Esc):
+    /// true consumes it.
+    var overlayKey: ((NSEvent) -> Bool)?
 
     private var scrollMapping = ScrollMapping()
     private var gestures = TrackpadGestures()
@@ -585,6 +588,7 @@ final class InputMapper {
         // The bar's own keys first (MIRROR-13): ⌃Tab takes the keyboard to the
         // bar, and while it has it the bar's keys never reach the phone.
         if barKey?(event) == true { return }
+        if overlayKey?(event) == true { return }
         let flags = event.modifierFlags
         // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
         // ⌘F: a disabled menu item does not consume its key equivalent, so the

@@ -3731,27 +3731,43 @@ class Session(object):
                              % (clip_id, msg.get("mime"), size))
             self._clip = None
             return
-        self._clip = {"id": clip_id, "mime": msg["mime"], "size": size, "data": bytearray()}
+        self._clip = {"id": clip_id, "mime": msg["mime"], "size": size, "data": bytearray(),
+                      "paste": msg.get("paste") is True}
 
     def _on_clip_data(self, clip_id, payload):
         clip = getattr(self, "_clip", None)
         if not clip or clip["id"] != clip_id:
             return
         clip["data"] += payload
-        if len(clip["data"]) >= clip["size"]:
-            data = bytes(clip["data"])
+        if len(clip["data"]) > clip["size"]:
+            sys.stderr.write("fakephone: clip image %r more bytes than announced\n" % clip_id)
             self._clip = None
-            digest = hashlib.sha256(data).hexdigest()
-            self.phone.events.clip_image("rx", "fake-%d.%s" % (clip_id, "png" if clip["mime"] == "image/png" else "jpg"),
-                                         size=len(data), sha256=digest, mime=clip["mime"])
-            sys.stderr.write("fakephone: clip image %r %d bytes -> %s\n" % (clip_id, len(data), digest))
 
     def _on_clip_image_end(self, msg):
         clip = getattr(self, "_clip", None)
-        if clip and clip["id"] == msg.get("id"):
-            # The tail arrived without enough chunks: drop it as the phone does.
-            sys.stderr.write("fakephone: clip.image.end for %r with %d/%s bytes\n"
-                             % (clip["id"], len(clip["data"]), clip["size"]))
+        clip_id = msg.get("id")
+        if clip and clip["id"] == clip_id:
+            self._clip = None
+            data = bytes(clip["data"])
+            ok = len(data) == clip["size"] and hashlib.sha256(data).hexdigest() == msg.get("sha256")
+            digest = hashlib.sha256(data).hexdigest()
+            if not ok:
+                sys.stderr.write("fakephone: clip.image.end for %r with %d/%s bytes\n"
+                                 % (clip["id"], len(data), clip["size"]))
+            else:
+                self.phone.events.clip_image("rx", "fake-%d.%s" % (clip["id"], "png" if clip["mime"] == "image/png" else "jpg"),
+                                             size=len(data), sha256=digest, mime=clip["mime"],
+                                             paste=clip.get("paste", False))
+                sys.stderr.write("fakephone: clip image %r %d bytes -> %s\n" % (clip["id"], len(data), digest))
+            if self.phone.args.clip_done_delay > 0:
+                time.sleep(self.phone.args.clip_done_delay)
+            if not self.phone.args.no_clip_done:
+                self._send({"t": "clip.image.done", "id": clip_id, "ok": ok})
+                sys.stderr.write("fakephone: clip.image.done %r ok=%s\n" % (clip_id, ok))
+        elif not self.phone.args.no_clip_done:
+            # A refused or unknown transfer still gets its answer: no key then.
+            self._send({"t": "clip.image.done", "id": clip_id, "ok": False})
+            sys.stderr.write("fakephone: clip.image.done %r ok=False (no transfer)\n" % clip_id)
 
     def _on_clip_image_abort(self, msg):
         clip = getattr(self, "_clip", None)
@@ -5323,6 +5339,10 @@ def build_parser():
     p.add_argument("--fs-write-delay-ms", type=int, default=0, metavar="MS",
                    help="pause after each incoming FS_DATA chunk of a write (a slow "
                         "phone, so the e2e check can kill it mid-write)")
+    p.add_argument("--clip-done-delay", type=float, default=0.0, metavar="SECONDS",
+                   help="wait this long before clip.image.done (the Pasting pill)")
+    p.add_argument("--no-clip-done", action="store_true",
+                   help="never answer clip.image.done (SHARE-16's timeout)")
     p.add_argument("--drop-ack-delay", type=float, default=0.0, metavar="SECONDS",
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "

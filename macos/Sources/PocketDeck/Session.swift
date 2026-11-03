@@ -171,6 +171,8 @@ enum SessionEvent {
     case clipImageData(id: UInt32, bytes: [UInt8])
     case clipImageEnd(id: UInt32, size: Int, sha256: String)
     case clipImageAbort(id: UInt32)
+    /// The phone wrote a clipboard image (SHARE-16's paste flow).
+    case clipImageDone(id: UInt32, ok: Bool)
     /// Share phone → Mac (docs/design/sharein.md).
     case shareText(String)
     case shareFileBegin(id: UInt32, name: String, mime: String)
@@ -1668,6 +1670,11 @@ final class Session {
             }
         case "clip.image.abort":
             if let id = message.int("id") { emit(.clipImageAbort(id: UInt32(truncatingIfNeeded: id))) }
+        case "clip.image.done":
+            if let id = message.int("id") {
+                emit(.clipImageDone(id: UInt32(truncatingIfNeeded: id),
+                                    ok: message.bool("ok") ?? false))
+            }
         case "notify.state":
             emit(.notifyState(on: message.bool("on") ?? false, reason: message.string("reason")))
         case "notify.post":
@@ -2080,7 +2087,13 @@ final class Session {
     }
     func cancelDrop(id: UInt32) { sendJSON(["t": "drop.cancel", "id": Int(id)]) }
     func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.dropData, id: id, bytes: bytes, sent: sent) }
-    func clipImageStart(id: UInt32, mime: String, size: Int) { sendJSON(["t": "clip.image.start", "id": Int(id), "mime": mime, "size": size]) }
+    func clipImageStart(id: UInt32, mime: String, size: Int, paste: Bool = false) {
+        var message: [String: Any] = ["t": "clip.image.start", "id": Int(id), "mime": mime, "size": size]
+        // A person's own ⌘V is explicit, like a drop: it bypasses the sync
+        // switch (SHARE-16). The switch governs only the background sync.
+        if paste { message["paste"] = true }
+        sendJSON(message)
+    }
     func clipImageEnd(id: UInt32, size: Int, sha256: String) { sendJSON(["t": "clip.image.end", "id": Int(id), "size": size, "sha256": sha256]) }
     func clipImageAbort(id: UInt32) { sendJSON(["t": "clip.image.abort", "id": Int(id)]) }
     func sendClipData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.clipData, id: id, bytes: bytes, sent: sent) }

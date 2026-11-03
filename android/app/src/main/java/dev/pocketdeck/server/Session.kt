@@ -254,7 +254,10 @@ class Session(
     }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
-    private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
+    private val clipImageReceiver = ClipImageReceiver(
+        ClipImageLand(clipImages, log), log,
+        done = { id, ok -> sendJson(mapOf("t" to "clip.image.done", "id" to id, "ok" to ok)) },
+    )
     private var clipImagePoll: Thread? = null
 
     private var clientId = ""
@@ -2795,7 +2798,10 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun onClipImageStart(obj: Map<String, Any?>) {
-        if (clipGateState == ClipGate.OFF) return
+        // A person's own ⌘V is explicit, like a drop: it bypasses the sync
+        // switch (SHARE-16). The switch governs only the background sync.
+        val paste = obj["paste"] == true
+        if (clipGateState == ClipGate.OFF && !paste) return
         val id = (obj["id"] as? Number)?.toInt() ?: return
         val size = (obj["size"] as? Number)?.toLong() ?: -1L
         clipImageReceiver.begin(id, Json.str(obj["mime"]), size)
