@@ -2067,7 +2067,8 @@ final class Session {
     /// `phone.volume` (docs/PROTOCOL.md "Volume"): the phone's music stream.
     func setVolume(_ level: Int) { sendJSON(["t": "phone.volume", "level": level]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
-    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0,
+                   target: String? = nil, index: Int = 1, count: Int = 1) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]
         if resume > 0 { message["resume"] = resume }
         sendJSON(message)

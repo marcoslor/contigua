@@ -40,16 +40,33 @@ extension ClipboardPasteboard {
 protocol PasteboardReader {
     func text() -> String?
     func isFileCopy() -> Bool
+    /// The file URLs of a file copy (SHARE-17's drop path).
+    func fileURLs() -> [URL]
+    /// The image of an item with no text (SHARE-16's paste path).
+    func image() -> (data: Data, mime: String)?
 }
 
 /// The general pasteboard.
 struct SystemPasteboardReader: PasteboardReader {
+    private let board = SystemPasteboard()
+
     func text() -> String? { NSPasteboard.general.string(forType: .string) }
 
     func isFileCopy() -> Bool {
         !(NSPasteboard.general.readObjects(forClasses: [NSURL.self],
                                           options: [.urlReadingFileURLsOnly: true]) ?? []).isEmpty
     }
+
+    func fileURLs() -> [URL] { board.currentFileURLs() }
+
+    func image() -> (data: Data, mime: String)? { board.currentImage() }
+}
+
+/// What ⌘V found on the pasteboard: everything but plain text is the window's
+/// flow (SHARE-16 for one image, SHARE-17 for files).
+enum PasteboardPaste: Equatable {
+    case files([URL])
+    case image(Data, String)
 }
 
 final class ClipboardSync {

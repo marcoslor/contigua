@@ -36,6 +36,8 @@
 //   dropfile PATH                  the Finder drag that would land here: the absolute
 //                                  file path (the drag destination's own handler runs;
 //                                  an .apk keeps its install route)
+//   deckdrop PATH                  the same drag, but fed to the Deck's drop
+//                                  handler: no app window, so no share target
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
 //                                  in the dwell pill's hot zone); over the video it is
 //                                  a mouse hover on the phone
@@ -131,6 +133,8 @@ enum DebugInputAction: Equatable {
     /// An app's density override; nil is "Default" (clear it).
     case density(pkg: String, value: Double?)
     case dropFile(String)
+    /// The same file fed to the Deck's drop handler (no app-window target).
+    case deckDrop(String)
     case hover(NormalizedPoint)
     case hoverOut
     case hoverSetting(Bool)
@@ -370,6 +374,22 @@ enum DebugInputScript {
                 throw LineError(message: "dropfile: no such file: \(path)")
             }
             return .dropFile(path)
+        case "deckdrop":
+            guard args.count == 1, !args[0].isEmpty else {
+                throw LineError(message: "deckdrop needs an absolute PATH")
+            }
+            var path = args[0]
+            if path.hasPrefix("~") {
+                path = String(path.dropFirst(1))
+                path = FileManager.default.homeDirectoryForCurrentUser.path + path
+            }
+            guard path.hasPrefix("/") else {
+                throw LineError(message: "deckdrop needs an absolute PATH (got relative '\(args[0])')")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw LineError(message: "deckdrop: no such file: \(path)")
+            }
+            return .deckDrop(path)
         case "notifyclick":
             guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifyclick needs an id") }
             return .notifyClick(args[0])
@@ -567,6 +587,8 @@ final class DebugInputDriver {
     var mediaVolume: ((Int) -> Void)?
     /// `mediacmd choose KEY`: `media.choose`.
     var mediaChoose: ((String) -> Void)?
+    /// `deckdrop PATH`: the Deck's drop handler.
+    var deckDrop: (([URL]) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
@@ -719,6 +741,8 @@ final class DebugInputDriver {
             controller.manager.setDensity(value, forPackage: pkg)
         case .dropFile(let path):
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
+        case .deckDrop(let path):
+            deckDrop?([URL(fileURLWithPath: path)])
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)

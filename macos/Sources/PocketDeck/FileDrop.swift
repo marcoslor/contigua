@@ -109,7 +109,8 @@ enum DropLimits {
 
 /// What the sender needs from a session — the wire is a detail here.
 protocol DropChannel: AnyObject {
-    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int)
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String,
+                   resume: Int, target: String?, index: Int, count: Int)
     func cancelDrop(id: UInt32)
     func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
 }
@@ -206,13 +207,18 @@ final class FileDropSender {
     /// A transfer that died with the connection: the phone kept a temp, so a
     /// re-drag of a file with this sha resumes at (bytes) for this long.
     private var resumeHints: [String: (bytes: Int, until: Date)] = [:]
+    /// The app window the batch is for; nil for the Deck and a phone window.
+    private var target: String?
+    /// How many files this gesture carries, for the batch fields.
+    private var batchCount = 0
 
-    func send(_ urls: [URL], session: any DropChannel) {
+    func send(_ urls: [URL], session: any DropChannel, target: String? = nil) {
         guard !isBusy else {
             return finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
         }
         clearTask?.cancel()
         self.session = session
+        self.target = target
         cancelled = false
         setPhase(.sending("", fraction: 0))
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -234,6 +240,7 @@ final class FileDropSender {
                 return finish("\(big.name) \(why), nothing was sent.", ok: false, outcome: .overCap)
             }
             queue = drops
+            batchCount = drops.count
             next()
         }
     }
@@ -254,7 +261,8 @@ final class FileDropSender {
         setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
-                          sha256: next.sha256, resume: resume)
+                          sha256: next.sha256, resume: resume, target: nil, index: 1,
+                          count: 1)
     }
 
     private func resume(sha256: String) -> Int {
@@ -376,6 +384,8 @@ final class FileDropSender {
         if keepState { return }
         queue = []
         current = nil
+        target = nil
+        batchCount = 0
         try? reader?.close()
         reader = nil
         id = 0

@@ -27,12 +27,25 @@ class DropReceiverTest {
     /** The writer appends from its own thread, so every read takes a stable copy. */
     private fun snapshot(): List<Map<String, Any?>> = synchronized(frames) { frames.toList() }
 
-    private val landing = DropReceiver.Landing { _, _ -> }
+    private data class Landed(
+        val file: File,
+        val mime: String,
+        val target: String?,
+        val index: Int,
+        val count: Int,
+    )
+
+    private val landed = Collections.synchronizedList(mutableListOf<Landed>())
+
+    private val landing = DropReceiver.Landing { file, mime, target, index, count ->
+        landed += Landed(file, mime, target, index, count)
+    }
 
     @Before
     fun pointDirAtTmp() {
         DropPolicy.DIRECTORY = tmp.root.absolutePath
         frames.clear()
+        landed.clear()
     }
 
     @After
@@ -53,10 +66,13 @@ class DropReceiverTest {
         "size" to size, "sha256" to sha(generated(size.toInt())), "resume" to resume,
     )
 
-    private fun startWith(name: String, bytes: ByteArray, resume: Long = 0) = mapOf(
-        "t" to "drop.start", "id" to 7L, "name" to name, "mime" to "text/plain",
-        "size" to bytes.size.toLong(), "sha256" to sha(bytes), "resume" to resume,
-    )
+    private fun startWith(name: String, bytes: ByteArray, resume: Long = 0,
+                          target: String? = null, index: Int = 1, count: Int = 1) =
+        mapOf(
+            "t" to "drop.start", "id" to 7L, "name" to name, "mime" to "text/plain",
+            "size" to bytes.size.toLong(), "sha256" to sha(bytes), "resume" to resume,
+            "index" to index, "count" to count,
+        ) + (if (target == null) emptyMap() else mapOf("target" to target))
 
     /** Polls until [count] progress frames have landed (the writer runs on its own thread). */
     private fun awaitProgress(count: Int = 1): List<Map<String, Any?>> {
@@ -202,6 +218,45 @@ class DropReceiverTest {
         val result = awaitResult()
         assertEquals(true, result["ok"])
         assertTrue(other.contentEquals(tmp.root.resolve("c.pdf").readBytes()))
+    }
+
+    @Test
+    fun theTargetAndBatchFieldsReachTheLanding() {
+        val files = listOf("one.pdf", "two.pdf", "three.pdf")
+        for ((position, name) in files.withIndex()) {
+            val bytes = generated(6)
+            val receiver = DropReceiver(landing, { frames += it })
+            receiver.begin(startWith(name, bytes, target = "com.example.app",
+                                     index = position + 1, count = files.size))
+            receiver.data(7, bytes)
+            assertEquals(true, awaitResult()["ok"])
+            frames.clear()
+        }
+        assertEquals(listOf(1, 2, 3), landed.map { it.index })
+        assertTrue(landed.all { it.count == 3 && it.target == "com.example.app" })
+        assertEquals(files, landed.map { it.file.name })
+    }
+
+    /** The batch is shared once, after the third file lands and not before. */
+    @Test
+    fun onlyTheLastFileOfABatchTriggersTheShare() {
+        val shared = mutableListOf<List<File>>()
+        val batch = ShareBatch { files, _ -> shared += files.map { it.first } }
+        val batchLanding = DropReceiver.Landing { file, mime, target, index, count ->
+            batch.landed(file, mime, target, index, count)
+        }
+        for (position in 1..3) {
+            val bytes = generated(4)
+            val receiver = DropReceiver(batchLanding, { frames += it })
+            receiver.begin(startWith("file-$position.pdf", bytes, target = "com.example.app",
+                                     index = position, count = 3))
+            receiver.data(7, bytes)
+            assertEquals(true, awaitResult()["ok"])
+            frames.clear()
+            assertEquals(if (position < 3) 0 else 1, shared.size)
+        }
+        assertEquals(listOf("file-1.pdf", "file-2.pdf", "file-3.pdf"),
+            shared.single().map { it.name })
     }
 
     @Test

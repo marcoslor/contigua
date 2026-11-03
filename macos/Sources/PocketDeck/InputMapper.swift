@@ -74,6 +74,11 @@ final class InputMapper {
     /// ⌘V's source. Injected so a file copy can be tested without the person's
     /// real pasteboard.
     var pasteboard: PasteboardReader = SystemPasteboardReader()
+    /// ⌘V with files or one image is the window's flow (SHARE-16/17). Returns
+    /// true when the key was taken; a window without a flow leaves it to text.
+    var onPaste: ((PasteboardPaste) -> Bool)?
+    /// ⇧⌘V: share the same content instead of pasting it (SHARE-16's fallback).
+    var onShareInstead: ((PasteboardPaste) -> Void)?
     var videoRectProvider: () -> CGRect = { .zero }
     var locationProvider: (NSEvent) -> CGPoint = { _ in .zero }
     var viewIsFlipped: () -> Bool = { false }

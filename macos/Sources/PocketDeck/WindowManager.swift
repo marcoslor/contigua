@@ -45,8 +45,10 @@ final class WindowManager {
     var frameLog: DebugFrameLog?
 
     /// Files a Finder drag dropped on a stream window (docs/design/dragdrop.md).
-    /// The owner (ConnectionController) routes them; an .apk keeps its own route.
-    var onFilesDropped: (([URL]) -> Void)?
+    /// The second argument is the app window's package (SHARE-17); the Deck, a
+    /// phone-mode window and a link window pass nil. The owner
+    /// (ConnectionController) routes them; an .apk keeps its own route.
+    var onFilesDropped: (([URL], String?) -> Void)?
 
     /// Set while the app is terminating so windows stop emitting pause/resume.
     private(set) var shuttingDown = false

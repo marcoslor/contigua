@@ -40,6 +40,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// window before the phone names its package.
     var densityPackage: String? { nil }
 
+    /// The package a drop on this window shares to (SHARE-17). Only an app
+    /// window has one; everywhere else the phone shows its chooser.
+    var dropTargetPackage: String? { nil }
+
     /// Where this window's density override lives (WindowDensityStore).
     var densityKey: String? { densityPackage.flatMap { WindowDensityStore.key(forPackage: $0) } }
 
@@ -233,7 +237,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
         mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
-        videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
+        videoView.onDroppedFiles = { [weak manager] urls in
+            manager?.onFilesDropped?(urls, nil)
+        }
         videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper

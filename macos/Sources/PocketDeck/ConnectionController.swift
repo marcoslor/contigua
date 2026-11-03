@@ -670,8 +670,8 @@ final class ConnectionController {
         windows.onStreamClosed = { [weak self] stream in
             DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
         }
-        windows.onFilesDropped = { [weak self] urls in
-            MainActor.assumeIsolated { self?.dropFiles(urls) }
+        windows.onFilesDropped = { [weak self] urls, target in
+            MainActor.assumeIsolated { self?.dropFiles(urls, target: target) }
         }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
@@ -1981,7 +1981,7 @@ final class ConnectionController {
     /// A Finder drag onto a stream window (or `dropfile` scripting): a lone .apk
     /// keeps the install route, the rest stream to Downloads/PocketDeck one by
     /// one. Phone abroad → a banner; the phone was the point of the drag.
-    func dropFiles(_ urls: [URL]) {
+    func dropFiles(_ urls: [URL], target: String?) {
         guard !isPreview else { return }
         let files = urls.filter { $0.isFileURL }
         guard !files.isEmpty else { return }
@@ -1993,7 +1993,7 @@ final class ConnectionController {
             showTransient("Connect a phone to send files to it.")
             return
         }
-        dropSender.send(files, session: session)
+        dropSender.send(files, session: session, target: target)
     }
 
     /// The stream windows' pill mouth: the phase rendered as a line. Every
@@ -3029,6 +3029,11 @@ final class ConnectionController {
                 guard let self, self.link.isOnline else { return }
                 self.nowPlaying.choose(key)
             }
+        }
+        // `deckdrop PATH`: the Deck's own drop handler, which carries no app
+        // window and so no share target (SHARE-17).
+        debugInput?.deckDrop = { [weak self] urls in
+            MainActor.assumeIsolated { self?.dropFiles(urls, target: nil) }
         }
         // The dockapps action writes the setting the way Settings'
         // @AppStorage does, then calls the same handler its onChange does.

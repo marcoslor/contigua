@@ -17,6 +17,9 @@ final class AppWindowController: StreamWindowController {
     /// So is its density override.
     override var densityPackage: String? { pkg }
 
+    /// A drop on an app window shares straight to the app it shows (SHARE-17).
+    override var dropTargetPackage: String? { pkg }
+
     /// The cover before the first frame: the app's cached icon and its label.
     override var showsOpeningCover: Bool { true }
     override var openingName: String { subject }
