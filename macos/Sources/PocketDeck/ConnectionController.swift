@@ -1455,7 +1455,8 @@ final class ConnectionController {
             }
         }
         if let (pid, pkg) = dockApps.binding(stream: stream),
-           let next = windows.openAppWindows.first(where: { $0.pkg == pkg && $0.stream != stream })?.stream {
+           let next = DockWindowFollow.survivor(closing: stream, pkg: pkg,
+                                                windows: windows.openAppWindows) {
             dockApps.rebind(pid: pid, to: next)
             return
         }

@@ -90,15 +90,22 @@ final class WindowManager {
     var onTooManyWindows: ((String) -> Void)?
 
     func linkLost() {
+        linkLost(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives the two steps without waiting.
+    func linkLost(at time: TimeInterval) {
         guard !shuttingDown else { return }
-        linkClock.linkLost(at: ProcessInfo.processInfo.systemUptime)
+        linkClock.linkLost(at: time)
         publishLinkPhase()
-        for controller in allControllers() { controller.setLinkDown(true) }
+        for controller in allControllers() { controller.setLinkDown(true, at: time) }
         // The one timer behind "Phone offline": a one-shot per phase change, so
         // no window or menu keeps a second copy of the rule.
         linkOfflineTimer?.invalidate()
-        if let next = linkClock.nextChange(at: ProcessInfo.processInfo.systemUptime) {
-            let timer = Timer(timeInterval: max(next.at - ProcessInfo.processInfo.systemUptime, 0),
+        linkOfflineTimer = nil
+        let current = ProcessInfo.processInfo.systemUptime
+        if let next = linkClock.nextChange(at: current) {
+            let timer = Timer(timeInterval: max(next.at - current, 0),
                               repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.linkPhaseTicked() }
             }
@@ -116,7 +123,13 @@ final class WindowManager {
     }
 
     private func linkPhaseTicked() {
-        linkClock.tick(at: ProcessInfo.processInfo.systemUptime)
+        linkPhaseTicked(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit tick: the New items say "Phone offline" once 15 s
+    /// have passed since the drop.
+    func linkPhaseTicked(at time: TimeInterval) {
+        linkClock.tick(at: time)
         publishLinkPhase()
     }
 

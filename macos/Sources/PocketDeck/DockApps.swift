@@ -548,6 +548,18 @@ enum DockSaveAll {
 
 // MARK: - Runtime
 
+/// One shim per app across several windows (dock-race × WIN-26): the identity
+/// serves the app, so closing one of its windows moves the shim to another one
+/// still open; only the app's last window lets it go.
+enum DockWindowFollow {
+    /// The stream the shim moves to after `stream` closed, or nil when the app
+    /// has no other window left.
+    static func survivor(closing stream: UInt32, pkg: String,
+                         windows: [(stream: UInt32, pkg: String?)]) -> UInt32? {
+        windows.first { $0.pkg == pkg && $0.stream != stream }?.stream
+    }
+}
+
 final class DockApps: NSObject {
     let folder: URL
     let profile: Profile
