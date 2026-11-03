@@ -37,7 +37,7 @@ class AndroidThumbSource : ThumbSource {
         cancel.onCancel { signal.cancel() }
         if (cancel.isCancelled()) return null
         val box = Size(longSide, longSide)
-        val bitmap = try {
+        var bitmap = try {
             if (video) {
                 ThumbnailUtils.createVideoThumbnail(file, box, signal)
             } else {
@@ -47,6 +47,16 @@ class AndroidThumbSource : ThumbSource {
             return null
         } ?: return null
         try {
+            // ThumbnailUtils sizes its decode from the source's sample steps and
+            // can hand back a bitmap longer than the box (a 1200x900 photo at
+            // 512 came back 800x600 on API 36), so the cap is enforced here.
+            ThumbScale.fit(bitmap.width, bitmap.height, longSide)?.let { (width, height) ->
+                val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+                if (scaled !== bitmap) {
+                    bitmap.recycle()
+                    bitmap = scaled
+                }
+            }
             val png = allowPng && bitmap.hasAlpha()
             val format = if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
             val stream = ByteArrayOutputStream()
