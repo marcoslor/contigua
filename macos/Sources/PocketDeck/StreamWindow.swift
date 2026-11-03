@@ -295,6 +295,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.manager.onFilesDropped?(urls, self.dropTargetPackage)
         }
+        videoView.onDroppedDrag = { [weak self] drag in
+            guard let self else { return }
+            self.manager.onDropDrag?(drag, self.dropTargetPackage)
+        }
         videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper
@@ -1300,6 +1304,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
             + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
+            + " drop_refusal=\(dropFailure ?? "none")"
             + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
             + " loading=\(openingState)"
             + " cover_phase=\(openingCoverPhase)"
@@ -1540,9 +1545,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: File-drop pill (docs/design/dragdrop.md)
 
     private var dropPill: GlassPillView?
+    private var dropFailure: String?
 
     /// Over the last frame: "Sending report.pdf… 43 %", then the outcome.
     /// nil hides the pill (a finished transfer fades when the state times out).
+    /// The source refusal's closed token for the chrome state (SHARE-18).
+    func setDropFailure(_ token: String?) {
+        dropFailure = token
+        writeChromeState()
+    }
+
     func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
         guard let state else {
             dropPill?.fade(to: 0)

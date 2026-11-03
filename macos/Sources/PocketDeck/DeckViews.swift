@@ -51,18 +51,9 @@ struct DeckRoot: View {
         }
         // A link dropped on the Deck opens on the phone (a .webloc file carries one too);
         // an app file (.apk, .apks, .xapk) installs on it; other files transfer
-        // (docs/design/dragdrop.md).
-        .dropDestination(for: URL.self) { urls, _ in
-            let apps = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) != nil }
-            let links = urls.compactMap { url in
-                url.isFileURL ? OpenLinkRequest.webloc(at: url) : LinkPolicy.validate(url.absoluteString)
-            }
-            let files = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) == nil }
-            if let app = apps.first { controller.installApk(app) }
-            for link in links { controller.openLink(OpenLinkRequest(url: link)) }
-            if !files.isEmpty { controller.dropFiles(files, target: nil) }
-            return !links.isEmpty || !apps.isEmpty || !files.isEmpty
-        }
+        // (docs/design/dragdrop.md). SHARE-18's image data, promises and links
+        // come through the same AppKit destination a stream window uses.
+        .background { DeckDropCatcher { drag in controller.dropDeck(drag) } }
         .task {
             // The menu bar panel is AppKit's and outside this scene; keep the
             // action that brings the Deck back after the window was closed.

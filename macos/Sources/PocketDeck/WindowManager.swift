@@ -50,6 +50,10 @@ final class WindowManager {
     /// (ConnectionController) routes them; an .apk keeps its own route.
     var onFilesDropped: (([URL], String?) -> Void)?
 
+    /// A drag carrying SHARE-18's sources (image data, a promise, a link) or
+    /// files; the owner resolves it before the file-drop sender runs.
+    var onDropDrag: ((DropDrag, String?) -> Void)?
+
     /// Set while the app is terminating so windows stop emitting pause/resume.
     private(set) var shuttingDown = false
 
@@ -93,6 +97,14 @@ final class WindowManager {
     }
 
     private var dropPill: (text: String, showsProgress: Bool)?
+    /// The last source refusal's closed token, written into the chrome state so
+    /// the e2e can name it without ever logging a message (SHARE-18).
+    private var dropFailure: String?
+
+    func setDropFailure(_ token: String?) {
+        dropFailure = token
+        for controller in allControllers() { controller.setDropFailure(token) }
+    }
 
     /// The phone wrote a clipboard image (SHARE-16): the window whose paste
     /// flow owns that id sends its one key, or shows the fallback pill.
@@ -330,6 +342,7 @@ final class WindowManager {
         store(controller, stream: stream)
         // A window opened while a drop runs or its outcome is up shows the pill.
         controller.setDropPill(dropPill)
+        controller.setDropFailure(dropFailure)
         controller.present()
         controller.sendOpen()
         onChange?()

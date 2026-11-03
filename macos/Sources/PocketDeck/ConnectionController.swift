@@ -191,6 +191,12 @@ final class ConnectionController {
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
     let dropSender = FileDropSender()
+    /// SHARE-18: the one drag being resolved (image data, promise or link), its
+    /// state machine and its per-gesture temp folder.
+    @ObservationIgnored private lazy var dropFlow = DropSourceFlow()
+    @ObservationIgnored private var pendingDropTarget: String?
+    @ObservationIgnored private var pendingDropDeck = false
+    @ObservationIgnored private var pendingDropRemote: URL?
     /// The phone's clipboard image assembly (docs/design/dragdrop.md).
     private let clipImageBuffer = ClipImageBuffer()
     /// Shares from the phone (docs/design/sharein.md).
@@ -548,6 +554,21 @@ final class ConnectionController {
         dropSender.onPhase = { [weak self] _ in
             MainActor.assumeIsolated { self?.syncDropPill() }
         }
+        // SHARE-18: one drag resolves at a time; its folder lives until the
+        // gesture's last result, a cancel or a session end.
+        dropFlow.onFiles = { [weak self] files, folder in
+            MainActor.assumeIsolated { self?.beginResolvedDrop(files, folder: folder) }
+        }
+        dropFlow.onRefuse = { [weak self] failure in
+            MainActor.assumeIsolated { self?.refuseDrop(failure) }
+        }
+        dropFlow.onHide = { [weak self] in
+            MainActor.assumeIsolated { self?.windows.setDropPill(nil) }
+        }
+        dropSender.onSettled = { [weak self] in
+            MainActor.assumeIsolated { self?.dropFlow.settled() }
+        }
+        DropScratch.sweep()
         // The waiting install's Cancel drops the queued file too (FILES-16).
         apkInstaller.onWaitingCancelled = { [weak self] in
             MainActor.assumeIsolated { self?.cancelPendingApk() }
@@ -672,6 +693,9 @@ final class ConnectionController {
         }
         windows.onFilesDropped = { [weak self] urls, target in
             MainActor.assumeIsolated { self?.dropFiles(urls, target: target) }
+        }
+        windows.onDropDrag = { [weak self] drag, target in
+            MainActor.assumeIsolated { self?.dropSources(drag, target: target, deck: false) }
         }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
@@ -1982,18 +2006,96 @@ final class ConnectionController {
     /// keeps the install route, the rest stream to Downloads/PocketDeck one by
     /// one. Phone abroad → a banner; the phone was the point of the drag.
     func dropFiles(_ urls: [URL], target: String?) {
-        guard !isPreview else { return }
         let files = urls.filter { $0.isFileURL }
         guard !files.isEmpty else { return }
         if files.count == 1, let app = files.first(where: { ApkBundle.kind(of: $0) != nil }) {
             installApk(app)
             return
         }
+        dropSources(DropDrag(files: files), target: target, deck: false)
+    }
+
+    /// The Deck's general drop destination (SHARE-18): its own routes for an
+    /// app bundle, a `.webloc` link and files, then the same source resolver.
+    func dropDeck(_ drag: DropDrag) {
+        guard !isPreview else { return }
+        let routes = DeckDropRouter.actions(drag)
+        if let app = routes.install { installApk(app) }
+        for link in routes.links { openLink(OpenLinkRequest(url: link.absoluteString)) }
+        if !routes.files.isEmpty {
+            beginResolvedDrop(routes.files, folder: nil, target: nil)
+        } else if routes.generated {
+            resolveDrop(drag, target: nil, deck: true)
+        } else if let url = routes.download {
+            // A link on the Deck keeps today's route even while the phone is
+            // away; only a live phone can turn its image answer into a drop.
+            if link.isOnline, session != nil {
+                resolveDrop(drag, target: nil, deck: true)
+            } else {
+                openLink(OpenLinkRequest(url: url.absoluteString))
+            }
+        }
+    }
+
+    /// SHARE-18's entry point: D1 picks the source, the resolver materialises it
+    /// into the gesture's temp folder, and the existing drop path sends it.
+    private func dropSources(_ drag: DropDrag, target: String?, deck: Bool) {
+        guard !isPreview else { return }
+        if drag.files.count == 1, let app = drag.files.first(where: { ApkBundle.kind(of: $0) != nil }) {
+            installApk(app)
+            return
+        }
+        guard DropSourceOrder.choose(drag) != .none else { return }
+        resolveDrop(drag, target: target, deck: deck)
+    }
+
+    private func resolveDrop(_ drag: DropDrag, target: String?, deck: Bool) {
+        guard link.isOnline, session != nil else {
+            showTransient("Connect a phone to send files to it.")
+            return
+        }
+        guard !dropFlow.isReady, dropFlow.phase != .resolving, !dropSender.isBusy else {
+            dropSender.busy()
+            return
+        }
+        pendingDropTarget = target
+        pendingDropDeck = deck
+        pendingDropRemote = drag.remote
+        windows.setDropFailure(nil)
+        if DropSourceOrder.choose(drag) == .files {
+            beginResolvedDrop(drag.files, folder: nil, target: target)
+        } else {
+            windows.setDropPill(("Sending…", true))
+            dropFlow.start(drag)
+        }
+    }
+
+    /// The flow's own hand-off uses the target recorded for this drag.
+    private func beginResolvedDrop(_ files: [URL], folder: URL?) {
+        beginResolvedDrop(files, folder: folder, target: pendingDropTarget)
+    }
+
+    private func beginResolvedDrop(_ files: [URL], folder: URL?, target: String?) {
+        guard !files.isEmpty else { return }
         guard link.isOnline, let session else {
+            DropScratch.remove(folder)
             showTransient("Connect a phone to send files to it.")
             return
         }
         dropSender.send(files, session: session, target: target)
+    }
+
+    private func refuseDrop(_ failure: DropResolveFailure) {
+        if pendingDropDeck {
+            if failure == .notImage, let url = pendingDropRemote {
+                openLink(OpenLinkRequest(url: url.absoluteString))
+            } else if failure != .cancelled {
+                showTransient(failure.text)
+            }
+            return
+        }
+        windows.setDropFailure(failure.token)
+        dropSender.refuse(failure.text, outcome: .phone("source_\(failure.token)"))
     }
 
     /// The stream windows' pill mouth: the phase rendered as a line. Every
@@ -2117,6 +2219,7 @@ final class ConnectionController {
         }
         if before.isOnline, !link.isOnline {
             windows.linkLost()
+            dropFlow.sessionEnded()
             dropSender.connectionLost()
             windows.pasteSessionEnded()
             clipImageBuffer.discard()
@@ -2324,6 +2427,7 @@ final class ConnectionController {
                 clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropFlow.sessionEnded()
                 dropSender.connectionLost()
                 windows.pasteSessionEnded()
                 fsClient?.connectionLost()
@@ -2348,6 +2452,7 @@ final class ConnectionController {
                 clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropFlow.sessionEnded()
                 dropSender.connectionLost()
                 windows.pasteSessionEnded()
                 fsClient?.connectionLost()
@@ -3042,6 +3147,10 @@ final class ConnectionController {
         // window and so no share target (SHARE-17).
         debugInput?.deckDrop = { [weak self] urls in
             MainActor.assumeIsolated { self?.dropFiles(urls, target: nil) }
+        }
+        // `deckdropimage`/`deckdropurl`: the Deck's SHARE-18 sources.
+        debugInput?.deckDropDrag = { [weak self] drag in
+            MainActor.assumeIsolated { self?.dropDeck(drag) }
         }
         // The dockapps action writes the setting the way Settings'
         // @AppStorage does, then calls the same handler its onChange does.

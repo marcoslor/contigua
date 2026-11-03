@@ -68,9 +68,11 @@ final class VideoLayerView: NSView {
     private var trackingArea: NSTrackingArea?
 
     /// Finder drags land here (`dropfile` scripting and the NSDraggingDestination
-    /// end on the same call; e2e drives it either way). Files only: links have
-    /// their own paths (OpenLink, the Deck's drop destination).
+    /// end on the same call; e2e drives it either way). SHARE-18's three new
+    /// sources arrive through `onDroppedDrag`; `onDroppedFiles` stays the
+    /// simple file-only seam tests and the old debug verb use.
     var onDroppedFiles: (([URL]) -> Void)?
+    var onDroppedDrag: ((DropDrag) -> Void)?
     /// A press on the picture (the phone's touch): the keyboard goes back to
     /// the phone, away from the bar (MIRROR-13).
     var onPointerDown: (() -> Void)?
@@ -103,8 +105,10 @@ final class VideoLayerView: NSView {
         // pinch and rotate pointers; resting palms and thumbs are not reported.
         allowedTouchTypes = [.indirect]
         wantsRestingTouches = false
-        // A Finder drag onto the window delivers files (docs/design/dragdrop.md).
-        registerForDraggedTypes([.fileURL])
+        // A Finder drag onto the window delivers files, image data, promises or
+        // a link (docs/design/dragdrop.md, SHARE-18).
+        registerForDraggedTypes([.fileURL] + DropDragReader.imageTypes
+                                + DropDragReader.promiseTypes + [.URL])
     }
 
     @available(*, unavailable)
@@ -163,17 +167,20 @@ final class VideoLayerView: NSView {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
-                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        guard !urls.isEmpty else { return false }
-        Log.app.info("drop: \(urls.count, privacy: .public) file(s) on the window")
-        onDroppedFiles?(urls)
+        guard let drag = DropDragReader.read(sender.draggingPasteboard) else { return false }
+        Log.app.info("drop: \(drag.kind, privacy: .public) on the window")
+        if let onDroppedDrag {
+            onDroppedDrag(drag)
+        } else if !drag.files.isEmpty {
+            onDroppedFiles?(drag.files)
+        } else {
+            return false
+        }
         return true
     }
 
     private func canReadFiles(in sender: any NSDraggingInfo) -> Bool {
-        !(sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]) ?? []).isEmpty
+        DropDragReader.canRead(sender.draggingPasteboard)
     }
 
     override func layout() {

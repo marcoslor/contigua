@@ -226,6 +226,7 @@ final class DropResolveMachineTests: XCTestCase {
         XCTAssertEqual([], machine.handle(.resolved))
         XCTAssertEqual([], machine.handle(.timedOut))
         _ = machine.handle(.start)
+        XCTAssertEqual([.handOff], machine.handle(.resolved))
         XCTAssertEqual([], machine.handle(.resolved))
         XCTAssertEqual([], machine.handle(.refused(.failed)))
         XCTAssertEqual([], machine.handle(.cancelled))
