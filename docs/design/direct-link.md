@@ -592,14 +592,22 @@ neighbour advertisement; `nd6` answers solicitations for it with its own
 advertisements. The kernel therefore never sees traffic for an address it
 owns.
 
-Sharing is the case to avoid: the kernel owns that address, has no connection
-for the peer's SYN-ACK, and answers it with a RST (and could answer lwIP's own
-segments the same way). `POCKETDECK_DIRECT_LL=shared` exists only for the
-guest experiment that shows this.
+Boot 7's `feth1.pcap` shows the sequence on the wire (times from
+`work/feth1.txt`): lwIP's unsolicited NA for `fe80::6465:74ff:fe68:a5` at
+35.378; the kernel's SYN to that address at 35.900223 **without an NS before
+it**, so macOS did install the mapping from the unsolicited NA (RFC 4861
+§7.2.5 only says a host *should* discard it without an entry); the kernel's
+NUD NS at 35.900458; lwIP's solicited NA at 35.900500; the peer's SYN-ACK at
+35.900537; the helper's ACK at 35.900834; then 1400-byte data segments. The
+separate address needed no kernel configuration and no shared state.
 
-On `nan0` the reasoning does not settle it: the network policy drops the
-kernel's own output, so the kernel's RST may never reach the peer and a shared
-address could work there. The reviewer's P4 run must check which case the
+Sharing is the case not to default to: the kernel owns that address, has no
+connection for the peer's SYN-ACK, and can answer it (and lwIP's own segments)
+with a RST. `POCKETDECK_DIRECT_LL=shared` is the guest experiment: boot 7 ran
+it and its 4 KiB echo passed (`DIRECT shared-echo ok`), so `feth` did not
+reproduce the RST. That does not settle `nan0`: the network policy there drops
+the kernel's own output, so the kernel's RST may never reach the peer and a
+shared address could work. The reviewer's P4 run must check which case the
 radio needs; the helper's default, and the one the feth harness exercises
 first, is its own address.
 
@@ -634,19 +642,32 @@ drives the helper and runs the app's own `TlsV2` over the fd.
 
 ### 7.3 The throughput benchmark
 
-Three numbers, all in the guest, all recorded in `docs/design/direct-link.md`
-when P2 runs (they replace "unknown" with a measurement):
+Three numbers, all in the guest. Boot 7 measured them (2026-11-03, `feth-path`
+under `PD_VM_SWAP_MAX_MB=4096 PD_VM_FREE_MIN=30`):
 
-| Figure | How | Why |
+| Figure | How | Measured (boot 7) |
 |---|---|---|
-| lwIP TCP, plaintext | 64 KiB writes, 30 s, `fakephone` reading | the stack's own ceiling |
-| TLS over it | the app's `TlsV2` client over the helper's fd | what the product actually gets |
-| helper CPU | `ps -o %cpu` sampled each second | one core is all the daemon has |
+| lwIP TCP, plaintext | 64 KiB writes, 30 s, `fakephone` reading | **320.17 Mbit/s**, 1,200,685,056 bytes |
+| TLS over it | the app's `TlsV2` client over the helper's fd | **344.22 Mbit/s**, 1,290,862,592 bytes |
+| helper CPU | `ps -o %cpu` sampled each second | mean **0.0%**, max **0.6%** of one core |
+
+Both runs are 30.00 s and the server's byte count matched the app's exactly
+(`PASS plaintext/TLS: every byte accounted for`), so neither number hides a
+retransmission or a dropped tail. The two runs are separate links, so the
+320/344 difference is run-to-run variation, not an effect of TLS.
 
 Pass/fail against the product's need: **≥ 8 Mbit/s with TLS** (one 1080p60
-mirror, ARCHITECTURE's number) with a loss-free 30 s run. A radio figure is
-still unmeasured until P4; the VM number is the stack's, not the link's, and the
-doc says so.
+mirror, ARCHITECTURE's number). The measured TLS run is **43× the bar**
+(344.22 / 8), so the stack is not the limit in this VM; the number is the
+stack's, not the radio's.
+
+Caveat: boot 7's *correctness* steps (1 MiB echo, MSS boundary, close) failed
+even though the benchmark passed. The app read back the echoed 1 MiB with a
+block out of place, while `feth1.pcap` showed the on-wire stream in order: the
+fault was in the bridge, where `receivedFromStack` wrote a newer segment while
+older bytes were still queued for the app. That is fixed in `c5bd4eb3` and
+covered by `testLinkKeepsQueuedBytesAheadOfNewData` (direct 40/0). There is no
+boot 8, so the fix is host-tested but not re-run in the guest.
 
 ### 7.4 The NAN proof — the reviewer's, on real hardware
 
