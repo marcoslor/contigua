@@ -28,8 +28,16 @@ internal class ShellClipboard(
 
     private val service: Any? by lazy { Hidden.proxy(IFACE, "clipboard") }
 
-    @Volatile private var onChange: ((ClipText) -> Unit)? = null
-    private var listener: Any? = null
+    /** The one live registration; only its handle may stop it (ISS-13). */
+    @Volatile private var live: ClipRegistration? = null
+
+    /**
+     * Guards every read-then-write of [live]. Without it, an old session's
+     * `stop` could pass its "still live" check, lose the CPU to the new
+     * session's `listen`, and then clear the new registration (the ISS-13 race
+     * in a smaller window). The binder calls stay outside the lock.
+     */
+    private val liveLock = Any()
 
     override fun getText(): ClipText? {
         val svc = service ?: return null
@@ -83,16 +91,19 @@ internal class ShellClipboard(
         return ClipImage(bytes, mime.lowercase())
     }
 
-    override fun listen(onChange: (ClipText) -> Unit) {
-        stop()
+    override fun listen(onChange: (ClipText) -> Unit): ClipRegistration {
+        val reg = ClipRegistration(onChange)
+        // The new registration is live before the old one is removed: a
+        // dispatch in flight from the old listener must not reach it.
+        val previous = synchronized(liveLock) { live.also { live = reg } }
+        if (previous != null) remove(previous)
         val svc = service ?: run {
             log("clipboard: no clipboard service; sync off")
-            return
+            return reg
         }
         val calls = ClipboardApi.calls(log)
-        val add = calls.add ?: return
-        val iface = calls.listenerIface ?: return
-        this.onChange = onChange
+        val add = calls.add ?: return reg
+        val iface = calls.listenerIface ?: return reg
         // Same shape as the keyguard listener in AndroidDeviceState: system_server
         // marshals the listener through asBinder() and calls transaction 1 (the
         // one-way dispatchPrimaryClipChanged) on the Binder we hand back.
@@ -100,27 +111,49 @@ internal class ShellClipboard(
             override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
                 if (code != IBinder.FIRST_CALL_TRANSACTION) return super.onTransact(code, data, reply, flags)
                 data.enforceInterface(iface.name)
-                val cb = this@ShellClipboard.onChange ?: return true
-                getText()?.let(cb)
+                // A late dispatch from a replaced registration is not this
+                // session's clip (ISS-13).
+                if (live !== reg) return true
+                getText()?.let(reg.onChange)
                 return true
             }
         }
         val proxy = Proxy.newProxyInstance(iface.classLoader, arrayOf(iface)) { _, method, _ ->
             if (method.name == "asBinder") carrier else null
         }
+        reg.listener = proxy
         val added = runCatching { add.invoke(svc, *argsFor(add, iface, proxy)) }
         added.exceptionOrNull()?.let {
             log("clipboard: addPrimaryClipChangedListener failed: ${failureClasses(it)}")
-            this.onChange = null
-            return
+            reg.listener = null
+            return reg
         }
-        listener = proxy
+        return reg
     }
 
-    override fun stop() {
-        onChange = null
-        val proxy = listener ?: return
-        listener = null
+    override fun stop(registration: ClipRegistration?) {
+        val reg = registration ?: return
+        val owned = synchronized(liveLock) {
+            if (live === reg) {
+                live = null
+                true
+            } else {
+                false
+            }
+        }
+        if (!owned) {
+            // A replaced or already stopped handle: the live session keeps its
+            // listener (ISS-13). Never prints a clip.
+            log("clipboard: stale stop ignored")
+            return
+        }
+        remove(reg)
+    }
+
+    /** Removes the platform listener a registration installed, if any. */
+    private fun remove(reg: ClipRegistration) {
+        val proxy = reg.listener ?: return
+        reg.listener = null
         val svc = service ?: return
         val calls = ClipboardApi.calls(log)
         val remove = calls.remove ?: return
