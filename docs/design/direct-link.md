@@ -579,7 +579,31 @@ Yes — from the sources, not from a boot:
   and one max-size frame each way. If either fails, the plan falls back to a
   `bridge` + `vlan` pair, and the doc records which one ran.
 
+### 7.1.1 The address lwIP uses
+
+lwIP does not share the interface's kernel link-local. It derives its own from
+the MAC (EUI-64 with the last byte moved) and announces it with an unsolicited
+neighbour advertisement; `nd6` answers solicitations for it with its own
+advertisements. The kernel therefore never sees traffic for an address it
+owns.
+
+Sharing is the case to avoid: the kernel owns that address, has no connection
+for the peer's SYN-ACK, and answers it with a RST (and could answer lwIP's own
+segments the same way). `POCKETDECK_DIRECT_LL=shared` exists only for the
+guest experiment that shows this.
+
+On `nan0` the reasoning does not settle it: the network policy drops the
+kernel's own output, so the kernel's RST may never reach the peer and a shared
+address could work there. The reviewer's P4 run must check which case the
+radio needs; the helper's default, and the one the feth harness exercises
+first, is its own address.
+
 ### 7.2 The harness
+
+The check is `feth-path` in `macos/scripts/e2e-checks.sh`; `vm-e2e.sh` builds
+the bundle with the define and pushes `pocketdeck-directd` beside it for that
+check only. The app side is `--direct-e2e`, a direct-build launch hook that
+drives the helper and runs the app's own `TlsV2` over the fd.
 
 1. `bash macos/scripts/vm-e2e.sh feth-path` (one boot, inside the heavy lock):
    the guest creates the `feth` pair, gives `feth0` a link-local
