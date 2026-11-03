@@ -342,10 +342,12 @@ class SessionDropperTest {
             stopEntered.countDown()
             release.await(5, TimeUnit.SECONDS)
         }
-        val old = FakeLiveSession(onClosed = { platform.stop() })
+        lateinit var oldReg: ClipRegistration
+        lateinit var nextReg: ClipRegistration
+        val old = FakeLiveSession(onClosed = { platform.stop(oldReg) })
         val dropper = SessionDropper(log = {}, closer = behind())
         dropper.adopt(macA, pinned = true) { old }
-        platform.listen { } // the old session's sync
+        oldReg = platform.listen { } // the old session's sync
         assertTrue("a live session was not dropped", dropper.drop())
         assertTrue("the dropped session never reached its clipboard stop",
             stopEntered.await(1, TimeUnit.SECONDS))
@@ -353,13 +355,15 @@ class SessionDropperTest {
         val next = FakeLiveSession()
         assertSame(next, dropper.adopt(macA, pinned = true) { next })
         val heard = java.util.concurrent.atomic.AtomicInteger(0)
-        platform.listen { heard.incrementAndGet() } // the new session's sync
+        nextReg = platform.listen { heard.incrementAndGet() } // the new session's sync
 
         release.countDown()
         awaitTrue("the dropped session's stop never finished") { platform.clipStopsDone.get() == 1 }
+        assertEquals("the dropped session's stop was not stale", 1, platform.staleClipStops.get())
         platform.changeClip("after the hand-over")
 
         assertEquals("the new session lost its listener to the dropped one", 1, heard.get())
+        platform.stop(nextReg)
     }
 
     @Test

@@ -115,11 +115,10 @@ class SessionTest {
 
     /**
      * PAIR-21: the phone serves one session at a time, and the next one is only
-     * created after the previous teardown has finished. The helper mirrors that;
-     * without it a reconnect started while the old session's shutdown was still
-     * running, and that shutdown's `stopClipboardSync()` cleared the platform's
-     * one clipboard listener after the new session had registered its own (a
-     * full K1 run lost `taskContinueRelaunchesFreshWhenTheMoveIsRefused` to it).
+     * created after the previous teardown has finished. The helper mirrors that
+     * order for the JVM harness. The clipboard's own listener is owner-scoped
+     * (ISS-13), so a teardown that outlives the slot cannot silence the next
+     * session either.
      */
     private fun awaitPreviousSessionEnded() {
         val previous = acceptThread ?: return
@@ -608,22 +607,22 @@ class SessionTest {
 
     /**
      * PAIR-21: the phone serves one session at a time, and the next one is only
-     * created after the previous teardown has finished. A full K1 run lost
+     * created after the previous teardown has finished. A full K1 run once lost
      * `taskContinueRelaunchesFreshWhenTheMoveIsRefused` because this helper did
-     * not: the reconnect started while the old session's shutdown was still
-     * running, and that shutdown's `stopClipboardSync()` cleared the platform's
-     * one clipboard listener after the new session had registered its own.
+     * not; the clipboard's owner-scoped listener (ISS-13) now covers the case
+     * the helper cannot order.
      */
     @Test
     fun aReconnectStartsOnlyAfterThePreviousTeardownEnded() {
+        // A listening session: its shutdown reaches the clipboard stop.
+        addAndAuthenticate()
         val teardownStarted = CountDownLatch(1)
         val teardownMayEnd = CountDownLatch(1)
-        // The old session's shutdown parks in its clipboard stop.
         platform.onClipStop = {
             teardownStarted.countDown()
             teardownMayEnd.await()
         }
-        closeCurrent()
+        session!!.close()
         assertTrue("the old session never started its teardown",
             teardownStarted.await(5, TimeUnit.SECONDS))
 
@@ -1190,6 +1189,7 @@ class SessionTest {
         val oldStop = handOverWhileTheOldClipboardStopRuns()
         oldStop.release.countDown()
         await { platform.clipStopsDone.get() == 1 }
+        assertEquals("the old session's stop was not stale", 1, platform.staleClipStops.get())
 
         platform.changeClip("after the hand-over")
 
@@ -1204,10 +1204,11 @@ class SessionTest {
         await { platform.clipStopsDone.get() == 1 }
         assertTrue("the old stop silenced the new session's listener", platform.clipListening)
 
-        closeCurrent()
+        session!!.close()
         await { platform.clipStopsDone.get() == 2 }
 
         assertFalse("the new session's own stop did not end delivery", platform.clipListening)
+        assertEquals("the new session's own stop was stale", 1, platform.staleClipStops.get())
     }
 
     /** A stands listening; its teardown parks in `stop`; B connects and listens. */

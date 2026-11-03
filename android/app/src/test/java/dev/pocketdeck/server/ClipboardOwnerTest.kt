@@ -1,5 +1,6 @@
 package dev.pocketdeck.server
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
 
@@ -13,12 +14,13 @@ class ClipboardOwnerTest {
     @Test
     fun `stopping with no listener and stopping twice are safe`() {
         val port = FakePlatform()
-        port.stop() // no listener at all
+        port.stop(null) // no listener at all
 
-        port.listen { }
-        port.stop()
-        port.stop() // the second stop has nothing left to stop
+        val reg = port.listen { }
+        port.stop(reg)
+        port.stop(reg) // the second stop is stale
 
         assertFalse("the listener survived its stop", port.clipListening)
+        assertEquals("the second stop was not the stale one", 1, port.staleClipStops.get())
     }
 }
