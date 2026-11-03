@@ -12,6 +12,7 @@
 - Toolchain: `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=$HOME/Library/Android/sdk` (platform 36, build-tools 36.0.0). Swift 6.4 / macOS 27 SDK, deployment target macOS 26 (Liquid Glass).
 - Don't change Android `versionCode` on a feature branch; it is bumped when a build is installed on a device.
 - Don't tick ROADMAP boxes; the reviewer does, once a feature is verified.
+- Open bugs, tasks and queued features live in `ISSUES.md` until there's an issue tracker. Add what you find outside your task there (its rules are at the top) instead of fixing it unasked.
 
 ## Product promises (never trade these away)
 
@@ -21,7 +22,7 @@
 - **Privacy in logs, tests and commits:** never log or save notification text, media titles/artists/albums/artwork, file names, paths or file contents, pasteboard contents, key material, nonces, exporters or secrets. Log ids, counts, sizes, states, durations, error codes and hash prefixes only.
 - **LAN and end to end:** the session is mutual TLS with pinned keys (docs/design/e2ee.md); nothing goes through a third party unencrypted.
 - **No backward compatibility during the alpha:** nothing is released and the phone and Mac apps ship together, so a protocol change may rename, remove or require fields freely — no "older peer" modes, fallbacks or tests. Every change is still documented in docs/PROTOCOL.md (and the protocol version bumped when a change breaks the other side). This rule ends when there are real users and the project leaves alpha.
-- **A feature blocked on something we don't have** (a paid Apple Developer ID, an account, special hardware) does not land on `main`. It lives on its own branch (`feature/<name>`), rebased now and then, and becomes a GitHub issue plus a PR when the repo is published. Today: camera sharing (`feature/camera`, needs a Developer ID for the camera extension).
+- **A feature blocked on something we don't have** (a paid Apple Developer ID, an account, special hardware) does not land on `main`. It lives on its own branch (`feature/<name>`), rebased now and then, and becomes a GitHub issue plus a PR when the repo is published. Today: camera sharing (`feature/camera`, needs a Developer ID for the camera extension) and Wi-Fi Direct (`feature/direct-link`, needs SIP off and boot settings; it may never merge, and `main` keeps only the paths groundwork, `docs/design/paths.md`).
 
 ## Swift and macOS
 
