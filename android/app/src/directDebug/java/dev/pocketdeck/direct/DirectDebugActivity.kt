@@ -72,7 +72,7 @@ class DirectDebugActivity : Activity() {
 
     /** States only: the log is the reviewer's proof trail (R-PRIV-1). */
     private fun printState() {
-        Log.i(TAG, "direct state: ${DirectRuntime.stateToken()}")
+        Log.i(TAG, "direct state: ${DirectRuntime.stateToken()}") // log-ok: closed machine state token
     }
 
     private companion object {
