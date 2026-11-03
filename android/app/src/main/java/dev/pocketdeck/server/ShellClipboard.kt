@@ -6,7 +6,6 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.os.Binder
-import android.os.Environment
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
@@ -191,22 +190,24 @@ internal fun imageClip(uri: Uri, mime: String): ClipData =
  * The FileProvider URI for an image in the drop folder, exactly as
  * `<external-path name="downloads" path="Download/PocketDeck"/>` maps it.
  *
- * Built by hand because this runs in the shell service process (uid 2000) with
- * the app's Context: `FileProvider.getUriForFile` asks PackageManager for the
- * app's resources, and the package/uid pair is refused (emulator boot 3).
+ * Built by hand, and from [DropPolicy.DIRECTORY] alone, because this runs in
+ * the shell service process (uid 2000) with the app's Context:
+ * `FileProvider.getUriForFile` asks PackageManager for the app's resources and
+ * `Environment.getExternalStorageDirectory()` asks StorageManager, and both
+ * refuse the package/uid pair (emulator boots 3/4; files.md §4). The path
+ * comparison stays lexical, too: `/sdcard` and `/storage/emulated/0` are the
+ * same folder, but their canonical forms need not spell it the same way.
  * [ShellClipboardImageTest] pins the mapping.
  */
 internal fun imageUri(file: File): Uri? {
-    val root = runCatching {
-        File(Environment.getExternalStorageDirectory(), "Download/PocketDeck").canonicalFile
-    }.getOrNull() ?: return null
-    val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return null
-    if (canonical.parentFile != root) return null
+    val drop = File(DropPolicy.DIRECTORY).absoluteFile.normalize()
+    val image = file.absoluteFile.normalize()
+    if (image.parentFile != drop) return null
     return Uri.Builder()
         .scheme(ContentResolver.SCHEME_CONTENT)
         .authority(FILE_PROVIDER_AUTHORITY)
         .appendPath("downloads")
-        .appendPath(canonical.name)
+        .appendPath(image.name)
         .build()
 }
 
