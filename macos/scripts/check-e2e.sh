@@ -6697,6 +6697,133 @@ PY
     stop_app
 }
 
+# check_drop_sources — SHARE-18 (docs/design/dragdrop.md): a drag carrying image
+# data and one carrying an http(s) link become files for the existing drop path;
+# a text/html answer refuses with the spec's copy and the drop pill. The refusal
+# is captured light and dark for review. A file promise needs a real
+# NSFilePromiseReceiver, which the scripted input cannot make: K2 covers both
+# delivery and the 30 s silence.
+check_drop_sources() {
+    clean
+    local shots="$ROOT/.agent/paste-drop"
+    mkdir -p "$shots"
+    python3 - "$WORK" <<'PY'
+import os, struct, sys, zlib
+work = sys.argv[1]
+serve = os.path.join(work, "http")
+os.makedirs(serve, exist_ok=True)
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\x00" + bytes((x * 7 + y * 13) % 256 for x in range(32 * 3)) for y in range(32))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(os.path.join(serve, "source.png"), "wb").write(png)
+open(os.path.join(serve, "page.html"), "w").write("<html><body>not an image</body></html>")
+PY
+    local http_port
+    http_port="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+    ( cd "$WORK/http" && python3 -m http.server "$http_port" --bind 127.0.0.1 \
+        > "$WORK/http.log" 2>&1 ) &
+    local http_pid=$!
+    trap 'kill $http_pid 2>/dev/null; wait $http_pid 2>/dev/null; trap - RETURN' RETURN
+    python3 - "$http_port" <<'PY'
+import socket, sys, time
+port = int(sys.argv[1])
+for _ in range(100):
+    s = socket.socket(); s.settimeout(0.1)
+    try:
+        s.connect(("127.0.0.1", port)); s.close(); sys.exit(0)
+    except OSError:
+        time.sleep(0.05)
+    finally:
+        s.close()
+sys.exit(1)
+PY
+    [ $? = 0 ] || { bad "DROP-SOURCES: the local server did not start"; return 1; }
+
+    drop_named() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+name = sys.argv[2]
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop" and e.get("ok") and e.get("files") \
+            and e["files"][0].get("name") == name:
+        print(json.dumps(e)); sys.exit(0)
+sys.exit(1)
+PY
+    }
+    drop_has() { drop_named "$1" >/dev/null; }
+    no_drop_named() { ! drop_named "$1" >/dev/null; }
+    png_size() { wc -c < "$WORK/http/source.png" | tr -d ' '; }
+
+    # phase APPEARANCE TAG
+    drop_sources_phase() {
+        local appearance="$1" tag="$2"
+        rm -f "$WORK/events.jsonl" "$WORK/chrome.txt"
+        FAKE_ARGS="" start_fake || return 1
+        printf '%s\n' \
+            "dropimage $WORK/http/source.png" "wait 8" \
+            "dropurl http://127.0.0.1:$http_port/source.png" "wait 5" \
+            "dropurl http://127.0.0.1:$http_port/page.html" "wait 2" \
+            > "$WORK/drop-sources.txt"
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+            --debug-input-script "$WORK/drop-sources.txt"
+        if ! wait_until 30 chrome_has "frame="; then
+            bad "DROP-SOURCES $tag: no app window"; stop_app; stop_fakephone; return 1
+        fi
+        local size
+        size="$(png_size)"
+        if wait_until 40 drop_has "Image.png"; then
+            drop_named "Image.png" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"][0]; sys.exit(0 if f.get("mime")=="image/png" and f.get("size")==int(sys.argv[1]) else 1)' "$size" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: image data became Image.png (${size} bytes, image/png)" \
+                || bad "DROP-SOURCES $tag: Image.png has the wrong size or MIME"
+        else
+            bad "DROP-SOURCES $tag: the phone never received Image.png"
+        fi
+        if wait_until 40 drop_has "source.png"; then
+            drop_named "source.png" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"][0]; sys.exit(0 if f.get("mime")=="image/png" and f.get("size")==int(sys.argv[1]) else 1)' "$size" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: the link's image became source.png (${size} bytes, image/png)" \
+                || bad "DROP-SOURCES $tag: source.png has the wrong size or MIME"
+        else
+            bad "DROP-SOURCES $tag: the phone never received the image link"
+        fi
+        if wait_until 30 chrome_has "drop_refusal=not_image"; then
+            chrome_has "drop_pill=shown" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: a text/html answer showed the refusal pill" \
+                || bad "DROP-SOURCES $tag: the refusal token has no pill"
+            screenshot 900 "$shots/drop-refusal-$tag.png" \
+                && ok "[SHARE-18] DROP-SOURCES $tag: refusal screenshot" \
+                || bad "DROP-SOURCES $tag: no refusal screenshot"
+        else
+            bad "DROP-SOURCES $tag: no not_image refusal (state: $(chrome_state))"
+        fi
+        no_drop_named "page.html" \
+            && ok "[SHARE-18] DROP-SOURCES $tag: the text/html answer sent no file" \
+            || bad "DROP-SOURCES $tag: the text/html answer was sent as a file"
+        stop_app
+        stop_fakephone
+        wait_until 5 no_fakephone
+    }
+
+    for spec in ${PD_E2E_DROP_SOURCE_PHASES:-light dark}; do
+        drop_sources_phase "$spec" "$spec"
+    done
+
+    say "screenshots: $shots/drop-refusal-{light,dark}.png"
+}
+
 # check_paste — ⌘V with an image (SHARE-16, docs/design/dragdrop.md). The image
 # goes to the phone as clip.image.*; the fake's `clip.image.done` is the gate for
 # exactly one KEY 279 (no meta). Without an answer the timeout sends no key and
