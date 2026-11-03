@@ -599,9 +599,14 @@ final class TlsConnectorV2: @unchecked Sendable {
             handshake.fail(TlsV2Error.handshakeTimeout)
         }
         do {
+            // NIO's client bootstrap normally sets TCP_NODELAY, which an
+            // AF_UNIX socketpair rejects (ENOPROTOOPT); enableMPTCP(true) is
+            // its public way to clear that default, and it has no effect on an
+            // already-connected descriptor. The helper's fd is a socketpair.
             let channel = try ClientBootstrap(group: group)
                 .channelOption(ChannelOptions.writeBufferWaterMark,
                                value: WriteBufferWaterMark(low: 256 << 10, high: 1 << 20))
+                .enableMPTCP(true)
                 .withConnectedSocket(socket)
                 .flatMap { ch -> EventLoopFuture<Channel> in
                     do {
