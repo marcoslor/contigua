@@ -519,7 +519,7 @@ interface ClipboardImagePort {
      * Puts the already-written image [file] on the clipboard; the platform decides
      * how another app can reach it (a FileProvider URI is the intent).
      */
-    fun writeImage(file: File, mime: String, label: String)
+    fun writeImage(file: File, mime: String, label: String): Boolean
 }
 
 /** Events pushed to the app process (pairing prompt, session state). */

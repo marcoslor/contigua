@@ -100,13 +100,15 @@ internal class ClipImageSender(
 internal class ClipImageReceiver(
     private val sink: Sink,
     private val log: (String) -> Unit = {},
+    /** The phone's answer to the Mac (SHARE-16): the image is on the clipboard, or not. */
+    private val done: (id: Int, ok: Boolean) -> Unit = { _, _ -> },
 ) {
-    /** Consumes a finished image (the real one writes the file and sets the clip). */
+    /** Consumes a finished image; true when it really reached the clipboard. */
     fun interface Sink {
-        fun offer(image: ClipImage)
+        fun offer(image: ClipImage): Boolean
     }
 
-    private class Transfer(var mimeType: String, val bytes: ByteArray, var size: Int = 0)
+    private class Transfer(val id: Int, var mimeType: String, val bytes: ByteArray, var size: Int = 0)
 
     private var transfer: Transfer? = null
 
@@ -116,11 +118,12 @@ internal class ClipImageReceiver(
             transfer = null
             return
         }
-        transfer = Transfer(mime!!, ByteArray(size.toInt()))
+        transfer = Transfer(id, mime!!, ByteArray(size.toInt()))
     }
 
     fun data(id: Int, payload: ByteArray) {
         val current = transfer ?: return
+        if (current.id != id) return
         if (current.size + payload.size > current.bytes.size) {
             log("clip image: more bytes than announced")
             transfer = null
@@ -130,20 +133,26 @@ internal class ClipImageReceiver(
         current.size += payload.size
     }
 
-    /** Validates and delivers; a mismatch is logged and dropped. */
+    /** Validates, delivers and answers the Mac; junk is refused, never answered with ok. */
     fun end(id: Int, size: Long, sha256: String?) {
-        val current = transfer ?: return
+        val current = transfer
+        if (current == null || current.id != id) {
+            done(id, false)
+            return
+        }
         transfer = null
         val hash = MessageDigest.getInstance("SHA-256").digest(current.bytes).joinToString("") { "%02x".format(it) }
         if (current.size.toLong() != size || hash != sha256?.lowercase()) {
             log("clip image: checksum failed (${current.size}/$size)")
+            done(id, false)
             return
         }
-        sink.offer(ClipImage(current.bytes, current.mimeType))
+        val ok = sink.offer(ClipImage(current.bytes, current.mimeType))
+        done(id, ok)
     }
 
     fun abort(id: Int) {
-        transfer = null
+        if (transfer?.id == id) transfer = null
     }
 }
 
@@ -159,18 +168,20 @@ class ClipImageLand(
 ) : ClipImageReceiver.Sink {
     private val lock = Any()
 
-    override fun offer(image: ClipImage) {
-        val port = port ?: run { log("clip image: no clipboard port"); return }
-        if (!ClipImagePolicy.valid(image.mime)) return
+    override fun offer(image: ClipImage): Boolean {
+        val port = port ?: run { log("clip image: no clipboard port"); return false }
+        if (!ClipImagePolicy.valid(image.mime)) return false
         val ext = if (image.mime.equals("image/jpeg", true)) "jpg" else "png"
-        val file = nextFile(ext) ?: run { log("clip image: no name"); return }
-        try {
+        val file = nextFile(ext) ?: run { log("clip image: no name"); return false }
+        return try {
             File(DIRECTORY).mkdirs()
             file.outputStream().use { it.write(image.bytes) }
-            port.writeImage(file, image.mime, file.nameWithoutExtension)
-            log("clip image: ${file.name} on the clipboard (${image.bytes.size} bytes)")
+            val ok = port.writeImage(file, image.mime, file.nameWithoutExtension)
+            if (ok) log("clip image: on the clipboard (${image.bytes.size} bytes)")
+            ok
         } catch (e: Exception) {
             log("clip image failed: ${e.message}")
+            false
         }
     }
 

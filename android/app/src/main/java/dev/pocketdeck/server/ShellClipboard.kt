@@ -86,19 +86,21 @@ internal class ShellClipboard(
      * URI of the app, which survives the paste into any app that ClipboardService
      * grants the URI to (the provider is public and keyed by the grant flag).
      */
-    override fun writeImage(file: File, mime: String, label: String) {
-        val context = ctx ?: run { log("clipboard: no context for an image clip"); return }
+    override fun writeImage(file: File, mime: String, label: String): Boolean {
+        val context = ctx ?: run { log("clipboard: no context for an image clip"); return false }
         val uri = runCatching { FileProvider.getUriForFile(context, AUTHORITY, file) }
             .onFailure { log("clipboard: fileprovider uri failed: ${it.message}") }
-            .getOrNull() ?: return
-        val clip = runCatching { ClipData.newUri(context.contentResolver, CLIP_LABEL, uri) }
-            .onFailure { log("clipboard: newUri failed: ${it.message}") }
-            .getOrNull() ?: return
-        val svc = service ?: return
-        val set = ClipboardApi.calls(log).set ?: return
-        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
+            .getOrNull() ?: return false
+        val clip = runCatching { imageClip(uri, mime) }
+            .onFailure { log("clipboard: image clip failed: ${it.message}") }
+            .getOrNull() ?: return false
+        val svc = service ?: return false
+        val set = ClipboardApi.calls(log).set ?: return false
+        val ok = runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
             .onFailure { log("clipboard: setPrimaryClip(image) failed: $it") }
-        log("clipboard: image clip ${file.name} ($mime)")
+            .isSuccess
+        if (ok) log("clipboard: image clip ($mime)")
+        return ok
     }
 
     override fun listen(onChange: (ClipText) -> Unit) {
@@ -153,6 +155,18 @@ internal class ShellClipboard(
         return SENSITIVE_KEYS.any { key -> runCatching { extras.getBoolean(key, false) }.getOrDefault(false) }
     }
 }
+
+/**
+ * A2: an image clip's item carries empty text. Android coerces an item with no
+ * text to its URI's string, so a plain text field would paste `content://…`;
+ * the empty text makes that field paste nothing, while an image receiver still
+ * gets the URI.
+ */
+internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item("", null, uri)
+
+/** The whole image clip: the image's own MIME type over the empty-text item. */
+internal fun imageClip(uri: Uri, mime: String): ClipData =
+    ClipData(ClipDescription(CLIP_LABEL, arrayOf(mime)), imageClipItem(uri))
 
 private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"

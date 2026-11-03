@@ -44,6 +44,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// window has one; everywhere else the phone shows its chooser.
     var dropTargetPackage: String? { nil }
 
+    /// This window's ⌘V image flow (SHARE-16); one per window.
+    private(set) var pasteFlow: PasteFlow?
+
     /// Where this window's density override lives (WindowDensityStore).
     var densityKey: String? { densityPackage.flatMap { WindowDensityStore.key(forPackage: $0) } }
 
@@ -236,17 +239,56 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.barKeyUp = { [weak self] event in self?.handleBarKey(event) ?? false }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
+        // ⌘V's image flow: the phone writes the clip, one paste key, a pill.
+        let paste = PasteFlow()
+        paste.sendImage = { [weak self, weak paste] id, data, mime in
+            guard let self else { return }
+            if ClipImageSend.run(data, mime: mime, session: self.session, id: id, paste: true) {
+                paste?.sent(id)
+            } else {
+                paste?.handle(.sendFailed(id))
+            }
+        }
+        paste.sendKey = { [weak self] event in
+            guard let self else { return }
+            self.session.key(event, stream: self.stream)
+        }
+        paste.cancelImage = { [weak self] id in self?.session.clipImageAbort(id: id) }
+        paste.share = { [weak self] data, mime in self?.sharePastedImage(data, mime: mime) }
+        paste.pill = { [weak self] state in self?.setPastePill(state) }
+        self.pasteFlow = paste
+
         // ⌘V with files is the drop path with this window's app as the target
-        // (SHARE-17); the image half is SHARE-16 and lands here next.
+        // (SHARE-17); an image takes the paste flow above.
         mapper.onPaste = { [weak self] paste in
             guard let self else { return false }
             switch paste {
             case .files(let urls):
                 self.manager.onFilesDropped?(urls, self.dropTargetPackage)
                 return true
-            case .image:
-                return false
+            case .image(let data, let mime):
+                guard !data.isEmpty, ClipImagePolicy.valid(mime: mime),
+                      data.count <= ClipImagePolicy.maxBytes else { return false }
+                self.startPaste(data: data, mime: mime)
+                return true
             }
+        }
+        // ⇧⌘V shares the same content through the drop path (SHARE-16/17).
+        mapper.onShareInstead = { [weak self] paste in
+            guard let self else { return }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+            case .image(let data, let mime):
+                self.sharePastedImage(data, mime: mime)
+            }
+        }
+        // Esc leaves the paste pill before it can become the phone's Back.
+        mapper.overlayKey = { [weak self] event in
+            guard let self, event.keyCode == InputMapper.keyCodeEscape,
+                  self.pasteFlow?.isPillVisible == true else { return false }
+            self.pasteFlow?.dismiss()
+            return true
         }
         mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
         videoView.onDroppedFiles = { [weak self] urls in
@@ -1258,6 +1300,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
             + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
+            + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
             + " loading=\(openingState)"
             + " cover_phase=\(openingCoverPhase)"
             + " cover_buttons=\(openingButtons)"
@@ -1525,6 +1568,91 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                                 y: videoView.bounds.height - size.height - 24,
                                 width: size.width, height: size.height)
         dropPill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+    }
+
+    // MARK: The ⌘V image pill (SHARE-16)
+
+    private var pastePill: GlassPillView?
+
+    /// The chrome state's token: the three pill states, `hidden` between them.
+    private var pastePillState: String {
+        switch pasteFlow?.phase {
+        case .sending?, .awaitingConfirmation?: return "pasting"
+        case .pasted?: return "pasted"
+        case .failed?: return "failed"
+        case .idle?, nil: return "hidden"
+        }
+    }
+
+    private var pasteButtonShown: Bool {
+        switch pasteFlow?.phase {
+        case .pasted?, .failed?: return true
+        case .idle?, .sending?, .awaitingConfirmation?, nil: return false
+        }
+    }
+
+    /// Over the last frame: the paste flow's three states. The outcome pills
+    /// carry the one button that shares the image through the drop path.
+    func setPastePill(_ state: PastePillState?) {
+        guard let state else {
+            pastePill?.fade(to: 0)
+            writeChromeState()
+            return
+        }
+        let button = state == .pasting ? nil : GlassPillButton(
+            title: "Share Instead",
+            help: "Share this image with the app instead of pasting it (⇧⌘V)",
+            action: { [weak self] in self?.pasteFlow?.shareInstead() }
+        )
+        let pill = pastePill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress,
+                                              button: button)
+        if pastePill == nil {
+            pastePill = pill
+            videoView.addSubview(pill)
+            pill.alphaValue = 0
+        }
+        pill.setText(state.text, showsProgress: state.showsProgress, button: button)
+        layoutPastePill()
+        pill.fade(to: 1)
+        writeChromeState()
+    }
+
+    private func layoutPastePill() {
+        guard let pastePill else { return }
+        let size = pastePill.fittingSize
+        pastePill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2,
+                                 y: videoView.bounds.height - size.height - 24,
+                                 width: size.width, height: size.height)
+        pastePill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+    }
+
+    /// Starts one ⌘V's image; the id is the wire transfer's, so the phone's
+    /// answer and this flow meet.
+    private func startPaste(data: Data, mime: String) {
+        pasteFlow?.paste(image: data, mime: mime, id: ClipImageSend.nextId())
+    }
+
+    /// ⇧⌘V and the pill's button: the image becomes a temp file on the drop
+    /// path, aimed at this window's app like any other drop (SHARE-17).
+    private func sharePastedImage(_ data: Data, mime: String) {
+        let ext = mime.lowercased() == "image/jpeg" ? "jpg" : "png"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pocketdeck-paste-\(UUID().uuidString).\(ext)")
+        guard (try? data.write(to: url)) != nil else {
+            Log.app.info("paste: could not write the share temp")
+            return
+        }
+        manager.onFilesDropped?([url], dropTargetPackage)
+    }
+
+    // MARK: The phone's answer
+
+    func clipImageDone(id: UInt32, ok: Bool) {
+        pasteFlow?.done(id: id, ok: ok)
+    }
+
+    func pasteSessionEnded() {
+        pasteFlow?.sessionEnded()
     }
 
     // MARK: Density

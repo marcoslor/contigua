@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -6695,6 +6695,122 @@ PY
         && ok "DROP the app survived the failed drop (one instance)" \
         || bad "DROP the app died or a second instance appeared"
     stop_app
+}
+
+# check_paste — ⌘V with an image (SHARE-16, docs/design/dragdrop.md). The image
+# goes to the phone as clip.image.*; the fake's `clip.image.done` is the gate for
+# exactly one KEY 279 (no meta). Without an answer the timeout sends no key and
+# shows the failure pill. The three pill states are captured light and dark for
+# review (the pasteboard is saved and put back, text only, as check_clip does).
+check_paste() {
+    clean
+    local saved="$WORK/pasteboard.saved" shots="$ROOT/.agent/paste-drop"
+    mkdir -p "$shots"
+    pbpaste > "$saved" 2>/dev/null
+    trap 'pbcopy < "$saved" 2>/dev/null; trap - RETURN' RETURN
+    python3 - "$WORK/paste.png" <<'PY2'
+import struct, sys, zlib
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\x00" + bytes((x * 5 + y * 11) % 256 for x in range(48 * 3)) for y in range(48))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 48, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY2
+
+    printf '%s\n' "pasteimage $WORK/paste.png" "keyraw cmd+v" "wait 9" > "$WORK/paste.txt"
+
+    paste_key_count() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "input" and e.get("kind") == "key" and e.get("action") == 0 \
+            and e.get("keycode") == 279 and e.get("meta") == 0:
+        count += 1
+print(count)
+PY
+    }
+    one_paste_key() { [ "$(paste_key_count)" = "1" ]; }
+    no_paste_key() { [ "$(paste_key_count)" = "0" ]; }
+    clip_seen() { grep -q '"dir":"rx".*"paste":true' "$WORK/events.jsonl" 2>/dev/null; }
+
+    # phase APPEARANCE done|none TAG
+    paste_phase() {
+        local appearance="$1" expect="$2" tag="$3"
+        rm -f "$WORK/events.jsonl" "$WORK/chrome.txt"
+        if [ "$expect" = "done" ]; then
+            FAKE_ARGS="--clip-done-delay 2"
+        else
+            FAKE_ARGS="--no-clip-done"
+        fi
+        start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+            --debug-input-script "$WORK/paste.txt"
+        if ! wait_until 30 chrome_has "frame="; then
+            bad "PASTE $tag: no app window"; stop_app; stop_fakephone; return 1
+        fi
+        if ! wait_until 15 clip_seen; then
+            bad "PASTE $tag: the phone never received the image (paste flag missing)"; \
+                stop_app; stop_fakephone; return 1
+        fi
+        if [ "$expect" = "done" ]; then
+            if wait_until 5 chrome_has "paste_pill=pasting"; then
+                chrome_has "paste_button=0" \
+                    && ok "[SHARE-16] PASTE $tag: the Pasting pill has no button" \
+                    || bad "PASTE $tag: the Pasting pill offered a button"
+                screenshot 900 "$shots/paste-pasting-$tag.png" \
+                    && ok "[SHARE-16] PASTE $tag: the Pasting pill is up while the phone writes the clip" \
+                    || bad "PASTE $tag: no Pasting screenshot"
+            else
+                bad "PASTE $tag: no Pasting pill"
+            fi
+            if wait_until 15 one_paste_key; then
+                ok "[SHARE-16] PASTE $tag: the confirmation sent exactly one KEY 279 with no meta"
+            else
+                bad "PASTE $tag: no single KEY 279 after clip.image.done ($(paste_key_count) keys)"
+            fi
+            sleep 1
+            [ "$(paste_key_count)" = "1" ] \
+                && ok "[SHARE-16] PASTE $tag: the paste sends one key, never a repeat" \
+                || bad "PASTE $tag: the paste repeated its key"
+            wait_until 5 chrome_has "paste_pill=pasted" \
+                && screenshot 900 "$shots/paste-pasted-$tag.png" \
+                && ok "[SHARE-16] PASTE $tag: the Image pasted pill and its Share button" \
+                || bad "PASTE $tag: no Image pasted pill"
+            chrome_has "paste_button=1" \
+                && ok "[SHARE-16] PASTE $tag: the outcome pill's one button is reachable" \
+                || bad "PASTE $tag: the outcome pill has no button"
+        else
+            # The 3 s wait passes with no answer: the failure pill, and not one key.
+            if wait_until 10 chrome_has "paste_pill=failed"; then
+                screenshot 900 "$shots/paste-failed-$tag.png"
+                ok "[SHARE-16] PASTE $tag: no confirmation showed the Nothing pasted pill"
+            else
+                bad "PASTE $tag: no failure pill after the timeout (state: $(chrome_state))"
+            fi
+            no_paste_key \
+                && ok "[SHARE-16] PASTE $tag: the timeout sent no key" \
+                || bad "PASTE $tag: a key was sent without a confirmation"
+            chrome_has "paste_button=1" \
+                && ok "[SHARE-16] PASTE $tag: the failure pill's Share button is there" \
+                || bad "PASTE $tag: the failure pill has no button"
+        fi
+        stop_app
+        stop_fakephone
+        wait_until 5 no_fakephone
+    }
+
+    for spec in ${PD_E2E_PASTE_PHASES:-light:done dark:done light:none dark:none}; do
+        paste_phase "${spec%%:*}" "${spec##*:}" "${spec%%:*}"
+    done
+
+    say "screenshots: $shots/paste-pasting-{light,dark}.png $shots/paste-pasted-{light,dark}.png $shots/paste-failed-{light,dark}.png"
 }
 
 # --- Share extension ------------------------------------------------------

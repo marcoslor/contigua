@@ -2118,6 +2118,7 @@ final class ConnectionController {
         if before.isOnline, !link.isOnline {
             windows.linkLost()
             dropSender.connectionLost()
+            windows.pasteSessionEnded()
             clipImageBuffer.discard()
         }
         if !before.isOnline, link.isOnline { windows.linkRestored() }
@@ -2324,6 +2325,7 @@ final class ConnectionController {
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
+                windows.pasteSessionEnded()
                 fsClient?.connectionLost()
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
@@ -2347,6 +2349,7 @@ final class ConnectionController {
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
+                windows.pasteSessionEnded()
                 fsClient?.connectionLost()
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
@@ -2396,7 +2399,12 @@ final class ConnectionController {
                 clipboardSync?.receiveImage(data, mime: mime)
             }
         case .clipImageAbort(let id):
+            _ = id
             clipImageBuffer.discard()
+        case .clipImageDone(let id, let ok):
+            // The phone wrote the clip (SHARE-16): the flow that owns the id
+            // sends its one paste key, or shows why it did not.
+            windows.clipImageDone(id: id, ok: ok)
         case .apkProgress(let id, let bytes):
             apkInstaller.progress(id: id, bytes: bytes)
         case .apkResult(let result):

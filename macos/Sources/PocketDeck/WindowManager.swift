@@ -94,6 +94,17 @@ final class WindowManager {
 
     private var dropPill: (text: String, showsProgress: Bool)?
 
+    /// The phone wrote a clipboard image (SHARE-16): the window whose paste
+    /// flow owns that id sends its one key, or shows the fallback pill.
+    func clipImageDone(id: UInt32, ok: Bool) {
+        for controller in allControllers() { controller.clipImageDone(id: id, ok: ok) }
+    }
+
+    /// Every window's paste flow stops waiting when the session goes.
+    func pasteSessionEnded() {
+        for controller in allControllers() { controller.pasteSessionEnded() }
+    }
+
     private let frames: UserDefaults
     private var cascadePoint = NSPoint.zero
     private static let framesKey = "streamFrames"
