@@ -13840,6 +13840,13 @@ check_feth_path() {
     feth_stop_servers
 
     # 4. A peer that closes mid-transfer: the link must report down within 2 s.
+    # A fresh helper generation gives this step its own directd-close.log.
+    feth_stop_helper
+    if ! feth_start_helper close; then
+        bad "[DIRECT-P2] the helper did not start for the peer-close step"
+        stop_feth
+        return
+    fi
     if feth_start_server close "$FETH_PORT" --close-after 1.0; then
         feth_run_e2e close 60 || true
         down_ms="$(sed -n 's/^DIRECT eof detected=broken down ms=\([0-9]*\)$/\1/p' "$WORK/direct-e2e-close.log" 2>/dev/null | tail -1)"
