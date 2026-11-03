@@ -7282,6 +7282,178 @@ print("\n".join(sorted(name for name in os.listdir(root)
 PY
 }
 
+# --- Thumbnails in Finder (docs/design/files.md "Thumbnails (S6)", files-thumbs)
+#
+# One VM boot, the real extension: Finder's icon view asks for a picture, the
+# app asks the fake phone, and the JPEG's icon is the phone's thumbnail while
+# the PDF next to it keeps its type icon. The fake phone holds its first answer
+# past the app's 8 s deadline (R-1: serverUnreachable, so the system may ask
+# again); reopening the folder gets the picture. Then the phone goes away and
+# the icon stays a type icon with no alert. The file is never materialized: no
+# fetchContents line may appear.
+check_files_thumbs() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        bad "FILES-THUMBS refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-thumbs"
+        return
+    fi
+    clean
+    local appex; appex="$(files_appex)"
+    command -v ffmpeg >/dev/null || { bad "FILES-THUMBS ffmpeg is needed to make the fixtures"; return 1; }
+    files_tree
+    # A real 1200x900 photo (the fake phone's own 64x64 answer is blue, so the
+    # icon can only be the thumbnail, not the file), and a PDF beside it.
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=1200x900:rate=1" \
+        -frames:v 1 -q:v 4 "$WORK/fsroot/DCIM/Camera/photo.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the photo"; return 1; }
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=blue:s=64x64" \
+        -frames:v 1 -q:v 4 "$WORK/thumb.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the thumbnail fixture"; return 1; }
+    python3 - "$WORK/fsroot" <<'PY'
+import os, sys
+open(os.path.join(sys.argv[1], "DCIM/Camera/report.pdf"), "wb").write(b"%PDF-1.4\n")
+PY
+
+    # hold_once: the first fs.thumb never answers, so the app's 8 s deadline is
+    # the first answer Finder sees (R-1).
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold_once" start_fake || return 1
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
+    files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    wait_until 60 eval '! stale_domain_folder' \
+        || bad "FILES-THUMBS the removed domain's folder is still in CloudStorage after 60 s"
+
+    launch --connect "127.0.0.1:$PORT" --files-domain add
+    wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
+        && ok "FILES-THUMBS NSFileProviderManager.add ok" \
+        || { bad "FILES-THUMBS add failed: $(grep 'files-domain' "$WORK/app.log" | head -2 | tr '\n' ' ')"; stop_app; stop_fakephone; return 1; }
+    wait_until 20 file_has "files-domain bridge group: ok" "$WORK/app.log" \
+        || bad "FILES-THUMBS no App Group bridge socket"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "FILES-THUMBS the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    files_list
+    local root; root="$(files_domain_path)"
+    files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
+    wait_until "$FILES_SWITCH_WAIT_S" files_root_lists "$root" \
+        && ok "FILES-THUMBS the extension is enabled and the domain enumerates" \
+        || { bad "FILES-THUMBS still user-disabled after the System Settings switch"; stop_app; stop_fakephone; return 1; }
+    ok "FILES-THUMBS the domain is mounted at $root"
+
+    # One Finder window, icon view, on the folder with both items.
+    # LaunchServices opens the folder without an AppleEvent to Finder (the
+    # CloudStorage mount can block Finder's `open` past the -1712 timeout on
+    # the first look); the window settings follow with their own timeout.
+    finder_folder() {
+        open -a Finder "$1" >/dev/null 2>&1 || true
+        local deadline=$((SECONDS + 30)) id
+        while [ $SECONDS -lt $deadline ]; do
+            id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+            [ -n "$id" ] && break
+            sleep 0.5
+        done
+        osascript - "$1" <<'OSA'
+on run argv
+    with timeout of 30 seconds
+        tell application "Finder"
+            activate
+            try
+                set theWindow to front window
+                set current view of theWindow to icon view
+                set icon size of theWindow's icon view options to 128
+                set bounds of theWindow to {80, 80, 900, 700}
+                set toolbar visible of theWindow to false
+                set statusbar visible of theWindow to false
+            end try
+        end tell
+    end timeout
+end run
+OSA
+    }
+    finder_close() {
+        osascript >/dev/null 2>&1 <<'OSA' || true
+with timeout of 20 seconds
+    tell application "Finder" to close every window
+end timeout
+OSA
+    }
+    thumb_logged() { files_log | grep -q "$1"; }
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    wait_until 30 thumb_logged 'thumb failed code=timeout' \
+        && ok "FILES-THUMBS [FILES-26/R-1] the held first ask answered timeout at the deadline" \
+        || bad "FILES-THUMBS no timeout line after the held ask"
+    # The system may retry by itself; if it does not, reopening the folder is
+    # the person's next look and must ask again (R-1).
+    if wait_until 15 thumb_logged 'thumb done bytes='; then
+        ok "FILES-THUMBS [FILES-26/R-1] the system asked again by itself and the picture arrived"
+    else
+        finder_close
+        finder_folder "$root/DCIM/Camera"
+        if wait_until 30 thumb_logged 'thumb done bytes='; then
+            ok "FILES-THUMBS [FILES-26/R-1] reopening the folder asked again and the picture arrived"
+        else
+            bad "FILES-THUMBS the system never asked again after serverUnreachable"
+        fi
+    fi
+    # The phone's successful answer is one event at the long side; the PDF and
+    # the folder never reached it.
+    if python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
+thumbs = [e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb"]
+sys.exit(0 if len(thumbs) == 1 and thumbs[0].get("size") == 512 else 1)
+PY
+    then
+        ok "FILES-THUMBS [FILES-22/23] one fs.thumb at 512: the PDF asked the phone nothing"
+    else
+        bad "FILES-THUMBS the phone saw the wrong fs.thumb count or size"
+    fi
+    files_log > "$WORK/thumb-log.txt" 2>/dev/null || true
+    if grep -q "photo.jpg\|report.pdf" "$WORK/thumb-log.txt"; then
+        bad "FILES-THUMBS [FILES-27] a file name appears in the thumbnail log"
+    else
+        ok "FILES-THUMBS [FILES-27] the thumbnail log carries no file name"
+    fi
+    if grep -q 'fetch done' "$WORK/thumb-log.txt"; then
+        bad "FILES-THUMBS [FILES-23] the thumbnail materialized the file"
+    else
+        ok "FILES-THUMBS [FILES-23] no fetchContents: the item stayed undownloaded"
+    fi
+    sleep 2
+    local finder_id; finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+    if [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs.png" 2>/dev/null; then
+        cp "$SHOTS/after-files-thumbs.png" "$WORK/after-files-thumbs.png" 2>/dev/null || true
+        ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs.png"
+    else
+        bad "FILES-THUMBS could not capture the Finder window"
+    fi
+
+    # The phone goes away: after the session's 30 s grace the next look is a
+    # type icon and no alert (FILES-26).
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 32
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    wait_until 30 thumb_logged 'thumb failed code=offline' \
+        && ok "FILES-THUMBS [FILES-26] the phone away answered offline, not an error" \
+        || bad "FILES-THUMBS no offline line with the phone away"
+    sleep 2
+    finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+    [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs-offline.png" 2>/dev/null \
+        && { cp "$SHOTS/after-files-thumbs-offline.png" "$WORK/after-files-thumbs-offline.png" 2>/dev/null || true; ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs-offline.png"; } \
+        || bad "FILES-THUMBS could not capture the offline Finder window"
+
+    finder_close
+    stop_app
+    files_oneshot remove "$WORK/remove.txt" >/dev/null 2>&1 || true
+    unregister_files >/dev/null 2>&1 || true
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_files_domain() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
         bad "FILES-DOMAIN refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-domain"
