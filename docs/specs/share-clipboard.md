@@ -16,6 +16,8 @@ Moving what a person has between the two devices without a cable or a cloud: pla
 | SHARE-S4 | P2 | As a person with an app in front on the phone, I want Move to Mac to bring that app into a Mac window, so that I keep my place. |
 | SHARE-S5 | P1 | As a person, I want a file dragged onto a window or the Deck to reach the phone, so that sending one file is one gesture. |
 | SHARE-S6 | P1 | As a person, I want a secret I copied not to travel, and nothing I share in a log, so that the convenience does not cost privacy. |
+| SHARE-S7 | P2 | As a person, I want ⌘V in a phone window to paste the image or files I copied on the Mac into that app, so that a copy-paste works across the two devices. |
+| SHARE-S8 | P2 | As a person, I want to drag an image from a browser, a web image or a photos promise onto a window or the Deck, so that any picture reaches the phone in one gesture. |
 
 ## Settings inventory
 
@@ -44,8 +46,15 @@ Everything else this surface does (Open on Phone, Move to Mac, a drop, Send to M
 | SHARE-13 | THE Mac's "Share clipboard with your phone" SHALL be the only clipboard switch, SHALL be off on a profile that never chose it and SHALL respect a stored on or off; the Mac SHALL send it as `clip.enable {on}` at every `welcome` and whenever it changes, and the phone SHALL start every session with sync off, so WHILE it is off **both** sides neither send nor apply `clip.set` or a clipboard image; turning it off WHILE a session is live SHALL stop both at once without tearing the session down; a change made while off SHALL NOT be sent when it comes back; another profile SHALL have its own value, and General's row SHALL say in either position what travels. | K2 `ClipboardSyncTests.testToggleOffSendsAndWritesNothing`, `testChangeMadeWhileOffIsNotSentWhenSyncComesBack`, `testReceiveBeforeStartDoesNothing`, `testIsEnabledIsOffUntilThePersonTurnsItOn`; K1 `SessionTest.thePhoneStopsSendingAfterTheMacTurnsTheGateOff`, `aClipFromTheMacIsNotAppliedWhileTheGateIsOff`, `ClipGateTest.the mac's word is the state`; e2e `clip` (`[SHARE-13]`: the Mac sends `on:false`, a fresh profile applies and sends nothing, the phone's later copy is suppressed; `on:true` after the toggle); review of `GeneralSettings` and `Session.onClipEnable` |
 | SHARE-15 | IF a share cannot be sent because the phone's shell service is not bound THEN the phone SHALL say "Start Shizuku to send to your Mac." (naming this phone's own missing permission, CONV-AND-03), and "No Mac connected" SHALL stay for a genuinely absent session. | K1 `ShareIntentTest.aShareWithNoShellSaysShizukuIsNeeded`, `noSessionMeansNoMacConnected`; review of `ShareDispatch.send` |
 | SHARE-14 | THE phone SHALL skip a clipboard item whose description carries `ClipDescription.EXTRA_IS_SENSITIVE` (or the same `android.content.extra.IS_SENSITIVE` extra), in the text and image directions, so a copied password never leaves the phone; the skip SHALL be counted in the log and never carry the item's text. | K1 `SessionTest.aSensitiveClipIsNeverSent`; review of `ShellClipboard.isSensitive` |
+| SHARE-16 | WHEN the person presses ⌘V in an app's stream window WHILE the general pasteboard holds an image and no file copy and "Share clipboard with your phone" is on THE Mac SHALL send it as a clipboard image (SHARE-2), SHALL wait up to 3 s for the phone's `clip.image.done {id,ok:true}` and SHALL then send one `KEY` frame (keycode 279, `metaState` 0) to that window's stream and SHALL show a 5 s "Image pasted. Nothing there? Share instead" pill; IF the phone answers `ok:false`, the session ends, a second ⌘V arrives while one is in flight, or the 3 s pass THEN the Mac SHALL send no key and SHALL show "Nothing pasted. Share instead"; either pill SHALL leave after 5 s or on Esc, and its button SHALL be reachable with Full Keyboard Access, with a help tag and VoiceOver label naming ⇧⌘V; ⇧⌘V WHILE the pasteboard holds an image SHALL send the image through the drop path to the window's app (SHARE-17); WHILE the switch is off, ⌘V with an image SHALL send nothing, plain text SHALL keep WIN-15's text paste and a file copy SHALL take SHARE-17. [NEEDS CLARIFICATION] whether a person's ⌘V should bypass the sync switch like a drop does, or stay gated by SHARE-13. | planned: K2 `PasteFlowTests` (the transition table: no confirmation → no key, refusal → fallback, timeout → no key, a second ⌘V ignored), `PasteShortcutTests`; K1 `PasteKeyTest` (keycode 279, no meta); e2e `paste` (an image on the Mac's pasteboard, fakephone confirms, exactly one `KEY` 279; no confirmation → no key); emulator `paste-image` (a TextView and a Compose field); real-phone spike for the apps that accept a pasted image |
+| SHARE-17 | WHEN the person presses ⌘V with a file copy in an app's stream window, or drops files on one (after SHARE-11's routing), THE Mac SHALL send every file through the existing `drop.*` transfer (one at a time, 200 MiB each) with the window's package in `drop.start.target`; the phone SHALL share each finished file straight to that package with `FLAG_GRANT_READ_URI_PERMISSION` and the ClipData grant (`ACTION_SEND`; the trampoline also builds `ACTION_SEND_MULTIPLE` when it is handed several URIs) and SHALL show today's chooser only when the package is absent, not installed, or has no activity that resolves the SEND intent; a drop on the Deck, a phone-mode window or a link window SHALL carry no target and keep the chooser; a file copy SHALL never be sent as text (SHARE-2) and SHALL send no paste key; a file over 200 MiB, a second transfer while one runs, or an offline phone SHALL be refused by SHARE-11's existing rules and never queued. | planned: K2 `TargetedDropTests` (the target rides every `drop.start` for an app window and is absent on the Deck, phone-mode and link windows), `PasteFlowTests` (a file copy takes the drop path, no key); K1 `DropPolicyTest.targetPackage` (shape, length, absent), `DropReceiverTest` (the target reaches `Landing`); e2e `drop` (targeted: no chooser; Deck: chooser); emulator `drop-target` (an app receives the file without a chooser); real-phone spike for per-app `resolveActivity` |
+| SHARE-18 | WHEN image data (`public.png`, `public.tiff`, `public.jpeg`, `public.image`), an `http(s)` URL or a file promise is dropped on a stream window or the Deck THE Mac SHALL write the image source as a temp file and send it through SHARE-11/17's drop path; for an `http(s)` URL the Mac SHALL attempt the image download and stop at 8 MiB or 10 s: an image answer SHALL become that temp file, and a non-image answer SHALL be refused with "That link isn't an image. Drop the link itself to open it." on a stream window and SHALL take today's link behaviour on the Deck (SHARE-8/11); a file promise SHALL be awaited up to 30 s; temp files SHALL live in a per-drop folder in the system temporary directory and SHALL be deleted when its `drop.result` arrives, on cancel and on session end, with folders older than 24 h swept at launch; an image on the pasteboard SHALL keep SHARE-2. | planned: K2 `DropSourceTests` (image data → PNG temp, the 8 MiB stop, the 10 s timeout, a non-image answer refused, a promise, temp cleanup), `DeckDropTests` (the Deck accepts all three sources); K1 `DropPolicyTest` (the image's MIME and name rules); e2e `drop-sources`; emulator `drop-image` |
 
-Priority note: SHARE-1, 3, 4, 7, 8, 9, 10, 11, 13, 14 and 15 are P1; the image direction and the copy detail are P2.
+Priority note: SHARE-1, 3, 4, 7, 8, 9, 10, 11, 13, 14 and 15 are P1; the image direction, the copy detail, and the planned paste/drop rows SHARE-16–18 are P2.
+
+## Visual items for prototypes
+
+SHARE-16/18 change what a person sees: the two paste pills ("Image pasted. Nothing there? Share instead" and "Nothing pasted. Share instead", each with its button), the drop target's highlight for image data, image URLs and file promises, and the refusal line for a URL that is not an image. The reviewer sees screenshots of each in light and dark, and with Reduce Motion and Reduce Transparency, before they land.
 
 ## States and events
 
@@ -77,6 +86,26 @@ The phone's half is one gate of its own (`ClipGate`, `android/app/src/main/java/
 | any | a `clip.enable` with no boolean | refused (`bad_request`); the state stays |
 | any | session end | Off; the next session starts Off |
 
+Paste and drop into an app (planned, SHARE-16–18) is one flow per window:
+
+| State | Event | Result |
+|---|---|---|
+| Idle | ⌘V, image, no file copy, switch on | Sending: one `clip.image.*`; "Pasting…" shown |
+| Sending | `clip.image.done {id, ok:true}` | Pasted: one `KEY` frame (279, no meta); a 5 s "Image pasted. Nothing there? Share instead" pill |
+| Sending | `clip.image.done {id, ok:false}` | Refused: no key; "Nothing pasted. Share instead" |
+| Sending | 3 s pass, disconnect, session end | Refused: no key; the fallback pill |
+| Sending | a second ⌘V | ignored; the first keeps waiting |
+| Idle | ⌘V, file copy | Dropping: one `drop.*` per file with the window's package; no key |
+| Dropping | every `drop.result ok:true` | Shared: the phone shares each file to the window's app |
+| Dropping | a `drop.result ok:false` or a cancel | Refused: the drop pill's reason; no share |
+| Idle | ⇧⌘V, image | Dropping: the image as a PNG temp file, the drop path |
+| Idle | ⇧⌘V, file copy | Dropping: the files, the drop path |
+| Idle | ⇧⌘V with text, or no app window | ignored |
+| any | `clip.image.done` for another id, or after the flow ended | ignored |
+| any | a drop while one runs | refused (`busy`); the first continues |
+
+The phone's share step picks its target once per finished file: the package resolves a SEND or VIEW intent for the file's MIME → that app only; absent, unknown or unresolvable → today's chooser (SHARE-17).
+
 Share-in is a receiver and a router (`ShareInbox`, `ShareFileReceiver`), fed only by the connected phone.
 
 | State | Event | Result |
@@ -105,14 +134,14 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 
 | Situation | Share and clipboard show |
 |---|---|
-| 0 phones | No session and no clipboard sync; Open on Phone keeps the link for 120 s and says "Pair a phone to open links on it."; a drop says "Connect a phone to send files to it."; Send to Mac answers "No Mac connected". |
+| 0 phones | No session and no clipboard sync; Open on Phone keeps the link for 120 s and says "Pair a phone to open links on it."; a drop says "Connect a phone to send files to it."; Send to Mac answers "No Mac connected"; a window's ⌘V with an image or files sends nothing and says the same. |
 | 1 phone | Everything acts on it. |
-| 2+ phones | Clipboard and Send to Mac belong to the phone in use only. Open on Phone asks which phone when none is named (connected first) and switches to the chosen one; Move to Mac and a drop act on the phone in use. |
+| 2+ phones | Clipboard and Send to Mac belong to the phone in use only. Open on Phone asks which phone when none is named (connected first) and switches to the chosen one; Move to Mac and a drop act on the phone in use; ⌘V and a targeted drop belong to the phone whose window they happen in. |
 | Connecting | Clipboard sync starts at ready; until then a copy is not queued. A link to a phone that is not connected makes it the phone in use and waits for `welcome` (120 s). Move to Mac's menu item is disabled while offline. |
 | Connected | As above. |
-| Offline / reconnecting | Clipboard polling stops; a phone image in flight is discarded; Open on Phone waits up to 120 s; a drop is refused, not queued; Move to Mac does nothing (and its entry is disabled). |
-| Phone that can't do the feature | A phone whose shell service is not bound (Shizuku missing or stopped) answers "Start Shizuku to send to your Mac."; a ready session that cannot be sent to answers "No Mac connected"; no share is queued. Older PocketDeck builds are not supported during the alpha (AGENTS.md). |
-| Clipboard off | The Mac sends and applies nothing and tells the phone, which also sends and applies nothing; the rest of the surface (Send to Mac, links, drops, Move to Mac) is unaffected. |
+| Offline / reconnecting | Clipboard polling stops; a phone image in flight is discarded; Open on Phone waits up to 120 s; a drop, a paste with an image and ⌘V with a file copy are refused, not queued; Move to Mac does nothing (and its entry is disabled). |
+| Phone that can't do the feature | A phone whose shell service is not bound (Shizuku missing or stopped) answers "Start Shizuku to send to your Mac."; a ready session that cannot be sent to answers "No Mac connected"; no share is queued; a phone that cannot write its clipboard answers `clip.image.done ok:false` and the Mac shows the paste fallback, never a key. Older PocketDeck builds are not supported during the alpha (AGENTS.md). |
+| Clipboard off | The Mac sends and applies nothing and tells the phone, which also sends and applies nothing; ⌘V with an image sends nothing until the switch is on (SHARE-16's open question); the rest of the surface (Send to Mac, links, drops, Move to Mac, ⇧⌘V) is unaffected. |
 
 ## Conventions
 
@@ -120,10 +149,10 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 |---|---|
 | CONV-MAC-01 | n/a: no search or filter field |
 | CONV-MAC-02 | n/a: this surface has no window of its own |
-| CONV-MAC-03 | applies: "Open on which phone?" is an alert — Esc is Cancel and opens nothing, Return is Open; the share banners use the system's own actions |
+| CONV-MAC-03 | applies: "Open on which phone?" is an alert — Esc is Cancel and opens nothing, Return is Open; the share banners use the system's own actions; the paste pills leave on Esc and their button is in the key-view loop (SHARE-16) |
 | CONV-MAC-04 | n/a: no text field (the clipboard itself is the system's) |
 | CONV-MAC-05 | n/a: nothing zoomable |
-| CONV-MAC-06 | applies: ⇧⌘C is in UX.md's shortcut table and shown in the Phone menu and the panel (SHARE-10); the Services entry has no shortcut, as Finder's own Services do |
+| CONV-MAC-06 | applies: ⇧⌘C is in UX.md's shortcut table and shown in the Phone menu and the panel (SHARE-10); ⇧⌘V (SHARE-16) is named in the paste pills' button help tags and VoiceOver labels; the Services entry has no shortcut, as Finder's own Services do |
 | CONV-MAC-07 | n/a: no shortcut is reused here |
 | CONV-MAC-10 | n/a: not the status item's panel; the panel's Move to Mac is PANEL-16 |
 | CONV-MAC-11 | n/a: no window represents one thing — a Move to Mac window stands for whatever was in front when it opened (design/handoff.md) |
@@ -131,27 +160,27 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 | CONV-MAC-13 | n/a: no menu item or full-screen command is added here |
 | CONV-MAC-14 | applies: the handoff window resizes as a stream window does (app-windows.md); this surface adds no layout |
 | CONV-MAC-15 | n/a: closing a window does not quit the app |
-| CONV-MAC-16 | applies: SHARE-8/11 (drop and Services behave as Finder's: a target highlights, a refusal says why) and the standard copy/paste; one unapproved break — a `.webloc` dropped on a stream window is saved as a file instead of opened (misses.md M1) |
-| CONV-MAC-20 | applies: the picker alert, the system banners and the handoff window render in light and dark with the accent and Increase Contrast |
-| CONV-MAC-21 | applies: the alert's buttons and the handoff window's bar are labelled; the phone picker's popup is the one gap (misses.md M2) |
-| CONV-MAC-22 | applies: nothing of this surface animates beyond the system alert and notification; Reduce Motion is the system's |
-| CONV-MAC-23 | applies: every result is words — "Copied from <phone>", "Image from <phone>", "Nothing to move…"; no state is carried by colour alone |
+| CONV-MAC-16 | applies: SHARE-8/11 and SHARE-16–18 (drop and Services behave as Finder's: a target highlights, a refusal says why; ⌘V pastes and ⇧⌘V shares instead); one unapproved break — a `.webloc` dropped on a stream window is saved as a file instead of opened (misses.md M1) |
+| CONV-MAC-20 | applies: the picker alert, the system banners, the handoff window and the paste/drop pills render in light and dark with the accent and Increase Contrast |
+| CONV-MAC-21 | applies: the alert's buttons, the handoff window's bar and the paste fallback pill's button are labelled; the phone picker's popup is the one gap (misses.md M2) |
+| CONV-MAC-22 | applies: the paste and drop pills fade like the window's other pills, and Reduce Motion removes the fade; everything else is the system's alert or notification |
+| CONV-MAC-23 | applies: every result is words — "Copied from <phone>", "Image from <phone>", "Nothing to move…", "Image pasted. Nothing there? Share instead", "Nothing pasted. Share instead", "That link isn't an image…"; no state is carried by colour alone |
 | CONV-MAC-24 | applies: the first share banner asks for notification permission in context; a denied permission only removes that banner — the copy or open still happens; links, drops and Move to Mac ask for nothing |
-| CONV-MAC-25 | n/a: no custom clickable controls (the alert's buttons and the system's notifications are native) |
-| CONV-MAC-26 | n/a: no custom layout |
+| CONV-MAC-25 | applies: the paste fallback pill's Share button has hover and pressed states (SHARE-16); everything else clickable is native |
+| CONV-MAC-26 | applies: the paste and drop pills reuse the stream window's one pill inset and rhythm (WIN-22) |
 | CONV-AND-01 | n/a: share and clipboard carry no phone navigation |
 | CONV-AND-02 | applies: the phone's share target labels and toasts follow the system theme; the phone posts no notification for a share (the Mac's banner does) |
 | CONV-AND-03 | applies: the feature needs Shizuku; without it the phone says "Start Shizuku to send to your Mac." (SHARE-15) and no other feature is disabled |
-| CONV-AND-04 | applies: the only phone-side writes are the dropped file under `Download/PocketDeck/` and a clipboard image pasted on the phone, both person-started; no lock, timeout or app state changes, and the phone stays locked |
+| CONV-AND-04 | applies: the only phone-side changes are the dropped file under `Download/PocketDeck/`, the clipboard image and the one paste key a person's ⌘V causes (SHARE-16), all person-started; no lock, timeout or app state changes, and the phone stays locked |
 | CONV-PD-01 | applies: the table above (0/1/2+ phones; the picker for links) |
 | CONV-PD-02 | applies: the table above (offline, connecting, a phone without a session, clipboard off) |
-| CONV-PD-03 | applies: a share is one-way — the Mac claims a save only after `share.end` verifies, and its refusal says why; a link opens only after the phone accepts it |
+| CONV-PD-03 | applies: a share is one-way — the Mac claims a save only after `share.end` verifies, and its refusal says why; a link opens only after the phone accepts it; a paste waits for `clip.image.done` before its key and shows "Pasting…" until then (SHARE-16) |
 | CONV-PD-04 | n/a: no slider or toggle follows a phone value (the clipboard poll is not a control) |
 | CONV-PD-05 | applies: SHARE-12 |
-| CONV-PD-06 | applies: no NFR budget belongs to this surface; the wire caps are the protocol's (1 MiB text, 8 MiB image, 50 MiB share file, 200 MiB drop), and a 50 MiB receive is bounded by those caps |
-| CONV-PD-07 | applies: "Send to Mac" (the phone's share target), "Open on Mac" (the phone's text menu and Open with), "Open on Phone" (the Mac's share extension and Service), "Move to Mac"/"Move Phone App to Mac" (panel and menu, as CONV-PD-07 already lists), "Share clipboard with your phone" |
-| CONV-PD-08 | applies: the tables above (clipboard, share-in receiver, link route, handoff) |
-| CONV-PD-09 | applies: SHARE-4/5 (a banner names what happened), SHARE-7 (a refused link is never half-sent), SHARE-10 ("Nothing to move…", "Opened fresh…") — one gap in a failure body, misses.md M3 |
+| CONV-PD-06 | applies: no NFR budget belongs to this surface; the wire caps are the protocol's (1 MiB text, 8 MiB image, 50 MiB share file, 200 MiB drop), a 50 MiB receive is bounded by those caps, and the planned waits are 3 s for a paste confirmation, 10 s and 8 MiB for an image URL, and 30 s for a file promise (SHARE-16/18) |
+| CONV-PD-07 | applies: "Send to Mac" (the phone's share target), "Open on Mac" (the phone's text menu and Open with), "Open on Phone" (the Mac's share extension and Service), "Move to Mac"/"Move Phone App to Mac" (panel and menu, as CONV-PD-07 already lists), "Share clipboard with your phone", "Share instead" (SHARE-16) |
+| CONV-PD-08 | applies: the tables above (clipboard, the phone's gate, paste and drop into an app, share-in receiver, link route, handoff) |
+| CONV-PD-09 | applies: SHARE-4/5 (a banner names what happened), SHARE-7 (a refused link is never half-sent), SHARE-10 ("Nothing to move…", "Opened fresh…"), SHARE-16/18 ("Nothing pasted. Share instead", "That link isn't an image. Drop the link itself to open it.") — one gap in a failure body, misses.md M3 |
 
 ## Assumptions
 
@@ -161,11 +190,16 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 - The person's clipboard is the system's general pasteboard; the Mac never keeps a copy.
 - `~/Downloads/PocketDeck/` is writable, or `--share-dir` overrides it for tests.
 - The phone's share sheet and "Open with" are Android's own surfaces; PocketDeck only supplies their labels and target.
+- The planned paste and targeted drop assume the Mac knows the window's package (`window.title.pkg`, PROTOCOL.md) and that Android 16's `TextView` handles `KEYCODE_PASTE`; a Compose field, a WebView and an app that swallows keys are verified on the emulator and the real-phone spike (`docs/design/dragdrop.md`).
+- A file promise is delivered to its temp file within 30 s, and an image URL's server answers within 10 s; both are the planned caps (SHARE-18).
+- The phone's `clip.image.done` is sent only after its clipboard write and its file write succeed, so the Mac can paste on it.
 
 ## Non-goals
 
-- Rich text, HTML, files or folders through the clipboard: text and one image only.
+- Rich text, HTML, files or folders through the clipboard: text and one image only (SHARE-16 sends one image; files take the drop path).
 - Dragging a file out of a phone window (design only).
+- V1–V3's code is not part of the file-copy fix: this round is the spec draft only.
+- Retrying a paste by itself, or a paste queue: a second ⌘V while one is in flight is ignored.
 - A share history, a queue for a phone that is away, or resending a failed share by itself.
 - Choosing a phone per clipboard message, or syncing several phones.
 - Opening any non-web scheme on the Mac from a shared text.
@@ -175,3 +209,8 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 
 - [NEEDS CLARIFICATION] **A `.webloc` on a window** — the Deck opens a dropped `.webloc` as a link, but a stream window saves it to the phone as a file (misses.md M1). Recommended: route it through the same `OpenLinkRequest.webloc` path on windows, so one gesture means one thing.
 - [NEEDS CLARIFICATION] **Image-refusal copy** — "Couldn't save the image from <phone>: checksum mismatch" is an internal phrase (and a write failure names the folder path). Recommended: "The image didn't arrive in one piece. Try sharing it again." and "PocketDeck couldn't save the image." (misses.md M3).
+- [NEEDS CLARIFICATION] **Does a person's ⌘V bypass the clipboard switch?** SHARE-13 gates `clip.image.*` on "Share clipboard with your phone", but ⌘V is a direct action like a drop (SHARE-11), and a person who turned sync off may still expect a paste they asked for. Recommended: yes, allow it, and name the exception in SHARE-13; the row above says "on" until this is answered.
+- [NEEDS CLARIFICATION] **Which apps accept a pasted image, and with which key?** `TextView` handles `KEYCODE_PASTE` and Ctrl+V (AOSP, below), but messaging and mail apps may use Compose, a WebView or their own editor; the real-phone spike records, per app, whether the image lands and which key worked. Recommended: `KEYCODE_PASTE` first, Ctrl+V as the fallback only if the spike needs it.
+- [NEEDS CLARIFICATION] **Does a targeted SEND reach each app?** `setPackage` + `resolveActivity` decides the targeted share, but an app may declare SEND and still open its own picker or refuse the URI. The real-phone spike records, per app, whether the file arrives without a chooser. Recommended: keep the chooser as the fallback and never claim a targeted share the app did not show.
+- [NEEDS CLARIFICATION] **Several files from one ⌘V** — one targeted share per file (the drop path lands and shares each) can show several app screens; one `ACTION_SEND_MULTIPLE` needs the phone to hold the files until the batch ends. Recommended: one share per file for the first round; measure on the real phone before adding a batch id.
+

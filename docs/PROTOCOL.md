@@ -428,7 +428,7 @@ Mac → phone (after `welcome`):
 | `clip.enable` | `on` | the Mac's clipboard switch: the phone sends and applies no `clip.set` or `clip.image.*` while it is off; see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
 | `apk.cancel` | `id` | abandon that install |
-| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; see "Drop Mac → phone" |
+| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume`, optional `target` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; `target` is the package of the window's app, so the finished file is shared straight to it; see "Drop Mac → phone" |
 | `drop.cancel` | `id` | abandon that drop |
 | `clip.image.start` | `id`, `mime`, `size` | a clipboard image follows in `CLIP_DATA` frames; see "Clipboard images" |
 | `clip.image.end` | `id`, `size`, `sha256` | the image is complete |
@@ -479,6 +479,7 @@ Phone → Mac:
 | `drop.progress` | `id`, `bytes` — bytes written of a file drop |
 | `drop.result` | `id`, `ok`; success: `path`; failure: `code`, `message` |
 | `clip.image.start` | `id`, `mime`, `size` — sent by either side |
+| `clip.image.done` | `id`, `ok` — the phone finished a Mac image: `ok:true` means the bytes verified and its clipboard holds the image, and only then may a paste follow; `ok:false` means it was refused (see "Clipboard images") |
 | `fs.items` | `id`, `page` (null = last), `items`: `[{"name","dir","size","mtime","ino","etag"}]` — no path per item; the parent is implicit |
 | `fs.item` | `id`, `item` (same shape) |
 | `fs.read.end` | `id`, `size`, `sha256` — the requested range is complete and correct |
@@ -614,10 +615,13 @@ What a Finder drag onto a phone window delivers (docs/design/dragdrop.md). Only 
 these; the phone never answers `drop.*` other than below.
 
 1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>"}`,
-   `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3). One drop per phone:
+   `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3) and optional
+   `"target":"<package>"` (the app of the window the drop landed on; absent on the Deck, a
+   phone-mode window and a link window). One drop per phone:
    while one is running a new `drop.start` answers `{"t":"drop.result","ok":false,"code":"busy"}`.
    The phone validates (`name` `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB
-   (209 715 200 bytes), `mime` non-empty UTF-8, `sha256` 64 lowercase hex) and answers
+   (209 715 200 bytes), `mime` non-empty UTF-8, `sha256` 64 lowercase hex, `target` when present
+   a package name `[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+` of at most 255 bytes) and answers
    `{"t":"drop.result","id":N,"ok":false,"code":"bad_request","message":...}` anything else.
 2. Mac → `DROP_DATA` frames with `stream` = `id` (each ≤ 1 MiB). The phone counts bytes against
    the announced `size`; more, or a stalled sender, fails the drop.
@@ -634,7 +638,10 @@ these; the phone never answers `drop.*` other than below.
 
 The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDeck/`, renames
 only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
-activity with the app's FileProvider content URI (docs/design/dragdrop.md).
+activity with the app's FileProvider content URI (docs/design/dragdrop.md). When `target` is
+present and that package resolves the SEND intent for the file's MIME the SEND is aimed at it
+with `setPackage` and shows no chooser; a package that is absent, not installed or has no
+matching activity gets today's chooser.
 
 ## Phone files
 
@@ -967,6 +974,10 @@ the sender may be either side:
   `CLIP_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
   `{"t":"clip.image.end","id":N,"size","sha256":"<64 hex>"}` — or `{"t":"clip.image.abort","id":N}`.
   Ids are per direction, from 1.
+- The phone answers a Mac image with `{"t":"clip.image.done","id":N,"ok":true}` after the bytes
+  verify **and** its clipboard holds the image; `{"ok":false}` when it refuses (a checksum
+  mismatch, no clipboard to write to, or over the cap). The Mac sends nothing else on that id,
+  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16).
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
@@ -979,6 +990,9 @@ the sender may be either side:
   never sent as text (SHARE-2). From the phone the image is read out of the clipboard's first
   item when its bytes are readable. The receiver keeps the SHA-256 of the bytes it last sent
   or received, so images are never echoed back, like `clip.set`.
+- A paste into the phone's focused field follows a confirmed image: after `clip.image.done`
+  with `ok:true` the Mac sends one `KEY` frame with keycode 279 (`KEYCODE_PASTE`) and
+  `metaState` 0 for that stream (docs/specs/share-clipboard.md SHARE-16).
 
 ## Ring
 
