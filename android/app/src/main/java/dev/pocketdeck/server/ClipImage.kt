@@ -150,7 +150,10 @@ internal class ClipImageReceiver(
         }
         val answered = AtomicBoolean(false)
         val answer: (Boolean) -> Unit = { ok ->
-            if (answered.compareAndSet(false, true)) done(id, ok)
+            if (answered.compareAndSet(false, true)) {
+                log("clip image: app answered ok=$ok (${current.bytes.size} bytes)")
+                done(id, ok)
+            }
         }
         runCatching { sink.offer(id, ClipImage(current.bytes, current.mimeType), answer) }
             .onFailure {

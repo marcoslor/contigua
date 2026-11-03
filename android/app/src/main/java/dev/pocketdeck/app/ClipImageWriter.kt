@@ -29,6 +29,7 @@ object ClipImageWriter {
             file.writeBytes(bytes)
             val uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
             context.getSystemService(ClipboardManager::class.java).setPrimaryClip(imageClip(uri, mime))
+            Log.i("ClipImageWriter", "set (${bytes.size} bytes)")  // log-ok: a byte count
             dir.listFiles().orEmpty()
                 .filter { it.isFile && it != file }
                 .forEach { runCatching { it.delete() } }
