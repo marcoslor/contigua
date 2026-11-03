@@ -153,6 +153,14 @@ final class StreamChromeView: NSView {
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
         openingCover.layer?.zPosition = 1.6
+        // The cover's coming or going changes the geometry every control and
+        // the cover itself lay out with (WIN-11): relayout at once, with no
+        // animation, the same way a style switch does.
+        openingCover.onVisibilityChange = { [weak self] in
+            guard let self else { return }
+            self.layoutChrome()
+            self.placeTrafficLights()
+        }
         addSubview(stallOverlay)
         stallOverlay.layer?.zPosition = 1.7
         addSubview(pillView)
@@ -227,11 +235,29 @@ final class StreamChromeView: NSView {
     /// The bar button at an index, for Return/Space while the bar has focus.
     func barAction(at index: Int) -> HeaderAction? { actions.action(at: index) }
 
-    /// Right now: the framed bar above the stream, or nothing in immersive and
-    /// in full screen.
+    /// Right now: the framed bar above the stream for the chrome, or 0 in
+    /// immersive, in full screen, and while the opening cover wears the
+    /// immersive geometry (WIN-11).
     var barHeight: CGFloat {
+        guard effectiveStyle == .framed, !(window?.styleMask.contains(.fullScreen) ?? false) else { return 0 }
+        return ChromeBar.height
+    }
+
+    /// The bar inset the stored style gives the stream, whether or not the
+    /// chrome draws it now: the video's rect follows this, not the cover's
+    /// immersive layout, so the virtual display's size never moves with the
+    /// cover and the bar's backdrop stays alive under it (WIN-11, WIN-40).
+    private var streamBarHeight: CGFloat {
         guard style == .framed, !(window?.styleMask.contains(.fullScreen) ?? false) else { return 0 }
         return ChromeBar.height
+    }
+
+    /// The style the chrome lays out with right now: while the opening cover is
+    /// up a framed window wears the immersive geometry, so the cover is one
+    /// sheet over the whole window and no empty bar shows behind it (WIN-11).
+    /// The stored style is untouched; the first frame brings the bar back.
+    var effectiveStyle: WindowStyle {
+        style == .framed && !openingCover.isHidden ? .immersive : style
     }
 
     override func layout() {
@@ -246,9 +272,10 @@ final class StreamChromeView: NSView {
 
     /// The pill's frame in this view (the window's content): `pillInset` in
     /// from the stream's top-left corner, as tall as the framed bar, wide
-    /// enough for its contents. nil when it cannot show (framed, full screen).
+    /// enough for its contents. nil when it cannot show (a framed window with
+    /// no cover, full screen).
     private func newPillFrame() -> NSRect? {
-        guard style == .immersive, !(window?.styleMask.contains(.fullScreen) ?? false) else { return nil }
+        guard effectiveStyle == .immersive, !(window?.styleMask.contains(.fullScreen) ?? false) else { return nil }
         return NSRect(x: DwellChrome.pillInset, y: bounds.height - DwellChrome.pillInset - DwellChrome.pillHeight,
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
@@ -256,14 +283,17 @@ final class StreamChromeView: NSView {
     func layoutChrome() {
         ext.frame = bounds
         let bar = barHeight
-        video.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - bar, 0))
+        video.frame = NSRect(x: 0, y: 0, width: bounds.width,
+                             height: max(bounds.height - streamBarHeight, 0))
         // The dots sit exactly over the stream, in its own coordinates, but on
         // this view's layer: no animation while the bar comes and goes.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         touchDots.frame = video.frame
         phoneOverlay.frame = video.frame
-        openingCover.frame = video.frame
+        // The cover is one sheet over the whole window in either style, the
+        // bar's band included (WIN-11).
+        openingCover.frame = bounds
         // The overlay is one sheet from the window's top edge: it covers the
         // bar too, and its words stay centred in the body below it.
         stallOverlay.frame = bounds
@@ -321,6 +351,11 @@ final class StreamChromeView: NSView {
 
     /// True while the haze is drawn (WIN-40; the e2e reads it).
     var hazeVisible: Bool { !hazeLayer.isHidden }
+
+    /// True when the framed bar's mirror band would show. The opening cover is
+    /// one opaque sheet over it until the first frame (WIN-11); the stall
+    /// overlay reports its own covering separately (`barMirrorCovered`).
+    var barMirrorVisible: Bool { barHeight > 0 && openingCover.isHidden }
 
     /// The kind's actions over the framed bar or, while the pill shows, inside
     /// it. Positions only: show/hide is the style's and the dwell's business

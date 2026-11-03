@@ -53,6 +53,7 @@ final class StreamChromeWindowTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628), "the window is the stream plus the bar")
         XCTAssertFalse(window.isOpaque)
         XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -78,6 +79,7 @@ final class StreamChromeWindowTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         let chrome = try XCTUnwrap(window.contentView as? StreamChromeView)
         XCTAssertEqual(chrome.barHeight, ChromeBar.height)
         XCTAssertEqual(chrome.style, .framed)
@@ -102,6 +104,7 @@ final class StreamChromeWindowTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
         let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
         let frame = close.convert(close.bounds, to: nil)
@@ -120,6 +123,7 @@ final class StreamChromeWindowTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         XCTAssertFalse(window.ignoresMouseEvents, "the framed bar is the window's (drag)")
         controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
         pump(0.4)
@@ -128,7 +132,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 haze=1 key=0 responder_video=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -162,7 +166,14 @@ final class StreamChromeWindowTests: XCTestCase {
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        // The window is still opening: the cover is one sheet over it and the
+        // framed bar's mirror, blur and haze wait for the first frame (WIN-11).
+        XCTAssertEqual(withoutVideo(state), "style=framed lights=hidden pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        controller.noteFirstFrame()
+        let live = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(live.hasPrefix("style=framed lights=shown pill=hidden"), live)
+        XCTAssertTrue(live.contains("loading=0 cover_phase=0"), live)
+        XCTAssertTrue(live.contains("bar_blur_radius=0 haze=1"), live)
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {
@@ -175,6 +186,7 @@ final class StreamChromeWindowTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
 
         controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification))
@@ -199,6 +211,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let manager = makeManager()
         let phone = PhoneWindowController(stream: 1, phone: nil, manager: manager)
         defer { phone.window?.close() }
+        phone.noteFirstFrame()
         let stream = phone.videoBounds()
         XCTAssertEqual(stream.width / stream.height, 1080 / 2340, accuracy: 0.005, "the stream is the phone's shape")
         XCTAssertEqual(phone.videoView.frame.size, stream)
@@ -476,6 +489,7 @@ final class StreamChromeImmersiveTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         // The stream's top edge at the screen's top: the bar has nowhere to go,
         // so the window moves down by exactly the bar on the way to immersive.
         window.setFrameTopLeftPoint(NSPoint(x: visible.minX + 200, y: visible.maxY))

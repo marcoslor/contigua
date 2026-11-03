@@ -46,9 +46,9 @@ final class OpeningCoverChromeTests: XCTestCase {
         XCTAssertEqual(chrome.openingCover.frame, chrome.bounds,
                        "the cover is one sheet over the whole content, the bar's band included")
         XCTAssertEqual(chrome.barHeight, 0, "no bar is laid out while the cover shows")
-        XCTAssertEqual(chrome.video.frame, chrome.bounds, "the stream's area is the whole window")
-        XCTAssertEqual(chrome.bounds.height - chrome.video.frame.maxY, 0,
-                       "the bar's mirror band has no height to show")
+        XCTAssertEqual(chrome.video.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
+                       "the stream keeps the framed style's rect, so the virtual display does not move")
+        XCTAssertFalse(chrome.barMirrorVisible, "the mirror's band is under the cover, not on screen")
         XCTAssertFalse(chrome.hazeVisible, "the framed haze is not over the cover")
 
         chrome.openingCover.show(nil, icon: nil)
@@ -57,8 +57,7 @@ final class OpeningCoverChromeTests: XCTestCase {
         XCTAssertEqual(chrome.barHeight, ChromeBar.height, "the framed bar comes back with the picture")
         XCTAssertEqual(chrome.video.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
                        "the stream keeps its framed area")
-        XCTAssertEqual(chrome.bounds.height - chrome.video.frame.maxY, ChromeBar.height,
-                       "the mirror band is back over the stream")
+        XCTAssertTrue(chrome.barMirrorVisible, "the mirror's band is back over the stream")
         XCTAssertTrue(chrome.hazeVisible, "and the framed haze with it")
     }
 
