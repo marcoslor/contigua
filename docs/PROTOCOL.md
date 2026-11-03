@@ -425,12 +425,12 @@ Mac → phone (after `welcome`):
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents (HOME / APP_SWITCH on display 0) only in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
-| `clip.enable` | `on` | the Mac's clipboard switch: the phone sends and applies no `clip.set` or `clip.image.*` while it is off; see "Clipboard sync" |
+| `clip.enable` | `on` | the Mac's clipboard switch for the background sync: while it is off the phone sends and applies no `clip.set` or unprompted `clip.image.*`; a `clip.image.start` with `paste:true` still applies (a person's ⌘V); see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
 | `apk.cancel` | `id` | abandon that install |
-| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume`, optional `target` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; `target` is the package of the window's app, so the finished file is shared straight to it; see "Drop Mac → phone" |
+| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume`, optional `target`, optional `index`, optional `count` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; `target` is the package of the window's app, so the finished batch is shared straight to it; `index`/`count` place this file in one gesture's batch; see "Drop Mac → phone" |
 | `drop.cancel` | `id` | abandon that drop |
-| `clip.image.start` | `id`, `mime`, `size` | a clipboard image follows in `CLIP_DATA` frames; see "Clipboard images" |
+| `clip.image.start` | `id`, `mime`, `size`, optional `paste` | a clipboard image follows in `CLIP_DATA` frames; `paste:true` is a person's own ⌘V in a window and bypasses `clip.enable`; see "Clipboard images" |
 | `clip.image.end` | `id`, `size`, `sha256` | the image is complete |
 | `clip.image.abort` | `id` | the sender gave up; discard what arrived |
 | `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
@@ -478,7 +478,7 @@ Phone → Mac:
 | `share.abort` | `id` — the phone gave up on that file; the Mac discards it |
 | `drop.progress` | `id`, `bytes` — bytes written of a file drop |
 | `drop.result` | `id`, `ok`; success: `path`; failure: `code`, `message` |
-| `clip.image.start` | `id`, `mime`, `size` — sent by either side |
+| `clip.image.start` | `id`, `mime`, `size`, `paste`? — sent by either side; `paste:true` only by the Mac |
 | `clip.image.done` | `id`, `ok` — the phone finished a Mac image: `ok:true` means the bytes verified and its clipboard holds the image, and only then may a paste follow; `ok:false` means it was refused (see "Clipboard images") |
 | `fs.items` | `id`, `page` (null = last), `items`: `[{"name","dir","size","mtime","ino","etag"}]` — no path per item; the parent is implicit |
 | `fs.item` | `id`, `item` (same shape) |
@@ -543,9 +543,11 @@ Plain text only, in both directions, while a session is ready
   off on a fresh profile. The Mac sends `{"t":"clip.enable","on":bool}` at
   every `welcome` and whenever the person changes it; the phone starts with
   sync off, so a phone that is not told sends nothing. While it is off that
-  side neither sends nor applies `clip.set` or a clipboard image — the bytes
-  stay on the phone, and the Mac's own side reads the setting for its sends
-  and its applies.
+  side neither sends nor applies `clip.set` or a background clipboard image —
+  the bytes stay on the phone, and the Mac's own side reads the setting for
+  its sends and its applies. The exception is a person's own ⌘V in a window:
+  a `clip.image.start` with `"paste":true` is explicit like a drop and the
+  phone applies it even while the switch is off (SHARE-16).
 - A pasteboard item that carries `public.file-url` is a file copy, not text:
   its text is the file's name and is never sent as `clip.set`. The Mac sends a
   file copy of exactly one image file at or under 8 MiB as a clipboard image;
@@ -614,14 +616,18 @@ Only the phone sends these; the Mac never answers them.
 What a Finder drag onto a phone window delivers (docs/design/dragdrop.md). Only the Mac sends
 these; the phone never answers `drop.*` other than below.
 
-1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>"}`,
+1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>","index":i,"count":n}`,
    `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3) and optional
    `"target":"<package>"` (the app of the window the drop landed on; absent on the Deck, a
-   phone-mode window and a link window). One drop per phone:
-   while one is running a new `drop.start` answers `{"t":"drop.result","ok":false,"code":"busy"}`.
-   The phone validates (`name` `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB
-   (209 715 200 bytes), `mime` non-empty UTF-8, `sha256` 64 lowercase hex, `target` when present
-   a package name `[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+` of at most 255 bytes) and answers
+   phone-mode window and a link window). `index` (1-based) and `count` place this file in one
+   gesture's batch: one ⌘V or one drop of several files sends `count` drops of one file each,
+   one at a time, with `index` 1…`count` in order; both default to 1 (a single file). One drop
+   per phone: while one is running a new `drop.start` answers
+   `{"t":"drop.result","ok":false,"code":"busy"}`. The phone validates (`name`
+   `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB (209 715 200 bytes), `mime` non-empty
+   UTF-8, `sha256` 64 lowercase hex, `target` when present a package name
+   `[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+` of at most 255 bytes, `index` and `count`
+   integers with 1 ≤ `index` ≤ `count` ≤ 1000) and answers
    `{"t":"drop.result","id":N,"ok":false,"code":"bad_request","message":...}` anything else.
 2. Mac → `DROP_DATA` frames with `stream` = `id` (each ≤ 1 MiB). The phone counts bytes against
    the announced `size`; more, or a stalled sender, fails the drop.
@@ -637,11 +643,15 @@ these; the phone never answers `drop.*` other than below.
    `drop.result` `cancelled`. A session that ends abandons its drop.
 
 The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDeck/`, renames
-only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
-activity with the app's FileProvider content URI (docs/design/dragdrop.md). When `target` is
-present and that package resolves the SEND intent for the file's MIME the SEND is aimed at it
+only after the SHA-256 matches, and media-scans the file. A gesture's files are collected as
+they land; after the **last** one (`index` = `count`) the phone offers one SEND for the batch
+with the app's FileProvider content URIs (docs/design/dragdrop.md): `ACTION_SEND` for one file,
+`ACTION_SEND_MULTIPLE` for 2–5, with `FLAG_GRANT_READ_URI_PERMISSION` and the ClipData grant on
+every URI. With more than 5 files it saves all of them and offers no SEND. When `target` is
+present and that package resolves the SEND intent for the batch's MIME the SEND is aimed at it
 with `setPackage` and shows no chooser; a package that is absent, not installed or has no
-matching activity gets today's chooser.
+matching activity gets today's chooser. A new target, a repeated `index` 1 or a different
+`count` starts a new batch, so a lost file can never block the next gesture.
 
 ## Phone files
 
@@ -973,11 +983,15 @@ the sender may be either side:
 - `{"t":"clip.image.start","id":N,"mime":"image/jpeg"|"image/png","size":S}`, then
   `CLIP_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
   `{"t":"clip.image.end","id":N,"size","sha256":"<64 hex>"}` — or `{"t":"clip.image.abort","id":N}`.
-  Ids are per direction, from 1.
+  Ids are per direction, from 1. The Mac may add `"paste":true`: the image is a person's own ⌘V in
+  a window, so it applies even while `clip.enable` is off (SHARE-16); nothing else changes.
 - The phone answers a Mac image with `{"t":"clip.image.done","id":N,"ok":true}` after the bytes
   verify **and** its clipboard holds the image; `{"ok":false}` when it refuses (a checksum
   mismatch, no clipboard to write to, or over the cap). The Mac sends nothing else on that id,
-  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16).
+  and a paste flow waits for `ok:true` (docs/specs/share-clipboard.md SHARE-16). The phone writes
+  an image as one clipboard item with empty text, a null intent and the image URI: a plain field
+  pastes nothing (the empty text is coerced, never the URI), while a field that accepts image
+  content still gets the URI (SHARE-2's A2 rule).
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
