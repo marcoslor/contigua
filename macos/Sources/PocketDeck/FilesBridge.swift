@@ -306,7 +306,7 @@ final class FilesBridgeListener {
 /// display name the domain shows. A protocol so the server can be tested with
 /// no session and no File Provider.
 @MainActor
-protocol FilesBridgeHost: AnyObject {
+protocol FilesBridgeHost: AnyObject, FilesThumbHost {
     var isConnected: Bool { get }
     var displayName: String? { get }
     func list(item: String, page: String?,
@@ -994,6 +994,8 @@ final class FilesBridge {
     var watchSet = FilesWatchSet()
     /// The clock the watch set uses; the tests move it by hand.
     var watchClock: () -> TimeInterval = { Date().timeIntervalSince1970 }
+    /// FILES-29: the deadline of one thumb request, measured from the ask.
+    var thumbDeadline: TimeInterval = 8
     private var expiryTimer: DispatchWorkItem?
     /// Working-set signals are coalesced: at most two a second (design).
     static let minSignalGap: TimeInterval = 0.5
@@ -1260,6 +1262,11 @@ final class FilesBridge {
                     }
                 }
             }
+        case .thumb(let id, let item, let size):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            _ = item
+            _ = size
+            client.send(.error(id: id, code: "not_media"))
         case .read(let id, let item, let offset, let length, let etag):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             // A whole-file read needs the item's size; the extension stats

@@ -19,6 +19,16 @@ final class FilesBridgeWireTests: XCTestCase {
                       fs: FsItem(name: name, dir: false, size: 4, mtime: 5, ino: 6, etag: "aa"))
     }
 
+    func testAThumbReplyRoundTrips() {
+        let line = BridgeWire.line(.thumb(id: 9, mime: "image/jpeg", size: 12, sha256: "ab"))
+        XCTAssertEqual([.reply(.thumb(id: 9, mime: "image/jpeg", size: 12, sha256: "ab"))],
+                       decode(line))
+    }
+
+    func testTheBridgeVersionMovedForThumbs() {
+        XCTAssertEqual(4, filesBridgeVersion)
+    }
+
     func testSignalsAreNotReplies() {
         let line = BridgeWire.signal(items: ["ino:10", FilesMap.rootIdentifier])
         XCTAssertEqual([.signal(items: ["ino:10", FilesMap.rootIdentifier])], decode(line))
@@ -31,6 +41,7 @@ final class FilesBridgeWireTests: XCTestCase {
             .list(id: 3, item: FilesMap.rootIdentifier, page: nil),
             .stat(id: 4, item: "ino:11"),
             .read(id: 5, item: "ino:12", offset: 10, length: 20, etag: "abcd"),
+            .thumb(id: 15, item: "ino:14", size: 512),
             .create(id: 6, request: BridgeCreate(parent: "ino:10", name: "new.txt",
                                                 dir: false, size: 9, sha256: String(repeating: "a", count: 64))),
             .create(id: 7, request: BridgeCreate(parent: FilesMap.rootIdentifier, name: "Folder",
