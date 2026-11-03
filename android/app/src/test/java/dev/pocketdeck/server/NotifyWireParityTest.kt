@@ -305,6 +305,32 @@ class NotifyWireParityTest {
     }
 
     @Test
+    fun `the active set's ids reach the Mac unchanged`() {
+        forwarding()
+        val event = NotifyEvents.snapshotEvent(listOf("k-1", "k-2", "k-1", "bad/id", ""))
+        assertEquals(listOf("k-1", "k-2"), event["ids"])
+        push(event)
+        assertCarried(event, readUntil("notify.snapshot"))
+    }
+
+    @Test
+    fun `a snapshot is bounded and a malformed entry drops only itself`() {
+        forwarding()
+        val many = (1..NotifyEvents.MAX_SNAPSHOT_IDS + 10).map { "k-$it" }
+        push(NotifyEvents.snapshotEvent(many))
+        val received = readUntil("notify.snapshot")
+        assertEquals(NotifyEvents.MAX_SNAPSHOT_IDS, (received["ids"] as List<*>).size)
+        assertEquals("k-1", (received["ids"] as List<*>).first())
+    }
+
+    @Test
+    fun `a snapshot without ids is dropped`() {
+        forwarding()
+        push(mapOf("t" to "notify.snapshot"))
+        assertTrue(expectNoMore("notify.snapshot"))
+    }
+
+    @Test
     fun `a picture outside the promised shape is dropped`() {
         forwarding()
         val data = Base64.getEncoder().encodeToString(ByteArray(16) { it.toByte() })

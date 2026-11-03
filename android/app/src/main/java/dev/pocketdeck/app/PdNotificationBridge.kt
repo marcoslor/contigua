@@ -66,6 +66,13 @@ class PdNotificationBridge {
         var chooseSink: ((String) -> Unit)? = null
 
         /**
+         * The shell answered `notify.enable on` while forwarding: the listener
+         * resends its active set (NOTIFY-1/PATH-6). One call per enable.
+         */
+        @Volatile
+        var resyncSink: (() -> Unit)? = null
+
+        /**
          * A JVM test records what would cross the wire here (after both gates);
          * the app leaves it null. Nothing else reads or writes it.
          */

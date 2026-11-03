@@ -1962,6 +1962,10 @@ class Session(
      * switch (docs/design/notify.md). A missing listener grant is tried once at
      * shell UID; when that fails the phone answers `no_access` and shows the
      * person where to allow it.
+     *
+     * Every `on:true` is also announced to the app, even a repeat: after a
+     * same-session rejoin the Mac asks again and the phone answers with its
+     * active set (NOTIFY-1/PATH-6, ISS-5).
      */
     private fun onNotifyEnable(obj: Map<String, Any?>) {
         val on = Json.bool(obj["on"]) ?: run {
@@ -1973,11 +1977,11 @@ class Session(
             notifyGranted = notifyAccess() || notifyGrant()
             if (notifyGranted) log("notify: listener access granted")
         }
-        reconcileNotify()
+        reconcileNotify(announce = on)
     }
 
     /** Re-evaluates the forwarding gate (also runs when the app reports a grant). */
-    fun reconcileNotify() {
+    fun reconcileNotify(announce: Boolean = false) {
         // A session that has not authenticated gets nothing but the machine; the
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
@@ -1990,9 +1994,11 @@ class Session(
         // A gate change always reaches the app, even when forwarding was false
         // both before and after (no access -> off): the attention item is the
         // app's own state. NO_ACCESS repeats, so a late-attached app still learns.
+        // [announce] is the Mac's own enable: it reaches the app even when the
+        // gate did not move, so the listener can resend its active set.
         val forward = gate == NotifyGate.FORWARDING
         notifyForwarding = forward
-        if (gateChanged || needsNotificationAccessAttention(gate)) {
+        if (gateChanged || needsNotificationAccessAttention(gate) || (announce && forward)) {
             runCatching { notifyState?.invoke(forward, if (gate == NotifyGate.NO_ACCESS) "no_access" else null) }
         }
         sendJson(notifyStateMessage(gate))
@@ -2302,6 +2308,7 @@ class Session(
             "notify.post" -> deviceNotifyPost(obj)
             "notify.image" -> deviceNotifyImage(obj)
             "notify.remove" -> deviceNotifyRemove(obj)
+            "notify.snapshot" -> deviceNotifySnapshot(obj)
             "media.state" -> deviceMedia(obj)
             "media.sessions" -> deviceMediaSessions(obj)
             "media.art" -> deviceMediaArt(obj)
@@ -2471,6 +2478,27 @@ class Session(
             return
         }
         sendJson(mapOf("t" to "notify.remove", "id" to id))
+    }
+
+    /**
+     * `notify.snapshot` (NOTIFY-1/PATH-6): the ids the phone's active set still
+     * holds, after a quiet post for each. Re-validated like every device event:
+     * at most [NotifyEvents.MAX_SNAPSHOT_IDS] opaque ids; a malformed one is
+     * dropped, the rest still go out.
+     */
+    private fun deviceNotifySnapshot(obj: Map<String, Any?>) {
+        val raw = obj["ids"] as? List<*> ?: run {
+            log("notify.snapshot dropped: ids")
+            return
+        }
+        val ids = ArrayList<String>(minOf(raw.size, NotifyEvents.MAX_SNAPSHOT_IDS))
+        for (entry in raw) {
+            if (ids.size == NotifyEvents.MAX_SNAPSHOT_IDS) break
+            val id = validToken(entry as? String, 64) ?: continue
+            if (id !in ids) ids += id
+        }
+        sendJson(mapOf("t" to "notify.snapshot", "ids" to ids))
+        log("notify.snapshot ids=${ids.size}")
     }
 
     private fun deviceMedia(obj: Map<String, Any?>) {

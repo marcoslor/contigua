@@ -421,6 +421,15 @@ enum NotifyMapping {
 
     static func record(liveEnded id: String) -> String { "notify live id=\(id) end" }
 
+    /// A snapshot dropped an id the phone's active set no longer holds
+    /// (NOTIFY-1). The summary names counts only.
+    static func record(snapshotEnded id: String) -> String { "notify snapshot end id=\(id)" }
+
+    /// The active set itself: its size and how many ids left.
+    static func record(snapshot count: Int, ended: Int) -> String {
+        "notify snapshot ids=\(count) ended=\(ended)"
+    }
+
     static func record(removed id: String) -> String { "notify remove id=\(id)" }
 
     static func record(opened: String, id: String) -> String { "notify click id=\(id) pkg=\(opened)" }
@@ -1025,6 +1034,35 @@ final class NotifyCenter {
         if let requestId = requestIds.removeValue(forKey: id) {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [requestId])
         }
+    }
+
+    /// `notify.snapshot` (NOTIFY-1): the phone's complete active set after a
+    /// rejoin. A banner, a live row or a post still waiting that the set no
+    /// longer holds leaves; the quiet posts before the marker already updated
+    /// the rest in place, so nothing here presents a banner.
+    func snapshot(ids: [String]) {
+        let keep = Set(ids)
+        var going = liveStore.items.map(\.id)
+        for id in knownOrder where !going.contains(id) { going.append(id) }
+        for id in pending.keys where !going.contains(id) { going.append(id) }
+        var ended = 0
+        for id in going where !keep.contains(id) {
+            if liveStore.end(id) {
+                record(NotifyMapping.record(liveEnded: id))
+                publishLive()
+            }
+            pending.removeValue(forKey: id)?.work.cancel()
+            dropAttachment(id)
+            known.removeValue(forKey: id)
+            postCounts.removeValue(forKey: id)
+            if let requestId = requestIds.removeValue(forKey: id), log == nil {
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [requestId])
+            }
+            record(NotifyMapping.record(snapshotEnded: id))
+            ended += 1
+        }
+        knownOrder.removeAll { !keep.contains($0) }
+        record(NotifyMapping.record(snapshot: ids.count, ended: ended))
     }
 
     /// A banner click (and the `notifyclick` debug action): opens the package's

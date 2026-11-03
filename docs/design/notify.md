@@ -70,14 +70,26 @@ phone has no second switch: its notification-listener grant is the phone-side ha
 
 ## Protocol (docs/PROTOCOL.md, session-level JSON)
 
-- mac→phone: `notify.enable {on}` — the only person-facing switch, sent when it changes and again on reconnect;
+- mac→phone: `notify.enable {on}` — the only person-facing switch, sent when it changes, again
+  on reconnect, and again after a same-session rejoin that followed an outage (PATH-6); every
+  `on:true` is an active-set request (NOTIFY-1).
   `notify.open {id, target: window|phone, stream?}` — a banner click (the id is one the phone
   issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
 - phone→mac: `notify.state {on, reason?}` (true once granted and forwarding; `reason:"no_access"`
   when the Mac asked but the listener grant is missing); `notify.post {id, pkg, app?,
-  when, title?, text?, alert, group?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
+  when, title?, text?, alert, group?, ongoing?}`; `notify.remove {id}`; `notify.snapshot {ids}`
+  — the active set that answers an enable: one quiet `notify.post` (`alert:false`) per
+  notification still active, then the ids it just posted; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
+
+The active set is how a rejoin repairs state the Mac cleared on path loss: the quiet posts
+update a changed row in place (never a second banner) and `notify.snapshot` names everything
+the phone still holds. The Mac drops every live row, banner and waiting post whose id the set
+does not name, so a row the phone ended during the outage does not outlive it. The set is the
+same shape at session start and after a rejoin; a planned switch or a probe join beside a
+live path sends no enable and therefore no snapshot. Ids are the opaque tokens `notify.post`
+carried (at most 200), never text.
 - Privacy: notification or media text is never logged (the e2e `--share-log` file records ids, package
   names and field lengths only, and in that mode nothing is posted to Notification Center); without
   an answered `notify.enable {on:true}` nothing is forwarded; disconnect clears the Mac's local state.

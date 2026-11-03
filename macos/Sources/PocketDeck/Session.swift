@@ -198,6 +198,9 @@ enum SessionEvent {
     /// The picture that follows a `notify.post` (docs/design/notify.md, 2b).
     case notifyImage(id: String, mime: String, width: Int, height: Int, data: Data)
     case notifyRemoved(id: String)
+    /// The phone's complete active set after a rejoin (NOTIFY-1): every id it
+    /// still holds, sent after a quiet post for each one.
+    case notifySnapshot(ids: [String])
     case mediaState(MediaState)
     /// "Media part 2": the active sessions and the chosen one, and the chosen
     /// session's artwork. A phone that does not know them never sends them.
@@ -376,6 +379,10 @@ final class Session {
     /// that has not heard one yet counts as active (the safe default).
     private var phoneScreenOn = true
     private var reconnectingEmitted = false
+    /// The Mac's notification opt-in for this session (NOTIFY-1): repeated on a
+    /// rejoin after an outage, so the phone resends its active set. A box
+    /// because the controller sets it from main and the session queue reads it.
+    private let notifyEnabled = SessionLockedBox(value: false)
     private var pairingAttempt = false
     /// The founding path's phone identity, for the pairing pin record.
     private var foundingPeerPin = ""
@@ -1498,11 +1505,21 @@ final class Session {
                 }
                 // A later path: one more connection, no second session, no
                 // second ready event (PATH-3).
+                // NOTIFY-1: an orphaned session's rejoin is the reconnect the
+                // ready branch never sees (ISS-5); the opt-in is repeated once
+                // the rejoined path is current. A probe join beside a live
+                // path (no outage) sends nothing.
+                var afterOutage = false
+                if case .orphaned = pathMachine.state { afterOutage = true }
                 attemptEvent(welcomedOn, .welcomed(session: session))
                 let wasProbe = attempts[welcomedOn]?.probeJoin == true
                 attachPath(welcomedOn)
                 if wasProbe { probeWelcomed(welcomedOn) }
                 emit(.pathsReconnecting(false))
+                if afterOutage, notifyEnabled.get() {
+                    Log.session.notice("notify: rejoined after an outage; asking for the active set")  // log-ok: a closed event, no value
+                    sendJSON(["t": "notify.enable", "on": true])
+                }
                 return
             }
             // From here the seq space exists: no frame may travel bare again,
@@ -1674,6 +1691,8 @@ final class Session {
                               width: width, height: height, data: data))
         case "notify.remove":
             emit(.notifyRemoved(id: message.string("id") ?? ""))
+        case "notify.snapshot":
+            emit(.notifySnapshot(ids: message.strings("ids") ?? []))
         case "media.state":
             emit(.mediaState(MediaState(
                 playing: message.bool("playing") ?? false,
@@ -1987,7 +2006,12 @@ final class Session {
     func text(stream: UInt32, text: String) { sendJSON(["t": "text", "stream": Int(stream), "text": text]) }
     func installApk(id: UInt32, files: [[String: Any]]) { sendJSON(["t": "apk.install", "id": Int(id), "files": files]) }
     func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
-    func enableNotifications(_ on: Bool) { sendJSON(["t": "notify.enable", "on": on]) }
+    func enableNotifications(_ on: Bool) {
+        // Remembered so a same-session rejoin after an outage can repeat it
+        // (NOTIFY-1/PATH-6): the phone answers with its active set.
+        notifyEnabled.set(on)
+        sendJSON(["t": "notify.enable", "on": on])
+    }
     /// The Mac's own "Share clipboard with your phone" setting, sent at ready and
     /// on every change: the phone has no switch, so this is what stops its sends.
     func enableClipboard(_ on: Bool) { sendJSON(["t": "clip.enable", "on": on]) }
