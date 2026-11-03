@@ -1039,8 +1039,8 @@ next, the app's queue never holds more than 3 asks per extension, and several
 open batches cannot put 3 x N asks on the bridge. MEASURED (K2
 `ThumbSchedulerLoadTests.testTheScrollLoad`, 2026-11-03): 3,000 ids in 60
 batches of 50 against a 300 ms phone, a new batch opening and the previous one
-cancelling every 2 s → first ask of a new batch p50 149 ms, p95 289 ms, max
-318 ms; the pending set peaked at 53 (3 in flight + one batch of 50). The phone
+cancelling every 2 s → first ask of a new batch p50 149-159 ms, p95 289-302 ms,
+max 313-318 ms over two runs; the pending set peaked at 53 (3 in flight + one batch of 50). The phone
 generates one at a time, accepts at most 3 live thumb ids (`fs_busy` past that)
 and puts the frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session
 writer's lowest-priority queue, drained after JSON, control, audio and video
