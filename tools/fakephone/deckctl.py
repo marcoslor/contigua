@@ -2087,6 +2087,39 @@ def cmd_drop(client, args):
     return 0 if msg.get("ok") is True else 1
 
 
+
+def cmd_dropbatch(client, args):
+    """Send one gesture's drops in one session (the Mac's multi-file batch)."""
+    with open(args.path, "rb") as handle:
+        data = handle.read()
+    if not data:
+        raise DeckError("dropbatch needs a non-empty file")
+    base = os.path.basename(args.path)
+    mime = _mime_of(args.path)
+    sha = hashlib.sha256(data).hexdigest()
+    ok = True
+    for index in range(1, args.count + 1):
+        ident = args.id + index
+        name = "batch-%d-%s" % (index, base)
+        message = {"t": "drop.start", "id": ident, "name": name, "mime": mime,
+                   "size": len(data), "sha256": sha, "index": index, "count": args.count}
+        if args.target:
+            message["target"] = args.target
+        client.send_json(message)
+        _wait_json(client, time.time() + 15, {"drop.progress"}, ident)
+        offset = 0
+        while offset < len(data):
+            end = min(offset + (256 << 10), len(data))
+            client.send_raw(proto.pack_frame(proto.TYPE_DROP_DATA, ident, data[offset:end]))
+            offset = end
+        result = _wait_json(client, time.time() + args.timeout, {"drop.result"}, ident)
+        print("drop batch id=%d name=%s index=%d/%d ok=%s code=%s"
+              % (ident, name, index, args.count, result.get("ok"),
+                 result.get("code") or "-"))
+        ok = ok and result.get("ok") is True
+    return 0 if ok else 1
+
+
 def cmd_clip_watch(client, args):
     """Print every `clip.set` the phone sends, for `--seconds`."""
     deadline = time.time() + args.seconds
@@ -2994,6 +3027,13 @@ def build_parser():
     sp.add_argument("--id", type=int, default=9002)
     sp.add_argument("--timeout", type=float, default=90.0)
 
+    sp = sub.add_parser("dropbatch", help="send one gesture's drops in one session (the Mac's batch)", **spp)
+    sp.add_argument("path")
+    sp.add_argument("--target", default=None, help="the app window's package (SHARE-17)")
+    sp.add_argument("--count", type=int, default=3)
+    sp.add_argument("--id", type=int, default=9100)
+    sp.add_argument("--timeout", type=float, default=90.0)
+
     sp = sub.add_parser("ring", help="phone.ring: ring the phone (or --stop), print ring.state", **spp)
     sp.add_argument("--seconds", type=int, default=30, help="ring for 1..30 s (default 30)")
     sp.add_argument("--stop", action="store_true", help="send phone.ring.stop instead")
@@ -3226,6 +3266,7 @@ COMMANDS = {
     "clip-set": cmd_clip_set,
     "clipimage": cmd_clipimage,
     "drop": cmd_drop,
+    "dropbatch": cmd_dropbatch,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,
     "media": cmd_media,
