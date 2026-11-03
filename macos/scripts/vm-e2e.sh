@@ -86,7 +86,7 @@ files_flag=()
 controls_flag=()
 for c in "${CHECKS[@]}"; do
     case "$c" in
-        files-domain|files-thumbs) files_flag=(--with-files) ;;
+        files-domain|files-thumbs|files-thumbs-scale) files_flag=(--with-files) ;;
         controls) controls_flag=(--with-controls) ;;
     esac
 done

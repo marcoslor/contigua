@@ -7900,6 +7900,294 @@ PY
     wait_until 5 no_fakephone
 }
 
+# --- Thumbnails at scale (FILES-30, files-thumbs-scale) ---------------------
+#
+# The person's report: a folder of thousands of images, scrolled far, and the
+# thumbnails did not follow. One VM boot opens 3,000 small JPEGs in Finder's
+# icon view, then scrolls to the middle and to the end. The fake phone answers
+# one thumbnail at a time, 300 ms each (a real phone's pace), so the ~20 icons
+# on a screen form a queue rather than filling at once.
+#
+# Records, ids/counts/sizes/durations only (FILES-27): the listing time for
+# 3,000 names, Finder's batch sizes and cancels (the extension's `thumb batch`
+# lines), and the time from the open / each scroll to the first picture on
+# screen.
+check_files_thumbs_scale() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        bad "FILES-THUMBS-SCALE refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-thumbs-scale"
+        return
+    fi
+    clean
+    local appex; appex="$(files_appex)"
+    command -v ffmpeg >/dev/null || { bad "FILES-THUMBS-SCALE ffmpeg is needed to make the fixtures"; return 1; }
+    files_tree
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=lime:s=64x64" \
+        -frames:v 1 -q:v 4 "$WORK/thumb.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS-SCALE could not make the thumbnail fixture"; return 1; }
+    # Fixture names only: 3,000 tiny JPEGs are the listing's weight, not the
+    # picture's (the fake serves its own green fixture for any image name).
+    python3 - "$WORK/fsroot" "$WORK/thumb.jpg" <<'PY'
+import os, sys
+root = os.path.join(sys.argv[1], "bulk")
+os.makedirs(root, exist_ok=True)
+data = open(sys.argv[2], "rb").read()
+for i in range(3000):
+    with open(os.path.join(root, "img%04d.jpg" % i), "wb") as handle:
+        handle.write(data)
+PY
+
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-delay-ms 300" start_fake || return 1
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
+    files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    wait_until 60 eval '! stale_domain_folder' \
+        || bad "FILES-THUMBS-SCALE the removed domain's folder is still in CloudStorage after 60 s"
+
+    launch --connect "127.0.0.1:$PORT" --files-domain add
+    wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
+        && ok "FILES-THUMBS-SCALE NSFileProviderManager.add ok" \
+        || { bad "FILES-THUMBS-SCALE add failed"; stop_app; stop_fakephone; return 1; }
+    wait_until 20 file_has "files-domain bridge group: ok" "$WORK/app.log" \
+        || bad "FILES-THUMBS-SCALE no App Group bridge socket"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "FILES-THUMBS-SCALE the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    files_list
+    local root; root="$(files_domain_path)"
+    files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
+    wait_until "$FILES_SWITCH_WAIT_S" files_root_lists "$root" \
+        && ok "FILES-THUMBS-SCALE the extension is enabled and the domain enumerates" \
+        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch"; stop_app; stop_fakephone; return 1; }
+
+    # -- The listing's weight ------------------------------------------------
+    local bulk="$root/bulk" t0 t1 names listing_ms
+    t0="$(now_ms)"
+    run_limited 20 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
+    t1="$(now_ms)"
+    names="$(wc -l < "$WORK/bulk-ls.txt" | tr -d ' ')"
+    listing_ms=$((t1 - t0))
+    step "FILES-THUMBS-SCALE listing: names=$names ms=$listing_ms"
+    if [ "${names:-0}" = "3000" ] && [ "$listing_ms" -le 5000 ]; then
+        ok "FILES-THUMBS-SCALE [FILES-30] 3,000 names listed in ${listing_ms} ms"
+    else
+        bad "FILES-THUMBS-SCALE listed ${names:-0} names in ${listing_ms} ms (want 3000 within 5000 ms)"
+    fi
+
+    # -- Finder's icon view --------------------------------------------------
+    finder_folder() {
+        open -a Finder "$1" >/dev/null 2>&1 || true
+        local deadline=$((SECONDS + 30)) id
+        while [ $SECONDS -lt $deadline ]; do
+            id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+            [ -n "$id" ] && break
+            sleep 0.5
+        done
+        osascript - "$1" <<'OSA'
+on run argv
+    with timeout of 30 seconds
+        tell application "Finder"
+            activate
+            try
+                set theWindow to front window
+                set current view of theWindow to icon view
+                set icon size of theWindow's icon view options to 128
+                set bounds of theWindow to {80, 80, 900, 700}
+                set toolbar visible of theWindow to false
+                set statusbar visible of theWindow to false
+            end try
+        end tell
+    end timeout
+end run
+OSA
+    }
+    finder_close() {
+        osascript >/dev/null 2>&1 <<'OSA' || true
+with timeout of 20 seconds
+    tell application "Finder" to close every window
+end timeout
+OSA
+    }
+    finder_id() { "$CGBIN" list --owner Finder | head -1 | cut -f1; }
+    # The extension's batch lines, one count per call: the movement signal and
+    # the record (ids and counts only, FILES-27). It refreshes the log first;
+    # a call costs a `log show`, so the scroll paths use it sparingly.
+    batch_count() {
+        files_log > "$WORK/scale-log.txt" 2>/dev/null || true
+        grep -c "$1" "$WORK/scale-log.txt" 2>/dev/null || true
+    }
+    finder_shot() {
+        local id; id="$(finder_id)"
+        [ -n "$id" ] && screencapture -x -o -l"$id" "$1" 2>/dev/null
+    }
+    # The fake's picture is pure green; the sidebar is skipped so Finder's own
+    # icons cannot count as one of ours.
+    green_pixels() {
+        local png="$1" skip="$2" width height
+        width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$png" 2>/dev/null)"
+        height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$png" 2>/dev/null)"
+        [ -n "$width" ] && [ -n "$height" ] || { echo 0; return; }
+        ffmpeg -hide_banner -loglevel error -y -i "$png" -f rawvideo -pix_fmt rgb24 "$WORK/shot.rgb" >/dev/null 2>&1 || { echo 0; return; }
+        python3 - "$WORK/shot.rgb" "$width" "$height" "$skip" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+width, height, skip = int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+start = int(width * skip)
+count = 0
+for y in range(height):
+    row = y * width * 3
+    for x in range(start, width):
+        i = row + x * 3
+        if data[i + 1] >= 200 and data[i] <= 90 and data[i + 2] <= 90:
+            count += 1
+print(count)
+PY
+    }
+    wait_first_picture() { # <label> <start_ms> <limit_s> -> "ms pixels" or "-1 pixels"
+        local label="$1" start="$2" limit="$3" png="$SHOTS/first-$label.png"
+        local deadline=$((SECONDS + limit)) px=0
+        while [ $SECONDS -lt $deadline ]; do
+            if finder_shot "$png"; then
+                px="$(green_pixels "$png" 0.35)"
+                if [ "${px:-0}" -ge 1000 ]; then
+                    echo "$(( $(now_ms) - start )) ${px:-0}"
+                    return 0
+                fi
+            fi
+            sleep 0.2
+        done
+        echo "-1 ${px:-0}"
+        return 1
+    }
+
+    finder_close
+    local open_start open_line start_ms start_px
+    open_start="$(now_ms)"
+    finder_folder "$bulk"
+    if open_line="$(wait_first_picture start "$open_start" 40)"; then
+        read -r start_ms start_px <<< "$open_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $start_ms ms after the view opened (${start_px} px)"
+    else
+        read -r start_ms start_px <<< "$open_line"
+        bad "FILES-THUMBS-SCALE no picture within 40 s of opening the view (${start_px} px)"
+        start_ms=-1
+    fi
+
+    # -- The scrolls ---------------------------------------------------------
+    # 240 px per event: 200 events = 48,000 px, about half of the grid's
+    # ~600 rows; the end is another 72,000 px, which clamps on the last row.
+    scroll_finder() { # <events> [amount] [pixels|line]
+        local id; id="$(finder_id)"
+        [ -n "$id" ] || return 1
+        if [ "${3:-pixels}" = "line" ]; then
+            cg_input scroll --window "$id" --dy -"${2:-20}" --repeat "$1" --delay-ms 8
+        else
+            cg_input scroll --window "$id" --dy -"${2:-240}" --repeat "$1" --delay-ms 8 --pixels
+        fi
+    }
+    scroll_picture() { # <label> <events> <limit_s> -> "ms pixels"
+        local label="$1" events="$2" limit="$3" start png="$SHOTS/scroll-$label.png"
+        local before after
+        before="$(batch_count 'thumb batch open')"
+        start="$(now_ms)"
+        scroll_finder "$events" || return 1
+        sleep 1
+        after="$(batch_count 'thumb batch open')"
+        if [ "${after:-0}" -le "${before:-0}" ]; then
+            # The pixel gesture moved nothing (some views ignore pixel units):
+            # a line gesture is the wheel every other check uses.
+            scroll_finder 60 20 line
+        fi
+        local deadline=$((SECONDS + limit)) px=0
+        while [ $SECONDS -lt $deadline ]; do
+            if finder_shot "$png"; then
+                px="$(green_pixels "$png" 0.35)"
+                if [ "${px:-0}" -ge 1000 ]; then
+                    echo "$(( $(now_ms) - start )) ${px:-0}"
+                    return 0
+                fi
+            fi
+            sleep 0.2
+        done
+        echo "-1 ${px:-0}"
+        return 1
+    }
+
+    local middle_line middle_ms middle_px
+    if middle_line="$(scroll_picture middle 200 20)"; then
+        read -r middle_ms middle_px <<< "$middle_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $middle_ms ms after the middle scroll (${middle_px} px)"
+    else
+        read -r middle_ms middle_px <<< "$middle_line"
+        bad "FILES-THUMBS-SCALE no picture at the middle within 20 s (${middle_px} px)"
+        middle_ms=-1
+    fi
+    sleep 2
+    local end_line end_ms end_px
+    if end_line="$(scroll_picture end 300 20)"; then
+        read -r end_ms end_px <<< "$end_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $end_ms ms after the end scroll (${end_px} px)"
+    else
+        read -r end_ms end_px <<< "$end_line"
+        bad "FILES-THUMBS-SCALE no picture at the end within 20 s (${end_px} px)"
+        end_ms=-1
+    fi
+    finder_shot "$SHOTS/after-files-thumbs-scale-end.png" \
+        && { cp "$SHOTS/after-files-thumbs-scale-end.png" "$WORK/" 2>/dev/null || true; \
+             ok "FILES-THUMBS-SCALE screenshot: $SHOTS/after-files-thumbs-scale-end.png"; }
+
+    # -- What Finder asked and cancelled -------------------------------------
+    sleep 5
+    finder_close
+    local opens cancels dones sizes
+    opens="$(batch_count 'thumb batch open')"; opens="${opens:-0}"
+    # Every batch completes once, including the ones the scroll cancelled: the
+    # extension's done line follows the last answer. A base build without the
+    # lines records 0/0, which the before run reads as "not logged".
+    local waited=0
+    while [ "$waited" -lt 30 ]; do
+        dones="$(batch_count 'thumb batch done')"; dones="${dones:-0}"
+        if [ "$opens" = "0" ] || [ "$dones" -ge "$opens" ]; then break; fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    cancels="$(batch_count 'thumb batch cancel')"; cancels="${cancels:-0}"
+    sizes="$(sed -n 's/.*thumb batch open id=[0-9]* n=\([0-9]*\) .*/n=\1/p' "$WORK/scale-log.txt" | sort | uniq -c | tr '\n' ' ')"
+    step "FILES-THUMBS-SCALE batches: open=$opens cancel=$cancels done=$dones sizes=${sizes:-none}"
+    if [ "$opens" = "0" ]; then
+        say "FILES-THUMBS-SCALE recorded: the build has no batch lines (before run)"
+    elif [ "$dones" -ge "$opens" ]; then
+        ok "FILES-THUMBS-SCALE [FILES-25] every batch completed ($dones of $opens)"
+    else
+        bad "FILES-THUMBS-SCALE $dones of $opens batches completed"
+    fi
+    say "FILES-THUMBS-SCALE recorded: batch sizes ${sizes:-none}; cancels $cancels"
+    say "FILES-THUMBS-SCALE recorded: first picture start=${start_ms} ms middle=${middle_ms} ms end=${end_ms} ms"
+
+    if grep -Eq 'img[0-9]{4}\.jpg' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE [FILES-27] a file name appears in the thumbnail log"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-27] the thumbnail log carries no file name"
+    fi
+    if grep -q 'fetch done' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE [FILES-23] the thumbnail materialized the file"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-23] no fetchContents: the items stayed undownloaded"
+    fi
+    if grep -q 'thumb failed code=fs_busy' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE the Mac exceeded the phone's 3 live thumb ids"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-25] the phone never answered fs_busy"
+    fi
+
+    stop_app
+    files_oneshot remove "$WORK/remove.txt" >/dev/null 2>&1 || true
+    unregister_files >/dev/null 2>&1 || true
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_files_domain() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
         bad "FILES-DOMAIN refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-domain"
