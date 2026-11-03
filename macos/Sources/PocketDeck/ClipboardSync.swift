@@ -21,8 +21,32 @@ protocol ClipboardPasteboard: AnyObject {
     /// The item's image (PNG bytes, or TIFF converted) when it holds one and no
     /// text; nil otherwise. Text items stay with the text path.
     func currentImage() -> (data: Data, mime: String)?
+    /// The file URLs the current item carries (`public.file-url`), if any.
+    func currentFileURLs() -> [URL]
     /// Replaces the contents with image bytes (PNG, plus TIFF for reading).
     func writeImage(data: Data, mime: String)
+}
+
+extension ClipboardPasteboard {
+    /// Boards that never carry files (an image-only fake) have none.
+    func currentFileURLs() -> [URL] { [] }
+}
+
+/// What ⌘V reads. A Finder copy also puts the file's name on the pasteboard as
+/// text; that text must never be typed into the phone (SHARE-2).
+protocol PasteboardReader {
+    func text() -> String?
+    func isFileCopy() -> Bool
+}
+
+/// The general pasteboard.
+struct SystemPasteboardReader: PasteboardReader {
+    func text() -> String? { NSPasteboard.general.string(forType: .string) }
+
+    func isFileCopy() -> Bool {
+        !(NSPasteboard.general.readObjects(forClasses: [NSURL.self],
+                                          options: [.urlReadingFileURLsOnly: true]) ?? []).isEmpty
+    }
 }
 
 final class ClipboardSync {
