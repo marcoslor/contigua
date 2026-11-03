@@ -224,7 +224,11 @@ enum DockShimMachine {
             return (.quitting, [.post(.quit)])
 
         case .hostExited:
-            // Scaffold: the transition lands with the fix; the tests fail here.
+            // DOCK-19 (ISS-6): the process that bound (or was about to bind)
+            // this shim is gone. There is no host left to post `quit` to; the
+            // same `[.exit]` a `closed` takes removes the Dock tile at once.
+            if case .bound = state { return (.quitting, [.exit]) }
+            if case .waiting(_, _, true) = state { return (.quitting, [.exit]) }
             return (state, [])
         }
     }

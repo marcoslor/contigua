@@ -163,6 +163,12 @@ launchd job; Apple Events need an automation permission prompt.
 - Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `dev.pocketdeck.dock.quit`;
   the host also watches `NSWorkspace.didTerminateApplication` for the shim's pid, so a force
   quit or crash closes the window too.
+- The shim watches the host in return (DOCK-19): `NSWorkspace.didTerminateApplicationNotification`
+  matched on `PDHostPath`, plus a process source on the host pid because a host started by
+  exec (the e2e) gets no LaunchServices termination notice. When the host ends — quit, crash
+  or force quit — a bound shim, or one still waiting after it has seen the host running,
+  quits at once (`hostExited`), so no Dock icon outlives PocketDeck. A waiting shim that has
+  not seen the host keeps its 30 s self-quit; a host relaunch starts its own shims again.
 - Closing the window (or the phone closing the stream, forgetting the phone) posts
   `dev.pocketdeck.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
 - An automatic identity still building or launching when its window closes is dropped
