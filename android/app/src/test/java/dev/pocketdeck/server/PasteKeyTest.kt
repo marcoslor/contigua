@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.KeyPayload
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -26,10 +27,16 @@ class PasteKeyTest {
 
     private val uri: Uri get() = Uri.parse("content://dev.pocketdeck.fileprovider/downloads/Clip%201.png")
 
+    /**
+     * Measured on the emulator (boot 3): a URI-only item pastes nothing in a
+     * plain field (a content:// URI that cannot serve text coerces to null)
+     * and does reach an image field's listener. So the item carries no text at
+     * all, rather than an empty one that would have to be maintained.
+     */
     @Test
-    fun anImageClipCarriesEmptyTextSoAPlainFieldPastesNothing() {
+    fun aUriOnlyImageItemNeverBecomesText() {
         val item = imageClipItem(uri)
-        assertEquals("", item.text?.toString())
+        assertNull(item.text)
         assertEquals(uri, item.uri)
         val context = ApplicationProvider.getApplicationContext<Context>()
         assertEquals("a field with no image receiver must paste nothing, never a content:// string",
