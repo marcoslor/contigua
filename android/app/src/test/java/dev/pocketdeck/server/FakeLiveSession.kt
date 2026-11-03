@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit
 internal class FakeLiveSession(
     private val gate: CountDownLatch = CountDownLatch(0),
     private val sessionId: String? = null,
+    /** Runs at the end of [close], as a session's shutdown does (ISS-13). */
+    private val onClosed: (() -> Unit)? = null,
 ) : LiveSession {
     val closeStarted = CountDownLatch(1)
 
@@ -41,6 +43,7 @@ internal class FakeLiveSession(
     override fun close() {
         closeStarted.countDown()
         gate.await(10, TimeUnit.SECONDS)
+        onClosed?.invoke()
         closedOn = Thread.currentThread().name
         closed = true
     }

@@ -52,8 +52,11 @@ class SessionTest {
                         onQrConsumed: (() -> Unit)? = null,
                         gates: () -> GateSettings? = { GateSettings(true, true) },
                         secureProbe: SecureProbe? = null,
-                        strays: Int = 0) {
-        awaitPreviousSessionEnded()
+                        strays: Int = 0,
+                        waitForPrevious: Boolean = true) {
+        // A test of the fast re-adopt (ISS-13) connects while the old teardown
+        // still runs; every other test keeps PAIR-21's one-at-a-time rule.
+        if (waitForPrevious) awaitPreviousSessionEnded()
         // This connect's listener and client port: the accept thread must take
         // this connection even when a later connect has replaced the fields.
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
@@ -1176,6 +1179,58 @@ class SessionTest {
         assertEquals("same", readUntil("clip.set")["text"])
         assertEquals("next", readUntil("clip.set")["text"])
     }
+
+    /**
+     * ISS-13: the slot is freed as soon as a drop happens, so the next session
+     * can listen while the old one's teardown still runs. The old stop must not
+     * silence the new session's listener.
+     */
+    @Test
+    fun anOldSessionsLateClipboardStopDoesNotSilenceTheNewSession() {
+        val oldStop = handOverWhileTheOldClipboardStopRuns()
+        oldStop.release.countDown()
+        await { platform.clipStopsDone.get() == 1 }
+
+        platform.changeClip("after the hand-over")
+
+        assertEquals("after the hand-over", readUntil("clip.set")["text"])
+    }
+
+    /** ISS-13: the session that installed the listener still stops it. */
+    @Test
+    fun theNewSessionsOwnStopEndsTheClipboardSync() {
+        val oldStop = handOverWhileTheOldClipboardStopRuns()
+        oldStop.release.countDown()
+        await { platform.clipStopsDone.get() == 1 }
+        assertTrue("the old stop silenced the new session's listener", platform.clipListening)
+
+        closeCurrent()
+        await { platform.clipStopsDone.get() == 2 }
+
+        assertFalse("the new session's own stop did not end delivery", platform.clipListening)
+    }
+
+    /** A stands listening; its teardown parks in `stop`; B connects and listens. */
+    private fun handOverWhileTheOldClipboardStopRuns(): OldClipboardStop {
+        addAndAuthenticate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        platform.onClipStop = {
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+        // The drop path: the old session is cut at once, its teardown still runs.
+        session!!.close()
+        assertTrue("the old session never reached its clipboard stop",
+            entered.await(5, TimeUnit.SECONDS))
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, waitForPrevious = false)
+        addAndAuthenticateCommon()
+        await { platform.clipListenCalls.get() == 2 }
+        return OldClipboardStop(release)
+    }
+
+    private class OldClipboardStop(val release: CountDownLatch)
 
     @Test
     fun clipAtOneMiBIsSentAndLargerIsNot() {
