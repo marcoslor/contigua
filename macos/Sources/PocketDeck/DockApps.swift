@@ -1102,6 +1102,11 @@ final class DockApps: NSObject {
         switch decision {
         case .answer:
             post(DockMessage.opened, pid: pid)
+            // The shim may have started listening after its bind's one post:
+            // its `ready` is the first moment it can hear anything, so the
+            // menu must travel with the answer or its Dock menu stays empty
+            // (the second shim of one app process, ISS-4 round 4).
+            sendWindowMenu(pid: pid)
         case .ignoreUnbound:
             return
         case .ignoreToken:
