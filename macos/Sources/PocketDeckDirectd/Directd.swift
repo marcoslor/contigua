@@ -67,12 +67,21 @@ final class DirectDaemon {
     private var peerMAC: [UInt8] = []
     private var peerLL: [UInt8] = []
     private var routeInstalled = false
+    private var nan: NanSession?
+    private var nanPending: NanPending?
+    private var nanDeadline: Date?
 
     private final class Client {
         let fd: Int32
         var framer = DirectLineFramer()
         var out = Data()
         init(fd: Int32) { self.fd = fd }
+    }
+
+    /// One request waiting for the NDP. Only one attempt runs at a time.
+    private enum NanPending {
+        case discover(Client)
+        case dial(Client, port: UInt16)
     }
 
     enum Event {
@@ -217,6 +226,7 @@ final class DirectDaemon {
             transfer()
             pdl_poll(stack)
             expire()
+            expireNan()
         }
         pdl_print_stats(stack)
         DirectLog.line("stopping on SIGTERM")
@@ -339,6 +349,12 @@ final class DirectDaemon {
     }
 
     private func closeClient(_ fd: Int32) {
+        if let pending = nanPending, let client = clients[fd],
+           pendingClient(pending) === client {
+            nanPending = nil
+            nanDeadline = nil
+            if let session = nan { nanApply(session.handle(.stop)) }
+        }
         kqueue.forget(fd: fd)
         close(fd)
         clients[fd] = nil
@@ -411,8 +427,14 @@ final class DirectDaemon {
         }
         switch request {
         case .hello:
-            // No NAN toolkit in this round: hello tells the truth about it.
-            sendReply(.hello(version: 1, dataLinks: DirectLimits.maxLinks), to: client)
+            // The toolkit is loaded only in a direct helper; a test build of
+            // this file still answers truthfully.
+            let subscribe = nanSession() != nil
+            sendReply(.hello(version: 1,
+                             toolkit: DirectToolkitReport(publish: false,
+                                                          subscribe: subscribe,
+                                                          dataLinks: DirectLimits.maxLinks)),
+                      to: client)
         case .probe:
             sendReply(.probe(ready: false,
                              codes: ["probe_unimplemented"],
@@ -433,8 +455,12 @@ final class DirectDaemon {
             pdl_set_peer(stack, ll, mac)
             DirectLog.line("peer \(spec.interface) mac \(hex(mac)) ll \(IPv6Address.format(ll))")
             sendReply(.ok, to: client)
-        case .dial(let port):
-            dial(port: port, from: client)
+        case .discover(let service, let psk):
+            discover(service: service, psk: psk, from: client)
+        case .dial(let request):
+            dial(request, from: client)
+        case .stop:
+            stopNan(from: client)
         case .close(let id):
             if let link = links[id] {
                 link.closeByApp()
@@ -458,7 +484,28 @@ final class DirectDaemon {
         }
     }
 
-    private func dial(port: UInt16, from client: Client) {
+    private func dial(_ request: DirectDial, from client: Client) {
+        if nan?.peer != nil {
+            connect(port: request.port, from: client)
+            return
+        }
+        if request.peer != nil, let service = request.service, let psk = request.psk {
+            guard nanPending == nil else {
+                sendReply(.error(.busy, message: "a NAN attempt is already running"), to: client)
+                return
+            }
+            beginNan(service: service, psk: psk,
+                     pending: .dial(client, port: request.port))
+            return
+        }
+        guard peerSpec != nil else {
+            sendReply(.error(.notReady, message: "no NAN session and no test peer"), to: client)
+            return
+        }
+        connect(port: request.port, from: client)
+    }
+
+    private func connect(port: UInt16, from client: Client) {
         guard let spec = peerSpec, peerLL.count == 16, peerMAC.count == 6 else {
             sendReply(.error(.notReady, message: "no peer set"), to: client)
             return
@@ -535,6 +582,156 @@ final class DirectDaemon {
         var bytes = [UInt8](repeating: 0, count: 8)
         arc4random_buf(&bytes, bytes.count)
         return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: the NAN session (§2.2, §2.5)
+
+    private func discover(service: String, psk: String, from client: Client) {
+        if nan?.peer != nil {
+            sendReply(.ok, to: client)
+            return
+        }
+        guard nanPending == nil else {
+            sendReply(.error(.busy, message: "a NAN attempt is already running"), to: client)
+            return
+        }
+        beginNan(service: service, psk: psk, pending: .discover(client))
+    }
+
+    /// Starts one attempt: the accepted SSI windows come from the key and the
+    /// clock, the passphrase from the key (§5, §6). The key itself never
+    /// reaches a log; its 8-hex fingerprint and length do.
+    private func beginNan(service: String, psk: String, pending: NanPending) {
+        guard let session = nanSession() else {
+            answer(pending, .error(.notReady, message: "no Wi-Fi Aware toolkit"))
+            return
+        }
+        guard let key = DirectKey.parse(psk) else {
+            answer(pending, .error(.badRequest, message: "the key is not 32 bytes"))
+            return
+        }
+        DirectLog.line("nan key=\(DirectKey.fingerprint(key)) len=\(key.count)")
+        let now = Int64(Date().timeIntervalSince1970)
+        let windows = NanSsi.accepted(key: key, epochSeconds: now)
+        let passphrase = DirectKey.passphrase(key)
+        nanPending = pending
+        nanDeadline = Date().addingTimeInterval(TimeInterval(NanLimits.ndpTimeoutSeconds))
+        nanApply(session.handle(.start(service: service, windows: windows,
+                                       passphrase: passphrase)))
+    }
+
+    private func stopNan(from client: Client) {
+        if let pending = nanPending {
+            nanPending = nil
+            nanDeadline = nil
+            answer(pending, .error(.notReady, message: "the NAN session stopped"))
+        }
+        guard let session = nan else {
+            sendReply(.ok, to: client)
+            return
+        }
+        let wasUp = session.peer != nil
+        nanApply(session.handle(.stop))
+        if wasUp {
+            for link in links.values { link.closeByApp() }
+        }
+        sendReply(.ok, to: client)
+    }
+
+    private func nanSession() -> NanSession? {
+        if let nan { return nan }
+        guard let port = ToolkitNanPort(log: { DirectLog.line($0) }) else { return nil }
+        let session = NanSession(port: port, interface: config.interface,
+                                 log: { DirectLog.line($0) })
+        port.onDiscovery = { [weak self] discovery in
+            self?.nanFeed(.discovered(discovery))
+        }
+        port.onReport = { [weak self] report in
+            self?.nanFeed(.dataSession(report))
+        }
+        nan = session
+        return session
+    }
+
+    private func nanFeed(_ event: NanSessionEvent) {
+        guard let nan else { return }
+        nanApply(nan.handle(event))
+    }
+
+    /// The machine has already performed its port actions; this side is the
+    /// peer hand-over and the reply the waiting request gets.
+    private func nanApply(_ step: NanSessionStep) {
+        for action in step.actions {
+            switch action {
+            case .peerUp(let spec):
+                applyNanPeer(spec)
+            case .peerLost:
+                clearNanPeer()
+            case .failed(let code):
+                finishNan(code)
+            case .subscribe, .updateWindows, .unsubscribe, .startDataSession,
+                 .stopDataSession:
+                break
+            }
+        }
+    }
+
+    private func applyNanPeer(_ spec: DirectPeerSpec) {
+        guard let mac = hexBytes(spec.mac), let ll = IPv6Address.parse(spec.linkLocal) else {
+            finishNan(.ndpRefused)
+            return
+        }
+        peerSpec = spec
+        peerMAC = mac
+        peerLL = ll
+        pdl_set_peer(stack, ll, mac)
+        DirectLog.line("peer \(spec.interface) mac \(spec.mac) ll \(spec.linkLocal)")
+        guard let pending = nanPending else { return }
+        nanPending = nil
+        nanDeadline = nil
+        switch pending {
+        case .discover(let client):
+            sendReply(.ok, to: client)
+        case .dial(let client, let port):
+            connect(port: port, from: client)
+        }
+    }
+
+    private func clearNanPeer() {
+        peerSpec = nil
+        peerMAC = []
+        peerLL = []
+        pdl_clear_peer(stack)
+        if routeInstalled && !links.values.contains(where: { $0.state == .up }) {
+            dropRoute()
+        }
+    }
+
+    private func finishNan(_ code: DirectWireCode) {
+        guard let pending = nanPending else { return }
+        nanPending = nil
+        nanDeadline = nil
+        answer(pending, .error(code, message: "the NAN session did not come up"))
+    }
+
+    private func answer(_ pending: NanPending, _ reply: DirectReply) {
+        switch pending {
+        case .discover(let client), .dial(let client, _):
+            sendReply(reply, to: client)
+        }
+    }
+
+    private func pendingClient(_ pending: NanPending) -> Client {
+        switch pending {
+        case .discover(let client), .dial(let client, _):
+            return client
+        }
+    }
+
+    private func expireNan() {
+        guard let deadline = nanDeadline, Date() >= deadline else { return }
+        nanDeadline = nil
+        nanFeed(.ndpTimeout)
     }
 
     // MARK: links

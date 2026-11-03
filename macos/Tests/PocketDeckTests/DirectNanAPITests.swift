@@ -36,7 +36,7 @@ final class DirectNanAPITests: XCTestCase {
             #"{"op":"dial","peer":"\#(peer)","svc":"\#(service)","port":1}"#,
             #"{"op":"dial","peer":"\#(peer)","psk":"\#(key)","port":1}"#,
             #"{"op":"dial","svc":"\#(service)","psk":"\#(key)","port":1}"#,
-            #"{"op":"dial","peer":"\#(peer)","svc":"\#(service)","psk":"\#(key.uppercased())","port":1}"#
+            #"{"op":"dial","peer":"\#(peer)","svc":"\#(service)","psk":"\#(String(repeating: "ab", count: 32).uppercased())","port":1}"#
         ]
         for json in cases {
             XCTAssertThrowsError(try parse(json), json)
@@ -88,6 +88,26 @@ final class DirectNanAPITests: XCTestCase {
         XCTAssertEqual(DirectWireCode.noKey.rawValue, "no_key")
         XCTAssertEqual(DirectWireCode.ndpTimeout.rawValue, "ndp_timeout")
         XCTAssertEqual(DirectWireCode.ndpRefused.rawValue, "ndp_refused")
+    }
+
+    /// DIRECT-15: the one line that names the key carries its fingerprint and
+    /// length, never the key or the passphrase.
+    func testTheHelperLogsTheKeyOnlyByItsFingerprint() throws {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repo.appendingPathComponent(
+            "macos/Sources/PocketDeckDirectd/Directd.swift"), encoding: .utf8)
+        let lines = source.components(separatedBy: .newlines)
+            .filter { $0.contains("nan key=") }
+        XCTAssertEqual(lines.count, 1, "the key has exactly one log line")
+        let line = try XCTUnwrap(lines.first)
+        XCTAssertTrue(line.contains("DirectKey.fingerprint(key)"), line)
+        XCTAssertTrue(line.contains("len="), line)
+        XCTAssertFalse(line.contains("passphrase"), line)
+        XCTAssertFalse(line.contains("psk"), line)
     }
 
     func testANanFailureIsOneHonestReply() throws {

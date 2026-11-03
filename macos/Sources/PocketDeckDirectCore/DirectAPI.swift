@@ -3,7 +3,7 @@ import Foundation
 
 /// The helper's wire vocabulary (docs/design/direct-link.md §2.5). Pure: no
 /// sockets, no files, so the request shapes are unit-tested without root.
-public enum DirectWireCode: String, Sendable, Equatable {
+public enum DirectWireCode: String, Sendable, Equatable, CaseIterable {
     case badRequest = "bad_request"
     case notReady = "not_ready"
     case notConsoleUser = "not_console_user"
@@ -32,21 +32,45 @@ public struct DirectPeerSpec: Sendable, Equatable {
     }
 }
 
+/// A `dial` request (§2.5). `peer`, `service` and `psk` travel together, or
+/// not at all: the latter is the test-only static peer, accepted only with
+/// `POCKETDECK_DIRECT_TEST=1`.
+public struct DirectDial: Sendable, Equatable {
+    /// 32 lowercase hex; the phone's own id is not on the air.
+    public var peer: String?
+    public var service: String?
+    /// The 32-byte NDP key as 64 lowercase hex; never logged or echoed.
+    public var psk: String?
+    public var port: UInt16
+
+    public init(peer: String?, service: String?, psk: String?, port: UInt16) {
+        self.peer = peer
+        self.service = service
+        self.psk = psk
+        self.port = port
+    }
+}
+
 public enum DirectRequest: Sendable, Equatable {
     case hello(version: Int)
     case probe
     case peer(DirectPeerSpec)
-    case dial(port: UInt16)
+    case discover(service: String, psk: String)
+    case dial(DirectDial)
     case close(link: String)
     case links
     /// Test-only: print lwIP's counters to the helper's stderr.
     case stats
+    /// Stop the NAN session (its data session, subscription and peer); links
+    /// over it are closed. Idempotent.
+    case stop
 }
 
 public enum DirectRequestError: Error, Sendable, Equatable {
     case notAnObject
     case unknownOp(String)
     case invalidField(String)
+    case incompleteDial
 
     public var code: DirectWireCode { .badRequest }
 
@@ -55,6 +79,7 @@ public enum DirectRequestError: Error, Sendable, Equatable {
         case .notAnObject: return "request must be a JSON object"
         case .unknownOp(let op): return "unknown op '\(op.prefix(24))'"
         case .invalidField(let field): return "invalid field '\(field.prefix(24))'"
+        case .incompleteDial: return "dial needs peer, svc and psk together"
         }
     }
 }
@@ -105,24 +130,34 @@ public enum DirectRequestParser {
             guard let port = integer(json["port"]), port >= 1, port <= 65535 else {
                 throw DirectRequestError.invalidField("port")
             }
-            // The NAN fields are validated when present; the test-only static
-            // peer supplies them when they are absent.
-            if let peer = json["peer"], !(peer is NSNull) {
-                guard let hex = peer as? String, isLowerHex(hex, count: 32) else {
-                    throw DirectRequestError.invalidField("peer")
+            // The NAN fields travel together, or not at all (the latter is
+            // the test-only static peer). The fields are validated when they
+            // are present; a partial request is refused.
+            let peer = try optionalText(json["peer"], field: "peer", max: 32)
+            let service = try optionalText(json["svc"], field: "svc", max: 64)
+            let psk = try optionalText(json["psk"], field: "psk", max: 64)
+            if peer != nil || service != nil || psk != nil {
+                guard let peer, let service, let psk,
+                      isLowerHex(peer, count: 32), isLowerHex(psk, count: 64),
+                      !service.isEmpty else {
+                    throw DirectRequestError.incompleteDial
                 }
+                return .dial(DirectDial(peer: peer, service: service, psk: psk,
+                                        port: UInt16(port)))
             }
-            if let service = json["svc"], !(service is NSNull) {
-                guard let name = service as? String, !name.isEmpty, name.count <= 64 else {
-                    throw DirectRequestError.invalidField("svc")
-                }
+            return .dial(DirectDial(peer: nil, service: nil, psk: nil,
+                                    port: UInt16(port)))
+        case "discover":
+            guard let service = json["svc"] as? String, !service.isEmpty,
+                  service.count <= 64, !service.contains("\0") else {
+                throw DirectRequestError.invalidField("svc")
             }
-            if let psk = json["psk"], !(psk is NSNull) {
-                guard let hex = psk as? String, isLowerHex(hex, count: 64) else {
-                    throw DirectRequestError.invalidField("psk")
-                }
+            guard let psk = json["psk"] as? String, isLowerHex(psk, count: 64) else {
+                throw DirectRequestError.invalidField("psk")
             }
-            return .dial(port: UInt16(port))
+            return .discover(service: service, psk: psk)
+        case "stop":
+            return .stop
         case "close":
             guard let link = json["link"] as? String, isLowerHex(link, count: 16) else {
                 throw DirectRequestError.invalidField("link")
@@ -145,6 +180,16 @@ public enum DirectRequestParser {
         guard double.rounded() == double, double >= 0, double <= 1_000_000 else { return nil }
         return Int(double)
     }
+
+    private static func optionalText(_ value: Any?, field: String,
+                                     max: Int) throws -> String? {
+        if value == nil || value is NSNull { return nil }
+        guard let text = value as? String, text.count <= max,
+              !text.contains("\0") else {
+            throw DirectRequestError.invalidField(field)
+        }
+        return text
+    }
 }
 
 public struct DirectLinkReport: Sendable, Equatable {
@@ -161,8 +206,20 @@ public struct DirectLinkReport: Sendable, Equatable {
     }
 }
 
+public struct DirectToolkitReport: Sendable, Equatable {
+    public var publish: Bool
+    public var subscribe: Bool
+    public var dataLinks: Int
+
+    public init(publish: Bool, subscribe: Bool, dataLinks: Int) {
+        self.publish = publish
+        self.subscribe = subscribe
+        self.dataLinks = dataLinks
+    }
+}
+
 public enum DirectReply: Sendable, Equatable {
-    case hello(version: Int, dataLinks: Int)
+    case hello(version: Int, toolkit: DirectToolkitReport)
     case probe(ready: Bool, codes: [String], detail: String)
     case dial(link: String, mtu: Int)
     case ok
@@ -172,11 +229,11 @@ public enum DirectReply: Sendable, Equatable {
     public func encoded() -> Data {
         var object: [String: Any] = ["ok": !isError]
         switch self {
-        case .hello(let version, let dataLinks):
+        case .hello(let version, let toolkit):
             object["v"] = version
-            object["toolkit"] = ["publish": false,
-                                 "subscribe": false,
-                                 "dataLinks": dataLinks]
+            object["toolkit"] = ["publish": toolkit.publish,
+                                 "subscribe": toolkit.subscribe,
+                                 "dataLinks": toolkit.dataLinks]
         case .probe(let ready, let codes, let detail):
             object["ready"] = ready
             object["codes"] = codes

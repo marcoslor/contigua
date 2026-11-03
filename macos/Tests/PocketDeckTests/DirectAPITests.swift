@@ -29,9 +29,13 @@ final class DirectAPITests: XCTestCase {
     }
 
     func testDialFields() throws {
-        XCTAssertEqual(try parse(#"{"op":"dial","port":47990}"#), .dial(port: 47990))
+        XCTAssertEqual(try parse(#"{"op":"dial","port":47990}"#),
+                       .dial(DirectDial(peer: nil, service: nil, psk: nil, port: 47990)))
         XCTAssertEqual(try parse(#"{"op":"dial","peer":"0123456789abcdef0123456789abcdef","svc":"_pocketdeck-nan._tcp","psk":"0000000000000000000000000000000000000000000000000000000000000000","port":1}"#),
-                       .dial(port: 1))
+                       .dial(DirectDial(peer: "0123456789abcdef0123456789abcdef",
+                                        service: "_pocketdeck-nan._tcp",
+                                        psk: String(repeating: "0", count: 64),
+                                        port: 1)))
         for bad in [#"{"op":"dial"}"#, #"{"op":"dial","port":0}"#, #"{"op":"dial","port":70000}"#,
                     #"{"op":"dial","port":1,"psk":"abc"}"#,
                     #"{"op":"dial","port":1,"peer":"xyz"}"#] {
@@ -71,7 +75,9 @@ final class DirectAPITests: XCTestCase {
 
     func testRepliesAreOneObjectUnderTheCap() throws {
         let cases: [DirectReply] = [
-            .hello(version: 1, dataLinks: 8),
+            .hello(version: 1, toolkit: DirectToolkitReport(publish: false,
+                                                            subscribe: true,
+                                                            dataLinks: 8)),
             .probe(ready: false, codes: ["probe_unimplemented"], detail: "x"),
             .dial(link: "0123456789abcdef", mtu: 1500),
             .ok,
