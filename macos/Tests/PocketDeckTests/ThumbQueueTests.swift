@@ -1,6 +1,7 @@
 // The thumbnail queue (FilesThumbQueue.swift): the pure transition table, the
-// 3-in-flight cap, the FIFO, cancel and the 8 s deadline measured from the ask
-// (docs/specs/files.md FILES-25/29). A stub host stands in for the session.
+// 3-in-flight cap, the FIFO, cancel and the 8 s deadline measured from the
+// `fs.thumb` send, not from the ask (docs/specs/files.md FILES-25/29). A stub
+// host stands in for the session.
 
 import Foundation
 import XCTest
@@ -76,7 +77,7 @@ final class ThumbQueueTests: XCTestCase {
                 .end(thumb): (.queued, []),
                 .failure(code: "x"): (.queued, []),
                 .cancel: (.cancelled, [.answer(.failure(code: "cancelled"))]),
-                .deadline: (.expired, [.answer(.failure(code: "timeout"))]),
+                .deadline: (.queued, []),
                 .drop: (.cancelled, [.answer(.failure(code: "offline"))]),
             ],
             .running: [
@@ -150,12 +151,57 @@ final class ThumbQueueTests: XCTestCase {
         XCTAssertEqual([1], host.cancels)
     }
 
-    func testAQueuedOneExpiresWithoutAPhoneRequest() {
+    func testAQueuedOneDoesNotExpire() {
         for id in 1...3 { ask(UInt32(id)) }
         ask(4, deadline: 0.05)
+        // Well past the deadline it would have had from the ask: it is queued,
+        // and queue time is not the phone's work (FILES-29).
+        XCTAssertFalse(wait(0.3) { self.answers[4] != nil },
+                       "a queued ask expired before it ran")
+        XCTAssertNil(answers[4])
+        XCTAssertEqual(3, host.calls.count, "a queued ask reached the phone early")
+        host.finish(0, .success(thumbBytes))
+        XCTAssertEqual(4, host.calls.count)
+        guard host.calls.count == 4 else { return }
+        host.finish(3, .success(thumbBytes))
+        XCTAssertEqual([.success(thumbBytes)], answers[4])
+        XCTAssertEqual([], host.cancels)
+    }
+
+    func testTheDeadlineStartsAtTheSend() {
+        for id in 1...3 { ask(UInt32(id)) }
+        ask(4, deadline: 0.1)
+        XCTAssertFalse(wait(0.25) { self.answers[4] != nil },
+                       "a queued ask expired before it ran")
+        XCTAssertEqual(3, host.calls.count)
+        host.finish(0, .success(thumbBytes))
+        XCTAssertEqual(4, host.calls.count, "the freed slot did not start the queued ask")
         XCTAssertTrue(wait { self.answers[4] != nil })
         XCTAssertEqual([.failure(code: "timeout")], answers[4])
-        XCTAssertEqual(3, host.calls.count, "an expired queued ask reached the phone")
+        XCTAssertEqual([4], host.cancels, "the timed-out ask did not send one fs.cancel")
+    }
+
+    func testTwentyQueuedAsksBehindASlowPhoneAllAnswer() {
+        // Finder asks for every visible icon at once and the phone generates
+        // one at a time. Each ask gets the full deadline from its own send, so
+        // the twentieth cannot expire while it waits (FILES-29).
+        for id in 1...20 { ask(UInt32(id), deadline: 0.2) }
+        XCTAssertEqual(3, host.calls.count)
+        var finished = 0
+        let end = Date().addingTimeInterval(5)
+        while finished < 20 && Date() < end {
+            if finished < host.calls.count {
+                host.finish(finished, .success(thumbBytes))
+                finished += 1
+            } else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        XCTAssertEqual(20, finished, "a queued ask never ran")
+        XCTAssertEqual(20, answers.count)
+        XCTAssertEqual(20, answers.values.filter { $0 == [.success(thumbBytes)] }.count,
+                       "a queued ask answered something other than its picture")
+        XCTAssertEqual([], host.cancels)
     }
 
     func testADropAnswersOfflineWithoutAPhoneCancel() {

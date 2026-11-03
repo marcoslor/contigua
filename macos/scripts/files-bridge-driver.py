@@ -1244,6 +1244,62 @@ def phase_thumb_timeout(socket_path):
         bridge.close()
 
 
+def phase_thumb_slow(socket_path, fixture):
+    """A phone that takes 1 s per picture: 12 asks queue three at a time, and
+    the last waits about 9 s before it starts — past the old 8 s deadline
+    measured from the ask — yet every one answers with bytes (FILES-29)."""
+    bridges = []
+    replies = []
+    asks = []
+    try:
+        with open(fixture, "rb") as handle:
+            expected = handle.read()
+        digest = hashlib.sha256(expected).hexdigest()
+        for _ in range(2):
+            bridge = Bridge(socket_path, timeout=90.0)
+            bridges.append(bridge)
+            report(bridge.hello().get("connected") is True, "THUMB hello: connected")
+            replies.append({})
+        photo = item_id(bridges[0], "DCIM/Camera/photo.jpg")
+        started = time.time()
+        for bridge in bridges:
+            ids = []
+            for _ in range(6):
+                request_id = bridge.new_id()
+                bridge.send({"t": "thumb", "id": request_id, "item": photo, "size": 512})
+                ids.append(request_id)
+            asks.append(ids)
+        deadline = time.time() + 60
+        for index, bridge in enumerate(bridges):
+            while len(replies[index]) < 6 and time.time() < deadline:
+                frame = bridge.frame()
+                if frame[0] == "data":
+                    continue
+                obj = frame[1]
+                if obj.get("id") in asks[index]:
+                    replies[index].setdefault(obj.get("id"), obj)
+        elapsed = time.time() - started
+        answers = [obj for by_id in replies for obj in by_id.values()]
+        successes = [obj for obj in answers if obj.get("t") == "thumb"]
+        failures = [obj for obj in answers if obj.get("t") != "thumb"]
+        report(len(answers) == 12,
+               "THUMB [FILES-29] all 12 queued asks answered (%d)" % len(answers))
+        report(len(successes) == 12 and not failures,
+               "THUMB [FILES-29] a 1 s phone answers all 12 with bytes, none timed out "
+               "(%d ok, %s)" % (len(successes),
+                                ",".join(str(obj.get("code")) for obj in failures)
+                                or "no errors"))
+        report(elapsed >= 9.0,
+               "THUMB [FILES-29] the last ask waited past the old 8 s from the ask "
+               "(%.1f s)" % elapsed)
+        report(all(obj.get("size") == len(expected) and
+                   (obj.get("sha256") or "").lower() == digest for obj in successes),
+               "THUMB [FILES-29] every queued answer is the phone's own picture")
+    finally:
+        for bridge in bridges:
+            bridge.close()
+
+
 def phase_kill(bridge, root, fake_pid):
     hello = bridge.hello()
     report(hello.get("connected") is True, "WRITE hello: connected")
@@ -1289,7 +1345,8 @@ def main():
     parser.add_argument("--phase",
                         choices=["online", "read", "offline", "write", "kill",
                                  "watch", "watchset", "thumb", "thumb-hold",
-                                 "thumb-once", "thumb-timeout", "thumb-none"],
+                                 "thumb-once", "thumb-timeout", "thumb-slow",
+                                 "thumb-none"],
                         required=True)
     parser.add_argument("--ttl", type=float, default=20.0)
     parser.add_argument("--watch-folders", default="")
@@ -1319,7 +1376,7 @@ def main():
             bridge.close()
         return 0
 
-    if args.phase in ("thumb-hold", "thumb-once", "thumb-timeout"):
+    if args.phase in ("thumb-hold", "thumb-once", "thumb-timeout", "thumb-slow"):
         try:
             if args.phase == "thumb-hold":
                 phase_thumb_hold(args.socket, args.fake_err or
@@ -1327,6 +1384,8 @@ def main():
             elif args.phase == "thumb-once":
                 phase_thumb_once(args.socket, args.fake_err or
                                  os.path.join(args.work, "fake.err"))
+            elif args.phase == "thumb-slow":
+                phase_thumb_slow(args.socket, args.thumb_fixture)
             else:
                 phase_thumb_timeout(args.socket)
         except (BridgeError, socket.timeout, OSError) as error:

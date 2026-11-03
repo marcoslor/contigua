@@ -3347,6 +3347,11 @@ class Session(object):
                     self.phone.events.fs("thumb.cancelled", id=thumb_id, held=True)
                     return
             with self._thumb_lock:
+                delay = self.phone.args.fs_thumb_delay_ms
+                if delay > 0:
+                    # One generator: the delay is inside the lock, so N asks
+                    # take N * delay and a queued ask waits its turn.
+                    time.sleep(delay / 1000.0)
                 fixture = self.phone.args.fs_thumb
                 if not fixture:
                     raise FsError("fs_no_thumb", "no thumbnail")
@@ -5267,6 +5272,9 @@ def build_parser():
                    help="normal answers at once; no_thumb refuses; hold answers nothing "
                         "until fs.cancel; hold_once holds only the first thumb (the R-1 "
                         "retry check)")
+    p.add_argument("--fs-thumb-delay-ms", type=int, default=0, metavar="MS",
+                   help="make each fs.thumb take this long inside the one generator "
+                        "(a slow phone, so a queued ask waits past 8 s)")
     p.add_argument("--fs-chunk-delay-ms", type=int, default=0, metavar="MS",
                    help="pause after each FS_DATA chunk (a slow phone, so a cancel "
                         "can land mid-file in the e2e check)")

@@ -1020,24 +1020,42 @@ this path touches `PowerManager` or the display.
 
 **Limits (T4).** At most 3 thumbnails in flight per session on the Mac
 (`FilesThumbQueue` in the app: FIFO, 3 slots, an 8 s deadline per request
-measured from the bridge ask, cancel either leaves the queue or sends one
-`fs.cancel`); the extension keeps its own 3 per batch so it never leans on the
-app's queue for pacing. The phone generates one at a time, accepts at most 3
-live thumb ids (`fs_busy` past that) and puts the frames on the **bulk lane** —
-`SendQueue.enqueueBulk`, the session writer's lowest-priority queue, drained
-after JSON, control, audio and video deltas with at most 1 MiB queued; the same
-`FS_DATA` type the paths layer counts as bulk (12 MiB unacked cap, 1 MiB window,
-no seq until the path has room). So a grid of icons can never overtake a reply,
-delay a stream, or starve a drop.
+measured from the `fs.thumb` send — a queued ask waits its turn; cancel either
+leaves the queue or sends one `fs.cancel`); the extension keeps its own 3 per
+batch so it never leans on the app's queue for pacing. The phone generates one
+at a time, accepts at most 3 live thumb ids (`fs_busy` past that) and puts the
+frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session writer's
+lowest-priority queue, drained after JSON, control, audio and video deltas with
+at most 1 MiB queued; the same `FS_DATA` type the paths layer counts as bulk
+(12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a grid
+of icons can never overtake a reply, delay a stream, or starve a drop.
 
-**Why 8 s.** A warm 512 px encode is tens of milliseconds, a cold HEIF/HEVC
-decode about a second; the answer is at most 256 KiB, about 20 ms on the LAN's
-100 Mbit/s floor. 8 s covers a three-deep queue of cold decodes, is under the
-10 s at which Finder's grid reads as broken, and is well under the bridge
-socket's 20 s receive timeout, so the app's own answer and its cancel win. It
-is a bridge deadline, not an NFR time limit: nobody waits on a thumbnail (the
-type icon is already there), so it does not belong in NFR.md; it is the spec's
-FILES-29 and the bridge's own constant.
+The queue's one request, by state (`FilesThumbQueue.transition`):
+
+| state | `slotFree` | `end` / `failure` | `cancel` | `deadline` | `drop` |
+|---|---|---|---|---|---|
+| `queued` | → `running`, send `fs.thumb` | ignored | → `cancelled`, answer `cancelled`; nothing reaches the phone | **ignored: queue time is not the phone's work** | → `cancelled`, answer `offline` |
+| `running` | ignored | → `done`, answer the bytes or the code | → `cancelled`, one `fs.cancel`, answer `cancelled` | → `expired`, one `fs.cancel`, answer `timeout` | → `cancelled`, answer `offline` |
+| `done` / `cancelled` / `expired` | ignored | ignored | ignored | ignored | ignored |
+
+Only the `queued` → `running` send arms the deadline timer; `settle` cancels it.
+
+**Why 8 s, and why the queue waits.** A warm 512 px encode is tens of
+milliseconds, a cold HEIF/HEVC decode about a second; the answer is at most
+256 KiB, about 20 ms on the LAN's 100 Mbit/s floor. The deadline starts when
+`fs.thumb` goes to the phone, so 8 s covers one ask's cold decode with a wide
+margin and stays under the 10 s at which Finder's grid reads as broken. Queue
+time is not the phone's work: Finder asks for every visible item at once, the
+phone generates one at a time, and a timeout is not retried by the system until
+the item's version changes, so expiring a queued ask would lose its picture for
+good. A queued ask therefore waits until it runs, Finder cancels it (the
+`Progress` is cancelled when the icon scrolls away or the window closes), or the
+session ends. The extension's per-thumbnail connection waits up to 120 s —
+about 170 photos at 0.7 s each, a full Finder icon grid — so the socket cannot
+cut a queued ask short, while still bounding a bridge that died. It is a bridge
+deadline, not an NFR time limit: nobody waits on a thumbnail (the type icon is
+already there), so it does not belong in NFR.md; it is the spec's FILES-29 and
+the bridge's own constant.
 
 ### Round-2 test plan
 
@@ -1053,14 +1071,17 @@ FILES-29 and the bridge's own constant.
   side, 3 in flight and the fourth queued in arrival order, cancel before and
   during the phone call, a transient failure (offline/timeout/`fs_busy`) →
   `serverUnreachable`, a permanent one (`fs_no_thumb`, `not_media`) → nil data,
-  and the bridge's deadline (a 50 ms deadline in the test) answers `timeout` and
-  sends one `fs.cancel`.
+  the bridge's deadline (a 50 ms deadline in the test) answers `timeout` and
+  sends one `fs.cancel`, and a queued ask does not expire while it waits but
+  gets its full deadline from the send (twenty asks behind three slots).
 - **Fake phone:** `fs.thumb` serves a fixed JPEG for a fixture name, with a mode
   that never answers and a mode that answers `fs_no_thumb`; host e2e
   `files-bridge` grows a `thumb` phase through the real bridge: bytes then
   `end` with a matching mime/size/hash, a `.pdf` and a folder answered without a
   phone request, three at once and the fourth after one ends, a cancelled queued
-  ask the phone never sees, and the deadline's one `fs.cancel`.
+  ask the phone never sees, the deadline's one `fs.cancel`, and 12 asks against
+  a phone that takes 1 s each all answering with bytes (the last waits past 8 s
+  before it starts).
 - **One VM boot:** `files-thumbs` — Finder's icon view shows the fake phone's
   thumbnail for a fixture JPEG while the item stays undownloaded (`isDownloaded`
   false), the PDF shows its type icon, and the fake phone's log has no

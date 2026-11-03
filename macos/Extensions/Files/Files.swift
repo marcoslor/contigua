@@ -286,9 +286,10 @@ func bridgeSocketPath(domain: NSFileProviderDomain) -> String? {
     return container.appendingPathComponent(name).path
 }
 
-private func bridgeConnection(for domain: NSFileProviderDomain) -> BridgeConnection? {
+private func bridgeConnection(for domain: NSFileProviderDomain,
+                              readTimeout: Int = 20) -> BridgeConnection? {
     guard let path = bridgeSocketPath(domain: domain) else { return nil }
-    return BridgeConnection(path: path)
+    return BridgeConnection(path: path, readTimeout: readTimeout)
 }
 
 // MARK: - Errors
@@ -433,8 +434,10 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
 
     // MARK: Bridge operations
 
-    private func connect() -> Result<BridgeConnection, FilesFailure> {
-        guard let connection = bridgeConnection(for: domain) else { return .failure(.offline) }
+    private func connect(readTimeout: Int = 20) -> Result<BridgeConnection, FilesFailure> {
+        guard let connection = bridgeConnection(for: domain, readTimeout: readTimeout) else {
+            return .failure(.offline)
+        }
         return .success(connection)
     }
 
@@ -1207,10 +1210,13 @@ extension FilesExtension {
         launchNext()
     }
 
-    /// One item's thumbnail: one request, its data frames, its answer.
+    /// One item's thumbnail: one request, its data frames, its answer. The
+    /// connection waits 120 s (FILES-29): the ask may sit in the app's queue
+    /// behind a camera folder, and the socket must not time it out first.
     private func thumb(item: String, size: Int,
                        progress: Progress) -> (data: Data?, error: Error?) {
-        guard case .success(let connection) = connect(), hello(connection) else {
+        guard case .success(let connection) = connect(readTimeout: FilesThumbPolicy.bridgeReadTimeout),
+              hello(connection) else {
             log.notice("thumb failed code=offline")
             return (nil, FilesThumbPolicy.error(for: "offline"))
         }
