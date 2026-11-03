@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only controls of the direct build (the reviewer's real-phone proof).
+     Release builds and every public build never see this overlay. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Direct build only (docs/design/direct-link.md §1.2, §4.4): the Aware
+     permissions live here and nowhere in the public manifest. The overlay
+     carries permissions only; components stay in the shared manifests. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- API 33+: the runtime permission asked when the person turns direct on. -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <!-- API 30–32: Aware discovery needs location; minSdk is 30. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>

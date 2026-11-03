@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// The opt-in build that carries the Wi-Fi Aware provider
+// (docs/design/direct-link.md §1.2). Without it src/direct is not a compile
+// input and NEARBY_WIFI_DEVICES never reaches the merged manifest.
+val directBuild = providers.gradleProperty("pocketdeck.direct").orNull == "true"
+
 android {
     namespace = "dev.pocketdeck"
     compileSdk = 36
@@ -17,6 +22,8 @@ android {
         // running instead of being replaced.
         versionCode = 128
         versionName = "0.1.0"
+        // The gate's K1 check reads this, and no direct class exists without it.
+        buildConfigField("boolean", "DIRECT", directBuild.toString())
     }
 
     buildFeatures {
@@ -61,6 +68,24 @@ android {
     }
 }
 
+/**
+ * The direct property adds the provider's source set, its manifest overlay and
+ * its K1 tests to the one debug variant. The public variant keeps compiling
+ * exactly what it compiled before (docs/design/direct-link.md §1.2).
+ */
+androidComponents {
+    onVariants { variant ->
+        if (!directBuild) return@onVariants
+        variant.sources.java?.addStaticSourceDirectory("src/direct/java")
+        variant.sources.manifests?.addStaticManifestFile("src/direct/AndroidManifest.xml")
+        variant.unitTest?.sources?.java?.addStaticSourceDirectory("src/directTest/java")
+        if (variant.buildType == "debug") {
+            variant.sources.java?.addStaticSourceDirectory("src/directDebug/java")
+            variant.sources.manifests?.addStaticManifestFile("src/directDebug/AndroidManifest.xml")
+        }
+    }
+}
+
 dependencies {
     // Shizuku: run server/ as shell (UID 2000) with no hidden-API restrictions.
     implementation("dev.rikka.shizuku:api:13.1.5")
@@ -99,6 +124,39 @@ dependencies {
 // Screenshot tests record PNGs into app/src/test/screenshots (commit-ready).
 tasks.withType<Test>().configureEach {
     systemProperty("roborazzi.test.record", "true")
+}
+
+/**
+ * DIRECT-2's other direction: the public APK must carry neither the Aware
+ * permission nor a single dev.pocketdeck.direct class. Runs before every public
+ * assembleDebug, so a leaked source set fails the build rather than a review.
+ */
+if (!directBuild) {
+    val verifyPublicBuildHasNoDirect = tasks.register("verifyPublicBuildHasNoDirect") {
+        group = "verification"
+        description = "Refuses a public build that carries Wi-Fi Aware code or its permission (DIRECT-2)."
+        dependsOn("processDebugMainManifest", "compileDebugKotlin")
+        doLast {
+            val intermediates = layout.projectDirectory.dir("build/intermediates").asFile
+            val manifests = intermediates.walkTopDown().filter {
+                it.isFile && it.name == "AndroidManifest.xml" &&
+                    it.invariantSeparatorsPath.contains("/merged_manifest") &&
+                    it.invariantSeparatorsPath.contains("/debug/")
+            }.toList()
+            check(manifests.isNotEmpty()) {
+                "verifyPublicBuildHasNoDirect: no merged debug manifest was found"
+            }
+            check(manifests.none { "NEARBY_WIFI_DEVICES" in it.readText() }) {
+                "verifyPublicBuildHasNoDirect: the public manifest asks for NEARBY_WIFI_DEVICES"
+            }
+            check(!layout.projectDirectory.dir("build/tmp/kotlin-classes/debug/dev/pocketdeck/direct").asFile.exists()) {
+                "verifyPublicBuildHasNoDirect: the public classes contain dev.pocketdeck.direct"
+            }
+        }
+    }
+    tasks.configureEach {
+        if (name == "assembleDebug") dependsOn(verifyPublicBuildHasNoDirect)
+    }
 }
 
 // Runs the C4 harness (see tools/fakephone/deckctl.py) on the JVM with the same
