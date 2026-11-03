@@ -65,7 +65,11 @@ emu shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
 
 power_dump() { emu shell dumpsys power 2>/dev/null | tr -d '\r'; }
 wake_state() { power_dump | grep -m1 'mWakefulness=' | sed 's/.*mWakefulness=//'; }
-app_wake_locks() { power_dump | grep -ci 'pocketdeck' || true; }
+# The held locks only: `dumpsys power` also keeps an ACQ/REL history, and a
+# notification post there is not a lock the app holds.
+app_wake_locks() {
+    power_dump | sed -n '/Wake Locks: size=/,/^$/p' | grep -ci 'pocketdeck' || true
+}
 display_state() {
     local tag="$1"
     power_dump > "$WORK/power-$tag.txt"
