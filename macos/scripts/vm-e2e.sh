@@ -54,6 +54,13 @@ for c in "${CHECKS[@]}"; do
 done
 [ "${#CHECKS[@]}" -gt 0 ] || { say "$usage"; exit 2; }
 
+# One appearance per boot: a mid-run appearance flip made round 3's shots come
+# out with the previous look, and a boot is the expensive part.
+case "${PD_E2E_SHOT_APPEARANCE:-dark}" in
+    dark|light) ;;
+    *) say "PD_E2E_SHOT_APPEARANCE must be dark or light (got '${PD_E2E_SHOT_APPEARANCE:-}')"; exit 2 ;;
+esac
+
 vm_exists || { say "no VM '$VM'; run macos/scripts/vm-prepare.sh first"; exit 3; }
 [ -f "$VM_KEY" ] || { say "no ssh key at $VM_KEY; run macos/scripts/vm-prepare.sh first"; exit 3; }
 if [ "$CHECK_ONLY" = 1 ]; then
@@ -116,6 +123,12 @@ cat > "$OUT/run-check.sh" <<'EOS'
 set -uo pipefail
 export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 cd "$(dirname "$0")/macos" || exit 3
+# The guest's display must stay awake for the whole run: a sleeping display
+# makes screencapture fail and can hold an NSMenu tracking loop (round 3's
+# wedge). caffeinate runs in this GUI session and is stopped with the script.
+caffeinate -dimsu &
+caffeinate_pid=$!
+trap 'kill "$caffeinate_pid" 2>/dev/null' EXIT INT TERM
 visible="$1"
 port="$2"
 profile="$3"

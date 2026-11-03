@@ -305,14 +305,16 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         try? FileManager.default.removeItem(atPath: path)
         guard let seconds = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-              seconds > 0, seconds <= 30, !rows.isEmpty else { return }
+              seconds > 0, seconds <= 10, !rows.isEmpty else { return }
         let menu = buildMenu()
         // The tracking loop owns this thread until the timer cancels it, so the
-        // timer goes in before the menu is up.
+        // timer goes in before the menu is up. Event tracking is where a menu's
+        // own loop runs: the cap must fire there, not only in common modes.
         let close = Timer(timeInterval: seconds, repeats: false) { _ in
             MainActor.assumeIsolated { menu.cancelTracking() }
         }
         RunLoop.main.add(close, forMode: .common)
+        RunLoop.main.add(close, forMode: .eventTracking)
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         NSApp.activate(ignoringOtherApps: true)
         menu.popUp(positioning: nil,

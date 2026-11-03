@@ -9379,40 +9379,37 @@ check_multiwin() {
     rm -f "$WORK"/menus-*.json "$WORK"/wm-*.json "$WORK/chrome.txt"
 
     # The review's shots (visible run only, one appearance per boot:
-    # PD_E2E_SHOT_APPEARANCE=dark|light). They land in the work dir, which the
-    # VM copies back with the run.
+    # PD_E2E_SHOT_APPEARANCE=dark|light, never both). They land in the work
+    # dir, which the VM copies back with the run.
     local appearance="${PD_E2E_SHOT_APPEARANCE:-dark}"
+    case "$appearance" in
+        dark|light) ;;
+        *) bad "MULTIWIN PD_E2E_SHOT_APPEARANCE must be dark or light (got '$appearance')"
+           appearance=dark ;;
+    esac
     mkdir -p "$WORK/shots"
     shot() {
         local file="$WORK/shots/$appearance-$1.png"
         screencapture -x "$file" && say "shot: $file" || bad "MULTIWIN no screenshot $1"
     }
-    # A boot is budgeted, so PD_E2E_SHOT_APPEARANCE=both takes each shot twice,
-    # in the guest's own dark and light appearance (the app follows the system
-    # when no --appearance is passed).
-    set_look() {
-        local dark=false
-        [ "$1" = dark ] && dark=true
-        gui_run osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark" \
-            >/dev/null 2>&1 || bad "MULTIWIN could not set the $1 appearance"
-        sleep 1.2
-    }
-    shot_both() {
-        [ "$appearance" = both ] || { shot "$1"; return; }
-        appearance=dark; set_look dark; shot "$1"
-        appearance=light; set_look light; shot "$1"
-        appearance=both; set_look dark
-    }
     # menu_shot NAME MENU — one of the app's own menus, held open by the same
-    # tracking loop a click starts, while the whole screen is captured.
+    # tracking loop a click starts, while the whole screen is captured. The
+    # check caps it at 10 s and closes it before the next step: a menu left
+    # tracking would hold the app's main thread and wedge the run (round 3).
     menu_shot() {
         local name="$1" menu="$2" report="$WORK/shots/$appearance-$1.json" seconds=4
-        [ "$appearance" = both ] && seconds=10
+        [ "$seconds" -le 10 ] || seconds=10
         control menutrack "$report" "$menu" "$seconds" \
             || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
         sleep 1.4
-        shot_both "$name"
-        wait_until 15 [ -s "$report" ] || bad "MULTIWIN menutrack $menu never reported"
+        shot "$name"
+        if ! wait_until 15 [ -s "$report" ]; then
+            bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
+            # The tracking loop still takes events when a timer is late: Escape
+            # closes the menu and gives the run its main thread back.
+            cg_input key --keycode 53 >/dev/null 2>&1 || true
+            return 1
+        fi
         sleep 0.4
     }
     # The app's windows at menu level: a popup menu is its own window (layer
@@ -9420,6 +9417,14 @@ check_multiwin() {
     menu_windows() {
         "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
             $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
+            END { print n + 0 }'
+    }
+    # Any process's popup window (a menu tracks in one, layer >= 100): the
+    # check waits for zero before it opens the next menu.
+    popup_windows() {
+        "$CGBIN" all 2>/dev/null | awk '
+            { for (i = 1; i <= NF; i++) {
                 if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
             END { print n + 0 }'
     }
@@ -9461,10 +9466,10 @@ check_multiwin() {
         sed -n 2p "$WORK/wm-key.txt"
     }
     # The app must be the frontmost one for NSApp.keyWindow to exist and for a
-    # real key to reach its menus. An automatic Dock shim is a regular app and
-    # takes the front when it launches; a person's next click would give it
-    # back, so the check raises the window again (setup, never a step proved by
-    # the ids below).
+    # real key to reach its menus. An automatic Dock shim no longer activates
+    # itself (DockApps.open), but a launch can still land during a raise; a
+    # person's next click would give the front back, so the check raises the
+    # window again (setup, never a step proved by the ids below).
     focus_app() {
         local pkg="$1" want="$2" i=0
         [ "$VISIBLE" = 1 ] || return 0
@@ -9518,7 +9523,7 @@ PY
 
     # ---- Launch 1: the default cap (4), two windows, ⌘N, the menus, ⌘` ------
     local look=()
-    [ "$VISIBLE" = 1 ] && [ "$appearance" != both ] && look=(--appearance "$appearance")
+    [ "$VISIBLE" = 1 ] && look=(--appearance "$appearance")
     FAKE_ARGS="--label-after-window 2 --label-to Docs,Mail --tls-identity $WORK/phone.identity" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$ctl" \
         ${look[@]+"${look[@]}"} \
@@ -9633,7 +9638,7 @@ PY
         # hides the title outside full screen; the Window menu and the Dock
         # shim name them). 5 and 2: the Window and File menus, held open the
         # way a click opens them.
-        shot_both 1-two-windows
+        shot 1-two-windows
         menu_shot 5-window-menu Window
         menu_shot 2-file-menu File
     else
@@ -9660,10 +9665,13 @@ PY
     if [ "$VISIBLE" = 1 ]; then
         # 3: the shim's own menu, the New + windows list a Dock right click
         # shows (the Dock owns that click; the shim pops the same buildMenu).
-        printf '7' > "$ctl/dockmenu-com.android.chrome-show"
+        # The shim's own 10 s cap closes it; the check waits for it to be gone
+        # before the next step opens the Deck's.
+        printf '5' > "$ctl/dockmenu-com.android.chrome-show"
         sleep 1.5
-        shot_both 3-dock-shim-menu
-        sleep 6
+        shot 3-dock-shim-menu
+        wait_until 12 eval '[ "$(popup_windows)" -eq 0 ]' \
+            || bad "MULTIWIN the shim's menu stayed open after its cap"
         focus_app com.android.chrome "Chrome (FakePhone)" || true
     else
         skip "MULTIWIN the Dock shim's menu shot" "the Dock owns its icon's click; the rows are the dump above and K2 AppWindowMenuTests"
@@ -9697,9 +9705,12 @@ PY
             [ "$(menu_windows)" -gt "$menus_before" ] \
                 && ok "[WIN-26] a real secondary click on the Deck cell opened its menu" \
                 || bad "[WIN-26] the Deck cell's right click opened no menu ($menus_before menus before)"
-            shot_both 4-deck-cell-menu
+            shot 4-deck-cell-menu
             cg_input key --keycode 53
-            sleep 0.6
+            # The check closes its own menu before the next step takes the app.
+            wait_until 8 eval '[ "$(menu_windows)" -eq "$menus_before" ]' \
+                || bad "MULTIWIN the Deck cell's menu stayed open after Escape"
+            sleep 0.2
         else
             bad "MULTIWIN no Deck cell point for the right click"
         fi
