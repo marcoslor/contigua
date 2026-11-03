@@ -1,6 +1,7 @@
 package dev.pocketdeck;
 
 import android.app.PendingIntent;
+import android.os.ParcelFileDescriptor;
 import dev.pocketdeck.IDeckCallback;
 
 /**
@@ -97,4 +98,11 @@ interface IDeckService {
      * activities from the background (docs/design/notify.md).
      */
     void openNotification(String id, int displayId, in PendingIntent intent) = 15;
+
+    /**
+     * A staged drop's bytes for the trampoline (SHARE-17): an fd opened by the
+     * shell for a bare name it staged for a pending SEND, or null for anything
+     * else. The app cannot open the staged path itself.
+     */
+    ParcelFileDescriptor openStaged(String name) = 17;
 }

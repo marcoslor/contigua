@@ -7,9 +7,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.core.content.FileProvider
-import dev.pocketdeck.server.DropPolicy
+import dev.pocketdeck.app.ShizukuClient
 import dev.pocketdeck.server.FILE_PROVIDER_AUTHORITY
-import java.io.File
 
 /**
  * The grant half of a drop's SEND step (docs/design/dragdrop.md). Shell (UID
@@ -20,8 +19,9 @@ import java.io.File
  * the provider.
  *
  * It accepts one to five bare names ([ShareRequest.parseBatch]) of files the
- * shell process staged in `files/shared/`, copies them into the app-owned share
- * cache and shares them once: `ACTION_SEND` for one, `ACTION_SEND_MULTIPLE` for
+ * shell process staged, copies each through the shell's `openStaged` fd into the
+ * app-owned share cache (the app cannot open a shell-written path itself), and
+ * shares them once: `ACTION_SEND` for one, `ACTION_SEND_MULTIPLE` for
  * two to five, straight to the window's package when it resolves the intent and
  * today's chooser otherwise (SHARE-17). No UI of its own: it finishes as soon
  * as the share is up, and every refusal is one line in logcat.
@@ -36,23 +36,23 @@ class ShareTrampoline : Activity() {
             Log.i(TAG, "share refused: bad name/mime")
             return finish()
         }
-        val stage = ShareRequest.stageDir(this)
-        val sources = targets.map { target -> stage?.let { File(it, target.name) } }
-        if (sources.any { it == null || !it.isFile || it.length() > DropPolicy.MAX_FILE_BYTES }) {
-            Log.i(TAG, "share refused: no staged file for ${targets.size} request(s)")
+        val service = ShizukuClient.current()
+        if (service == null) {
+            Log.i(TAG, "share refused: no shell service for ${targets.size} file(s)")  // log-ok: a count
             return finish()
         }
-        val shared = mutableListOf<File>()
-        for (source in sources) {
-            val copy = ShareCache.put(ShareRequest.cacheDir(this), source!!, ::log)
-            if (copy == null) {
-                Log.i(TAG, "share refused: cannot copy ${targets.size} file(s)")
-                return finish()
-            }
-            shared += copy
+        // The shell opens each staged file and hands over the fd: the app can
+        // stat a shell-written path but not open it (boot 5, H2).
+        val shared = ShareCopies.copy(
+            { name -> service.openStaged(name) },
+            targets,
+            ShareRequest.cacheDir(this),
+            ::log,
+        )
+        if (shared == null) {
+            Log.i(TAG, "share refused: cannot copy ${targets.size} file(s)")  // log-ok: a count
+            return finish()
         }
-        // The staging copies exist for this one hand-off; the cache copies are shared.
-        sources.forEach { runCatching { it!!.delete() } }
 
         val uris = shared.mapNotNull { file ->
             runCatching { FileProvider.getUriForFile(this, FILE_PROVIDER_AUTHORITY, file) }
