@@ -21,7 +21,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **V3.** Drop images from anywhere (image data, web image URLs, file promises); a drop on an app's window goes straight to that app.
 
   First, a real-phone spike: which apps accept a pasted image from a shell clip (messaging and mail apps), and whether a share aimed at one app works per app.
-- **ISS-2 Finder thumbnails for phone photos and videos.** Finder shows generic icons for phone media. Plan: an `fs.thumb` request served from the phone's media store thumbnails, capped at about 512 px, at most 3 in flight and below video in priority. Measure the cost on a real phone first. Phone photos on the Mac (section 5) builds on it.
+- **ISS-2 Finder thumbnails for phone photos and videos.** Finder shows generic icons for phone media. Specced: FILES-22…29 and design/files.md "Thumbnails (S6)" (`fs.thumb` on the session, one at a time on the phone, at most 3 in flight, the bulk lane). Next: round 2 builds it (K1 `FsThumbnailerTest`; K2 `FilesThumbTests`, `ThumbQueueTests`; host e2e `files-bridge` phase `thumb`; VM `files-thumbs`; emulator `thumbs`). The real-phone cost measurement is the reviewer's.
 
 ## 2. Bugs you can see
 
