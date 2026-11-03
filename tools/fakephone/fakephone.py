@@ -1462,6 +1462,11 @@ class FsWatchFake(object):
                 self._sink(changed)
 
 
+def _thumb_name_hash(path):
+    """A name's hash for the fake's own log/events: never the name (FILES-27)."""
+    return hashlib.sha256(os.path.basename(path).encode("utf-8")).hexdigest()[:16]
+
+
 def _fs_id(msg):
     value = msg.get("id")
     if isinstance(value, int) and 0 < value <= 0xFFFFFFFF:
@@ -3324,9 +3329,15 @@ class Session(object):
             if mode == "hold_once" and not self._thumb_held_once:
                 self._thumb_held_once = True
                 hold = True
+            hold_name = self.phone.args.fs_thumb_hold_name
+            if hold_name and os.path.basename(path) == hold_name:
+                # Every ask for this name is held: the VM's R-1 JPEG never
+                # answers, so the check can record what the system does.
+                hold = True
         except FsError as exc:
             return self._fs_error(thumb_id, exc)
-        job = {"cancel": threading.Event(), "held": hold, "thread": None}
+        name = _thumb_name_hash(path)
+        job = {"cancel": threading.Event(), "held": hold, "thread": None, "name": name}
         with self._fs_lock:
             if len(self._fs_thumbs) >= 3 or thumb_id in self._fs_thumbs:
                 return self._fs_error(thumb_id, FsError("fs_busy", "too many thumbnails"))
@@ -3334,17 +3345,19 @@ class Session(object):
         thread = threading.Thread(target=self._run_fs_thumb,
                                   args=(thumb_id, job, path, size, kind), daemon=True)
         job["thread"] = thread
-        sys.stderr.write("fakephone: fs thumb accept id=%d\n" % thumb_id)
+        sys.stderr.write("fakephone: fs thumb accept id=%d name=%s\n" % (thumb_id, name))
         sys.stderr.flush()
         thread.start()
 
     def _run_fs_thumb(self, thumb_id, job, path, size, kind):
+        name = job["name"]
         try:
             if job["held"]:
-                self.phone.events.fs("thumb.hold", id=thumb_id)
+                self.phone.events.fs("thumb.hold", id=thumb_id, name=name)
                 job["cancel"].wait(60)
                 if job["cancel"].is_set():
-                    self.phone.events.fs("thumb.cancelled", id=thumb_id, held=True)
+                    self.phone.events.fs("thumb.cancelled", id=thumb_id, name=name,
+                                         held=True)
                     return
             with self._thumb_lock:
                 delay = self.phone.args.fs_thumb_delay_ms
@@ -3360,16 +3373,16 @@ class Session(object):
                 if len(data) > MAX_THUMB_BYTES:
                     raise FsError("fs_no_thumb", "the answer did not fit")
                 active = 1
-                self.phone.events.fs("thumb", id=thumb_id, size=size, bytes=len(data),
-                                     active=active, mime="image/jpeg")
+                self.phone.events.fs("thumb", id=thumb_id, name=name, size=size,
+                                     bytes=len(data), active=active, mime="image/jpeg")
                 if not self.sender.send_bulk(thumb_id,
                                              proto.pack_frame(proto.TYPE_FS_DATA, thumb_id, data)):
                     return
                 end = {"t": "fs.thumb.end", "id": thumb_id, "mime": "image/jpeg",
                        "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
                 self.sender.send_bulk(0, proto.pack_json(end))
-                self.phone.events.fs("thumb.done", id=thumb_id, bytes=len(data),
-                                     mime="image/jpeg")
+                self.phone.events.fs("thumb.done", id=thumb_id, name=name,
+                                     bytes=len(data), mime="image/jpeg")
                 sys.stderr.write("fakephone: fs thumb id=%d %d bytes\n"
                                  % (thumb_id, len(data)))
                 sys.stderr.flush()
@@ -3434,7 +3447,7 @@ class Session(object):
         if write is not None and write["id"] == read_id:
             # A cancelled write leaves nothing: the temp goes, no reply follows.
             self._fail_write(write, "cancelled", "cancelled", silent=True)
-            self.phone.events.fs("cancel", id=read_id, kind="write")
+            self.phone.events.fs("cancel", id=read_id, target="write")
             return
         with self._fs_lock:
             job = self._fs_jobs.get(read_id)
@@ -3443,8 +3456,10 @@ class Session(object):
             thumb["cancel"].set()
             if self.sender:
                 self.sender.cancel_bulk(read_id)
-            self.phone.events.fs("cancel", id=read_id, kind="thumb")
-            sys.stderr.write("fakephone: fs thumb cancel id=%d\n" % read_id)
+            self.phone.events.fs("cancel", id=read_id, target="thumb",
+                                 name=thumb.get("name"))
+            sys.stderr.write("fakephone: fs thumb cancel id=%d name=%s\n"
+                             % (read_id, thumb.get("name")))
             sys.stderr.flush()
             return
         if job is None:
@@ -5272,6 +5287,9 @@ def build_parser():
                    help="normal answers at once; no_thumb refuses; hold answers nothing "
                         "until fs.cancel; hold_once holds only the first thumb (the R-1 "
                         "retry check)")
+    p.add_argument("--fs-thumb-hold-name", default=None, metavar="NAME",
+                   help="hold every fs.thumb whose file has this name (the VM's "
+                        "R-1 check holds lost.jpg while photo.jpg answers)")
     p.add_argument("--fs-thumb-delay-ms", type=int, default=0, metavar="MS",
                    help="make each fs.thumb take this long inside the one generator "
                         "(a slow phone, so a queued ask waits past 8 s)")

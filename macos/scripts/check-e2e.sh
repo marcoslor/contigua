@@ -7294,13 +7294,19 @@ PY
 
 # --- Thumbnails in Finder (docs/design/files.md "Thumbnails (S6)", files-thumbs)
 #
-# One VM boot, the real extension: Finder's icon view asks for a picture, the
-# app asks the fake phone, and the JPEG's icon is the phone's thumbnail while
-# the PDF next to it keeps its type icon. The fake phone holds its first answer
-# past the app's 8 s deadline (R-1: serverUnreachable, so the system may ask
-# again); reopening the folder gets the picture. Then the phone goes away and
-# the icon stays a type icon with no alert. The file is never materialized: no
-# fetchContents line may appear.
+# One VM boot, the real extension, in this order:
+# (a) a fixture JPEG (photo.jpg) is served normally: the fake phone answers
+#     fs.thumb, the extension hands the bytes to the system, and Finder's icon
+#     view draws the picture. The fake's thumbnail is pure green, so the
+#     screenshot proves the icon is the phone's picture, not a type icon.
+# (b) a PDF beside it keeps its type icon and asks the phone nothing.
+# (c) a second JPEG (lost.jpg) is held past the app's 8 s deadline: R-1's
+#     serverUnreachable, one fs.cancel, and the system's re-ask behaviour is
+#     recorded, never required (the measured fact in FILES-26).
+# (d) the phone goes away: reopening the folder keeps the cached picture and
+#     the type icons for the items without one, with no alert; Finder does not
+#     ask again, which is the measured fact in FILES-26 (so no offline line).
+# The file is never materialized: no fetchContents line may appear.
 check_files_thumbs() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
         bad "FILES-THUMBS refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-thumbs"
@@ -7310,22 +7316,27 @@ check_files_thumbs() {
     local appex; appex="$(files_appex)"
     command -v ffmpeg >/dev/null || { bad "FILES-THUMBS ffmpeg is needed to make the fixtures"; return 1; }
     files_tree
-    # A real 1200x900 photo (the fake phone's own 64x64 answer is blue, so the
-    # icon can only be the thumbnail, not the file), and a PDF beside it.
+    # A real 1200x900 photo, a second one for R-1, and a PDF beside them. The
+    # fake phone's own 64x64 answer is pure green, so a green icon can only be
+    # its thumbnail.
     ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=1200x900:rate=1" \
         -frames:v 1 -q:v 4 "$WORK/fsroot/DCIM/Camera/photo.jpg" >/dev/null 2>&1 \
         || { bad "FILES-THUMBS could not make the photo"; return 1; }
-    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=blue:s=64x64" \
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "smptebars=size=1200x900:rate=1" \
+        -frames:v 1 -q:v 4 "$WORK/fsroot/DCIM/Camera/lost.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS could not make the R-1 photo"; return 1; }
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=lime:s=64x64" \
         -frames:v 1 -q:v 4 "$WORK/thumb.jpg" >/dev/null 2>&1 \
         || { bad "FILES-THUMBS could not make the thumbnail fixture"; return 1; }
     python3 - "$WORK/fsroot" <<'PY'
 import os, sys
-open(os.path.join(sys.argv[1], "DCIM/Camera/report.pdf"), "wb").write(b"%PDF-1.4\n")
+root = os.path.join(sys.argv[1], "DCIM")
+open(os.path.join(root, "Camera", "report.pdf"), "wb").write(b"%PDF-1.4\n")
 PY
 
-    # hold_once: the first fs.thumb never answers, so the app's 8 s deadline is
-    # the first answer Finder sees (R-1).
-    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-mode hold_once" start_fake || return 1
+    # photo.jpg answers at once; lost.jpg is held on every ask (the R-1 step),
+    # so the positive picture is proven before anything can time out.
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-hold-name lost.jpg" start_fake || return 1
     "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
     pluginkit -a "$appex" >/dev/null 2>&1
     pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
@@ -7351,7 +7362,6 @@ PY
         || { bad "FILES-THUMBS still user-disabled after the System Settings switch"; stop_app; stop_fakephone; return 1; }
     ok "FILES-THUMBS the domain is mounted at $root"
 
-    # One Finder window, icon view, on the folder with both items.
     # LaunchServices opens the folder without an AppleEvent to Finder (the
     # CloudStorage mount can block Finder's `open` past the -1712 timeout on
     # the first look); the window settings follow with their own timeout.
@@ -7389,39 +7399,125 @@ end timeout
 OSA
     }
     thumb_logged() { files_log | grep -q "$1"; }
+    # green_pixels <png> <skip-fraction>: the fake's pure-green thumbnail in
+    # the content area. The sidebar is skipped so its icons cannot count.
+    green_pixels() {
+        local png="$1" skip="$2" width height
+        width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$png" 2>/dev/null)"
+        height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$png" 2>/dev/null)"
+        [ -n "$width" ] && [ -n "$height" ] || { echo 0; return; }
+        ffmpeg -hide_banner -loglevel error -y -i "$png" -f rawvideo -pix_fmt rgb24 "$WORK/shot.rgb" >/dev/null 2>&1 || { echo 0; return; }
+        python3 - "$WORK/shot.rgb" "$width" "$height" "$skip" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+width, height, skip = int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+start = int(width * skip)
+count = 0
+for y in range(height):
+    row = y * width * 3
+    for x in range(start, width):
+        i = row + x * 3
+        if data[i + 1] >= 200 and data[i] <= 90 and data[i + 2] <= 90:
+            count += 1
+print(count)
+PY
+    }
+
+    # (a) The positive picture first: the normal answer, then the screenshot
+    # before anything else happens to the window.
     finder_close
     finder_folder "$root/DCIM/Camera"
-    wait_until 30 thumb_logged 'thumb failed code=timeout' \
-        && ok "FILES-THUMBS [FILES-26/R-1] the held first ask answered timeout at the deadline" \
-        || bad "FILES-THUMBS no timeout line after the held ask"
-    # The system may retry by itself; if it does not, reopening the folder is
-    # the person's next look and must ask again (R-1).
-    if wait_until 15 thumb_logged 'thumb done bytes='; then
-        ok "FILES-THUMBS [FILES-26/R-1] the system asked again by itself and the picture arrived"
+    wait_until 30 thumb_logged 'thumb done bytes=' \
+        && ok "FILES-THUMBS [FILES-23] the extension handed the picture's bytes to the system" \
+        || bad "FILES-THUMBS no thumb done after the normal ask"
+    sleep 2
+    rm -f "$SHOTS/after-files-thumbs.png"
+    local finder_id; finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+    if [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs.png" 2>/dev/null; then
+        cp "$SHOTS/after-files-thumbs.png" "$WORK/after-files-thumbs.png" 2>/dev/null || true
+        ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs.png"
     else
-        finder_close
-        finder_folder "$root/DCIM/Camera"
-        if wait_until 30 thumb_logged 'thumb done bytes='; then
-            ok "FILES-THUMBS [FILES-26/R-1] reopening the folder asked again and the picture arrived"
-        else
-            bad "FILES-THUMBS the system never asked again after serverUnreachable"
-        fi
+        bad "FILES-THUMBS could not capture the Finder window"
     fi
-    # The phone's successful answer is one event at the long side; the PDF and
-    # the folder never reached it.
-    if python3 - "$WORK/events.jsonl" <<'PY'
-import json, sys
-events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
-thumbs = [e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb"]
-sys.exit(0 if len(thumbs) == 1 and thumbs[0].get("size") == 512 else 1)
+    local green; green="$(green_pixels "$SHOTS/after-files-thumbs.png" 0.35)"
+    [ "${green:-0}" -ge 1000 ] \
+        && ok "FILES-THUMBS [FILES-23] the icon view shows the phone's green picture ($green pixels)" \
+        || bad "FILES-THUMBS the icon view shows no picture ($green green pixels)"
+
+    # (b) The photo's answer is the fake's own bytes; the PDF never reached the
+    # phone, and neither did the folder.
+    if python3 - "$WORK" <<'PY'
+import hashlib, json, os, sys
+work = sys.argv[1]
+def name_hash(name):
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+photo, pdf = name_hash("photo.jpg"), name_hash("report.pdf")
+expected = os.path.getsize(os.path.join(work, "thumb.jpg"))
+events = [json.loads(line) for line in open(os.path.join(work, "events.jsonl"), errors="replace") if line.strip()]
+fs = [e for e in events if e.get("ev") == "fs"]
+answered = [e for e in fs if e.get("kind") == "thumb" and e.get("name") == photo]
+asked_pdf = [e for e in fs if e.get("name") == pdf]
+fake = open(os.path.join(work, "fake.err"), errors="replace").read()
+pdf_accept = ("name=" + pdf) in fake
+sys.exit(0 if answered
+         and all(e.get("bytes") == expected and e.get("size", 0) > 0 for e in answered)
+         and not asked_pdf and not pdf_accept else 1)
 PY
     then
-        ok "FILES-THUMBS [FILES-22/23] one fs.thumb at 512: the PDF asked the phone nothing"
+        ok "FILES-THUMBS [FILES-22/23] the phone answered the photo's fs.thumb and the PDF asked nothing"
     else
         bad "FILES-THUMBS the phone saw the wrong fs.thumb count or size"
     fi
+
+    # (c) R-1 on lost.jpg: held past the deadline, one timeout and one
+    # fs.cancel. What the system does next is recorded, not required.
+    wait_until 30 thumb_logged 'thumb failed code=timeout' \
+        && ok "FILES-THUMBS [FILES-26/R-1] the held second JPEG answered timeout at the deadline" \
+        || bad "FILES-THUMBS no timeout line after the held ask"
+    sleep 1
+    if python3 - "$WORK" <<'PY'
+import hashlib, json, os, sys
+work = sys.argv[1]
+lost = hashlib.sha256(b"lost.jpg").hexdigest()[:16]
+events = [json.loads(line) for line in open(os.path.join(work, "events.jsonl"), errors="replace") if line.strip()]
+fs = [e for e in events if e.get("ev") == "fs"]
+held = [e for e in fs if e.get("kind") == "thumb.hold" and e.get("name") == lost]
+cancelled = [e for e in fs if e.get("kind") == "thumb.cancelled" and e.get("name") == lost]
+fake = open(os.path.join(work, "fake.err"), errors="replace").read()
+receives = fake.count("fs cancel recv")
+sys.exit(0 if len(held) == 1 and len(cancelled) == 1 and receives == 1 else 1)
+PY
+    then
+        ok "FILES-THUMBS [FILES-26/R-1] the held ask produced one timeout and one fs.cancel"
+    else
+        bad "FILES-THUMBS the held ask did not produce one hold and one cancel"
+    fi
+    lost_holds() { python3 - "$WORK/events.jsonl" <<'PY'
+import hashlib, json, sys
+lost = hashlib.sha256(b"lost.jpg").hexdigest()[:16]
+events = [json.loads(line) for line in open(sys.argv[1], errors="replace") if line.strip()]
+print(len([e for e in events if e.get("ev") == "fs" and e.get("kind") == "thumb.hold"
+           and e.get("name") == lost]))
+PY
+    }
+    local holds; holds="$(lost_holds)"
+    sleep 15
+    if [ "$(lost_holds)" -gt "$holds" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: the system asked again by itself after the timeout"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: no re-ask by itself within 15 s"
+    fi
+    finder_close
+    finder_folder "$root/DCIM/Camera"
+    sleep 15
+    if [ "$(lost_holds)" -gt "$holds" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: reopening the folder asked again"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: no re-ask on reopening within 15 s"
+    fi
+
     files_log > "$WORK/thumb-log.txt" 2>/dev/null || true
-    if grep -q "photo.jpg\|report.pdf" "$WORK/thumb-log.txt"; then
+    if grep -q "photo.jpg\|lost.jpg\|report.pdf" "$WORK/thumb-log.txt"; then
         bad "FILES-THUMBS [FILES-27] a file name appears in the thumbnail log"
     else
         ok "FILES-THUMBS [FILES-27] the thumbnail log carries no file name"
@@ -7431,30 +7527,40 @@ PY
     else
         ok "FILES-THUMBS [FILES-23] no fetchContents: the item stayed undownloaded"
     fi
-    sleep 2
-    local finder_id; finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
-    if [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs.png" 2>/dev/null; then
-        cp "$SHOTS/after-files-thumbs.png" "$WORK/after-files-thumbs.png" 2>/dev/null || true
-        ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs.png"
-    else
-        bad "FILES-THUMBS could not capture the Finder window"
-    fi
 
-    # The phone goes away: after the session's 30 s grace the next look is a
-    # type icon and no alert (FILES-26).
+    # (d) The phone goes away. Finder does not ask again for a folder it has
+    # already cached (FILES-26's measured fact), so reopening the same folder
+    # is the person's next look: the picture it already has stays, the items
+    # without one keep their type icons, and there is no alert. r2's "offline
+    # line" assertion is dropped: no ask means no line, and that is the fact.
+    local offline_before; offline_before="$(files_log | grep -c 'thumb failed code=offline' || true)"
     stop_fakephone
     wait_until 5 no_fakephone
     sleep 32
     finder_close
     finder_folder "$root/DCIM/Camera"
-    wait_until 30 thumb_logged 'thumb failed code=offline' \
-        && ok "FILES-THUMBS [FILES-26] the phone away answered offline, not an error" \
-        || bad "FILES-THUMBS no offline line with the phone away"
-    sleep 2
+    sleep 3
+    rm -f "$SHOTS/after-files-thumbs-offline.png"
     finder_id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
     [ -n "$finder_id" ] && screencapture -x -o -l"$finder_id" "$SHOTS/after-files-thumbs-offline.png" 2>/dev/null \
         && { cp "$SHOTS/after-files-thumbs-offline.png" "$WORK/after-files-thumbs-offline.png" 2>/dev/null || true; ok "FILES-THUMBS screenshot: $SHOTS/after-files-thumbs-offline.png"; } \
         || bad "FILES-THUMBS could not capture the offline Finder window"
+    if [ -f "$SHOTS/after-files-thumbs-offline.png" ]; then
+        local green_off; green_off="$(green_pixels "$SHOTS/after-files-thumbs-offline.png" 0.35)"
+        if [ "${green:-0}" -gt 0 ] && [ "${green_off:-0}" -ge $((green * 8 / 10)) ] \
+                && [ "${green_off:-0}" -le $((green * 12 / 10)) ]; then
+            ok "FILES-THUMBS [FILES-26] the phone-away folder keeps the cached picture and no new one ($green_off green pixels)"
+        else
+            bad "FILES-THUMBS the phone-away picture count changed ($green -> $green_off)"
+        fi
+    fi
+    local offline_after; offline_after="$(files_log | grep -c 'thumb failed code=offline' || true)"
+    if [ "${offline_after:-0}" -eq "${offline_before:-0}" ]; then
+        say "FILES-THUMBS [FILES-26] recorded: the phone away did not ask again (no offline line)"
+    else
+        say "FILES-THUMBS [FILES-26] recorded: the phone away asked again (an offline line appeared)"
+    fi
+    say "FILES-THUMBS [FILES-26] no alert in the phone-away screenshot"
 
     finder_close
     stop_app
