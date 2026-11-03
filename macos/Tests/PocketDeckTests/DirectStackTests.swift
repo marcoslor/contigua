@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import PDLWIP
 import XCTest
+@testable import pocketdeck_directd
 
 /// The helper's lwIP stack on a fake link: `linkoutput` writes into a
 /// socketpair, and `pdl_input` is fed the frames a kernel would send. No BPF,
@@ -128,6 +129,42 @@ final class DirectStackTests: XCTestCase {
             sent += frame[(54 + headerLength)..<(54 + headerLength + payloadLength)]
         }
         XCTAssertEqual(sent, payload, "the peer must receive the bytes in order")
+    }
+
+    func testLinkPumpsAppBytesAfterAttach() throws {
+        let fake = try FakeLink(ownMAC: ownMAC, ownLL: ownLL)
+        pdl_set_peer(fake.stack, peerLL, peerMAC)
+        resetCallbacks()
+        let conn = try XCTUnwrap(fake.connect(to: peerLL, port: 47_990))
+        let syn = try XCTUnwrap(fake.drainFrames().first)
+        let synAckSeq: UInt32 = 0x1122_3344
+        fake.send(fake.synAck(from: peerLL, fromMAC: peerMAC, to: ownLL,
+                              clientPort: fake.tcpSourcePort(syn),
+                              serverPort: fake.tcpDestinationPort(syn),
+                              sequence: synAckSeq, acknowledgement: fake.tcpSequence(syn) &+ 1))
+        _ = fake.drainFrames()
+
+        var pair = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
+                        port: 47_990, remote: "fe80::1")
+        defer {
+            link.closeByApp()
+            link.releaseConnection()
+            close(pair[0])
+            close(pair[1])
+        }
+
+        link.attach(conn)
+        link.connected()
+        let payload = (0..<2048).map { UInt8($0 & 0xff) }
+        payload.withUnsafeBufferPointer { XCTAssertTrue(link.appendFromApp($0)) }
+        link.pumpToStack()
+
+        let frames = fake.drainFrames()
+        XCTAssertFalse(frames.isEmpty, "an attached link must write the app's bytes to the peer")
+        XCTAssertEqual(frames.reduce(0) { $0 + Int(u16($1, 18)) - Int($1[66] >> 4) * 4 },
+                       payload.count)
     }
 
     // MARK: callbacks

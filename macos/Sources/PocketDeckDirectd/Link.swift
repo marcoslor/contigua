@@ -140,6 +140,12 @@ final class Link {
 
     // MARK: events
 
+    /// Stores the C connection pdl_connect returned. Without this the link can
+    /// hand out its fd and answer "up" while every pump sees `conn == nil`.
+    func attach(_ connection: OpaquePointer) {
+        conn = connection
+    }
+
     func connected() {
         guard state == .connecting else {
             transition(.connected)

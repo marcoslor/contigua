@@ -510,12 +510,12 @@ final class DirectDaemon {
             }
             self?.linkWentDown()
         }
-        let alive = withExtendedLifetime(link) {
+        let connection = withExtendedLifetime(link) {
             pdl_connect(stack, peerLL, port, Unmanaged.passUnretained(link).toOpaque(),
                         directConnectedCallback, directRecvCallback, directSentCallback,
-                        directErrorCallback) != nil
+                        directErrorCallback)
         }
-        guard alive else {
+        guard let connection else {
             // pdl_connect may already have run the error callback; fail() is
             // idempotent once the link is down.
             link.fail(.connectFailed)
@@ -528,6 +528,7 @@ final class DirectDaemon {
             }
             return
         }
+        link.attach(connection)
     }
 
     private static func randomLinkID() -> String {
