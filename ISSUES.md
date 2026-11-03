@@ -31,6 +31,11 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## 2. Bugs you can see
 
 - **ISS-3 Streams flicker on lock and unlock.** Locking or unlocking the phone makes the open stream windows flicker briefly. It predates the 2026-11-01 locked-phone fixes; the person rates it minor.
+  - **Reproduced on the emulator (2026-11-03, `fix/flicker`, 8 boots):** after a wake, the Mac paints a black or dimmed frame (mean luma 0–170 against a 245 baseline) for up to about 1 s. The rig and its judge (`flicker.sh`, `FlickerJudgeTests`, WIN-43's wording) are on the branch.
+  - **Tried, not merged:** a phone-side gate (`StreamDisplayGate`) that sends nothing while the stream's display is off and, after a panel or display edge, waits for a key frame newer than the edge.
+    - It cannot tell a black picture from a real one: right after the display comes back on, the phone draws it black for a moment, so the first fresh key frame is itself black (boot 8: a mean-0 frame 240 ms after `display 5 power: on`).
+    - Phase B still had 4 luma findings. An earlier version also delayed the first picture on a locked phone to 5.5 s; that was fixed before boot 8 (0.84 / 0.23 s).
+  - **Next idea, needs a design decision:** hold the paint on the Mac instead, for frames that follow a phone power edge, until the decoded picture's mean luma is back near the last good picture's; or measure on the real phone first, where the cause may differ (the 11-01 field log points at an encoder burst).
 - **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced as multi-window phase 2: WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`.
   - **The phone half** is on `main` (2026-10-28): `multi`, `newInstance`, `taskId`, `maxWindows`, task labels and closing one task.
   - **The Mac half** (⌘N, File/Dock/Deck menus, titles per task, the cap, offline) is built on `epic/mw-mac` (K2 and e2e `multiwin` green on 10-28) and was never merged; it waited on its VM screenshots. Being brought up to `main` (2026-11-03).
