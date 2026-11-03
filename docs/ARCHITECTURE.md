@@ -38,10 +38,12 @@ The app binds the user service over Shizuku and talks to it over AIDL:
 
 - `IDeckService.aidl` (app → shell): growable transaction codes — `stopServer`,
   `setPairedClients`, `respondPairing`, `setBatteryState`, `setLockedState`,
-  `shareFile`, `setNotifyShared`, `pushDeviceEvent` (bumped per transaction; see
-  "Device lessons").
+  `shareFile`, `setNotifyShared`, `pushDeviceEvent`, `openStaged` (an fd for a staged
+  drop), `clipImageDone` (the app's answer to a clipboard image) (bumped per transaction;
+  see "Device lessons").
 - `IDeckCallback.aidl` (shell → app): `onPairingRequest`, `onPaired`,
-  `onSessionChanged`, `onNotifySession`, `onMediaCommand`.
+  `onSessionChanged`, `onNotifySession`, `onMediaCommand`, `onClipImage` (a clipboard
+  image's bytes for the app to set).
 
 The app pushes identity and per-feature gates in (`setPairedClients`, the
 notify opt-in), the shell calls back for pairing decisions and media actions.
@@ -130,15 +132,20 @@ system-privileged steps):
   resumable via `resume:bytes`, 200 MiB cap, one active drop per phone) → the
   phone lands the file in `Downloads/PocketDeck/`, media-scans it and offers a
   SEND chooser through `DropReceiver` + shell staging (`ShellLanding`,
-  `ShareTrampoline`): the app's own-uid SEND step picks the receiving app.
+  `ShareTrampoline`). The shell stages the file and opens it read-only through
+  `openStaged` (the app cannot open a shell-written path, boot 5); the app
+  copies from that fd into its own cache and its own-uid SEND step picks the
+  receiving app.
 - **APK install** reuses the same transport shape: `apk.install` + `APK_DATA`
   → `pm install-create/write/commit` at shell uid; `.apks`/`.xapk` bundles are
   parsed Mac-side first (docs/design/apk.md).
 - **Share phone → Mac**: `shareFile` (AIDL) hands bytes from the phone's SHARE
   to the shell; `share.text`/`share.file` drive the Mac (browser / clipboard /
   `~/Downloads/PocketDeck` + a Show-in-Finder notification).
-- Clipboard is read/written at shell uid (`ShellClipboard`), so it works while
-  the phone is locked; text and images, both directions.
+- Clipboard text is read/written at shell uid (`ShellClipboard`), so it works
+  while the phone is locked; images are read there too. A Mac image goes to the
+  app process over `onClipImage` because ClipboardService refuses the shell's
+  own URI clip (boot 5); the app sets it and answers `clipImageDone`.
 
 ## The Mac side
 

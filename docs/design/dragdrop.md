@@ -25,15 +25,16 @@ the only path we create), renamed after a SHA-256 match. Then a media scan
 available — the SEND step, whose URI grant must come from the UID that owns `dev.pocketdeck.fileprovider`.
 Shell (UID 2000) does not own it, so an `am start -a SEND --grant-read-uri-permission` from shell has the grant
 silently dropped and the receiver crashes on a URI it cannot open. Instead the shell process stages the finished
-file in the app's external media folder (`Android/media/dev.pocketdeck/shared/`; the app reads what shell writes
-there, while the same file under `Android/data/<pkg>` stays unreadable to it). The folder is
-`/storage/emulated/0/Android/media/<pkg>/shared`: in the uid-2000 process both
-`getExternalMediaDirs()` and `Environment.getExternalStorageDirectory()` are refused (boots 3/4),
-so it is computed from the real root and the app's package. The shell then starts the exported,
-UI-less
-`dev.pocketdeck.drop.ShareTrampoline` with the bare name. The trampoline accepts only a name its own sanitiser
-leaves alone, copies the file into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB) and shows the SEND chooser for that
-copy, `FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` set — the grant therefore comes from the app's own UID.
+file in its own external media folder, `/storage/emulated/0/Android/media/<pkg>/shared`: in the uid-2000 process
+both `getExternalMediaDirs()` and `Environment.getExternalStorageDirectory()` are refused (boots 3/4),
+so it is computed from the real root and the app's package. The shell records the bare name in
+`ShareStaging` (60 s, one open) and starts the exported, UI-less
+`dev.pocketdeck.drop.ShareTrampoline` with that name. The app can stat a shell-written file there but not
+open it (boot 5, H2: `EACCES`), so the trampoline asks the shell for the bytes: `IDeckService.openStaged(name)`
+opens the staged file read-only at uid 2000, unlinks it and returns the descriptor. `ShareCopies` copies from
+that descriptor into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB); the trampoline never opens the staged path
+itself. It accepts only a name its own sanitiser leaves alone and shows the SEND chooser for the copy,
+`FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` set — the grant therefore comes from the app's own UID.
 The phone never trusts payload or name beyond `sha256` and the sanitised name.
 
 ## Finder file copies
@@ -46,7 +47,7 @@ never sends its text, and ⌘V in a stream window consumes it instead of typing 
 a file over 1 MiB is read and decoded off the main thread. Everything else sends nothing
 (SHARE-2). The drop path turns ⌘V into a transfer instead (SHARE-17).
 
-## Clipboard images — extends `clip.set` (text only today)
+## Clipboard images — extends `clip.set`
 - Binary `0x23 CLIP_DATA`, both directions, same shape as the drop:
   `{"t":"clip.image.start","id","mime","size"}` → `0x23` chunks →
   `{"t":"clip.image.end","size","sha256"}` / `{"t":"clip.image.abort","id"}`. Cap 8 MiB each way:
@@ -55,17 +56,21 @@ a file over 1 MiB is read and decoded off the main thread. Everything else sends
 - Mac: the text poll also picks up an image item (PNG verbatim, TIFF converted) when the item has
   no text; received images are written back as PNG. A hash of the bytes prevents echo like
   `syncedHash`; secret/concealed items are still never sent.
-- Phone: `ShellClipboard` gains image read (first item's stream) and write (one item carrying
-  only a FileProvider URI under Downloads/PocketDeck, media-scanned). A2, measured on the
-  emulator: a URI-only item pastes nothing in a plain field (a content URI that cannot serve text
-  coerces to null; `plain text length=0`) and reaches a field whose content listener takes image
-  types (`rich image bytes=98`; boots 3/4). The URI is built from the drop folder by hand, and
-  the storage root is `/storage/emulated/0`, because both `FileProvider.getUriForFile` and
-  `Environment.getExternalStorageDirectory()` are refused for uid 2000 (boots 3/4; files.md §4).
-  Risk: another app pasting a shell-made clip depends on ClipboardService URI grants — the r2
-  boots stopped at the write (`clip.image.done ok:false`), and the fixed write was not re-run
-  (no boot left), so it stays unproven until the real-phone spike; worst case the image still
-  exists in the folder.
+- Phone: `ShellClipboard` reads the first item's stream for the phone → Mac poll. The Mac → phone
+  write is app-owned: uid 2000's URI clip fails ClipboardService's owner check (boot 5, H1:
+  `setPrimaryClip(image) failed: InvocationTargetException`), and the app cannot read a file the
+  shell wrote (H2). So the shell writes the verified bytes to a scratch file under
+  `Android/media/<pkg>/clip`, opens the descriptor, unlinks the file and calls the app's
+  `IDeckCallback.onClipImage(id, mime, fd)`; the app copies it into `cacheDir/clip` (only the
+  newest file is kept), builds the FileProvider URI at its own uid and sets A2's URI-only item,
+  then answers `IDeckService.clipImageDone(id, ok)`. That answer is the only source of
+  `clip.image.done`; no callback, no answer within 3 s or a failed write is `ok:false`.
+  A clip whose URI authority is `dev.pocketdeck.fileprovider` is the app's own write, and the poll
+  never syncs it back (the echo rule). A2, measured on the emulator (boot 7): the URI-only item
+  pastes nothing in a plain field (a content URI that cannot serve text coerces to null;
+  `plain text length=0`) and reaches a field whose content listener takes image types
+  (`rich image bytes=592`, the fixture's exact size), with `clip.image.done ok=True` and the app
+  logging its own write while in the background.
 
 ## Paste and drop into an app (SHARE-16–17 built; SHARE-18 planned)
 
@@ -75,9 +80,9 @@ clipboard-image path and then a paste key; plain text keeps today's `text` frame
 
 **V1, an image.** The Mac sends the image as `clip.image.*` with `"paste":true` — a person's ⌘V
 is explicit like a drop, so the phone applies it even while "Share clipboard with your phone" is
-off (A1; the switch governs the background sync). The phone writes one URI-only clipboard
-item (the image's URI, no text; A2) and answers
-`{"t":"clip.image.done","id":N,"ok":true}` (PROTOCOL.md
+off (A1; the switch governs the background sync). The app process writes one URI-only clipboard
+item from the descriptor the shell hands it (the image's URI, no text; A2) and answers
+`{"t":"clip.image.done","id":N,"ok":true}` through `clipImageDone` (PROTOCOL.md
 "Clipboard images"); only then does the Mac send one `KEY` frame with keycode 279
 (`KEYCODE_PASTE`) and `metaState` 0 to the window's stream. The wait is 3 s; a refusal, a
 disconnect or the timeout sends no key and shows "Nothing pasted."
@@ -109,7 +114,9 @@ files in `ShareBatch` and offers one SEND after the last one: `ACTION_SEND` for 
 `ACTION_SEND_MULTIPLE` for 2–5, each with `FLAG_GRANT_READ_URI_PERMISSION` and the same
 `ClipData`; over 5 files are saved but never shared. It adds `--esa names`, `--esa mimes` and
 `--es target <pkg>` to the `am start` of
-`android/app/src/main/java/dev/pocketdeck/drop/ShareTrampoline.kt`; its `offer` builds the SEND,
+`android/app/src/main/java/dev/pocketdeck/drop/ShareTrampoline.kt`; the trampoline gets each
+staged file's bytes through `IDeckService.openStaged` (the shell opens it; the app cannot open
+the shell-written path, boot 5), copies them into `cacheDir/shared`, and its `offer` builds the SEND,
 calls `setPackage(pkg)`, and shows the intent only when `resolveActivity` returns a component for
 it; otherwise it clears the package and shows today's chooser. No paste key is sent for files.
 
@@ -153,6 +160,11 @@ read a shell-written file there, even in its own package folder). A
 clipboard cap over 8 MiB would stream through the queue that carries video and stall the session.
 
 ## Risks
-The SEND step is verified with a live `am start` of the trampoline on the emulator (chooser shown, Messages
-opens the attachment, no `Permission Denial` in logcat). A vendor ROM that refuses the trampoline leaves the
-file written in Downloads. Phone→Mac image reads through other apps' content URIs may not resolve.
+The SEND step is verified on the emulator (boot 7): the trampoline copied the staged file through
+`openStaged` and `share offered for 1 file(s)` named the targeted package
+(`com.google.android.apps.messaging`), an untargeted drop opened
+`com.android.intentresolver/.ChooserActivityLauncher`, and a 3-file gesture shared once
+(`share offered for 3 file(s)`), with the app's own clip written from the background and pasted
+by the image field. A vendor ROM that refuses the trampoline leaves the file written in Downloads.
+Phone→Mac image reads through other apps' content URIs may not resolve, and which real apps accept
+a pasted image is still the real-phone spike's Q2/Q3.
