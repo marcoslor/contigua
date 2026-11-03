@@ -170,6 +170,8 @@ finish() {
 # helper adds and the helper itself never touch the host.
 FETH_HELPER_PID=""
 FETH_HELPER_SUDO=""
+FETH_HELPER_LOG=""
+FETH_HELPER_STEP=""
 FETH_SERVER_PIDS=()
 FETH_PAIR=0
 FETH_SOCK=""
@@ -265,28 +267,52 @@ stop_feth() {
     [ -n "$FETH_SOCK" ] && rm -f "$FETH_SOCK"
 }
 
-# feth_start_helper [ENV=value...] — the helper as root on feth0, test mode.
+# feth_start_helper <step> [ENV=value...] — the helper as root on feth0, test
+# mode. Its whole log lives in directd-<step>.log, so boot 8 keeps the path,
+# close, shared and benchmark generations apart.
 feth_start_helper() {
-    local extra=("$@") i
-    : > "$WORK/directd.log"
+    local step="$1" extra=() i pids
+    shift
+    extra=("$@")
+    FETH_HELPER_STEP="$step"
+    FETH_HELPER_LOG="$WORK/directd-$step.log"
+    : > "$FETH_HELPER_LOG"
     feth_root env POCKETDECK_DIRECT_IF=feth0 POCKETDECK_DIRECT_TEST=1 \
         POCKETDECK_DIRECT_SOCK="$FETH_SOCK" ${extra[@]+"${extra[@]}"} \
-        "$FETH_HELPER" >"$WORK/directd.log" 2>&1 &
+        "$FETH_HELPER" >"$FETH_HELPER_LOG" 2>&1 &
     FETH_HELPER_SUDO=$!
     for i in $(seq 1 100); do
         [ -S "$FETH_SOCK" ] && break
         kill -0 "$FETH_HELPER_SUDO" 2>/dev/null || break
         sleep 0.1
     done
-    FETH_HELPER_PID="$(feth_root pgrep -P "$FETH_HELPER_SUDO" 2>/dev/null | head -1)"
-    [ -n "$FETH_HELPER_PID" ] || FETH_HELPER_PID="$FETH_HELPER_SUDO"
+    # The CPU number is only meaningful for the daemon itself: find it by name,
+    # as root, and refuse a generation with zero or several matches.
+    pids="$(feth_root pgrep -x pocketdeck-directd 2>/dev/null || true)"
+    if [ "$(printf '%s\n' "$pids" | sed '/^$/d' | wc -l | tr -d ' ')" != "1" ]; then
+        say "helper processes: ${pids:-none} (want exactly one pocketdeck-directd)"
+        for i in $pids; do feth_root kill "$i" >/dev/null 2>&1 || true; done
+        kill "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        FETH_HELPER_SUDO=""
+        FETH_HELPER_PID=""
+        return 1
+    fi
+    FETH_HELPER_PID="$pids"
     [ -S "$FETH_SOCK" ]
 }
 
 # feth_stop_helper — stop the daemon we started, and the sudo that owns it.
 feth_stop_helper() {
+    local i
     if [ -n "$FETH_HELPER_PID" ]; then
         feth_root kill "$FETH_HELPER_PID" >/dev/null 2>&1 || true
+        # The next start asserts exactly one pocketdeck-directd; wait for this
+        # generation to leave before checking.
+        for i in $(seq 1 50); do
+            feth_root kill -0 "$FETH_HELPER_PID" 2>/dev/null || break
+            sleep 0.1
+        done
         FETH_HELPER_PID=""
     fi
     if [ -n "$FETH_HELPER_SUDO" ]; then
@@ -294,16 +320,23 @@ feth_stop_helper() {
         wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
         FETH_HELPER_SUDO=""
     fi
+    for i in $(seq 1 50); do
+        [ -z "$(feth_root pgrep -x pocketdeck-directd 2>/dev/null || true)" ] && break
+        sleep 0.1
+    done
     feth_keep_stats
     [ -n "$FETH_SOCK" ] && rm -f "$FETH_SOCK"
     return 0
 }
 
 # feth_keep_stats — the helper prints lwIP's counters on SIGTERM; keep every
-# helper generation's lines even though the next start truncates directd.log.
+# generation's lines, tagged with its step, beside its directd-<step>.log.
 feth_keep_stats() {
-    [ -f "$WORK/directd.log" ] || return 0
-    grep 'lwip stats' "$WORK/directd.log" >>"$WORK/lwip-stats.log" 2>/dev/null || true
+    local log="$FETH_HELPER_LOG"
+    FETH_HELPER_LOG=""
+    [ -n "$log" ] && [ -f "$log" ] || return 0
+    grep 'lwip stats' "$log" | sed "s/^/$FETH_HELPER_STEP: /" \
+        >>"$WORK/lwip-stats.log" 2>/dev/null || true
     return 0
 }
 
@@ -13780,9 +13813,9 @@ check_feth_path() {
     fi
 
     # 3. The path: hello, peer, dial, fd, 1 MiB echo, MSS sizes, close.
-    if ! feth_start_helper; then
+    if ! feth_start_helper path; then
         bad "[DIRECT-P2] the helper did not start"
-        tail -5 "$WORK/directd.log" | while IFS= read -r line; do say "  $line"; done
+        tail -5 "$FETH_HELPER_LOG" | while IFS= read -r line; do say "  $line"; done
         stop_feth
         return
     fi
@@ -13806,16 +13839,16 @@ check_feth_path() {
         || bad "[DIRECT-P2] close was refused"
     feth_stop_servers
 
-    # 4. A peer that closes mid-transfer: the link must report down within 5 s.
+    # 4. A peer that closes mid-transfer: the link must report down within 2 s.
     if feth_start_server close "$FETH_PORT" --close-after 1.0; then
         feth_run_e2e close 60 || true
         down_ms="$(sed -n 's/^DIRECT eof detected=broken down ms=\([0-9]*\)$/\1/p' "$WORK/direct-e2e-close.log" 2>/dev/null | tail -1)"
         if [ -z "$down_ms" ]; then
             bad "[DIRECT-P2] the link never reported down after the peer closed (or the app hung)"
-        elif [ "$down_ms" -le 5000 ]; then
+        elif [ "$down_ms" -le 2000 ]; then
             ok "[DIRECT-P2] peer close: link down ${down_ms} ms after EOF"
         else
-            bad "[DIRECT-P2] peer close: link down took ${down_ms} ms (limit 5000)"
+            bad "[DIRECT-P2] peer close: link down took ${down_ms} ms (limit 2000)"
         fi
     else
         bad "[DIRECT-P2] the close server did not start"
@@ -13827,7 +13860,7 @@ check_feth_path() {
     # the separate-address run above is the one that must pass.
     feth_stop_helper
     shared_outcome="not run"
-    if feth_start_helper POCKETDECK_DIRECT_LL=shared; then
+    if feth_start_helper shared POCKETDECK_DIRECT_LL=shared; then
         if feth_start_server echo "$FETH_PORT"; then
             feth_run_e2e shared 60 || true
             if grep -q "^DIRECT shared-echo ok" "$WORK/direct-e2e-shared.log" 2>/dev/null; then
@@ -13835,7 +13868,9 @@ check_feth_path() {
             elif grep -q "^DIRECT shared-echo fail" "$WORK/direct-e2e-shared.log" 2>/dev/null; then
                 shared_outcome="echo failed"
             fi
-            if grep -q "^DIRECT echo ok bytes=1048576" "$WORK/direct-e2e-path.log" 2>/dev/null; then
+            if [ "$shared_outcome" = "not run" ]; then
+                bad "[DIRECT-P2] address experiment: shared address has no measured echo"
+            elif grep -q "^DIRECT echo ok bytes=1048576" "$WORK/direct-e2e-path.log" 2>/dev/null; then
                 ok "[DIRECT-P2] address experiment: shared with feth0's kernel link-local -> $shared_outcome; separate address -> 1 MiB echo measured"
             else
                 bad "[DIRECT-P2] address experiment: separate address has no measured echo ($shared_outcome for shared)"
@@ -13850,7 +13885,7 @@ check_feth_path() {
     feth_stop_helper
 
     # 6. The benchmark: lwIP plaintext 30 s, TLS over the fd 30 s, helper CPU.
-    if ! feth_start_helper; then
+    if ! feth_start_helper bench; then
         bad "[DIRECT-P2] the helper did not start for the benchmark"
         stop_feth
         return
@@ -13889,8 +13924,9 @@ check_feth_path() {
             tls_mbps="$(printf '%s' "$tls_line" | sed -E 's/.*mbps=([0-9.]+).*/\1/')"
             plain_seen="$(tail -1 "$WORK/feth-count-$FETH_PORT.txt" 2>/dev/null)"
             tls_seen="$(tail -1 "$WORK/feth-count-$FETH_TLS_PORT.txt" 2>/dev/null)"
-            cpu_mean="$(awk '{s+=$1; n++} END {if (n) printf "%.1f", s/n; else printf "0"}' "$WORK/cpu.txt")"
-            cpu_max="$(awk 'BEGIN {m=0} {if ($1>m) m=$1} END {printf "%.1f", m}' "$WORK/cpu.txt")"
+            cpu_mean="$(awk 'NF {s+=$1; n++} END {if (n) printf "%.1f", s/n; else printf "0"}' "$WORK/cpu.txt")"
+            cpu_max="$(awk 'BEGIN {m=0} NF {if ($1>m) m=$1} END {printf "%.1f", m}' "$WORK/cpu.txt")"
+            cpu_samples="$(awk 'NF {n++} END {print n+0}' "$WORK/cpu.txt")"
             [ "$plain_bytes" = "$plain_seen" ] \
                 && ok "[DIRECT-P2] plaintext: every byte accounted for ($plain_bytes)" \
                 || bad "[DIRECT-P2] plaintext bytes differ: client $plain_bytes, server $plain_seen"
@@ -13898,11 +13934,17 @@ check_feth_path() {
                 && ok "[DIRECT-P2] TLS: every byte accounted for ($tls_bytes)" \
                 || bad "[DIRECT-P2] TLS bytes differ: client $tls_bytes, server $tls_seen"
             if awk -v m="$tls_mbps" 'BEGIN {exit !(m >= 8.0)}'; then
-                ok "[DIRECT-P2] benchmark: plain $plain_mbps Mbit/s, TLS $tls_mbps Mbit/s (bar 8), helper CPU mean $cpu_mean% max $cpu_max%"
+                ok "[DIRECT-P2] benchmark: plain $plain_mbps Mbit/s, TLS $tls_mbps Mbit/s (bar 8)"
             else
-                bad "[DIRECT-P2] benchmark: TLS $tls_mbps Mbit/s is under the 8 Mbit/s bar (plain $plain_mbps, CPU $cpu_mean%)"
+                bad "[DIRECT-P2] benchmark: TLS $tls_mbps Mbit/s is under the 8 Mbit/s bar (plain $plain_mbps)"
             fi
-            say "DIRECT-BENCH plain_mbps=$plain_mbps tls_mbps=$tls_mbps cpu_mean=$cpu_mean cpu_max=$cpu_max plain_bytes=$plain_bytes tls_bytes=$tls_bytes"
+            if [ "$cpu_samples" -ge 20 ] \
+                && awk -v m="$cpu_mean" -v x="$cpu_max" 'BEGIN {exit !(m > 0 && x > 0)}'; then
+                ok "[DIRECT-P2] helper CPU measured on pid $FETH_HELPER_PID: mean $cpu_mean% max $cpu_max% over $cpu_samples samples"
+            else
+                bad "[DIRECT-P2] helper CPU was not measured: mean $cpu_mean% max $cpu_max% over $cpu_samples samples"
+            fi
+            say "DIRECT-BENCH plain_mbps=$plain_mbps tls_mbps=$tls_mbps cpu_mean=$cpu_mean cpu_max=$cpu_max cpu_samples=$cpu_samples plain_bytes=$plain_bytes tls_bytes=$tls_bytes"
         fi
     else
         bad "[DIRECT-P2] a benchmark server did not start"
