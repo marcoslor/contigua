@@ -239,4 +239,16 @@ final class ThumbQueueTests: XCTestCase {
         XCTAssertEqual(1, answers[1]?.count)
         XCTAssertEqual([], host.cancels, "a finished request was cancelled on the phone")
     }
+
+    /// The line shows the phase the machine left, not the one it entered twice.
+    func testATransitionLogsThePhaseItLeft() {
+        var lines: [String] = []
+        queue.logTransition = { lines.append($0) }
+        ask(1)
+        XCTAssertEqual(["thumb: queued --slot--> running"], lines)
+        guard host.calls.count == 1 else { return }
+        host.finish(0, .success(thumbBytes))
+        XCTAssertEqual(["thumb: queued --slot--> running",
+                        "thumb: running --end--> done"], lines)
+    }
 }
