@@ -10,6 +10,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
 
 /// The pasteboard as the sync sees it. `SystemPasteboard` is the real one.
@@ -243,14 +244,33 @@ struct FileCopyImage {
         return FileCopyImage(url: url, type: type, size: size)
     }
 
-    /// PNG and JPEG go verbatim; every other image type becomes PNG, like the
-    /// TIFF clipboard path.
+    /// PNG and JPEG go verbatim. Any other image type is re-encoded: PNG when it
+    /// has alpha, JPEG at quality 0.9 when it is opaque, because a photo (HEIC
+    /// above all) as PNG is several times its size and would miss the 8 MiB cap.
+    /// The source's metadata, orientation included, is carried over. A result
+    /// over the cap sends nothing.
     static func encode(_ data: Data, type: UTType) -> (Data, String)? {
         guard !data.isEmpty, data.count <= ClipboardSync.maxImageBytes else { return nil }
         if type.conforms(to: .png) { return (data, "image/png") }
         if type.conforms(to: .jpeg) { return (data, "image/jpeg") }
-        guard let image = NSImage(data: data), let png = image.pngData() else { return nil }
-        return (png, "image/png")
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let (target, mime): (UTType, String) = hasAlpha(image) ? (.png, "image/png") : (.jpeg, "image/jpeg")
+        let out = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+                out as CFMutableData, target.identifier as CFString, 1, nil) else { return nil }
+        let options: [CFString: Any] = target == .jpeg ? [kCGImageDestinationLossyCompressionQuality: 0.9] : [:]
+        CGImageDestinationAddImageFromSource(destination, source, 0, options as CFDictionary)
+        guard CGImageDestinationFinalize(destination),
+              out.length > 0, out.length <= ClipboardSync.maxImageBytes else { return nil }
+        return (out as Data, mime)
+    }
+
+    private static func hasAlpha(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: return false
+        default: return true
+        }
     }
 }
 

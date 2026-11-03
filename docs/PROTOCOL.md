@@ -914,7 +914,8 @@ the sender may be either side:
 - The Mac sends an image when the general pasteboard changes to an item with image data and no
   text (PNG verbatim, TIFF converted to PNG) and it is not marked concealed by a password
   manager. It also sends a Finder copy of exactly one image file this way: PNG and JPEG
-  verbatim, any other image type converted to PNG, at or under the cap; the file's name is
+  verbatim, any other image type re-encoded (PNG with alpha, JPEG at quality 0.9 when
+  opaque), the result at or under the cap; the file's name is
   never sent as text (SHARE-2). From the phone the image is read out of the clipboard's first
   item when its bytes are readable. The receiver keeps the SHA-256 of the bytes it last sent
   or received, so images are never echoed back, like `clip.set`.

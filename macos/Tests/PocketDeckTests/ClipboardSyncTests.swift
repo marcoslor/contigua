@@ -127,12 +127,15 @@ final class ClipboardSyncTests: XCTestCase {
         return url
     }
 
-    /// A HEIC file, when this macOS can encode one.
+    /// An opaque 64 x 64 HEIC file (a photo's shape), when this macOS can encode
+    /// one. The HEVC encoder refuses tiny images and alpha.
     private func heicFile(_ name: String) -> URL? {
-        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
-                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
+                                   bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
                                    isPlanar: false, colorSpaceName: .deviceRGB,
                                    bytesPerRow: 0, bitsPerPixel: 0)!
+        let bytes = rep.bitmapData!
+        for i in 0..<(rep.bytesPerRow * rep.pixelsHigh) { bytes[i] = UInt8((i * 13) & 0xFF) }
         guard let image = rep.cgImage else { return nil }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
@@ -183,7 +186,7 @@ final class ClipboardSyncTests: XCTestCase {
         XCTAssertEqual(imageSends.first?.data.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
-    func testAHEICFileCopyBecomesPNG() throws {
+    func testAnOpaqueHEICFileCopyBecomesJPEG() throws {
         guard let url = heicFile("photo.heic") else {
             throw XCTSkip("this macOS cannot encode HEIC in a test")
         }
@@ -192,7 +195,8 @@ final class ClipboardSyncTests: XCTestCase {
         sync.poll()
         XCTAssertEqual(sent, [])
         XCTAssertEqual(imageSends.count, 1)
-        XCTAssertEqual(imageSends.first?.mime, "image/png")
+        XCTAssertEqual(imageSends.first?.mime, "image/jpeg")
+        XCTAssertEqual(imageSends.first?.data.prefix(3), Data([0xFF, 0xD8, 0xFF]))
     }
 
     func testTwoFilesSendNothing() {
