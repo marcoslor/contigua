@@ -788,8 +788,13 @@ real phone, and `--probe` saying `ok`. The helper's own session part ends at
 "the peer is in lwIP"; the fd, the pinned TLS and the 30 s `path.ping` are the
 app's (P4). Run the steps in this order and keep the log beside the result.
 
-1. The machine, read-only:
+1. The machine, read-only. A hand-built helper must carry the entitlement
+   first (the installed one gets it from P4's installer; the build script
+   leaves it off so the stock feth VM can launch the binary):
    ```sh
+   codesign -f -s - --identifier dev.pocketdeck.directd \
+     --entitlements docs/research/wifi-aware-direct-link/probes/ent-pub.plist \
+     macos/build/direct/pocketdeck-directd
    sudo "/Library/Application Support/PocketDeck/pocketdeck-directd" --probe
    sudo launchctl print system/dev.pocketdeck.directd | head -20
    ```

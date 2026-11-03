@@ -8,8 +8,10 @@
 #
 # --out defaults to macos/build/direct and receives PocketDeck.app and
 # pocketdeck-directd. --helper-only skips the app bundle (a quick helper
-# rebuild). The helper is ad-hoc signed; the Wi-Fi Aware entitlement belongs to
-# the NAN session (round 2) and is not carried here.
+# rebuild). The helper is ad-hoc signed without entitlements, so the feth VM
+# (AMFI on) can launch it; the installed helper gets the Wi-Fi Aware
+# entitlement from P4's installer, and §7.4 shows the codesign line for a
+# hand-built proof binary.
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # macos/
 

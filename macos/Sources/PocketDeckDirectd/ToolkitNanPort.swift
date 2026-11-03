@@ -149,6 +149,9 @@ final class ToolkitNanPort: NanPort {
             }
             let token = nextToken
             nextToken += 1
+            // Only the newest results can still be started; a long
+            // subscription must not pin every discovery object forever.
+            if discoveries.count >= 8 { discoveries.removeAll() }
             discoveries[token] = object
             onDiscovery?(NanDiscovery(token: token, ssi: ssi))
             return
@@ -415,7 +418,6 @@ final class NanForwardingDelegate: NSObject {
 
 private typealias ForwardIMP = @convention(c) (AnyObject, Selector, AnyObject) -> Void
 private typealias SignatureIMP = @convention(c) (AnyObject, Selector, Selector) -> AnyObject?
-#endif
 
 /// The two runtime entry points `installForwarding` registers. Top-level and
 /// captureless, so they are C function pointers.
@@ -438,3 +440,4 @@ private let nanForwardInvocation: ForwardIMP = { object, _, invocation in
 private let nanMethodSignature: SignatureIMP = { _, _, selector in
     NanForwardingDelegate.signature(for: selector)
 }
+#endif
