@@ -11,7 +11,7 @@ final class ToolkitNanPortTests: XCTestCase {
     func testEveryPinnedSelectorIsStillInTheProofSource() throws {
         let source = try proofSource("sub.m")
         for selector in ToolkitNanPort.outgoingSelectors {
-            XCTAssertTrue(source.contains(selector),
+            XCTAssertTrue(Self.source(source, hasSelector: selector),
                           "\(selector) is no longer in the proof's source")
         }
         for prefix in ToolkitNanPort.callbackPrefixes {
@@ -44,6 +44,24 @@ final class ToolkitNanPortTests: XCTestCase {
                        "a test must never dlopen the private toolkit")
         XCTAssertGreaterThan(ToolkitNanPort.outgoingSelectors.count, 0)
         XCTAssertFalse(ToolkitNanPort.loaded)
+    }
+
+    /// ObjC interleaves argument types and names, so a selector is its parts
+    /// in order, not one literal string.
+    private static func source(_ source: String, hasSelector selector: String) -> Bool {
+        let parts = selector.split(separator: ":", omittingEmptySubsequences: true)
+        if selector.hasSuffix(":") {
+            var cursor = source.startIndex
+            for part in parts {
+                guard let range = source.range(of: "\(part):",
+                                               range: cursor..<source.endIndex) else {
+                    return false
+                }
+                cursor = range.upperBound
+            }
+            return true
+        }
+        return source.contains(" \(selector)]")
     }
 
     private func proofSource(_ name: String) throws -> String {
