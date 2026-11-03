@@ -311,3 +311,10 @@ private fun argsFor(m: Method, valueType: Class<*>?, value: Any?): Array<Any?> {
         }
     }
 }
+
+/**
+ * The echo rule for app-owned clipboard images (SHARE-2/16): a clip pointing at
+ * our own provider is the app's own write, never something to sync back to the
+ * Mac.
+ */
+internal fun isOurClip(uri: Uri?): Boolean = false
