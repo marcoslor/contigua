@@ -9443,6 +9443,23 @@ check_multiwin() {
         control keywindow "$WORK/wm-key.txt" >/dev/null 2>&1
         sed -n 2p "$WORK/wm-key.txt"
     }
+    # The app must be the frontmost one for NSApp.keyWindow to exist and for a
+    # real key to reach its menus. An automatic Dock shim is a regular app and
+    # takes the front when it launches; a person's next click would give it
+    # back, so the check raises the window again (setup, never a step proved by
+    # the ids below).
+    focus_app() {
+        local pkg="$1" want="$2" i=0
+        [ "$VISIBLE" = 1 ] || return 0
+        while [ "$i" -lt 20 ]; do
+            control open --open "$pkg" >/dev/null 2>&1 || true
+            sleep 0.5
+            [ "$(front_title)" = "$want" ] && return 0
+            i=$((i + 1))
+        done
+        bad "MULTIWIN focus: $pkg never came front ('$(front_title)')"
+        return 1
+    }
     # File ▸ New <App> Window, the same item ⌘N is on: its path from the dump.
     pick_new_window() {
         local expect="${1:-}" attempt item title
@@ -9492,6 +9509,7 @@ PY
     wait_until 20 window_rx window.open com.android.settings \
         || { bad "MULTIWIN no window.open for Settings"; stop_app; stop_fakephone; return 1; }
     sleep 1
+    focus_app com.android.settings "Settings (FakePhone)" || true
     local before="$(pw_opens)"
     pick_new_window disabled
     sleep 2
@@ -9536,6 +9554,7 @@ PY
     wait_until 20 window_rx window.open com.android.chrome \
         || { bad "MULTIWIN no window.open for Chrome"; stop_app; stop_fakephone; return 1; }
     sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
     before="$(window_open_count com.android.chrome)"
     control deckclick Chrome >/dev/null 2>&1
     control deckclick Chrome >/dev/null 2>&1
@@ -9776,6 +9795,7 @@ PY
     wait_until 20 window_rx window.open com.android.chrome \
         || { bad "MULTIWIN cap 2: no window.open"; stop_app; stop_fakephone; return 1; }
     sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
     pick_new_window
     wait_until 15 pw_instances_at_least 1 \
         && ok "[WIN-32] a phone at cap 2 still allows the second window" \
@@ -9800,6 +9820,7 @@ PY
     wait_until 20 window_rx window.open com.android.chrome \
         || { bad "MULTIWIN forced: no window.open"; stop_app; stop_fakephone; return 1; }
     sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
     pick_new_window
     wait_until 20 events_have '"kind":"refused"' \
         && ok "[WIN-32] the fake phone refused the extra window below its cap" \
@@ -9828,6 +9849,7 @@ PY
     wait_until 20 window_rx window.open com.android.chrome \
         || { bad "MULTIWIN drop: no window.open"; stop_app; stop_fakephone; return 1; }
     sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
     pick_new_window
     wait_until 15 pw_instances_at_least 1 \
         || { bad "MULTIWIN drop: the second window never opened"; stop_app; stop_fakephone; return 1; }
