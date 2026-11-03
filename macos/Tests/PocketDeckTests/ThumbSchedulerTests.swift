@@ -30,13 +30,18 @@ final class ThumbSchedulerTests: XCTestCase {
     private final class Recorder {
         var answers: [String: [(data: Data?, error: Error?)]] = [:]
         var doneCount = 0
+        var doneErrors: [Error?] = []
 
         func open(_ scheduler: FilesThumbScheduler, ids: [String], phone: FakePhone) -> Int {
             scheduler.open(items: ids, start: phone.start,
                            per: { [self] item, data, error in
+                               XCTAssertEqual(0, doneCount, "\(item) answered after the batch completed")
                                answers[item, default: []].append((data, error))
                            },
-                           done: { [self] _ in doneCount += 1 })
+                           done: { [self] error in
+                               doneCount += 1
+                               doneErrors.append(error)
+                           })
         }
     }
 
@@ -46,7 +51,10 @@ final class ThumbSchedulerTests: XCTestCase {
 
     /// The bug the brief names: a cancelled batch used to leave its unstarted
     /// ids unanswered and never call `done`, so Finder could wait for ever.
-    func testACancelledBatchAnswersEveryUnstartedIdOnceAndCompletesOnce() {
+    /// The header's rule (NSFileProviderThumbnailing.h, "Cancellations"): the
+    /// completion handler gets NSUserCancelledError in the cancellation
+    /// handler, and no per-thumbnail block may follow it.
+    func testACancelledBatchAnswersEveryUnstartedIdOnceAndCompletesAtOnce() {
         let scheduler = FilesThumbScheduler()
         let phone = FakePhone()
         let recorder = Recorder()
@@ -66,31 +74,40 @@ final class ThumbSchedulerTests: XCTestCase {
             XCTAssertEqual(NSUserCancelledError, errorCode(answers.first?.error),
                            "not the File Provider header's cancellation error")
         }
-        XCTAssertEqual(0, recorder.doneCount, "done before the in-flight asks answered")
+        XCTAssertEqual(1, recorder.doneCount, "the cancel did not complete the batch at once")
+        XCTAssertEqual(NSUserCancelledError, errorCode(recorder.doneErrors.first ?? nil),
+                       "the batch did not complete with the cancellation error")
 
         for index in 0..<3 {
             XCTAssertTrue(phone.asks[index].isCancelled())
             phone.finish(index)
         }
-        XCTAssertEqual(1, recorder.doneCount, "the batch did not complete exactly once")
-        XCTAssertEqual(10, recorder.answers.values.reduce(0) { $0 + $1.count })
+        XCTAssertEqual(1, recorder.doneCount, "the batch completed twice")
+        XCTAssertEqual(7, recorder.answers.values.reduce(0) { $0 + $1.count },
+                       "a late in-flight answer followed the completion")
     }
 
-    /// In-flight asks keep today's behaviour: one fs.cancel from the connection
-    /// and a nil answer; the scheduler itself never invents an answer twice.
-    func testAnInFlightAskStillAnswersOnceAfterTheCancel() {
+    /// An in-flight ask of a cancelled batch stops (one fs.cancel from the
+    /// connection); its late answer is dropped, and its slot goes back to the
+    /// pool, so the next batch is not starved by the cancelled one.
+    func testAnInFlightAskOfACancelledBatchFreesItsSlotAndAnswersNothing() {
         let scheduler = FilesThumbScheduler()
         let phone = FakePhone()
         let recorder = Recorder()
-        let id = recorder.open(scheduler, ids: ["ino:1"], phone: phone)
-        XCTAssertEqual(1, phone.asks.count)
+        let id = recorder.open(scheduler, ids: ["a1", "a2", "a3"], phone: phone)
+        XCTAssertEqual(3, phone.asks.count)
         scheduler.cancel(id)
-        XCTAssertTrue(phone.asks[0].isCancelled())
-        phone.finish(0)
-        XCTAssertEqual(1, recorder.answers["ino:1"]?.count)
-        XCTAssertNil(recorder.answers["ino:1"]?.first?.data)
-        XCTAssertNil(recorder.answers["ino:1"]?.first?.error)
         XCTAssertEqual(1, recorder.doneCount)
+        XCTAssertTrue(phone.asks[0].isCancelled())
+
+        let next = Recorder()
+        _ = next.open(scheduler, ids: ["b1", "b2", "b3"], phone: phone)
+        XCTAssertEqual(3, phone.asks.count, "the pool started past its limit")
+        for index in 0..<3 { phone.finish(index) }
+        XCTAssertNil(recorder.answers["a1"], "a late answer followed the completion")
+        XCTAssertEqual(["a1", "a2", "a3", "b1", "b2", "b3"], phone.asks.map(\.item),
+                       "the cancelled batch's slots never came back")
+        XCTAssertEqual(0, next.doneCount)
     }
 
     func testEveryIdAnswersOnceAndTheBatchCompletesOnce() {

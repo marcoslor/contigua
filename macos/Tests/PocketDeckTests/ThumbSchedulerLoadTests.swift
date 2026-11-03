@@ -67,6 +67,7 @@ final class ThumbSchedulerLoadTests: XCTestCase {
         let opened = Locked<[Int: TimeInterval]>([:])
         let cancelled = Locked<[Int: TimeInterval]>([:])
         let doneCounts = Locked<[Int: Int]>([:])
+        let doneCodes = Locked<[Int: Int]>([:])
         let answers = Locked<[String: Int]>([:])
         let pendingMax = Locked<Int>(0)
         let start = Date().timeIntervalSince1970
@@ -86,7 +87,10 @@ final class ThumbSchedulerLoadTests: XCTestCase {
                 items: items,
                 start: phone.start(batch: index),
                 per: { item, _, _ in answers.with { $0[item, default: 0] += 1 } },
-                done: { _ in doneCounts.with { $0[index, default: 0] += 1 } })
+                done: { error in
+                    doneCounts.with { $0[index, default: 0] += 1 }
+                    doneCodes.with { $0[index] = (error as NSError?)?.code ?? 0 }
+                })
             batchIDs.with { $0.append(id) }
             pendingMax.with { $0 = max($0, scheduler.pendingCount) }
         }
@@ -125,7 +129,21 @@ final class ThumbSchedulerLoadTests: XCTestCase {
         for index in 0..<batches {
             XCTAssertEqual(1, doneCounts.with { $0[index] ?? 0 }, "batch \(index)'s done count")
         }
-        XCTAssertEqual(batches * size, answers.with { $0.count }, "not every id answered")
+        // A cancelled batch completes at once with NSUserCancelledError, which
+        // covers the asks it still had in flight (the header's rule), so only
+        // those may go without a per-thumbnail answer: at most the pool's 3
+        // per cancelled batch. The last batch is never cancelled and answers
+        // every id.
+        for index in 0..<(batches - 1) {
+            XCTAssertEqual(NSUserCancelledError, doneCodes.with { $0[index] },
+                           "cancelled batch \(index) did not complete with the cancellation error")
+        }
+        XCTAssertEqual(0, doneCodes.with { $0[batches - 1] }, "the last batch did not complete cleanly")
+        let answeredCount = answers.with { $0.count }
+        XCTAssertGreaterThanOrEqual(answeredCount, batches * size - (batches - 1) * 3,
+                                    "more ids went unanswered than the cancelled batches had in flight")
+        let lastAnswered = answers.with { all in all.keys.filter { $0.hasPrefix("b\(batches - 1)-") }.count }
+        XCTAssertEqual(size, lastAnswered, "the live batch did not answer every id")
         let wrong = answers.with { $0.filter { $0.value != 1 } }
         XCTAssertEqual(0, wrong.count, "ids answered more than once: \(wrong.keys.prefix(3))")
         XCTAssertLessThanOrEqual(pendingMax.with { $0 }, 3 + size,
