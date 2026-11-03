@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|feth-path|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -149,6 +149,7 @@ finish() {
         end_shared
         kill_e2e_app
         stop_fakephone
+        stop_feth
         stop_vdisplay
         stop_watchdog app
         unregister_share
@@ -161,6 +162,119 @@ finish() {
     stop_watchdog app
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
     release_lock
+}
+
+
+# --- feth: the direct-link helper in the VM (docs/design/direct-link.md §7.2)
+# Everything here is root-in-the-guest only: the pair, BPF, the route the
+# helper adds and the helper itself never touch the host.
+FETH_HELPER_PID=""
+FETH_HELPER_SUDO=""
+FETH_SERVER_PIDS=()
+FETH_PAIR=0
+FETH_SOCK=""
+FETH_APP_PID=""
+
+feth_root() { sudo -n "$@"; }
+
+stop_feth() {
+    local pid
+    if [ -n "$FETH_APP_PID" ]; then
+        kill "$FETH_APP_PID" >/dev/null 2>&1 || true
+        FETH_APP_PID=""
+    fi
+    for pid in ${FETH_SERVER_PIDS[@]+"${FETH_SERVER_PIDS[@]}"}; do
+        kill "$pid" >/dev/null 2>&1 || true
+    done
+    FETH_SERVER_PIDS=()
+    if [ -n "$FETH_HELPER_PID" ]; then
+        feth_root kill "$FETH_HELPER_PID" >/dev/null 2>&1 || true
+        FETH_HELPER_PID=""
+    fi
+    if [ -n "$FETH_HELPER_SUDO" ]; then
+        kill "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        FETH_HELPER_SUDO=""
+    fi
+    if [ "$FETH_PAIR" = 1 ]; then
+        feth_root ifconfig feth0 destroy >/dev/null 2>&1 || true
+        feth_root ifconfig feth1 destroy >/dev/null 2>&1 || true
+        FETH_PAIR=0
+    fi
+    [ -n "$FETH_SOCK" ] && rm -f "$FETH_SOCK"
+}
+
+# feth_start_helper [ENV=value...] — the helper as root on feth0, test mode.
+feth_start_helper() {
+    local extra=("$@") i
+    : > "$WORK/directd.log"
+    feth_root env POCKETDECK_DIRECT_IF=feth0 POCKETDECK_DIRECT_TEST=1 \
+        POCKETDECK_DIRECT_SOCK="$FETH_SOCK" ${extra[@]+"${extra[@]}"} \
+        "$FETH_HELPER" >"$WORK/directd.log" 2>&1 &
+    FETH_HELPER_SUDO=$!
+    for i in $(seq 1 100); do
+        [ -S "$FETH_SOCK" ] && break
+        kill -0 "$FETH_HELPER_SUDO" 2>/dev/null || break
+        sleep 0.1
+    done
+    FETH_HELPER_PID="$(feth_root pgrep -P "$FETH_HELPER_SUDO" 2>/dev/null | head -1)"
+    [ -n "$FETH_HELPER_PID" ] || FETH_HELPER_PID="$FETH_HELPER_SUDO"
+    [ -S "$FETH_SOCK" ]
+}
+
+# feth_stop_helper — stop the daemon we started, and the sudo that owns it.
+feth_stop_helper() {
+    if [ -n "$FETH_HELPER_PID" ]; then
+        feth_root kill "$FETH_HELPER_PID" >/dev/null 2>&1 || true
+        FETH_HELPER_PID=""
+    fi
+    if [ -n "$FETH_HELPER_SUDO" ]; then
+        kill "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        wait "$FETH_HELPER_SUDO" >/dev/null 2>&1 || true
+        FETH_HELPER_SUDO=""
+    fi
+    [ -n "$FETH_SOCK" ] && rm -f "$FETH_SOCK"
+    return 0
+}
+
+# feth_start_server <mode> <port> [extra arguments...]
+feth_start_server() {
+    local mode="$1" port="$2"
+    shift 2
+    "$FAKE_PY" "$ROOT/tools/fakephone/feth_phone.py" \
+        --address "fe80::1%feth1" --port "$port" --mode "$mode" \
+        --stats "$WORK/feth-count-$port.txt" "$@" \
+        > "$WORK/feth-server-$port.log" 2>&1 &
+    FETH_SERVER_PIDS+=("$!")
+    local i
+    for i in $(seq 1 60); do
+        grep -q "feth_phone listening" "$WORK/feth-server-$port.log" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+feth_stop_servers() {
+    local pid
+    for pid in ${FETH_SERVER_PIDS[@]+"${FETH_SERVER_PIDS[@]}"}; do
+        kill "$pid" >/dev/null 2>&1 || true
+    done
+    FETH_SERVER_PIDS=()
+}
+
+# feth_run_e2e <mode> <alarm seconds> — the app's DirectE2E hook; its lines go
+# into the check's log so every step is visible in run.log.
+feth_run_e2e() {
+    local mode="$1" limit="$2" log="$WORK/direct-e2e-$1.log"
+    PD_DIRECT_SOCK="$FETH_SOCK" PD_DIRECT_PEER_MAC="$FETH_MAC1" \
+        PD_DIRECT_PEER_LL="fe80::1" PD_DIRECT_PORT="$FETH_PORT" \
+        PD_DIRECT_TLS_PORT="$FETH_TLS_PORT" PD_DIRECT_SECS="${FETH_BENCH_SECS:-30}" \
+        perl -e 'alarm shift; exec @ARGV' "$limit" \
+        "$APP" --profile "$PROFILE" --direct-e2e "$mode" >"$log" 2>&1
+    local status=$?
+    local line
+    while IFS= read -r line; do say "  $line"; done < "$log"
+    return "$status"
 }
 
 # clear_profile_state — the e2e profile's pairing keys and defaults, nothing else.
@@ -13586,3 +13700,208 @@ load_report
 say ""
 say "passed=$PASS failed=$FAIL"
 [ "$FAIL" = "0" ]
+
+# --- feth-path (direct-link P2, docs/design/direct-link.md §7) --------------
+# The guest's kernel is the phone: a feth pair, a plain/TLS server bound to
+# feth1, and the helper on feth0 with BPF. Root, interfaces, routes and the
+# helper exist only inside the VM; a host run skips with the reason.
+check_feth_path() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        skip feth-path "root, BPF and network interfaces; runs in the e2e VM"
+        return
+    fi
+    FETH_HELPER="$(dirname "$E2E_BUNDLE")/pocketdeck-directd"
+    if [ ! -x "$FETH_HELPER" ]; then
+        skip feth-path "no pocketdeck-directd beside the bundle; run scripts/direct/build.sh"
+        return
+    fi
+    if ! sudo -n true 2>/dev/null; then
+        bad "[DIRECT-P2] the guest does not allow sudo -n; the harness needs root"
+        return
+    fi
+    stop_feth
+    FETH_SOCK="$WORK/directd.sock"
+    FETH_PORT=$((PORT + 100))
+    FETH_TLS_PORT=$((PORT + 101))
+    FETH_APP_PID=""
+
+    # 1. The pair, and the guest kernel's answer to "does feth exist?"
+    if feth_root ifconfig feth0 create >/dev/null 2>&1 \
+        && feth_root ifconfig feth1 create >/dev/null 2>&1 \
+        && feth_root ifconfig feth0 peer feth1 >/dev/null 2>&1; then
+        FETH_PAIR=1
+        feth_root ifconfig feth0 up >/dev/null 2>&1
+        feth_root ifconfig feth1 up >/dev/null 2>&1
+        FETH_MAC0="$(feth_root ifconfig feth0 ether 2>/dev/null | awk '{print $2}')"
+        FETH_MAC1="$(feth_root ifconfig feth1 ether 2>/dev/null | awk '{print $2}')"
+        ok "[DIRECT-P2] harness=feth pair up ($FETH_MAC0 <-> $FETH_MAC1)"
+    else
+        # No feth in this kernel. A bridge needs two ports and the guest has
+        # no second link to bridge to, so the plan's fallback cannot invent
+        # one; record it and stop instead of touching en0.
+        bad "[DIRECT-P2] this guest kernel has no feth (bridge+vlan needs a spare trunk port; not attempted)"
+        stop_feth
+        return
+    fi
+
+    if [ -z "$FETH_MAC0" ] || [ -z "$FETH_MAC1" ]; then
+        bad "[DIRECT-P2] the feth pair carries no MAC addresses"
+        stop_feth
+        return
+    fi
+
+    # The phone side: one link-local, DAD off so the server binds at once.
+    feth_root ifconfig feth1 inet6 fe80::1/64 -dad >/dev/null 2>&1 \
+        || feth_root ifconfig feth1 inet6 fe80::1/64 >/dev/null 2>&1
+    sleep 1
+    if feth_root ifconfig feth1 inet6 2>/dev/null | grep -q "inet6 fe80::1"; then
+        ok "[DIRECT-P2] feth1 has fe80::1"
+    else
+        bad "[DIRECT-P2] feth1 did not take fe80::1"
+        stop_feth
+        return
+    fi
+
+    # 2. §7.1: one maximum-size frame each way, through BPF.
+    if ! clang -O2 -o "$WORK/bpf-frame-test" "$MACOS/scripts/direct/bpf-frame-test.c" 2>"$WORK/bpf-build.log"; then
+        bad "[DIRECT-P2] bpf-frame-test did not compile"
+        tail -3 "$WORK/bpf-build.log" | while IFS= read -r line; do say "  $line"; done
+        stop_feth
+        return
+    fi
+    if feth_root "$WORK/bpf-frame-test" feth0 feth1 >"$WORK/bpf-frame.log" 2>&1; then
+        while IFS= read -r line; do ok "[DIRECT-P2] $line"; done < "$WORK/bpf-frame.log"
+    else
+        while IFS= read -r line; do say "  $line"; done < "$WORK/bpf-frame.log"
+        bad "[DIRECT-P2] a maximum-size frame did not cross the feth pair through BPF"
+        stop_feth
+        return
+    fi
+
+    # 3. The path: hello, peer, dial, fd, 1 MiB echo, MSS sizes, close.
+    if ! feth_start_helper; then
+        bad "[DIRECT-P2] the helper did not start"
+        tail -5 "$WORK/directd.log" | while IFS= read -r line; do say "  $line"; done
+        stop_feth
+        return
+    fi
+    if feth_start_server echo "$FETH_PORT"; then
+        if feth_run_e2e path 180; then
+            ok "[DIRECT-P2] hello, peer, dial and the fd"
+        else
+            bad "[DIRECT-P2] the path run failed"
+        fi
+    else
+        bad "[DIRECT-P2] the echo server did not bind fe80::1"
+    fi
+    grep -q "^DIRECT echo ok bytes=1048576" "$WORK/direct-e2e-path.log" 2>/dev/null \
+        && ok "[DIRECT-P2] 1 MiB echoed and compared byte for byte" \
+        || bad "[DIRECT-P2] the 1 MiB echo did not match"
+    grep -q "^DIRECT mss ok" "$WORK/direct-e2e-path.log" 2>/dev/null \
+        && ok "[DIRECT-P2] MSS boundary run (1399/1400/1401/2800/4200)" \
+        || bad "[DIRECT-P2] the MSS boundary run failed"
+    grep -q "^DIRECT close ok" "$WORK/direct-e2e-path.log" 2>/dev/null \
+        && ok "[DIRECT-P2] close removed the link" \
+        || bad "[DIRECT-P2] close was refused"
+    feth_stop_servers
+
+    # 4. A peer that closes mid-transfer: the link must report down within 5 s.
+    if feth_start_server close "$FETH_PORT" --close-after 1.0; then
+        feth_run_e2e close 60 || true
+        down_ms="$(sed -n 's/^DIRECT eof detected=broken down ms=\([0-9]*\)$/\1/p' "$WORK/direct-e2e-close.log" 2>/dev/null | tail -1)"
+        if [ -z "$down_ms" ]; then
+            bad "[DIRECT-P2] the link never reported down after the peer closed (or the app hung)"
+        elif [ "$down_ms" -le 5000 ]; then
+            ok "[DIRECT-P2] peer close: link down ${down_ms} ms after EOF"
+        else
+            bad "[DIRECT-P2] peer close: link down took ${down_ms} ms (limit 5000)"
+        fi
+    else
+        bad "[DIRECT-P2] the close server did not start"
+    fi
+    feth_stop_servers
+
+    # 5. Which address lwIP uses: shared with the kernel, or its own. The
+    # shared run is the experiment §7.1 asks for; its outcome is recorded, and
+    # the separate-address run above is the one that must pass.
+    feth_stop_helper
+    shared_outcome="not run"
+    if feth_start_helper POCKETDECK_DIRECT_LL=shared; then
+        if feth_start_server echo "$FETH_PORT"; then
+            feth_run_e2e shared 60 || true
+            if grep -q "^DIRECT shared-echo ok" "$WORK/direct-e2e-shared.log" 2>/dev/null; then
+                shared_outcome="echo passed"
+            elif grep -q "^DIRECT shared-echo fail" "$WORK/direct-e2e-shared.log" 2>/dev/null; then
+                shared_outcome="echo failed"
+            fi
+            ok "[DIRECT-P2] address experiment: shared with feth0's kernel link-local -> $shared_outcome; separate address -> passed"
+        else
+            bad "[DIRECT-P2] the echo server did not start for the shared-address run"
+        fi
+    else
+        bad "[DIRECT-P2] the helper did not start in shared-address mode"
+    fi
+    feth_stop_servers
+    feth_stop_helper
+
+    # 6. The benchmark: lwIP plaintext 30 s, TLS over the fd 30 s, helper CPU.
+    if ! feth_start_helper; then
+        bad "[DIRECT-P2] the helper did not start for the benchmark"
+        stop_feth
+        return
+    fi
+    if ! /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/feth-key.pem" \
+        -out "$WORK/feth-cert.pem" -days 1 -subj "/CN=feth-phone" >/dev/null 2>&1 <<<""; then
+        bad "[DIRECT-P2] could not generate the TLS server certificate"
+        stop_feth
+        return
+    fi
+    if feth_start_server count "$FETH_PORT" && feth_start_server count "$FETH_TLS_PORT" \
+        --tls --cert "$WORK/feth-cert.pem" --key "$WORK/feth-key.pem"; then
+        : > "$WORK/cpu.txt"
+        FETH_BENCH_SECS=30 feth_run_e2e bench 300 &
+        FETH_APP_PID=$!
+        (
+            while kill -0 "$FETH_APP_PID" 2>/dev/null; do
+                ps -o %cpu= -p "$FETH_HELPER_PID" >> "$WORK/cpu.txt" 2>/dev/null
+                sleep 1
+            done
+        ) &
+        cpu_sampler=$!
+        wait "$FETH_APP_PID"
+        bench_status=$?
+        FETH_APP_PID=""
+        wait "$cpu_sampler" 2>/dev/null
+        sleep 2
+        plain_line="$(grep '^DIRECT plain ' "$WORK/direct-e2e-bench.log" 2>/dev/null | tail -1)"
+        tls_line="$(grep '^DIRECT tls bytes=' "$WORK/direct-e2e-bench.log" 2>/dev/null | tail -1)"
+        if [ "$bench_status" != 0 ] || [ -z "$plain_line" ] || [ -z "$tls_line" ]; then
+            bad "[DIRECT-P2] the benchmark did not finish"
+        else
+            plain_bytes="$(printf '%s' "$plain_line" | sed -E 's/.*bytes=([0-9]+).*/\1/')"
+            plain_mbps="$(printf '%s' "$plain_line" | sed -E 's/.*mbps=([0-9.]+).*/\1/')"
+            tls_bytes="$(printf '%s' "$tls_line" | sed -E 's/.*bytes=([0-9]+).*/\1/')"
+            tls_mbps="$(printf '%s' "$tls_line" | sed -E 's/.*mbps=([0-9.]+).*/\1/')"
+            plain_seen="$(tail -1 "$WORK/feth-count-$FETH_PORT.txt" 2>/dev/null)"
+            tls_seen="$(tail -1 "$WORK/feth-count-$FETH_TLS_PORT.txt" 2>/dev/null)"
+            cpu_mean="$(awk '{s+=$1; n++} END {if (n) printf "%.1f", s/n; else printf "0"}' "$WORK/cpu.txt")"
+            cpu_max="$(awk 'BEGIN {m=0} {if ($1>m) m=$1} END {printf "%.1f", m}' "$WORK/cpu.txt")"
+            [ "$plain_bytes" = "$plain_seen" ] \
+                && ok "[DIRECT-P2] plaintext: every byte accounted for ($plain_bytes)" \
+                || bad "[DIRECT-P2] plaintext bytes differ: client $plain_bytes, server $plain_seen"
+            [ "$tls_bytes" = "$tls_seen" ] \
+                && ok "[DIRECT-P2] TLS: every byte accounted for ($tls_bytes)" \
+                || bad "[DIRECT-P2] TLS bytes differ: client $tls_bytes, server $tls_seen"
+            if awk -v m="$tls_mbps" 'BEGIN {exit !(m >= 8.0)}'; then
+                ok "[DIRECT-P2] benchmark: plain $plain_mbps Mbit/s, TLS $tls_mbps Mbit/s (bar 8), helper CPU mean $cpu_mean% max $cpu_max%"
+            else
+                bad "[DIRECT-P2] benchmark: TLS $tls_mbps Mbit/s is under the 8 Mbit/s bar (plain $plain_mbps, CPU $cpu_mean%)"
+            fi
+            say "DIRECT-BENCH plain_mbps=$plain_mbps tls_mbps=$tls_mbps cpu_mean=$cpu_mean cpu_max=$cpu_max plain_bytes=$plain_bytes tls_bytes=$tls_bytes"
+        fi
+    else
+        bad "[DIRECT-P2] a benchmark server did not start"
+    fi
+    feth_stop_servers
+    stop_feth
+}

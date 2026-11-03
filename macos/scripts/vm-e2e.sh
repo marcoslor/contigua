@@ -84,11 +84,20 @@ say "building build/e2e/PocketDeck.app on the host"
 # run carries it (a host run must have nothing to register).
 files_flag=()
 controls_flag=()
+direct_flag=0
 for c in "${CHECKS[@]}"; do
     [ "$c" = files-domain ] && files_flag=(--with-files)
     [ "$c" = controls ] && controls_flag=(--with-controls)
+    # feth-path is the direct-link harness: its bundle carries the define and
+    # the helper binary sits beside it (docs/design/direct-link.md §7.2).
+    [ "$c" = feth-path ] && direct_flag=1
 done
-if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e \
+if [ "$direct_flag" = 1 ]; then
+    if ! bash "$MACOS/scripts/direct/build.sh" --out "$MACOS/build/e2e" --variant e2e \
+            > "$OUT/host-build.log" 2>&1; then
+        say "direct host build failed; see $OUT/host-build.log"; tail -5 "$OUT/host-build.log"; exit 3
+    fi
+elif ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e \
         ${files_flag[@]+"${files_flag[@]}"} ${controls_flag[@]+"${controls_flag[@]}"} > "$OUT/host-build.log" 2>&1; then
     say "host build failed; see $OUT/host-build.log"; tail -5 "$OUT/host-build.log"; exit 3
 fi
