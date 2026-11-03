@@ -5,6 +5,7 @@
 // file only reads the bundle, drives the machine and performs its actions.
 
 import AppKit
+import Dispatch
 import os
 
 private let shimLog = Logger(subsystem: "dev.pocketdeck.mac", category: "shim")
@@ -24,6 +25,14 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private var listening = false
     /// When the observers were registered: the host's answer is measured from it.
     private var listenStartedAt: Date?
+    /// Whether this shim has seen the host running (at listen, after its own
+    /// launch, or when `opened` arrived). A host exit is only news after that.
+    private var hostSeen = false
+    /// The host pid's exit watch. `didTerminateApplication` is the named
+    /// source (DOCK-19), but LaunchServices does not post it for every launch
+    /// (the e2e starts the app by exec); a process source fires for SIGTERM
+    /// and SIGKILL alike and is the guarantee.
+    private var hostWatch: DispatchSourceProcess?
 
     override init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -73,11 +82,20 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
                            object: profile, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,
                            object: profile, suspensionBehavior: .deliverImmediately)
+        // DOCK-19 (ISS-6): the host's process is the shim's reason to exist. A
+        // quit, a crash and a force quit all post this; matching the bundle
+        // (not a pid) survives a relaunch racing the notification.
+        let runningHost = runningHost()
+        hostSeen = runningHost != nil
+        if let runningHost { watchHost(pid: runningHost.processIdentifier) }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(hostTerminated(_:)),
+            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         shimLog.notice("dock shim \(self.pid, privacy: .public) listening")
         // An automatic launch stands for a window that is already open: it
         // posts `ready` until the host answers, so a bind that happened before
         // this moment is not a lost answer. A manual launch asks for the window.
-        apply(.launch(automatic: automatic, hostSeen: false, now: Date()))
+        apply(.launch(automatic: automatic, hostSeen: hostSeen, now: Date()))
     }
 
     private func apply(_ event: DockShimMachine.Event) {
@@ -125,14 +143,55 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
     private func launchHostIfNeeded() {
         guard let hostURL else { return }
-        let running = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleURL?.standardizedFileURL == hostURL.standardizedFileURL
+        // From here the host exists (or is about to): its exit is ours to see.
+        hostSeen = true
+        if let running = runningHost() {
+            watchHost(pid: running.processIdentifier)
+            return
         }
-        guard !running else { return }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.arguments = ["--profile", profile]
         configuration.activates = false
-        NSWorkspace.shared.openApplication(at: hostURL, configuration: configuration) { _, _ in }
+        NSWorkspace.shared.openApplication(at: hostURL, configuration: configuration) { [weak self] app, _ in
+            guard let self, let app else { return }
+            DispatchQueue.main.async { self.watchHost(pid: app.processIdentifier) }
+        }
+    }
+
+    /// The host bundle (PDHostPath), not a pid: a relaunch keeps the same URL.
+    private func runningHost() -> NSRunningApplication? {
+        guard let hostURL else { return nil }
+        return NSWorkspace.shared.runningApplications.first {
+            $0.bundleURL?.standardizedFileURL == hostURL.standardizedFileURL
+        }
+    }
+
+    /// A process source, not a notification: it fires for a normal quit, a
+    /// crash and a force quit, and needs no LaunchServices registration of the
+    /// host (the e2e starts it by exec). The host is one process; a relaunch
+    /// starts its own shims.
+    private func watchHost(pid: pid_t) {
+        guard pid > 0 else { return }
+        hostWatch?.cancel()
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.hostWatch = nil
+            self.apply(.hostExited)
+        }
+        hostWatch = source
+        source.resume()
+        // Gone before the watch started: the source would never fire.
+        if kill(pid, 0) != 0, errno == ESRCH { apply(.hostExited) }
+    }
+
+    /// DOCK-19 (ISS-6): `didTerminateApplication` covers quit, crash and force
+    /// quit. A shim bound to that host (or waiting after seeing it) exits.
+    @objc private func hostTerminated(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let hostURL,
+              app.bundleURL?.standardizedFileURL == hostURL.standardizedFileURL else { return }
+        apply(.hostExited)
     }
 
     private func post(_ name: Notification.Name) {
@@ -148,6 +207,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func opened(_ notification: Notification) {
         guard isMine(notification) else { return }
+        hostSeen = true
         apply(.opened)
     }
 
