@@ -418,6 +418,10 @@ pdl_conn *pdl_connect(pdl *s, const uint8_t peer_ll[16], uint16_t port,
     tcp_arg(pcb, c);
     tcp_err(pcb, on_error);
     tcp_sent(pcb, on_sent);
+    /* The app sets TCP_NODELAY on its LAN paths; that intent cannot cross the
+     * socketpair, so the helper must not coalesce either: a keystroke waiting
+     * on Nagle is a key press the person sees late. */
+    tcp_nagle_disable(pcb);
     ip6_addr_t peer;
     memcpy(peer.addr, peer_ll, 16);
     ip_addr_copy_from_ip6(addr, peer);
@@ -432,7 +436,6 @@ pdl_conn *pdl_connect(pdl *s, const uint8_t peer_ll[16], uint16_t port,
         }
         return NULL;
     }
-    tcp_nagle_disable(pcb);
     return c;
 }
 
