@@ -3408,6 +3408,12 @@ final class ConnectionController {
                 return "deckfocus needs search|grid"
             }
             guard let deck = DeckWindow.window else { return "no deck window" }
+            // A real right click on a cell (multiwin's WIN-26 shot) opens its
+            // context menu only when the Deck's app is already front: the
+            // click that activates a background app is used up activating it.
+            // An automatic Dock shim can hold the front after a window launch.
+            // Background mode keeps the person's front app (no activation).
+            BackgroundMode.activateApp()
             deck.makeKeyAndOrderFront(nil)
             if what == "search" {
                 DeckSearch.focusAndSelect(in: deck) { requestSearchFocus() }

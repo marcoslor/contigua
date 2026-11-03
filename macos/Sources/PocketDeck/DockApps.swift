@@ -848,7 +848,11 @@ final class DockApps: NSObject {
     private func open(_ url: URL, arguments: [String] = [], delayedLaunch: Bool = false,
                       automatic: Bool = false, launched: @escaping (Int?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = !BackgroundMode.isOn
+        // An automatic launch stands for a window that is already open: it is
+        // a Dock identity, not something the person launched, so it must never
+        // take the front from the window it names (a visible run's Deck menu
+        // and right click need PocketDeck active; round 3 saw the shim front).
+        configuration.activates = automatic ? false : !BackgroundMode.isOn
         configuration.arguments = arguments
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, _ in
             let pid = app.map { Int($0.processIdentifier) }

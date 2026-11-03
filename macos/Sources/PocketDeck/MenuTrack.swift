@@ -34,7 +34,7 @@ enum MenuTrack {
     /// Starts one tracked session. Returns why it could not start, else nil.
     static func start(path resultPath: String, itemPath: String, seconds wait: TimeInterval) -> String? {
         guard !running else { return "a menu track is already running" }
-        guard wait > 0, wait <= 30 else { return "menutrack needs 0 < SECONDS <= 30" }
+        guard wait > 0, wait <= 10 else { return "menutrack needs 0 < SECONDS <= 10" }
         let item = resolve(itemPath: itemPath)
         guard let item else { return "menutrack: no menu item at \(itemPath)" }
         guard let submenu = item.submenu else { return "menutrack: \(itemPath) has no submenu" }
@@ -62,6 +62,11 @@ enum MenuTrack {
             submenu.popUp(positioning: nil,
                           at: NSPoint(x: 40, y: max(40, (view.bounds.height) - 40)),
                           in: view)
+            // The tracking loop ended (a click, Escape or the close timer).
+            // Write now if the report timer never ran: the next step must never
+            // be refused as "a menu track is already running" (the VM's sleep
+            // wedge, round 3).
+            if running { write() }
         }
         schedule(after: 0.4 + wait) {
             openedSubmenu = trackingPaths.contains(itemPath)
@@ -87,6 +92,10 @@ enum MenuTrack {
             MainActor.assumeIsolated { work() }
         }
         RunLoop.main.add(timer, forMode: .common)
+        // A menu's own tracking loop runs in the event-tracking mode; a mode
+        // that forgot to inherit common modes would never fire the close and
+        // would leave the app's main thread inside NSMenu (round 3's wedge).
+        RunLoop.main.add(timer, forMode: .eventTracking)
         timers.append(timer)
     }
 
