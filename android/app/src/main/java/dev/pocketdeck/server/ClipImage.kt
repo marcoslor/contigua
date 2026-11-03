@@ -178,6 +178,7 @@ class ClipImageLand(
             file.outputStream().use { it.write(image.bytes) }
             val ok = port.writeImage(file, image.mime, file.nameWithoutExtension)
             if (ok) log("clip image: on the clipboard (${image.bytes.size} bytes)")
+            else log("clip image: clipboard write refused")
             ok
         } catch (e: Exception) {
             log("clip image failed: ${e.message}")

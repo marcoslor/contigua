@@ -145,13 +145,24 @@ else
   tail -3 "$OUT/paste-drop-a2-clip.log" | tee -a "$LOG"
   section a2-clip FAIL "clipimage (see $OUT/paste-drop-a2-clip.log)"
 fi
-emu logcat -d 2>/dev/null | tr -d '\r' |
-  grep -m1 'clipboard: image clip' > "$OUT/paste-drop-a2-write.log" || true
-if [ -s "$OUT/paste-drop-a2-write.log" ]; then
-  section a2-write PASS "$(cat "$OUT/paste-drop-a2-write.log")"
+# The whole write trace, not just its last line: the failure's step is the bug.
+emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' |
+  grep -E 'clipboard:|clip image' > "$OUT/paste-drop-a2-write.log" || true
+cat "$OUT/paste-drop-a2-write.log" | sed 's/^/  /' | tee -a "$LOG"
+if grep -q 'clipboard: image clip (' "$OUT/paste-drop-a2-write.log"; then
+  section a2-write PASS "$(grep 'clipboard: image clip (' "$OUT/paste-drop-a2-write.log" | tail -1)"
 else
-  section a2-write FAIL "ShellClipboard logged no image write"
+  section a2-write FAIL "ShellClipboard logged no image write ($(wc -l < "$OUT/paste-drop-a2-write.log" | tr -d ' ') trace lines, see paste-drop-a2-write.log)"
 fi
+# The file and the provider it must come from, printed for the diagnosis.
+emu shell ls -l /sdcard/Download/PocketDeck 2>/dev/null | tr -d '\r' \
+  > "$OUT/paste-drop-a2-files.log" || true
+emu shell dumpsys package dev.pocketdeck 2>/dev/null | tr -d '\r' |
+  grep -A8 'dev.pocketdeck.fileprovider' > "$OUT/paste-drop-a2-provider.log" || true
+emu shell dumpsys activity providers 2>/dev/null | tr -d '\r' |
+  grep -A6 'pocketdeck' > "$OUT/paste-drop-a2-providers.log" || true
+printf '  files: %s\n' "$(tail -3 "$OUT/paste-drop-a2-files.log" | tr '\n' ' ' | cut -c1-200)" | tee -a "$LOG"
+printf '  provider: %s\n' "$(sed -n '2,4p' "$OUT/paste-drop-a2-provider.log" | tr '\n' ' ' | cut -c1-200)" | tee -a "$LOG"
 
 clear_debug_log
 start_debug --es field plain
@@ -239,7 +250,8 @@ else
 fi
 sleep 2
 SHARE_LOG="$(emu logcat -d -s PocketDeckDrop:I PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
-  | grep -E 'share offered|drop: (SEND|am start|staging)' | tail -3 | tr '\n' ' ')"
+  | grep -E 'share offered|share: target|share: chooser|trampoline: started|drop: (SEND|am start|staging)' \
+  | tail -5 | tr '\n' ' | ')"
 if printf '%s' "$SHARE_LOG" | grep -q "to $TARGET"; then
   section target-share PASS "$SHARE_LOG"
 else
@@ -272,14 +284,12 @@ else
   section notarget-chooser FAIL "no chooser for an untargeted drop: $CHOOSER"
 fi
 
-# Every failure keeps its logcat: the last run failed in ShellClipboard and in
-# the trampoline with no service lines saved, and the cause was not recoverable.
-if [ "$FAILED" != 0 ]; then
-  emu logcat -d -s PocketDeckSvc:I PocketDeckDrop:I PasteDebug:I ShellClipboard:I 2>/dev/null \
-    | tr -d '\r' > "$OUT/paste-drop-logcat.txt" || true
-  printf 'SECTION logcat INFO %s lines in %s\n' \
-    "$(wc -l < "$OUT/paste-drop-logcat.txt" | tr -d ' ')" "paste-drop-logcat.txt" | tee -a "$LOG"
-fi
+# The logcat is always kept: a diagnosis run needs the trace even when every
+# section passed, and a proof run needs it when one did not.
+emu logcat -d -s PocketDeckSvc:I PocketDeckDrop:I PasteDebug:I ShellClipboard:I 2>/dev/null \
+  | tr -d '\r' > "$OUT/paste-drop-logcat.txt" || true
+printf 'SECTION logcat INFO %s lines in %s\n' \
+  "$(wc -l < "$OUT/paste-drop-logcat.txt" | tr -d ' ')" "paste-drop-logcat.txt" | tee -a "$LOG"
 
 kill_emulator
 exit "$FAILED"

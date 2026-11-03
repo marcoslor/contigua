@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
+import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -81,6 +82,12 @@ class PasteDebugActivity : Activity() {
             "item=${intent.getStringExtra("item") ?: "keep"}")
     }
 
+    /** Numbers only: proves whether the injected key reaches the field at all. */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        Log.i(TAG, "key code=${event.keyCode} action=${event.action} meta=${event.metaState}")  // log-ok: numbers only
+        return super.dispatchKeyEvent(event)
+    }
+
     /** The rich field's answer: the image's real byte length, never its content. */
     private fun received(payload: ContentInfoCompat, result: TextView): ContentInfoCompat? {
         val uri = payload.clip.getItemAt(0).uri
@@ -108,10 +115,10 @@ class PasteDebugActivity : Activity() {
     private fun imageFile(): File {
         val dir = File(cacheDir, "shared").apply { mkdirs() }
         val file = File(dir, "paste-debug.png")
-        if (!file.isFile) {
-            val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        }
+        // Always rewrite: an earlier run could leave a zero-byte file (boot 3
+        // read 0 bytes through the provider), and the image must be real.
+        val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         return file
     }
 

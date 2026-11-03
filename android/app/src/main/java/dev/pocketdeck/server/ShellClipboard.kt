@@ -2,12 +2,14 @@ package dev.pocketdeck.server
 
 import android.content.ClipData
 import android.content.ClipDescription
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
-import androidx.core.content.FileProvider
 import android.os.Binder
+import android.os.Environment
 import android.os.IBinder
 import android.os.Parcel
+import android.os.Process
 import java.io.File
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -87,20 +89,36 @@ internal class ShellClipboard(
      * grants the URI to (the provider is public and keyed by the grant flag).
      */
     override fun writeImage(file: File, mime: String, label: String): Boolean {
-        val context = ctx ?: run { log("clipboard: no context for an image clip"); return false }
-        val uri = runCatching { FileProvider.getUriForFile(context, AUTHORITY, file) }
-            .onFailure { log("clipboard: fileprovider uri failed: ${it.message}") }
-            .getOrNull() ?: return false
-        val clip = runCatching { imageClip(uri, mime) }
-            .onFailure { log("clipboard: image clip failed: ${it.message}") }
-            .getOrNull() ?: return false
-        val svc = service ?: return false
-        val set = ClipboardApi.calls(log).set ?: return false
-        val ok = runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-            .onFailure { log("clipboard: setPrimaryClip(image) failed: $it") }
-            .isSuccess
-        if (ok) log("clipboard: image clip ($mime)")
-        return ok
+        // State only: the UID tells whether Shizuku's shell process is the one
+        // writing, and the size/kind tell whether the file is really there.
+        log("clipboard: image write uid=${Process.myUid()} " +
+            "exists=${file.isFile} size=${file.length()} mime=$mime")
+        // The URI is built here, not by FileProvider.getUriForFile: that static
+        // helper asks PackageManager for the app's resources, and this process
+        // is uid 2000 with the app's Context, so the system refuses the pair
+        // ("package does not match caller's uid"; emulator boot 3).
+        val uri = imageUri(file) ?: run {
+            log("clipboard: image outside the drop folder")
+            return false
+        }
+        log("clipboard: image uri scheme=${uri.scheme} own=${uri.authority == AUTHORITY}")
+        val clip = imageClip(uri, mime)
+        log("clipboard: image clip items=${clip.itemCount} " +
+            "mime=${clip.description.getMimeType(0)}")
+        val svc = service ?: run {
+            log("clipboard: no clipboard service for an image")
+            return false
+        }
+        val set = ClipboardApi.calls(log).set ?: run {
+            log("clipboard: no setPrimaryClip for an image")
+            return false
+        }
+        val attempt = runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
+        attempt.exceptionOrNull()?.let {
+            log("clipboard: setPrimaryClip(image) failed: ${it.javaClass.simpleName}")
+        }
+        if (attempt.isSuccess) log("clipboard: image clip ($mime)")
+        return attempt.isSuccess
     }
 
     override fun listen(onChange: (ClipText) -> Unit) {
@@ -157,16 +175,40 @@ internal class ShellClipboard(
 }
 
 /**
- * A2: an image clip's item carries empty text. Android coerces an item with no
- * text to its URI's string, so a plain text field would paste `content://…`;
- * the empty text makes that field paste nothing, while an image receiver still
- * gets the URI.
+ * A2, measured on the emulator (boot 3): the URI-only item pastes nothing in a
+ * plain text field (a content URI that cannot serve text coerces to null, never
+ * to its `content://` string) and reaches a field whose OnReceiveContentListener
+ * accepts image types. So the item carries the URI alone; the empty-text
+ * variant is not needed.
  */
-internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item("", null, uri)
+internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item(uri)
 
-/** The whole image clip: the image's own MIME type over the empty-text item. */
+/** The whole image clip: the image's own MIME type over the URI-only item. */
 internal fun imageClip(uri: Uri, mime: String): ClipData =
     ClipData(ClipDescription(CLIP_LABEL, arrayOf(mime)), imageClipItem(uri))
+
+/**
+ * The FileProvider URI for an image in the drop folder, exactly as
+ * `<external-path name="downloads" path="Download/PocketDeck"/>` maps it.
+ *
+ * Built by hand because this runs in the shell service process (uid 2000) with
+ * the app's Context: `FileProvider.getUriForFile` asks PackageManager for the
+ * app's resources, and the package/uid pair is refused (emulator boot 3).
+ * [ShellClipboardImageTest] pins the mapping.
+ */
+internal fun imageUri(file: File): Uri? {
+    val root = runCatching {
+        File(Environment.getExternalStorageDirectory(), "Download/PocketDeck").canonicalFile
+    }.getOrNull() ?: return null
+    val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return null
+    if (canonical.parentFile != root) return null
+    return Uri.Builder()
+        .scheme(ContentResolver.SCHEME_CONTENT)
+        .authority(FILE_PROVIDER_AUTHORITY)
+        .appendPath("downloads")
+        .appendPath(canonical.name)
+        .build()
+}
 
 private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
