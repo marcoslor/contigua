@@ -91,6 +91,18 @@ final class Link {
     /// the rest waits in `toApp` and stays unacknowledged until it moves.
     func receivedFromStack(_ data: UnsafePointer<UInt8>, _ length: Int) -> UInt16 {
         guard state != .down, sock >= 0 else { return 0 }
+        // Once anything waits in toApp, every later segment queues behind it.
+        // Writing a newer segment straight to the socket would reorder the
+        // stream (boot 7's 1 MiB echo read back a block out of place).
+        if !toApp.isEmpty {
+            guard toApp.count + length <= DirectLimits.linkBufferBytes else {
+                DirectLog.line("link \(id) app stopped reading; closing")
+                fail(.peerClosed)
+                return 0
+            }
+            toApp.append(Data(bytes: data, count: length))
+            return 0
+        }
         var sent = 0
         while sent < length {
             let wrote = write(sock, data + sent, length - sent)

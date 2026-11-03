@@ -167,6 +167,59 @@ final class DirectStackTests: XCTestCase {
                        payload.count)
     }
 
+    func testLinkKeepsQueuedBytesAheadOfNewData() throws {
+        var pair = [Int32](repeating: 0, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        _ = fcntl(pair[0], F_SETFL, O_NONBLOCK)
+        _ = fcntl(pair[1], F_SETFL, O_NONBLOCK)
+        var receiveBuffer: Int32 = 1024
+        _ = setsockopt(pair[0], SOL_SOCKET, SO_RCVBUF,
+                       &receiveBuffer, socklen_t(MemoryLayout<Int32>.size))
+        let link = Link(id: "0123456789abcdef", peer: "peer", sock: pair[1],
+                        port: 47_990, remote: "fe80::1")
+        defer {
+            close(pair[0])
+            close(pair[1])
+        }
+
+        let first = (0..<100_000).map { UInt8($0 & 0xff) }
+        let second = (0..<8_000).map { UInt8(($0 &+ 0xa0) & 0xff) }
+        let firstTook = first.withUnsafeBufferPointer {
+            link.receivedFromStack($0.baseAddress!, $0.count)
+        }
+        XCTAssertLessThan(Int(firstTook), first.count, "the test needs a partial write")
+
+        var drained = [UInt8](repeating: 0, count: 4096)
+        let drainedCount = read(pair[0], &drained, drained.count)
+        XCTAssertGreaterThan(drainedCount, 0)
+        _ = second.withUnsafeBufferPointer {
+            link.receivedFromStack($0.baseAddress!, $0.count)
+        }
+
+        // The socket is non-blocking, so flushToApp only moves what fits right
+        // now. Drain the socket and flush again until toApp is empty.
+        var rest: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        var idle = 0
+        while true {
+            let got = read(pair[0], &buffer, buffer.count)
+            if got > 0 {
+                rest += buffer[0..<got]
+                idle = 0
+                continue
+            }
+            if link.toApp.isEmpty { break }
+            link.flushToApp()
+            idle += 1
+            if idle >= 1000 {
+                XCTFail("flushToApp made no progress with \(link.toApp.count) bytes queued")
+                break
+            }
+        }
+        XCTAssertEqual(Array(drained[0..<drainedCount]) + rest, first + second,
+                       "bytes already queued must leave before a later segment")
+    }
+
     // MARK: callbacks
 
     private func resetCallbacks() {
