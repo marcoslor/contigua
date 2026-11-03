@@ -76,6 +76,10 @@ int pdl_conn_alive(pdl_conn *conn);
 /* The netif's MTU (1500). */
 uint16_t pdl_mtu(void);
 
+/* The state bits of address slot 0 (lwIP's IP6_ADDR_* values). Tests use it
+ * to tell a valid link-local from one still in duplicate detection. */
+uint8_t pdl_address_state(const pdl *stack);
+
 #ifdef __cplusplus
 }
 #endif

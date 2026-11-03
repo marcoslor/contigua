@@ -264,6 +264,11 @@ uint16_t pdl_mtu(void)
     return 1500;
 }
 
+uint8_t pdl_address_state(const pdl *s)
+{
+    return netif_ip6_addr_state(&s->netif, 0);
+}
+
 /* --- connections ------------------------------------------------------- */
 
 static struct pdl_conn *conn_for(void *arg)

@@ -42,7 +42,10 @@
 #define LWIP_WND_SCALE 0
 #define TCP_MSS 1400
 #define TCP_WND 65535
-#define TCP_SND_BUF (64 * 1024)
+/* Without window scaling lwIP's tcpwnd_size_t is u16_t, so 64 KiB becomes 0
+ * and tcp_sndbuf() reports no room: the helper accepted the handshake and
+ * never wrote a byte. One less than 64 KiB is the largest that fits. */
+#define TCP_SND_BUF 65535
 #define TCP_SND_QUEUELEN 188
 #define MEMP_NUM_TCP_PCB 8
 #define MEMP_NUM_TCP_SEG 192

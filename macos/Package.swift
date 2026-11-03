@@ -84,7 +84,7 @@ let package = Package(
             path: "Sources/PocketDeckDirectd"
         ),
         .testTarget(name: "PocketDeckTests",
-                    dependencies: ["PocketDeck", "PocketDeckDirectCore"],
+                    dependencies: ["PocketDeck", "PocketDeckDirectCore", "PDLWIP"],
                     path: "Tests/PocketDeckTests"),
     ]
 )
