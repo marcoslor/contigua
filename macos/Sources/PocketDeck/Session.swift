@@ -2071,6 +2071,11 @@ final class Session {
                    target: String? = nil, index: Int = 1, count: Int = 1) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]
         if resume > 0 { message["resume"] = resume }
+        if let target { message["target"] = target }
+        // The batch position always rides the wire: the phone shares once,
+        // after the last file (SHARE-17).
+        message["index"] = index
+        message["count"] = count
         sendJSON(message)
     }
     func cancelDrop(id: UInt32) { sendJSON(["t": "drop.cancel", "id": Int(id)]) }

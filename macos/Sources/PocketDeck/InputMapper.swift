@@ -623,10 +623,31 @@ final class InputMapper {
                 // A Finder copy puts the file's name on the pasteboard as text;
                 // typing it into the app pastes the name, not the file
                 // (SHARE-2). The file itself goes through a drop (SHARE-17).
-                guard !pasteboard.isFileCopy() else { return }
+                if pasteboard.isFileCopy() {
+                    if flags.contains(.shift) {
+                        let files = pasteboard.fileURLs()
+                        if !files.isEmpty { onShareInstead?(.files(files)) }
+                    } else {
+                        let files = pasteboard.fileURLs()
+                        if !files.isEmpty { _ = onPaste?(.files(files)) }
+                    }
+                    return
+                }
+                if flags.contains(.shift) {
+                    // ⇧⌘V shares the image instead of pasting it (SHARE-16).
+                    if let image = pasteboard.image() {
+                        onShareInstead?(.image(image.data, image.mime))
+                    }
+                    return
+                }
                 if let text = pasteboard.text(), !text.isEmpty {
                     flushText()
                     send?(.text(text))
+                    return
+                }
+                if let image = pasteboard.image() {
+                    flushText()
+                    _ = onPaste?(.image(image.data, image.mime))
                 }
             case "a", "c", "f", "x", "z":
                 if let code = Self.metaKeyMap[event.keyCode] {

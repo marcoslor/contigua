@@ -19,58 +19,103 @@ import java.io.File
  * activity instead and the SEND intent is built here, in the process that owns
  * the provider.
  *
- * It accepts one bare name ([ShareRequest.parse]) of a file the shell process
- * staged in `files/shared/`, copies it into the app-owned share cache and shows
- * the chooser for that copy. No UI of its own: it finishes as soon as the
- * chooser is up, and every refusal is one line in logcat.
+ * It accepts one to five bare names ([ShareRequest.parseBatch]) of files the
+ * shell process staged in `files/shared/`, copies them into the app-owned share
+ * cache and shares them once: `ACTION_SEND` for one, `ACTION_SEND_MULTIPLE` for
+ * two to five, straight to the window's package when it resolves the intent and
+ * today's chooser otherwise (SHARE-17). No UI of its own: it finishes as soon
+ * as the share is up, and every refusal is one line in logcat.
  */
 class ShareTrampoline : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val rawName = intent.getStringExtra(EXTRA_NAME)
-        val rawMime = intent.getStringExtra(EXTRA_MIME)
-        val target = ShareRequest.parse(rawName, rawMime)
-        if (target == null) {
-            Log.i(TAG, "share refused: bad name/mime (${rawName?.take(80)}, ${rawMime?.take(40)})")
+        val targets = requests()
+        if (targets == null) {
+            Log.i(TAG, "share refused: bad name/mime")
             return finish()
         }
-        val source = ShareRequest.stageDir(this)?.let { File(it, target.name) }
-        if (source == null || !source.isFile || source.length() > DropPolicy.MAX_FILE_BYTES) {
-            Log.i(TAG, "share refused: no staged file for ${target.name}")
+        val stage = ShareRequest.stageDir(this)
+        val sources = targets.map { target -> stage?.let { File(it, target.name) } }
+        if (sources.any { it == null || !it.isFile || it.length() > DropPolicy.MAX_FILE_BYTES }) {
+            Log.i(TAG, "share refused: no staged file for ${targets.size} request(s)")
             return finish()
         }
-        val shared = ShareCache.put(ShareRequest.cacheDir(this), source)
-        if (shared == null) {
-            Log.i(TAG, "share refused: cannot copy ${target.name}")
-            return finish()
+        val shared = mutableListOf<File>()
+        for (source in sources) {
+            val copy = ShareCache.put(ShareRequest.cacheDir(this), source!!)
+            if (copy == null) {
+                Log.i(TAG, "share refused: cannot copy ${targets.size} file(s)")
+                return finish()
+            }
+            shared += copy
         }
-        // The staging copy exists for this one hand-off; the cache copy is shared.
-        runCatching { source.delete() }
+        // The staging copies exist for this one hand-off; the cache copies are shared.
+        sources.forEach { runCatching { it!!.delete() } }
 
-        val uri = runCatching { FileProvider.getUriForFile(this, FILE_PROVIDER_AUTHORITY, shared) }
-            .onFailure { Log.i(TAG, "share: no uri for ${shared.name}: ${it.message}") }
-            .getOrNull() ?: return finish()
-        offer(uri, shared, target.mime)
+        val uris = shared.mapNotNull { file ->
+            runCatching { FileProvider.getUriForFile(this, FILE_PROVIDER_AUTHORITY, file) }
+                .onFailure { Log.i(TAG, "share: no uri for ${shared.size} file(s): ${it.javaClass.simpleName}") }  // log-ok: a count and an exception class
+                .getOrNull()
+        }
+        if (uris.size != targets.size) return finish()
+        offer(uris, targets, ShareRequest.parseTarget(intent.getStringExtra(EXTRA_TARGET)))
         finish()
     }
 
-    /** The SEND intent, granted to whichever app the user picks. */
-    private fun offer(uri: Uri, file: File, mime: String) {
-        val name = file.name
-        val send = Intent(Intent.ACTION_SEND)
-            .setType(mime)
-            .putExtra(Intent.EXTRA_STREAM, uri)
+    /** The checked batch; an older single-name extra is still understood. */
+    private fun requests(): List<ShareRequest.Target>? {
+        val names = intent.getStringArrayExtra(EXTRA_NAMES)
+        if (names != null) {
+            return ShareRequest.parseBatch(names.toList(), intent.getStringArrayExtra(EXTRA_MIMES)?.toList())
+        }
+        val single = ShareRequest.parse(intent.getStringExtra(EXTRA_NAME),
+                                        intent.getStringExtra(EXTRA_MIME))
+        return single?.let { listOf(it) }
+    }
+
+    /**
+     * The SEND intent, granted to whichever app is picked, or aimed at the
+     * window's package when it resolves one (no chooser then).
+     */
+    private fun offer(uris: List<Uri>, requests: List<ShareRequest.Target>, target: String?) {
+        val multiple = uris.size > 1
+        val type = requests.map { it.mime }.distinct().singleOrNull() ?: "*/*"
+        val label = if (multiple) "Send ${uris.size} files" else requests.single().name
+        val send = Intent(if (multiple) Intent.ACTION_SEND_MULTIPLE else Intent.ACTION_SEND)
+            .setType(type)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (multiple) {
+            send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        } else {
+            send.putExtra(Intent.EXTRA_STREAM, uris.single())
+        }
         // The clip carries the grant too: a receiver that reads ClipData first
         // (most of them do) gets the same read access as one that reads the extra.
-        send.clipData = ClipData.newRawUri(name, uri)
-        val started = runCatching { startActivity(Intent.createChooser(send, name)) }
-            .onFailure { Log.i(TAG, "share: no chooser for $name: ${it.message}") }
+        val clip = ClipData.newRawUri(label, uris.first())
+        uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+        send.clipData = clip
+
+        if (target != null) {
+            val aimed = Intent(send).setPackage(target)
+            if (aimed.resolveActivity(packageManager) != null) {
+                val started = runCatching { startActivity(aimed) }
+                    .onFailure { Log.i(TAG, "share: ${target} did not start: ${it.javaClass.simpleName}") }  // log-ok: checked package, exception class
+                    .isSuccess
+                if (started) {
+                    Log.i(TAG, "share offered for ${uris.size} file(s) to $target ($type)")  // log-ok: checked package and MIME
+                    return
+                }
+            }
+        }
+        send.setPackage(null)
+        val started = runCatching { startActivity(Intent.createChooser(send, label)) }
+            .onFailure { Log.i(TAG, "share: no chooser for ${uris.size} file(s): ${it.javaClass.simpleName}") }  // log-ok: a count and an exception class
             .isSuccess
         Log.i(
             TAG,
-            if (started) "share offered for $name ($mime, ${file.length()} bytes)" else "share failed for $name",
+            if (started) "share offered for ${uris.size} file(s) ($type)"
+            else "share failed for ${uris.size} file(s)",
         )
     }
 
@@ -78,5 +123,8 @@ class ShareTrampoline : Activity() {
         const val TAG = "PocketDeckDrop"
         const val EXTRA_NAME = "name"
         const val EXTRA_MIME = "mime"
+        const val EXTRA_NAMES = "names"
+        const val EXTRA_MIMES = "mimes"
+        const val EXTRA_TARGET = "target"
     }
 }

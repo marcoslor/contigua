@@ -9,6 +9,9 @@ import java.io.File
  * so the file shows up in Files/Photos, and — where sensible — the SEND chooser
  * with the app's FileProvider URI. Everything is best effort: the file is on the
  * card either way.
+ *
+ * A gesture's files land one at a time; [ShareBatch] collects them and calls
+ * back once, after the last one, so the phone shares the batch once (SHARE-17).
  */
 class ShellLanding(
     /** The app's context (Shizuku hands it in): the external folder and the scanner. */
@@ -16,9 +19,11 @@ class ShellLanding(
     private val log: (String) -> Unit = {},
 ) : DropReceiver.Landing {
 
-    override fun land(file: File, mime: String) {
+    private val batch = ShareBatch { files, target -> offerSend(files, target) }
+
+    override fun land(file: File, mime: String, target: String?, index: Int, count: Int) {
         scan(file)
-        offerSend(file, mime)
+        batch.landed(file, mime, target, index, count)
     }
 
     /** Makes the file visible without waiting for the card to be remounted. */
@@ -30,24 +35,41 @@ class ShellLanding(
     }
 
     /**
-     * Hands the finished file to the app process, which shows the SEND chooser:
-     * the URI grant has to come from the UID that owns the provider — this
-     * process is shell (UID 2000), and `am start -a android.intent.action.SEND`
-     * from it drops the grant, so the receiver cannot open the URI (and crashes
-     * on it). Instead the file is staged in the app's external `files/shared/`
+     * Hands the finished batch to the app process, which shows one SEND for all
+     * of it (SHARE-17): the URI grant has to come from the UID that owns the
+     * provider — this process is shell (UID 2000), and `am start` from it drops
+     * the grant. Instead each file is staged in the app's external `files/shared/`
      * folder and the exported [dev.pocketdeck.drop.ShareTrampoline] is started
-     * with its bare name; the trampoline copies it into the app's share cache
-     * and builds the SEND intent there.
+     * with their bare names, a mime array and the window's package.
      */
-    private fun offerSend(file: File, mime: String) {
-        val app = app ?: run { log("drop: no context, no SEND for ${file.name}"); return }
-        val name = stage(app, file, mime) ?: return
+    private fun offerSend(files: List<Pair<File, String>>, target: String?) {
+        val app = app ?: run {
+            log("drop: no context, no SEND for ${files.size} file(s)")
+            return
+        }
+        val dir = ShareRequest.stageDir(app) ?: run {
+            log("drop: no external files dir, no SEND for ${files.size} file(s)")
+            return
+        }
+        dir.mkdirs()
+        sweep(dir)
+        val names = mutableListOf<String>()
+        val mimes = mutableListOf<String>()
+        for ((file, mime) in files) {
+            val name = stage(dir, file, mime) ?: return
+            names += name
+            mimes += mime
+        }
+        val args = mutableListOf(
+            "am", "start", "-n", TRAMPOLINE,
+            "--esa", "names", names.joinToString(","),
+            "--esa", "mimes", mimes.joinToString(","),
+        )
+        if (target != null) {
+            args += listOf("--es", "target", target)
+        }
         val started = runCatching {
-            val proc = ProcessBuilder(
-                "am", "start", "-n", TRAMPOLINE,
-                "--es", "name", name,
-                "--es", "mime", mime,
-            ).redirectErrorStream(true).start()
+            val proc = ProcessBuilder(args).redirectErrorStream(true).start()
             proc.outputStream.close()
             val out = proc.inputStream.bufferedReader().readText()
             out to proc.waitFor()
@@ -56,24 +78,16 @@ class ShellLanding(
         if (code != 0 || out.contains("Error", ignoreCase = true)) {
             log("drop: SEND not offered (${out.trim().take(200)})")
         } else {
-            log("drop: SEND offered for $name")
+            log("drop: SEND offered for ${names.size} file(s)")
         }
     }
 
     /** Copies [file] into the staging folder; returns the name the trampoline is given. */
-    private fun stage(app: Context, file: File, mime: String): String? {
-        val dir = ShareRequest.stageDir(app) ?: run {
-            log("drop: no external files dir, no SEND for ${file.name}")
-            return null
-        }
-        return runCatching {
-            dir.mkdirs()
-            sweep(dir)
-            val name = stageName(dir, file.name, mime)
-            file.copyTo(File(dir, name), overwrite = true)
-            name
-        }.onFailure { log("drop: staging ${file.name} failed: ${it.message}") }.getOrNull()
-    }
+    private fun stage(dir: File, file: File, mime: String): String? = runCatching {
+        val name = stageName(dir, file.name, mime)
+        file.copyTo(File(dir, name), overwrite = true)
+        name
+    }.onFailure { log("drop: staging failed: ${it.message}") }.getOrNull()
 
     /**
      * The trampoline copies a staged file once and deletes it; anything older is
