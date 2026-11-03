@@ -8,6 +8,10 @@ import Foundation
 setvbuf(stdout, nil, _IOLBF, 0)
 
 do {
+    if CommandLine.arguments.contains("--probe") {
+        print(DirectProbeRunner.run().jsonLine())
+        exit(0)
+    }
     let daemon = try DirectDaemon(config: DirectConfig.fromEnvironment())
     daemon.run()
 } catch {

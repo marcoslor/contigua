@@ -436,9 +436,9 @@ final class DirectDaemon {
                                                           dataLinks: DirectLimits.maxLinks)),
                       to: client)
         case .probe:
-            sendReply(.probe(ready: false,
-                             codes: ["probe_unimplemented"],
-                             detail: "the radio probe lands with the NAN session (round 2)"),
+            let result = DirectProbeRunner.run()
+            sendReply(.probe(ready: result.ready, codes: result.codes,
+                             detail: result.sentence),
                       to: client)
         case .peer(let spec):
             guard config.testMode else {
