@@ -32,7 +32,7 @@ WORKING_SET = ".workingSet"
 TRASH = ".trashContainer"
 WRITE_CHUNK = 256 * 1024
 # The bridge wire version (FilesCore.swift): 3 adds the watch wire.
-BRIDGE_VERSION = 3
+BRIDGE_VERSION = 4
 
 
 def report(ok, text):
@@ -181,6 +181,37 @@ class Bridge(object):
                 continue
             if obj.get("id") == request_id:
                 return obj
+
+    def thumb(self, item, size):
+        """One thumbnail: (data, mime, size, sha256, code, frames).
+
+        A success ends with `thumb` (the bytes came as data frames before it);
+        a refusal ends with `error`, which carries the code and no bytes.
+        """
+        request_id = self.new_id()
+        self.send({"t": "thumb", "id": request_id, "item": item, "size": size})
+        data, frames = b"", 0
+        while True:
+            frame = self.frame()
+            if frame[0] == "data":
+                _, first, payload = frame
+                if first != request_id:
+                    raise BridgeError("thumbnail data for another id")
+                data += payload
+                frames += 1
+                continue
+            obj = frame[1]
+            if obj.get("id") != request_id:
+                raise BridgeError("reply for another id")
+            if obj.get("t") == "thumb":
+                return (data, obj.get("mime"), obj.get("size"), obj.get("sha256"),
+                        None, frames)
+            if obj.get("t") == "error":
+                return (data, None, None, None, obj.get("code"), frames)
+            raise BridgeError("unexpected thumbnail reply %r" % obj.get("t"))
+
+    def cancel_request(self, request_id):
+        self.send({"t": "cancel", "id": request_id})
 
     def create_item(self, parent, name, data, directory=False):
         """create + ready + data chunks + item. Returns the reply object."""
@@ -776,7 +807,9 @@ def check_offline(socket_path):
     try:
         # The app learns the session ended from its own socket; give it a moment.
         hello = bridge.hello()
-        deadline = time.time() + 10.0
+        # The session keeps a 30 s rejoin grace, so a phone killed mid-run may
+        # still read as connected for a while after the process is gone.
+        deadline = time.time() + 45.0
         while hello.get("connected") is not False and time.time() < deadline:
             time.sleep(0.25)
             hello = bridge.hello()
@@ -1040,6 +1073,177 @@ def phase_write(bridge, root):
            "WRITE a write into Android/data answers fs_denied (%s)" % refused.get("code"))
 
 
+def thumb_log(path):
+    """The fake phone's accept/cancel lines, in file order (ids and counts only)."""
+    accepts, cancels = [], []
+    try:
+        with open(path, errors="replace") as handle:
+            for number, line in enumerate(handle):
+                if "fs thumb accept" in line:
+                    accepts.append(number)
+                elif "fs thumb cancel" in line:
+                    cancels.append(number)
+    except OSError:
+        pass
+    return accepts, cancels
+
+
+def phase_thumb(bridge, root, fixture):
+    """A normal phone: bytes then thumb, and the type filter leaves documents
+    and folders with no phone traffic (FILES-22/23)."""
+    hello = bridge.hello()
+    report(hello.get("connected") is True, "THUMB hello: connected")
+    with open(fixture, "rb") as handle:
+        expected = handle.read()
+    digest = hashlib.sha256(expected).hexdigest()
+    photo = item_id(bridge, "DCIM/Camera/photo.jpg")
+    report(photo is not None, "THUMB the photo has an id")
+    data, mime, size, sha, code, frames = bridge.thumb(photo, 512)
+    report(code is None and data == expected,
+           "THUMB [FILES-23] the bytes are the phone's answer (%d bytes)" % len(data))
+    report(mime == "image/jpeg", "THUMB [FILES-23] the mime is image/jpeg")
+    report(size == len(expected) and (sha or "").lower() == digest,
+           "THUMB [FILES-23] size and sha256 match the bytes")
+    report(frames == 1, "THUMB [FILES-23] the answer is one data frame (%d)" % frames)
+    pdf = item_id(bridge, "Documents/report.pdf")
+    data, mime, size, sha, code, frames = bridge.thumb(pdf, 512)
+    report(code == "not_media" and not data and frames == 0,
+           "THUMB [FILES-22] a document is answered not_media with no bytes (%s)" % code)
+    folder = item_id(bridge, "DCIM/Camera")
+    data, mime, size, sha, code, frames = bridge.thumb(folder, 512)
+    report(code == "not_media" and not data and frames == 0,
+           "THUMB [FILES-22] a folder is answered not_media with no bytes (%s)" % code)
+
+
+def phase_thumb_none(bridge):
+    """A phone that makes no picture: fs_no_thumb is permanent; a text name
+    never reaches the phone at all (FILES-22/26)."""
+    hello = bridge.hello()
+    report(hello.get("connected") is True, "THUMB hello: connected")
+    photo = item_id(bridge, "DCIM/Camera/photo.jpg")
+    data, mime, size, sha, code, frames = bridge.thumb(photo, 512)
+    report(code == "fs_no_thumb" and not data and frames == 0,
+           "THUMB [FILES-26] a phone without a picture answers fs_no_thumb (%s)" % code)
+    text = item_id(bridge, "Documents/file00.txt")
+    data, mime, size, sha, code, frames = bridge.thumb(text, 512)
+    report(code == "not_media" and not data and frames == 0,
+           "THUMB [FILES-22] a text file is answered not_media with no bytes (%s)" % code)
+
+
+def phase_thumb_hold(socket_path, fake_err):
+    """A phone that holds every answer: three of four reach it, and cancel
+    answers all four; the queued fourth never reaches the phone (FILES-25)."""
+    bridge = Bridge(socket_path, timeout=30.0)
+    try:
+        report(bridge.hello().get("connected") is True, "THUMB hello: connected")
+        photo = item_id(bridge, "DCIM/Camera/photo.jpg")
+        request_ids = []
+        for _ in range(4):
+            request_id = bridge.new_id()
+            bridge.send({"t": "thumb", "id": request_id, "item": photo, "size": 512})
+            request_ids.append(request_id)
+        time.sleep(0.8)
+        accepts, cancels = thumb_log(fake_err)
+        report(len(accepts) == 3 and not cancels,
+               "THUMB [FILES-25] three reach the phone and the fourth waits (%d, %d cancels)"
+               % (len(accepts), len(cancels)))
+        # One connection, FIFO: the last request is the queued one. Cancel it
+        # first, so freeing the running slots cannot start it.
+        for request_id in [request_ids[3]] + request_ids[:3]:
+            bridge.cancel_request(request_id)
+            if request_id == request_ids[3]:
+                time.sleep(0.2)
+        replies = {}
+        deadline = time.time() + 5
+        while len(replies) < 4 and time.time() < deadline:
+            try:
+                frame = bridge.frame()
+            except socket.timeout:
+                continue
+            if frame[0] == "data":
+                continue
+            obj = frame[1]
+            if obj.get("id") in request_ids:
+                replies.setdefault(obj.get("id"), obj)
+        codes = [replies.get(request_id, {}).get("code") for request_id in request_ids]
+        report(codes == ["cancelled"] * 4,
+               "THUMB [FILES-25] every cancelled ask answers cancelled (%s)" % codes)
+        accepts, _ = thumb_log(fake_err)
+        report(len(accepts) == 3,
+               "THUMB [FILES-25] the queued fourth never reached the phone (%d accepts)"
+               % len(accepts))
+    finally:
+        bridge.close()
+
+
+def phase_thumb_once(socket_path, fake_err):
+    """A phone that holds only its first answer: 3 start, the fourth waits and
+    runs once two of them end (FILES-25)."""
+    bridge = Bridge(socket_path, timeout=4.0)
+    try:
+        report(bridge.hello().get("connected") is True, "THUMB hello: connected")
+        photo = item_id(bridge, "DCIM/Camera/photo.jpg")
+        request_ids = []
+        for _ in range(4):
+            request_id = bridge.new_id()
+            bridge.send({"t": "thumb", "id": request_id, "item": photo, "size": 512})
+            request_ids.append(request_id)
+        replies = {}
+        held = None
+        deadline = time.time() + 4
+        while time.time() < deadline and len(replies) < 3:
+            try:
+                frame = bridge.frame()
+            except socket.timeout:
+                continue
+            if frame[0] == "data":
+                continue
+            obj = frame[1]
+            if obj.get("id") in request_ids:
+                replies.setdefault(obj.get("id"), obj)
+        for request_id in request_ids:
+            if request_id not in replies:
+                held = request_id
+                break
+        report(held == request_ids[0] and len(replies) == 3,
+               "THUMB [FILES-25] the first answer is held, the other three finish")
+        accepts, _ = thumb_log(fake_err)
+        report(len(accepts) == 4,
+               "THUMB [FILES-25] the queued fourth starts after one ends (%d accepted)"
+               % len(accepts))
+        successes = sum(1 for obj in replies.values() if obj.get("t") == "thumb")
+        report(successes == 3,
+               "THUMB [FILES-25] the three unheld answers are thumbnails (%d)" % successes)
+        if held is not None:
+            bridge.cancel_request(held)
+            code = bridge.wait_for(held).get("code")
+            report(code == "cancelled",
+                   "THUMB [FILES-25] the held ask answers cancelled (%s)" % code)
+
+    finally:
+        bridge.close()
+
+
+def phase_thumb_timeout(socket_path):
+    """A phone that accepts and never answers: the app answers at its 8 s
+    deadline and sends one fs.cancel (FILES-29)."""
+    bridge = Bridge(socket_path, timeout=30.0)
+    try:
+        report(bridge.hello().get("connected") is True, "THUMB hello: connected")
+        photo = item_id(bridge, "DCIM/Camera/photo.jpg")
+        started = time.time()
+        data, mime, size, sha, code, frames = bridge.thumb(photo, 512)
+        elapsed = time.time() - started
+        report(code == "timeout",
+               "THUMB [FILES-29] a phone that never answers answers timeout (%s)" % code)
+        report(7.0 <= elapsed <= 10.5,
+               "THUMB [FILES-29] the deadline is 8 s from the ask (%.1f s)" % elapsed)
+        report(not data and frames == 0,
+               "THUMB [FILES-29] a timed-out answer carries no bytes")
+    finally:
+        bridge.close()
+
+
 def phase_kill(bridge, root, fake_pid):
     hello = bridge.hello()
     report(hello.get("connected") is True, "WRITE hello: connected")
@@ -1081,9 +1285,11 @@ def main():
     parser.add_argument("--work", required=True)
     parser.add_argument("--fake-err", default=None)
     parser.add_argument("--fake-pid", type=int, default=None)
+    parser.add_argument("--thumb-fixture", default=None)
     parser.add_argument("--phase",
                         choices=["online", "read", "offline", "write", "kill",
-                                 "watch", "watchset"],
+                                 "watch", "watchset", "thumb", "thumb-hold",
+                                 "thumb-once", "thumb-timeout", "thumb-none"],
                         required=True)
     parser.add_argument("--ttl", type=float, default=20.0)
     parser.add_argument("--watch-folders", default="")
@@ -1113,6 +1319,21 @@ def main():
             bridge.close()
         return 0
 
+    if args.phase in ("thumb-hold", "thumb-once", "thumb-timeout"):
+        try:
+            if args.phase == "thumb-hold":
+                phase_thumb_hold(args.socket, args.fake_err or
+                                 os.path.join(args.work, "fake.err"))
+            elif args.phase == "thumb-once":
+                phase_thumb_once(args.socket, args.fake_err or
+                                 os.path.join(args.work, "fake.err"))
+            else:
+                phase_thumb_timeout(args.socket)
+        except (BridgeError, socket.timeout, OSError) as error:
+            report(False, "THUMB the bridge stopped answering (%s)" % error)
+            return 1
+        return 0
+
     if args.phase in ("write", "kill"):
         try:
             bridge = Bridge(args.socket, timeout=60.0)
@@ -1137,6 +1358,12 @@ def main():
         report(False, "BRIDGE cannot connect to the bridge socket (%s)" % error)
         return 1
     try:
+        if args.phase == "thumb":
+            phase_thumb(bridge, args.root, args.thumb_fixture)
+            return 0
+        if args.phase == "thumb-none":
+            phase_thumb_none(bridge)
+            return 0
         if args.phase == "read":
             # The read-only half of `online`: what a Finder browse, a Quick
             # Look and a stat send, with no create/cancel in the same phase.

@@ -2100,7 +2100,10 @@ final class Session {
         if let etag { message["etag"] = etag }
         sendJSON(message)
     }
-    func fsCancel(id: UInt32) { sendJSON(["t": "fs.cancel", "id": Int(id)]) }
+    func fsCancel(id: UInt32) {
+        let accepted = sendJSON(["t": "fs.cancel", "id": Int(id)])
+        Log.files.notice("session: fs.cancel sent ok=\(accepted, privacy: .public)")
+    }
     func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
                  exclusive: Bool) {
         var message: [String: Any] = ["t": "fs.write", "id": Int(id), "path": path,

@@ -162,7 +162,12 @@ final class FilesThumbQueue {
                 }
             })
         case .sendCancel:
-            if let fsID = job.fsID { job.host.cancel(id: fsID) }
+            if let fsID = job.fsID {
+                job.host.cancel(id: fsID)
+                Log.files.notice("thumb: cancel fs")
+            } else {
+                Log.files.notice("thumb: cancel without an fs id")
+            }
         case .answer(let answer):
             guard !job.answered else { return }
             job.answered = true
