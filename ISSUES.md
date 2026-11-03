@@ -31,7 +31,10 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## 2. Bugs you can see
 
 - **ISS-3 Streams flicker on lock and unlock.** Locking or unlocking the phone makes the open stream windows flicker briefly. It predates the 2026-11-01 locked-phone fixes; the person rates it minor.
-- **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced, not built (multi-window phase 2): WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`. `WindowManager.openOrRaise` has a `newWindow:` placeholder. Also cover the app's own in-stream "New window": it starts a second task on the same virtual display, which should move to its own display and Mac window (spike first).
+- **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced as multi-window phase 2: WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`.
+  - **The phone half** is on `main` (2026-10-28): `multi`, `newInstance`, `taskId`, `maxWindows`, task labels and closing one task.
+  - **The Mac half** (⌘N, File/Dock/Deck menus, titles per task, the cap, offline) is built on `epic/mw-mac` (K2 and e2e `multiwin` green on 10-28) and was never merged; it waited on its VM screenshots. Being brought up to `main` (2026-11-03).
+  - **The app's own in-stream "New window"** is the case the person hit: it starts a second task on the same virtual display, which should move to its own display and Mac window. Not specced; an emulator spike and a spec draft come first.
 - **ISS-7 A shared app stops responding after ⌘K under load.** The shared app's control channel stalls after a ⌘K launch while WindowServer is busy. Seen in 3 of about 10 e2e runs on 2026-11-01, none since.
 - **ISS-8 A revoked Mac fails silently.** A Mac whose pairing was removed on the phone waits through a 16 s handshake timeout instead of being told. Re-check.
 - **ISS-9 "Busy" sticks after a network drop.** The phone kept reporting a busy session after a drop. Re-check: the paths layer (E-10, 2026-11-02) frees the slot.
