@@ -698,7 +698,8 @@ Rules:
 
 - The phone makes the picture at shell uid with the platform's own image/video
   thumbnail generator, long side `min(size, 512)`, JPEG at quality 80, or PNG
-  when the bitmap has alpha. The whole answer is at most 256 KiB (262 144
+  when the bitmap has alpha and the item is an image (a video frame is always
+  JPEG). The whole answer is at most 256 KiB (262 144
   bytes): a larger first encode is re-encoded once at quality 60 (a PNG over
   the cap becomes a flattened JPEG), and if that is still larger the answer is
   `fs_no_thumb` with no bytes sent.

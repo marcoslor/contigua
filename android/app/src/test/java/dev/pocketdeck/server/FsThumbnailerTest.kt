@@ -176,6 +176,18 @@ class FsThumbnailerTest {
     }
 
     @Test
+    fun aVideoNeverAsksForPng() {
+        // A video frame is opaque even when the bitmap reports alpha; boot 2's
+        // MP4 came back as a 29 KB PNG (FILES-24).
+        val source = setup()
+        file("DCIM/Camera/clip.mp4", ByteArray(4))
+        val thumbs = thumbs(source)
+        thumbs.begin(ask(1, "DCIM/Camera/clip.mp4"))
+        awaitEnd(1)
+        assertFalse(source.calls.single().allowPng)
+    }
+
+    @Test
     fun anAlphaPngIsPassedThrough() {
         val source = setup()
         source.renderer = { ThumbBytes(byteArrayOf(2, 3, 4), "image/png") }

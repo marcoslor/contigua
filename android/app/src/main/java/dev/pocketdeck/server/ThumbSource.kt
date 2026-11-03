@@ -35,7 +35,9 @@ interface ThumbSource {
 
     /**
      * Long side at most [longSide]; JPEG at [quality], or PNG while [allowPng]
-     * and the bitmap has alpha (PNG ignores the quality). Null: no picture.
+     * and the bitmap has alpha (PNG ignores the quality). A video frame is
+     * opaque even when its bitmap reports alpha, so the caller passes
+     * `allowPng = false` for video (FILES-24). Null: no picture.
      */
     fun render(file: File, video: Boolean, longSide: Int, quality: Int,
                allowPng: Boolean, cancel: ThumbCancellation): ThumbBytes?
