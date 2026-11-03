@@ -497,11 +497,28 @@ interface ClipboardPort {
     fun getText(): ClipText?
     fun setText(text: String)
 
-    /** Starts delivering text changes to [onChange]; replaces any earlier listener. */
-    fun listen(onChange: (ClipText) -> Unit)
+    /**
+     * Starts delivering text changes to [onChange] and returns this listener's
+     * handle. The port has one live listener: this replaces any earlier one,
+     * whose handle becomes stale.
+     */
+    fun listen(onChange: (ClipText) -> Unit): ClipRegistration
 
-    /** Stops delivery. Safe to call more than once and without [listen]. */
-    fun stop()
+    /**
+     * Stops delivery for [registration], but only while it is the live one. A
+     * stale handle (replaced, already stopped or null) is a no-op, so an old
+     * session's teardown can never silence the next session's sync (ISS-13).
+     */
+    fun stop(registration: ClipRegistration?)
+}
+
+/**
+ * One clipboard listener registration (ISS-13): the handle [ClipboardPort.listen]
+ * hands back. Only the owner of the live registration may stop it.
+ */
+class ClipRegistration internal constructor(internal val onChange: (ClipText) -> Unit) {
+    /** The platform listener this registration installed, if any. */
+    internal var listener: Any? = null
 }
 
 /** An image the clipboard holds: primary bytes (JPEG/PNG) of the first image item. */

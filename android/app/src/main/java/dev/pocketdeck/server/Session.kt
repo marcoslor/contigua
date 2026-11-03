@@ -226,6 +226,8 @@ class Session(
         sendDelta = { stream, ptsUs, bytes -> queue.enqueueDelta(stream, ptsUs, bytes) },
     )
     private val clipSync = ClipSync()
+    /** This session's clipboard listener; only its handle may stop it (ISS-13). */
+    @Volatile private var clipRegistration: ClipRegistration? = null
     /** How many sensitive clips were kept on the phone this session (a count, never text). */
     @Volatile private var sensitiveClipsSkipped = 0
     /** The Mac's clipboard gate for this session; Off until it says otherwise. */
@@ -1935,7 +1937,7 @@ class Session(
     /** Local changes after welcome go out as `clip.set`; the text present at welcome does not. */
     private fun startClipboardSync() {
         val port = clipboard ?: return
-        port.listen { clip ->
+        clipRegistration = port.listen { clip ->
             if (clipGateState == ClipGate.OFF) return@listen
             if (clip.sensitive) {
                 // A password manager's item: the count only, never its text.
@@ -1963,7 +1965,9 @@ class Session(
     }
 
     private fun stopClipboardSync() {
-        runCatching { clipboard?.stop() }
+        val registration = clipRegistration ?: return
+        clipRegistration = null
+        runCatching { clipboard?.stop(registration) }
     }
 
     // ------------------------------------------------------------------
