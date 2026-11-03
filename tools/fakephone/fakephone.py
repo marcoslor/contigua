@@ -268,6 +268,22 @@ NOTIFY_IMAGE_MAX = 200 * 1024
 NOTIFY_LIVE_INTERVAL = 2.0
 NOTIFY_LIVE_TICKS = 5
 
+# ISS-5/NOTIFY-1: a rejoin after an outage. The first enable posts two live
+# rows; the fake's own state then moves (one row's progress, the other row
+# ended) with nothing sent, the case where the frames were lost while the wire
+# was down. A later enable answers with the active set: each row's current
+# state quietly, then `notify.snapshot` naming what is still active.
+NOTIFY_REJOIN_POSTS = [
+    {"id": "pd-r1", "pkg": "com.uber",
+     "title": "pd-notify-title-30", "text": "pd-notify-text-30",
+     "live": {"progress": 0.2, "chip": "4 min"}},
+    {"id": "pd-r2", "pkg": "com.google.android.youtube",
+     "title": "pd-notify-title-31", "text": "pd-notify-text-31",
+     "live": {"chrono": "future", "countDown": True}},
+]
+NOTIFY_REJOIN_MOVE_AFTER = 5.0
+NOTIFY_REJOIN_PROGRESS = 0.9
+
 NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fake Song",
                       "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
                       "positionMs": 0, "rate": 1.0}
@@ -2143,6 +2159,9 @@ class Session(object):
         self._live_lock = threading.Lock()
         self._live_last = {}
         self._live_pending = {}
+        # --notify-rejoin: the fake's active set, moved while the wire is down
+        # (ISS-5). Per session, so a fresh session starts from the first enable.
+        self._notify_rejoin = None
         self._live_flusher = None
         # Paths (docs/PROTOCOL.md "Paths"): the hello is read by FakePhone's
         # connection handler, which needs it to choose the slot.
@@ -3607,6 +3626,9 @@ class Session(object):
             self._send({"t": "notify.state", "on": False, "reason": "no_access"})
             return
         self._send({"t": "notify.state", "on": True})
+        if getattr(self.phone.args, "notify_rejoin", False):
+            self._on_notify_rejoin()
+            return
         if getattr(self.phone.args, "notify_quiet", False):
             # NOTIFY-19: one key, ten posts, only the first alerting.
             self._send_quiet_updates()
@@ -3660,6 +3682,55 @@ class Session(object):
             self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                      titleLen=len(NOTIFY_MEDIA_STATE["title"]),
                                      durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _on_notify_rejoin(self):
+        """ISS-5/NOTIFY-1: the active set across a rejoin.
+
+        The first enable posts the two live rows. Their state then moves with
+        nothing sent (the outage lost the frames); a later enable — the Mac's
+        repeat after a same-session rejoin — answers with what is active now:
+        one quiet post per row, then `notify.snapshot` with the ids.
+        """
+        if self._notify_rejoin is None:
+            self._notify_rejoin = {}
+            for post in NOTIFY_REJOIN_POSTS:
+                live = self._live_wire(post["live"])
+                self._notify_rejoin[post["id"]] = {"post": post, "live": live}
+                self._send_rejoin_post(post, live, alert=True)
+            threading.Thread(target=self._move_notify_rejoin, daemon=True).start()
+            return
+        active = [row for row in self._notify_rejoin.values() if row["live"] is not None]
+        for row in active:
+            self._send_rejoin_post(row["post"], row["live"], alert=False)
+        ids = [row["post"]["id"] for row in active]
+        self._send({"t": "notify.snapshot", "ids": ids})
+        self.phone.events.notify("snapshot", ids=len(ids))
+
+    def _move_notify_rejoin(self):
+        """The phone's state moves while the wire is down; nothing is sent."""
+        time.sleep(NOTIFY_REJOIN_MOVE_AFTER)
+        state = self._notify_rejoin
+        if state is None or self.sender is None:
+            return
+        row = state.get("pd-r1")
+        if row is not None:
+            row["live"] = self._live_wire({"progress": NOTIFY_REJOIN_PROGRESS, "chip": "2 min"})
+        ended = state.pop("pd-r2", None)
+        self.phone.events.notify("rejoin.move", moved=1 if row is not None else 0,
+                                 ended=1 if ended is not None else 0)
+
+    def _send_rejoin_post(self, post, live, alert):
+        """One active set entry: a post's shape, alerting only its first time."""
+        wire = dict(post, t="notify.post", when=int(time.time() * 1000), alert=alert)
+        wire.pop("image", None)
+        wire.pop("tick", None)
+        wire.pop("removeAfter", None)
+        wire["live"] = live
+        self._send(wire)
+        self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
+                                 titleLen=len(post["title"]), bodyLen=len(post["text"]),
+                                 actions=0, reply=0, ongoing=1, live=1,
+                                 alert=1 if alert else 0)
 
     def _send_badge_posts(self):
         """NOTIFY-22: one post with a picture and one without, for an app whose
@@ -5090,6 +5161,10 @@ def build_parser():
     p.add_argument("--notify-media", action="store_true",
                    help="on notify.enable also post the picture and Live Update shapes "
                         "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")
+    p.add_argument("--notify-rejoin", action="store_true",
+                   help="on notify.enable post two live rows (pd-r1, pd-r2); their state "
+                        "moves after a few seconds with nothing sent, and a later enable "
+                        "answers with the active set and notify.snapshot (ISS-5, NOTIFY-1)")
     p.add_argument("--notify-quiet", action="store_true",
                    help="on notify.enable post one key ten times, the first alerting and "
                         "the nine updates not (NOTIFY-19; a progress bar's wire)")

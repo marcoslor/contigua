@@ -64,6 +64,9 @@
 //                    button's place in the window
 //   quit             a real quit through NSApp.terminate (⌘Q's path), for a
 //                    check that relaunches the app
+//   livedump PATH    the menu bar's LIVE section as JSON, at a moment no
+//                    debug-input script is running (the e2e's notify/path
+//                    checks read the rows before and after an outage)
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

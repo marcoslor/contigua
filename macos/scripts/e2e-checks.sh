@@ -742,9 +742,46 @@ PY
 #  3. the same, but the route comes back 10 s after the second path went
 #     silent: the Mac re-dials joins, the same session id comes back, and the
 #     picture resumes within 5 s of the route.
+# Phase (b) also carries ISS-5/NOTIFY-1: a live row and a timer are up before
+# the black-out; while it runs the phone's own state moves (one row's progress,
+# the other ended) with nothing sent; after the rejoin the Mac asks again and
+# shows the new progress, the ended row gone, and no second banner.
 check_pathgrace() {
     clean
     local ends
+    # live rows through the debug-control folder (the menu bar's LIVE section).
+    live_dump() { control livedump "$1" >/dev/null 2>&1; }
+    live_has() { # live_has FILE ID — the dump worked and holds that row
+        [ -s "$1" ] || return 1
+        python3 - "$1" "$2" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1])).get("live") or []
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if any(row.get("id") == sys.argv[2] for row in rows) else 1)
+PY
+    }
+    live_is() { # live_is FILE ID PROGRESS — that row carries that progress
+        [ -s "$1" ] || return 1
+        python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1])).get("live") or []
+except (OSError, ValueError):
+    sys.exit(1)
+for row in rows:
+    if row.get("id") == sys.argv[2]:
+        progress = row.get("progress")
+        sys.exit(0 if isinstance(progress, (int, float))
+                 and abs(progress - float(sys.argv[3])) < 0.001 else 1)
+sys.exit(1)
+PY
+    }
+    live_row_has() { live_dump "$1" && live_has "$1" "$2"; }
+    live_row_is() { live_dump "$1" && live_is "$1" "$2" "$3"; }
+    # live_row_gone — the dump worked and the row is not in it.
+    live_row_gone() { live_dump "$1" && ! live_has "$1" "$2"; }
     FAKE_ARGS="--paths 2 --drop-path all after 5 --no-rejoin" start_fake || return 1
     path_pair_once "$PORT"
     launch --connect "127.0.0.1:$PORT" --connect2 "127.0.0.1:$((PORT + 1))" \
@@ -881,18 +918,35 @@ PY
     clean
     pathfault_nuke
     local session t_lift rejoin_dt
-    FAKE_ARGS="--paths 2" start_fake || return 1
+    local notify_log="$WORK/notify-grace.log" notify_device="" t_rejoin="" notify_dt=""
+    FAKE_ARGS="--paths 2 --notify-rejoin" start_fake || return 1
     pathfault_start "$((PORT + 3))" "$PORT"
     pathfault_start "$((PORT + 4))" "$((PORT + 1))"
     path_pair_once "$PORT"
+    # The per-phone opt-in is a stored default, seeded after the pairing run so
+    # that run did not enable it (docs/specs/notifications.md NOTIFY-1).
+    notify_device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$notify_device" ] \
+        || { bad "[NOTIFY-1] PATHGRACE(b) no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$notify_device" -bool YES
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
-        --open-phone --debug-chrome-state "$WORK/chrome-grace2.txt" --quit-after 60
+        --open-phone --debug-chrome-state "$WORK/chrome-grace2.txt" --quit-after 70 \
+        --debug-control "$WORK-control" --share-log "$notify_log"
     path_stream_start
     wait_until 20 path_upto 2 \
         || bad "[PATH-6] PATHGRACE(b) the second path never joined"
     wait_until 15 events_have '"ev":"video"' \
         && ok "[PATH-6] PATHGRACE(b) the two-path session is live before the faults" \
         || bad "[PATH-6] PATHGRACE(b) no mirror video before the faults"
+    # ISS-5: a Live Update and a timer are on the menu bar before the black-out.
+    wait_until 20 live_row_has "$WORK/grace-live-1.json" pd-r1 \
+        && ok "[NOTIFY-12] PATHGRACE(b) the live row is up before the outage" \
+        || bad "[NOTIFY-12] PATHGRACE(b) no live row before the outage: $(cat "$notify_log" 2>/dev/null | tail -3 | tr '\n' '|')"
+    live_row_has "$WORK/grace-live-1.json" pd-r2 \
+        && ok "[NOTIFY-12] PATHGRACE(b) the timer row is up before the outage" \
+        || bad "[NOTIFY-12] PATHGRACE(b) no timer row before the outage"
     founder=""
     for _ in $(seq 1 80); do
         founder="$(path_hello_listener)"
@@ -951,6 +1005,27 @@ PY
     wait_until 10 path_joined_up_since "$t_lift" \
         && ok "[PATH-22] PATHGRACE(b) the phone attached the rejoined path to the same session" \
         || bad "[PATH-6] PATHGRACE(b) no path attached after the route came back"
+    t_rejoin="$(path_now)"
+    # ISS-5/NOTIFY-1: the phone's state moved while no path was up (one row's
+    # progress, the timer ended) and nothing was sent. The Mac repeated its
+    # opt-in once the rejoined path was current; the active set must bring the
+    # rows up to date within 3 s, without a second banner.
+    if wait_until 3 live_row_is "$WORK/grace-live-2.json" pd-r1 0.9; then
+        notify_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_rejoin')))")"
+        ok "[NOTIFY-1] PATHGRACE(b) the live row showed the phone's new progress ${notify_dt}s after the rejoin (limit 3.0)"
+    else
+        notify_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_rejoin')))")"
+        bad "[NOTIFY-1] PATHGRACE(b) the live row's new progress did not arrive within 3 s of the rejoin (${notify_dt}s): $(cat "$notify_log" 2>/dev/null | tail -3 | tr '\n' '|')"
+    fi
+    live_row_gone "$WORK/grace-live-2.json" pd-r2 \
+        && ok "[NOTIFY-1] PATHGRACE(b) the timer row the phone ended during the outage is gone" \
+        || bad "[NOTIFY-1] PATHGRACE(b) the ended timer row is still in the LIVE section"
+    [ "$(grep -cE 'notify post id=pd-r1 .* presented=1 ' "$notify_log" 2>/dev/null)" = "1" ] \
+        && ok "[NOTIFY-19] PATHGRACE(b) the active set presented no second banner" \
+        || bad "[NOTIFY-19] PATHGRACE(b) a live row presented more than once: $(grep -E 'notify post id=pd-r1 ' "$notify_log" 2>/dev/null | tr '\n' '|')"
+    [ "$(grep -cF 'notify post id=pd-r2 ' "$notify_log" 2>/dev/null)" = "1" ] \
+        && ok "[NOTIFY-1] PATHGRACE(b) the active set did not re-post the ended row" \
+        || bad "[NOTIFY-1] PATHGRACE(b) the ended row was posted again: $(grep -F 'notify post id=pd-r2 ' "$notify_log" 2>/dev/null | tr '\n' '|')"
     wait_until 5 chrome_online "$WORK/chrome-grace2.txt" \
         && ok "[PATH-17] PATHGRACE(b) the window left reconnecting" \
         || bad "[PATH-17] PATHGRACE(b) the window still says the link is down"
