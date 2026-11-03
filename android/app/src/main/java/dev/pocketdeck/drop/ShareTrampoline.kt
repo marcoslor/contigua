@@ -30,6 +30,7 @@ class ShareTrampoline : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.i(TAG, "trampoline: started")
         val targets = requests()
         if (targets == null) {
             Log.i(TAG, "share refused: bad name/mime")
@@ -98,7 +99,9 @@ class ShareTrampoline : Activity() {
 
         if (target != null) {
             val aimed = Intent(send).setPackage(target)
-            if (aimed.resolveActivity(packageManager) != null) {
+            val resolves = aimed.resolveActivity(packageManager) != null
+            Log.i(TAG, "share: target $target resolves=$resolves")  // log-ok: checked package
+            if (resolves) {
                 val started = runCatching { startActivity(aimed) }
                     .onFailure { Log.i(TAG, "share: ${target} did not start: ${it.javaClass.simpleName}") }  // log-ok: checked package, exception class
                     .isSuccess
@@ -109,6 +112,7 @@ class ShareTrampoline : Activity() {
             }
         }
         send.setPackage(null)
+        Log.i(TAG, "share: chooser for ${uris.size} file(s)")  // log-ok: a count
         val started = runCatching { startActivity(Intent.createChooser(send, label)) }
             .onFailure { Log.i(TAG, "share: no chooser for ${uris.size} file(s): ${it.javaClass.simpleName}") }  // log-ok: a count and an exception class
             .isSuccess

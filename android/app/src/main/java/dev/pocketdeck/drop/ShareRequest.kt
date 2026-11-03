@@ -1,6 +1,7 @@
 package dev.pocketdeck.drop
 
 import android.content.Context
+import android.os.Environment
 import dev.pocketdeck.server.DropPolicy
 import java.io.File
 
@@ -27,8 +28,13 @@ object ShareRequest {
      * inaccessible to the app, even in its own package folder).
      */
     fun stageDir(context: Context): File? {
-        val media = context.getExternalMediaDirs().firstOrNull { it != null } ?: return null
-        return File(media, "shared")
+        // Not getExternalMediaDirs(): in the uid-2000 shell process that call
+        // threw SecurityException ("package does not match caller's uid") and
+        // killed the SEND step before it could log (emulator boot 3). The path
+        // is the app's external media folder, which both identities can read.
+        val packageName = context.applicationInfo.packageName
+        return File(File(Environment.getExternalStorageDirectory(), "Android/media/$packageName"),
+                    "shared")
     }
 
     /** The app-owned copy of the shared files: the one folder the provider serves. */
