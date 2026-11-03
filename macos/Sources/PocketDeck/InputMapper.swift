@@ -69,7 +69,11 @@ final class InputMapper {
     }
 
     let stream: UInt32
+    /// The protocol message sender.
     var send: ((Command) -> Void)?
+    /// ⌘V's source. Injected so a file copy can be tested without the person's
+    /// real pasteboard.
+    var pasteboard: PasteboardReader = SystemPasteboardReader()
     var videoRectProvider: () -> CGRect = { .zero }
     var locationProvider: (NSEvent) -> CGPoint = { _ in .zero }
     var viewIsFlipped: () -> Bool = { false }
@@ -611,7 +615,7 @@ final class InputMapper {
                 flushText()
                 send?(.nav("back"))
             case "v":
-                if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
+                if let text = pasteboard.text(), !text.isEmpty {
                     flushText()
                     send?(.text(text))
                 }
