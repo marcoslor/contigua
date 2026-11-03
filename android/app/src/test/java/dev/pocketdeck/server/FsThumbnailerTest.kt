@@ -111,7 +111,7 @@ class FsThumbnailerTest {
     private fun awaitEnd(id: Int): Map<String, Any?> {
         repeat(300) {
             end(id)?.let { return it }
-            Thread.sleep(10)
+            Thread.sleep(10) // real-time: polling another thread's reply
         }
         throw AssertionError("no fs.thumb.end for id $id; bulk=${bulk.size} json=${json}")
     }
@@ -119,7 +119,7 @@ class FsThumbnailerTest {
     private fun awaitFailure(id: Int): Map<String, Any?> {
         repeat(300) {
             failure(id)?.let { return it }
-            Thread.sleep(10)
+            Thread.sleep(10) // real-time: polling another thread's reply
         }
         throw AssertionError("no error for id $id; json=${json}")
     }
@@ -127,7 +127,7 @@ class FsThumbnailerTest {
     private fun awaitCalls(source: FakeSource, count: Int) {
         repeat(300) {
             if (source.calls.size >= count) return
-            Thread.sleep(10)
+            Thread.sleep(10) // real-time: polling another thread's reply
         }
         throw AssertionError("only ${source.calls.size} render calls, wanted $count")
     }
@@ -273,7 +273,7 @@ class FsThumbnailerTest {
         assertTrue(enter.await(5, TimeUnit.SECONDS))
         thumbs.begin(ask(2, "b.jpg"))
         thumbs.begin(ask(3, "c.jpg"))
-        Thread.sleep(100)
+        Thread.sleep(100) // real-time: a second step would land in this window
         assertEquals("more than one render ran at once", 1, source.calls.size)
         release.countDown()
         awaitEnd(3)
@@ -315,7 +315,7 @@ class FsThumbnailerTest {
         thumbs.cancel(3L)
         release.countDown()
         awaitEnd(2)
-        Thread.sleep(150)
+        Thread.sleep(150) // real-time: a wrong render would land in this window
         assertEquals(listOf("a.jpg", "b.jpg"), source.calls.map { it.name })
         assertNull(end(3))
         assertNull(failure(3))
@@ -334,7 +334,7 @@ class FsThumbnailerTest {
         assertTrue(enter.await(5, TimeUnit.SECONDS))
         thumbs.cancel(1L)
         release.countDown()
-        Thread.sleep(200)
+        Thread.sleep(200) // real-time: a send or render would land in this window
         assertNull(end(1))
         assertNull(failure(1))
         assertEquals(0, bulk.size)
@@ -369,7 +369,7 @@ class FsThumbnailerTest {
     fun nothingRunsWithoutARequest() {
         val source = setup()
         val thumbs = thumbs(source)
-        Thread.sleep(50)
+        Thread.sleep(50) // real-time: a stray worker would start in this window
         assertEquals(0, source.calls.size)
         assertTrue(bulk.isEmpty())
         assertTrue(json.isEmpty())
@@ -382,7 +382,7 @@ class FsThumbnailerTest {
         file("a.jpg", ByteArray(4))
         val thumbs = thumbs(source) { false }
         thumbs.begin(ask(1, "a.jpg"))
-        Thread.sleep(200)
+        Thread.sleep(200) // real-time: a send or render would land in this window
         assertNull(end(1))
         assertEquals(0, bulk.size)
     }
@@ -400,7 +400,7 @@ class FsThumbnailerTest {
         assertTrue(enter.await(5, TimeUnit.SECONDS))
         val closing = Thread { thumbs.close() }
         closing.start()
-        Thread.sleep(100)
+        Thread.sleep(100) // real-time: a second step would land in this window
         release.countDown()
         closing.join(5_000)
         assertNull(end(1))

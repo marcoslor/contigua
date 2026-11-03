@@ -2102,7 +2102,7 @@ final class Session {
     }
     func fsCancel(id: UInt32) {
         let accepted = sendJSON(["t": "fs.cancel", "id": Int(id)])
-        Log.files.notice("session: fs.cancel sent ok=\(accepted, privacy: .public)")
+        Log.files.notice("session: fs.cancel sent ok=\(accepted, privacy: .public)")  // log-ok: a closed flag, no name
     }
     func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
                  exclusive: Bool) {
