@@ -11,15 +11,15 @@
 # no JVM ever runs on the host. The emulator, the checks and the kill are this
 # one call. Pairing is poc.py's prompt-and-Allow path, once.
 #
-# A2: the real ShellClipboard writes an image clip from a clip.image.* transfer
-# (a URI-only item); KEYCODE_PASTE in a plain EditText pastes nothing, while an
-# EditText whose OnReceiveContentListener takes image/* receives the image. The
-# debug activity sets the same URI-only item in both fields to show what each
-# gets (boots 3/4: the plain field pasted nothing, the image field got it).
+# A2: the app process writes the Mac's clipboard image (boot 5 showed the
+# shell's own URI clip refused), with the launcher on top. KEYCODE_PASTE in a
+# plain EditText pastes nothing, while an EditText whose OnReceiveContentListener
+# takes image/* reads the fixture's exact bytes; the debug activity sets no clip
+# in that step and is only a labelled control afterwards.
 #
 # SHARE-17: a drop with a target opens that installed SEND app with no chooser
 # (POCKETDECK_DROP_TARGET overrides the first installed one); the same drop
-# without a target opens the system chooser.
+# without a target opens the system chooser; a 3-file batch shares once.
 set -u
 
 MODE=run
@@ -62,7 +62,9 @@ check_mode() {
     || { section deckctl FAIL "clipimage"; return 1; }
   "$PYTHON" tools/fakephone/deckctl.py drop --help >/dev/null \
     || { section deckctl FAIL "drop"; return 1; }
-  section deckctl PASS "clipimage and drop verbs"
+  "$PYTHON" tools/fakephone/deckctl.py dropbatch --help >/dev/null \
+    || { section deckctl FAIL "dropbatch"; return 1; }
+  section deckctl PASS "clipimage, drop and dropbatch verbs"
   [ -f "$APK" ] || { section apk FAIL "no $APK (build it with k1-docker)"; return 1; }
   "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null |
     grep -q "PasteDebugActivity" \
@@ -138,33 +140,42 @@ back() { emu shell input keyevent 4 >/dev/null 2>&1 || true; sleep 0.5; }
 paste_key() { emu shell input keyevent 279 >/dev/null 2>&1 || true; sleep 1.5; }
 
 # --- A2 --------------------------------------------------------------------
-step "A2: the real ShellClipboard writes an image clip"
-if "${DC[@]}" clipimage "$PNG" --id 9001 > "$OUT/paste-drop-a2-clip.log" 2>&1; then
-  CLIP_LINE="$(tail -1 "$OUT/paste-drop-a2-clip.log")"
-  section a2-clip PASS "$CLIP_LINE"
+# The real path: the app process owns the clipboard image (boot 5, H1). The app
+# must be in the background when the Mac's clip arrives, so the launcher goes on
+# top first; the debug activity is opened only after clip.image.done ok=True and
+# sets no clip of its own in this step.
+step "A2: the app writes a Mac clipboard image from the background"
+back
+emu shell input keyevent 3 >/dev/null 2>&1 || true
+sleep 1
+A2_TOP="$(debug_top)"
+printf '  top before clipimage: %s\n' "$A2_TOP" | tee -a "$LOG"
+if printf '%s' "$A2_TOP" | grep -q 'dev.pocketdeck'; then
+  section a2-background FAIL "the app is on top before the clip: $A2_TOP"
+else
+  section a2-background PASS "the app is in the background: $A2_TOP"
+fi
+PNG_BYTES="$(wc -c < "$PNG" | tr -d ' ')"
+if "${DC[@]}" clipimage "$PNG" --id 9001 > "$OUT/paste-drop-a2-clip.log" 2>&1 \
+    && grep -q 'ok=True' "$OUT/paste-drop-a2-clip.log"; then
+  section a2-clip PASS "$(tail -1 "$OUT/paste-drop-a2-clip.log")"
 else
   tail -3 "$OUT/paste-drop-a2-clip.log" | tee -a "$LOG"
   section a2-clip FAIL "clipimage (see $OUT/paste-drop-a2-clip.log)"
 fi
-# The whole write trace, not just its last line: the failure's step is the bug.
-emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' |
-  grep -E 'clipboard:|clip image' > "$OUT/paste-drop-a2-write.log" || true
-cat "$OUT/paste-drop-a2-write.log" | sed 's/^/  /' | tee -a "$LOG"
-if grep -q 'clipboard: image clip (' "$OUT/paste-drop-a2-write.log"; then
-  section a2-write PASS "$(grep 'clipboard: image clip (' "$OUT/paste-drop-a2-write.log" | tail -1)"
+sleep 1
+A2_TRACE="$(emu logcat -d -s PocketDeckSvc:I ClipImageWriter:I 2>/dev/null | tr -d '\r' \
+  | grep -E 'clip image:|ClipImageWriter' | tail -6)"
+printf '%s\n' "$A2_TRACE" > "$OUT/paste-drop-a2-write.log"
+printf '%s\n' "$A2_TRACE" | sed 's/^/  /' | tee -a "$LOG"
+if printf '%s' "$A2_TRACE" | grep -q 'app answered ok=true'; then
+  section a2-write PASS "$(printf '%s\n' "$A2_TRACE" | grep 'app answered ok=true' | tail -1)"
 else
-  section a2-write FAIL "ShellClipboard logged no image write ($(wc -l < "$OUT/paste-drop-a2-write.log" | tr -d ' ') trace lines, see paste-drop-a2-write.log)"
+  section a2-write FAIL "no app-owned clipboard write in logcat"
 fi
-# The file and the provider it must come from, printed for the diagnosis.
-emu shell ls -l /sdcard/Download/PocketDeck 2>/dev/null | tr -d '\r' \
-  > "$OUT/paste-drop-a2-files.log" || true
-emu shell dumpsys package dev.pocketdeck 2>/dev/null | tr -d '\r' |
-  grep -A8 'dev.pocketdeck.fileprovider' > "$OUT/paste-drop-a2-provider.log" || true
-emu shell dumpsys activity providers 2>/dev/null | tr -d '\r' |
-  grep -A6 'pocketdeck' > "$OUT/paste-drop-a2-providers.log" || true
-printf '  files: %s\n' "$(tail -3 "$OUT/paste-drop-a2-files.log" | tr '\n' ' ' | cut -c1-200)" | tee -a "$LOG"
-printf '  provider: %s\n' "$(sed -n '2,4p' "$OUT/paste-drop-a2-provider.log" | tr '\n' ' ' | cut -c1-200)" | tee -a "$LOG"
 
+# The real clip, no debug clip: a plain field pastes nothing and the image
+# field reads the fixture's exact byte count.
 clear_debug_log
 start_debug --es field plain
 PLAIN_TOP="$(debug_top)"
@@ -174,9 +185,9 @@ printf '%s\n' "$PLAIN" > "$OUT/paste-drop-a2-plain.log"
 if ! printf '%s' "$PLAIN_TOP" | grep -q 'PasteDebugActivity'; then
   section a2-plain FAIL "the debug activity is not on top: $PLAIN_TOP"
 elif printf '%s\n' "$PLAIN" | grep -q 'plain text length=[1-9]'; then
-  section a2-plain FAIL "the image item pasted text: $(printf '%s\n' "$PLAIN" | grep 'plain text length=' | tail -1)"
+  section a2-plain FAIL "the app's image item pasted text: $(printf '%s\n' "$PLAIN" | grep 'plain text length=' | tail -1)"
 else
-  section a2-plain PASS "KEYCODE_PASTE with the image item pasted nothing in a plain field (text length stayed 0)"
+  section a2-plain PASS "the app's image item pasted nothing in a plain field (text length stayed 0)"
 fi
 back
 
@@ -188,17 +199,16 @@ RICH="$(debug_log | grep 'rich image bytes=' | tail -1)"
 printf '%s\n' "$RICH" > "$OUT/paste-drop-a2-rich.log"
 if ! printf '%s' "$RICH_TOP" | grep -q 'PasteDebugActivity'; then
   section a2-rich FAIL "the debug activity is not on top: $RICH_TOP"
-elif printf '%s' "$RICH" | grep -q 'rich image bytes=[1-9]'; then
+elif printf '%s\n' "$RICH" | grep -q "rich image bytes=$PNG_BYTES"; then
   section a2-rich PASS "$RICH"
 else
-  section a2-rich FAIL "the image field received nothing: ${RICH:-no listener line}"
+  section a2-rich FAIL "the image field got '${RICH:-nothing}', wanted $PNG_BYTES bytes"
 fi
 back
 
-# The URI-only item, first in the plain field and then in the image field: the
-# brief asks what each gets. Measured on API 36 (boots 3/4): a content:// URI
-# that cannot serve text coerces to null, so the plain field pastes nothing;
-# the image field still takes the URI.
+# Control: the debug activity sets the same URI-only item itself. A plain field
+# must still paste nothing; the image field reads the debug fixture, not the
+# real one. Labelled so it cannot be mistaken for the real path.
 clear_debug_log
 start_debug --es item uri --es field plain
 URI_TOP="$(debug_top)"
@@ -207,24 +217,24 @@ URI_LOG="$(debug_log)"
 printf '%s\n' "$URI_LOG" > "$OUT/paste-drop-a2-uri.log"
 URI_LINE="$(printf '%s\n' "$URI_LOG" | grep 'plain text length=' | tail -1)"
 if ! printf '%s' "$URI_TOP" | grep -q 'PasteDebugActivity'; then
-  section a2-uri FAIL "the debug activity is not on top: $URI_TOP"
+  section a2-uri-control-plain FAIL "the debug activity is not on top: $URI_TOP"
 else
-  section a2-uri PASS "the URI-only item in a plain field: ${URI_LINE:-no text line (pasted nothing)}"
+  section a2-uri-control-plain PASS "debug-set URI-only item in a plain field: ${URI_LINE:-no text line (pasted nothing)}"
 fi
 back
 
 clear_debug_log
-start_debug --es field rich
+start_debug --es item uri --es field rich
 URI_RICH_TOP="$(debug_top)"
 paste_key
 URI_RICH="$(debug_log | grep 'rich image bytes=' | tail -1)"
 printf '%s\n' "$URI_RICH" > "$OUT/paste-drop-a2-uri-rich.log"
 if ! printf '%s' "$URI_RICH_TOP" | grep -q 'PasteDebugActivity'; then
-  section a2-uri-rich FAIL "the debug activity is not on top: $URI_RICH_TOP"
-elif printf '%s' "$URI_RICH" | grep -q 'rich image bytes=[1-9]'; then
-  section a2-uri-rich PASS "$URI_RICH"
+  section a2-uri-control-rich FAIL "the debug activity is not on top: $URI_RICH_TOP"
+elif printf '%s\n' "$URI_RICH" | grep -q 'rich image bytes=[1-9]'; then
+  section a2-uri-control-rich PASS "$URI_RICH"
 else
-  section a2-uri-rich FAIL "the image field got nothing from the URI-only item: ${URI_RICH:-no listener line}"
+  section a2-uri-control-rich FAIL "the debug-set image got nothing: ${URI_RICH:-no listener line}"
 fi
 back
 
@@ -236,8 +246,15 @@ back
 emu shell cmd package query-activities -a android.intent.action.SEND \
   -c android.intent.category.DEFAULT -t image/png 2>/dev/null | tr -d '\r' \
   > "$OUT/paste-drop-send-apps.log" || true
-INSTALLED="$(sed -n 's/.*packageName=\(.*\)/\1/p' "$OUT/paste-drop-send-apps.log" \
-  | grep -Ev '^(dev\.pocketdeck|android|com\.android\.systemui)$' | head -1)"
+SEND_PKGS="$(sed -n 's/.*packageName=\(.*\)/\1/p' "$OUT/paste-drop-send-apps.log" \
+  | grep -Ev '^(dev\.pocketdeck|android|com\.android\.systemui)$' | awk '!seen[$0]++')"
+INSTALLED="$(printf '%s\n' "$SEND_PKGS" | head -1)"
+# The built-in print service hands its SEND to the print spooler, so its top is
+# not its own package; prefer Messages when it is installed: its share activity
+# stays in its package.
+if printf '%s\n' "$SEND_PKGS" | grep -qx 'com.google.android.apps.messaging'; then
+  INSTALLED=com.google.android.apps.messaging
+fi
 TARGET="${POCKETDECK_DROP_TARGET:-${INSTALLED:-org.fossify.messages}}"
 step "SHARE-17: a drop targeted at $TARGET (SEND apps: $(tr '\n' ' ' < "$OUT/paste-drop-send-apps.log" | cut -c1-160))"
 emu logcat -c >/dev/null 2>&1 || true
@@ -278,15 +295,37 @@ fi
 sleep 2
 CHOOSER="$(emu shell dumpsys activity activities 2>/dev/null | tr -d '\r' |
            grep -E 'mResumedActivity|topResumedActivity' | head -1)"
-if printf '%s' "$CHOOSER" | grep -q 'intentresolver'; then
+if printf '%s' "$CHOOSER" | grep -Eq 'intentresolver|ChooserActivity'; then
   section notarget-chooser PASS "top activity: $CHOOSER"
 else
   section notarget-chooser FAIL "no chooser for an untargeted drop: $CHOOSER"
 fi
 
+step "SHARE-17: a 3-file batch shares once"
+back
+emu logcat -c >/dev/null 2>&1 || true
+if "${DC[@]}" dropbatch "$PNG" --target "$TARGET" --count 3 --id 9100 \
+    > "$OUT/paste-drop-batch.log" 2>&1; then
+  section batch-drop PASS "$(tail -1 "$OUT/paste-drop-batch.log")"
+else
+  tail -3 "$OUT/paste-drop-batch.log" | tee -a "$LOG"
+  section batch-drop FAIL "dropbatch (see $OUT/paste-drop-batch.log)"
+fi
+sleep 2
+BATCH_SHARE="$(emu logcat -d -s PocketDeckDrop:I PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
+  | grep -E 'share offered for 3 file|share: chooser for 3 file|share refused' | tail -3 | tr '\n' ' | ')"
+printf '%s\n' "$BATCH_SHARE" > "$OUT/paste-drop-batch-share.log"
+if printf '%s' "$BATCH_SHARE" | grep -Eq 'share offered for 3 file|share: chooser for 3 file'; then
+  section batch-share PASS "$BATCH_SHARE"
+else
+  section batch-share FAIL "no 3-file share: '${BATCH_SHARE:-none}'"
+fi
+printf '  batch top: %s\n' "$(emu shell dumpsys activity activities 2>/dev/null | tr -d '\r' | grep -E 'mResumedActivity|topResumedActivity' | head -1)" | tee -a "$LOG"
+back
+
 # The logcat is always kept: a diagnosis run needs the trace even when every
 # section passed, and a proof run needs it when one did not.
-emu logcat -d -s PocketDeckSvc:I PocketDeckDrop:I PasteDebug:I ShellClipboard:I 2>/dev/null \
+emu logcat -d -s PocketDeckSvc:I PocketDeckDrop:I PasteDebug:I ClipImageWriter:I 2>/dev/null \
   | tr -d '\r' > "$OUT/paste-drop-logcat.txt" || true
 printf 'SECTION logcat INFO %s lines in %s\n' \
   "$(wc -l < "$OUT/paste-drop-logcat.txt" | tr -d ' ')" "paste-drop-logcat.txt" | tee -a "$LOG"
