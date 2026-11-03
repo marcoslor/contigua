@@ -37,8 +37,45 @@ let package = Package(
             // define for an e2e bundle (sec L-6).
             swiftSettings: [.define("PD_TEST_HOOKS", .when(configuration: .debug))]
         ),
+        // lwIP 2.2.1 from upstream (macos/vendor/lwip/VENDORED.md), with the
+        // netif/BPF glue §2.4 asks for. Linked only into the helper; a plain
+        // build still type-checks it.
+        .target(
+            name: "PDLWIP",
+            path: "vendor/lwip",
+            sources: [
+                "port/pdlbpf.c",
+                "port/pdlwip.c",
+                "src/core/def.c",
+                "src/core/inet_chksum.c",
+                "src/core/init.c",
+                "src/core/ip.c",
+                "src/core/mem.c",
+                "src/core/memp.c",
+                "src/core/netif.c",
+                "src/core/pbuf.c",
+                "src/core/sys.c",
+                "src/core/tcp.c",
+                "src/core/tcp_in.c",
+                "src/core/tcp_out.c",
+                "src/core/timeouts.c",
+                "src/core/ipv6/ethip6.c",
+                "src/core/ipv6/icmp6.c",
+                "src/core/ipv6/inet6.c",
+                "src/core/ipv6/ip6.c",
+                "src/core/ipv6/ip6_addr.c",
+                "src/core/ipv6/ip6_frag.c",
+                "src/core/ipv6/nd6.c",
+                "src/netif/ethernet.c",
+            ],
+            cSettings: [
+                .headerSearchPath("port"),
+                .headerSearchPath("src/include"),
+            ]
+        ),
         .executableTarget(
             name: "pocketdeck-directd",
+            dependencies: ["PDLWIP"],
             path: "Sources/PocketDeckDirectd"
         ),
         .testTarget(name: "PocketDeckTests",
