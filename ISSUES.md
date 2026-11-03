@@ -21,7 +21,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **V3.** Drop images from anywhere (image data, web image URLs, file promises); a drop on an app's window goes straight to that app.
 
   First, a real-phone spike: which apps accept a pasted image from a shell clip (messaging and mail apps), and whether a share aimed at one app works per app.
-- **ISS-2 Finder thumbnails for phone photos and videos.** Finder shows generic icons for phone media. Specced: FILES-22…29 and design/files.md "Thumbnails (S6)" (`fs.thumb` on the session, one at a time on the phone, at most 3 in flight, the bulk lane). Next: round 2 builds it (K1 `FsThumbnailerTest`; K2 `FilesThumbTests`, `ThumbQueueTests`; host e2e `files-bridge` phase `thumb`; VM `files-thumbs`; emulator `thumbs`). The real-phone cost measurement is the reviewer's.
+- **ISS-2 Finder thumbnails for phone photos and videos.** **Merged to main 2026-11-03** (FILES-22…29, `fs.thumb`; 1bd0ce9c). Proven on the emulator (HEIC/JPEG/MP4 in 0.5–0.7 s, 512 px, no held wake locks) and in the VM (Finder draws the phone's picture; a PDF keeps its icon). Finder never asks again after a lost thumbnail until the file changes (FILES-26), so the queue never expires an ask (FILES-29). Waiting on the real-phone check: a camera folder in Finder's icon view fills with pictures, and the cost on the phone (time per thumbnail, battery).
 
 ## 2. Bugs you can see
 
