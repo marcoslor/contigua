@@ -56,6 +56,7 @@ final class DirectDaemon {
     private let stack: OpaquePointer
     private let ownMAC: [UInt8]
     private let consoleUID: UInt32
+    private let consoleGID: UInt32
     private var clients: [Int32: Client] = [:]
     private var links: [String: Link] = [:]
     private var peerSpec: DirectPeerSpec?
@@ -84,10 +85,11 @@ final class DirectDaemon {
         self.config = config
         signal(SIGPIPE, SIG_IGN)
 
-        guard let uid = DirectDaemon.consoleUser() else {
+        guard let console = DirectDaemon.consoleUser() else {
             throw DaemonError.noConsoleUser
         }
-        consoleUID = uid
+        consoleUID = console.uid
+        consoleGID = console.gid
 
         var mac = [UInt8](repeating: 0, count: 6)
         guard pdl_if_mac(config.interface, &mac) == 0 else {
@@ -114,7 +116,7 @@ final class DirectDaemon {
             + (config.sharedAddress ? " (shared with the kernel)" : ""))
 
         kqueue = try Kqueue()
-        listenFD = try DirectDaemon.listen(at: config.socketPath)
+        listenFD = try DirectDaemon.listen(at: config.socketPath, group: consoleGID)
     }
 
     deinit {
@@ -140,16 +142,21 @@ final class DirectDaemon {
                 mac[0] ^ 0x02, mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5] ^ 0xa5]
     }
 
-    private static func consoleUser() -> UInt32? {
+    private static func consoleUser() -> (uid: UInt32, gid: UInt32)? {
         var uid: uid_t = 0
-        guard let name = SCDynamicStoreCopyConsoleUser(nil, &uid, nil) else {
+        var gid: gid_t = 0
+        guard let name = SCDynamicStoreCopyConsoleUser(nil, &uid, &gid) else {
             return nil
         }
         _ = name
-        return uid
+        return (UInt32(uid), UInt32(gid))
     }
 
-    private static func listen(at path: String) throws -> Int32 {
+    /// The socket is `0660 root:<console user's group>` (§2.1). The daemon
+    /// runs as root, so a socket created in a directory without the setgid bit
+    /// would otherwise land in root:wheel, and the console user (staff) could
+    /// not connect — boot 4 answered every connect() with EACCES.
+    private static func listen(at path: String, group: UInt32) throws -> Int32 {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -174,6 +181,7 @@ final class DirectDaemon {
             close(fd)
             throw DaemonError.socket(errno)
         }
+        _ = chown(path, 0, group)
         _ = chmod(path, 0o660)
         guard Darwin.listen(fd, 8) == 0 else {
             close(fd)
