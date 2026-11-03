@@ -60,8 +60,8 @@ enum PastePillState: Equatable {
     var text: String {
         switch self {
         case .pasting: return "Pasting…"
-        case .pasted: return "Image pasted. Nothing there? Share instead"
-        case .failed: return "Nothing pasted. Share instead"
+        case .pasted: return "Image pasted. Nothing there?"
+        case .failed: return "Nothing pasted."
         }
     }
 
