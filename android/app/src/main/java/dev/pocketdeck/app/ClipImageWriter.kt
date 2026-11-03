@@ -1,6 +1,14 @@
 package dev.pocketdeck.app
 
+import android.content.ClipboardManager
 import android.content.Context
+import android.util.Log
+import androidx.core.content.FileProvider
+import dev.pocketdeck.server.ClipImagePolicy
+import dev.pocketdeck.server.FILE_PROVIDER_AUTHORITY
+import dev.pocketdeck.server.imageClip
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 
 /**
@@ -11,5 +19,38 @@ import java.io.InputStream
  */
 object ClipImageWriter {
 
-    fun write(context: Context, mime: String, input: InputStream): Boolean = false
+    fun write(context: Context, mime: String, input: InputStream): Boolean {
+        if (!ClipImagePolicy.valid(mime)) return false
+        val bytes = readAtMost(input, ClipImagePolicy.MAX_BYTES) ?: return false
+        val dir = File(context.cacheDir, "clip").apply { mkdirs() }
+        val ext = if (mime.equals("image/jpeg", true)) "jpg" else "png"
+        val file = runCatching { File.createTempFile("clip-", ".$ext", dir) }.getOrNull() ?: return false
+        return try {
+            file.writeBytes(bytes)
+            val uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
+            context.getSystemService(ClipboardManager::class.java).setPrimaryClip(imageClip(uri, mime))
+            dir.listFiles().orEmpty()
+                .filter { it.isFile && it != file }
+                .forEach { runCatching { it.delete() } }
+            true
+        } catch (e: Throwable) {
+            Log.i("ClipImageWriter", "write failed: ${dev.pocketdeck.server.failureClasses(e)}")  // log-ok: class names only
+            runCatching { file.delete() }
+            false
+        }
+    }
+
+    /** The bytes, or null when the stream is over [cap]; never keeps an over-cap image. */
+    private fun readAtMost(input: InputStream, cap: Int): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        var total = 0
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) return out.toByteArray()
+            total += n
+            if (total > cap) return null
+            out.write(buffer, 0, n)
+        }
+    }
 }

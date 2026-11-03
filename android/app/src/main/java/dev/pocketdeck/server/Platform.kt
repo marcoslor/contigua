@@ -514,12 +514,15 @@ interface ClipboardImagePort {
      * app's content URI; a null is simply "nothing synced", never an error.
      */
     fun readImage(): ClipImage?
+}
 
-    /**
-     * Puts the already-written image [file] on the clipboard; the platform decides
-     * how another app can reach it (a FileProvider URI is the intent).
-     */
-    fun writeImage(file: File, mime: String, label: String): Boolean
+/**
+ * The app-owned clipboard write (SHARE-2/16): the shell has the bytes, the app
+ * has the provider and the clipboard. [done] receives the app's answer once,
+ * or false when there is no app or it does not answer in time.
+ */
+fun interface ClipImageHost {
+    fun offer(id: Int, mime: String, bytes: ByteArray, done: (Boolean) -> Unit)
 }
 
 /** Events pushed to the app process (pairing prompt, session state). */

@@ -29,7 +29,8 @@ class DeckService(private val appContext: Context?) :
     IDeckService.Stub(),
     PairingStore,
     DeviceSource,
-    DeckCallback {
+    DeckCallback,
+    ClipImageHost {
 
     /** Shizuku may construct the service either with a Context or with nothing. */
     constructor() : this(null)
@@ -38,6 +39,21 @@ class DeckService(private val appContext: Context?) :
 
     /** The staged names a pending SEND may still open (SHARE-17). */
     private val staging = ShareStaging(log = ::log)
+
+    /** Mac -> phone clipboard images: the app owns the provider and the clip. */
+    private val clipBridge = ClipImageBridge(
+        callback = {
+            callback?.let { cb ->
+                ClipImageBridge.ClipImageCallback { id, mime, data -> cb.onClipImage(id, mime, data) }
+            }
+        },
+        scratch = {
+            appContext?.let {
+                File(DropPolicy.STORAGE_ROOT, "Android/media/${it.applicationInfo.packageName}/clip")
+            }
+        },
+        log = ::log,
+    )
     @Volatile private var deviceId: String = ""
     @Volatile private var deviceName: String = "Android"
 
@@ -109,6 +125,7 @@ class DeckService(private val appContext: Context?) :
         runCatching { power?.shutdown() }
         runCatching { stopServer() }
         staging.close()
+        clipBridge.close()
         System.exit(0)
     }
 
@@ -167,6 +184,7 @@ class DeckService(private val appContext: Context?) :
                 taskPresence = titles,
                 clipboard = clip,
                 clipImages = clip,
+                clipImageHost = this,
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
                 dropLanding = ShellLanding(appContext, staging, ::log),
@@ -249,6 +267,13 @@ class DeckService(private val appContext: Context?) :
      */
     override fun openStaged(name: String?): ParcelFileDescriptor? =
         name?.let { staging.open(it) }
+
+    override fun offer(id: Int, mime: String, bytes: ByteArray, done: (Boolean) -> Unit) =
+        clipBridge.offer(id.toString(), mime, bytes, done)
+
+    override fun clipImageDone(id: String?, ok: Boolean) {
+        id?.let { clipBridge.answer(it, ok) }
+    }
 
     override fun setCallback(cb: IDeckCallback?) {
         val previous = appBinder

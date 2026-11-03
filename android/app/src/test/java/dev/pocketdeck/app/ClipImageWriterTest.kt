@@ -35,6 +35,16 @@ class ClipImageWriterTest {
     fun clear() {
         dir.deleteRecursively()
         clipboard.clearPrimaryClip()
+        // FileProvider caches one path strategy per authority for the process.
+        // Each Robolectric test has its own cacheDir, so the previous test's
+        // root would refuse this one; the app's cacheDir never moves.
+        runCatching {
+            val cache = Class.forName("androidx.core.content.FileProvider")
+                .getDeclaredField("sCache")
+                .apply { isAccessible = true }
+                .get(null) as MutableMap<*, *>
+            cache.clear()
+        }
     }
 
     private fun write(mime: String = "image/png", bytes: ByteArray = byteArrayOf(1, 2, 3)): Boolean =
