@@ -1034,7 +1034,9 @@ measured from the `fs.thumb` send — a queued ask waits its turn; cancel either
 leaves the queue or sends one `fs.cancel`); the extension runs one 3-ask pool
 across all its Finder batches (`FilesThumbScheduler`): the newest batch's
 unstarted ids first, index order within a batch, a cancelled batch answering its
-unstarted ids and completing once. So what the person is looking at is asked
+unstarted ids and completing at once with `NSUserCancelledError` (the header's
+rule; an ask still in flight stops at its next frame, and its late answer only
+frees its slot). So what the person is looking at is asked
 next, the app's queue never holds more than 3 asks per extension, and several
 open batches cannot put 3 x N asks on the bridge. MEASURED (K2
 `ThumbSchedulerLoadTests.testTheScrollLoad`, 2026-11-03): 3,000 ids in 60

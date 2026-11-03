@@ -1,7 +1,9 @@
 // The extension's thumbnails, and only its thumbnails: every Finder batch is
-// handed here, the asks run through one pool, and every id gets exactly one
-// answer and every batch exactly one completion, even when the batch is
-// cancelled (docs/specs/files.md FILES-22, FILES-25, FILES-26, FILES-29).
+// handed here, the asks run through one pool, every id gets at most one
+// answer, and every batch exactly one completion, after its answers. A
+// cancelled batch completes at once with NSUserCancelledError, which covers
+// the ids still in flight (the header's rule; docs/specs/files.md FILES-22,
+// FILES-25, FILES-26, FILES-29).
 //
 // The type knows nothing about sockets or File Provider errors: `start` is the
 // ask (the extension wraps its bridge connection in it) and `per`/`done` are
@@ -41,6 +43,11 @@ final class FilesThumbScheduler {
         var answered = 0
         var cancelled = false
         var completed = false
+        /// Serialises Finder's handlers for this batch: no `per` may follow
+        /// `done` (the header: `completionHandler` only after every per
+        /// thumbnail block), even when a cancel races a late answer.
+        let deliveryLock = NSLock()
+        var doneSent = false
 
         init(id: Int, items: [String], start: @escaping Start,
              per: @escaping PerThumbnail, done: @escaping Done) {
@@ -99,9 +106,14 @@ final class FilesThumbScheduler {
         return id
     }
 
-    /// Finder's progress was cancelled. Every id that has not started gets its
-    /// one answer now; ids in flight finish the way they always do, and the
-    /// batch completes once, after the last one (FILES-25).
+    /// Finder's progress was cancelled. The header's rule for
+    /// `fetchThumbnails` ("Cancellations"): call the completion handler with
+    /// `NSUserCancelledError` in the cancellation handler, quickly, and
+    /// `completionHandler` only after the per-thumbnail blocks it will get.
+    /// So every unstarted id is answered with the cancellation error, then the
+    /// batch completes with it at once. An ask still in flight stops at its
+    /// next frame (one `fs.cancel`); its late answer frees its slot and is
+    /// dropped, because the batch is already complete (FILES-25).
     func cancel(_ id: Int) {
         lock.lock()
         guard let batch = batches.first(where: { $0.id == id }),
@@ -110,22 +122,17 @@ final class FilesThumbScheduler {
             return
         }
         batch.cancelled = true
+        batch.completed = true
         let unstarted = Array(batch.items[batch.next...])
         batch.next = batch.items.count
         batch.answered += unstarted.count
-        let complete = batch.answered == batch.items.count
-        if complete {
-            batch.completed = true
-            batches.removeAll { $0 === batch }
-        }
-        let per = batch.per
-        let done = batch.done
+        batches.removeAll { $0 === batch }
         lock.unlock()
         let error = Self.cancelledError
         for item in unstarted {
-            per(item, nil, error)
+            deliver(batch, item: item, data: nil, error: error)
         }
-        if complete { done(nil) }
+        complete(batch, error: error)
     }
 
     /// The NFR's observation point: asks in flight plus every unstarted id of a
@@ -197,23 +204,41 @@ final class FilesThumbScheduler {
 
     private func finish(_ batch: Batch, item: String, data: Data?, error: Error?) {
         lock.lock()
-        guard !batch.completed else {
-            lock.unlock()
-            return
-        }
+        // The slot is the pool's whatever became of the batch: a cancelled
+        // batch's late answer must still free it.
         batch.running -= 1
         running -= 1
+        guard !batch.completed else {
+            lock.unlock()
+            pump()
+            return
+        }
         batch.answered += 1
         let complete = batch.answered == batch.items.count
         if complete {
             batch.completed = true
             batches.removeAll { $0 === batch }
         }
-        let per = batch.per
-        let done = batch.done
         lock.unlock()
-        per(item, data, error)
-        if complete { done(nil) }
+        deliver(batch, item: item, data: data, error: error)
+        if complete { self.complete(batch, error: nil) }
         pump()
+    }
+
+    /// One per-thumbnail answer, unless the batch has already completed.
+    private func deliver(_ batch: Batch, item: String, data: Data?, error: Error?) {
+        batch.deliveryLock.lock()
+        defer { batch.deliveryLock.unlock() }
+        guard !batch.doneSent else { return }
+        batch.per(item, data, error)
+    }
+
+    /// The batch's one completion.
+    private func complete(_ batch: Batch, error: Error?) {
+        batch.deliveryLock.lock()
+        defer { batch.deliveryLock.unlock() }
+        guard !batch.doneSent else { return }
+        batch.doneSent = true
+        batch.done(error)
     }
 }

@@ -1150,6 +1150,12 @@ final class ReadState {
 
 // MARK: - Thumbnails
 
+/// A batch's answered count, for Finder's progress; per-thumbnail answers may
+/// come from several threads at once.
+private final class ThumbAnswerCount: NSLock, @unchecked Sendable {
+    var count = 0
+}
+
 /// Who gets a picture at all: `FilesThumbPolicy` decides the type and the R-1
 /// answer in FilesCore's companion file, so K2 pins both.
 extension FilesExtension {
@@ -1166,6 +1172,7 @@ extension FilesExtension {
             return progress
         }
         let started = Date()
+        let answered = ThumbAnswerCount()
         // One pool for every batch: the scheduler decides what runs when, so
         // several Finder batches cannot put 3 x N asks on the bridge, and a
         // cancelled batch answers all of its ids and completes once.
@@ -1183,6 +1190,11 @@ extension FilesExtension {
             },
             per: { item, data, error in
                 perThumbnailCompletionHandler(NSFileProviderItemIdentifier(item), data, error)
+                answered.lock()
+                answered.count += 1
+                let count = answered.count
+                answered.unlock()
+                progress.completedUnitCount = Int64(count)
             },
             done: { error in
                 let ms = Int(Date().timeIntervalSince(started) * 1000)
@@ -1193,6 +1205,8 @@ extension FilesExtension {
             log.notice("thumb batch cancel id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public)")
             self?.thumbs.cancel(batchID)
         }
+        // A cancel that landed before the handler was set: cancel is idempotent.
+        if progress.isCancelled { thumbs.cancel(batchID) }
         log.notice("thumb batch open id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public) size=\(size, privacy: .public)")
         return progress
     }
