@@ -820,7 +820,7 @@ final class FilesBridgeTests: XCTestCase {
             client.send(.thumb(id: UInt32(id), item: "ino:\(id)", size: 512))
         }
         XCTAssertTrue(pump { host.pendingThumbs.count == 3 })
-        Thread.sleep(forTimeInterval: 0.2)
+        Thread.sleep(forTimeInterval: 0.2) // real-time: a fourth thumb would land in this window
         XCTAssertEqual(3, host.pendingThumbs.count, "a fourth thumb reached the phone")
         host.finishThumb(0, .success(thumb))
         XCTAssertTrue(pump { host.pendingThumbs.count == 4 })
@@ -839,7 +839,7 @@ final class FilesBridgeTests: XCTestCase {
         client.send(.cancel(id: 4))
         XCTAssertTrue(pump { client.replies().count >= 1 })
         XCTAssertEqual([.error(id: 4, code: "cancelled")], client.replies())
-        Thread.sleep(forTimeInterval: 0.2)
+        Thread.sleep(forTimeInterval: 0.2) // real-time: a fourth thumb would land in this window
         XCTAssertEqual(3, host.pendingThumbs.count)
         XCTAssertEqual([100, 101, 102], host.pendingThumbs.map { Int($0.id) })
     }

@@ -167,7 +167,7 @@ final class FsClient {
         let path: String
         var received: [UInt8] = []
         var hasher = SHA256()
-        var cancelTimer: DispatchWorkItem?
+        var cancelTimer: DispatchWorkItem?  // gcd: one deadline timer per thumb
         var completion: ((Result<FilesThumb, FsError>) -> Void)?
 
         init(path: String, completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
@@ -182,7 +182,7 @@ final class FsClient {
         let sink: ReadSink
         var received = 0
         var hasher = SHA256()
-        var cancelTimer: DispatchWorkItem?
+        var cancelTimer: DispatchWorkItem?  // gcd: one deadline timer per thumb
         var completion: ((Result<FsReadResult, FsError>) -> Void)?
 
         init(path: String, expected: Int, sink: ReadSink,

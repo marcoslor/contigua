@@ -67,7 +67,7 @@ final class FilesThumbQueue {
         var started = false
         var settled = false
         var answered = false
-        var timer: DispatchWorkItem?
+        var timer: DispatchWorkItem?  // gcd: one deadline timer per request
 
         init(id: UInt32, client: ObjectIdentifier, item: String, size: Int,
              host: any FilesThumbHost, answer: @escaping (ThumbAnswer) -> Void) {
@@ -103,11 +103,11 @@ final class FilesThumbQueue {
         order.append(key)
         // From the ask, queue time included: a person sees the type icon
         // meanwhile, so a request that misses its turn is answered, not kept.
-        let timer = DispatchWorkItem { [weak self] in
+        let timer = DispatchWorkItem { [weak self] in  // gcd: a deadline timer
             MainActor.assumeIsolated { self?.advance(key, .deadline) }
         }
         job.timer = timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(deadline, 0.001), execute: timer)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(deadline, 0.001), execute: timer)  // gcd: a deadline hops back to the main actor
         startNext()
     }
 
@@ -138,7 +138,7 @@ final class FilesThumbQueue {
         let (next, actions) = Self.transition(job.phase, event)
         guard next != job.phase else { return }
         job.phase = next
-        Log.files.notice("thumb: \(Self.token(job.phase), privacy: .public) --\(Self.token(event), privacy: .public)--> \(Self.token(next), privacy: .public)")
+        Log.files.notice("thumb: \(Self.token(job.phase), privacy: .public) --\(Self.token(event), privacy: .public)--> \(Self.token(next), privacy: .public)")  // log-ok: closed state and event tokens, never a value from the wire
         for action in actions { perform(action, job) }
         if next == .done || next == .cancelled || next == .expired {
             settle(job)
