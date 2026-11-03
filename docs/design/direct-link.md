@@ -802,6 +802,19 @@ app's (P4). Run the steps in this order and keep the log beside the result.
    `{"codes":[],"detail":"Direct link is ready.","ok":true,"ready":true}`.
    Any other code is the first row of §2.6 to fix; the installer prints that
    step. `launchctl` must say `state = running`.
+
+   **Before P4's installer exists** there's no LaunchDaemon. Install the signed
+   binary by hand, probe it, then run it in the foreground in its own terminal
+   (skip the `launchctl` line):
+   ```sh
+   sudo install -d -o root -g wheel -m 0755 "/Library/Application Support/PocketDeck"
+   sudo install -o root -g wheel -m 0755 macos/build/direct/pocketdeck-directd \
+     "/Library/Application Support/PocketDeck/pocketdeck-directd"
+   sudo "/Library/Application Support/PocketDeck/pocketdeck-directd" --probe
+   sudo "/Library/Application Support/PocketDeck/pocketdeck-directd"
+   ```
+   Stop it with ⌃C when the proof is done; remove the binary afterwards if the
+   machine should be left as it was.
 2. Watch the helper in a second terminal:
    ```sh
    sudo tail -f /var/log/pocketdeck-directd.log
