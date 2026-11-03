@@ -2,7 +2,6 @@ package dev.pocketdeck.drop
 
 import android.content.Context
 import android.content.ContextWrapper
-import android.os.Environment
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -12,17 +11,19 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /**
- * The staging folder must be computed from the app's package, not asked of the
- * Context: `getExternalMediaDirs()` in the uid-2000 shell process threw
- * SecurityException on the emulator (boot 3), which killed the whole SEND step
- * before it could log. The path itself is the app's external media folder, the
- * one folder Android lets both identities read.
+ * The staging folder must be computed from the app's package and the real
+ * storage root, not asked of the Context or of Environment: in the uid-2000
+ * shell process `getExternalMediaDirs()` and
+ * `Environment.getExternalStorageDirectory()` both reach system services that
+ * refuse the app package under that uid (emulator boot 3; files.md §4), which
+ * killed the whole SEND step before it could log. `/storage/emulated/0` is the
+ * real path of `/sdcard`, the same root DeckService gives the file browser.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ShareRequestStageTest {
 
-    private class RefusingMediaDirs(base: Context) : ContextWrapper(base) {
+    private class RefusingContext(base: Context) : ContextWrapper(base) {
         override fun getExternalMediaDirs(): Array<File> =
             throw SecurityException("package does not match caller's uid")
     }
@@ -30,8 +31,8 @@ class ShareRequestStageTest {
     @Test
     fun theStageDirIsTheAppsExternalMediaFolderWithoutAskingForMediaDirs() {
         val app = ApplicationProvider.getApplicationContext<Context>()
-        val expected = File(Environment.getExternalStorageDirectory(),
+        val expected = File("/storage/emulated/0",
                             "Android/media/${app.packageName}/shared")
-        assertEquals(expected, ShareRequest.stageDir(RefusingMediaDirs(app)))
+        assertEquals(expected, ShareRequest.stageDir(RefusingContext(app)))
     }
 }
