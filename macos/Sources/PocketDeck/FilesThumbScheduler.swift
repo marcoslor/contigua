@@ -71,6 +71,7 @@ final class FilesThumbScheduler {
     private var nextID = 1
     private var running = 0
     private var pumping = false
+    private var needsPump = false
 
     init(limit: Int = FilesThumbPolicy.inFlightLimit) {
         self.limit = limit
@@ -145,32 +146,45 @@ final class FilesThumbScheduler {
     private func pump() {
         lock.lock()
         if pumping {
+            // A completion can free a slot while another thread is between two
+            // picks; remember to look again instead of losing that turn.
+            needsPump = true
             lock.unlock()
             return
         }
         pumping = true
         lock.unlock()
         while true {
-            lock.lock()
-            var chosen: (Batch, String)?
-            if running < limit {
-                for batch in batches where !batch.cancelled && !batch.completed {
-                    guard batch.next < batch.items.count else { continue }
-                    let item = batch.items[batch.next]
-                    batch.next += 1
-                    batch.running += 1
-                    running += 1
-                    chosen = (batch, item)
-                    break
-                }
+            while let (batch, item) = takeNext() {
+                startOne(batch, item: item)
             }
+            lock.lock()
+            if needsPump {
+                needsPump = false
+                lock.unlock()
+                continue
+            }
+            pumping = false
             lock.unlock()
-            guard let (batch, item) = chosen else { break }
-            startOne(batch, item: item)
+            return
         }
+    }
+
+    /// The next ask: newest live batch first, index order within it. Nil while
+    /// the pool is full or nothing is left.
+    private func takeNext() -> (Batch, String)? {
         lock.lock()
-        pumping = false
-        lock.unlock()
+        defer { lock.unlock() }
+        guard running < limit else { return nil }
+        for batch in batches.reversed() where !batch.cancelled && !batch.completed {
+            guard batch.next < batch.items.count else { continue }
+            let item = batch.items[batch.next]
+            batch.next += 1
+            batch.running += 1
+            running += 1
+            return (batch, item)
+        }
+        return nil
     }
 
     private func startOne(_ batch: Batch, item: String) {
