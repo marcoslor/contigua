@@ -1,10 +1,10 @@
 # Phone files
 
-Prefix: `FILES`. Owner docs: [design/files.md](../design/files.md) §1, §4–§5 and "Fixes 10-20", [design/dragdrop.md](../design/dragdrop.md), [design/apk.md](../design/apk.md), [UX.md](../UX.md) §4 (the Settings row), [PROTOCOL.md](../PROTOCOL.md) § "Drop Mac → phone", "Phone files" and "APK install", [NFR.md](../NFR.md). Last reviewed: 2026-10-27, against main `6073e3c`.
+Prefix: `FILES`. Owner docs: [design/files.md](../design/files.md) §1, §4–§5, "Thumbnails (S6)" and "Fixes 10-20", [design/dragdrop.md](../design/dragdrop.md), [design/apk.md](../design/apk.md), [UX.md](../UX.md) §4 (the Settings row), [PROTOCOL.md](../PROTOCOL.md) § "Drop Mac → phone", "Phone files" and "APK install", [NFR.md](../NFR.md). Last reviewed: 2026-11-03, against main `53172542`.
 
 ## Purpose
 
-The phone's shared storage in Finder, and the two ways a Mac file reaches the phone. One opt-in switch puts a location — "PocketDeck (<phone name>)" — in Finder, served by a File Provider extension that asks the running app (the only owner of the session) over a private socket in the app's group; browsing, opening, copying in and out, renaming and deleting all act on the phone's own `/sdcard`. Separately, a file dropped on a window or the Deck is transferred into `Download/PocketDeck/`, and an Android package (`.apk`, `.apks`, `.xapk`) opens the installer instead. Both are person-started, one at a time, verified by SHA-256, and neither leaves anything on the phone when it fails.
+The phone's shared storage in Finder, and the two ways a Mac file reaches the phone. One opt-in switch puts a location — "PocketDeck (<phone name>)" — in Finder, served by a File Provider extension that asks the running app (the only owner of the session) over a private socket in the app's group; browsing, opening, copying in and out, renaming and deleting all act on the phone's own `/sdcard`, and a photo or a video shows the phone's own picture in Finder's icon view without being downloaded. Separately, a file dropped on a window or the Deck is transferred into `Download/PocketDeck/`, and an Android package (`.apk`, `.apks`, `.xapk`) opens the installer instead. Both are person-started, one at a time, verified by SHA-256, and neither leaves anything on the phone when it fails.
 
 ## User stories
 
@@ -19,6 +19,7 @@ The phone's shared storage in Finder, and the two ways a Mac file reaches the ph
 | FILES-S7 | P1 | As a person, I want to install an app by dropping its package, so that I do not need a store or a cable. |
 | FILES-S8 | P1 | As a person, I want a refusal to say what went wrong, so that a failed drop or install is not a silent no. |
 | FILES-S9 | P2 | As a person, I want a 200 MiB drop and a 1 GiB install to be refused before they waste the link, so that the answer is quick. |
+| FILES-S10 | P2 | As a person, I want phone photos and videos to show their picture in Finder's icon view, so that I can recognise one without opening it. |
 
 ## Requirements
 
@@ -45,12 +46,36 @@ The phone's shared storage in Finder, and the two ways a Mac file reaches the ph
 | FILES-19 | THE bridge, the extension, the drop sender and the installer SHALL write no file name, path, file content or app label to a log or a crash report: operation names, counts, sizes and hash prefixes only; the person's own file name MAY appear on the window and in the banner's text, which the person can see. | K2 `FilesBridgeTests` (the log lines carry op names and sizes), `NotifyMacTests.testRecordsCarrySizesAndPackagesNotText` (the same rule on the wire); host e2e `files-bridge` and `files-write` (no name from the tree in the app log); review of `FilesBridge`, `FsClient`, `FileDrop`, `ApkInstall` |
 | FILES-20 | EVERY control SHALL be reachable at 1280×800 and SHALL be honest about its state: the Settings switch is disabled with its sentence when the build cannot serve Finder, the deck's prompt line names the system switch, and no row claims the phone is reachable while it is away. | K2 `FilesDomainControllerTests` (the states), `LayoutTests` (the Settings page's last control is reachable); VM e2e `files-domain` (the switch's states) |
 | FILES-21 | A small file's fetch (a Quick Look preview) SHALL complete within `fetch_small_ms` (3000 ms, NFR.md), and a folder's listing SHALL show its first page without waiting for the whole folder. | VM e2e `files-domain` (the 412-byte and 1 MiB fetches against the limit); K2 `HangingPeerTests` (a terminal reply ends the request) |
+| FILES-22 | WHEN Finder asks for thumbnails THE extension SHALL ask the phone only for items whose name maps to a type conforming to `public.image` or `public.movie` (`UTType(filenameExtension:)`), SHALL answer every other item — every folder, a `.pdf`, a name with no known type — with nil data at once, with no bridge request and no phone traffic (so a folder with no media asks nothing), and SHALL complete the batch once. | K2 `FilesThumbTests.testAnImageAsksAndAPdfDoesNot`, `testAFolderIsAnsweredAtOnceWithNoRequest`, `testAnUnknownExtensionIsNil`, `testTheBatchCompletesOnceWhenNothingAsks`; VM e2e `files-thumbs` `[FILES-22]` (the fake phone's JPEG shows a picture, the PDF a type icon, and its log has no `fs.thumb` for the PDF) |
+| FILES-23 | WHEN Finder asks for a thumbnail of a media item WHILE the session is up THE extension SHALL send one `thumb` bridge request with the item's identifier, its etag and the wanted long side (capped at the wire's 4096); the app SHALL send one `fs.thumb {id, path, size, etag?}` on the session, where `size` is the long side in pixels the Mac wants, and SHALL stream the phone's `FS_DATA` frames (`stream` = the id) back as the thumbnail's bytes, which the extension SHALL give to Finder for that item; `fs.thumb.end` SHALL carry `mime` (`image/jpeg` or `image/png`), `size` (the byte count) and `sha256`. | K2 `FilesCoreTests.testAThumbRequestAndEndLines`, `FilesBridgeTests.testAThumbStreamsDataThenMimeAndEnd`, `FilesThumbTests.testTheRequestCarriesTheLongSide`, `testTheBytesReachFinderForTheItem`; host e2e `files-bridge` `[FILES-23]` (the driver gets JPEG bytes, then `end` whose mime, size and hash match); K1 `FsThumbnailerTest.testTheAnswerIsOneBulkFrameThenEnd` |
+| FILES-24 | WHEN the phone serves `fs.thumb` THE phone SHALL make the picture at shell UID with the platform's image or video thumbnail generator, long side `min(size, 512)`, JPEG at quality 80, or PNG WHEN the bitmap has alpha, and the whole answer SHALL be at most 256 KiB; IF the first encode is larger THEN it SHALL re-encode once at quality 60 (a PNG at quality 60 is a flattened JPEG) and IF that is still larger THEN it SHALL answer `fs_no_thumb`, sending no bytes; it SHALL keep no thumbnail cache and SHALL NOT prefetch. | K1 `FsThumbnailerTest.testTheLongSideIsCappedAt512`, `testAJpegIsQuality80`, `testAlphaMakesAPng`, `testAnOversizedAnswerIsReencodedOnce`, `testStillOversizedIsNoThumb`, `testNoCacheAndNoPrefetch`; emulator `thumbs` (a pushed JPEG, HEIC and MP4 each answer ≤ 256 KiB at a long side ≤ 512, and each duration is printed) |
+| FILES-25 | THE Mac SHALL keep at most 3 thumbnails in flight per session and SHALL queue the rest first in, first out; WHEN Finder cancels one THE Mac SHALL drop it from the queue, or send one `fs.cancel {id}` WHILE it runs; the phone SHALL generate one at a time, SHALL answer `fs_busy` past 3 live thumb ids, and SHALL put the frames and the end on the bulk lane `fs.read` uses, below video. | K2 `ThumbQueueTests.testThreeRunAndTheFourthWaits`, `testACancelLeavesTheQueue`, `testACancelOfARunningOneSendsFsCancel`, `FilesThumbTests.testAtMostThreeInFlight`; K1 `FsThumbnailerTest.testOneWorkerAndFifo`, `testAFourthIdIsBusy`; host e2e `files-bridge` `[FILES-25]` (four asks: the fake phone has three `fs.thumb` at once and the fourth only after one ends; a cancelled queued ask never reaches the phone) |
+| FILES-26 | IF the session is down, or the phone answers any `fs_*` failure (`fs_not_found`, `fs_stale`, `fs_no_thumb`, `fs_denied`, `fs_busy`…), or the deadline passes, THEN the extension SHALL answer nil data and SHALL show no error; the system SHALL keep its type icon and MAY ask again later. | K2 `FilesThumbTests.testOfflineAnswersNilWithoutAnError`, `testAFailureAnswersNil`, `testAStaleEtagAnswersNil`; host e2e `files-bridge` `[FILES-26]` (a fake phone in `fs_no_thumb` mode reaches the driver as that code, with no name in the app log); VM e2e `files-thumbs` (phone away: type icons, no alert) |
+| FILES-27 | THE extension, the bridge and the phone SHALL write no file name or path to a log, a crash report or an error message for a thumbnail; ids, counts, sizes, durations, mimes and codes only. | K2 `FilesThumbTests.testNoNameOrPathInTheThumbLog`, `FilesBridgeTests` (the thumb path's log lines); K1 `FsThumbnailerTest.testLogsCarryNoName`; host e2e `files-bridge` `[FILES-27]` (no name from the tree in the app log) |
+| FILES-28 | THE phone SHALL make a thumbnail only WHEN a Mac asks — nothing at session start, on a listing or for a folder — and a `fs.thumb` SHALL NOT wake the screen, take a wake lock, start a stream or touch the display, so that the screen's on/off state, the wake locks and the open streams are the same before and after the answer. | K1 `FsThumbnailerTest.testNothingRunsWithoutARequest`; review of `AndroidThumbSource` (no power or display call); emulator `thumbs` (the screen state is the same before and after, and the log shows no stream and no wake lock) |
+| FILES-29 | WHEN a `thumb` bridge request has not finished within 8 s of the ask (queue time included) THE app SHALL remove it — from the queue, or with one `fs.cancel` WHILE it runs — and SHALL answer the extension `error code "timeout"`, which the extension SHALL turn into nil data; 8 s because a cold 512 px HEIF/HEVC decode is about a second, so it covers a three-deep queue of cold decodes and stays under both the 10 s at which Finder's grid reads as broken and the bridge socket's 20 s receive timeout. | K2 `ThumbQueueTests.testTheDeadlineAnswersTimeoutAndCancels`, `testAQueuedOneExpiresWithoutAPhoneRequest`; host e2e `files-bridge` `[FILES-29]` (a fake phone that accepts and never answers: the driver gets `timeout` inside 8 s and the fake logs one `fs.cancel`) |
 
-Priority note: FILES-1, 2, 3, 5, 7, 8, 10, 12, 13, 15 and 16 are P1 — a location that appears by accident, lies about the phone, or silently loses a file is worse than no location. The watch detail, the caps and the fetch limit are P2.
+Priority note: FILES-1, 2, 3, 5, 7, 8, 10, 12, 13, 15 and 16 are P1 — a location that appears by accident, lies about the phone, or silently loses a file is worse than no location. FILES-26 and FILES-27 are also P1: a missing icon must never be an error, and a thumbnail must never put a name in a log. The watch detail, the caps, the fetch limit and the rest of the thumbnail rows are P2.
 
 ## States and events
 
 The switch's machine is one value per profile (`FilesDomainController.State`); the domain's traffic state follows the session; the drop sender is a second, small machine (`FileDropSender`: idle → announcing → sending → settling → idle). Watches and pending writes are the bridge's own sets, not modes.
+
+A thumbnail request is one small machine per ask in the app (`FilesThumbQueue`), with the 3-in-flight limit as the queue's own counter; the extension runs at most the same three for a Finder batch, and each in-flight thumbnail owns one bridge connection (the bridge's one-request-per-connection habit, so three at once stay inside its 8-live-id cap).
+
+| State (thumb) | Event | Result |
+|---|---|---|
+| — | a `thumb` bridge request arrives | Queued, or Running at once while a slot is free |
+| Queued | a slot frees (fewer than 3 run) | Running: one `fs.thumb {id, path, size, etag?}` |
+| Queued | Finder cancels | Cancelled: `error cancelled`; the phone never hears of it |
+| Queued | the 8 s deadline | Cancelled: `error timeout`; the phone never hears of it |
+| Running | `FS_DATA` | the bytes go on to the extension; the state stays Running |
+| Running | `fs.thumb.end` | Finished: `thumbEnd` with mime, size and sha256 |
+| Running | `error fs_*` | Finished: the same code to the extension |
+| Running | Finder cancels | Cancelled: one `fs.cancel`, `error cancelled` |
+| Running | the 8 s deadline | Cancelled: one `fs.cancel`, `error timeout` |
+| Running | the session goes down | Cancelled: `error offline`; there is nothing left to cancel |
+| Finished / Cancelled | any later frame for the id | dropped |
 
 | State | Event | Result |
 |---|---|---|
@@ -75,21 +100,21 @@ The switch's machine is one value per profile (`FilesDomainController.State`); t
 | Idle | `a drop while the phone is away` | refused with "Connect a phone to send files to it."; nothing queued |
 | any | `a bundle dropped` | the install route instead (`apk.install`); an install waits up to 120 s for the link |
 
-Ignored events, stated so nobody builds them: a working-set identifier as a watch request, a touch whose ten minutes have passed, a signal with the switch off and no adopted domain, a copy while the phone is away that the extension answers from its own cache, a `drop.progress` after the result, and a second `drop.start` while one runs.
+Ignored events, stated so nobody builds them: a working-set identifier as a watch request, a touch whose ten minutes have passed, a signal with the switch off and no adopted domain, a copy while the phone is away that the extension answers from its own cache, a `drop.progress` after the result, a second `drop.start` while one runs, a `FS_DATA` or `fs.thumb.end` for a cancelled or unknown thumb id, a second cancel for one thumb, and a thumbnail ask for a folder or a non-media file — the extension never sends one, and if one ever arrives the phone answers `fs_not_a_dir` or `fs_no_thumb`, not a picture.
 
 ## Phone count and connection
 
 | Situation | Files shows |
 |---|---|
-| 0 phones | The switch can be turned on (the notification, the domain and the bridge need no phone) but the location is empty and every listing answers "Phone not connected"; a drop is refused ("Connect a phone to send files to it.") and an install is kept pending for 120 s with "Pair a phone to install apps on it." (a paired phone that is away gets "Connect your phone to install apps on it.") and the waiting phase on screen. The location's name is plain "PocketDeck". |
-| 1 phone | That phone's storage, named "PocketDeck (<name>)"; drops and installs go to it. |
-| 2+ phones | The location follows the phone **in use** (the domain's name changes with Settings ▸ Use This Phone); the other phones' storage is not mounted. A drop and an install act on the phone in use. |
-| Connecting | The domain is disconnected until the session is ready; already-fetched files open, listings answer from the Mac's own cache or say the phone is not connected. |
-| Connected | Live listings, reads, writes, watches and drops. |
-| Offline / reconnecting | "Phone not connected": the domain disconnects, cached files still open, a copy is kept pending and lands after the reconnect, a drop is refused and an install waits up to 120 s for the link. |
+| 0 phones | The switch can be turned on (the notification, the domain and the bridge need no phone) but the location is empty and every listing answers "Phone not connected"; every item keeps its type icon (a thumbnail ask answers nil at once and is not queued); a drop is refused ("Connect a phone to send files to it.") and an install is kept pending for 120 s with "Pair a phone to install apps on it." (a paired phone that is away gets "Connect your phone to install apps on it.") and the waiting phase on screen. The location's name is plain "PocketDeck". |
+| 1 phone | That phone's storage, named "PocketDeck (<name>)", with that phone's thumbnails in the icon view; drops and installs go to it. |
+| 2+ phones | The location follows the phone **in use** (the domain's name changes with Settings ▸ Use This Phone); the other phones' storage is not mounted, and their thumbnails are not asked for. A drop and an install act on the phone in use. |
+| Connecting | The domain is disconnected until the session is ready; already-fetched files open, listings answer from the Mac's own cache or say the phone is not connected, and thumbnails answer nil at once (type icons) rather than waiting. |
+| Connected | Live listings, reads, writes, watches, thumbnails and drops. |
+| Offline / reconnecting | "Phone not connected": the domain disconnects, cached files still open, thumbnails answer nil at once and nothing is queued for later, a copy is kept pending and lands after the reconnect, a drop is refused and an install waits up to 120 s for the link. |
 | Key rejected (Pair again) | As offline; nothing pairs or re-pairs from this surface. |
-| Phone that can't do the feature | A build without the extension disables the switch with its sentence; a phone that refuses `fs.*` reports the phone's error code as a sentence, and no fallback to another transport exists during the alpha. |
-| Install running / a drop sending | One at a time per phone; the second is refused with its reason. |
+| Phone that can't do the feature | A build without the extension disables the switch with its sentence; a phone that refuses `fs.*` reports the phone's error code as a sentence; a media file the phone cannot make a thumbnail of (`fs_no_thumb`) keeps its type icon and is never shown as an error, and there is no fallback to the Mac's Quick Look; no fallback to another transport exists during the alpha. |
+| Install running / a drop sending | One at a time per phone; the second is refused with its reason. A thumbnail never interrupts either: it rides the bulk lane below video. |
 
 ## Conventions
 
@@ -109,25 +134,25 @@ Ignored events, stated so nobody builds them: a working-set identifier as a watc
 | CONV-MAC-14 | n/a: no app-drawn content to resize |
 | CONV-MAC-15 | n/a: closing a Finder window quits nothing |
 | CONV-MAC-16 | applies: FILES-8 and FILES-13 (a copy in behaves as Finder's; a drop highlights, is accepted or refused with a reason); **deviates (approved 10-27)**: a delete in the location deletes for ever — there is no Trash on the phone; Finder's own confirmation says the item is deleted immediately and never offers a Trash move (FILES-8), and the Settings row says so |
-| CONV-MAC-20 | applies: the Settings row, the prompt line and the pill render in light and dark with the accent and Increase Contrast |
-| CONV-MAC-21 | applies: the switch, its sentence and the two buttons are labelled; the pill's text is readable and its percentage is text, not a bar alone |
-| CONV-MAC-22 | applies: the prompt's move transition is the only motion; Reduce Motion removes it |
-| CONV-MAC-23 | applies: every state is a sentence (needs switch, failed, not connected, refused) and never a colour alone |
-| CONV-MAC-24 | applies: turning the switch on is the moment macOS is asked for the File Provider switch, and the row says what to do; no other permission is asked |
+| CONV-MAC-20 | applies: the Settings row, the prompt line and the pill render in light and dark with the accent and Increase Contrast; thumbnails are pixels Finder draws in its own grid — nothing of ours is drawn, so there is no appearance state of ours to get wrong (FILES-23) |
+| CONV-MAC-21 | applies: the switch, its sentence and the two buttons are labelled; the pill's text is readable and its percentage is text, not a bar alone; a thumbnail carries no label of ours — Finder labels the item, and the picture is the system's own decoration (FILES-22) |
+| CONV-MAC-22 | applies: the prompt's move transition is the only motion; Reduce Motion removes it; a thumbnail either arrives or the type icon stays, with no animation of ours (FILES-26) |
+| CONV-MAC-23 | applies: every state is a sentence (needs switch, failed, not connected, refused) and never a colour alone; a missing thumbnail is not a state of ours to draw — it is the system's type icon (FILES-26) |
+| CONV-MAC-24 | applies: turning the switch on is the moment macOS is asked for the File Provider switch, and the row says what to do; no other permission is asked, and thumbnails add none — they ride the switch and the session (FILES-1, FILES-11) |
 | CONV-MAC-25 | applies: the Settings switch and the prompt's buttons are native controls with their hover, pressed and disabled states (disabled is dimmed neutral) |
 | CONV-MAC-26 | applies: one side inset and one 8/12 pt rhythm in the Settings section and the Deck's prompt line; each helper sentence sits under the control it explains |
 | CONV-AND-01 | n/a: no phone navigation |
 | CONV-AND-02 | applies: the phone writes its received files into `Download/PocketDeck/` and shows the system's own progress notification, which names what it is doing and is dismissable; the drop's SEND chooser is the app's own UI on the phone |
 | CONV-AND-03 | applies: the phone needs no runtime permission for the drop (shell UID writes the file) and the installer runs at shell UID; a phone without Shizuku says so on its own home, not here |
-| CONV-AND-04 | applies: the only phone-side effects are the files the person copied and the app they installed; the phone stays locked, and no setting is changed |
-| CONV-PD-01 | applies: the phone-count table above (0, 1, 2+; the location and every action follow the phone in use) |
-| CONV-PD-02 | applies: the table above (connecting, connected, offline, key rejected, a build without the extension, a phone that refuses `fs.*`) |
-| CONV-PD-03 | applies: FILES-13 and FILES-18 (a drop's and an install's outcome is the phone's own `result`, never a local guess; the pill says "Sending…" until the phone answers) |
+| CONV-AND-04 | applies: the only phone-side effects are the files the person copied and the app they installed; a thumbnail writes nothing and changes nothing — no screen wake, no wake lock, no stream (FILES-28); the phone stays locked, and no setting is changed |
+| CONV-PD-01 | applies: the phone-count table above (0, 1, 2+; the location, its thumbnails and every action follow the phone in use, and with no phone every item keeps its type icon) |
+| CONV-PD-02 | applies: the table above (connecting, connected, offline, key rejected, a build without the extension, a phone that refuses `fs.*` or answers `fs_no_thumb`); every one of those thumbnail states is the type icon, never an error (FILES-26) |
+| CONV-PD-03 | applies: FILES-13 and FILES-18 (a drop's and an install's outcome is the phone's own `result`, never a local guess; the pill says "Sending…" until the phone answers); a thumbnail has no pending state and claims nothing — nil data is the whole answer (FILES-26) |
 | CONV-PD-04 | n/a: no slider or toggle follows a phone value (the drop's percentage follows the phone's progress reports; the person does not drag it) |
-| CONV-PD-05 | applies: FILES-19 |
-| CONV-PD-06 | applies: FILES-21 (`fetch_small_ms`); the bridge runs no work when nothing is browsing, and a drop is paced so it cannot starve the video queue (≤256 KiB, ≤4 in flight — design/dragdrop.md) |
-| CONV-PD-07 | applies: "Show phone files in Finder", "Install APK…", "Install on Phone", "Move Phone App to Mac" (not this surface), and the location's name "PocketDeck (<phone name>)" are one name each |
-| CONV-PD-08 | applies: the switch/domain machine, the session's effect on it and the drop sender are the tables above |
+| CONV-PD-05 | applies: FILES-19 and FILES-27 (a thumbnail log carries an id, a count, a size, a duration, a mime or a code, never a name or a path) |
+| CONV-PD-06 | applies: FILES-21 (`fetch_small_ms`); FILES-25 and FILES-29 (at most 3 thumbnails, one generated at a time, on the bulk lane below video, each bounded by 8 s) so a grid of icons cannot delay a listing, a read or a stream; the bridge runs no work when nothing is browsing, and a drop is paced so it cannot starve the video queue (≤256 KiB, ≤4 in flight — design/dragdrop.md) |
+| CONV-PD-07 | applies: "Show phone files in Finder", "Install APK…", "Install on Phone", "Move Phone App to Mac" (not this surface), and the location's name "PocketDeck (<phone name>)" are one name each; thumbnails add no name of their own |
+| CONV-PD-08 | applies: the switch/domain machine, the session's effect on it, the drop sender and the thumbnail queue (FILES-25, FILES-29) are the tables above |
 | CONV-PD-09 | applies: FILES-4 (the row's sentences name the next step), FILES-15 (a refusal says why), FILES-3 ("Open System Settings" and "Check again" name what they do) |
 
 ## Assumptions
@@ -137,6 +162,8 @@ Ignored events, stated so nobody builds them: a working-set identifier as a watc
 - The phone writes its files at shell UID (Shizuku): `/sdcard` is readable, `Android/` and dot entries are deliberately not.
 - A drop's 200 MiB cap is counted while receiving on the phone; an install's 1 GiB cap is the bundle's total. Neither number lives in NFR.md (they are protocol caps, not time limits).
 - Finder, not this app, draws the location: the icon view, the columns, Quick Look and the progress UI are the system's.
+- The phone makes a thumbnail from the file itself at shell UID: `ThumbnailUtils.createImageThumbnail`/`createVideoThumbnail` (API 29+; the app's minSdk is 30), so a format the platform can decode is a format it can thumbnail, and a format it cannot answers `fs_no_thumb` rather than an error the person sees.
+- Finder asks for thumbnails in batches and shows each one as it arrives; a slow or missing answer costs that item's icon, not the folder.
 
 ## Non-goals
 
@@ -147,9 +174,11 @@ Ignored events, stated so nobody builds them: a working-set identifier as a watc
 - Uploading a folder tree in one drop, or a queue of several drops: one file at a time, in order, and a second is refused.
 - Installing an app on a phone other than the one in use, or choosing ABI/density splits on the Mac.
 - The phone's own file UI, its Downloads folder or its media library as a surface: the phone's storage is the surface.
+- A thumbnail cache on either side, or prefetching icons for a folder nobody is looking at (FILES-24, FILES-28).
+- Thumbnails for documents, PDFs or folders: the system's type icon is the answer, not a picture of the first page (FILES-22).
+- Falling back to the Mac's Quick Look, or materializing the file to get an icon, when the phone cannot make a thumbnail (FILES-26).
 
 ## Open questions
 
 - [NEEDS CLARIFICATION] settings.md's settings inventory does not list "Show phone files in Finder" (nor the other General/Input switches), so the one place that claims to bind every setting is incomplete. Recommended: add the row to that inventory in a follow-up (it is specs-1's file, not this epic's), with its store `files.showInFinder`, default off, and "no" in the panel column.
 - [NEEDS CLARIFICATION] The watch cap is 64 folders on the Mac with a ten-minute TTL, while the phone's own inotify guard is 256 and the design still calls the number unmeasured (design/files.md "Open questions"). Recommended: keep 64 (the folder poll is the safety net) and record the measured cost in the design doc when someone measures it.
-- [NEEDS CLARIFICATION] Thumbnails: the extension today asks the Mac's Quick Look for a materialized file rather than a phone-side `fs.thumb`. Recommended: keep it (no new wire message, no phone work while nobody browses) and say so in the design doc.
