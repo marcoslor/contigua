@@ -24,6 +24,9 @@ object DeckState {
     @Volatile var paired: List<Prefs.PairedMac> = emptyList()
     @Volatile var pending: PendingPairing? = null
 
+    /** R-8/D-4: the sentence for a refused Mac version; null until a refusal. */
+    @Volatile var versionSentence: String? = null
+
     /**
      * The notification gate is open: the Mac asked (`notify.enable`) and the
      * phone's listener grant is live. Relayed from the shell service; the

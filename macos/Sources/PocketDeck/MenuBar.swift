@@ -3,35 +3,99 @@
 import AppKit
 import SwiftUI
 
-struct MenuBarIcon: View {
-    @Environment(ConnectionController.self) private var controller
+/// The status item's own drawing. AppKit centres an image and applies the menu
+/// bar's inactive-display treatment to it; a SwiftUI view layered over the
+/// button got neither (the person's padding, off-centre glyph and bright icon on
+/// the secondary display). So every frame here is one template image: the
+/// symbol, plus the agent dot drawn into the same image (it widens it).
+enum MenuBarGlyph {
+    /// The menu bar's standard symbol metrics.
+    static let configuration = NSImage.SymbolConfiguration(textStyle: .body)
+    static let dotDiameter: CGFloat = 4
+    static let dotGap: CGFloat = 2
+    /// The reconnecting pulse's off frame: the same template image at reduced
+    /// alpha, which template rendering turns into the mask, so the system still
+    /// dims this frame with the rest of the menu bar.
+    static let dimFraction: CGFloat = 0.45
 
-    var body: some View {
-        HStack(spacing: 3) {
-            icon
-            if controller.mcp.clientCount > 0 {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 5))
-                    .accessibilityLabel("An AI agent is connected")
-            }
-        }
-        .task {
-            // This view exists from launch. Started from a shell (the test
-            // harness) SwiftUI sometimes does not present the Deck by itself.
-            try? await Task.sleep(for: .seconds(0.5))
-            DeckWindow.open()
+    static func symbol(for link: Link) -> String {
+        switch link {
+        case .offline: "iphone.slash"
+        case .idle, .connecting, .online, .reconnecting, .needsPairing, .pairing: "apps.iphone"
         }
     }
 
-    @ViewBuilder
-    private var icon: some View {
-        switch controller.link {
-        case .online, .connecting, .pairing, .idle, .needsPairing:
-            Image(systemName: "apps.iphone")
-        case .reconnecting:
-            Image(systemName: "apps.iphone").symbolEffect(.pulse)
-        case .offline:
-            Image(systemName: "iphone.slash")
+    static func image(link: Link, dot: Bool, dimmed: Bool = false) -> NSImage {
+        let name = symbol(for: link)
+        let glyph = NSImage(systemSymbolName: name, accessibilityDescription: "PocketDeck")?
+            .withSymbolConfiguration(configuration)
+            ?? NSImage(size: NSSize(width: 14, height: 16))
+        let fraction = dimmed ? dimFraction : 1
+        let size = NSSize(width: glyph.size.width + (dot ? dotGap + dotDiameter : 0),
+                          height: glyph.size.height)
+        let image = NSImage(size: size, flipped: false) { rect in
+            glyph.draw(in: NSRect(x: 0, y: 0, width: glyph.size.width, height: glyph.size.height),
+                       from: .zero, operation: .sourceOver, fraction: fraction)
+            if dot {
+                NSColor.black.withAlphaComponent(fraction).setFill()
+                NSBezierPath(ovalIn: NSRect(x: glyph.size.width + dotGap,
+                                            y: (rect.height - dotDiameter) / 2,
+                                            width: dotDiameter, height: dotDiameter)).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "PocketDeck"
+        return image
+    }
+}
+
+/// The reconnecting pulse: two template frames swapped on a timer. One machine
+/// decides the frame, so the link change and every tick are explicit, tested
+/// transitions rather than a loose flag beside NSTimer.
+enum MenuBarPulseState: String, Equatable {
+    case steady
+    case bright
+    case dim
+}
+
+enum MenuBarPulseEvent: Equatable {
+    /// The link started (true) or stopped pulsing.
+    case pulses(Bool)
+    /// The frame timer fired.
+    case tick
+}
+
+enum MenuBarPulseAction: Equatable {
+    /// Redraw the button's image: the dim frame or the full one.
+    case show(dim: Bool)
+    case startTimer
+    case stopTimer
+}
+
+struct MenuBarPulseMachine {
+    private(set) var state: MenuBarPulseState = .steady
+
+    var isDim: Bool { state == .dim }
+
+    mutating func handle(_ event: MenuBarPulseEvent) -> [MenuBarPulseAction] {
+        switch (state, event) {
+        case (.steady, .pulses(true)):
+            state = .bright
+            return [.show(dim: false), .startTimer]
+        case (.steady, .pulses(false)), (.steady, .tick):
+            return []
+        case (.bright, .pulses(true)), (.dim, .pulses(true)):
+            return []
+        case (.bright, .pulses(false)), (.dim, .pulses(false)):
+            state = .steady
+            return [.show(dim: false), .stopTimer]
+        case (.bright, .tick):
+            state = .dim
+            return [.show(dim: true)]
+        case (.dim, .tick):
+            state = .bright
+            return [.show(dim: false)]
         }
     }
 }

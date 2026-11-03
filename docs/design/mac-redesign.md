@@ -122,17 +122,23 @@ backgrounds), window background default.
 - **Grid (D):** `DeckGridLayout` places every cell from the width of the pass that draws it, so a live resize or a
   zoom cannot draw a clipped edge column. At 100 % a cell is 96×108, its icon 64×64 (the shared `PhoneAppIcon` in the
   macOS shape, docs/design/dock.md §Icons), with an 8 pt icon-label gap, a fixed 16 pt column gap and row spacing, a
-  24 pt vertical inset and a 16 pt hover corner. The block is centred and stops growing at 880 pt (60 pt margins at
-  1000; 5 columns at 640, 8 at 1000 and wider). Label `.caption` 1 line `.truncationMode(.middle)`. Hover
+  24 pt vertical inset and a 16 pt hover corner. The block is centred, capped at 880 pt and reserves the rail's 44 pt
+  on its trailing side (5 columns at 640, 8 at 1000 and wider). A window over 1000 pt scales the cells, icons, gaps,
+  insets and the cap by clamp(width/1000, 1, 1.5), so the tiles grow with the window; the rail's column starts 18 pt
+  right of the grid's right edge at every zoom and width. Label `.caption` 1 line `.truncationMode(.middle)`. Hover
   `.fill(.quaternary)`; keyboard/mouse selection `.fill(Color.accentColor.opacity(0.22))`, both
   `RoundedRectangle(cornerRadius: 16)`. **Single click opens** (↩ opens the selected one, or the first match when none
   is selected). **⌘+ / ⌘− / ⌘0** scale the whole grid (cell, icon, gaps, insets and the 880 pt cap) through
-  0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window.
+  0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window. A **title-bar
+  double-click or the green button** takes the Deck's intrinsic width — the 880 pt grid plus 60 pt a side at the
+  person's zoom, plus the rail — and the screen's visible height, never wider than the screen (DECK-24).
 - **A–Z rail (D):** the Deck's trailing edge carries one 16 pt column, 8 pt from the edge: A–Z then `#`, 9 pt letters
   on a 12 pt pitch, the current letter accent and semibold, empty letters dimmed at 35 %. It appears only when the
   search field is empty and there are at least 30 apps. Clicking or dragging a letter scrolls to its first app; an
-  empty letter skips forward to the next one with apps. The current letter comes from the first app in the top
-  visible row, read from `visibleRect.minY + contentInsets.top`.
+  empty letter skips forward to the next one with apps. The accent lights the letter the jump landed on and keeps
+  it until the grid is scrolled by other means (the wheel, the trackpad, the scroll bar or the keys) or another
+  letter is picked; otherwise it is the last section start in the top visible row, read from
+  `visibleRect.minY + contentInsets.top`.
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
   is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
   `.allowsHitTesting(false)`.
@@ -231,10 +237,10 @@ second group is **This Mac**: **General**, **Input**, **Automation**. The detail
 - **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
   from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New
   windows become key but do not hide the Deck (they open on the Deck's screen, offset right of it when it fits).
-- **Link-down state:** the layer keeps its last frame; a **status pill** (`NSGlassEffectView`, cornerRadius 18, 36 pt
-  high, SwiftUI content "Reconnecting…" `.caption` + small `ProgressView`; "Phone offline" after 15 s) fades in at the
-  bottom center after 1 s of link loss and out when the link returns. Input is dropped while down (no queueing).
-  Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
+- **Link-down state:** the layer keeps its last frame; the **disconnection overlay** (DESIGN.md "Disconnection
+  overlay": one acrylic over the whole window, the window's icon, "Reconnecting…" and "Waiting for <phone>…") comes up
+  1 s after the loss and reads "Phone offline" at 15 s; a reconnect takes it away. Input is dropped while down (no
+  queueing). Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
 - Unchanged: `VideoLayerView`, `AVSampleBufferDisplayLayer`, `InputMapper`, `DebugInput`, gestures, resize debounce,
   pause/resume, density, edge swipe.
 

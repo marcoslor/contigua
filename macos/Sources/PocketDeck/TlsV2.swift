@@ -499,7 +499,9 @@ final class TlsConnectorV2: @unchecked Sendable {
                  onFrame: @escaping @Sendable (Frame) -> Void,
                  onError: @escaping @Sendable (String) -> Void,
                  onPeerPin: (@Sendable (String) -> Void)? = nil,
-                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void) {
+                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil,
+                 onWritableChange: (@Sendable (Bool) -> Void)? = nil,
+                 handshakeTimeout: TimeAmount = .seconds(6)) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void, isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void) {
         // Throws TlsV2Error.noPin / .pinMismatch / .incompleteIdentity BEFORE
         // any dial when the pin rules cannot be met (§8 step 3 gate).
         let tlsConfig = try configuration()
@@ -514,27 +516,79 @@ final class TlsConnectorV2: @unchecked Sendable {
                                                     pinnedPinHex: pinnedPhone?.phoneFingerprintHex)
         let learn = onPeerPin
         let learnCert = onPeerCert
+        // PATH-20: a path is ready only when TLS has finished, not when TCP
+        // has. The hello is serialized over the finished attempts, so a
+        // black-holed provider must never win it just by accepting a socket.
+        let handshake = group.next().makePromise(of: Void.self)
+        // R-12: a peer that accepts TCP and then goes silent must not block
+        // this thread and hold the fd forever. The attempt timer still owns the
+        // attempt; this closes the channel so the dial fails inside it.
+        let handshakeDeadline = group.next().scheduleTask(in: handshakeTimeout) {
+            handshake.fail(TlsV2Error.handshakeTimeout)
+        }
         do {
             let channel = try ClientBootstrap(group: group)
+                .channelOption(ChannelOptions.writeBufferWaterMark,
+                               value: WriteBufferWaterMark(low: 256 << 10, high: 1 << 20))
                 .connect(to: try SocketAddress(ipAddress: host, port: port))
-                .flatMap { ch -> EventLoopFuture<Channel> in ch.pipeline.addHandler(sslHandler).map { _ in ch } }
                 .flatMap { ch -> EventLoopFuture<Channel> in
-                    ch.pipeline.addHandler(HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
-                                                              peerCertificate: { cert in learnCert?(cert) })).map { _ in ch }
+                    // Both handlers enter the pipeline in one event-loop turn,
+                    // before the handshake can complete, so the learn handler
+                    // never misses the SSL handler's event.
+                    do {
+                        try ch.pipeline.syncOperations.addHandler(sslHandler)
+                        try ch.pipeline.syncOperations.addHandler(
+                            HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
+                                                  peerCertificate: { cert in learnCert?(cert) },
+                                                  handshakePromise: handshake))
+                        if let onWritableChange {
+                            try ch.pipeline.syncOperations.addHandler(WritabilityHandler(onChange: onWritableChange))
+                        }
+                    } catch {
+                        return ch.eventLoop.makeFailedFuture(error)
+                    }
+                    return ch.eventLoop.makeSucceededFuture(ch)
                 }
                 .flatMap { ch -> EventLoopFuture<Channel> in
                     ch.pipeline.addHandler(FrameDeliveryHandler(onFrame: onFrame, onError: onError)).map { _ in ch }
                 }
                 .wait()
+            do {
+                try handshake.futureResult.wait()
+            } catch {
+                handshakeDeadline.cancel()
+                channel.close(promise: nil)
+                throw error
+            }
+            handshakeDeadline.cancel()
             return (channel, { capture.only.flatMap { ExporterV2.derive(exporterSecret: $0) } }, { frame in
                 var buffer = channel.allocator.buffer(capacity: frame.encoded.count)
                 buffer.writeBytes(frame.encoded)
                 _ = channel.writeAndFlush(buffer)
+            }, { channel.isWritable }, { reading in
+                _ = channel.setOption(ChannelOptions.autoRead, value: reading)
             })
         } catch {
+            handshakeDeadline.cancel()
             let message = String(describing: error)
             throw TlsV2Error.dialFailed(String(message.prefix(180)))
         }
+    }
+}
+
+/// Reports NIO's writability so the path layer can feed bulk only while the
+/// channel's write buffer is under its water mark (D-2).
+final class WritabilityHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    private let onChange: @Sendable (Bool) -> Void
+
+    init(onChange: @escaping @Sendable (Bool) -> Void) {
+        self.onChange = onChange
+    }
+
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        onChange(context.channel.isWritable)
+        context.fireChannelWritabilityChanged()
     }
 }
 
@@ -548,26 +602,47 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let handshakeCompleted: @Sendable (String) -> Void
     private let peerCertificate: @Sendable (NIOSSLCertificate) -> Void
+    /// Completed when the handshake finishes (or fails), after the callbacks
+    /// above ran: the connector does not report a path ready before this.
+    private let handshakePromise: EventLoopPromise<Void>?
     private var fired = false
+    /// The promise completes once, on this handler's event loop.
+    private var settled = false
 
     init(handshakeCompleted: @escaping @Sendable (String) -> Void,
-         peerCertificate: @escaping @Sendable (NIOSSLCertificate) -> Void = { _ in }) {
+         peerCertificate: @escaping @Sendable (NIOSSLCertificate) -> Void = { _ in },
+         handshakePromise: EventLoopPromise<Void>? = nil) {
         self.handshakeCompleted = handshakeCompleted
         self.peerCertificate = peerCertificate
+        self.handshakePromise = handshakePromise
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if !fired, case .handshakeCompleted = event as? TLSUserEvent {
             fired = true
             let report = handshakeCompleted
+            let done = handshakePromise
             // NEVER block the event loop with a synchronous pipeline lookup:
-            // the future form resolves on the same loop, cleanly.
-            _ = context.pipeline.handler(type: NIOSSLHandler.self).whenSuccess { handler in
-                if let cert = handler.peerCertificate {
-                    self.peerCertificate(cert)
-                }
-                if let peerFp = handler.peerCertificate.flatMap({ PinCheckV2.pointFingerprint(cert: $0) }) {
-                    report(Data(peerFp).hexString)
+            // the future form resolves on the same loop, cleanly. The promise
+            // is completed last so connect() cannot outrun the pin callback.
+            context.pipeline.handler(type: NIOSSLHandler.self).whenComplete { result in
+                switch result {
+                case .success(let handler):
+                    if let cert = handler.peerCertificate {
+                        self.peerCertificate(cert)
+                    }
+                    if let peerFp = handler.peerCertificate.flatMap({ PinCheckV2.pointFingerprint(cert: $0) }) {
+                        report(Data(peerFp).hexString)
+                    }
+                    if !self.settled {
+                        self.settled = true
+                        done?.succeed(())
+                    }
+                case .failure(let error):
+                    if !self.settled {
+                        self.settled = true
+                        done?.fail(error)
+                    }
                 }
             }
         }
@@ -575,8 +650,20 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        if !settled {
+            settled = true
+            handshakePromise?.fail(error)
+        }
         context.fireErrorCaught(error)
         context.close(promise: nil)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        if !settled {
+            settled = true
+            handshakePromise?.fail(TlsV2Error.dialFailed("closed before the handshake finished"))
+        }
+        context.fireChannelInactive()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {

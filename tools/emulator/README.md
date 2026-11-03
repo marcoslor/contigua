@@ -72,6 +72,28 @@ SECTION icons PASS apps=3 px=216,1296 flat=144,864 layers=3/3 max_ms=693
 `media.sh` and `phone-screen.sh` still run alone (`--no-boot` reuses a rig that
 is already up and paired).
 
+### direct-p1: the one-boot path proof
+
+```sh
+bash tools/emulator/p1-proof.sh --check
+~/dev/pocketdeck/.agent/heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
+```
+
+`p1-proof.sh` is the direct-p1 item-7 proof of the **real** shell server (not
+fakephone): it boots once, pairs the Mac app through the real prompt, founds a
+session on two providers, proves the second path joined (no supersede), drops
+32 MiB through a path black-holed at 8 MiB and checks the device-side sha256,
+refuses a v3-shaped hello with `v=4`, and waits out the 30 s grace (the Mac's
+`orphaned --grace--> ended`, the phone's slot free, the panel restored). The
+apk must already be built (`start.sh --no-build` installs it). `--check` is the
+rehearsal: `preflight.sh`, the stale APK/Mac app checks and the tools, with no
+device and no boot. Results and the table go to
+`.agent/direct-link/p1-emulator.md`; the per-phase logs are under
+`/tmp/pd-direct-p1-emu/` (copy them before another `--check`). The boot budget
+is in `.agent/budgets/<worktree>` and the ledger is
+`/tmp/pocketdeck-boots.ledger`; one boot per run, `adb -s emulator-5554 emu
+kill` only.
+
 ### Reliability rules (each one cost a boot once)
 
 - **Run every script as `bash <script>`.** Do not rely on the exec bit: a fresh

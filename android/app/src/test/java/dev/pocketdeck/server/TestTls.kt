@@ -86,4 +86,38 @@ object TestTls {
     }
 
     private const val PASSWORD = "pocketdeck-test-memory-only"
+
+    /** The harness pins the peer by fingerprint, not by certificate chain. */
+    private val trustAll = object : javax.net.ssl.X509TrustManager {
+        override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+        override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+    }
+
+    /**
+     * The phone side of the harness. [provider] switches the server's TLS stack
+     * (Conscrypt, Android's); [useEngineSocket] picks Conscrypt's engine socket
+     * or the FD socket Android uses by default.
+     */
+    fun serverContext(
+        id: Identity,
+        provider: java.security.Provider?,
+        useEngineSocket: Boolean,
+    ): SSLContext {
+        val store = KeyStore.getInstance("PKCS12")
+        store.load(null, PASSWORD.toCharArray())
+        store.setKeyEntry("self", id.privateKey, PASSWORD.toCharArray(), arrayOf(id.cert))
+        val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+        kmf.init(store, PASSWORD.toCharArray())
+        val context = if (provider == null) {
+            SSLContext.getInstance("TLS")
+        } else {
+            SSLContext.getInstance("TLS", provider)
+        }
+        context.init(kmf.keyManagers, arrayOf(trustAll), SecureRandom())
+        if (provider != null) {
+            org.conscrypt.Conscrypt.setUseEngineSocket(context.socketFactory, useEngineSocket)
+        }
+        return context
+    }
 }

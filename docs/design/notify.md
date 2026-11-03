@@ -48,10 +48,13 @@ phone has no second switch: its notification-listener grant is the phone-side ha
   the listener route is ever blocked by an OEM.
 - Plumbing: AIDL `IDeckService.pushNotificationEvent(json)` / `pushMediaState(json)` app→shell;
   `IDeckCallback.onMediaCommand(action)` shell→app. The shell `Session` validates and forwards.
+- Parity guard: K1 `NotifyWireParityTest` pushes every field the app's builders emit through
+  `Session.onDeviceEvent` and fails when the shell server drops or changes one.
 - Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
   label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
   a notification with neither title nor label shows the phone name alone; text = body, grouped per
-  phone (`threadIdentifier` = phone id). "When I click a phone notification" (per phone, beside the
+  phone (`threadIdentifier` = phone id; `<phone id>.<group hash>` when the post carries a group,
+  NOTIFY-20). "When I click a phone notification" (per phone, beside the
   opt-in, enabled only while it is on) picks what a click does: **Open on Mac** (default) opens or
   raises the app's window and runs the notification's own `contentIntent` on that window's virtual
   display; **Open on phone** runs it on the phone's display 0 and opens no Mac window; **Do nothing**
@@ -67,14 +70,26 @@ phone has no second switch: its notification-listener grant is the phone-side ha
 
 ## Protocol (docs/PROTOCOL.md, session-level JSON)
 
-- mac→phone: `notify.enable {on}` — the only person-facing switch, sent when it changes and again on reconnect;
+- mac→phone: `notify.enable {on}` — the only person-facing switch, sent when it changes, again
+  on reconnect, and again after a same-session rejoin that followed an outage (PATH-6); every
+  `on:true` is an active-set request (NOTIFY-1).
   `notify.open {id, target: window|phone, stream?}` — a banner click (the id is one the phone
   issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
 - phone→mac: `notify.state {on, reason?}` (true once granted and forwarding; `reason:"no_access"`
   when the Mac asked but the listener grant is missing); `notify.post {id, pkg, app?,
-  when, title?, text?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
+  when, title?, text?, alert, group?, ongoing?}`; `notify.remove {id}`; `notify.snapshot {ids}`
+  — the active set that answers an enable: one quiet `notify.post` (`alert:false`) per
+  notification still active, then the ids it just posted; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
+
+The active set is how a rejoin repairs state the Mac cleared on path loss: the quiet posts
+update a changed row in place (never a second banner) and `notify.snapshot` names everything
+the phone still holds. The Mac drops every live row, banner and waiting post whose id the set
+does not name, so a row the phone ended during the outage does not outlive it. The set is the
+same shape at session start and after a rejoin; a planned switch or a probe join beside a
+live path sends no enable and therefore no snapshot. Ids are the opaque tokens `notify.post`
+carried (at most 200), never text.
 - Privacy: notification or media text is never logged (the e2e `--share-log` file records ids, package
   names and field lengths only, and in that mode nothing is posted to Notification Center); without
   an answered `notify.enable {on:true}` nothing is forwarded; disconnect clears the Mac's local state.
@@ -197,6 +212,26 @@ image: the image is dropped with `notify image id=… late` (a second banner for
 one notification is worse than a missing thumbnail). Late means the hold has
 elapsed; deeper queues are not reordered.
 
+### The attachment's app badge
+
+N4, picked 10-31. With a picture, the attachment is a square PNG with alpha: the picture
+is scaled to fill (**cover**) and clipped to a circle, with the sending app's icon as a
+circular badge at the bottom-right — 40 % of the side, inset 4.5 % from the right and
+bottom edges, clipped to a circle, **no ring**. With no picture, the app's icon alone is
+the attachment at 256 px, filling the square and clipped to a rounded square with a 22 %
+corner (never a circle, so it cannot be read as a person's photo). A picture's side is
+min(512 px, its long side).
+
+The icon is the Deck's and Dock's rendering: the cached adaptive layers, else the flat
+icon, through `PhoneAppIcon` (F3 plate included), drawn body-full so the badge or tile is
+filled; the cache size class is the first whose source stays inside the 1.3× upscale
+bound (docs/NFR.md). No icon cached, or a source too small: the picture stays a circle
+without a badge, and with no picture there is nothing to attach. A composed PNG that
+would exceed 200 KiB (or the `NotifyImageCaps` caps) falls back to the phone's picture as
+sent, today's behaviour; an undecodable picture keeps the phone's bytes too. The record carries facts only — `composed shape=… badge=yes|no
+side=… class=…`, or `composed fallback=over_cap|no_icon` — never pixels or text
+(R-PRIV-1). There is no setting, and the banner's own icon stays PocketDeck's.
+
 ### Live Updates
 
 Android 16 promotes an eligible ongoing notification (a ProgressStyle, CallStyle
@@ -242,6 +277,135 @@ host's Notification Center in e2e (`--share-log` records instead).
 Samsung's Now Bar has no public API; One UI 8 shows Android 16 Live Updates
 there, so the same promoted notification appears in it with no Samsung-specific
 code.
+
+## Quiet updates: which posts may present (NOTIFY-19)
+
+A notification that updates in place (a progress bar, a download, a timer)
+posts again for every tick. Reusing the request identifier replaces the banner
+on the Mac but does not make it quiet: `UNUserNotificationCenter.h`
+(`addNotificationRequest:`, macOS 27.0 SDK) says *"A notification request with
+the identifier as an existing delivered notifications will alert for the new
+notification request and replace the existing delivered notification when it is
+triggered."* Every update therefore presented again, which is the report's
+first bug.
+
+The decision now travels with the post. The phone marks `alert:true` on the
+first post of a key and on an update Android would alert for, and `alert:false`
+when the notification carries `FLAG_ONLY_ALERT_ONCE`, when its title and text
+hash equals the last forwarded post of that key, or when the only thing that
+moved is a progress bar (`NotifyEvents.alerts` with `progressOnly`: both posts
+carry a bar and the title hash is unchanged, so "12 MB of 50 MB" → "13 MB of
+50 MB" is quiet while the post that drops the bar is judged by its content).
+The hashes live in memory and are never logged.
+
+On the Mac, `NotifyPostPolicy.plan(alert:delivered:)` says what the post does:
+`.banner` for an alerting post with no banner, `.quietAdd` for a quiet one —
+`alert:false` is always quiet, so a LOW channel or a notification first seen
+mid-life is listed without a banner — `.replace` for an alerting update, and
+`.quietReplace` for a non-alerting update of a delivered banner. Both quiet
+plans submit with `content.interruptionLevel = .passive`.
+
+**Finding: a passive replacement is not presented.** `UNNotificationContent.h`
+(macOS 27.0 SDK, `UNNotificationInterruptionLevel`) defines `.passive` as
+*"Added to the notification list; does not light up screen or play sound"* and
+`.active` as *"Presented immediately"*. Apple's documentation pages for
+`UNNotificationInterruptionLevel` and its `passive` case
+(`developer.apple.com/documentation/usernotifications/`) state the same. A
+replacement therefore lands in the list and the quiet update is never shown as
+a banner. Levels above `.active` are never set, and Focus is untouched
+(NOTIFY-18): a passive notification is still subject to the person's Focus.
+
+What this round does **not** prove: the system draws the banners, and host e2e
+runs are quiet (`--share-log`), so "no second banner" rests on the header
+definitions above plus the Mac's own record (`alert=`, `banners=`,
+`presented=`, `quiet=` on each `notify post` line) and the K2 test that posts
+ten times and reads it. A real banner's look stays with the `notify-vm` check.
+If a future OS did present a passive replacement anyway, the fallback is the
+one the spec allows: keep the delivered banner untouched and update only the
+Mac's record (the LIVE row and the dismiss state); the record already
+distinguishes a presented post from a quiet one.
+
+The hold is not a delivery (2026-10-29 review finding): a post waits up to
+300 ms for its picture, and an app that re-posts right away — to add an action
+or an icon — supersedes that waiting post. The newcomer inherits the wait's
+delivery state (`NotifyPostMerge.delivered`) and alerts if either post did
+(`NotifyPostMerge.alert`), so only a banner already handed to Notification
+Center can be replaced quietly. Without that, a quiet re-post 100 ms after an
+alerting one left the person with no banner at all (`presented=0`).
+
+## Conversations: the last message is the body (NOTIFY-3)
+
+A `MessagingStyle` notification keeps its conversation in `EXTRA_MESSAGES` (a
+`Bundle[]` of text, time and sender) and its name in `EXTRA_CONVERSATION_TITLE`;
+`EXTRA_TITLE`/`EXTRA_TEXT` may both be empty, so r1 dropped such a post as
+"no title and no text". The listener now walks the messages back to the last one
+with text, uses that text as the body and, when `EXTRA_TITLE` is empty, the
+conversation title (else that message's sender) as the title. A plain title and
+text still win; the wire's per-string caps are unchanged, and a string over the
+cap is dropped whole. MessagingStyle itself caps a message's own text at 1024,
+so the wire cap is not reachable from a real conversation.
+
+## Media notifications are not banners (NOTIFY-3)
+
+A player's notification carries `EXTRA_MEDIA_SESSION`; while it plays it is also
+ongoing, and r1's promoted-ongoing gate happened to skip it — but a paused
+player is not ongoing, so the notification would banner on the Mac beside the Now
+Playing row for the same session. A post carrying a media session is now skipped
+with `notify skip media id=…` and its id joins the not-announced set (a removal
+for a notification the Mac never saw is not news). Now Playing is unchanged.
+
+## Channels: LOW and MIN are listed quietly (NOTIFY-21)
+
+Android's shade shows a MIN channel in its silent section and a LOW one without
+a heads-up; neither is a banner. The listener reads the channel's importance
+from the system's ranking of the notification's key
+(`getCurrentRanking().getRanking(key, ranking)`), marks every post of a LOW or
+MIN channel `alert:false`, and still forwards it — the Mac lists it with
+`.passive` (NOTIFY-19) instead of dropping a notification Android would show.
+DEFAULT and above keep the alert rules, and a ranking the system does not
+answer for leaves today's rules in place with `notify importance=unknown` in
+logcat. The line carries the number (or `unknown`), never a channel name.
+
+## Groups: summaries never land on their children (NOTIFY-20)
+
+Android bundles a chat's messages into a group: each message is a child and the
+app also posts one `FLAG_GROUP_SUMMARY` notification ("5 new messages") to fold
+them. The listener forwarded both, and the summary — a different key, hence a
+different banner — landed on top of the message that had just arrived. The wire
+also had no group, so the Mac put every notification of a phone into one thread.
+
+The phone now keeps a small machine per package+group (`NotifyGroups` in
+NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
+`SUMMARY`; every transition is in `NotifyGroupMachineTest`):
+
+- a summary forwarded on its own is quiet when the app asked for
+  `GROUP_ALERT_CHILDREN` (`NotifyEvents.summaryAlerts`); children keep their
+  own decision, so the child that takes a summary away still alerts;
+- a child is forwarded and its id joins the group's set; a re-post of a known child is an update, not a second child (a chat updates its one notification per message);
+- the summary is forwarded only while the group has no forwarded child;
+- when a child arrives after a forwarded summary, the summary gets a
+  `notify.remove` first and the child follows;
+- a child's removal drops its id, and the last one leaving returns the group
+  to `EMPTY` (the state is forgotten), so a later summary can be forwarded
+  again; the set is bounded like the other maps.
+
+A removal is announced for every id the phone forwarded, whatever its bounded
+forwarded-id map still holds: the Mac keeps the banner, so a swallowed removal
+is a ghost. The only silent removals are the summaries the phone deliberately
+kept (they were never forwarded), remembered in a small bounded set.
+
+The wire's `group` is 64 bits of SHA-256 over the package and the Android group
+key (`NotifyEvents.groupHash`), never the key: apps put chat and folder names in
+it, and a log or a thread identifier must not carry one. The Mac only accepts
+that 16-lowercase-hex shape (`NotifyMapping.thread`) and threads a grouped post
+under `<phone id>.<group>`; anything else joins the phone's own thread. Because
+the hash is salted by the package (and 64 bits wide), it is not reversible to a
+short name.
+
+Not proven here: the machine's decisions on a real listener (a K1 class and the
+fake phone's replay only). The emulator budget is 0 this round, so a real
+WhatsApp group on a real phone stays with the next device pass; the e2e proves
+the wire and the Mac's threading.
 
 ## Media part 2 design (v0.2 #9)
 

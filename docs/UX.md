@@ -80,11 +80,15 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
    mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
    touch. Settings → Input → **Hover over Android apps** turns it off.
-   New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
-   ("Reconnecting…") sits over the last frame; the window stays open.
+   New windows cascade (never on top of the Deck) and remember their frame. While the connection is down the window shows
+   its disconnection screen — the last frame under one acrylic, the app's icon, "Reconnecting…" and "Waiting for <phone>…",
+   then "Phone offline" after 15 s — and stays open.
    While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
+   The same menu's **Add to Applications** puts that one app in Applications as a real Mac app — Launchpad, Spotlight
+   and other launchers list it — and **Remove from Applications** takes only that shortcut away; the phone's page can do it for
+   every app at once (**Save all apps as shortcuts**).
 3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's name and state,
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
    **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
@@ -113,9 +117,11 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when its key is
    gone), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
    and Now Playing**, **When I click a notification** with **Open on this Mac** / **Open on the phone** / **Do
-   nothing**, and **Muted apps** with its count, a search field and a **Muted** checkbox column), **Screen**
-   (**Keep the phone screen off until I turn it on from the Mac**) and **Forget** (**Forget This Phone…** alone
-   at the end). The window title is the open page's name, and that is the only other place a phone is named: no
+   nothing**, and **Muted apps** with its count, a search field and a **Muted** checkbox column), **Applications**
+   (**Save all apps as shortcuts**, with the sentence that it gives every app of that phone a real Mac app in
+   Applications — Launchpad, Spotlight and other launchers — and that off removes only the ones this switch made),
+   **Screen** (**Keep the phone screen off until I turn it on from the Mac**) and **Forget** (**Forget This
+   Phone…** alone at the end). The window title is the open page's name, and that is the only other place a phone is named: no
    section heading carries it. ⌘, reopens the last page (the in-use phone, or **General** with no phones); the
    sidebar has the keyboard, ↑/↓ move between rows and Tab moves into the page; **Add Phone…** opens the
    pairing sheet without moving the page. Any phone is one click away and its settings are editable whether or

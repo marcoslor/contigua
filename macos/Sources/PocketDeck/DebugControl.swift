@@ -20,6 +20,8 @@
 //                    check reads the bar after the last window closed)
 //   iconmenu PATH    the status item's own menu as JSON, without popping it (the
 //                    e2e menus check reads Settings…/About/Quit from it)
+//   menubaricon      the status item as AppKit has it: "length=… image=…
+//                    subviews=… state=… dot=…" (the e2e menubar-shots check)
 //   panel-menu       Phone ▸ Turn Off Phone Screen: the same call the menu
 //                    item's binding makes (the phone window's own action)
 //   nav-click back|home|recents  a click on that bar button: synthetic NSEvents
@@ -49,12 +51,24 @@
 //                    Deck window's event handling
 //   deckcellpoint LABEL PATH  that cell's centre in Quartz coordinates, for a
 //                    check that posts a real right click (the cell's menu)
+//   deckmenu LABEL   the cell's own context menu, through a secondary click at
+//                    the cell's drawn place (for the quiet screenshots)
+//   shortcut add|remove PKG
+//                    the Deck tile's Add to/Remove from Applications action
+//                    (docs/specs/dock.md DOCK-4); a context menu cannot be
+//                    clicked in a quiet run
+//   dock add|remove PKG  the tile's Add to Dock/Remove from Dock App action
+//   shortcutsall on|off  the phone page's Save all switch, through its own
+//                    write-then-apply path
 //   keywindow PATH   the key window's identifier and title, one per line
 //                    (which window a raise actually put in front)
 //   coverclick TITLE a click on the opening cover's Cancel or Close, at the
 //                    button's place in the window
 //   quit             a real quit through NSApp.terminate (⌘Q's path), for a
 //                    check that relaunches the app
+//   livedump PATH    the menu bar's LIVE section as JSON, at a moment no
+//                    debug-input script is running (the e2e's notify/path
+//                    checks read the rows before and after an outage)
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

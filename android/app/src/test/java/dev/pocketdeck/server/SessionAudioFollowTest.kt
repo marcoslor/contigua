@@ -54,6 +54,7 @@ class SessionAudioFollowTest {
     private lateinit var platform: FakePlatform
     private lateinit var serverSocket: ServerSocket
     private lateinit var client: Socket
+    private lateinit var reader: FrameReader
 
     @Volatile private lateinit var session: Session
     @Volatile private lateinit var capture: RecordingCapture
@@ -90,6 +91,9 @@ class SessionAudioFollowTest {
         accept.start()
         client = Socket("127.0.0.1", serverSocket.localPort)
         client.soTimeout = 5_000
+        // One reader for the socket: a FrameReader buffers ahead, so a new one
+        // per frame would eat the bytes that arrived in the same read.
+        reader = FrameReader(client.getInputStream())
     }
 
     @After
@@ -105,8 +109,11 @@ class SessionAudioFollowTest {
     }
 
     private fun readJson(): Map<String, Any?> {
-        val frame = FrameReader(client.getInputStream()).readFrame() ?: error("connection closed")
-        return Json.parseObject(String(frame.payload))
+        while (true) {
+            val frame = reader.readFrame() ?: error("connection closed")
+            if (frame.type == dev.pocketdeck.proto.PathCodec.TYPE_ACK) continue
+            return pathJson(frame)
+        }
     }
 
     private fun readUntil(t: String): Map<String, Any?> {
@@ -128,7 +135,7 @@ class SessionAudioFollowTest {
 
     private fun authenticate() {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))
+        send(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))
         readUntil("welcome")
     }
 

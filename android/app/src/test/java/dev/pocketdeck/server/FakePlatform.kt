@@ -84,6 +84,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val paired = CopyOnWriteArrayList<PairedClient>()
     val pairEnded = CopyOnWriteArrayList<String>()
     val sessionChanges = CopyOnWriteArrayList<SessionChange>()
+    /** R-8: every protocol version a Mac's hello was refused for (null = absent). */
+    val versionRefusals = CopyOnWriteArrayList<Int?>()
 
     var apps: List<AppEntry> = emptyList()
     var iconResult: String? = null
@@ -330,8 +332,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     }
 
     override fun stop() {
+        onClipStop?.invoke()
         clipListener = null
     }
+
+    /** Runs inside the session's shutdown, before the listener goes: a slow teardown. */
+    var onClipStop: (() -> Unit)? = null
 
     /** Whether the session has started listening; it does so just after `welcome` is queued. */
     val clipListening: Boolean get() = clipListener != null
@@ -369,5 +375,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) {
         sessionChanges.add(SessionChange(connected, clientId, macName, windows))
+    }
+
+    override fun onVersionRefused(macV: Int?) {
+        versionRefusals.add(macV)
     }
 }

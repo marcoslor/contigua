@@ -8,6 +8,8 @@ import SwiftUI
 
 struct LaunchOptions {
     var connect: (host: String, port: UInt16)?
+    /// `--connect2`: the test-only second LAN provider (PATH-20's e2e).
+    var connect2: (host: String, port: UInt16)?
     var openPackages: [String] = []
     var openPhone = false
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
@@ -43,12 +45,18 @@ struct LaunchOptions {
     var floatWindows = false
     /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
     var debugChromeState: String?
+    /// `--debug-frame-log FILE`: one line per video frame a window received,
+    /// with the path it arrived on (e2e; DebugFrameLog.swift).
+    var debugFrameLog: String?
     /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
     var debugBanner: String?
     /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
     var debugDeckGrid: String?
     /// `--debug-deck-zoom FILE`: the Deck's double-click zoom, measured (e2e `deck`).
     var debugDeckZoom: String?
+    /// `--debug-stream-zoom FILE`: a live stream window's double-click zoom,
+    /// measured against a scripted drag (e2e `zoom`).
+    var debugStreamZoom: String?
     var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
@@ -66,6 +74,15 @@ struct LaunchOptions {
     /// the phone's app list arrives (e2e).
     var dockAdd: String?
     var dockRemove: String?
+    /// `--dock-launch-delay SECONDS`: hold the automatic identity's build and
+    /// launch back so it lands after the window closes (e2e race).
+    var dockLaunchDelay: TimeInterval?
+    /// `--dock-bind-delay SECONDS`: hold the automatic launch's pid callback
+    /// back, as a slow launch would (e2e race).
+    var dockBindDelay: TimeInterval?
+    /// `--dock-debug-listen-delay SECONDS`: a newly built shim registers its
+    /// observers that many seconds after launch, as a slow launch does (e2e).
+    var dockDebugListenDelay: TimeInterval?
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
     /// through the same code the Settings ▸ Phones ▸ Rename dialog calls (e2e).
     var setNickname: String?
@@ -98,6 +115,9 @@ struct LaunchOptions {
     /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
     /// instead of the App Group container (e2e `controls` check; no extension).
     var controlsDirectory: String?
+    /// `--debug-motion full` (test hook): effective Reduce Motion is off for
+    /// this run, whatever the system says (the VM's fisheye proof).
+    var debugMotion: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -108,6 +128,7 @@ struct LaunchOptions {
     /// (sec L-6: `--debug-control` alone can drive a live session).
     static let testHooks: [String: Bool] = [
         "--connect": true,
+        "--connect2": true,
         "--open": true,
         "--open-phone": false,
         "--resize-stream": true,
@@ -128,6 +149,7 @@ struct LaunchOptions {
         "--dump-video": true,
         "--float-windows": false,
         "--debug-chrome-state": true,
+        "--debug-frame-log": true,
         "--debug-banner": true,
         "--audio-stats": true,
         "--share-log": true,
@@ -136,6 +158,9 @@ struct LaunchOptions {
         "--dock-dir": true,
         "--dock-add": true,
         "--dock-remove": true,
+        "--dock-launch-delay": true,
+        "--dock-bind-delay": true,
+        "--dock-debug-listen-delay": true,
         "--set-nickname": true,
         "--continue-on-mac": false,
         "--background": false,
@@ -146,6 +171,7 @@ struct LaunchOptions {
         "--files-bridge-dir": true,
         "--files-domain-seen": true,
         "--controls-dir": true,
+        "--debug-motion": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -175,6 +201,11 @@ struct LaunchOptions {
                 if let value = next(), let colon = value.lastIndex(of: ":"),
                    let port = UInt16(value[value.index(after: colon)...]) {
                     options.connect = (String(value[..<colon]), port)
+                }
+            case "--connect2":
+                if let value = next(), let colon = value.lastIndex(of: ":"),
+                   let port = UInt16(value[value.index(after: colon)...]) {
+                    options.connect2 = (String(value[..<colon]), port)
                 }
             case "--open":
                 if let value = next() {
@@ -218,12 +249,16 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--debug-chrome-state":
                 options.debugChromeState = next()
+            case "--debug-frame-log":
+                options.debugFrameLog = next()
             case "--debug-banner":
                 options.debugBanner = next()
             case "--debug-deck-grid":
                 options.debugDeckGrid = next()
             case "--debug-deck-zoom":
                 options.debugDeckZoom = next()
+            case "--debug-stream-zoom":
+                options.debugStreamZoom = next()
             case "--audio-stats":
                 options.audioStatsFile = next()
             case "--profile":
@@ -242,6 +277,12 @@ struct LaunchOptions {
                 options.dockAdd = next()
             case "--dock-remove":
                 options.dockRemove = next()
+            case "--dock-launch-delay":
+                if let value = next() { options.dockLaunchDelay = Double(value) }
+            case "--dock-bind-delay":
+                if let value = next() { options.dockBindDelay = Double(value) }
+            case "--dock-debug-listen-delay":
+                if let value = next() { options.dockDebugListenDelay = Double(value) }
             case "--set-nickname":
                 options.setNickname = next()
             case "--continue-on-mac":
@@ -262,6 +303,8 @@ struct LaunchOptions {
                 options.filesDomainSeen = next()
             case "--controls-dir":
                 options.controlsDirectory = next()
+            case "--debug-motion":
+                options.debugMotion = next()
             default:
                 break
             }
@@ -308,6 +351,17 @@ struct LaunchOptions {
         let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
         return (UInt32(parts.first ?? "") ?? 0, parts.count > 1 ? (Double(parts[1]) ?? 0) : 0)
     }
+
+    #if PD_TEST_HOOKS
+    /// `--check-input-script FILE`: the e2e rig's rehearsal. Parses the script
+    /// through the same grammar the driver uses and exits, so a boot can never
+    /// spend itself on a line the app would reject at load (`wait 80`).
+    static func checkInputScript(_ arguments: [String]) -> String? {
+        guard let flag = arguments.firstIndex(of: "--check-input-script"),
+              arguments.indices.contains(flag + 1) else { return nil }
+        return arguments[flag + 1]
+    }
+    #endif
 }
 
 // MARK: - Environment shared by the scenes and the delegate
@@ -322,6 +376,12 @@ final class AppEnvironment {
 
     private init() {
         let options = LaunchOptions.parse(CommandLine.arguments)
+        #if PD_TEST_HOOKS
+        if ProcessInfo.processInfo.environment["PD_GRID_CHANGES"] != nil {
+            // Line-buffered stdout, so a killed run still has its trace.
+            setvbuf(stdout, nil, _IOLBF, 0)
+        }
+        #endif
         // A profile name that does not parse must not fall back to the default
         // profile: a test run would then use the user's data.
         let release = Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String == "release"
@@ -424,6 +484,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LiveTextWarmer.start()
         if let path = environment.options.debugDeckZoom {
             DeckZoomProbe.start(path: path)
+        }
+        if let path = environment.options.debugStreamZoom {
+            StreamZoomProbe.start(path: path)
         }
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
@@ -533,6 +596,39 @@ enum DeckWindow {
 @main
 enum PocketDeckMain {
     static func main() {
+        #if PD_TEST_HOOKS
+        if let script = LaunchOptions.checkInputScript(CommandLine.arguments) {
+            do {
+                let text = try String(contentsOfFile: script, encoding: .utf8)
+                _ = try DebugInputScript.parse(text)
+                // The rest of the phase's argv is parsed exactly as the run
+                // would parse it; a flag with a missing or malformed value is
+                // a failure here, not a boot.
+                let options = LaunchOptions.parse(CommandLine.arguments)
+                let arguments = CommandLine.arguments
+                let required: [(String, Bool)] = [
+                    ("--connect", options.connect != nil),
+                    ("--connect2", options.connect2 != nil),
+                    ("--quit-after", options.quitAfter != nil),
+                    ("--debug-input-script", options.debugInputScript != nil),
+                    ("--profile", options.profile != nil),
+                ]
+                for (flag, parsed) in required where arguments.contains(flag) && !parsed {
+                    throw NSError(domain: "p1-proof", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "\(flag) has no valid value"])
+                }
+                if let refusal = options.launchRefusal(releaseBuild: false) {
+                    throw NSError(domain: "p1-proof", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: refusal])
+                }
+                print("input script ok")
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(("check-launch \(script): \(error)\n").utf8))
+                exit(2)
+            }
+        }
+        #endif
         // Window state saved by an older build (or by a copy started without a
         // window) must never leave the app without its Deck. Registered, not
         // written: nothing lands in the user's defaults.

@@ -27,8 +27,14 @@ object ShareRequest {
      * inaccessible to the app, even in its own package folder).
      */
     fun stageDir(context: Context): File? {
-        val media = context.getExternalMediaDirs().firstOrNull { it != null } ?: return null
-        return File(media, "shared")
+        // Not getExternalMediaDirs() or Environment.getExternalStorageDirectory():
+        // both reach system services that refuse the app package under uid 2000
+        // ("package does not match caller's uid"), which killed the SEND step
+        // before it could log (emulator boots 3/4). The real root is the one
+        // DeckService gives the file browser; the app's external media folder
+        // is the one folder both identities can read.
+        val packageName = context.applicationInfo.packageName
+        return File(File(DropPolicy.STORAGE_ROOT, "Android/media/$packageName"), "shared")
     }
 
     /** The app-owned copy of the shared files: the one folder the provider serves. */
@@ -41,6 +47,25 @@ object ShareRequest {
      * [DropPolicy.NAME_MAX_CHARS] characters — and [mime] either absent or a
      * plain `type/subtype`.
      */
+    /**
+     * One gesture's checked request (SHARE-17): 1 to [ShareCache.MAX_FILES]
+     * bare names and their matching mime types. Null when any one is refused,
+     * so the trampoline shares all of them or none.
+     */
+    fun parseBatch(names: List<String>?, mimes: List<String>?): List<Target>? {
+        val raw = names?.takeIf { it.isNotEmpty() } ?: return null
+        if (raw.size > ShareCache.MAX_FILES) return null
+        val types = when {
+            mimes.isNullOrEmpty() -> List(raw.size) { DEFAULT_MIME }
+            mimes.size == raw.size -> mimes
+            else -> return null
+        }
+        return raw.zip(types).map { (name, mime) -> parse(name, mime) ?: return null }
+    }
+
+    /** The window's package when it is a package name; anything else means the chooser. */
+    fun parseTarget(raw: String?): String? = DropPolicy.packageName(raw)
+
     fun parse(name: String?, mime: String?): Target? {
         val raw = name?.takeIf { it.isNotEmpty() } ?: return null
         val type = mime?.takeIf { it.isNotEmpty() } ?: DEFAULT_MIME

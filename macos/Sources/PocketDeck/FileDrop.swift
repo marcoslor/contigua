@@ -109,7 +109,8 @@ enum DropLimits {
 
 /// What the sender needs from a session — the wire is a detail here.
 protocol DropChannel: AnyObject {
-    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int)
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String,
+                   resume: Int, target: String?, index: Int, count: Int)
     func cancelDrop(id: UInt32)
     func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
 }
@@ -167,6 +168,9 @@ final class FileDropSender {
     /// Every phase change, the outcome's timeout included: the pill's owner is
     /// this sender, so nothing else schedules a hide.
     @ObservationIgnored var onPhase: ((Phase) -> Void)?
+    /// The gesture is over (saved, refused, cancelled or lost): a source's temp
+    /// folder can go. Not called while a batch moves to its next file.
+    @ObservationIgnored var onSettled: (() -> Void)?
 
     /// How long an outcome stays up, and the sleep it waits on (a test's own).
     private let finishedHold: Duration
@@ -206,13 +210,27 @@ final class FileDropSender {
     /// A transfer that died with the connection: the phone kept a temp, so a
     /// re-drag of a file with this sha resumes at (bytes) for this long.
     private var resumeHints: [String: (bytes: Int, until: Date)] = [:]
+    /// The app window the batch is for; nil for the Deck and a phone window.
+    private var target: String?
+    /// How many files this gesture carries, for the batch fields.
+    private var batchCount = 0
 
-    func send(_ urls: [URL], session: any DropChannel) {
-        guard !isBusy else {
-            return finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
-        }
+    /// A second drop while one runs: keep the running pill and its transfer.
+    func busy() {
+        finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
+    }
+
+    /// A source that never became files (SHARE-18): the same pill, the same
+    /// five-second hide, and a closed outcome token for the log.
+    func refuse(_ text: String, outcome: Outcome = .nothing) {
+        finish(text, ok: false, outcome: outcome)
+    }
+
+    func send(_ urls: [URL], session: any DropChannel, target: String? = nil) {
+        guard !isBusy else { return busy() }
         clearTask?.cancel()
         self.session = session
+        self.target = target
         cancelled = false
         setPhase(.sending("", fraction: 0))
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -234,6 +252,7 @@ final class FileDropSender {
                 return finish("\(big.name) \(why), nothing was sent.", ok: false, outcome: .overCap)
             }
             queue = drops
+            batchCount = drops.count
             next()
         }
     }
@@ -254,7 +273,8 @@ final class FileDropSender {
         setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
-                          sha256: next.sha256, resume: resume)
+                          sha256: next.sha256, resume: resume, target: target,
+                          index: batchCount - queue.count, count: batchCount)
     }
 
     private func resume(sha256: String) -> Int {
@@ -327,7 +347,11 @@ final class FileDropSender {
         if result.ok, let path = result.path {
             let name = path.split(separator: "/").last.map(String.init) ?? ""
             if queue.isEmpty {
-                finish("Saved on the phone: \(name)", ok: true, outcome: .saved)
+                // One gesture is one pill: a batch says how many files landed,
+                // not the name of its last file (>5 are saved, never shared).
+                let text = batchCount > 1 ? "Saved \(batchCount) files on the phone."
+                                          : "Saved on the phone: \(name)"
+                finish(text, ok: true, outcome: .saved)
             } else {
                 finish("Saved \(name), sending the next file…", ok: true, outcome: .saved, keepState: true)
                 next()
@@ -376,13 +400,19 @@ final class FileDropSender {
         if keepState { return }
         queue = []
         current = nil
+        target = nil
+        batchCount = 0
         try? reader?.close()
         reader = nil
         id = 0
         inFlight = 0
         offset = 0
         cursor = 0
+        // A previous outcome's five seconds must not hide this one (a source
+        // refusal can land as the last transfer's timer fires).
+        clearTask?.cancel()
         setPhase(.finished(text, ok: ok))
+        onSettled?()
         clearTask = Task { [weak self] in
             guard let self else { return }
             await self.sleep(self.finishedHold)

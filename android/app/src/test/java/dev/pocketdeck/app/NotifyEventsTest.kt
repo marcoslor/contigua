@@ -1,6 +1,7 @@
 package dev.pocketdeck.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -16,6 +17,7 @@ class NotifyEventsTest {
             title = "Design review",
             text = "Deck vs slides at 4",
             when_ = 1_700_000_000_000,
+            alert = true,
         )
         assertNotNull(event)
         assertEquals("notify.post", event!!["t"])
@@ -27,22 +29,22 @@ class NotifyEventsTest {
 
     @Test
     fun `long text is dropped whole, and empty content drops the event`() {
-        assertNull(NotifyEvents.notificationEvent("a", "com.a", "", "", 0))
+        assertNull(NotifyEvents.notificationEvent("a", "com.a", "", "", 0, alert = true))
         // over the cap: null (nothing partial goes out)
         assertNull(
-            NotifyEvents.notificationEvent("a", "com.a", "x".repeat(NotifyEvents.MAX_CHARS + 1), null, 5),
+            NotifyEvents.notificationEvent("a", "com.a", "x".repeat(NotifyEvents.MAX_CHARS + 1), null, 5, alert = true),
         )
         // title only, no text: still valid
-        assertNotNull(NotifyEvents.notificationEvent("a", "com.a", "title only", null, 5))
+        assertNotNull(NotifyEvents.notificationEvent("a", "com.a", "title only", null, 5, alert = true))
     }
 
     @Test
     fun `our own package and malformed ids are skipped`() {
-        assertNull(NotifyEvents.notificationEvent("a", "dev.pocketdeck", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("a", "bad pkg!", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("", "com.a", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("a".repeat(65), "com.a", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("has|space", "com.a", "t", "x", 1))
+        assertNull(NotifyEvents.notificationEvent("a", "dev.pocketdeck", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("a", "bad pkg!", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("", "com.a", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("a".repeat(65), "com.a", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("has|space", "com.a", "t", "x", 1, alert = true))
     }
 
     @Test
@@ -173,6 +175,7 @@ class NotifyEventsTest {
     fun `notification event carries actions and ongoing`() {
         val event = NotifyEvents.notificationEvent(
             id = "k-1", pkg = "com.chat", title = "t", text = "x", when_ = 5,
+            alert = true,
             actions = NotifyEvents.selectActions(listOf(candidate(1, "Reply", reply = true))),
             ongoing = true,
         )!!
@@ -182,7 +185,7 @@ class NotifyEventsTest {
         assertEquals(1, actions.single()["i"])
         assertEquals(true, actions.single()["reply"])
         // No actions, no field (an old Mac sees the same message as before).
-        assertNull(NotifyEvents.notificationEvent("k-1", "com.chat", "t", "x", 5)!!["actions"])
+        assertNull(NotifyEvents.notificationEvent("k-1", "com.chat", "t", "x", 5, alert = true)!!["actions"])
     }
 
     @Test
@@ -215,13 +218,114 @@ class NotifyEventsTest {
 
     @Test
     fun `the debug poster is the only own-package notification that leaves`() {
-        assertNull(NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1))
+        assertNull(NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, alert = true))
         assertNotNull(
-            NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, debugPoster = true),
+            NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, alert = true, debugPoster = true),
         )
         assertTrue(NotifyEvents.debugPoster("dev.pocketdeck", flagged = true, debugBuild = true))
         // Release builds never forward their own package, flagged or not.
         assertEquals(false, NotifyEvents.debugPoster("dev.pocketdeck", flagged = true, debugBuild = false))
         assertEquals(false, NotifyEvents.debugPoster("com.other", flagged = true, debugBuild = true))
+    }
+
+    @Test
+    fun `alert follows Android's own rule`() {
+        // The first post of a key always alerts, whatever the app asked for.
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = true, contentChanged = false, progressOnly = true))
+        // An update the app asked to alert once does not.
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = true, contentChanged = true, progressOnly = false))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = true, contentChanged = false, progressOnly = false))
+        // An update whose title and text did not change says nothing new.
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = false, progressOnly = false))
+        // A changed update alerts.
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+    }
+
+    @Test
+    fun `a bar that only moves is not news`() {
+        // Row 6: both posts carry a bar and the title stayed -> quiet, even
+        // with a text that moves ("12 MB of 50 MB" -> "13 MB of 50 MB").
+        assertTrue(NotifyEvents.progressOnly(previousHadBar = true, hadBar = true,
+                                             previousTitleHash = "t1", titleHash = "t1"))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = true))
+        // The post that drops the bar has no bar: it is not progress-only.
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = true, hadBar = false,
+                                                      previousTitleHash = "t1", titleHash = "t1"))
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        // A first post with a bar still alerts, and a new title alerts.
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = false, contentChanged = true, progressOnly = true))
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = true, hadBar = true,
+                                                      previousTitleHash = "t1", titleHash = "t2"))
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        // No previous post, no bar: nothing to compare.
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = false, hadBar = true,
+                                                      previousTitleHash = null, titleHash = "t1"))
+    }
+
+    @Test
+    fun `a children-only group keeps its lone summary quiet`() {
+        assertEquals(false, NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_CHILDREN))
+        assertTrue(NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_SUMMARY))
+        assertTrue(NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_ALL))
+    }
+
+    @Test
+    fun `importance can only make a post quieter`() {
+        assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_MIN))
+        assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_LOW))
+        assertEquals(false, NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_DEFAULT))
+        assertEquals(false, NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_HIGH))
+        assertEquals(false, NotifyEvents.quietByImportance(null))
+    }
+
+    @Test
+    fun `the title hash is stable, short and carries no text`() {
+        val hash = NotifyEvents.titleHash("Download")
+        assertEquals(hash, NotifyEvents.titleHash("Download"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.titleHash("Download failed"))
+        assertNotEquals(hash, NotifyEvents.titleHash(null))
+        assertEquals(NotifyEvents.titleHash(null), NotifyEvents.titleHash(""))
+        assertEquals(false, hash.contains("Download"))
+    }
+
+    @Test
+    fun `content hashes compare posts without keeping their text`() {
+        val hash = NotifyEvents.contentHash("Design review", "Deck at 4")
+        assertEquals(hash, NotifyEvents.contentHash("Design review", "Deck at 4"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.contentHash("Design review", "Deck at 5"))
+        assertNotEquals(hash, NotifyEvents.contentHash("Design review 2", "Deck at 4"))
+        // A missing title and an empty one are the same content.
+        assertEquals(NotifyEvents.contentHash(null, "x"), NotifyEvents.contentHash("", "x"))
+        assertEquals(false, hash.contains("Deck"))
+    }
+
+    @Test
+    fun `group hashes are 64 bits over the package and the key`() {
+        val hash = NotifyEvents.groupHash("com.whatsapp", "Family chat")
+        assertEquals(hash, NotifyEvents.groupHash("com.whatsapp", "Family chat"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.groupHash("com.whatsapp", "Work chat"))
+        assertNotEquals(hash, NotifyEvents.groupHash("com.slack", "Family chat"))
+        // The separator keeps a split across the two strings apart.
+        assertNotEquals(NotifyEvents.groupHash("a", "bc"), NotifyEvents.groupHash("ab", "c"))
+        assertEquals(false, hash.contains("Family"))
+    }
+
+    @Test
+    fun `every post carries alert and only a grouped one carries group`() {
+        val plain = NotifyEvents.notificationEvent("k", "com.a", "t", "x", 1, alert = true)!!
+        assertEquals(true, plain["alert"])
+        assertEquals(false, plain.containsKey("group"))
+        val quiet = NotifyEvents.notificationEvent(
+            "k", "com.a", "t", "x", 1, alert = false, group = "0123456789abcdef",
+        )!!
+        assertEquals(false, quiet["alert"])
+        assertEquals("0123456789abcdef", quiet["group"])
     }
 }

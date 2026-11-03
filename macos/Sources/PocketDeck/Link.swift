@@ -219,6 +219,9 @@ struct LinkMachine {
     private(set) var link: Link = .idle
     private var outageStart: Date?
     private var failures = 0
+    /// Consecutive closes right after TLS, before any `welcome` (PAIR-23): one
+    /// may be a phone restarting, two in a row mean it refuses this Mac.
+    private var earlyCloses = 0
     /// Where to go back to when a pairing is cancelled.
     private var resume: Link = .idle
 
@@ -234,18 +237,21 @@ struct LinkMachine {
             link = .connecting(phone)
             outageStart = now
             failures = 0
+            earlyCloses = 0
             return [.attempt(after: 0)]
 
         case .activate(let phone):
             link = .connecting(phone)
             outageStart = now
             failures = 0
+            earlyCloses = 0
             return [.attempt(after: 0)]
 
         case .welcome(let phone):
             link = .online(phone)
             outageStart = nil
             failures = 0
+            earlyCloses = 0
             return []
 
         case .attemptFailed(let reason):
@@ -254,6 +260,7 @@ struct LinkMachine {
         case .reachabilityHint, .tryNow:
             guard link.isRecovering || isRetryable(event) else { return [] }
             failures = 0
+            earlyCloses = 0
             return [.attempt(after: 0)]
 
         case .beginPairing(let phone):
@@ -335,11 +342,35 @@ struct LinkMachine {
             // than leaving a silent offline link (PAIR-5).
             link = .pairing(phone, .coolingDown)
             return [.stopAttempts]
-        case "pin-mismatch", "bad_pin", "no-pin":
-            // v2: the TLS-level pairing state died; retries never fix it, the
-            // re-pair hint handles the person's next step.
+        case "pin-mismatch", "bad_pin", "no-pin", "not_paired":
+            // v2: the TLS-level pairing state died, or the phone no longer pins
+            // this Mac at all (PAIR-23); retries never fix it, the re-pair hint
+            // handles the person's next step.
+            //
+            // A retry to a phone whose pairing switch is off cannot present a
+            // pin at all, so its `no-pin` is that same refusal, not a lost key:
+            // the sentence and the backoff stay (PAIR-13).
+            if reason == "no-pin", case .offline(_, .pairingsOff) = link {
+                failures += 1
+                return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
+            }
             link = .needsPairing(phone)
             return [.stopAttempts]
+        case "closed-early":
+            // A phone that pins nothing for this Mac closes right after TLS
+            // without a word when its pairings are off (PAIR-23). One such
+            // close may be the phone restarting; twice in a row is a refusal.
+            earlyCloses += 1
+            if earlyCloses >= 2 {
+                link = .needsPairing(phone)
+                return [.stopAttempts]
+            }
+            failures += 1
+            if case .online = link {
+                link = .reconnecting(phone)
+                outageStart = now
+            }
+            return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
         case "version":
             link = .offline(phone, .versionMismatch)
             return [.stopAttempts]

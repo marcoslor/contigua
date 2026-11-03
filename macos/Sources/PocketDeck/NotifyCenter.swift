@@ -59,6 +59,58 @@ enum NotifyLiveOutcome: Equatable {
     case coalesced
 }
 
+/// What a post does to the Mac's banner set (NOTIFY-19, docs/specs/
+/// notifications.md): Android alerts the first post of a key and an update it
+/// did not silence, and never the quiet ones.
+enum NotifyPostPlan: Equatable {
+    /// No banner exists and the post alerts: present one.
+    case banner
+    /// No banner exists and the post is quiet: add it to the list, present
+    /// nothing (a LOW channel, or a notification first seen mid-life).
+    case quietAdd
+    /// An alerting update of a delivered banner: present the replacement.
+    case replace
+    /// A quiet update: replace the delivered banner without presenting it.
+    case quietReplace
+
+    /// Nothing is presented: the post only lands in the list.
+    var quiet: Bool { self == .quietAdd || self == .quietReplace }
+}
+
+enum NotifyPostPolicy {
+    static func plan(alert: Bool, delivered: Bool) -> NotifyPostPlan {
+        if !delivered { return alert ? .banner : .quietAdd }
+        return alert ? .replace : .quietReplace
+    }
+}
+
+/// A post that supersedes one still in its hold (NOTIFY-19): the earlier post
+/// never reached Notification Center, so the newcomer inherits its delivery
+/// state, and the delivered post alerts if either of them did. Only a banner
+/// already handed to the system can be replaced quietly.
+enum NotifyPostMerge {
+    static func alert(new: Bool, superseded: Bool?) -> Bool {
+        new || (superseded ?? false)
+    }
+
+    static func delivered(supersededReplacesDelivered: Bool?, requestIdExists: Bool) -> Bool {
+        supersededReplacesDelivered ?? requestIdExists
+    }
+}
+
+/// What the Mac's record says about one post: the wire's alert decision, the
+/// banners it holds for that id, and the running presented/quiet counts.
+struct NotifyBannerFacts: Equatable {
+    var alert: Bool
+    var banners: Int
+    var presented: Int
+    var quiet: Int
+
+    var record: String {
+        "alert=\(alert ? 1 : 0) banners=\(banners) presented=\(presented) quiet=\(quiet)"
+    }
+}
+
 /// The Live Update rows behind the menu bar's section, with in-place updates and
 /// the one-per-second rule (docs/design/notify.md). Pure, so the rules are
 /// unit-tested; the caller owns the banner and the recording.
@@ -252,6 +304,12 @@ struct PhoneNotification: Equatable {
     var ongoing: Bool = false
     var actions: [NotifyActionInfo] = []
     var live: NotifyLive? = nil
+    /// Whether Android would alert for this post (NOTIFY-19): the first post of
+    /// a key, or an update the app did not silence. Required on the wire.
+    var alert: Bool = true
+    /// `notify.post`'s `group`: a 64-bit hash of the phone's group key
+    /// (NOTIFY-20). Never the key itself; absent when the notification has none.
+    var group: String? = nil
 }
 
 /// One row of the menu bar's "Live on <phone>" section, updated in place.
@@ -310,15 +368,31 @@ enum NotifyMapping {
         return (title, body)
     }
 
+    /// The banner's thread (NOTIFY-4, NOTIFY-20): the phone's id alone, or the
+    /// phone and the notification's group hash when it has one, so a group's
+    /// messages stack together and never with the rest of the phone. Only the
+    /// wire's 16 lowercase hex characters are accepted as a group.
+    static func thread(phoneId: String, group: String?) -> String {
+        guard let group, isValidGroup(group) else { return phoneId }
+        return "\(phoneId).\(group)"
+    }
+
+    static func isValidGroup(_ group: String) -> Bool {
+        group.count == 16 && group.allSatisfy { "0123456789abcdef".contains($0) }
+    }
+
     /// Field sizes and counts only — never the text itself (privacy). The
     /// category id is a hash of the shape, so the e2e can see the counts.
     static func record(posted n: PhoneNotification, title: String, body: String,
                        thread: String, code: Bool, category: String,
+                       composed: String? = nil, facts: NotifyBannerFacts,
                        image: NotifyImageInfo? = nil) -> String {
         let reply = n.actions.contains { $0.reply } ? 1 : 0
         var line = "notify post id=\(n.id) pkg=\(n.pkg) titleLen=\(title.count) bodyLen=\(body.count)"
             + " thread=\(thread) actions=\(n.actions.count) reply=\(reply) code=\(code ? 1 : 0)"
             + " ongoing=\(n.ongoing ? 1 : 0) category=\(category)"
+        if let composed { line += " " + composed }
+        line += " " + facts.record
         if n.live != nil { line += " live=1" }
         if let image { line += " " + image.record }
         return line
@@ -346,6 +420,15 @@ enum NotifyMapping {
     }
 
     static func record(liveEnded id: String) -> String { "notify live id=\(id) end" }
+
+    /// A snapshot dropped an id the phone's active set no longer holds
+    /// (NOTIFY-1). The summary names counts only.
+    static func record(snapshotEnded id: String) -> String { "notify snapshot end id=\(id)" }
+
+    /// The active set itself: its size and how many ids left.
+    static func record(snapshot count: Int, ended: Int) -> String {
+        "notify snapshot ids=\(count) ended=\(ended)"
+    }
 
     static func record(removed id: String) -> String { "notify remove id=\(id)" }
 
@@ -595,6 +678,15 @@ final class NotifyCenter {
     /// there is nothing to attach to).
     var hold: TimeInterval = 0.3
 
+    /// The post package's icon for the attachment (NOTIFY-22). `nil` leaves
+    /// every picture as a plain circle with no badge. Replaceable so tests draw
+    /// a fixture and never read the person's cache.
+    var iconFor: ((_ pkg: String, _ deviceId: String) -> NotifyAttachmentComposer.Icon?)?
+
+    /// Where attachment temp files are written. Tests point it at a temp folder;
+    /// nil means the profile's caches.
+    var attachmentRoot: URL?
+
     /// What a banner response or a debug action needs, kept for the ids the
     /// phone issued. Bounded like the wire's own id map.
     private struct Known {
@@ -619,11 +711,15 @@ final class NotifyCenter {
         var category: String
         var image: (info: NotifyImageInfo, data: Data)?
         var work: DispatchWorkItem
+        /// A banner for this id already existed when the post arrived.
+        var replacesDelivered: Bool
     }
 
     private var known: [String: Known] = [:]
     private var knownOrder: [String] = []
     private var requestIds: [String: String] = [:]
+    /// Per id: how many posts presented and how many replaced quietly (NOTIFY-19).
+    private var postCounts: [String: (presented: Int, quiet: Int)] = [:]
     private var pending: [String: PendingPost] = [:]
     /// The id → temp attachment path; deleted with the banner or a disconnect.
     private var attachments: [String: URL] = [:]
@@ -636,12 +732,34 @@ final class NotifyCenter {
     private static let maxKnown = 200
 
     /// Where a profile's attachment temp files live: caches, not Documents.
-    private static var attachmentDirectory: URL? {
+    private static var profileAttachmentDirectory: URL? {
         guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             return nil
         }
         return base.appendingPathComponent(Profile.active.supportDirectoryName, isDirectory: true)
             .appendingPathComponent("notify", isDirectory: true)
+    }
+
+    private var attachmentDirectory: URL? { attachmentRoot ?? Self.profileAttachmentDirectory }
+
+    /// The post package's cached icon in the composer's form (NOTIFY-22): the
+    /// Deck's slot first, then the Dock's, so the first source that fits the
+    /// attachment's size is the one drawn.
+    nonisolated static func cachedIcon(pkg: String, deviceId: String) -> NotifyAttachmentComposer.Icon? {
+        var candidates: [NotifyAttachmentComposer.IconCandidate] = []
+        for sizeClass in IconSizeClass.allCases {
+            let layers = IconCache.shared.loadLayerData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
+            let flat = IconCache.shared.loadData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
+            if let layers, let fg = NotifyAttachmentComposer.decode(layers.fg),
+               let bg = NotifyAttachmentComposer.decode(layers.bg) {
+                candidates.append(NotifyAttachmentComposer.IconCandidate(
+                    layers: (fg, bg), flat: nil, sizeClass: sizeClass))
+            } else if let flat, let image = NotifyAttachmentComposer.decode(flat) {
+                candidates.append(NotifyAttachmentComposer.IconCandidate(
+                    layers: nil, flat: image, sizeClass: sizeClass))
+            }
+        }
+        return candidates.isEmpty ? nil : NotifyAttachmentComposer.Icon(candidates: candidates)
     }
 
     /// The whole set of live rows (the menu bar reads this).
@@ -705,15 +823,26 @@ final class NotifyCenter {
         // still waits its hold so the line can carry the picture that follows.
         let category = log == nil ? categories.category(for: n, hasCode: code != nil) : shape
         let requestId = requestId(phoneId: phoneId, id: n.id)
+        // A post inside the hold of one still waiting supersedes it (NOTIFY-19):
+        // it inherits that post's delivery state and alerts if either did, so a
+        // quiet re-post can never swallow the first banner. Only a banner
+        // already handed to Notification Center can be replaced quietly.
+        let superseded = pending[n.id]
+        var delivered = n
+        delivered.alert = NotifyPostMerge.alert(new: n.alert, superseded: superseded?.notification.alert)
+        let replacesDelivered = NotifyPostMerge.delivered(
+            supersededReplacesDelivered: superseded?.replacesDelivered,
+            requestIdExists: requestIds[n.id] != nil,
+        )
         requestIds[n.id] = requestId
         // A cancellation of an earlier post for the same id ends its wait too.
         pending.removeValue(forKey: n.id)?.work.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.deliver(id: n.id)
         }
-        pending[n.id] = PendingPost(notification: n, phoneId: phoneId, phoneName: phoneName,
+        pending[n.id] = PendingPost(notification: delivered, phoneId: phoneId, phoneName: phoneName,
                                     title: title, body: body, category: category,
-                                    image: nil, work: work)
+                                    image: nil, work: work, replacesDelivered: replacesDelivered)
         if hold > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
         } else {
@@ -746,24 +875,63 @@ final class NotifyCenter {
     /// The post's wait is over: write its attachment (if any) and submit it.
     private func deliver(id: String) {
         guard let post = pending.removeValue(forKey: id) else { return }
+        let plan = NotifyPostPolicy.plan(alert: post.notification.alert,
+                                        delivered: post.replacesDelivered)
+        // NOTIFY-19: a quiet update replaces the delivered banner without
+        // presenting it. `.passive` is the level that adds to the list without
+        // lighting the screen (UNNotificationContent.h, docs/design/notify.md).
+        var counts = postCounts[id] ?? (presented: 0, quiet: 0)
+        if plan.quiet { counts.quiet += 1 } else { counts.presented += 1 }
+        postCounts[id] = counts
+        let thread = NotifyMapping.thread(phoneId: post.phoneId, group: post.notification.group)
         var info = post.image?.info
         var url: URL?
-        if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
-                                                                 info: image.info, data: image.data) {
+        // NOTIFY-22: the picture is cut to a circle with the sending app's
+        // badge, and with no picture the app's icon alone is the attachment.
+        let picture = post.image.flatMap { NotifyAttachmentComposer.decode($0.data) }
+        let composition: NotifyAttachmentComposer.Outcome
+        if post.image != nil, picture == nil {
+            // Undecodable bytes never become "no picture": keep them as sent.
+            composition = NotifyAttachmentComposer.Outcome(attachment: nil, fallback: .render)
+        } else {
+            composition = NotifyAttachmentComposer.compose(
+                picture: picture,
+                icon: iconFor?(post.notification.pkg, post.phoneId),
+            )
+        }
+        if let composed = composition.attachment {
+            let composedInfo = NotifyImageInfo(mime: composed.mime, width: composed.side,
+                                               height: composed.side, size: composed.data.count)
+            info = composedInfo
+            if let written = writeAttachment(phoneId: post.phoneId, id: id, info: composedInfo,
+                                             data: composed.data) {
+                url = written
+                info?.attachment = written.path
+                attachments[id] = written
+            }
+        } else if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
+                                                                         info: image.info, data: image.data) {
+            // The composition could not meet the caps: today's picture.
             url = written
             info?.attachment = written.path
             attachments[id] = written
         }
         record(NotifyMapping.record(posted: post.notification, title: post.title, body: post.body,
-                                    thread: post.phoneId, code: NotifyCode.find(title: post.notification.title,
+                                    thread: thread, code: NotifyCode.find(title: post.notification.title,
                                                                                  text: post.notification.text) != nil,
-                                    category: post.category, image: info))
+                                    category: post.category, composed: composition.record,
+                                    facts: NotifyBannerFacts(alert: post.notification.alert,
+                                                             banners: requestIds[id] == nil ? 0 : 1,
+                                                             presented: counts.presented,
+                                                             quiet: counts.quiet),
+                                    image: info))
         guard log == nil else { return }
         let content = UNMutableNotificationContent()
         content.title = post.title
         if !post.body.isEmpty { content.body = post.body }
-        content.threadIdentifier = post.phoneId
+        content.threadIdentifier = thread
         content.sound = nil
+        if plan.quiet { content.interruptionLevel = .passive }
         content.categoryIdentifier = post.category
         content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": post.notification.pkg,
                             "id": id, "phone": post.phoneId]
@@ -779,7 +947,7 @@ final class NotifyCenter {
 
     /// Writes the temp file 0600 in a 0700 directory; nil when it cannot.
     private func writeAttachment(phoneId: String, id: String, info: NotifyImageInfo, data: Data) -> URL? {
-        guard let directory = Self.attachmentDirectory else { return nil }
+        guard let directory = attachmentDirectory else { return nil }
         let manager = FileManager.default
         do {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -811,7 +979,7 @@ final class NotifyCenter {
         publishLive()
         for (_, url) in attachments { try? FileManager.default.removeItem(at: url) }
         attachments.removeAll()
-        if let directory = Self.attachmentDirectory {
+        if let directory = attachmentDirectory {
             try? FileManager.default.removeItem(at: directory)
         }
         requestIds.values.forEach {
@@ -820,6 +988,7 @@ final class NotifyCenter {
         known.removeAll()
         knownOrder.removeAll()
         requestIds.removeAll()
+        postCounts.removeAll()
     }
 
     private func scheduleLiveFlush() {
@@ -861,9 +1030,39 @@ final class NotifyCenter {
         dropAttachment(id)
         known.removeValue(forKey: id)
         knownOrder.removeAll { $0 == id }
+        postCounts.removeValue(forKey: id)
         if let requestId = requestIds.removeValue(forKey: id) {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [requestId])
         }
+    }
+
+    /// `notify.snapshot` (NOTIFY-1): the phone's complete active set after a
+    /// rejoin. A banner, a live row or a post still waiting that the set no
+    /// longer holds leaves; the quiet posts before the marker already updated
+    /// the rest in place, so nothing here presents a banner.
+    func snapshot(ids: [String]) {
+        let keep = Set(ids)
+        var going = liveStore.items.map(\.id)
+        for id in knownOrder where !going.contains(id) { going.append(id) }
+        for id in pending.keys where !going.contains(id) { going.append(id) }
+        var ended = 0
+        for id in going where !keep.contains(id) {
+            if liveStore.end(id) {
+                record(NotifyMapping.record(liveEnded: id))
+                publishLive()
+            }
+            pending.removeValue(forKey: id)?.work.cancel()
+            dropAttachment(id)
+            known.removeValue(forKey: id)
+            postCounts.removeValue(forKey: id)
+            if let requestId = requestIds.removeValue(forKey: id), log == nil {
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [requestId])
+            }
+            record(NotifyMapping.record(snapshotEnded: id))
+            ended += 1
+        }
+        knownOrder.removeAll { !keep.contains($0) }
+        record(NotifyMapping.record(snapshot: ids.count, ended: ended))
     }
 
     /// A banner click (and the `notifyclick` debug action): opens the package's
@@ -937,6 +1136,7 @@ final class NotifyCenter {
         while knownOrder.count > Self.maxKnown {
             let oldest = knownOrder.removeFirst()
             known.removeValue(forKey: oldest)
+            postCounts.removeValue(forKey: oldest)
             // The id is going away: its temp file must not outlive it.
             if let url = attachments.removeValue(forKey: oldest) {
                 try? FileManager.default.removeItem(at: url)

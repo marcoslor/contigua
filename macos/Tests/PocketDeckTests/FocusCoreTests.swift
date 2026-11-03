@@ -1,5 +1,6 @@
-// Focus core: wanted state from the filter, the once-per-connection reconcile,
-// menu and intent commands, and the stored values.
+// Focus core: wanted state from the filter, menu and intent commands, and the
+// stored values. The connect rule (the edge rule) is the shared control
+// machine's, tested in ControlIntentTests.
 
 import XCTest
 @testable import PocketDeck
@@ -34,21 +35,11 @@ final class FocusCoreTests: XCTestCase {
 
     // MARK: Reconcile
 
-    func testReconcileSendsWantedToASupportedPhone() {
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: .priority, phoneDnd: .off), .send(.priority))
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: .alarms, phoneDnd: .off), .send(.alarms))
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: PhoneDndMode.none, phoneDnd: .off), .send(PhoneDndMode.none))
-    }
-
-    func testReconcileSendsOffWhenNotWanted() {
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: nil, phoneDnd: .off), .send(.off))
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: nil, phoneDnd: .priority), .send(.off))
-    }
-
-    func testReconcileDoesNothingForAnOldPhone() {
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: .priority, phoneDnd: nil), .unsupported)
-        XCTAssertEqual(FocusReconciler.onConnect(wanted: nil, phoneDnd: nil), .unsupported)
-    }
+    // The connect rule itself is the shared control machine's `connected`
+    // transition (ControlIntentTests): it sends only what this phone has not
+    // had, and a person's own change on the phone stands until the Mac intent
+    // changes again. The old-phone skip is the controller's `phoneDnd` guard,
+    // proved by the e2e `focus` check.
 
     // MARK: Menu and intent commands
 

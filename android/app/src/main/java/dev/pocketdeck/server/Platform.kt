@@ -195,6 +195,8 @@ interface VideoSink {
     /** [content] is where the picture sits in the w×h frame (a mirror's black edges are outside it). */
     fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect)
     fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray)
+    /** `window.still`: the stream is live, but its encoder produced nothing. */
+    fun onStill(stream: Int)
 }
 
 /** Receives encoded device-wide audio (one mixer tap, stream 0). */
@@ -344,7 +346,11 @@ interface Power {
     /** Input is flowing; poke the display's own group (throttled internally). */
     fun onInput(displayId: Int)
 
-    /** The set of displays whose streams are currently unpaused. */
+    /**
+     * The set of displays whose app streams are open, covered windows included.
+     * A pause is not a close: the episode keeps every open stream's display and
+     * ends only when the last one closes (or the all-paused grace expires).
+     */
     fun setActiveStreams(
         displayIds: List<Int>,
         allPaused: Boolean = false,
@@ -360,6 +366,18 @@ interface Power {
      * the display call and the key-event fallback.
      */
     fun wakeScreen(): WakeResult = WakeResult.FAILED
+
+    /**
+     * The person's own use of the phone, for the wake-ownership machine
+     * (docs/specs/controls.md CTRL-7): the keyguard went unlocked.
+     */
+    fun onPersonUnlocked() {}
+
+    /**
+     * Display 0's power state changed (`state.screen`): the person's own wake,
+     * or our own wake landing, which the machine tells apart by timing.
+     */
+    fun onPersonScreen(on: Boolean) {}
 
     /**
      * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
@@ -496,12 +514,15 @@ interface ClipboardImagePort {
      * app's content URI; a null is simply "nothing synced", never an error.
      */
     fun readImage(): ClipImage?
+}
 
-    /**
-     * Puts the already-written image [file] on the clipboard; the platform decides
-     * how another app can reach it (a FileProvider URI is the intent).
-     */
-    fun writeImage(file: File, mime: String, label: String)
+/**
+ * The app-owned clipboard write (SHARE-2/16): the shell has the bytes, the app
+ * has the provider and the clipboard. [done] receives the app's answer once,
+ * or false when there is no app or it does not answer in time.
+ */
+fun interface ClipImageHost {
+    fun offer(id: Int, mime: String, bytes: ByteArray, done: (Boolean) -> Unit)
 }
 
 /** Events pushed to the app process (pairing prompt, session state). */
@@ -511,6 +532,13 @@ interface DeckCallback {
     fun onPairingEnded(requestId: String)
     fun onPaired(clientId: String, name: String, keyHex: String)
     fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int)
+
+    /**
+     * R-8/D-4: a Mac's `hello` named another protocol version; `macV` is that
+     * version (null when absent). The app shows the sentence naming which side
+     * to update until a session succeeds.
+     */
+    fun onVersionRefused(macV: Int?) {}
 }
 
 /**

@@ -101,8 +101,8 @@ short timeout; until then the domain's items are the cached ones and dataless it
   https://developer.apple.com/documentation/fileprovider/nsfileprovidercontentpolicy) is what
   Finder's **Keep Downloaded** means; `downloadLazily` (the default) is our ordinary item.
 - Thumbnails come from `NSFileProviderThumbnailing.fetchThumbnails(for:requestedSize:…)`;
-  when the phone can answer cheaply (S5+) they are real phone thumbnails; otherwise the system
-  makes an icon from the file type.
+  the phone makes them over `fs.thumb` for a name that maps to an image or movie type, and
+  every other item keeps the system's type icon (see "Thumbnails (S6)").
 - Offline: `NSFileProviderManager.disconnect(reason:options:[.temporary])` marks the domain
   "may be out of date" while its cached content keeps working; dataless items then answer
   `NSFileProviderError.serverUnreachable`; `reconnect()` when the session is ready again
@@ -945,8 +945,168 @@ Still unverified: the same on a real Mac with the real phone (the hands-on pass)
    rules already in S1 exercised end to end, MediaStore scan on write. Mac: the Deck's "Phone
    files" row (domain state, "Show in Finder", add/remove domain from Settings), the offline
    path of §5. Checks: e2e `files-offline` (kill fakephone → `disconnect` called, cached read
-   works, a write stays pending; restart → `reconnect`, upload lands), and `files-thumbs`
-   (`fetchThumbnails` fills the grid while `isDownloaded` stays false).
+   works, a write stays pending; restart → `reconnect`, upload lands), host `files-bridge`
+   phase `thumb` and VM `files-thumbs` (the icon grid fills from `fs.thumb` while
+   `isDownloaded` stays false — see "Thumbnails (S6)").
+
+## Thumbnails (S6)
+
+Finder's icon grid asks the extension for a picture and no file body: E4's
+run logged `fetchThumbnails ids=big size=2048x2048` and no `fetchContents` for
+`big` afterwards (§1). So the picture comes from the phone, not from a
+materialized copy on the Mac, and the wire addition is one request shaped like
+`fs.read` (PROTOCOL.md "Phone files" › "Thumbnails"). This section is what
+FILES-22…29 carry, and it closes the old open question: the Mac never
+materializes a file just to draw its icon.
+
+**Which items (T1).** Only a name whose extension maps to a type conforming to
+`public.image` or `public.movie` (`UTType(filenameExtension:)`, the same call
+`FilesMap.contentTypeIdentifier` already makes for `ProviderItem.contentType`).
+Everything else — a `.pdf`, a folder, a name with no type — is answered with
+nil data at once, with no phone request, so the system draws its type icon. The
+extension cannot map an identifier to a name, so it sends one `thumb` request
+for every id in the batch and the app makes the decision from the mapped path
+(`FilesThumbPolicy.pathIsMedia`, the same `UTType` call) before any phone
+traffic; a wrong answer here costs a phone round trip per icon.
+
+**The path (T2).** The extension adopts `NSFileProviderThumbnailing`:
+`fetchThumbnails(for:requestedSize:perThumbnailCompletionHandler:completionHandler:)`
+arrives as a batch. Each media item becomes one `thumb` bridge request —
+`{t:"thumb", id, item, size}` (the item's identifier, the batch's long side
+clamped to the wire's 1–4096) — on its own `BridgeConnection`, the bridge's one
+request per connection habit, so the extension needs no demultiplexer and never
+holds more than 3 connections (the bridge's 6-client cap). The app turns it
+into one `fs.thumb {id, path, size}` on the session. No etag goes with it: the
+id map keeps ids and paths, not etags, and a `thumb` of a version the phone has
+already replaced is corrected by the next listing (a picture of the wrong
+version is still only a picture, while a stat per icon would cost more); the
+phone's `etag` field stays optional for any other caller. the phone answers with
+`FS_DATA` frames (`stream` = the phone id), then `fs.thumb.end {id, mime, size,
+sha256}`, or one `fs_*` failure. The extension hands the bytes to the system as
+`Data` — `perThumbnailCompletionHandler` takes no type, and the system sniffs
+JPEG/PNG — checks the end's `size` and `sha256` against what it received (the
+read's rule) and answers nil on a mismatch, and calls the batch's completion
+once. The bridge's own version goes 3 → 4 (new request and reply cases); the
+phone's wire version stays 4 (new `t` values only).
+
+**Lost or missing (R-1).** The system may remember a nil answer as "this version
+has no thumbnail" and not ask again until the item's version changes, so a
+picture lost to a timeout or a disconnected phone would never appear. The
+per-thumbnail handler therefore answers a **transient** failure — the session
+down, the 8 s deadline, `fs_busy` (the app's `offline`, `timeout`, `fs_busy`,
+`busy`, `closed`) — with `NSFileProviderError(.serverUnreachable)` (a transient
+error, so the answer is not remembered as final), and a **permanent** one — not
+a media type, `fs_no_thumb`,
+`fs_not_found`, `fs_denied`, `fs_not_a_dir`, `fs_stale`, a size/sha256 mismatch
+— with nil data. Neither is shown to the person: a thumbnail error is not an
+alert, and the type icon is what either answer leaves behind. `FilesThumbPolicy`
+holds both decisions, so K2 pins them even though the extension object itself is
+compiled only by `bundle.sh`.
+
+**Measured (VM `files-thumbs`, 2026-11-03).** The system did not ask again after
+either answer: not by itself within 45 s, not on close and reopen within 30 s,
+and not at all with the phone away. `serverUnreachable` is therefore harmless
+but cannot be relied on to bring a lost picture back — a lost thumbnail returns
+only when the item's version changes. That is why a queued ask must not expire
+while it waits (FILES-29).
+
+**The phone's generator (T3).** `FsThumbnailer` mirrors `FsReader`: a request
+parses the id, path, `size` (1–4096, else `fs_denied`), resolves the path,
+stats, refuses a directory, checks `etag` like a read, checks the name's MIME
+prefix is `image/` or `video/`, and enqueues the job. One worker thread runs the
+queue; each job calls a `ThumbSource` seam, whose Android implementation
+(`AndroidThumbSource`) is `ThumbnailUtils.createImageThumbnail(File, Size,
+CancellationSignal)` or `createVideoThumbnail(...)` (API 29+; minSdk is 30),
+then `Bitmap.compress` — JPEG at quality 80, or PNG when the bitmap has alpha
+and the item is an image (a video frame is opaque even when its bitmap reports
+alpha, so video is always JPEG) — with the long side `min(size, 512)`. Over
+256 KiB it re-encodes once as JPEG at
+quality 60 (a PNG over the cap loses its alpha; it is a thumbnail), and if that
+is still over, `fs_no_thumb` with no bytes. The seam is what the JVM tests fake:
+`FsThumbnailer` owns the cap, the re-encode decision, the queue, cancel and the
+logs; the platform owns decode and encode. Nothing is cached and nothing is
+prefetched; cancel goes through the same `CancellationSignal`, and no code on
+this path touches `PowerManager` or the display.
+
+**Limits (T4).** At most 3 thumbnails in flight per session on the Mac
+(`FilesThumbQueue` in the app: FIFO, 3 slots, an 8 s deadline per request
+measured from the `fs.thumb` send — a queued ask waits its turn; cancel either
+leaves the queue or sends one `fs.cancel`); the extension keeps its own 3 per
+batch so it never leans on the app's queue for pacing. The phone generates one
+at a time, accepts at most 3 live thumb ids (`fs_busy` past that) and puts the
+frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session writer's
+lowest-priority queue, drained after JSON, control, audio and video deltas with
+at most 1 MiB queued; the same `FS_DATA` type the paths layer counts as bulk
+(12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a grid
+of icons can never overtake a reply, delay a stream, or starve a drop.
+
+The queue's one request, by state (`FilesThumbQueue.transition`):
+
+| state | `slotFree` | `end` / `failure` | `cancel` | `deadline` | `drop` |
+|---|---|---|---|---|---|
+| `queued` | → `running`, send `fs.thumb` | ignored | → `cancelled`, answer `cancelled`; nothing reaches the phone | **ignored: queue time is not the phone's work** | → `cancelled`, answer `offline` |
+| `running` | ignored | → `done`, answer the bytes or the code | → `cancelled`, one `fs.cancel`, answer `cancelled` | → `expired`, one `fs.cancel`, answer `timeout` | → `cancelled`, answer `offline` |
+| `done` / `cancelled` / `expired` | ignored | ignored | ignored | ignored | ignored |
+
+Only the `queued` → `running` send arms the deadline timer; `settle` cancels it.
+
+**Why 8 s, and why the queue waits.** A warm 512 px encode is tens of
+milliseconds, a cold HEIF/HEVC decode about a second; the answer is at most
+256 KiB, about 20 ms on the LAN's 100 Mbit/s floor. The deadline starts when
+`fs.thumb` goes to the phone, so 8 s covers one ask's cold decode with a wide
+margin and stays under the 10 s at which Finder's grid reads as broken. Queue
+time is not the phone's work: Finder asks for every visible item at once, the
+phone generates one at a time, and a timeout is not retried by the system until
+the item's version changes, so expiring a queued ask would lose its picture for
+good. A queued ask therefore waits until it runs, Finder cancels it (the
+`Progress` is cancelled when the icon scrolls away or the window closes), or the
+session ends. The extension's per-thumbnail connection waits up to 120 s —
+about 170 photos at 0.7 s each, a full Finder icon grid — so the socket cannot
+cut a queued ask short, while still bounding a bridge that died. It is a bridge
+deadline, not an NFR time limit: nobody waits on a thumbnail (the type icon is
+already there), so it does not belong in NFR.md; it is the spec's FILES-29 and
+the bridge's own constant.
+
+### Round-2 test plan
+
+- **K1 — the generator behind the seam** (`FsThumbnailerTest`, a fake
+  `ThumbSource`): the 512 long-side cap, JPEG 80, the alpha → PNG choice for an
+  image and JPEG for a video, the
+  single re-encode and `fs_no_thumb`, the 256 KiB cap, cancel of a queued and a
+  running job, one worker and FIFO order, `fs_busy` past 3 ids, the etag and
+  missing-file refusals, no call at all without a request, and log lines that
+  carry no name.
+- **K2 — the extension's routing with a fake bridge** (`FilesThumbTests`, plus
+  `FilesBridgeTests` and `FilesCoreTests`): an image is media and a `.pdf` is
+  not, a document path asks the phone nothing, the request carries the long
+  side, 3 in flight and the fourth queued in arrival order, cancel before and
+  during the phone call, a transient failure (offline/timeout/`fs_busy`) →
+  `serverUnreachable`, a permanent one (`fs_no_thumb`, `not_media`) → nil data,
+  the bridge's deadline (a 50 ms deadline in the test) answers `timeout` and
+  sends one `fs.cancel`, and a queued ask does not expire while it waits but
+  gets its full deadline from the send (twenty asks behind three slots).
+- **Fake phone:** `fs.thumb` serves a fixed JPEG for a fixture name, with a mode
+  that never answers and a mode that answers `fs_no_thumb`; host e2e
+  `files-bridge` grows a `thumb` phase through the real bridge: bytes then
+  `end` with a matching mime/size/hash, a `.pdf` and a folder answered without a
+  phone request, three at once and the fourth after one ends, a cancelled queued
+  ask the phone never sees, the deadline's one `fs.cancel`, and 12 asks against
+  a phone that takes 1 s each all answering with bytes (the last waits past 8 s
+  before it starts).
+- **One VM boot:** `files-thumbs` — in this order: (a) Finder's icon view shows
+  the fake phone's green thumbnail for `photo.jpg` (the screenshot, taken
+  first, is `.agent/finder-thumbs/after-files-thumbs.png`) while the item stays
+  undownloaded; (b) the PDF shows its type icon and the fake phone's log has no
+  `fs.thumb` for it; (c) a second JPEG (`lost.jpg`) is held past the deadline:
+  one timeout and one `fs.cancel`, and the system's re-ask is recorded, never
+  required (FILES-26); (d) with the phone away, the cached picture stays, the
+  rest keep type icons, and there is no alert — Finder does not ask again, so
+  there is no offline line.
+- **One emulator boot:** `thumbs` — push a JPEG, a HEIC and an MP4 into the
+  emulator's `DCIM/Camera`, ask `fs.thumb` for each through `deckctl`, and print
+  the mime, the long side, the byte count and the time each took; assert ≤ 256
+  KiB and a long side ≤ 512. The real-phone cost measurement stays with the
+  reviewer.
 
 ## Fixes 10-20 (the hands-on pass)
 
@@ -1021,9 +1181,6 @@ Mac + phone pass stays with the reviewer).
   returned nothing for the shell user on API 36, so **the number is still unmeasured**. The
   folder poll above is now the real safety net: it does not depend on inotify at all, so the
   cap only decides how many folders get the fast path.
-- Should thumbnails come from the phone (`fetchThumbnails` → an `fs.thumb` read) or from the
-  Mac's own Quick Look once a file is materialized? S6 decides; the cheap answer is the
-  latter for downloaded files and the former for the working set.
 - Deleting into the Trash server-side: `deleteItem` is "delete forever"
   (https://developer.apple.com/documentation/fileprovider/nsfileproviderreplicatedextension);
   a phone-side `.trash` is possible but changes what the person sees in Files on the phone.

@@ -103,8 +103,8 @@ class NotifySessionTest {
     }
 
     private fun readJson(): Map<String, Any?> {
-        val frame = reader.readFrame() ?: error("connection closed; logs: $logs")
-        return Json.parseObject(String(frame.payload))
+        val frame = readPathFrame(reader) ?: error("connection closed; logs: $logs")
+        return pathJson(frame)
     }
 
     private fun await(timeoutMs: Long = 2_000, condition: () -> Boolean) {
@@ -145,7 +145,7 @@ class NotifySessionTest {
     }
 
     private fun authenticate() {
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Mac"))
+        send(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "Mac", "pair" to true))
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -189,6 +189,26 @@ class NotifySessionTest {
         val state = readUntil("notify.state")
         assertEquals(true, state["on"])
         assertEquals(1, grantAttempts)
+    }
+
+    @Test
+    fun `a repeated enable announces the gate again so the phone resends its active set`() {
+        connect()
+        authenticate()
+        listenerAccess = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals(true, readUntil("notify.state")["on"])
+        assertEquals(listOf(true), forwards.toList())
+        // NOTIFY-1/PATH-6 (ISS-5): a same-session rejoin repeats the opt-in.
+        // The app process hears the gate's answer on every enable and answers
+        // the second one with its active set; one announcement per enable.
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals(true, readUntil("notify.state")["on"])
+        assertEquals(listOf(true, true), forwards.toList())
+        // A third enable is not coalesced either: each one is a rejoin's ask.
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        assertEquals(listOf(true, true, true), forwards.toList())
     }
 
     @Test
@@ -263,7 +283,7 @@ class NotifySessionTest {
 
         val push = mapOf(
             "t" to "notify.post", "id" to "key_wa_1", "pkg" to "com.whatsapp",
-            "title" to "Design review", "text" to "Deck at 4", "when" to 5L,
+            "title" to "Design review", "text" to "Deck at 4", "when" to 5L, "alert" to true,
         )
         session!!.onDeviceEvent("notify.post", push)
         val posted = readUntil("notify.post")

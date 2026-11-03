@@ -112,6 +112,23 @@ enum Letterbox {
                   placement: placement(video: video, bounds: bounds.size, resizePending: false, phoneMode: false))
     }
 
+    /// Whether the pending fill is still up. While the window is being resized
+    /// (a drag or the zoom animation) only a config at the requested size ends
+    /// it: an older picture whose aspect is still within `fillTolerance` would
+    /// otherwise stop the fill for a frame and flash a letterbox mid-resize.
+    /// Settled, the tolerance is the normal rule.
+    static func resizeStillPending(video: CGSize, request: CGSize, liveResizing: Bool) -> Bool {
+        guard video.width > 0, video.height > 0, request.width > 0, request.height > 0 else {
+            return true
+        }
+        if liveResizing {
+            let step = CGFloat(VideoSize.granularity)
+            return !(abs(video.width - request.width) <= step
+                     && abs(video.height - request.height) <= step)
+        }
+        return !answers(config: video, request: request)
+    }
+
     /// True when `config` answers `request`: the window asks for its pixels
     /// floored to 16, and the phone may answer one step off on each axis, or
     /// with the same aspect within `fillTolerance`. Until it does, a resize is

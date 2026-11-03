@@ -306,7 +306,7 @@ final class FilesBridgeListener {
 /// display name the domain shows. A protocol so the server can be tested with
 /// no session and no File Provider.
 @MainActor
-protocol FilesBridgeHost: AnyObject {
+protocol FilesBridgeHost: AnyObject, FilesThumbHost {
     var isConnected: Bool { get }
     var displayName: String? { get }
     func list(item: String, page: String?,
@@ -551,6 +551,21 @@ final class SessionBridgeHost: FilesBridgeHost {
                 }
             }
         }
+    }
+
+    /// One thumbnail: the type is decided from the mapped path, with no phone
+    /// traffic for a document (FILES-22), and the phone's bytes come back whole.
+    func thumb(item: String, size: Int,
+               onStart: @escaping (UInt32) -> Void,
+               completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
+        guard let path = map.path(for: item) else {
+            return completion(.failure(FsError(code: "fs_not_found")))
+        }
+        guard FilesThumbPolicy.pathIsMedia(path) else {
+            return completion(.failure(FsError(code: "not_media")))
+        }
+        client.streamThumb(path: path, size: size, etag: nil,
+                           onStart: onStart, completion: completion)
     }
 
     func streamRead(item: String, offset: Int, length: Int, etag: String?,
@@ -994,6 +1009,10 @@ final class FilesBridge {
     var watchSet = FilesWatchSet()
     /// The clock the watch set uses; the tests move it by hand.
     var watchClock: () -> TimeInterval = { Date().timeIntervalSince1970 }
+    /// FILES-29: the deadline of one thumb request, measured from the ask.
+    var thumbDeadline: TimeInterval = 8
+    /// At most three thumbnails run, the rest wait (FILES-25).
+    let thumbQueue = FilesThumbQueue()
     private var expiryTimer: DispatchWorkItem?
     /// Working-set signals are coalesced: at most two a second (design).
     static let minSignalGap: TimeInterval = 0.5
@@ -1052,6 +1071,7 @@ final class FilesBridge {
         listener?.stop()
         listener = nil
         socketPath = nil
+        thumbQueue.reset()
         host?.cancelAll()
         host = nil
         liveIDs.removeAll()
@@ -1088,6 +1108,7 @@ final class FilesBridge {
     /// phone's watches are gone with the session; the timestamps stay so a quick
     /// reconnect re-sends the folders that are still inside their ten minutes.
     func detach() {
+        thumbQueue.reset()
         host?.cancelAll()
         host = nil
         liveIDs.removeAll()
@@ -1260,6 +1281,27 @@ final class FilesBridge {
                     }
                 }
             }
+        case .thumb(let id, let item, let size):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            thumbQueue.request(id: id, client: slot, item: item, size: size,
+                               deadline: thumbDeadline, host: host) { [weak self, weak client] answer in
+                MainActor.assumeIsolated {
+                    guard let self, let client else { return }
+                    self.end(id, client)
+                    switch answer {
+                    case .success(let thumb):
+                        client.sendData(id: id, bytes: thumb.data)
+                        client.send(.thumb(id: id, mime: thumb.mime,
+                                           size: thumb.data.count, sha256: thumb.sha256))
+                        let mime = thumb.mime == "image/png" ? "png" : "jpeg"
+                        Log.files.notice("bridge: thumb done bytes=\(thumb.data.count, privacy: .public) mime=\(mime, privacy: .public)")
+                    case .failure(let code):
+                        client.send(.error(id: id, code: code))
+                        Log.files.notice("bridge: thumb failed code=\(code, privacy: .public)")
+                    }
+                }
+            }
         case .read(let id, let item, let offset, let length, let etag):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             // A whole-file read needs the item's size; the extension stats
@@ -1387,6 +1429,7 @@ final class FilesBridge {
                 }
             }
         case .cancel(let id):
+            if thumbQueue.cancel(id: id, client: slot) { return }
             if let fsID = readIDs[slot]?[id] {
                 readIDs[slot]?[id] = nil
                 end(id, client)
@@ -1484,6 +1527,7 @@ final class FilesBridge {
         let slot = ObjectIdentifier(client)
         // Every read this client had in flight is abandoned on the phone too.
         for (_, fsID) in readIDs[slot] ?? [:] { host?.cancel(id: fsID) }
+        thumbQueue.cancel(client: slot)
         for (_, sink) in writeSinks[slot] ?? [:] { sink.cancel() }
         readIDs.removeValue(forKey: slot)
         writeSinks.removeValue(forKey: slot)

@@ -1,5 +1,7 @@
 package dev.pocketdeck;
 
+import android.os.ParcelFileDescriptor;
+
 /** One-way events from the shell service to the app process. */
 oneway interface IDeckCallback {
 
@@ -14,6 +16,13 @@ oneway interface IDeckCallback {
 
     /** The pairing request ended unanswered; the app should dismiss its prompt. */
     void onPairingEnded(String requestId);
+
+    /**
+     * The Mac's hello named another protocol version (R-8/D-4): `macV` is the
+     * Mac's version, -1 when its hello carried none. The app shows the
+     * sentence naming which side to update until a session succeeds.
+     */
+    void onVersionRefused(int macV);
 
     /**
      * The notification gate's answer (docs/design/notify.md): `forwarding` is
@@ -58,4 +67,11 @@ oneway interface IDeckCallback {
 
     /** A Mac cleared the forwarded notification `id` (`notify.dismiss`). */
     void onNotifyDismiss(String id);
+
+    /**
+     * A clipboard image from the Mac (SHARE-2/16): `data` is a pipe the app
+     * copies into its own cache, sets as A2's URI-only clip and answers with
+     * `clipImageDone`. The shell never sets an image clip itself.
+     */
+    void onClipImage(String id, String mime, in ParcelFileDescriptor data);
 }

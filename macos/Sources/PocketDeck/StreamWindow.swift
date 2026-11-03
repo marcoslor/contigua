@@ -5,6 +5,22 @@
 import AppKit
 import SwiftUI
 
+/// A stream window whose zoom the app can run itself. AppKit's zoom animation
+/// holds the main run loop for its whole length; while it runs no decoded
+/// frame reaches the display layer, the phone's sender backs up and re-attaches
+/// its encoder when the backlog clears (measured in .agent/zoom-jank). The
+/// controller animates the same frame sequence from its display link instead,
+/// as a live resize, and the window keeps streaming.
+final class StreamWindow: NSWindow {
+    /// Returns true when the window handled the zoom itself.
+    var customZoom: (() -> Bool)?
+
+    override func zoom(_ sender: Any?) {
+        if customZoom?() == true { return }
+        super.zoom(sender)
+    }
+}
+
 class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The stream this window shows.
     let stream: UInt32
@@ -23,6 +39,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// window (its dpi keeps the phone's dp width) and for a link or handoff
     /// window before the phone names its package.
     var densityPackage: String? { nil }
+
+    /// The package a drop on this window shares to (SHARE-17). Only an app
+    /// window has one; everywhere else the phone shows its chooser.
+    var dropTargetPackage: String? { nil }
+
+    /// This window's ⌘V image flow (SHARE-16); one per window.
+    private(set) var pasteFlow: PasteFlow?
 
     /// Where this window's density override lives (WindowDensityStore).
     var densityKey: String? { densityPackage.flatMap { WindowDensityStore.key(forPackage: $0) } }
@@ -84,18 +107,24 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The picture watchdog (FrameWatchdog): frames counted from the session
-    /// queue, the decision on the main thread.
+    /// queue, the decision on the main thread. `window.still` messages are a
+    /// second heartbeat for encoders that drop the repeat on a still screen.
     @ObservationIgnored let frameClock = FrameClock()
     private var watchdog = FrameWatchdog()
+    /// `window.still` messages seen for this stream: a count, never content.
+    private(set) var stills = 0
     private var stallTimer: Timer?
     /// The local key monitor that gives the bar its keys before AppKit's own
     /// Tab handling (see `handleBarKey`).
     private var barKeyMonitor: Any?
-    private(set) var isStalled = false
+    /// The picture's state (WIN-39): live, stalled, or the link's two down
+    /// steps. One machine, whose presentation is the disconnection overlay.
+    private(set) var picture = PictureState()
+    var isStalled: Bool { picture.isStalled }
     /// The link is down: the bar's phone-side controls are dimmed, with the
     /// reason, so a click cannot vanish into a dead session (M3, item 8).
     private(set) var phoneControlsOffline = false
-    private var linkIsDown = false
+    private var linkIsDown: Bool { picture.isLinkDown }
 
     /// The watchdog's rule: a live session, the window on screen, and a picture
     /// that is wanted (not paused, not Live Text, no cover). While it is false
@@ -154,9 +183,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // under a transparent titlebar, and is transparent itself outside
         // the stream.
         let frameSize = style.windowSize(stream: contentSize)
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: frameSize),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = StreamWindow(contentRect: NSRect(origin: .zero, size: frameSize),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         // The app sets this window's frame itself (a stream's size, a phone's
         // turn): the backstop leaves those frames to the delegate above.
@@ -171,6 +200,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome = StreamChromeView(video: videoView, style: style)
         super.init(window: window)
         window.delegate = self
+        window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
         // Where AppKit put the standard buttons before the chrome moves them;
         // full screen gives them back (applyChromeConfig).
@@ -209,8 +239,66 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.barKeyUp = { [weak self] event in self?.handleBarKey(event) ?? false }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
+        // ⌘V's image flow: the phone writes the clip, one paste key, a pill.
+        let paste = PasteFlow()
+        paste.sendImage = { [weak self, weak paste] id, data, mime in
+            guard let self else { return }
+            if ClipImageSend.run(data, mime: mime, session: self.session, id: id, paste: true) {
+                paste?.sent(id)
+            } else {
+                paste?.handle(.sendFailed(id))
+            }
+        }
+        paste.sendKey = { [weak self] event in
+            guard let self else { return }
+            self.session.key(event, stream: self.stream)
+        }
+        paste.cancelImage = { [weak self] id in self?.session.clipImageAbort(id: id) }
+        paste.share = { [weak self] data, mime in self?.sharePastedImage(data, mime: mime) }
+        paste.pill = { [weak self] state in self?.setPastePill(state) }
+        self.pasteFlow = paste
+
+        // ⌘V with files is the drop path with this window's app as the target
+        // (SHARE-17); an image takes the paste flow above.
+        mapper.onPaste = { [weak self] paste in
+            guard let self else { return false }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+                return true
+            case .image(let data, let mime):
+                guard !data.isEmpty, ClipImagePolicy.valid(mime: mime),
+                      data.count <= ClipImagePolicy.maxBytes else { return false }
+                self.startPaste(data: data, mime: mime)
+                return true
+            }
+        }
+        // ⇧⌘V shares the same content through the drop path (SHARE-16/17).
+        mapper.onShareInstead = { [weak self] paste in
+            guard let self else { return }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+            case .image(let data, let mime):
+                self.sharePastedImage(data, mime: mime)
+            }
+        }
+        // Esc leaves the paste pill before it can become the phone's Back.
+        mapper.overlayKey = { [weak self] event in
+            guard let self, event.keyCode == InputMapper.keyCodeEscape,
+                  self.pasteFlow?.isPillVisible == true else { return false }
+            self.pasteFlow?.dismiss()
+            return true
+        }
         mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
-        videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
+        videoView.onDroppedFiles = { [weak self] urls in
+            guard let self else { return }
+            self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+        }
+        videoView.onDroppedDrag = { [weak self] drag in
+            guard let self else { return }
+            self.manager.onDropDrag?(drag, self.dropTargetPackage)
+        }
         videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper
@@ -307,6 +395,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
         chrome.openingCover.show(display, icon: openingIcon)
+        // The cover's ground takes the bar's haze with it (WIN-40).
+        chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
         // it, from the first moment to a refusal (WIN-22, item M9).
         updateFrozen()
@@ -320,6 +410,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         openingPhase = nil
         showOpeningPhase()
         Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        // The extension view builds its backdrop once the stream it mirrors has
+        // a frame: turn its radius up now that it exists (WIN-40). This is also
+        // where a macOS without the filter gets its one fact line.
+        chrome.reapplyBarBlur(reportMissing: true)
         updateFrozen()
         tickFrameWatchdog()
         run(actions)
@@ -769,9 +863,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func rememberFrame() {
         // Never the screen-sized frame full screen moves the window to: the
-        // next open would come back too big. An added window of an app is not
+        // next open would come back too big. A resize in progress (a drag's
+        // steps, a zoom's animation) is not a frame to come back to either:
+        // its end remembers the settled one. An added window of an app is not
         // the app's frame either (WIN-13).
-        guard remembersFrame, let window, window.isVisible, !closingFromRemote,
+        guard remembersFrame, let window, window.isVisible, !closingFromRemote, !isLiveResizing,
               !window.styleMask.contains(.fullScreen), windowedFrame == nil else { return }
         manager.saveFrame(window.frame, forKey: frameKey)
     }
@@ -790,6 +886,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             StreamMenuState.shared.fullScreen = false
         }
         liveText.exit(.close)
+        stopZoomAnimation()
         openingTimer?.invalidate()
         openingTimer = nil
         dwellTimer?.invalidate()
@@ -799,6 +896,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         settleTimer = nil
         manager.noteKeyLost(stream)
         if !closingFromRemote { sendClose() }
+        let count = stills
+        Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
         // AppKit keeps a closed window in `NSApp.windows`, and with it the whole
         // layer tree under its content view — including the display layer and
         // the picture it holds. A closed window holds no picture (WIN-33).
@@ -809,15 +908,146 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         manager.remove(stream: stream)
     }
 
+    // MARK: Zoom
+
+    /// Whether this window's zoom runs as an app-driven live resize. Every
+    /// stream window does — an app, a link, a handoff or the phone mirror —
+    /// because all of them show a live picture that AppKit's own zoom would
+    /// freeze for the animation's whole length. The target is the delegate's
+    /// standard frame: the screen's visible frame, or the phone's fit.
+    var zoomsAsLiveResize: Bool { true }
+
+    /// The standard frame the window is showing, and the frame a second zoom
+    /// returns to (WindowZoom).
+    private(set) var zoom = WindowZoom.State.normal
+    private var zoomLink: CADisplayLink?
+    /// A display link pauses with its screen: the timer finishes the animation
+    /// even when no frame drives it (a hidden or occluded window).
+    private var zoomTimer: Timer?
+    private var zoomFrom: NSRect = .zero
+    private var zoomTo: NSRect = .zero
+    private var zoomStarted: CFTimeInterval = 0
+    /// AppKit's own zoom takes about a third of a second; the app-driven one
+    /// keeps that so a double-click feels the same.
+    private static let zoomDuration: CFTimeInterval = 0.3
+
+    /// The window's own zoom path (double-click on the bar, the green light,
+    /// Window ▸ Zoom): animate the frame from the display link as a live
+    /// resize, so the picture keeps arriving. Returns false when the window
+    /// does not run its own zoom.
+    func zoomAsLiveResize() -> Bool {
+        guard zoomsAsLiveResize, zoomLink == nil, !isLiveResizing,
+              let window, let screen = window.screen else { return false }
+        let standard = zoomStandardFrame(on: screen)
+        let (state, target) = WindowZoom.onZoom(zoom, frame: window.frame, standard: standard)
+        zoom = state
+        // The state is a closed set; no person data.
+        Log.app.notice("window zoom: \(state.name, privacy: .public)")  // log-ok: closed state set
+        guard !sameFrame(window.frame, target) else { return true }
+        zoomFrom = window.frame
+        zoomTo = target
+        beginLiveResize()
+        zoomStarted = CACurrentMediaTime()
+        let link = window.contentView?.displayLink(target: self, selector: #selector(zoomTick(_:)))
+        link?.add(to: .main, forMode: .common)
+        zoomLink = link
+        if link == nil {
+            finishZoom()
+            return true
+        }
+        let timer = Timer(timeInterval: Self.zoomDuration + 0.2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishZoom() }
+        }
+        zoomTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        return true
+    }
+
+    /// The frame AppKit would zoom to: the screen's visible frame, or what the
+    /// window's delegate makes of it (the phone window's phone-shaped fit).
+    private func zoomStandardFrame(on screen: NSScreen) -> NSRect {
+        var frame = screen.visibleFrame
+        if let window, let delegate = window.delegate,
+           delegate.responds(to: #selector(NSWindowDelegate.windowWillUseStandardFrame(_:defaultFrame:))) {
+            frame = delegate.windowWillUseStandardFrame?(window, defaultFrame: frame) ?? frame
+        }
+        return frame
+    }
+
+    /// One animation step, driven by the display link: the same delegate calls
+    /// a person's live drag makes, with AppKit's ease-out curve.
+    @objc private func zoomTick(_ link: CADisplayLink) {
+        guard let window else { finishZoom(); return }
+        let raw = min(1, max(0, (CACurrentMediaTime() - zoomStarted) / Self.zoomDuration))
+        let t = 1 - pow(1 - raw, 3)
+        let frame = NSRect(x: zoomFrom.minX + (zoomTo.minX - zoomFrom.minX) * t,
+                           y: zoomFrom.minY + (zoomTo.minY - zoomFrom.minY) * t,
+                           width: zoomFrom.width + (zoomTo.width - zoomFrom.width) * t,
+                           height: zoomFrom.height + (zoomTo.height - zoomFrom.height) * t)
+        liveResizeFrame(frame)
+        if raw >= 1 { finishZoom() }
+    }
+
+    private func finishZoom() {
+        stopZoomAnimation()
+        if let window {
+            // A display link that never ticked (no link, or a hidden window
+            // whose link paused) still owes the zoom its frame.
+            if !sameFrame(window.frame, zoomTo) { liveResizeFrame(zoomTo) }
+            zoom = WindowZoom.settled(zoom, at: window.frame)
+        }
+        // The same delegate call a drag's end makes, so a kind with its own
+        // end work (the phone mirror's rotation) runs it.
+        if let window {
+            windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+        } else {
+            endLiveResize()
+        }
+    }
+
+    private func stopZoomAnimation() {
+        zoomLink?.invalidate()
+        zoomLink = nil
+        zoomTimer?.invalidate()
+        zoomTimer = nil
+    }
+
+    private func sameFrame(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) <= 0.5 && abs(a.minY - b.minY) <= 0.5
+            && abs(a.width - b.width) <= 0.5 && abs(a.height - b.height) <= 0.5
+    }
+
     // MARK: Resize
 
     /// The person is dragging a corner: only the drag sets the frame until it
     /// ends. A stream event (a rotation) must not move the window under the
-    /// hand; it waits for `windowDidEndLiveResize`.
+    /// hand; it waits for `windowDidEndLiveResize`. The same state covers the
+    /// app's own zoom animation: both are one shape change the phone hears
+    /// about once, at the end.
     private(set) var isLiveResizing = false
 
     func windowWillStartLiveResize(_ notification: Notification) {
+        // A hand on the window takes over from a zoom animation in flight.
+        stopZoomAnimation()
+        beginLiveResize()
+    }
+
+    /// A drag's or the zoom's first frame: the last picture starts filling the
+    /// window before the first size change, so no letterbox frame shows.
+    private func beginLiveResize() {
         isLiveResizing = true
+        videoView.isWindowLiveResizing = true
+        videoView.noteResizeRequested()
+        liveText.exit(.resize)
+    }
+
+    /// The shape change is over: the phone is asked once, now, and the settled
+    /// frame is the one to come back to.
+    private func endLiveResize() {
+        isLiveResizing = false
+        videoView.isWindowLiveResizing = false
+        scheduleResize(after: 0)
+        rememberFrame()
     }
 
     /// The proposed size a person's drag or an Accessibility resize asks for,
@@ -836,6 +1066,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(NSRect(origin: window.frame.origin, size: snapped), display: true)
     }
 
+    /// One step of the zoom animation: the size is the person's drag rule, the
+    /// origin moves with it (a zoom centres the window on the screen).
+    private func liveResizeFrame(_ frame: NSRect) {
+        guard let window else { return }
+        let size = windowWillResize(window, to: frame.size)
+        window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+    }
+
     func windowDidResize(_ notification: Notification) {
         // A stream window changing shape cannot keep a frozen frame: the new
         // picture would be a different size under the same overlay.
@@ -846,9 +1084,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        isLiveResizing = false
-        scheduleResize(after: 0)
-        rememberFrame()
+        endLiveResize()
     }
 
     private func scheduleResize(after delay: TimeInterval) {
@@ -1067,13 +1303,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let titleUp = window?.titleVisibility == .visible
         let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
         let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
-        // The "Not responding" pill is the visible part of a stall: it must be
-        // in the view tree, saying so, and fading in (the state's `stall=` is
-        // only the flag). The e2e asserts this, so a window that stops the
-        // picture without telling the person fails the check.
-        let stallPill = pill.map {
-            $0.superview != nil && $0.text == "Not responding" && $0.fadeTarget == 1
-        } ?? false
+        // The disconnection overlay is the visible part of a stall or a
+        // dropped link: it must be in the view tree, with its icon and its
+        // lines (the state's `stall=` is only the flag). The e2e asserts this,
+        // so a window that stops the picture without telling the person fails.
+        let overlay = chrome.stallOverlay
         // The picture's drawn rect in window points, top-left origin: the band
         // check reads the screenshot inside it.
         let picture = videoView.convert(videoView.videoRect(), to: nil)
@@ -1094,16 +1328,21 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
             + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
             + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
-            + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
+            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
+            + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
             + " paused=\(isPaused ? 1 : 0) expecting=\(expectsFrames ? 1 : 0) opening=\(isOpening ? 1 : 0)"
             + " frame_age_ms=\(frameClock.lastFrame.map { Int(((now() - $0) * 1000).rounded()) } ?? -1)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
+            + " drop_refusal=\(dropFailure ?? "none")"
+            + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
             + " loading=\(openingState)"
             + " cover_phase=\(openingCoverPhase)"
             + " cover_buttons=\(openingButtons)"
             + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
+            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " haze=\(chrome.hazeVisible ? 1 : 0)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
@@ -1226,6 +1465,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         tickFrameWatchdog(at: ProcessInfo.processInfo.systemUptime)
     }
 
+    /// `window.still` from the phone (PHONE-21): the stream is live and its
+    /// encoder has produced nothing for a second. It counts as a heartbeat and
+    /// ends a shown stall; it is not a frame, so the opening cover stays up.
+    func noteStill() {
+        noteStill(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives it without waiting.
+    func noteStill(at now: TimeInterval) {
+        stills += 1
+        if watchdog.still(at: now) { setStalled(false) }
+        writeChromeState()
+    }
+
     /// The tick with the clock passed in, so a test can drive the window's
     /// rule (expectation changes included) without waiting in real time.
     func tickFrameWatchdog(at now: TimeInterval) {
@@ -1239,6 +1492,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             setStalled(false)
         }
         if watchdog.tick(at: now, expecting: expecting) { setStalled(true) }
+        tickPicture(at: now)
+    }
+
+    /// The link's clock: the same 0.25 s tick moves "Reconnecting…" and "Phone
+    /// offline", so a test drives them without waiting (WIN-16).
+    func tickPicture(at now: TimeInterval) {
+        applyPicture(.tick(now), at: now)
     }
 
     /// The phone reported `power.locked` (its own power press with our streams
@@ -1256,83 +1516,74 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         writeChromeState()
     }
 
-    /// The picture stopped (or came back): the same kind of pill as the
-    /// reconnecting one, "Not responding", and `stall=1` in the chrome state.
-    /// A stall is a frozen mode: input and the phone-side actions stop too.
+    /// The picture stopped (or came back): the machine's stall event. A stall
+    /// is a frozen mode: input and the phone-side actions stop too.
     private func setStalled(_ stalled: Bool) {
-        guard stalled != isStalled else { return }
-        isStalled = stalled
-        if stalled {
-            let pill = self.pill ?? GlassPillView(text: "Not responding", showsProgress: false)
-            if self.pill == nil {
-                self.pill = pill
-                videoView.addSubview(pill)
-                pill.alphaValue = 0
-            }
-            pill.setText("Not responding", showsProgress: false)
-            layoutPill()
-            pill.fade(to: 1)
+        applyPicture(.stall(stalled), at: now())
+    }
+
+    /// One transition of the picture's machine: log the path, run its actions
+    /// and let the frozen state and the chrome state follow.
+    private func applyPicture(_ event: PictureState.Event, at time: TimeInterval) {
+        let from = PictureState.label(picture.state)
+        guard let actions = picture.handle(event, at: time) else { return }
+        let state = "\(from) --\(event)--> \(PictureState.label(picture.state))"
+        Log.video.notice("picture: \(state, privacy: .public)")
+        for action in actions { run(action) }
+        // `updateFrozen` writes the chrome state, so the transition lands there
+        // once.
+        updateFrozen()
+    }
+
+    /// The overlay came or went (WIN-39).
+    private func run(_ action: PictureState.Action) {
+        switch action {
+        case .present(let kind):
+            let display = StallOverlayDisplay(kind: kind, phone: manager.phoneName)
+            chrome.stallOverlay.show(display, icon: openingIcon)
+            chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
-        } else {
-            pill?.fade(to: 0)
+        case .dismiss:
+            chrome.stallOverlay.hide()
+            chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=0")
         }
-        updateFrozen()
     }
 
     // MARK: Link state
 
-    private var pill: GlassPillView?
-    private var pillShowWork: DispatchWorkItem?
-    private var pillOfflineWork: DispatchWorkItem?
-
-    /// The link dropped or came back: a pill over the last frame says so after
-    /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
+    /// The link dropped or came back: the overlay says so after 1 s (a blip
+    /// shows nothing), and "Phone offline" 15 s after the drop.
     func setLinkDown(_ down: Bool) {
-        linkIsDown = down
+        setLinkDown(down, at: now())
+    }
+
+    /// The clock-explicit half, so a test drives the two steps without waiting.
+    func setLinkDown(_ down: Bool, at time: TimeInterval) {
         phoneControlsOffline = down
         chrome.setOffline(down)
         if down {
             liveText.exit(.disconnect)
-            setStalled(false)
+            applyPicture(.linkDown, at: time)
+        } else {
+            applyPicture(.linkUp, at: time)
         }
         writeChromeState()
-        pillShowWork?.cancel()
-        pillOfflineWork?.cancel()
-        guard down else {
-            pill?.fade(to: 0)
-            return
-        }
-        let show = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let pill = self.pill ?? GlassPillView(text: "Reconnecting…", showsProgress: true)
-            if self.pill == nil {
-                self.pill = pill
-                self.videoView.addSubview(pill)
-                pill.alphaValue = 0
-            }
-            pill.setText("Reconnecting…", showsProgress: true)
-            self.layoutPill()
-            pill.fade(to: 1)
-        }
-        let offline = DispatchWorkItem { [weak self] in
-            self?.pill?.setText("Phone offline", showsProgress: false)
-            self?.layoutPill()
-        }
-        pillShowWork = show
-        pillOfflineWork = offline
-        // The pill's two phases are one-shot timers on the main run loop, next
-        // to the machine's clock (LinkPhaseClock holds the same two numbers).
-        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.reconnectingAfter, execute: show)  // gcd: the pill's delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.offlineAfter, execute: offline)  // gcd: the pill's delay
     }
 
     // MARK: File-drop pill (docs/design/dragdrop.md)
 
     private var dropPill: GlassPillView?
+    private var dropFailure: String?
 
     /// Over the last frame: "Sending report.pdf… 43 %", then the outcome.
     /// nil hides the pill (a finished transfer fades when the state times out).
+    /// The source refusal's closed token for the chrome state (SHARE-18).
+    func setDropFailure(_ token: String?) {
+        dropFailure = token
+        writeChromeState()
+    }
+
     func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
         guard let state else {
             dropPill?.fade(to: 0)
@@ -1360,11 +1611,89 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         dropPill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
     }
 
-    private func layoutPill() {
-        guard let pill else { return }
-        let size = pill.fittingSize
-        pill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2, y: 24, width: size.width, height: size.height)
-        pill.autoresizingMask = [.minXMargin, .maxXMargin, .maxYMargin]
+    // MARK: The ⌘V image pill (SHARE-16)
+
+    private var pastePill: GlassPillView?
+
+    /// The chrome state's token: the three pill states, `hidden` between them.
+    private var pastePillState: String {
+        switch pasteFlow?.phase {
+        case .sending?, .awaitingConfirmation?: return "pasting"
+        case .pasted?: return "pasted"
+        case .failed?: return "failed"
+        case .idle?, nil: return "hidden"
+        }
+    }
+
+    private var pasteButtonShown: Bool {
+        switch pasteFlow?.phase {
+        case .pasted?, .failed?: return true
+        case .idle?, .sending?, .awaitingConfirmation?, nil: return false
+        }
+    }
+
+    /// Over the last frame: the paste flow's three states. The outcome pills
+    /// carry the one button that shares the image through the drop path.
+    func setPastePill(_ state: PastePillState?) {
+        guard let state else {
+            pastePill?.fade(to: 0)
+            writeChromeState()
+            return
+        }
+        let button = state == .pasting ? nil : GlassPillButton(
+            title: "Share Instead",
+            help: "Share this image with the app instead of pasting it (⇧⌘V)",
+            action: { [weak self] in self?.pasteFlow?.shareInstead() }
+        )
+        let pill = pastePill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress,
+                                              button: button)
+        if pastePill == nil {
+            pastePill = pill
+            videoView.addSubview(pill)
+            pill.alphaValue = 0
+        }
+        pill.setText(state.text, showsProgress: state.showsProgress, button: button)
+        layoutPastePill()
+        pill.fade(to: 1)
+        writeChromeState()
+    }
+
+    private func layoutPastePill() {
+        guard let pastePill else { return }
+        let size = pastePill.fittingSize
+        pastePill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2,
+                                 y: videoView.bounds.height - size.height - 24,
+                                 width: size.width, height: size.height)
+        pastePill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+    }
+
+    /// Starts one ⌘V's image; the id is the wire transfer's, so the phone's
+    /// answer and this flow meet.
+    private func startPaste(data: Data, mime: String) {
+        pasteFlow?.paste(image: data, mime: mime, id: ClipImageSend.nextId())
+    }
+
+    /// ⇧⌘V and the pill's button: the image becomes a temp file on the drop
+    /// path, aimed at this window's app like any other drop (SHARE-17).
+    private func sharePastedImage(_ data: Data, mime: String) {
+        let ext = mime.lowercased() == "image/jpeg" ? "jpg" : "png"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pocketdeck-paste-\(UUID().uuidString).\(ext)")
+        guard (try? data.write(to: url)) != nil else {
+            Log.app.info("paste: could not write the share temp")
+            return
+        }
+        manager.onFilesDropped?([url], dropTargetPackage)
+    }
+
+    // MARK: The phone's answer
+
+    func clipImageDone(id: UInt32, ok: Bool) {
+        pasteFlow?.done(id: id, ok: ok)
+    }
+
+    func pasteSessionEnded() {
+        pasteFlow?.sessionEnded()
     }
 
     // MARK: Density

@@ -25,15 +25,15 @@ struct AppIconLayers: Equatable {
     }
 }
 
-/// The glass tile's pure geometry and the variant a grid icon renders
-/// (docs/DESIGN.md "The app grid"). With glass icons on, the tile draws the
-/// shared renderer's output (docs/design/dock.md §Icons): the macOS squircle,
-/// the adaptive layers at full opacity or the flat icon on its plate. With the
-/// setting off it keeps the bare flat image.
+/// The tile's pure geometry and the variant a grid icon renders
+/// (docs/DESIGN.md "The app grid"). Every tile draws the shared renderer's
+/// output (docs/design/dock.md §Icons): the macOS squircle, the adaptive
+/// layers at full opacity or the flat icon drawn by its own shape. Until that
+/// render lands, the tile shows the placeholder or the generated fallback —
+/// never the bare flat image.
 enum GlassIcon {
     static let tileSide: CGFloat = 56
     static let cornerFraction: CGFloat = 0.225
-    static let flatInsetFraction: CGFloat = 0.78
 
     static var cornerRadius: CGFloat { tileSide * cornerFraction }
 
@@ -49,26 +49,20 @@ enum GlassIcon {
     /// so its central 2/3 covers the tile.
     static let zoomFactor: CGFloat = 3 / 2
 
-    static var flatSide: CGFloat { tileSide * flatInsetFraction }
-
-    /// What the grid draws for one app cell, in order of what the phone sent
-    /// and the setting's state.
+    /// What the grid draws for one app cell. The phone's flat reply is never a
+    /// variant by itself: the tile draws only the renderer's image.
     enum Variant: Equatable {
         /// The shared renderer's icon (macOS shape, the phone's colours).
         case rendered(NSImage)
-        /// Setting off: the phone's flat image as it arrives.
-        case bare(NSImage)
-        /// Quietly waiting for the phone's answer.
+        /// Quietly waiting for the phone's answer or the render.
         case placeholder
         /// The phone said the icon does not exist.
         case fallback
     }
 
-    static func variant(rendered: NSImage?, image: NSImage?,
-                        isMissing: Bool, glassOn: Bool) -> Variant {
-        guard let image else { return isMissing ? .fallback : .placeholder }
-        if glassOn, let rendered { return .rendered(rendered) }
-        return .bare(image)
+    static func variant(rendered: NSImage?, isMissing: Bool) -> Variant {
+        guard let rendered else { return isMissing ? .fallback : .placeholder }
+        return .rendered(rendered)
     }
 }
 
@@ -92,7 +86,6 @@ enum FallbackIcon {
 struct FallbackAppIcon: View {
     let label: String
     let pkg: String
-    var side: CGFloat = GlassIcon.tileSide
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -106,54 +99,70 @@ struct FallbackAppIcon: View {
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             }
-            .frame(width: side, height: side)
+            .aspectRatio(1, contentMode: .fit)
     }
 }
 
-/// One grid icon. With the setting on: the shared renderer's image
-/// (docs/design/dock.md §Icons), already shaped, so the tile only scales it —
-/// no material over the colours, a small lift on hover. With it off: today's
-/// look exactly (the flat image, the generated tile or the quiet placeholder).
+/// One grid icon: the shared renderer's image (docs/design/dock.md §Icons),
+/// already shaped, so the tile only scales it — no material over the colours,
+/// a small lift on hover. Until it lands: the quiet placeholder, or the
+/// generated tile when the phone has none.
 struct AppIconView: View {
     let app: AppInfo
-    let image: NSImage?
     /// The renderer's output at the tile's size (`ConnectionController.deckIcons`).
     private(set) var rendered: NSImage?
     /// The phone is not going to send one (it said so, or the link is down).
     private(set) var isMissing: Bool
-    private(set) var glassOn: Bool
     /// The pointer is over the cell: the tile responds to it.
     private(set) var hovering = false
-    /// The tile's side in points (the grid's 64 pt at 100 %, scaled by zoom).
-    private(set) var side = GlassIcon.tileSide
+    /// The tile's side at the person's zoom, before the width factor: the size
+    /// the icon is laid out and drawn at (the grid's 64 pt at 100 %).
+    private(set) var baseSide = GlassIcon.tileSide
 
-    init(app: AppInfo, image: NSImage?, rendered: NSImage? = nil,
-         isMissing: Bool = false, glassOn: Bool = true, hovering: Bool = false,
-         side: CGFloat = GlassIcon.tileSide) {
+    init(app: AppInfo, rendered: NSImage? = nil,
+         isMissing: Bool = false, hovering: Bool = false,
+         baseSide: CGFloat = GlassIcon.tileSide) {
         self.app = app
-        self.image = image
         self.rendered = rendered
         self.isMissing = isMissing
-        self.glassOn = glassOn
         self.hovering = hovering
-        self.side = side
+        self.baseSide = baseSide
     }
 
     var body: some View {
+        content
+            .frame(width: baseSide, height: baseSide)
+            // The cell's layout gives the icon the width factor's square; a
+            // transform scales the drawn icon to it, so a live resize moves one
+            // layer instead of re-rendering the image every frame (DECK-5).
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .modifier(DeckIconScale(base: baseSide))
+    }
+
+    private var content: some View {
         Group {
-            switch GlassIcon.variant(rendered: rendered, image: image, isMissing: isMissing, glassOn: glassOn) {
+            switch GlassIcon.variant(rendered: rendered, isMissing: isMissing) {
             case .rendered(let rendered):
                 Image(nsImage: rendered).resizable().interpolation(.high)
                     .scaleEffect(hovering ? 1.04 : 1)
-            case .bare(let image):
-                Image(nsImage: image).resizable().interpolation(.high)
-                    .clipShape(.rect(cornerRadius: 13, style: .continuous))
             case .placeholder:
                 RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
             case .fallback:
-                FallbackAppIcon(label: app.label, pkg: app.pkg, side: side)
+                FallbackAppIcon(label: app.label, pkg: app.pkg)
             }
         }
-        .frame(width: side, height: side)
+    }
+}
+
+/// Scales the icon drawn at its base side to the square the grid gives it.
+/// A projection, not a new frame: the image keeps its rendered layer.
+private struct DeckIconScale: GeometryEffect {
+    var base: CGFloat
+    var animatableData: EmptyAnimatableData = .init()
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        guard base > 0, size.width > 0 else { return ProjectionTransform(.identity) }
+        let scale = size.width / base
+        return ProjectionTransform(CGAffineTransform(scaleX: scale, y: scale))
     }
 }

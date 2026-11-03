@@ -3,11 +3,16 @@ package dev.pocketdeck.server
 import dev.pocketdeck.app.MediaArtRules
 import dev.pocketdeck.app.MediaControl
 import dev.pocketdeck.app.NotifyEvents
+import dev.pocketdeck.app.NotifyImageRules
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Frame
 import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
+import dev.pocketdeck.proto.PathCodec
+import dev.pocketdeck.proto.PathIds
+import dev.pocketdeck.proto.PathKind
+import dev.pocketdeck.proto.ReorderWindow
 import dev.pocketdeck.proto.VideoConfigPayload
 import dev.pocketdeck.proto.VideoFramePayload
 import dev.pocketdeck.proto.AudioConfigPayload
@@ -16,6 +21,9 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.ArrayDeque
+import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -69,8 +77,12 @@ class Session(
     private val fsPlatform: FsPlatform = FsPlatform.None,
     /** Change source for `fs.watch` (docs/design/files.md §5); tests fake it. */
     private val fsWatch: FsWatchSource = FsWatchSource.None,
-    /** Clipboard image port (read + write); null leaves images unsynced. */
+    /** Decode/encode seam for `fs.thumb` (docs/design/files.md "Thumbnails (S6)"); tests fake it. */
+    private val fsThumb: ThumbSource = ThumbSource.None,
+    /** Clipboard image read port (the phone -> Mac poll); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
+    /** The app-owned clipboard write (Mac -> phone); null answers ok=false. */
+    private val clipImageHost: ClipImageHost? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -132,6 +144,14 @@ class Session(
      * screens"); null never reports it (tests, or a phone that cannot read it).
      */
     private val secureProbe: SecureProbe? = null,
+    /** The hello the server already read to decide a join (PATH-3); null = read it here. */
+    private val preReadHello: Map<String, Any?>? = null,
+    /** This path's provider class (the public build's is LAN). */
+    private val pathKind: PathKind = PathKind.LAN,
+    /** Test seam: every [startPathReader] call, by path id. */
+    private val onPathReaderStart: (String) -> Unit = {},
+    /** Test seam: a new path writer's first wake, by path id. */
+    private val onPathWriterStart: (String) -> Unit = {},
 ) : VideoSink, AudioSink, LiveSession {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -192,6 +212,8 @@ class Session(
     @Volatile private var phase = Phase.HELLO
     /** This session's teardown; [SessionTeardown.State.LIVE] while it serves. */
     private val teardown = AtomicReference(SessionTeardown.State.LIVE)
+    /** The thread that owns the socket before `welcome`; set at [run]'s start. */
+    @Volatile private var readerThread: Thread? = null
 
     private val streams = LinkedHashMap<Int, StreamState>()
     /**
@@ -226,24 +248,126 @@ class Session(
     private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
     private val fsWriter = files?.let { FsWriter(it.paths, fsPlatform, ::sendJson, log) }
     private val fsOps = files?.let { FsMutations(it.paths, fsPlatform, log) }
+    private val fsThumbnailer = files?.let {
+        FsThumbnailer(it.paths, fsThumb, queue::enqueueBulk, ::sendJson, log)
+    }
     private val fsWatcher = files?.let {
         FsWatcher(it.paths, fsWatch, ::sendJson, log = log)
     }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
-    private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
+    private val clipImageReceiver = ClipImageReceiver(
+        ClipImageLand(clipImageHost, log), log,
+        done = { id, ok -> sendJson(mapOf("t" to "clip.image.done", "id" to id, "ok" to ok)) },
+    )
     private var clipImagePoll: Thread? = null
 
     private var clientId = ""
     private var clientName = "Mac"
 
-    /** The v2 pairing room; read/written on the reader thread only. */
+    // ---- paths (docs/design/paths.md §3) ------------------------------
+    private val hub = PathHub(
+        log = log,
+        now = now,
+        wake = ::wakeTicker,
+        // E-10/PATH-9: one removal point reports every detach route — a socket
+        // error, EOF, a Mac close, the phone's own ClosePath — to the machine.
+        onDetached = { id -> inbound.put(Inbound.Down(id)) },
+        onWriterStart = onPathWriterStart,
+    )
+    private val pathMachine = PathSessionMachine()
+    private val pathRanking = PathRanking()
+    private var sessionId = ""
+    @Volatile private var liveSessionId: String? = null
+    override val pathSessionId: String? get() = liveSessionId
+    private var firstPathId = ""
+    private var firstTransport: PathHub.Transport? = null
+    private class InboundQueue(private val maxBytes: Int) {
+        private val lock = Object()
+        private val items = ArrayDeque<Inbound>()
+        private var bytes = 0
+        private var closed = false
+
+        private fun cost(item: Inbound): Int =
+            if (item is Inbound.Deliver) item.frame.payload.size + PATH_FRAME_OVERHEAD else 0
+
+        /** Blocks the reader until the session has room: never drops an event. */
+        fun put(item: Inbound) {
+            val cost = cost(item)
+            synchronized(lock) {
+                while (!closed && items.isNotEmpty() && bytes + cost > maxBytes) lock.wait()
+                if (closed) return
+                items.addLast(item)
+                bytes += cost
+                lock.notifyAll()
+            }
+        }
+
+        fun poll(timeoutMs: Long): Inbound? {
+            synchronized(lock) {
+                if (items.isEmpty() && !closed) lock.wait(timeoutMs)
+                if (items.isEmpty()) return null
+                val item = items.removeFirst()
+                bytes -= cost(item)
+                lock.notifyAll()
+                return item
+            }
+        }
+
+        fun close() {
+            synchronized(lock) {
+                closed = true
+                items.clear()
+                bytes = 0
+                lock.notifyAll()
+            }
+        }
+    }
+
+    private val inbound = InboundQueue(INBOX_MAX_BYTES)
+    private var pathTicker: Thread? = null
+    private val tickSignal = Object()
+    // Joined from the server thread and read from the session thread.
+    private val pathReaders = CopyOnWriteArrayList<Thread>()
+    /** The last AUDIO_CONFIG: repeated after a switch (docs/design/paths.md §5.6). */
+    @Volatile private var lastAudioConfig: ByteArray? = null
+
+    private sealed interface Inbound {
+        class Deliver(val frame: Frame) : Inbound
+        class Down(val path: String) : Inbound
+        class Up(val path: String, val joined: Boolean) : Inbound
+        class PeerSwitch(val path: String, val seq: Long, val arrivedOn: String) : Inbound
+        class Pong(val path: String, val rttMs: Double) : Inbound
+        class PingLost(val path: String) : Inbound
+        data object Tick : Inbound
+        data object AckAboveSent : Inbound
+        data object ProtocolError : Inbound
+    }
+
+    /** The v2 pairing room; read by the reader thread. The work queue is the
+     * one hand-off from another thread, and [pairLock] guards both. */
     private var pendingPairId: String? = null
     private var pairSettled = false
     private var pendingNp: ByteArray? = null
     private var pendingMacFp = ByteArray(32)
     private var pendingPhoneFp = ByteArray(32)
     private var currentMacName: String? = null
+
+    /**
+     * Pre-welcome work another thread recorded for the reader: the reader is
+     * the only thread that may write before `welcome` (PATH-2). Android's TLS
+     * socket refused the binder thread's `pair.ok` write while the reader was
+     * in its 250 ms poll (boot 5), so the answer is a queue, not a callback.
+     */
+    private sealed interface ReaderWork {
+        data object PairAllowed : ReaderWork
+        data object PairDenied : ReaderWork
+        data object PairExpired : ReaderWork
+        data class Refuse(val code: String, val message: String) : ReaderWork
+    }
+
+    /** Queued under [pairLock], drained by the reader only. */
+    private val readerWork = ArrayDeque<ReaderWork>()
 
     private val loggedUnknown = HashSet<String>()
 
@@ -289,7 +413,15 @@ class Session(
     /** The protocol's `state` stream: one emission per real change. */
     private val stateTracker = DeviceStateTracker { state -> sendState(state) }
 
+    /** The person's own use of the phone, for the wake machine's edges (CTRL-7). */
+    private val personUse = PersonUseTracker()
+
     private fun sendState(state: DeviceState) {
+        for (use in personUse.note(state)) when (use) {
+            PersonUse.UNLOCKED -> power.onPersonUnlocked()
+            PersonUse.SCREEN_ON -> power.onPersonScreen(true)
+            PersonUse.SCREEN_OFF -> power.onPersonScreen(false)
+        }
         val message = linkedMapOf<String, Any?>(
             "t" to "state",
             "locked" to state.locked,
@@ -379,6 +511,18 @@ class Session(
     override fun close() = apply(SessionTeardown.Event.Drop)
 
     /**
+     * True from the moment this session starts closing. A reader must not ack
+     * a frame after a refusal/bye was queued: that ACK would land behind the
+     * last frame on the wire. Derived from the teardown machine, not a parallel
+     * flag (AGENTS.md).
+     */
+    private val closing: Boolean
+        get() = when (teardown.get()) {
+            SessionTeardown.State.ENDING, SessionTeardown.State.DROPPED -> true
+            SessionTeardown.State.LIVE, SessionTeardown.State.FINISHED -> false
+        }
+
+    /**
      * Runs one step of the teardown machine and its returned actions. The state
      * is the compare-and-set, so a drop racing the reader's own end runs one
      * transition, not two.
@@ -431,6 +575,7 @@ class Session(
     }
 
     fun run() {
+        readerThread = Thread.currentThread()
         // The hold decides `state.panel` on its own (the person's power
         // button, a paused window, the session ending): tell the Mac at once —
         // but only once it has authenticated (nothing but the pairing machine
@@ -451,29 +596,353 @@ class Session(
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
         try {
             socket.tcpNoDelay = true
-            // The protocol promises at most ~250 ms of queued video per stream.
-            // Without a bound the kernel (and any forwarder on the path) happily
-            // buffers megabytes, the send queue never fills and the drop rule
-            // never fires; 128 KB is still far above a LAN's bandwidth-delay
-            // product, so throughput is unaffected.
-            runCatching { socket.sendBufferSize = SEND_BUFFER_BYTES }
+            // E-1/RRR-2: the send buffer is sized once, in Server.serve, for
+            // the founder and every join (the raw socket under this one), so
+            // the protocol's ~250 ms of queued video holds on every path.
             socket.soTimeout = handshakeTimeoutMs
+            // A provisional name so a refusal before the hello still reaches the
+            // peer; the hello's own `path` renames it (PATH-1).
+            if (firstTransport == null) {
+                firstPathId = PathIds.pathId(emptySet())
+                firstTransport = PathHub.Transport(firstPathId, socket, plainSocket, pathKind)
+                hub.start(firstTransport!!)
+            }
             val reader = FrameReader(socket.getInputStream())
-            while (teardown.get() == SessionTeardown.State.LIVE) {
+            if (preReadHello != null) {
+                onHello(preReadHello)
+                runCatching { socket.soTimeout = 0 }
+            }
+            // A pairing may take minutes (a person reads two screens), so that
+            // phase polls instead of blocking forever: this thread checks the
+            // decision queue after every timeout (PATH-3).
+            if (phase == Phase.PAIR) runCatching { socket.soTimeout = PAIR_POLL_MS }
+            var pending: Frame? = null
+            while (teardown.get() == SessionTeardown.State.LIVE && phase != Phase.READY) {
+                // Another thread records the pairing answer; this thread writes
+                // it. Android's TLS socket throws for a write from the binder
+                // thread while this one polls the read (boot 5, PATH-2).
+                drainReaderWork()
+                if (phase == Phase.READY) break
                 val frame = try {
                     reader.readFrame()
                 } catch (e: SocketTimeoutException) {
+                    if (phase == Phase.PAIR) continue
                     log("handshake timeout")
                     break
                 }
                 if (frame == null) break
+                // The session became ready while this read was in flight: the
+                // frame belongs to the path layer, not the handshake router.
+                if (phase == Phase.READY) {
+                    pending = frame
+                    break
+                }
                 handle(frame)
+            }
+            // A gate push can record a refusal while `welcome` is going out.
+            drainReaderWork()
+            if (phase == Phase.READY && teardown.get() == SessionTeardown.State.LIVE) {
+                startPathReader(firstTransport!!, reader, pending)
+                startPathTicker()
+                while (teardown.get() == SessionTeardown.State.LIVE) {
+                    // A refusal recorded as `welcome` went out still wins.
+                    drainReaderWork()
+                    if (teardown.get() != SessionTeardown.State.LIVE) break
+                    val item = try {
+                        inbound.poll(500)
+                    } catch (e: InterruptedException) {
+                        break
+                    } ?: continue
+                    consume(item)
+                }
             }
         } catch (e: Throwable) {
             log("reader ended: ${e.message}")
         } finally {
             shutdown()
+            readerThread = null
         }
+    }
+
+    /** The session thread consumes every path event here, serially. */
+    private fun consume(item: Inbound) {
+        when (item) {
+            is Inbound.Deliver -> handle(item.frame)
+            is Inbound.Down -> {
+                // E-10/PATH-9: the hub is the one removal point and it already
+                // reported this detach; every route is a PathDown, whichever
+                // path the phone happens to be sending on. A CurrentFailed for
+                // an id that was not the machine's current used to be ignored
+                // without removing it from `live` (boot 14).
+                handlePathEvent(PathSessionEvent.PathDown(item.path))
+            }
+            is Inbound.Up -> {
+                hub.transport(item.path)?.let { startPathReader(it) }
+                handlePathEvent(PathSessionEvent.PathUp(item.path, item.joined))
+            }
+            is Inbound.PeerSwitch -> followSwitch(item)
+            is Inbound.Pong -> {
+                val at = now() / 1000.0
+                pathRanking.addSample(item.path, item.rttMs, at)
+                pathMachine.scores[item.path] = pathRanking.score(item.path, at) ?: -1
+            }
+            is Inbound.PingLost -> {
+                val at = now() / 1000.0
+                pathRanking.addSample(item.path, null, at)
+                if (item.path == hub.currentPath) {
+                    handlePathEvent(PathSessionEvent.CurrentFailed(item.path))
+                }
+            }
+            Inbound.Tick -> tickPaths()
+            Inbound.AckAboveSent -> {
+                log("paths: ack above what was sent")
+                apply(SessionTeardown.Event.Stop)
+            }
+            Inbound.ProtocolError -> {
+                log("paths: protocol error")
+                apply(SessionTeardown.Event.Stop)
+            }
+        }
+    }
+
+    private fun handlePathEvent(event: PathSessionEvent) {
+        val at = now() / 1000.0
+        val before = pathMachine.state
+        for (id in pathMachine.live) {
+            pathMachine.scores[id] = pathRanking.score(id, at) ?: -1
+        }
+        val actions = pathMachine.handle(event, at)
+        val after = pathMachine.state
+        if (after != before) log(PathSessionLog.line(before, event, after))
+        for (action in actions) {
+            when (action) {
+                is PathSessionAction.StartPing, is PathSessionAction.StopPing -> Unit
+                is PathSessionAction.Ranking -> pathRanking.handle(action.event, at)
+                is PathSessionAction.ClosePath -> hub.detach(action.path)
+                // PATH-8: only the Mac decides. The phone moves its sending
+                // path in followSwitch, when the Mac's marker names it.
+                is PathSessionAction.SwitchTo -> Unit
+                PathSessionAction.ReplayFromLastAck -> hub.replayOnCurrent()
+                PathSessionAction.RequestKeyframes -> Unit
+                PathSessionAction.MarkReconnecting -> log("paths: reconnecting")
+                is PathSessionAction.End -> {
+                    log("paths: ended ${action.reason}")
+                    apply(SessionTeardown.Event.Stop)
+                }
+                PathSessionAction.Ignore -> Unit
+            }
+        }
+        // A transition changes the grace/drain/ping deadlines: recompute.
+        wakeTicker()
+    }
+
+    /** The Mac named the path: follow it, and answer with our own marker (PATH-9). */
+    private fun followSwitch(item: Inbound.PeerSwitch) {
+        val plannedFrom = if (item.arrivedOn != item.path && hub.hasPath(item.arrivedOn)) item.arrivedOn else null
+        val from = hub.currentPath
+        // E-3: the old path stays attached as a standby (still read, still
+        // answering pings); the Mac decides when it goes. E-6: the replay goes
+        // out before the marker, which never waits for credit.
+        hub.followSwitch(item.path, plannedFrom ?: item.path)
+        if (from != null && from != item.path) {
+            // The sending path moved on the Mac's marker: from, to and whether
+            // the Mac planned it (path.switch on the old path) or fled a fault.
+            log("paths: sending $from -> ${item.path} (${if (plannedFrom != null) "planned" else "failure"})")
+        }
+        // A lost AUDIO_CONFIG costs one frame, not the rest of the audio (§5.6).
+        lastAudioConfig?.let { queue.enqueueControl(0, it) }
+        handlePathEvent(PathSessionEvent.PeerSwitch(item.path, item.seq, item.path))
+    }
+
+    private fun tickPaths() {
+        hub.flushAck()
+        hub.pingAll(transferRunning())
+        // During a switch the phone's sending path is still the old one until
+        // the Mac's marker arrives; the path the session is moving to is the
+        // current one for the pong rule (PATH-7), or a lost pong on it would
+        // never reach the machine.
+        val current = pongWatchPath(pathMachine.state, hub.currentPath)
+        for (loss in hub.pongLosses()) {
+            val at = now() / 1000.0
+            pathRanking.addSample(loss.path, null, at)
+            pongFailure(loss, current)?.let { handlePathEvent(it) }
+        }
+        for (stale in hub.joinedTimeouts()) {
+            // The detach reports its own PathDown (E-10).
+            hub.detach(stale)
+            log("path joined without a pong: dropped")
+        }
+        // E-10/PATH-21: the migrating state carries the orphan's deadline.
+        if (pathMachine.state.graceDeadline() != null) {
+            handlePathEvent(PathSessionEvent.GraceExpired)
+        }
+        val at = now() / 1000.0
+        pathRanking.handle(PathRankingEvent.Tick(at), at)
+    }
+
+    private fun startPathTicker() {
+        if (pathTicker != null) return
+        pathTicker = Thread({
+            while (teardown.get() == SessionTeardown.State.LIVE) {
+                val at = now()
+                val wait = nextTickDelay(at)
+                if (wait > 0) {
+                    var interrupted = false
+                    synchronized(tickSignal) {
+                        try {
+                            tickSignal.wait(wait)
+                        } catch (e: InterruptedException) {
+                            interrupted = true
+                        }
+                    }
+                    if (interrupted) break
+                    // Woken for a new (earlier) deadline: recompute instead of
+                    // ticking early.
+                    if (now() < at + wait) continue
+                }
+                if (teardown.get() != SessionTeardown.State.LIVE) break
+                inbound.put(Inbound.Tick)
+            }
+        }, "pocketdeck-paths").also { it.start() }
+    }
+
+    /** R-15/D-1: a new deadline (an ACK timer, a join, a state change). */
+    private fun wakeTicker() {
+        synchronized(tickSignal) { tickSignal.notifyAll() }
+    }
+
+    /**
+     * D-1: the ticker wakes for the next timer (ping policy, pong, joined drop,
+     * drain, grace), not on a fixed poll. A session with no timer at all only
+     * needs a keepalive wake.
+     */
+    internal fun nextTickDelay(at: Long): Long {
+        var next = hub.nextDeadline(transferRunning())
+        pathMachine.state.graceDeadline()?.let { deadline ->
+            val graceAt = (deadline * 1000).toLong()
+            if (graceAt in (at + 1) until next) next = graceAt
+        }
+        if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
+        return (next - at).coerceIn(TICK_MIN_MS, TICK_KEEPALIVE_MS)
+    }
+
+    /** D-1: the screen is on or a transfer runs (a stream, drop, APK, fs bulk). */
+    private fun transferRunning(): Boolean =
+        synchronized(streams) { streams.isNotEmpty() } ||
+            stateTracker.current?.screen == ScreenState.ON ||
+            hub.bulkActive()
+
+    private fun startPathReader(
+        t: PathHub.Transport,
+        reader: FrameReader = FrameReader(t.socket.getInputStream()),
+        first: Frame? = null,
+    ) {
+        onPathReaderStart(t.id)
+        if (pathReaders.any { it.name == "pocketdeck-path-${t.id}" }) return
+        val thread = Thread({
+            var pending: Frame? = first
+            // R-11: frames ahead of a gap that this same path must fill wait
+            // here, never dropped and never behind a paused reader. RR-10:
+            // bounded by bytes (one window, PATH-15), not by a frame count.
+            val held = ArrayDeque<Frame>()
+            var heldBytes = 0
+            try {
+                while (teardown.get() == SessionTeardown.State.LIVE && !t.closed) {
+                    val frame = when {
+                        pending != null -> pending!!.also { pending = null }
+                        held.isNotEmpty() && hub.canBuffer() ->
+                            held.removeFirst().also { heldBytes -= it.payload.size }
+                        else -> reader.readFrame() ?: break
+                    }
+                    val read = hub.receive(t.id, frame)
+                    val events = read.events
+                    val pressure = events.filterIsInstance<PathHub.Event.Backpressure>().firstOrNull()
+                    if (pressure != null) {
+                        if (pressure.stop) {
+                            pending = frame
+                            hub.awaitReorderSpace(t.id)
+                        } else {
+                            // The gap is earlier in this same path's stream:
+                            // pausing the reader would never fill it (PATH-10).
+                            held.addLast(frame)
+                            heldBytes += frame.payload.size
+                            if (held.size > ReorderWindow.MAX_FRAMES ||
+                                heldBytes > ReorderWindow.MAX_BYTES
+                            ) {
+                                inbound.put(Inbound.ProtocolError)
+                                return@Thread
+                            }
+                        }
+                        continue
+                    }
+                    for (event in events) {
+                        when (event) {
+                            is PathHub.Event.Deliver -> inbound.put(Inbound.Deliver(event.frame))
+                            is PathHub.Event.Down -> {
+                                inbound.put(Inbound.Down(event.path))
+                                return@Thread
+                            }
+                            is PathHub.Event.Pong -> inbound.put(Inbound.Pong(event.path, event.rttMs))
+                            is PathHub.Event.Ping -> Unit
+                            is PathHub.Event.PeerSwitch ->
+                                inbound.put(Inbound.PeerSwitch(event.path, event.seq, event.arrivedOn))
+                            PathHub.Event.AckAboveSent -> inbound.put(Inbound.AckAboveSent)
+                            PathHub.Event.ProtocolError -> {
+                                inbound.put(Inbound.ProtocolError)
+                                return@Thread
+                            }
+                            is PathHub.Event.Backpressure -> Unit
+                        }
+                    }
+                    // R-1: the ACK leaves only after every frame the hub
+                    // delivered is in the session's hand-off, so a slow handler
+                    // pushes back through TCP instead of losing an acked frame.
+                    // RR-8: only a delivered RELIABLE frame earns one; the
+                    // Mac's ACKs, pings and lossy input would be pure airtime.
+                    // A closing session never acks: the refusal/bye is the last
+                    // frame the Mac may see.
+                    if (!closing && read.deliveredReliable) hub.ackHandled(t.id)
+                }
+            } catch (e: Throwable) {
+                if (teardown.get() == SessionTeardown.State.LIVE) {
+                    log("path reader ended: ${e.message}")
+                }
+            } finally {
+                // E-10/PATH-9: EOF and a Mac close are detaches here; the hub
+                // reports the PathDown from its single removal point.
+                if (teardown.get() == SessionTeardown.State.LIVE) hub.detach(t.id)
+            }
+        }, "pocketdeck-path-${t.id}")
+        thread.isDaemon = true
+        pathReaders.add(thread)
+        thread.start()
+    }
+
+    /**
+     * A join (PATH-3): the same session, one more path. The slot already
+     * decided; this attaches the socket and answers `welcome.session`.
+     */
+    override fun attachPath(pathId: String, socket: Socket, plain: Socket): AttachResult {
+        if (phase != Phase.READY || teardown.get() != SessionTeardown.State.LIVE) return AttachResult.BUSY
+        if (hub.hasPath(pathId) || hub.pathCount >= PathHub.MAX_PATHS) return AttachResult.TOO_MANY
+        runCatching { socket.tcpNoDelay = true }
+        runCatching { socket.soTimeout = 0 }
+        val t = PathHub.Transport(pathId, socket, plain, pathKind)
+        if (!hub.attach(t)) return AttachResult.TOO_MANY
+        hub.expectFirstPong(pathId)
+        sendWelcomeOn(pathId)
+        // E-10: the machine learns the path before its reader can hand over a
+        // marker. The session thread starts the reader (Inbound.Up) and is the
+        // only caller: two startPathReader calls on one socket raced, and the
+        // losing reader read the first frame's body as its length ("frame
+        // length too large: 16777216", a probe join's first ping, 11-02).
+        inbound.put(Inbound.Up(pathId, joined = true))
+        // D-1: a joined path is pinged at once so its ranking starts (the
+        // welcome is already queued; the ping follows it on the same writer).
+        hub.pingPath(pathId)
+        wakeTicker()
+        log("paths: joined $pathId (paths ${hub.pathCount})")
+        return AttachResult.ATTACHED
     }
 
     private fun shutdown() {
@@ -495,6 +964,7 @@ class Session(
         val abandoned = synchronized(pairLock) {
             val open = if (pairSettled) null else pendingPairId
             pairSettled = true
+            readerWork.clear()
             pairLock.notifyAll()
             open
         }
@@ -508,6 +978,7 @@ class Session(
         runCatching { drop?.close() }
         runCatching { fsReader?.close() }
         runCatching { fsWriter?.close() }
+        runCatching { fsThumbnailer?.close() }
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
@@ -527,22 +998,34 @@ class Session(
         runCatching { power.onSessionEnded() }
         runCatching { power.onPanelChanged = null }
         runCatching { power.onPowerLocked = null }
+        pathTicker?.interrupt()
+        pathTicker = null
+        // Wake a reader blocked in the hand-off: the session is going.
+        inbound.close()
+        // The writer drains the queue through the path hub: close the hub only
+        // after it has written the last frame (a refusal's error, a bye).
         queue.close()
         runCatching { writerThread?.join(1000) }
+        hub.closeAll()
+        for (t in pathReaders) runCatching { t.join(200) }
+        pathReaders.clear()
         closeTransport()
         if (phase == Phase.READY) runCatching { callback.onSessionChanged(false, clientId.ifEmpty { null }, null, 0) }
     }
 
     private fun writerLoop() {
         try {
-            val out = BufferedOutputStream(socket.getOutputStream())
             while (true) {
                 val bytes = queue.poll() ?: break
-                out.write(bytes)
-                out.flush()
+                // Reliable frames are wrapped and kept for a switch; lossy ones
+                // go bare on the current path (docs/design/paths.md §5.5).
+                hub.send(bytes)
             }
             // Drained after a stop (e.g. pair_denied): the reader is still in a
-            // blocking read, and closing the transport is what wakes it.
+            // blocking read, and closing the transport is what wakes it. The
+            // path writers flush first (R-2): a refusal must not lose its race
+            // with this close.
+            hub.drain()
             closeTransport()
         } catch (e: Throwable) {
             log("writer ended: ${e.message}")
@@ -579,7 +1062,9 @@ class Session(
         when (phase) {
             Phase.HELLO -> if (t == "hello") onHello(obj) else rejectProtocol("expected hello, got '$t'")
             Phase.PAIR -> when (t) {
-                "hello" -> onHello(obj)
+                // A second hello in one session is not a new handshake: the
+                // pairing phase it is already in decides (PAIR-10's QR probe).
+                "hello" -> logOnce("second hello ignored")
                 "pair.request" -> onPairRequest()
                 "pair.nonce" -> onPairNonce(obj)
                 "pair.ok" -> onPairingOkFromMac(obj)
@@ -591,8 +1076,27 @@ class Session(
 
     private fun onHello(obj: Map<String, Any?>) {
         val v = Json.int(obj["v"])
-        if (v != PROTOCOL_VERSION) {
-            sendError("version", "unsupported protocol version $v")
+        // The path id names this connection; a v4 hello always carries one.
+        val pathId = Json.str(obj["path"]) ?: PathIds.pathId(emptySet())
+        if (firstTransport == null) {
+            firstPathId = pathId
+            firstTransport = PathHub.Transport(pathId, socket, plainSocket, pathKind)
+            hub.start(firstTransport!!)
+        } else if (pathId != firstPathId) {
+            hub.rekey(firstPathId, pathId)
+            firstPathId = pathId
+            firstTransport?.id = pathId
+        }
+        if (dev.pocketdeck.proto.PathVersion.refused(v)) {
+            // PATH-1: the refusal carries this phone's own version; the screen
+            // names the Mac's side from the hello's v.
+            log("version: ${dev.pocketdeck.proto.PathVersion.phoneSentence(v)}")
+            runCatching { callback.onVersionRefused(v) }
+            sendJson(mapOf(
+                "t" to "error",
+                "code" to "version",
+                "v" to dev.pocketdeck.proto.PathVersion.CURRENT,
+            ))
             apply(SessionTeardown.Event.Stop)
             return
         }
@@ -602,11 +1106,29 @@ class Session(
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
         val client = store.snapshot().firstOrNull { it.clientId == clientId }
-        when (ConnectionGate.decide(gateProvider(), isPaired = client != null)) {
+        // A user-driven pairing says so in its hello (PAIR-23); a Mac that
+        // believes it is paired sends a bare one. A scanned QR makes an unpinned
+        // probe a pairing too: the phone itself invited it.
+        val pairingAttempt = Json.bool(obj["pair"]) == true || qrPendingForPeer()
+        when (ConnectionGate.decide(gateProvider(), isPaired = client != null, isPairing = pairingAttempt)) {
             GateDecision.REFUSE_CONNECTIONS_OFF ->
                 return refuse(GateDecision.REFUSE_CONNECTIONS_OFF)
             GateDecision.REFUSE_PAIRING_OFF ->
                 return refuse(GateDecision.REFUSE_PAIRING_OFF)
+            GateDecision.NOT_PAIRED -> {
+                // The Mac holds our pin but we hold none of its: say so at once
+                // instead of waiting for a pair.request it will never send.
+                log("refused: no pairing for this Mac mac=${macIdHash(clientId)}")
+                finishWithError("not_paired", "this phone has no pairing with this Mac")
+                return
+            }
+            GateDecision.CLOSE_SILENT -> {
+                // PAIR-12: a peer we pin nothing for learns nothing at all.
+                log("refused: no pairing for this Mac, pairings off mac=${macIdHash(clientId)}")
+                apply(SessionTeardown.Event.Stop)
+                queue.close()
+                return
+            }
             GateDecision.ACCEPT -> Unit
         }
         if (client == null) {
@@ -664,8 +1186,8 @@ class Session(
         pendingPhoneFp = tlsView?.selfFingerprint?.invoke() ?: selfFingerprintBytes()
         pendingMacFp = tlsFacts.peerFingerprint()
         // A person decides on the phone while this thread only watches for the
-        // Mac going away, so no read timeout applies.
-        runCatching { socket.soTimeout = 0 }
+        // Mac going away: poll so a decision on another thread is seen at once.
+        runCatching { socket.soTimeout = PAIR_POLL_MS }
         val commit = PairingCodeV2.commit(np, pendingPhoneFp, pendingMacFp)
         sendJson(mapOf("t" to "pair.commit", "c" to PairingCodeV2.hex(commit)))
         phase = Phase.PAIR
@@ -673,6 +1195,15 @@ class Session(
             it.isDaemon = true
             it.start()
         }
+    }
+
+    /** True when a scanned QR names this peer: the phone invited its hello. */
+    private fun qrPendingForPeer(): Boolean {
+        val qr = pendingQrProvider() ?: return false
+        val fp = Json.str(qr["macFp"]) ?: return false
+        val at = Json.long(qr["at"]) ?: 0
+        if (System.currentTimeMillis() - at !in 0..PENDING_QR_TTL_MS) return false
+        return fp.contentEqualsHex(tlsFacts.peerFingerprint())
     }
 
     /**
@@ -708,12 +1239,13 @@ class Session(
             return false
         }
         if (secret.size != 16) return false
-        runCatching { socket.soTimeout = 0 }
+        runCatching { socket.soTimeout = PAIR_POLL_MS }
         val hmac = PairingCodeV2.qrHmac(secret, exporter, pendingPhoneFp)
-        sendJson(mapOf("t" to "pair.qr", "m" to PairingCodeV2.hex(hmac)))
         // One-time: a second hello with the same QR secret must not be answered
-        // (review L-3). The app's stored copy expires with its TTL.
+        // (review L-3). Consume before the write so a reader that sees the frame
+        // never sees a secret still stored.
         runCatching { pendingQrConsumer() }
+        sendJson(mapOf("t" to "pair.qr", "m" to PairingCodeV2.hex(hmac)))
         phase = Phase.PAIR
         return true
     }
@@ -727,7 +1259,7 @@ class Session(
             finishWithError("pair_commit", "pairing answer does not match the session")
             return
         }
-        runCatching { socket.soTimeout = 0 }
+        runCatching { socket.soTimeout = PAIR_POLL_MS }
         if (autoApprovePairing) {
             synchronized(pairLock) { pairSettled = true }
             completePairing()
@@ -773,47 +1305,70 @@ class Session(
 
     private fun expirePairing(id: String) {
         val deadline = System.currentTimeMillis() + pairDecisionTimeoutMs
-        val expired = synchronized(pairLock) {
+        synchronized(pairLock) {
             while (!pairSettled && pendingPairId == id) {
                 val left = deadline - System.currentTimeMillis()
                 if (left <= 0) {
+                    // M-1: nobody answered. Keep the phone quiet for a moment so
+                    // a peer cannot retry the prompt in a tight loop. The reader
+                    // writes the timeout error; this thread never touches the
+                    // socket (PATH-2).
                     pairSettled = true
-                    return@synchronized true
+                    readerWork.addLast(ReaderWork.PairExpired)
+                    pairLock.notifyAll()
+                    return
                 }
                 pairLock.wait(left)
             }
-            false
         }
-        if (!expired) return
-        // M-1: nobody answered; keep the phone quiet for a moment so a peer
-        // cannot retry the prompt in a tight loop.
-        pairCooldown.start()
-        runCatching { callback.onPairingEnded(id) }
-        finishWithError("pair_timeout", "no decision on the phone")
     }
 
     /**
-     * Called from the app process (binder thread) when the user answers the
-     * prompt. Allow completes the pairing right here: the reader thread is
-     * only watching the socket.
+     * Called from the app process (binder thread) when the person answers the
+     * prompt. Only the decision is recorded here: the reader thread writes
+     * `pair.ok` or the denial, because before `welcome` it is the one thread
+     * that may touch the TLS socket (PATH-2, boot 5).
      */
     override fun respondPairing(requestId: String, allow: Boolean) {
-        val mine = synchronized(pairLock) {
-            if (requestId != pendingPairId || pairSettled || isClosed) {
-                false
-            } else {
-                pairSettled = true
-                pairLock.notifyAll()
-                true
-            }
+        synchronized(pairLock) {
+            if (requestId != pendingPairId || pairSettled || isClosed) return
+            pairSettled = true
+            readerWork.addLast(if (allow) ReaderWork.PairAllowed else ReaderWork.PairDenied)
+            pairLock.notifyAll()
         }
-        if (!mine) return
-        if (allow) {
-            completePairing()
-        } else {
-            // M-1: a Deny is a decision about this Mac; hold off new prompts.
-            pairCooldown.start()
-            finishWithError("pair_denied", "pairing denied")
+        log("pairing: ${if (allow) "allow" else "deny"} recorded")
+    }
+
+    /**
+     * Runs the pre-welcome work another thread recorded. Only the reader calls
+     * this; [finishWithError] hands a refusal here too, so no binder thread
+     * ever writes on the TLS socket (PATH-2).
+     */
+    private fun drainReaderWork() {
+        while (true) {
+            val work = synchronized(pairLock) { readerWork.pollFirst() } ?: return
+            if (teardown.get() != SessionTeardown.State.LIVE) return
+            // The pairing frames must not wait out the 250 ms read poll: clear
+            // the read timeout before the first write, as main did.
+            runCatching { socket.soTimeout = 0 }
+            when (work) {
+                ReaderWork.PairAllowed -> {
+                    log("pairing: allow")
+                    completePairing()
+                }
+                ReaderWork.PairDenied -> {
+                    log("pairing: deny")
+                    pairCooldown.start()
+                    finishWithError("pair_denied", "pairing denied")
+                }
+                ReaderWork.PairExpired -> {
+                    log("pairing: no decision")
+                    pairCooldown.start()
+                    pendingPairId?.let { runCatching { callback.onPairingEnded(it) } }
+                    finishWithError("pair_timeout", "no decision on the phone")
+                }
+                is ReaderWork.Refuse -> finishWithError(work.code, work.message)
+            }
         }
     }
 
@@ -860,36 +1415,61 @@ class Session(
 
     /** Sends [code], lets it flush, then ends the session. */
     private fun finishWithError(code: String, message: String) {
+        if (phase != Phase.READY && Thread.currentThread() !== readerThread) {
+            // A pre-welcome refusal may not write from a caller thread (the
+            // app's gate push, a binder decision): hand it to the reader.
+            if (teardown.get() != SessionTeardown.State.LIVE) return
+            synchronized(pairLock) {
+                readerWork.addLast(ReaderWork.Refuse(code, message))
+                pairLock.notifyAll()
+            }
+            return
+        }
         sendError(code, message)
         apply(SessionTeardown.Event.Stop)
         queue.close()
     }
 
     private fun welcome() {
-        val d = device.info()
-        // Set before the welcome is queued: after a pairing the reader thread
-        // may see the Mac's first request as soon as the frame is on the wire.
+        if (sessionId.isEmpty()) sessionId = PathIds.sessionId()
+        liveSessionId = sessionId
+        // The first path is live before `welcome` is queued: after a pairing the
+        // reader may see the Mac's first request as soon as the frame is out.
+        hub.sendJSONOn(firstPathId, welcomeMessage())
         phase = Phase.READY
-        sendJson(
-            mapOf(
-                "t" to "welcome",
-                "device" to mapOf(
-                    "id" to d.id,
-                    "name" to d.name,
-                    "model" to d.model,
-                    "sdk" to d.sdk,
-                    "screen" to mapOf("w" to d.screenW, "h" to d.screenH, "dpi" to d.dpi),
-                    "locked" to d.locked,
-                ),
-            ),
-        )
         // The read timeout only guards the handshake; a live session may be
         // silent for long stretches (static content, no input).
         runCatching { socket.soTimeout = 0 }
+        pathMachine.startLive(firstPathId)
+        log("session ${sessionId.take(8)}: welcome (protocol ${dev.pocketdeck.proto.PathVersion.CURRENT})")
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStateWatch()
         startClipboardSync()
         startClipImagePoll()
+    }
+
+    /** A `welcome` on a joined path echoes the same session id (PATH-3). */
+    private fun sendWelcomeOn(pathId: String) {
+        // PATH-3: the welcome must precede every path frame, and the join ping
+        // (PATH-12/D-1) is a priority frame: both take the priority lane in
+        // queue order, or the ping would overtake the welcome.
+        hub.sendJSONOn(pathId, welcomeMessage(), priority = true)
+    }
+
+    private fun welcomeMessage(): Map<String, Any?> {
+        val d = device.info()
+        return mapOf(
+            "t" to "welcome",
+            "session" to sessionId,
+            "device" to mapOf(
+                "id" to d.id,
+                "name" to d.name,
+                "model" to d.model,
+                "sdk" to d.sdk,
+                "screen" to mapOf("w" to d.screenW, "h" to d.screenH, "dpi" to d.dpi),
+                "locked" to d.locked,
+            ),
+        )
     }
 
     /**
@@ -924,6 +1504,7 @@ class Session(
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
                 "fs.read" -> onFsRead(obj)
+                "fs.thumb" -> onFsThumb(obj)
                 "fs.write" -> fsWriter?.begin(obj)
                 "fs.move" -> onFsMove(obj)
                 "fs.delete" -> onFsDelete(obj)
@@ -934,6 +1515,7 @@ class Session(
                 "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let {
                     fsReader?.cancel(it)
                     fsWriter?.cancel(it)
+                    fsThumbnailer?.cancel(it)
                 }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
@@ -1052,6 +1634,9 @@ class Session(
         val displayId = display.open(stream, w, h, dpi, this)
         val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = WindowContent.App(task.pkg, task.activity) }
         synchronized(streams) { streams[stream] = state }
+        // The episode's take-over first: on a shared group the move waits for
+        // the sleeping display to wake, so the wake cannot wait for it.
+        updatePower()
         // Moving before the reply: `started` must match what actually happened.
         val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
         if (moved) {
@@ -1116,7 +1701,12 @@ class Session(
             val displayId = display.open(stream, w, h, dpi, this)
             val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
-            // The launch first: `window.opened` names the task it made (WIN-32),
+            // The episode's take-over first: a VD created while the panel's
+            // group sleeps starts OFF, and the launch waits for the wake (the
+            // 10-30 open: 11 s in the launch, 23 s to the first frame). The
+            // keep-alive's own step runs after this returns, beside the launch.
+            updatePower()
+            // The launch next: `window.opened` names the task it made (WIN-32),
             // and video that arrived before this point waits in the gate.
             val launched = when (content) {
                 is WindowContent.App -> launchOn(displayId, content.pkg, content.activity, newInstance)
@@ -1134,7 +1724,9 @@ class Session(
                 }
             }
         }
-        updatePower()
+        // An app or link stream already told the power policy before its
+        // launch; only the mirror decides after its reply (it never wakes).
+        if (content == WindowContent.Phone) updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
@@ -1277,7 +1869,7 @@ class Session(
         if (!state.paused) {
             state.paused = true
             display.pause(state.stream)
-            updatePower(paused = true)
+            updatePower()
         }
     }
 
@@ -1383,6 +1975,10 @@ class Session(
      * switch (docs/design/notify.md). A missing listener grant is tried once at
      * shell UID; when that fails the phone answers `no_access` and shows the
      * person where to allow it.
+     *
+     * Every `on:true` is also announced to the app, even a repeat: after a
+     * same-session rejoin the Mac asks again and the phone answers with its
+     * active set (NOTIFY-1/PATH-6, ISS-5).
      */
     private fun onNotifyEnable(obj: Map<String, Any?>) {
         val on = Json.bool(obj["on"]) ?: run {
@@ -1394,11 +1990,11 @@ class Session(
             notifyGranted = notifyAccess() || notifyGrant()
             if (notifyGranted) log("notify: listener access granted")
         }
-        reconcileNotify()
+        reconcileNotify(announce = on)
     }
 
     /** Re-evaluates the forwarding gate (also runs when the app reports a grant). */
-    fun reconcileNotify() {
+    fun reconcileNotify(announce: Boolean = false) {
         // A session that has not authenticated gets nothing but the machine; the
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
@@ -1411,9 +2007,11 @@ class Session(
         // A gate change always reaches the app, even when forwarding was false
         // both before and after (no access -> off): the attention item is the
         // app's own state. NO_ACCESS repeats, so a late-attached app still learns.
+        // [announce] is the Mac's own enable: it reaches the app even when the
+        // gate did not move, so the listener can resend its active set.
         val forward = gate == NotifyGate.FORWARDING
         notifyForwarding = forward
-        if (gateChanged || needsNotificationAccessAttention(gate)) {
+        if (gateChanged || needsNotificationAccessAttention(gate) || (announce && forward)) {
             runCatching { notifyState?.invoke(forward, if (gate == NotifyGate.NO_ACCESS) "no_access" else null) }
         }
         sendJson(notifyStateMessage(gate))
@@ -1721,7 +2319,9 @@ class Session(
         if (phase != Phase.READY || !notifyForwarding) return
         when (t) {
             "notify.post" -> deviceNotifyPost(obj)
+            "notify.image" -> deviceNotifyImage(obj)
             "notify.remove" -> deviceNotifyRemove(obj)
+            "notify.snapshot" -> deviceNotifySnapshot(obj)
             "media.state" -> deviceMedia(obj)
             "media.sessions" -> deviceMediaSessions(obj)
             "media.art" -> deviceMediaArt(obj)
@@ -1735,11 +2335,16 @@ class Session(
         // holding this notification is not the person's app; only real
         // application packages are forwarded.
         val pkg = validToken(Json.str(obj["pkg"]), 255) ?: return dropNotifyPost("pkg")
+        // The Mac shows a post only when it knows whether Android would alert
+        // (NOTIFY-19), so the decision is required, never defaulted.
+        val alert = obj["alert"] as? Boolean ?: return dropNotifyPost("alert")
         val title = Json.str(obj["title"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
         val text = Json.str(obj["text"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
         if (title == null && text == null) return dropNotifyPost("empty content")
         val whenMs = Json.long(obj["when"])?.takeIf { it > 0 }
         val ongoing = Json.bool(obj["ongoing"]) == true
+        val group = validGroup(Json.str(obj["group"]))
+        val live = validLive(obj["live"])
         val actions = validActions(obj["actions"])
         val message = LinkedHashMap<String, Any?>()
         message["t"] = "notify.post"
@@ -1748,9 +2353,107 @@ class Session(
         if (title != null) message["title"] = title
         if (text != null) message["text"] = text
         if (whenMs != null) message["when"] = whenMs
+        message["alert"] = alert
         if (ongoing) message["ongoing"] = true
+        if (live != null) message["live"] = live
+        if (group != null) message["group"] = group
         if (actions.isNotEmpty()) message["actions"] = actions
         sendJson(message)
+    }
+
+    /**
+     * `group` is the phone's own hash (NOTIFY-20): 8 bytes of SHA-256 printed
+     * as lowercase hex, nothing else. Any other shape is dropped — the post
+     * itself is still the person's, so only the field goes.
+     */
+    private fun validGroup(raw: String?): String? {
+        if (raw == null) return null
+        if (raw.length != GROUP_HASH_CHARS || raw.any { it !in '0'..'9' && it !in 'a'..'f' }) {
+            log("notify.post group dropped")
+            return null
+        }
+        return raw
+    }
+
+    /**
+     * `live` (docs/design/notify.md "Part 2b"): the shape the listener's
+     * `liveFor` builds and the Mac's `NotifyLive(json:)` reads. A key the Mac
+     * never reads is dropped; a known key with the wrong type or outside its
+     * range drops the whole object, because the Mac would otherwise trust a
+     * value the phone promised. The log names the key, never its value.
+     */
+    private fun validLive(raw: Any?): Map<String, Any?>? {
+        if (raw == null) return null
+        val source = raw as? Map<*, *> ?: return dropLive("shape")
+        val live = LinkedHashMap<String, Any?>()
+        for ((key, value) in source) {
+            when (key) {
+                "progress" -> {
+                    val progress = (value as? Number)?.toDouble()?.takeIf { it.isFinite() }
+                        ?: return dropLive("progress")
+                    if (progress !in 0.0..1.0) return dropLive("progress")
+                    live["progress"] = progress
+                }
+                "chip" -> {
+                    val chip = (value as? String)?.trim() ?: return dropLive("chip")
+                    if (chip.isEmpty() || chip.length > NotifyEvents.MAX_CHIP) return dropLive("chip")
+                    live["chip"] = chip
+                }
+                "chrono" -> {
+                    val chrono = (value as? Number)?.toLong() ?: return dropLive("chrono")
+                    if (chrono <= 0L) return dropLive("chrono")
+                    live["chrono"] = chrono
+                }
+                "countDown" -> {
+                    val countDown = value as? Boolean ?: return dropLive("countDown")
+                    if (countDown) live["countDown"] = true
+                }
+                // The Mac reads no other key; an unknown one is dropped.
+                else -> Unit
+            }
+        }
+        // An empty object is still the marker a promoted notification sends.
+        return live
+    }
+
+    private fun dropLive(key: String): Map<String, Any?>? {
+        log("notify.post live dropped: $key")
+        return null
+    }
+
+    /**
+     * `notify.image` (docs/design/notify.md): the picture that follows a post
+     * for the same id. Re-checked so the Mac never holds more than the phone
+     * promised: the id token, the mime allowlist, the side bounds, the encoded
+     * cap and a body that decodes. A refusal names the field, never the bytes.
+     */
+    private fun deviceNotifyImage(obj: Map<String, Any?>) {
+        val id = validToken(Json.str(obj["id"]), 64) ?: return dropNotifyImage("id")
+        val mime = Json.str(obj["mime"])?.lowercase()
+        if (mime == null || mime !in NOTIFY_IMAGE_MIMES) return dropNotifyImage("mime")
+        val width = (obj["w"] as? Number)?.toInt() ?: return dropNotifyImage("w")
+        val height = (obj["h"] as? Number)?.toInt() ?: return dropNotifyImage("h")
+        if (width !in 1..NotifyImageRules.MAX_SIDE) return dropNotifyImage("w")
+        if (height !in 1..NotifyImageRules.MAX_SIDE) return dropNotifyImage("h")
+        val data = Json.str(obj["data"]) ?: return dropNotifyImage("data")
+        val bytes = runCatching { Base64.getDecoder().decode(data) }.getOrNull()
+            ?: return dropNotifyImage("data")
+        if (bytes.isEmpty() || bytes.size > NotifyImageRules.MAX_BYTES) return dropNotifyImage("bytes")
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "notify.image"
+        message["id"] = id
+        message["mime"] = mime
+        message["w"] = width
+        message["h"] = height
+        // Canonical base64, so the Mac's decoder never sees padding or wrapping
+        // this side tolerated.
+        message["data"] = Base64.getEncoder().encodeToString(bytes)
+        sendJson(message)
+        log("notify.image id=$id mime=$mime w=$width h=$height size=${bytes.size}")
+    }
+
+    private fun dropNotifyImage(why: String) {
+        log("notify.image dropped: $why")
     }
 
     /**
@@ -1788,6 +2491,27 @@ class Session(
             return
         }
         sendJson(mapOf("t" to "notify.remove", "id" to id))
+    }
+
+    /**
+     * `notify.snapshot` (NOTIFY-1/PATH-6): the ids the phone's active set still
+     * holds, after a quiet post for each. Re-validated like every device event:
+     * at most [NotifyEvents.MAX_SNAPSHOT_IDS] opaque ids; a malformed one is
+     * dropped, the rest still go out.
+     */
+    private fun deviceNotifySnapshot(obj: Map<String, Any?>) {
+        val raw = obj["ids"] as? List<*> ?: run {
+            log("notify.snapshot dropped: ids")
+            return
+        }
+        val ids = ArrayList<String>(minOf(raw.size, NotifyEvents.MAX_SNAPSHOT_IDS))
+        for (entry in raw) {
+            if (ids.size == NotifyEvents.MAX_SNAPSHOT_IDS) break
+            val id = validToken(entry as? String, 64) ?: continue
+            if (id !in ids) ids += id
+        }
+        sendJson(mapOf("t" to "notify.snapshot", "ids" to ids))
+        log("notify.snapshot ids=${ids.size}")
     }
 
     private fun deviceMedia(obj: Map<String, Any?>) {
@@ -1980,6 +2704,15 @@ class Session(
         reader.begin(obj)
     }
 
+    private fun onFsThumb(obj: Map<String, Any?>) {
+        val thumbs = fsThumbnailer
+        if (thumbs == null) {
+            fsId(obj)?.let { fsError(it, FsPaths.denied("files are not served")) }
+            return
+        }
+        thumbs.begin(obj)
+    }
+
     private fun onFsStat(obj: Map<String, Any?>) {
         val id = fsId(obj) ?: return
         val view = files ?: return fsError(id, FsPaths.denied("files are not served"))
@@ -2067,7 +2800,10 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun onClipImageStart(obj: Map<String, Any?>) {
-        if (clipGateState == ClipGate.OFF) return
+        // A person's own ⌘V is explicit, like a drop: it bypasses the sync
+        // switch (SHARE-16). The switch governs only the background sync.
+        val paste = obj["paste"] == true
+        if (clipGateState == ClipGate.OFF && !paste) return
         val id = (obj["id"] as? Number)?.toInt() ?: return
         val size = (obj["size"] as? Number)?.toLong() ?: -1L
         clipImageReceiver.begin(id, Json.str(obj["mime"]), size)
@@ -2240,13 +2976,24 @@ class Session(
         gate.frame(stream, ptsUs, key, Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload))
     }
 
+    /**
+     * `window.still` (PHONE-21): the stream is live but its encoder has produced
+     * nothing for a second. The Mac counts it as a picture heartbeat, never as a
+     * first frame.
+     */
+    override fun onStill(stream: Int) {
+        sendJson(mapOf("t" to "window.still", "stream" to stream))
+    }
+
     // ------------------------------------------------------------------
     // audio sink (device-wide, stream 0)
     // ------------------------------------------------------------------
 
     override fun onAudioConfig(codec: Int, sampleRate: Int, channels: Int, frameMs: Int, setup: ByteArray) {
         val payload = Frames.encodeAudioConfig(AudioConfigPayload(codec, sampleRate, channels, frameMs, setup))
-        queue.enqueueControl(0, Frames.encode(Frames.TYPE_AUDIO_CONFIG, 0, payload))
+        val bytes = Frames.encode(Frames.TYPE_AUDIO_CONFIG, 0, payload)
+        lastAudioConfig = bytes
+        queue.enqueueControl(0, bytes)
         sendJson(mapOf("t" to "audio.state", "on" to true, "codec" to codec))
     }
 
@@ -2280,6 +3027,7 @@ class Session(
 
     private fun onAudioStop() {
         runCatching { audioCapture?.stop() }
+        lastAudioConfig = null
         queue.clearAudio()
         sendJson(mapOf("t" to "audio.state", "on" to false, "codec" to 0))
     }
@@ -2353,11 +3101,18 @@ class Session(
         // that has not authenticated must see nothing else. The type only in
         // the log, never a payload.
         val t = obj["t"] as? String ?: ""
-        if (phase != Phase.READY && t !in PRE_READY_TYPES) {
-            logOnce("dropped before ready: $t")
+        val bytes = Frames.encodeJson(0, Json.encode(obj))
+        if (phase != Phase.READY) {
+            if (t !in PRE_READY_TYPES) {
+                logOnce("dropped before ready: $t")
+                return
+            }
+            // The handshake and pairing frames are bare: no session seq space
+            // exists before `welcome` (PATH-2).
+            hub.sendOn(firstPathId, bytes)
             return
         }
-        queue.enqueueJson(Frames.encodeJson(0, Json.encode(obj)))
+        queue.enqueueJson(bytes)
     }
 
     private fun sendError(code: String, message: String, stream: Int = 0) {
@@ -2606,21 +3361,21 @@ class Session(
     private fun windowCount(): Int = synchronized(streams) { streams.size }
 
     /**
-     * Tells the power policy what the session holds now. [paused] marks a
-     * `window.pause` as the cause of an empty set: every stream covered at once
-     * keeps the panel state for a grace period instead of handing the phone
-     * back and taking it again on the next unpause. A close or the session end
-     * passes false and hands back at once.
+     * Tells the power policy what the session holds now. [ids] is every open app
+     * stream's display, covered windows included: a pause is not a close, and a
+     * window the Mac covers must not take its display (or the episode) with it.
+     * [allPaused] says every one of them is covered, which starts the grace.
      */
-    private fun updatePower(paused: Boolean = false) {
+    private fun updatePower() {
         val ids: List<Int>
         val allPaused: Boolean
         val mirroring: Boolean
         var phoneOpen = false
         synchronized(streams) {
             val open = streams.values.toList()
-            ids = open.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
-            allPaused = paused && open.isNotEmpty() && open.all { it.paused }
+            val apps = open.filter { it.content != WindowContent.Phone }
+            ids = apps.map { it.displayId }
+            allPaused = apps.isNotEmpty() && apps.all { it.paused }
             mirroring = open.any { it.content == WindowContent.Phone && !it.paused }
             phoneOpen = open.any { it.content == WindowContent.Phone }
         }
@@ -2651,7 +3406,7 @@ class Session(
     }
 
     companion object {
-        const val PROTOCOL_VERSION = 3
+        const val PROTOCOL_VERSION = 4
         const val OWN_PACKAGE = "dev.pocketdeck"
         const val PHONE_DISPLAY = 0
         const val KEYCODE_BACK = 4
@@ -2669,12 +3424,35 @@ class Session(
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
 
+        /**
+         * R-1/PATH-15: the session's inbound hand-off is bounded by bytes, not
+         * by a frame count: a 256-slot queue could hold 2 GiB of 8 MiB frames.
+         * The reorder window's own budget covers it because a delivered frame
+         * has left the window; a single frame larger than the budget is still
+         * admitted when the queue is empty.
+         */
+        const val INBOX_MAX_BYTES = 4 shl 20
+        const val PATH_FRAME_OVERHEAD = 9
+
         /** How long `window.opened` waits for the task id the launch made. */
         const val TASK_WAIT_MS = 2_000L
         const val TASK_POLL_MS = 50L
 
+        /** D-1: the ticker's floor and its idle keepalive wake. */
+        const val TICK_MIN_MS = 5L
+        const val TICK_KEEPALIVE_MS = 60_000L
+
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64
+
+        /** `NotifyEvents.groupHash`: 8 bytes of SHA-256 printed as lowercase hex. */
+        const val GROUP_HASH_CHARS = 16
+
+        /** The two formats the phone's `NotifyImageRules` can produce. */
+        private val NOTIFY_IMAGE_MIMES = setOf(
+            NotifyImageRules.mime(hasAlpha = false),
+            NotifyImageRules.mime(hasAlpha = true),
+        )
 
         /** The clipboard-image poll: images are user-paced, not sub-second. */
         const val CLIP_IMAGE_POLL_MS = 1_000L
@@ -2684,6 +3462,9 @@ class Session(
 
         /** Bounds the kernel's video backlog so the delta-drop rule can fire. */
         const val SEND_BUFFER_BYTES = 128 * 1024
+
+        /** The pairing phase's read poll: a decision may land on another thread. */
+        const val PAIR_POLL_MS = 250
 
         /** Virtual displays and encoders need dimensions that are multiples of 16. */
         fun floor16(v: Int): Int = if (v <= 0) 0 else (v / 16) * 16

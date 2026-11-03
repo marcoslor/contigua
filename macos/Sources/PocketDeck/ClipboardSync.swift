@@ -1,7 +1,8 @@
-// Plain-text clipboard sync with the phone (`clip.set`, docs/PROTOCOL.md
-// "Clipboard sync"). While a session is ready, a poll of the general pasteboard
-// sends text that changed, and a text from the phone is written to it. Images
-// travel the same rules at 8 MiB (`clip.image.*`, docs/design/dragdrop.md).
+// Clipboard sync with the phone (`clip.set`, docs/PROTOCOL.md "Clipboard
+// sync"). While a session is ready, a poll of the general pasteboard sends text
+// that changed, and a text from the phone is written to it. Images travel the
+// same rules at 8 MiB (`clip.image.*`, docs/design/dragdrop.md), and a Finder
+// copy of one image file is sent as an image, never as its name (SHARE-2).
 //
 // The pasteboard and the timer are injected, so the rules are tested with a
 // fake pasteboard and a manual clock.
@@ -9,6 +10,8 @@
 import AppKit
 import CryptoKit
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// The pasteboard as the sync sees it. `SystemPasteboard` is the real one.
 protocol ClipboardPasteboard: AnyObject {
@@ -21,8 +24,49 @@ protocol ClipboardPasteboard: AnyObject {
     /// The item's image (PNG bytes, or TIFF converted) when it holds one and no
     /// text; nil otherwise. Text items stay with the text path.
     func currentImage() -> (data: Data, mime: String)?
+    /// The file URLs the current item carries (`public.file-url`), if any.
+    func currentFileURLs() -> [URL]
     /// Replaces the contents with image bytes (PNG, plus TIFF for reading).
     func writeImage(data: Data, mime: String)
+}
+
+extension ClipboardPasteboard {
+    /// Boards that never carry files (an image-only fake) have none.
+    func currentFileURLs() -> [URL] { [] }
+}
+
+/// What ⌘V reads. A Finder copy also puts the file's name on the pasteboard as
+/// text; that text must never be typed into the phone (SHARE-2).
+protocol PasteboardReader {
+    func text() -> String?
+    func isFileCopy() -> Bool
+    /// The file URLs of a file copy (SHARE-17's drop path).
+    func fileURLs() -> [URL]
+    /// The image of an item with no text (SHARE-16's paste path).
+    func image() -> (data: Data, mime: String)?
+}
+
+/// The general pasteboard.
+struct SystemPasteboardReader: PasteboardReader {
+    private let board = SystemPasteboard()
+
+    func text() -> String? { NSPasteboard.general.string(forType: .string) }
+
+    func isFileCopy() -> Bool {
+        !(NSPasteboard.general.readObjects(forClasses: [NSURL.self],
+                                          options: [.urlReadingFileURLsOnly: true]) ?? []).isEmpty
+    }
+
+    func fileURLs() -> [URL] { board.currentFileURLs() }
+
+    func image() -> (data: Data, mime: String)? { board.currentImage() }
+}
+
+/// What ⌘V found on the pasteboard: everything but plain text is the window's
+/// flow (SHARE-16 for one image, SHARE-17 for files).
+enum PasteboardPaste: Equatable {
+    case files([URL])
+    case image(Data, String)
 }
 
 final class ClipboardSync {
@@ -31,6 +75,12 @@ final class ClipboardSync {
     /// The image cap (docs/PROTOCOL.md "Clipboard images"): 8 MiB each way.
     static let maxImageBytes = 8 * 1024 * 1024
     static let pollInterval: TimeInterval = 0.5
+    /// A Finder copy carries `public.file-url` next to the file's name as text;
+    /// that text is the name, never a copy that goes to the phone (SHARE-2).
+    static let fileCopyType = NSPasteboard.PasteboardType.fileURL.rawValue
+    /// File copies up to this read on the calling thread; larger ones decode off
+    /// it so the window does not hitch.
+    static let fileReadOnMainLimit = 1_048_576
 
     /// Set by password managers on secrets; items carrying any of them are never sent.
     static let secretTypes: Set<String> = [
@@ -66,6 +116,10 @@ final class ClipboardSync {
     private var syncedHash: SHA256.Digest?
     /// Same hash rule for clipboard images.
     private var syncedImageHash: SHA256.Digest?
+    /// Reads and converts a file copy. Over 1 MiB it runs off the main thread
+    /// and delivers back on it; tests replace this to stay synchronous.
+    var readFileCopy: (URL, UTType, Bool, @escaping ((Data, String)?) -> Void) -> Void =
+        ClipboardSync.readFileCopyInBackground
 
     var isRunning: Bool { stopClock != nil }
 
@@ -103,6 +157,10 @@ final class ClipboardSync {
         guard isEnabled() else { return }
         let item = pasteboard.currentItem()
         guard item.types.isDisjoint(with: Self.secretTypes) else { return }
+        if item.types.contains(Self.fileCopyType) {
+            sendFileCopy(changeCount: count)
+            return
+        }
         if item.text == nil, let image = pasteboard.currentImage(), !image.data.isEmpty {
             guard image.data.count <= Self.maxImageBytes, let hash = digest(image.data) else { return }
             guard hash != syncedImageHash else { return }
@@ -113,6 +171,39 @@ final class ClipboardSync {
         guard let text = item.text, let hash = Self.digest(text), hash != syncedHash else { return }
         syncedHash = hash
         send(text)
+    }
+
+    /// D2: a Finder copy of exactly one image file at or under the cap becomes
+    /// a clipboard image; anything else sends nothing — never the file's name as
+    /// text (SHARE-2). A result that arrives after another copy is dropped.
+    private func sendFileCopy(changeCount: Int) {
+        let urls = pasteboard.currentFileURLs()
+        guard urls.count == 1, let url = urls.first,
+              let copy = FileCopyImage.describe(url) else { return }
+        readFileCopy(url, copy.type, copy.size > Self.fileReadOnMainLimit) { [weak self] image in
+            guard let self, let image, self.isEnabled(),
+                  self.pasteboard.changeCount == changeCount else { return }
+            let (data, mime) = image
+            guard let hash = self.digest(data), hash != self.syncedImageHash else { return }
+            self.syncedImageHash = hash
+            self.sendImage(data, mime)
+        }
+    }
+
+    /// Reads and encodes off the main thread for a large image; the window and
+    /// the protocol send get the result back on it.
+    private static func readFileCopyInBackground(
+        _ url: URL, type: UTType, offMain: Bool, done: @escaping ((Data, String)?) -> Void
+    ) {
+        let read: () -> (Data, String)? = {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return FileCopyImage.encode(data, type: type)
+        }
+        guard offMain else { return done(read()) }
+        DispatchQueue.global(qos: .userInitiated).async {  // gcd: a file read and decode must not block the main run loop
+            let image = read()
+            DispatchQueue.main.async { done(image) }  // gcd: the send stays on main like every poll result
+        }
     }
 
     /// Writes text from the phone. The hash is recorded before the write and the
@@ -154,6 +245,52 @@ final class ClipboardSync {
     }
 }
 
+/// A Finder file copy that D2 allows through: exactly one image file at or
+/// under the clipboard image cap. The file is read only after this says so.
+struct FileCopyImage {
+    let url: URL
+    let type: UTType
+    let size: Int
+
+    static func describe(_ url: URL) -> FileCopyImage? {
+        guard let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey, .contentTypeKey]),
+              values.isRegularFile == true,
+              let size = values.fileSize, size > 0, size <= ClipboardSync.maxImageBytes,
+              let type = values.contentType, type.conforms(to: .image) else { return nil }
+        return FileCopyImage(url: url, type: type, size: size)
+    }
+
+    /// PNG and JPEG go verbatim. Any other image type is re-encoded: PNG when it
+    /// has alpha, JPEG at quality 0.9 when it is opaque, because a photo (HEIC
+    /// above all) as PNG is several times its size and would miss the 8 MiB cap.
+    /// The source's metadata, orientation included, is carried over. A result
+    /// over the cap sends nothing.
+    static func encode(_ data: Data, type: UTType) -> (Data, String)? {
+        guard !data.isEmpty, data.count <= ClipboardSync.maxImageBytes else { return nil }
+        if type.conforms(to: .png) { return (data, "image/png") }
+        if type.conforms(to: .jpeg) { return (data, "image/jpeg") }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let (target, mime): (UTType, String) = hasAlpha(image) ? (.png, "image/png") : (.jpeg, "image/jpeg")
+        let out = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+                out as CFMutableData, target.identifier as CFString, 1, nil) else { return nil }
+        let options: [CFString: Any] = target == .jpeg ? [kCGImageDestinationLossyCompressionQuality: 0.9] : [:]
+        CGImageDestinationAddImageFromSource(destination, source, 0, options as CFDictionary)
+        guard CGImageDestinationFinalize(destination),
+              out.length > 0, out.length <= ClipboardSync.maxImageBytes else { return nil }
+        return (out as Data, mime)
+    }
+
+    private static func hasAlpha(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast: return false
+        default: return true
+        }
+    }
+}
+
 /// The general pasteboard.
 final class SystemPasteboard: ClipboardPasteboard {
     private let pasteboard = NSPasteboard.general
@@ -170,6 +307,12 @@ final class SystemPasteboard: ClipboardPasteboard {
     func write(text: String) {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    func currentFileURLs() -> [URL] {
+        (pasteboard.readObjects(forClasses: [NSURL.self],
+                                options: [.urlReadingFileURLsOnly: true]) ?? [])
+            .compactMap { ($0 as? NSURL).map { $0 as URL } }
     }
 
     func currentImage() -> (data: Data, mime: String)? {

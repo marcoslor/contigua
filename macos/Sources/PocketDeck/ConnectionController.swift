@@ -150,7 +150,29 @@ final class ConnectionController {
     // MARK: Published state
 
     private(set) var machine = LinkMachine()
-    var link: Link { machine.link }
+    /// The link the UI and every action reads. A live session with no usable
+    /// path is not online: requests would queue into the grace's dead session
+    /// (PATH-17), so it reads as Reconnecting until a path joins or the session
+    /// ends. The machine's own link is untouched, so no new attempt is started
+    /// over the session the paths layer is trying to bring back.
+    var link: Link {
+        guard pathsDown, case .online(let phone) = machine.link else { return machine.link }
+        return .reconnecting(phone)
+    }
+    /// The live session's path outage (PATH-17), one state rather than flags
+    /// kept in step: none, or down since a moment and, after the windows' 15 s,
+    /// offline. The panel shows Reconnecting at once and Offline after that,
+    /// while the session keeps its own 30 s grace underneath (PATH-6).
+    enum PathOutage: Equatable {
+        case none
+        case down(since: Date, offline: Bool)
+    }
+    private(set) var pathOutage = PathOutage.none
+    var pathsDown: Bool { pathOutage != .none }
+    var pathsOffline: Bool {
+        if case .down(_, let offline) = pathOutage { return offline }
+        return false
+    }
     private(set) var transientBanner: Banner?
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
@@ -169,6 +191,12 @@ final class ConnectionController {
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
     let dropSender = FileDropSender()
+    /// SHARE-18: the one drag being resolved (image data, promise or link), its
+    /// state machine and its per-gesture temp folder.
+    @ObservationIgnored private lazy var dropFlow = DropSourceFlow()
+    @ObservationIgnored private var pendingDropTarget: String?
+    @ObservationIgnored private var pendingDropDeck = false
+    @ObservationIgnored private var pendingDropRemote: URL?
     /// The phone's clipboard image assembly (docs/design/dragdrop.md).
     private let clipImageBuffer = ClipImageBuffer()
     /// Shares from the phone (docs/design/sharein.md).
@@ -226,9 +254,11 @@ final class ConnectionController {
         let apps = link.phone?.id == deviceId && appsLoaded ? self.apps : appsCache.load(deviceId: deviceId)
         guard !apps.isEmpty else { return }
         spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
                         iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
         dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
-                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [])
+                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [],
+                           saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: deviceId))
         dockRevision += 1
     }
 
@@ -244,7 +274,7 @@ final class ConnectionController {
     private(set) var apps: [AppInfo] = []
     private(set) var appsLoaded = false
     private(set) var icons: [String: NSImage] = [:]
-    /// The adaptive layers of the icons that have them (`deck.glassIcons`).
+    /// The adaptive layers of the icons that have them.
     private(set) var iconLayers: [String: AppIconLayers] = [:]
     /// The shared renderer's icon for the Deck tile (docs/design/dock.md §Icons).
     private(set) var deckIcons: [String: NSImage] = [:]
@@ -258,13 +288,33 @@ final class ConnectionController {
     /// The Dock's 1296 px icon was asked once this connection (the shim waits
     /// for it the first time, docs/design/dock.md §Icons).
     private var dockIconAsked: Set<String> = []
+    /// "Add to Dock" presses waiting for the Dock's 1296 px reply, keyed by
+    /// `{deviceId}/{pkg}`.
+    private var pendingDockAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private var pendingApplicationAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
+    /// Save all work waiting for the Dock's icon or the one build slot, keyed
+    /// by `{deviceId}/{pkg}`.
+    private var shortcutWork: [String: ShortcutWork] = [:]
+    /// A switch change bumps this; a step queued before it is dropped.
+    private var shortcutGeneration: [String: Int] = [:]
+    /// Dock-size icon requests in flight. Save all keeps at most four, so a
+    /// phone with 230 apps is not asked for 230 icons at once.
+    private var dockIconOutstanding: Set<String> = []
+    /// Save all bundles being written right now.
+    private var shortcutBuilding: Set<String> = []
+    /// Phones whose Spotlight list needs one re-index when their builds finish.
+    private var spotlightRefreshPending: Set<String> = []
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
     /// The stored Focus filter values (docs/design/focus.md).
     private let focusStore: FocusStore
     private(set) var focusValues = FocusFilterValues()
-    /// One reconcile per connection: the first `state` decides and sends once.
+    /// This phone's DND intent memory (docs/specs/controls.md): the value it
+    /// received last, so a reconnect only sends what changed while apart.
+    private let dndIntent: ControlIntentRecorder
+    /// One reconcile per connection: the first `state` applies what is new.
     private var focusReconciled = false
     /// `--debug-dnd on|off`, run when the first state shows the phone's support.
     private var pendingDebugDnd: Bool?
@@ -314,6 +364,14 @@ final class ConnectionController {
 
     func openDeckPanel() {
         deckPanelRequest += 1
+    }
+
+    /// The popover's close request (`deckpanelclose`): a quiet run cannot
+    /// dismiss it with a click, and a shot of the Deck must not carry it.
+    private(set) var deckPanelCloseRequest = 0
+
+    func closeDeckPanel() {
+        deckPanelCloseRequest += 1
     }
 
     /// A rail letter the e2e asked to click (`deck-rail`), with a token so the
@@ -475,8 +533,10 @@ final class ConnectionController {
         batteryMemory = BatteryMemory(profile: profile)
         focusStore = FocusStore(profile: profile)
         focusValues = focusStore.load()
+        dndIntent = ControlIntentRecorder(store: ControlIntentStore(defaults: profile.defaults, control: .dnd))
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
-                            profile: profile)
+                            profile: profile, bindDelay: options.dockBindDelay ?? 0,
+                            listenDelay: options.dockDebugListenDelay)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
                                                  knownDeviceId: nil, clientId: ""),
                                 defaults: profile.defaults)
@@ -497,6 +557,21 @@ final class ConnectionController {
         dropSender.onPhase = { [weak self] _ in
             MainActor.assumeIsolated { self?.syncDropPill() }
         }
+        // SHARE-18: one drag resolves at a time; its folder lives until the
+        // gesture's last result, a cancel or a session end.
+        dropFlow.onFiles = { [weak self] files, folder in
+            MainActor.assumeIsolated { self?.beginResolvedDrop(files, folder: folder) }
+        }
+        dropFlow.onRefuse = { [weak self] failure in
+            MainActor.assumeIsolated { self?.refuseDrop(failure) }
+        }
+        dropFlow.onHide = { [weak self] in
+            MainActor.assumeIsolated { self?.windows.setDropPill(nil) }
+        }
+        dropSender.onSettled = { [weak self] in
+            MainActor.assumeIsolated { self?.dropFlow.settled() }
+        }
+        DropScratch.sweep()
         // The waiting install's Cancel drops the queued file too (FILES-16).
         apkInstaller.onWaitingCancelled = { [weak self] in
             MainActor.assumeIsolated { self?.cancelPendingApk() }
@@ -513,6 +588,9 @@ final class ConnectionController {
         // The same `--share-log` file records what both halves would have shown.
         let shareLog = options.shareLog.map { URL(fileURLWithPath: $0) }
         notifyCenter.log = shareLog
+        // NOTIFY-22: the banner's attachment carries the sending app's icon,
+        // from the same cache the Deck and Dock draw.
+        notifyCenter.iconFor = NotifyCenter.cachedIcon
         notifyCenter.onOpen = { [weak self] click in
             MainActor.assumeIsolated { self?.notificationClicked(click) }
         }
@@ -573,6 +651,7 @@ final class ConnectionController {
         if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
         windows.floatWindows = options.floatWindows
         windows.chromeStateFile = options.debugChromeState.map { URL(fileURLWithPath: $0) }
+        windows.frameLog = options.debugFrameLog.map(DebugFrameLog.init)
         if let path = options.debugInputScript, let error = armDebugInput(path) {
             FileHandle.standardError.write(Data((error + "\n").utf8))
             exit(2)
@@ -615,8 +694,11 @@ final class ConnectionController {
         windows.onStreamClosed = { [weak self] stream in
             DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
         }
-        windows.onFilesDropped = { [weak self] urls in
-            MainActor.assumeIsolated { self?.dropFiles(urls) }
+        windows.onFilesDropped = { [weak self] urls, target in
+            MainActor.assumeIsolated { self?.dropFiles(urls, target: target) }
+        }
+        windows.onDropDrag = { [weak self] drag, target in
+            MainActor.assumeIsolated { self?.dropSources(drag, target: target, deck: false) }
         }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
@@ -677,6 +759,21 @@ final class ConnectionController {
     }
 
     func shutdown() {
+        isShuttingDown = true
+        // A launch that has not started yet will never be seen: drop it now, so
+        // no shim is built for a window that is going away with the app.
+        for (stream, pending) in dockPendingLaunches where !pending.started {
+            dockPendingLaunches[stream] = nil
+            dockEstablishing.remove(pending.key)
+        }
+        // One already in flight may still hand us a pid; a launched shim that no
+        // window owns is stopped with the app (docs/design/dock.md §Lifecycle).
+        dockApps.quitUnboundLaunches()
+        let deadline = Date().addingTimeInterval(3)
+        while !dockPendingLaunches.isEmpty, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        dockApps.quitUnboundLaunches()
         mcp.stop()
         windows.beginShutdown()
         stopQR()
@@ -699,7 +796,27 @@ final class ConnectionController {
 
     private func tick() {
         send(.tick)
+        if case .down(let since, let offline) = pathOutage {
+            let now = Date().timeIntervalSince(since) >= LinkMachine.offlineAfter
+            if now != offline { pathOutage = .down(since: since, offline: now) }
+        }
         if let qr, !qr.expired, !qr.succeeded, qr.payload.isExpired() { expireQR() }
+    }
+
+    /// The session's path layer lost or regained every path (`pathsReconnecting`).
+    /// The windows switch at once; the panel follows the same two steps as a
+    /// dropped link so a path outage is never shown as Connected (PANEL-12).
+    private func setPathsDown(_ down: Bool) {
+        if down {
+            guard pathOutage == .none else { return }
+            pathOutage = .down(since: Date(), offline: false)
+        } else {
+            clearPathOutage()
+        }
+    }
+
+    private func clearPathOutage() {
+        pathOutage = .none
     }
 
     private func observeSystem() {
@@ -786,7 +903,12 @@ final class ConnectionController {
         remembered.forget(id: phone.id)
         appsCache.remove(deviceId: phone.id)
         spotlight.remove(deviceId: phone.id)
+        spotlightRefreshPending.remove(phone.id)
+        SaveAllShortcutsSetting.write(false, for: phone.id, to: profile.defaults)
         dockApps.forget(deviceId: phone.id)
+        shortcutGeneration[phone.id, default: 0] += 1
+        shortcutWork = shortcutWork.filter { $0.value.deviceId != phone.id }
+        shortcutBuilding = shortcutBuilding.filter { !$0.hasPrefix("\(phone.id)/") }
         dockRevision += 1
         rememberedPhones = remembered.all
         if link.phone?.id == phone.id {
@@ -884,27 +1006,287 @@ final class ConnectionController {
 
     // MARK: Dock apps (docs/design/dock.md)
 
+    /// Whether the app's shim carries the Dock reason (Add to Dock): Save all
+    /// and Add to Applications never make a tile's menu say Remove from Dock.
     func isInDock(_ app: AppInfo) -> Bool {
         _ = dockRevision
         guard let id = link.phone?.id else { return false }
-        return dockApps.hasShim(deviceId: id, pkg: app.pkg)
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.dock)
     }
 
     var canAddToDock: Bool { dockApps.isAvailable && link.phone != nil }
 
     func addToDock(_ app: AppInfo) {
         guard let phone = link.phone else { return }
+        guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
+            // The shim's icon is drawn once, from the Dock's size class: wait
+            // for the phone's 1296 px reply instead of baking the Deck's flat.
+            pendingDockAdds["\(phone.id)/\(app.pkg)"] = (phone.id, app.pkg, app.label)
+            requestDockIcon(app.pkg)
+            return
+        }
         if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
-                        launch: true, pinned: true) == nil {
+                        launch: true, origins: dockApps.origins(deviceId: phone.id, pkg: app.pkg).union(.dock)) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
+        spotlightShortcutChanged(deviceId: phone.id, pkg: app.pkg)
         dockRevision += 1
+    }
+
+    /// "Add to Dock" presses waiting for the Dock's 1296 px reply.
+    private func runPendingDockAdds() {
+        guard let phone = link.phone, !pendingDockAdds.isEmpty else { return }
+        for key in pendingDockAdds.keys.sorted() {
+            guard let add = pendingDockAdds[key], add.deviceId == phone.id,
+                  dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
+            pendingDockAdds[key] = nil
+            if dockApps.add(deviceId: add.deviceId, pkg: add.pkg, label: add.label,
+                            phoneName: displayName(for: phone), launch: true,
+                            origins: dockApps.origins(deviceId: add.deviceId, pkg: add.pkg).union(.dock)) == nil {
+                showTransient("Couldn't add \(add.label) to the Dock.")
+            }
+            spotlightShortcutChanged(deviceId: add.deviceId, pkg: add.pkg)
+            dockRevision += 1
+        }
     }
 
     func removeFromDock(_ app: AppInfo) {
         guard let id = link.phone?.id else { return }
-        dockApps.remove(deviceId: id, pkg: app.pkg)
+        removeDockOrigin(deviceId: id, pkg: app.pkg)
         dockRevision += 1
+    }
+
+    private func removeDockOrigin(deviceId: String, pkg: String) {
+        let decision = DockOrigins.applying(.remove(.dock), to: dockApps.origins(deviceId: deviceId, pkg: pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: deviceId, pkg: pkg)
+        case .write:
+            // Another reason keeps the shortcut: only the Dock identity goes.
+            let label = apps.first { $0.pkg == pkg }?.label ?? pkg
+            if let phone = link.phone, phone.id == deviceId {
+                dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+            dockApps.quitIfUnbound(deviceId: deviceId, pkg: pkg)
+        case .none:
+            break
+        }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
+    }
+
+    // MARK: Application shortcuts (docs/design/dock.md §Shortcuts)
+
+    /// Whether the app's shim carries the reason "Add to Applications".
+    func hasManualShortcut(_ app: AppInfo) -> Bool {
+        _ = dockRevision
+        guard let id = link.phone?.id else { return false }
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.manual)
+    }
+
+    var canAddToApplications: Bool { dockApps.isAvailable && link.phone != nil }
+
+    /// This build carries the shim executable, so shortcuts can be made at all.
+    var canMakeShortcuts: Bool { dockApps.isAvailable }
+
+    /// "Add to Applications": adds `manual` and builds the shortcut, launching
+    /// nothing — it is a Launchpad/Spotlight/launcher entry, not a window.
+    func addToApplications(_ app: AppInfo) {
+        guard let phone = link.phone, dockApps.isAvailable else { return }
+        guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
+            pendingApplicationAdds["\(phone.id)/\(app.pkg)"] = (phone.id, app.pkg, app.label)
+            requestDockIcon(app.pkg)
+            return
+        }
+        installShortcut(deviceId: phone.id, pkg: app.pkg, label: app.label, phone: phone)
+    }
+
+    /// "Remove from Applications": removes only `manual`; a shim Save all or the
+    /// Dock still asks for stays.
+    func removeFromApplications(_ app: AppInfo) {
+        guard let id = link.phone?.id else { return }
+        let decision = DockOrigins.applying(.remove(.manual), to: dockApps.origins(deviceId: id, pkg: app.pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: id, pkg: app.pkg)
+        case .write:
+            if let phone = link.phone, phone.id == id {
+                dockApps.add(deviceId: id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+        case .none:
+            break
+        }
+        spotlightShortcutChanged(deviceId: id, pkg: app.pkg)
+        dockRevision += 1
+    }
+
+    private func installShortcut(deviceId: String, pkg: String, label: String, phone: PhoneRef) {
+        let origins = dockApps.origins(deviceId: deviceId, pkg: pkg).union(.manual)
+        if dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                        launch: false, origins: origins) == nil {
+            showTransient("Couldn't add \(label) to Applications.")
+        }
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
+        dockRevision += 1
+    }
+
+    // MARK: Spotlight's one entry per app (docs/specs/dock.md DOCK-9)
+
+    /// A shim appeared or went away: an app with one is not a CoreSpotlight item
+    /// too. A new shim takes its item out (cheap); a removed one puts the phone's
+    /// list back in, without the apps that still have shims.
+    private func spotlightShortcutChanged(deviceId: String, pkg: String) {
+        if dockApps.hasShim(deviceId: deviceId, pkg: pkg) {
+            spotlight.remove(deviceId: deviceId, pkg: pkg)
+        } else {
+            spotlightRefreshPending.insert(deviceId)
+        }
+        if shortcutBuilding.isEmpty { flushSpotlightRefreshes() }
+    }
+
+    /// Save all's batch ends: one exclusion pass for the whole batch, since each
+    /// new shim already took its own item out.
+    private func spotlightBatchFinished(deviceId: String) {
+        spotlightRefreshPending.insert(deviceId)
+        flushSpotlightRefreshes()
+    }
+
+    /// Save all off removes many bundles: one re-index when the last is gone.
+    private func flushSpotlightRefreshes() {
+        for deviceId in spotlightRefreshPending.sorted() {
+            spotlightRefreshPending.remove(deviceId)
+            refreshSpotlight(deviceId: deviceId)
+        }
+    }
+
+    private func refreshSpotlight(deviceId: String) {
+        guard let phone = remembered.phone(id: deviceId)?.ref else { return }
+        let list = (link.phone?.id == deviceId && appsLoaded) ? apps : appsCache.load(deviceId: deviceId)
+        guard !list.isEmpty else { return }
+        spotlight.index(apps: list, deviceId: deviceId, phoneName: displayName(for: phone),
+                        excluding: dockApps.shimPackages(deviceId: deviceId),
+                        iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
+    }
+
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private func runPendingApplicationAdds() {
+        guard let phone = link.phone, !pendingApplicationAdds.isEmpty else { return }
+        for key in pendingApplicationAdds.keys.sorted() {
+            guard let add = pendingApplicationAdds[key], add.deviceId == phone.id,
+                  dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
+            pendingApplicationAdds[key] = nil
+            installShortcut(deviceId: add.deviceId, pkg: add.pkg, label: add.label, phone: phone)
+        }
+    }
+
+    // MARK: Save all (docs/design/dock.md §Shortcuts)
+
+    /// One app's Save all work (a write or a remove), with the switch revision
+    /// it was planned under.
+    private struct ShortcutWork {
+        var deviceId: String
+        var pkg: String
+        var label: String
+        var origins: DockOriginSet
+        var action: DockShimAction
+        var generation: Int
+    }
+
+    /// The phone page's "Save all apps as shortcuts": per phone, off by default.
+    func saveAllShortcuts(deviceId: String) -> Bool {
+        SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: deviceId)
+    }
+
+    /// The switch changed: store it and apply it. On adds `all` to every app of
+    /// the phone; off removes only `all`, so a shim the Dock or the person keeps
+    /// stays (rewritten).
+    func setSaveAllShortcuts(_ on: Bool, for deviceId: String) {
+        guard !deviceId.isEmpty else { return }
+        SaveAllShortcutsSetting.write(on, for: deviceId, to: profile.defaults)
+        shortcutGeneration[deviceId, default: 0] += 1
+        shortcutWork = shortcutWork.filter { $0.value.deviceId != deviceId }
+        queueSaveAll(deviceId: deviceId)
+    }
+
+    /// Plans the phone's apps against the shims on disk and queues what changed.
+    /// On an offline phone the cached list is used; its icons wait for the
+    /// connection, so the bundles keep what they have.
+    private func queueSaveAll(deviceId: String) {
+        let on = saveAllShortcuts(deviceId: deviceId)
+        let list = (link.phone?.id == deviceId && appsLoaded) ? apps : appsCache.load(deviceId: deviceId)
+        if on, list.isEmpty { return }
+        let generation = shortcutGeneration[deviceId, default: 0]
+        for step in DockSaveAll.plan(apps: list, records: dockApps.records(), deviceId: deviceId, on: on) {
+            shortcutWork["\(deviceId)/\(step.pkg)"] = ShortcutWork(
+                deviceId: deviceId, pkg: step.pkg, label: step.label, origins: step.origins,
+                action: step.action, generation: generation)
+        }
+        pumpShortcutWork()
+    }
+
+    /// One build at a time, each when its icon has answered; at most four icon
+    /// requests in flight (docs/design/dock.md §Shortcuts). The file work is on
+    /// DockApps' queue, so the Deck never waits for 230 bundles.
+    private func pumpShortcutWork() {
+        guard !shortcutWork.isEmpty, let phone = link.phone else { return }
+        for key in shortcutWork.keys.sorted() {
+            guard let work = shortcutWork[key], !shortcutBuilding.contains(key) else { continue }
+            guard work.deviceId == phone.id,
+                  work.generation == shortcutGeneration[work.deviceId, default: 0] else {
+                // Another phone's work waits for its connection; a superseded
+                // switch change drops its own.
+                if work.generation != shortcutGeneration[work.deviceId, default: 0] {
+                    shortcutWork[key] = nil
+                }
+                continue
+            }
+            if work.action == .remove {
+                shortcutWork[key] = nil
+                shortcutBuilding.insert(key)
+                dockApps.removeInBackground(deviceId: work.deviceId, pkg: work.pkg) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.shortcutBuilding.remove(key)
+                        self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
+                        if work.generation != self.shortcutGeneration[work.deviceId, default: 0] {
+                            self.queueSaveAll(deviceId: work.deviceId)
+                        }
+                        self.pumpShortcutWork()
+                        // The last removal already put the phone's list back;
+                        // this covers a pending removal left by an add batch.
+                        if self.shortcutBuilding.isEmpty { self.flushSpotlightRefreshes() }
+                    }
+                }
+            } else if dockIconReady(pkg: work.pkg, deviceId: work.deviceId) {
+                shortcutWork[key] = nil
+                shortcutBuilding.insert(key)
+                let name = displayName(for: phone)
+                dockApps.addInBackground(deviceId: work.deviceId, pkg: work.pkg, label: work.label,
+                                         phoneName: name, origins: work.origins) { [weak self] ok in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.shortcutBuilding.remove(key)
+                        if !ok { self.showTransient("Couldn't save \(work.label) as a shortcut.") }
+                        else { Log.app.notice("dock: save all built \(work.pkg, privacy: .public)") }
+                        self.dockRevision += 1
+                        self.spotlightShortcutChanged(deviceId: work.deviceId, pkg: work.pkg)
+                        // The switch changed while the bundle was being written:
+                        // run the current plan again so no shim keeps a reason
+                        // that was turned off (docs/design/dock.md §Shortcuts).
+                        if work.generation != self.shortcutGeneration[work.deviceId, default: 0] {
+                            self.queueSaveAll(deviceId: work.deviceId)
+                        }
+                        self.pumpShortcutWork()
+                        if self.shortcutBuilding.isEmpty { self.spotlightBatchFinished(deviceId: work.deviceId) }
+                    }
+                }
+            } else if !dockIconAsked.contains(work.pkg), dockIconOutstanding.count < 4 {
+                Log.app.debug("dock: save all asks for \(work.pkg, privacy: .public) (\(self.dockIconOutstanding.count, privacy: .public) out)")
+                requestDockIcon(work.pkg)
+            }
+        }
     }
 
     /// A Dock app was launched, clicked or ⌘-Tabbed to: its window opens or comes forward.
@@ -956,11 +1338,18 @@ final class ConnectionController {
         guard dockHooksPending, let phone = link.phone, appsLoaded else { return }
         if let pkg = options.dockAdd {
             guard IconCache.shared.loadData(pkg: pkg, deviceId: phone.id) != nil || missingIcons.contains(pkg) else { return }
+            guard dockIconReady(pkg: pkg, deviceId: phone.id) else {
+                requestDockIcon(pkg)
+                return
+            }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
-                         launch: false, pinned: true)
+                         launch: false, origins: dockApps.origins(deviceId: phone.id, pkg: pkg).union(.dock))
+            spotlightShortcutChanged(deviceId: phone.id, pkg: pkg)
         }
-        if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
+        if let pkg = options.dockRemove {
+            removeDockOrigin(deviceId: phone.id, pkg: pkg)
+        }
         // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
         // Rename, driven as a hook so the check runs the real code path.
         if let name = options.setNickname { setNickname(name, for: phone.id) }
@@ -973,6 +1362,24 @@ final class ConnectionController {
     /// Keys of `{deviceId}/{pkg}` the automatic path is currently working on, so
     /// one app identity is built at most once per moment.
     private var dockEstablishing: Set<String> = []
+
+    /// An automatic launch that has not finished yet, for one window. The window
+    /// can close before the build starts or before the shim is up; then the work
+    /// is dropped or the pid is quit, never bound (docs/design/dock.md §Lifecycle).
+    private struct DockPendingLaunch {
+        var deviceId: String
+        var pkg: String
+        var started = false
+        var windowClosed = false
+        var key: String { "\(deviceId)/\(pkg)" }
+    }
+
+    /// Stream → its automatic launch while the build, launch or bind is pending.
+    private var dockPendingLaunches: [UInt32: DockPendingLaunch] = [:]
+
+    /// True from the start of shutdown: a launch that completes then is stopped
+    /// instead of bound, and no window is reconsidered.
+    private var isShuttingDown = false
 
     /// Settings → General "Show phone apps in the Dock": on unless it is off.
     var showAppsInDock: Bool { DockAutoSetting.isEnabled(in: profile.defaults) }
@@ -1036,12 +1443,26 @@ final class ConnectionController {
     /// A window closed: its shim exits — unless another window of the same app
     /// is still open, which the identity moves to instead (docs/design/dock.md).
     private func dockFollowWindowClosed(_ stream: UInt32) {
+        // Its identity may still be building or launching: mark the pending work
+        // for the stream gone. A build that has not started is dropped; one that
+        // has started still quits the pid it gets (dockLaunchFinished).
+        if var pending = dockPendingLaunches[stream] {
+            pending.windowClosed = true
+            dockPendingLaunches[stream] = pending
+            if !pending.started {
+                dockPendingLaunches[stream] = nil
+                dockEstablishing.remove(pending.key)
+            }
+        }
         if let (pid, pkg) = dockApps.binding(stream: stream),
            let next = windows.openAppWindows.first(where: { $0.pkg == pkg && $0.stream != stream })?.stream {
             dockApps.rebind(pid: pid, to: next)
             return
         }
         dockApps.streamClosed(stream)
+        // A dropped launch frees the app's in-flight key: another window of the
+        // same app may have been waiting for it.
+        recheckOpenWindows()
     }
 
     /// An open app window has no Dock identity bound to it: decide what happens.
@@ -1056,7 +1477,7 @@ final class ConnectionController {
         // for them once and wait (a flat icon, or a phone that predates `px`,
         // needs no wait). docs/design/dock.md §Icons.
         if state == .cached, !dockIconReady(pkg: pkg, deviceId: phone.id) {
-            if dockIconAsked.insert(pkg).inserted { requestIcon(pkg, px: IconSizeClass.dock.layerPx) }
+            requestDockIcon(pkg)
             return
         }
         let info = dockApps.shimIconInfo(deviceId: phone.id, pkg: pkg)
@@ -1073,13 +1494,16 @@ final class ConnectionController {
             return
         case .launchExisting:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
-                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, bind: stream, launched: launched)
+                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, label: label,
+                                       phoneName: self.displayName(for: phone),
+                                       bind: stream, launched: launched)
             }
         case .createAndLaunch:
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
                     DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
-                                 profile: profile, hostPath: Bundle.main.bundleURL.path),
+                                 profile: self.profile, hostPath: Bundle.main.bundleURL.path,
+                                 origins: self.dockApps.origins(deviceId: phone.id, pkg: pkg).union(.window)),
                     bind: stream, launched: launched)
             }
         }
@@ -1087,31 +1511,66 @@ final class ConnectionController {
 
     /// Runs the launch and clears the in-flight key and binds the pid when it is up.
     private func bindWhenDockCleared(deviceId: String, pkg: String, stream: UInt32,
-                                     work: (_ launched: @escaping (Int?) -> Void) -> Void) {
-        let key = "\(deviceId)/\(pkg)"
-        dockEstablishing.insert(key)
-        work { [weak self] pid in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.dockEstablishing.remove(key)
-                if let pid {
-                    // The setting can turn off while the bundle is being built:
-                    // the fresh identity must not outlive it (only manual ones
-                    // do), so it is stopped instead of bound.
-                    if self.showAppsInDock || self.dockApps.isPinned(deviceId: deviceId, pkg: pkg) {
-                        self.dockApps.bind(pid: pid, stream: stream, pkg: pkg)
-                    } else {
-                        self.dockApps.quit(pid: pid)
-                    }
+                                     work: @escaping (_ launched: @escaping (Int?) -> Void) -> Void) {
+        dockEstablishing.insert("\(deviceId)/\(pkg)")
+        dockPendingLaunches[stream] = DockPendingLaunch(deviceId: deviceId, pkg: pkg)
+        let start = { [weak self] in
+            guard let self, var pending = self.dockPendingLaunches[stream],
+                  !pending.windowClosed else { return }
+            pending.started = true
+            self.dockPendingLaunches[stream] = pending
+            work { pid in
+                MainActor.assumeIsolated {
+                    self.dockLaunchFinished(stream: stream, deviceId: deviceId, pkg: pkg, pid: pid)
                 }
-                self.recheckOpenWindows()
             }
         }
+        // e2e: hold the build and launch back, so it lands after a window that
+        // closes in the meantime (the load-dependent race, made deterministic).
+        if let delay = options.dockLaunchDelay, delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { start() }  // gcd: e2e hold of the launch
+        } else {
+            start()
+        }
+    }
+
+    /// The automatic launch finished. A pid for a window that is no longer open
+    /// must quit at once: nothing would ever close that shim again, and it would
+    /// outlive its window and the app (docs/design/dock.md §Lifecycle).
+    private func dockLaunchFinished(stream: UInt32, deviceId: String, pkg: String, pid: Int?) {
+        dockPendingLaunches[stream] = nil
+        dockEstablishing.remove("\(deviceId)/\(pkg)")
+        let landing = DockLaunch.landing(
+            pid: pid,
+            windowOpen: windows.openAppWindows.contains { $0.stream == stream },
+            settingOn: showAppsInDock, pinned: dockApps.isPinned(deviceId: deviceId, pkg: pkg),
+            quitting: isShuttingDown)
+        switch landing {
+        case .nothing:
+            break
+        case .bind:
+            if let pid {
+                dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                Log.app.notice("dock auto: bound shim \(pid, privacy: .public) to stream \(stream, privacy: .public)")
+            }
+        case .quitWindowClosed:
+            if let pid { dockApps.quit(pid: pid) }
+            Log.app.notice("dock auto: late launch for closed stream \(stream, privacy: .public) → quit")
+        case .quitSettingOff:
+            if let pid { dockApps.quit(pid: pid) }
+        case .quitShuttingDown:
+            if let pid { dockApps.quit(pid: pid) }
+            Log.app.notice("dock auto: launch in flight at quit for stream \(stream, privacy: .public) → quit")
+        }
+        // The bundle exists on disk after any landing: its Spotlight item goes.
+        spotlightShortcutChanged(deviceId: deviceId, pkg: pkg)
+        if !isShuttingDown { recheckOpenWindows() }
     }
 
     /// The automatic path reconsiders every open app window: after the app list,
     /// the icons and the setting (a window may have waited for one of them).
     private func recheckOpenWindows() {
+        guard !isShuttingDown else { return }
         for window in windows.openAppWindows {
             guard let pkg = window.pkg else { continue }
             establishDockFollow(pkg: pkg, stream: window.stream)
@@ -1122,17 +1581,34 @@ final class ConnectionController {
         windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
     }
 
+    /// One app of the phone in use, by package: the live list, else the cache.
+    private func appInfo(_ pkg: String) -> AppInfo? {
+        if let app = apps.first(where: { $0.pkg == pkg }) ?? windows.appsByPkg[pkg] { return app }
+        guard let id = link.phone?.id else { return nil }
+        return appsCache.load(deviceId: id).first { $0.pkg == pkg }
+    }
+
     private func iconState(pkg: String, deviceId: String) -> DockFollow.IconState {
         if IconCache.shared.loadData(pkg: pkg, deviceId: deviceId) != nil { return .cached }
         return missingIcons.contains(pkg) ? .reportedMissing : .unknown
     }
 
-    /// Whether the Dock's size class has an answer: 1296 px layers, or a flat
-    /// answer from a phone with no adaptive layers (it must not be asked again).
+    /// Whether the Dock's size class has an answer. Every shim icon is drawn
+    /// from the phone's 1296 px reply — its layers, or the 864 px flat a flat
+    /// icon covers its tile with — so a flat-only app asks too: the Deck slot's
+    /// 288 px flat would be a 2.9× upscale at 1024 (docs/design/dock.md §Icons).
+    /// An app the phone says it has no icon for is ready without one.
     private func dockIconReady(pkg: String, deviceId: String) -> Bool {
-        let cache = IconCache.shared
-        if cache.layersAnswered(pkg: pkg, deviceId: deviceId, sizeClass: .dock) { return true }
-        return !cache.hasLayers(pkg: pkg, deviceId: deviceId)
+        if missingIcons.contains(pkg) { return true }
+        return IconCache.shared.layersAnswered(pkg: pkg, deviceId: deviceId, sizeClass: .dock)
+    }
+
+    /// Asks for the Dock's 1296 px icon once per connection.
+    private func requestDockIcon(_ pkg: String) {
+        if dockIconAsked.insert(pkg).inserted {
+            dockIconOutstanding.insert(pkg)
+            requestIcon(pkg, px: IconSizeClass.dock.layerPx)
+        }
     }
 
     /// Asks the phone for one icon at `px`, remembering the size so the reply
@@ -1270,11 +1746,13 @@ final class ConnectionController {
     }
 
     /// The Focus filter's perform() (and the `--debug-focus` hook): store what
-    /// it asks for, then tell a connected phone at once. A phone that connects
-    /// later is reconciled once by [reconcileFocus].
+    /// it asks for, then apply it as one Mac-side edge (a Focus started or
+    /// ended). A phone that connects later gets the stored intent by
+    /// [reconcileFocus], and only when it differs from what that phone had.
     func setFocusFilter(_ values: FocusFilterValues) {
         storeFocusValues(values)
-        let sent = sendFocusIfSupported()
+        let wanted = focusValues.wanted ?? .off
+        let sent = applyDnd(wanted, edge: .intentChanged(wanted.rawValue))
         FocusDebugLog.write(focus: "filter", ok: true,
                             fields: ["enabled": values.enabled, "silence": values.silence,
                                      "allow": values.allow.rawValue,
@@ -1292,8 +1770,7 @@ final class ConnectionController {
     /// The menu bar item and the manual intent: send one mode now. The phone's
     /// next `state` moves the checkmark, never an optimistic local guess.
     func setPhoneDnd(_ mode: PhoneDndMode) {
-        guard link.isOnline, phoneDnd != nil, let session else { return }
-        session.setDnd(mode)
+        applyDnd(mode, edge: .personAction(mode.rawValue))
     }
 
     /// The menu item's click: on becomes priority, off becomes off.
@@ -1318,20 +1795,33 @@ final class ConnectionController {
                                      "current": current.rawValue])
     }
 
-    /// Sends the stored wanted state when this phone can take it; false when
-    /// there is no session or the phone is an old build.
+    /// The device the live session belongs to; nil when there is none.
+    private var controlDeviceId: String? {
+        let id = link.phone?.id ?? session?.phone?.id
+        guard let id, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// Applies one DND edge for this phone (docs/specs/controls.md): the machine
+    /// decides what to send from this phone's memory, so a value the phone has
+    /// already received is not sent again. False when no live phone can take it.
     @discardableResult
-    private func sendFocusIfSupported() -> Bool {
-        guard link.isOnline, phoneDnd != nil, let session else { return false }
-        session.setDnd(focusValues.wanted ?? .off)
+    private func applyDnd(_ wanted: PhoneDndMode, edge: ControlIntentEvent) -> Bool {
+        guard link.isOnline, phoneDnd != nil, let id = controlDeviceId, let session else { return false }
+        for action in dndIntent.record(edge, deviceId: id) {
+            if case .send(let value) = action, let mode = PhoneDndMode(rawValue: value) {
+                session.setDnd(mode)
+            }
+        }
         return true
     }
 
     /// Once per connection, on the first `state`: read the system's current
     /// filter first (a Focus that ended while PocketDeck was away is "not
-    /// wanted"), then decide. `dnd` is the only proof the phone supports the
-    /// command; not wanted sends off, which the phone's restore rule turns into
-    /// a no-op unless the DND is ours.
+    /// wanted"), then apply only what this phone has not had. The phone's own
+    /// `dnd` report has already moved the machine by then. `dnd` is the only
+    /// proof the phone supports the command; not wanted sends off, which the
+    /// phone's restore rule turns into a no-op unless the DND is ours.
     private func reconcileFocusOnFirstState(_ dnd: PhoneDndMode?) {
         guard !focusReconciled else { return }
         focusReconciled = true
@@ -1346,15 +1836,13 @@ final class ConnectionController {
     }
 
     private func reconcileFocus(onConnectWith dnd: PhoneDndMode?) {
-        switch FocusReconciler.onConnect(wanted: focusValues.wanted, phoneDnd: dnd) {
-        case .send(let mode):
-            session?.setDnd(mode)
+        guard dnd != nil, link.isOnline, let id = controlDeviceId, let session else { return }
+        let wanted = focusValues.wanted ?? .off
+        for action in dndIntent.record(.connected(wanted.rawValue), deviceId: id) {
+            guard case .send(let value) = action, let mode = PhoneDndMode(rawValue: value) else { continue }
+            session.setDnd(mode)
             FocusDebugLog.write(focus: "reconcile", ok: true,
-                                fields: ["wanted": focusValues.wanted?.rawValue ?? "off",
-                                         "sent": mode.rawValue])
-        case .unsupported:
-            // An old phone: the menu stays disabled and nothing is sent.
-            break
+                                fields: ["wanted": wanted.rawValue, "sent": mode.rawValue])
         }
     }
 
@@ -1578,19 +2066,97 @@ final class ConnectionController {
     /// A Finder drag onto a stream window (or `dropfile` scripting): a lone .apk
     /// keeps the install route, the rest stream to Downloads/PocketDeck one by
     /// one. Phone abroad → a banner; the phone was the point of the drag.
-    func dropFiles(_ urls: [URL]) {
-        guard !isPreview else { return }
+    func dropFiles(_ urls: [URL], target: String?) {
         let files = urls.filter { $0.isFileURL }
         guard !files.isEmpty else { return }
         if files.count == 1, let app = files.first(where: { ApkBundle.kind(of: $0) != nil }) {
             installApk(app)
             return
         }
-        guard link.isOnline, let session else {
+        dropSources(DropDrag(files: files), target: target, deck: false)
+    }
+
+    /// The Deck's general drop destination (SHARE-18): its own routes for an
+    /// app bundle, a `.webloc` link and files, then the same source resolver.
+    func dropDeck(_ drag: DropDrag) {
+        guard !isPreview else { return }
+        let routes = DeckDropRouter.actions(drag)
+        if let app = routes.install { installApk(app) }
+        for link in routes.links { openLink(OpenLinkRequest(url: link.absoluteString)) }
+        if !routes.files.isEmpty {
+            beginResolvedDrop(routes.files, folder: nil, target: nil)
+        } else if routes.generated {
+            resolveDrop(drag, target: nil, deck: true)
+        } else if let url = routes.download {
+            // A link on the Deck keeps today's route even while the phone is
+            // away; only a live phone can turn its image answer into a drop.
+            if link.isOnline, session != nil {
+                resolveDrop(drag, target: nil, deck: true)
+            } else {
+                openLink(OpenLinkRequest(url: url.absoluteString))
+            }
+        }
+    }
+
+    /// SHARE-18's entry point: D1 picks the source, the resolver materialises it
+    /// into the gesture's temp folder, and the existing drop path sends it.
+    private func dropSources(_ drag: DropDrag, target: String?, deck: Bool) {
+        guard !isPreview else { return }
+        if drag.files.count == 1, let app = drag.files.first(where: { ApkBundle.kind(of: $0) != nil }) {
+            installApk(app)
+            return
+        }
+        guard DropSourceOrder.choose(drag) != .none else { return }
+        resolveDrop(drag, target: target, deck: deck)
+    }
+
+    private func resolveDrop(_ drag: DropDrag, target: String?, deck: Bool) {
+        guard link.isOnline, session != nil else {
             showTransient("Connect a phone to send files to it.")
             return
         }
-        dropSender.send(files, session: session)
+        guard !dropFlow.isReady, dropFlow.phase != .resolving, !dropSender.isBusy else {
+            dropSender.busy()
+            return
+        }
+        pendingDropTarget = target
+        pendingDropDeck = deck
+        pendingDropRemote = drag.remote
+        windows.setDropFailure(nil)
+        if DropSourceOrder.choose(drag) == .files {
+            beginResolvedDrop(drag.files, folder: nil, target: target)
+        } else {
+            windows.setDropPill(("Sending…", true))
+            dropFlow.start(drag)
+        }
+    }
+
+    /// The flow's own hand-off uses the target recorded for this drag.
+    private func beginResolvedDrop(_ files: [URL], folder: URL?) {
+        beginResolvedDrop(files, folder: folder, target: pendingDropTarget)
+    }
+
+    private func beginResolvedDrop(_ files: [URL], folder: URL?, target: String?) {
+        guard !files.isEmpty else { return }
+        guard link.isOnline, let session else {
+            DropScratch.remove(folder)
+            showTransient("Connect a phone to send files to it.")
+            return
+        }
+        dropSender.send(files, session: session, target: target)
+    }
+
+    private func refuseDrop(_ failure: DropResolveFailure) {
+        if pendingDropDeck {
+            if failure == .notImage, let url = pendingDropRemote {
+                openLink(OpenLinkRequest(url: url.absoluteString))
+            } else if failure != .cancelled {
+                showTransient(failure.text)
+            }
+            return
+        }
+        windows.setDropFailure(failure.token)
+        dropSender.refuse(failure.text, outcome: .phone("source_\(failure.token)"))
     }
 
     /// The stream windows' pill mouth: the phase rendered as a line. Every
@@ -1714,7 +2280,9 @@ final class ConnectionController {
         }
         if before.isOnline, !link.isOnline {
             windows.linkLost()
+            dropFlow.sessionEnded()
             dropSender.connectionLost()
+            windows.pasteSessionEnded()
             clipImageBuffer.discard()
         }
         if !before.isOnline, link.isOnline { windows.linkRestored() }
@@ -1749,7 +2317,8 @@ final class ConnectionController {
             ? discovered.first { $0.deviceId == ref.id } : nil
         if found == nil, let connect = options.connect {
             lastAttemptWasService = false
-            start(Session(endpoint: .hostPort(host: connect.host, port: connect.port),
+            let endpoints = manualEndpoints(connect)
+            start(Session(endpoint: endpoints[0], endpoints: endpoints,
                           knownDeviceId: ref.id.isEmpty ? nil : ref.id, clientId: clientId,
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
@@ -1825,6 +2394,7 @@ final class ConnectionController {
 
     private func start(_ newSession: Session, policy: Session.PairingPolicy) {
         stopClipboardSync()
+        clearPathOutage()
         session?.close()
         session = newSession
         newSession.pairingPolicy = policy
@@ -1889,8 +2459,19 @@ final class ConnectionController {
         startManual(host: host, port: port, ref: ref)
     }
 
+    /// The test-only second provider rides beside the LAN one (PATH-20/§10).
+    private func manualEndpoints(_ connect: (host: String, port: UInt16)) -> [Session.Endpoint] {
+        var endpoints = [Session.Endpoint.hostPort(host: connect.host, port: connect.port)]
+        if let second = options.connect2 {
+            endpoints.append(.hostPort(host: second.host, port: second.port))
+        }
+        return endpoints
+    }
+
     private func startManual(host: String, port: UInt16, ref: PhoneRef) {
-        start(Session(endpoint: .hostPort(host: host, port: port), knownDeviceId: ref.id.isEmpty ? nil : ref.id,
+        let endpoints = manualEndpoints((host, port))
+        start(Session(endpoint: endpoints[0], endpoints: endpoints,
+                      knownDeviceId: ref.id.isEmpty ? nil : ref.id,
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
@@ -1904,9 +2485,12 @@ final class ConnectionController {
         case .state(let state, let detail):
             switch state {
             case .failed(let reason):
+                clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropFlow.sessionEnded()
                 dropSender.connectionLost()
+                windows.pasteSessionEnded()
                 fsClient?.connectionLost()
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
@@ -1926,9 +2510,12 @@ final class ConnectionController {
                 }
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
+                clearPathOutage()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropFlow.sessionEnded()
                 dropSender.connectionLost()
+                windows.pasteSessionEnded()
                 fsClient?.connectionLost()
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
@@ -1941,6 +2528,27 @@ final class ConnectionController {
             default:
                 break
             }
+        case .pathsReconnecting(let on):
+            // PATH-17: the windows say so at once while there is no path, and
+            // return to the live picture by themselves when one joins.
+            setPathsDown(on)
+            if on {
+                windows.linkLost()
+                // No banner, live row or attachment outlives the phone (the
+                // same rule as a session close): the grace keeps the session
+                // for a join, never the person's data.
+                notifyCenter.clearAll()
+            } else {
+                windows.linkRestored()
+            }
+        case .pathsSwitched:
+            if let session { windows.requestKeyframes(from: session) }
+        case .versionRefused(let sentence):
+            // PATH-1: name which app to update; the retry loop stops below on
+            // the `version` failure and `retriesAutomatically` says no.
+            // A version mismatch is not a blip: keep the sentence that names
+            // the app to update up long enough to read (PATH-1).
+            showTransient(sentence, seconds: 30)
         case .clipboard(let text):
             clipboardSync?.receive(text)
         case .dropProgress(let id, let bytes):
@@ -1957,7 +2565,12 @@ final class ConnectionController {
                 clipboardSync?.receiveImage(data, mime: mime)
             }
         case .clipImageAbort(let id):
+            _ = id
             clipImageBuffer.discard()
+        case .clipImageDone(let id, let ok):
+            // The phone wrote the clip (SHARE-16): the flow that owns the id
+            // sends its one paste key, or shows why it did not.
+            windows.clipImageDone(id: id, ok: ok)
         case .apkProgress(let id, let bytes):
             apkInstaller.progress(id: id, bytes: bytes)
         case .apkResult(let result):
@@ -1989,6 +2602,9 @@ final class ConnectionController {
         case .fsReadEnd(let id, let size, let sha256):
             fsClient?.readEnd(id: id, size: size, sha256: sha256)
             filesBridgeClient?.readEnd(id: id, size: size, sha256: sha256)
+        case .fsThumbEnd(let id, let mime, let size, let sha256):
+            fsClient?.thumbEnd(id: id, mime: mime, size: size, sha256: sha256)
+            filesBridgeClient?.thumbEnd(id: id, mime: mime, size: size, sha256: sha256)
         case .fsProgress(let id, let bytes):
             fsClient?.progress(id: id, bytes: bytes)
             filesBridgeClient?.progress(id: id, bytes: bytes)
@@ -2016,7 +2632,8 @@ final class ConnectionController {
                 nowPlaying.clear()
                 notifyCenter.clearAll()
             }
-        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing, let live):
+        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing, let live,
+                          let alert, let group):
             let ref = link.phone?.id.isEmpty == false ? link.phone
                 : session?.phone.map { PhoneRef(id: $0.id, name: $0.name, model: $0.model) }
             guard let phone = ref, !phone.id.isEmpty else { break }
@@ -2029,7 +2646,8 @@ final class ConnectionController {
             notifySeen[phone.id, default: []].insert(pkg)
             notifyCenter.post(
                 PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text,
-                                  ongoing: ongoing, actions: actions, live: live),
+                                  ongoing: ongoing, actions: actions, live: live,
+                                  alert: alert, group: group),
                 phoneId: phone.id,
                 phoneName: displayName(for: phone, fallback: "your phone"),
                 labelFor: { [weak self] in self?.labelFor($0) ?? nil },
@@ -2038,6 +2656,10 @@ final class ConnectionController {
             notifyCenter.image(id: id, mime: mime, width: w, height: h, data: data)
         case .notifyRemoved(let id):
             notifyCenter.remove(id: id)
+        case .notifySnapshot(let ids):
+            // NOTIFY-1: the active set after a rejoin. The posts before it
+            // already added or updated the rows; this drops what it lacks.
+            notifyCenter.snapshot(ids: ids)
         case .mediaState(let media):
             nowPlaying.apply(media)
         case .mediaSessions(let rows, let chosen):
@@ -2050,6 +2672,12 @@ final class ConnectionController {
             // The size class the reply fills: what was asked for this package,
             // oldest request first (a reply does not echo `px`).
             let askedPx = iconRequests[pkg]?.isEmpty == false ? iconRequests[pkg]!.removeFirst() : nil
+            if let askedPx, IconSizeClass.forRequest(askedPx) == .dock {
+                dockIconOutstanding.remove(pkg)
+                Log.app.debug("dock: icon answered for \(pkg, privacy: .public) (\(self.dockIconOutstanding.count, privacy: .public) still out)")
+            } else if askedPx == nil {
+                Log.app.debug("dock: icon answered with no request for \(pkg, privacy: .public)")
+            }
             if let image = NSImage(data: png) {
                 icons[pkg] = image
                 windows.setIcon(image, pkg: pkg)
@@ -2068,6 +2696,9 @@ final class ConnectionController {
                 missingIcons.insert(pkg)
             }
             runDockHooks()
+            runPendingDockAdds()
+            runPendingApplicationAdds()
+            pumpShortcutWork()
             recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):
@@ -2077,6 +2708,12 @@ final class ConnectionController {
             if let secure { windows.setPhoneSecure(secure) }
             windows.setPhonePanel(panel)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
+            // The phone's own report moves the DND machine first: it is what
+            // says whether the Mac's last value still stands (a person's change
+            // on the phone stands until the Mac intent changes again).
+            if let dnd, let id = controlDeviceId {
+                dndIntent.record(.phoneReported(dnd.rawValue), deviceId: id)
+            }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
         case .ringState(let playing):
@@ -2101,12 +2738,15 @@ final class ConnectionController {
                 // The window never opened: it goes away, the notice is what stays.
                 windows.closeFailedHandoff(stream: stream)
                 showTransient("Nothing to move. Your phone is showing its home screen or PocketDeck.")
-            } else if code == "launch_failed" || (stream != 0 && code == "no_stream") {
+            } else if code == "launch_failed" {
                 showTransient(ConnectionFailure.message(for: code) ?? "Something went wrong.")
             } else if stream == 0 && (code == "unavailable" || code == "bad_request") {
                 // `phone.panel` refused: the phone never turned its screen off.
                 windows.failPhonePanelRequest()
             }
+            // `no_stream` is never a launcher notice (WIN-38): WindowManager
+            // handles it by the window's state, and with no window it is only
+            // logged. The gate in Session means it should not arrive at all.
         default:
             break
         }
@@ -2369,6 +3009,7 @@ final class ConnectionController {
         layerRefresh.reset()
         iconRequests = [:]
         dockIconAsked = []
+        dockIconOutstanding = []
         let hadWindows = !windows.openStreams.isEmpty
         windows.phone = info
         // Every window title carries the display name from here on.
@@ -2466,24 +3107,35 @@ final class ConnectionController {
                 icons[app.pkg] = cached
                 windows.setIcon(cached, pkg: app.pkg)
                 loadCachedLayers(app.pkg, deviceId: id)
+                // A cached flat (or a phone that predates layers) still gets a
+                // render: the tile never draws the flat image itself, and the
+                // phone's answer may take a while or never come.
+                if deckIcons[app.pkg] == nil { refreshDeckIcon(app.pkg) }
             } else {
                 requestIcon(app.pkg, px: IconSizeClass.deck.layerPx)
             }
         }
         // A cached icon without layers may predate them: ask once per
         // connection, so a phone that has layers catches the rendered look up.
-        if GlassIconsSetting.isEnabled(in: profile.defaults), let id = link.phone?.id {
+        if let id = link.phone?.id {
             for app in list where iconLayers[app.pkg] == nil && icons[app.pkg] != nil && IconCache.shared.hasLayers(pkg: app.pkg, deviceId: id) == false {
                 if layerRefresh.allow(pkg: app.pkg) { requestIcon(app.pkg, px: IconSizeClass.deck.layerPx) }
             }
         }
         if let ref = link.phone {
-            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
-                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
             dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: displayName(for: ref),
-                               keep: dockPkgsOfOpenWindows)
+                               keep: dockPkgsOfOpenWindows,
+                               saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: ref.id))
+            queueSaveAll(deviceId: ref.id)
+            // An app with a shim is listed by Launchpad/Spotlight/a launcher as the
+            // real app, so it is not a CoreSpotlight item too (DOCK-9).
+            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
+                            excluding: dockApps.shimPackages(deviceId: ref.id),
+                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
         }
         runDockHooks()
+        runPendingDockAdds()
+        runPendingApplicationAdds()
         recheckOpenWindows()
         // An open-app intent needs the live list (a fresh profile has no cache).
         runPendingDebugIntents(immediateOnly: false)
@@ -2495,14 +3147,14 @@ final class ConnectionController {
         sheet = .code
     }
 
-    private func showTransient(_ text: String) {
+    private func showTransient(_ text: String, seconds: TimeInterval = 5) {
         transientBanner = Banner(text: text, action: nil)
         transientTimer?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.transientBanner = nil }
         }
         transientTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)  // gcd: the banner's dismissal timer
     }
 
     // MARK: Test hooks
@@ -2556,10 +3208,25 @@ final class ConnectionController {
                 self.nowPlaying.choose(key)
             }
         }
+        // `deckdrop PATH`: the Deck's own drop handler, which carries no app
+        // window and so no share target (SHARE-17).
+        debugInput?.deckDrop = { [weak self] urls in
+            MainActor.assumeIsolated { self?.dropFiles(urls, target: nil) }
+        }
+        // `deckdropimage`/`deckdropurl`: the Deck's SHARE-18 sources.
+        debugInput?.deckDropDrag = { [weak self] drag in
+            MainActor.assumeIsolated { self?.dropDeck(drag) }
+        }
         // The dockapps action writes the setting the way Settings'
         // @AppStorage does, then calls the same handler its onChange does.
         debugInput?.dockApps = { [weak self] on in
             MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
+        }
+        debugInput?.shortcutsAll = { [weak self] on in
+            MainActor.assumeIsolated {
+                guard let self, let phone = self.link.phone else { return }
+                self.setSaveAllShortcuts(on, for: phone.id)
+            }
         }
         // The panel's debug host and driver: the same SwiftUI content the menu
         // bar shows, and clicks at the controls' own frames.
@@ -2592,6 +3259,18 @@ final class ConnectionController {
         }
         debugInput?.arm(phoneOnly: phoneOnly)
         return nil
+    }
+
+    /// The forced rail position (`deckrailenter`/`deckrailmove`): a quiet run
+    /// cannot move the pointer, so the state machine is fed the same event the
+    /// container's hover sends, and the rest of the path (the frozen span, the
+    /// help tag, the ease) is the live one.
+    private func forceRail(letter: String) -> Bool {
+        RailPointerModel.shared.force(letter: letter, reduceMotion: railReduceMotion)
+    }
+
+    private var railReduceMotion: Bool {
+        Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     /// `--debug-control` (DebugControl.swift): the e2e checks that share this
@@ -2741,7 +3420,9 @@ final class ConnectionController {
         case "deckclick":
             // A Deck cell's click: its own drawn place, through the window's
             // event handling (the Deck has no debug route that calls openOrRaise).
-            guard let label = arguments.first else { return "deckclick needs an app label" }
+            // The label may hold spaces (an app's words are its name).
+            guard !arguments.isEmpty else { return "deckclick needs an app label" }
+            let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
         case "deckcellpoint":
@@ -2758,6 +3439,53 @@ final class ConnectionController {
             let text = "\(point.x) \(point.y)\n"
             return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
                 ? "deckcellpoint failed" : nil
+        case "deckmenu":
+            // The cell's own context menu, through a secondary click at its
+            // drawn place (for the quiet screenshots; setup, not a check).
+            guard !arguments.isEmpty else { return "deckmenu needs an app label" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            return DeckCellClick.menu(label: arguments.joined(separator: " "), in: deck)
+        case "shortcut", "dock":
+            // The tile's menu actions (docs/specs/dock.md DOCK-3/4): a context
+            // menu cannot be clicked in a quiet run, so the check runs the same
+            // controller action the item runs, by package. Setup for the e2e.
+            guard arguments.count >= 2, ["add", "remove"].contains(arguments[0]) else {
+                return "\(command) needs add|remove PKG"
+            }
+            guard let app = appInfo(arguments[1]) else { return "no app \(arguments[1])" }
+            if command == "dock" {
+                arguments[0] == "add" ? addToDock(app) : removeFromDock(app)
+            } else {
+                arguments[0] == "add" ? addToApplications(app) : removeFromApplications(app)
+            }
+            return nil
+        case "shortcutsall":
+            // The phone page's Save all switch, through the same write-then-
+            // apply path its binding runs (setup for the e2e).
+            guard let raw = arguments.first, ["on", "off"].contains(raw) else {
+                return "shortcutsall needs on|off"
+            }
+            guard let phone = link.phone else { return "no phone" }
+            setSaveAllShortcuts(raw == "on", for: phone.id)
+            return nil
+        case "shortcutstats":
+            // Save all's own counters (the e2e's diagnosis when a build stalls):
+            // counts and package names, never a label.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "shortcutstats needs an absolute PATH"
+            }
+            let text = """
+            pending=\(shortcutWork.count)
+            building=\(shortcutBuilding.count)
+            asked=\(dockIconAsked.count)
+            outstanding=\(dockIconOutstanding.count)
+            pending_keys=\(shortcutWork.keys.sorted().joined(separator: ","))
+            building_keys=\(shortcutBuilding.sorted().joined(separator: ","))
+            asked_keys=\(dockIconAsked.sorted().joined(separator: ","))
+            outstanding_keys=\(dockIconOutstanding.sorted().joined(separator: ","))
+            """
+            do { try text.write(toFile: path, atomically: true, encoding: .utf8) } catch { return "cannot write \(path)" }
+            return nil
         case "coverclick":
             // A click on the opening cover's own button (Cancel or Close), at
             // its place in the window, through the window's event handling.
@@ -2773,6 +3501,13 @@ final class ConnectionController {
             // from inside the poll would hold the reply the check waits for.
             Task { @MainActor in target.chrome.openingCover.press(title) }
             return nil
+        case "livedump":
+            // The menu bar's LIVE section at an arbitrary moment (the notify
+            // and path checks read the rows before and after an outage).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "livedump needs an absolute PATH"
+            }
+            return writeLiveDump(path) ? nil : "livedump could not write \(path)"
         case "keywindow":
             // Which window a raise actually put in front: a read, for a check
             // that must not infer it from the CG window list's order.
@@ -2839,6 +3574,11 @@ final class ConnectionController {
             // setup for the switch inside).
             PanelProbe.openDeckPopover(controller: self)
             return nil
+        case "deckpanelclose":
+            // Closing it again: a quiet run cannot click outside the popover,
+            // and the Deck's own shots must not carry it.
+            closeDeckPanel()
+            return nil
         case "panelhover":
             guard arguments.count == 2 else { return "panelhover needs HOST and an item ID" }
             return PanelProbe.hover(host: arguments[0], id: arguments[1]) ? nil : "panelhover failed"
@@ -2859,6 +3599,12 @@ final class ConnectionController {
             guard let path = arguments.first, path.hasPrefix("/") else { return "iconmenu needs PATH" }
             guard let menuBar = MenuBarController.current else { return "no menu bar item" }
             return menuBar.dumpSecondaryMenu(to: path) ? nil : "iconmenu could not write \(path)"
+        case "menubaricon":
+            // The item itself: its length, the button's own image, foreign
+            // views over it, the link and the agent dot (e2e menubar-shots,
+            // PANEL-25). The reply is the line the check reads, not "ok".
+            guard let menuBar = MenuBarController.current else { return "no menu bar item" }
+            return menuBar.iconDescription()
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
@@ -2926,6 +3672,21 @@ final class ConnectionController {
                 return "panelringer needs HOST and MODE (normal, vibrate, silent)"
             }
             return PanelProbe.ringer(host: arguments[0], mode: mode) ? nil : "panelringer failed"
+        case "deckzoom":
+            // The Deck's zoom step, for a run that wants 125 %: the same store
+            // ⌘+ / ⌘− write, which the grid follows.
+            guard let raw = arguments.first, let value = Double(raw) else {
+                return "deckzoom needs a value"
+            }
+            Profile.active.defaults.set(value, forKey: DeckZoom.key)
+            return nil
+        case "deckzoomwindow":
+            // The Deck's standard zoom (DECK-24): the same AppKit path the
+            // green button and a title-bar double-click take, so
+            // windowWillUseStandardFrame answers it.
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            window.zoom(nil)
+            return nil
         case "deck-size":
             // Resize the Deck for the grid checks: the block is centred and
             // capped at a wide size and drops columns as the window narrows.
@@ -2944,6 +3705,18 @@ final class ConnectionController {
                 + " \(Int(frame.width.rounded())) \(Int(frame.height.rounded()))\n"
             return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
                 ? "deck-frame failed" : nil
+        case "deck-screen":
+            // The visible frame of the screen the Deck window is on, "W H" in
+            // points: the standard zoom takes that height, and the key window
+            // is not the Deck in a quiet run (DECK-24).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deck-screen needs PATH"
+            }
+            guard let screen = DeckWindow.window?.screen ?? NSScreen.main else { return "no screen" }
+            let visible = screen.visibleFrame
+            let line = "\(Int(visible.width.rounded())) \(Int(visible.height.rounded()))\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deck-screen failed" : nil
         case "deck-move":
             // The Deck's origin in screen points: setup for the frame check
             // (a quiet run cannot drag the window), DECK-19.
@@ -2991,28 +3764,154 @@ final class ConnectionController {
             deckRailToken += 1
             deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
             return nil
-        case "deckrailhover":
-            // The rail's magnification for a shot: a quiet run cannot move the
-            // pointer to the rail's letters. A real pointer's hover is the
-            // rail's own onContinuousHover, proved in the VM.
+        case "deck-scroll":
+            // The rail is pointer-only and a quiet run cannot move the real
+            // pointer, so the e2e scrolls the grid by other means (what the
+            // scroll bar does) through this verb; the accent's return to the
+            // top row's letter is the proof (DECK-7).
+            guard let dy = arguments.first.flatMap(Double.init) else { return "deck-scroll needs DY" }
+            return DeckGridScroll.scroll(by: CGFloat(dy))
+        case "deckrailenter":
+            // The pointer enters the rail's rest column at LETTER's band, which
+            // freezes the span there.
             guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
-                return "deckrailhover needs A-Z or #"
+                return "deckrailenter needs A-Z or #"
             }
             guard DeckWindow.window != nil else { return "no deck window" }
-            DeckRailHover.shared.letter = letter
+            guard forceRail(letter: letter) else { return "deckrailenter failed" }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
-        case "deckrailhoverout":
-            DeckRailHover.shared.letter = nil
+        case "deckrailmove":
+            // The pointer moves to LETTER's band inside the frozen span; the
+            // ends must not move.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailmove needs A-Z or #"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            guard forceRail(letter: letter) else { return "deckrailmove failed" }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
+        case "deckrailleave":
+            RailPointerModel.shared.leave(reduceMotion: railReduceMotion)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckrailanchor":
+            // The rail's top-left in Quartz screen coordinates, for a visible
+            // run's real pointer at a place measured from the render.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckrailanchor needs PATH"
+            }
+            return DeckRailPoint.anchorPoint(to: path) ? nil : "deckrailanchor failed"
+        case "deckrailslots":
+            // The rail's drawn geometry (DECK-7): the pitch, the rail and
+            // container heights, the slots' y/height and their glyph boxes in
+            // the rail's own points, plus the tag's letter while it shows.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckrailslots needs PATH"
+            }
+            let model = RailPointerModel.shared
+            guard let fit = model.railFit, !model.slots.isEmpty else { return "no rail" }
+            let height = CGFloat(fit.count) * fit.pitch
+            let frozen = model.state.frozen
+            let scales: [CGFloat]
+            let layout: [RailLayout.Slot]
+            if let frozen {
+                // The centre is solved inside the frozen span.
+                let centre = RailLayout.frozenCentre(atY: frozen.y, span: frozen.span,
+                                                     count: fit.count)
+                scales = RailLayout.scales(count: fit.count, centre: centre,
+                                           reduceMotion: railReduceMotion)
+                layout = RailLayout.frozenSlots(scales: scales, span: frozen.span)
+            } else {
+                scales = Array(repeating: 1, count: fit.count)
+                layout = (0..<fit.count).map {
+                    RailLayout.Slot(y: CGFloat($0) * fit.pitch, height: fit.pitch)
+                }
+            }
+            var items: [[String: Any]] = []
+            for (index, box) in layout.enumerated() {
+                let glyph = 9 * scales[index]
+                items.append(["first": model.slots[index].first,
+                              "letters": model.slots[index].count,
+                              "scale": Double(scales[index]),
+                              "y": Double(box.y),
+                              "height": Double(box.height),
+                              "glyphTop": Double(box.y + (box.height - glyph) / 2),
+                              "glyphBottom": Double(box.y + (box.height + glyph) / 2)])
+            }
+            let tag: Any = frozen.map {
+                RailLayout.letter(atY: $0.y, in: layout, slots: model.slots) ?? NSNull()
+            } ?? NSNull()
+            let state: String
+            switch model.state {
+            case .away: state = "away"
+            case .hovering: state = "hovering"
+            case .dragging: state = "dragging"
+            }
+            let line: [String: Any] = ["pitch": Double(fit.pitch),
+                                       "reduceMotion": railReduceMotion,
+                                       "railHeight": Double(height),
+                                       "containerHeight": Double(model.containerSize.height),
+                                       "state": state,
+                                       "y": Double(frozen?.y ?? -1),
+                                       "spanTop": Double(frozen?.span.top ?? -1),
+                                       "spanBottom": Double(frozen?.span.bottom ?? -1),
+                                       "tag": tag,
+                                       "slots": items]
+            guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
+                  var text = String(data: data, encoding: .utf8) else {
+                return "deckrailslots failed"
+            }
+            text += "\n"
+            return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckrailslots failed" : nil
+        case "deckrailsweep":
+            // N pointer moves in one command, the body-count proof's moves: the
+            // first enters at A and the rest sweep down the rail, one runloop
+            // turn per move (about 30 ms), as a pointer's moves arrive. A single
+            // turn for all of them would coalesce them into one transaction and
+            // hide a per-move invalidation.
+            guard let steps = Int(arguments.first ?? ""), steps > 0 else {
+                return "deckrailsweep needs N"
+            }
+            guard let fit = RailPointerModel.shared.railFit else { return "no rail" }
+            let total = CGFloat(fit.count) * fit.pitch
+            for step in 0..<steps {
+                let y = steps == 1 ? 0 : total * CGFloat(step) / CGFloat(steps - 1)
+                RailPointerModel.shared.track(dx: 0, y: y, reduceMotion: railReduceMotion)
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+            }
+            return nil
+        case "deckbodycount":
+            // The grid body's evaluation count: the proof a pointer on the
+            // rail does not invalidate the grid.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckbodycount needs PATH"
+            }
+            #if PD_TEST_HOOKS
+            let line = "\(DeckGridProbe.bodyCount)\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckbodycount failed" : nil
+            #else
+            return "deckbodycount needs a test-hooks build"
+            #endif
+        case "deckbodyreset":
+            #if PD_TEST_HOOKS
+            DeckGridProbe.resetBodyCount()
+            return nil
+            #else
+            return "deckbodyreset needs a test-hooks build"
+            #endif
         case "deckrailpoint":
             // The letter's centre in Quartz screen coordinates, for a visible
-            // VM run's real pointer.
-            guard arguments.count == 2, DeckRail.letters.contains(arguments[0]) else {
-                return "deckrailpoint needs A-Z or # and PATH"
+            // VM run's real pointer. An optional DX puts it that many points
+            // left of the rail's leading edge.
+            guard arguments.count >= 2, arguments.count <= 3,
+                  DeckRail.letters.contains(arguments[0]) else {
+                return "deckrailpoint needs A-Z or # and PATH [DX]"
             }
-            return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
+            let dx = arguments.count == 3 ? CGFloat(Double(arguments[2]) ?? 0) : 0
+            return DeckRailPoint.point(letter: arguments[0], to: arguments[1], dx: dx)
                 ? nil : "deckrailpoint failed"
         case "settings-open":
             // The ⌘, route (a setup step for a check that needs Settings open).

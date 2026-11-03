@@ -186,6 +186,30 @@ private final class StubBridgeHost: FilesBridgeHost {
     var pending: [PendingRead] = []
     var nextID: UInt32 = 100
 
+    /// Thumbnails stay open until the test finishes them.
+    struct PendingThumb {
+        let id: UInt32
+        let item: String
+        let size: Int
+        let completion: (Result<FilesThumb, FsError>) -> Void
+    }
+    var pendingThumbs: [PendingThumb] = []
+    var thumbItems: [String] = []
+
+    func thumb(item: String, size: Int,
+               onStart: @escaping (UInt32) -> Void,
+               completion: @escaping (Result<FilesThumb, FsError>) -> Void) {
+        let id = nextID
+        nextID += 1
+        onStart(id)
+        thumbItems.append(item)
+        pendingThumbs.append(PendingThumb(id: id, item: item, size: size, completion: completion))
+    }
+
+    func finishThumb(_ index: Int, _ result: Result<FilesThumb, FsError>) {
+        pendingThumbs[index].completion(result)
+    }
+
     func list(item: String, page: String?,
               completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void) {
         completion(listResult)
@@ -756,5 +780,102 @@ final class FilesBridgeTests: XCTestCase {
         try start()
         bridge.stop()
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    // MARK: Thumbnails (FILES-23/25/26/29, R-1)
+
+    private let thumb = FilesThumb(data: [0xFF, 0xD8, 0xFF], mime: "image/jpeg", sha256: "ab")
+
+    func testAThumbAnswersDataThenTheEnd() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.thumb(id: 7, item: "ino:1", size: 512))
+        XCTAssertTrue(pump { host.pendingThumbs.count == 1 })
+        XCTAssertEqual(["ino:1"], host.thumbItems)
+        XCTAssertEqual(512, host.pendingThumbs.first?.size)
+        host.finishThumb(0, .success(thumb))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertEqual([[0xFF, 0xD8, 0xFF]], client.dataChunks(id: 7))
+        XCTAssertEqual([.thumb(id: 7, mime: "image/jpeg", size: 3, sha256: "ab")], client.replies())
+    }
+
+    func testAThumbFailureAnswersItsCode() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.thumb(id: 8, item: "ino:2", size: 512))
+        XCTAssertTrue(pump { host.pendingThumbs.count == 1 })
+        host.finishThumb(0, .failure(FsError(code: "fs_no_thumb")))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertEqual([.error(id: 8, code: "fs_no_thumb")], client.replies())
+        XCTAssertTrue(client.dataChunks(id: 8).isEmpty)
+    }
+
+    func testThumbRequestsQueueThreeAtATime() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        for id in 1...4 {
+            client.send(.thumb(id: UInt32(id), item: "ino:\(id)", size: 512))
+        }
+        XCTAssertTrue(pump { host.pendingThumbs.count == 3 })
+        Thread.sleep(forTimeInterval: 0.2) // real-time: a fourth thumb would land in this window
+        XCTAssertEqual(3, host.pendingThumbs.count, "a fourth thumb reached the phone")
+        host.finishThumb(0, .success(thumb))
+        XCTAssertTrue(pump { host.pendingThumbs.count == 4 })
+        XCTAssertEqual(["ino:1", "ino:2", "ino:3", "ino:4"], host.thumbItems)
+    }
+
+    func testACancelledQueuedThumbNeverReachesThePhone() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        for id in 1...4 {
+            client.send(.thumb(id: UInt32(id), item: "ino:\(id)", size: 512))
+        }
+        XCTAssertTrue(pump { host.pendingThumbs.count == 3 })
+        guard host.pendingThumbs.count == 3 else { return }
+        client.send(.cancel(id: 4))
+        XCTAssertTrue(pump { client.replies().count >= 1 })
+        XCTAssertEqual([.error(id: 4, code: "cancelled")], client.replies())
+        Thread.sleep(forTimeInterval: 0.2) // real-time: a fourth thumb would land in this window
+        XCTAssertEqual(3, host.pendingThumbs.count)
+        XCTAssertEqual([100, 101, 102], host.pendingThumbs.map { Int($0.id) })
+    }
+
+    func testACancelledRunningThumbSendsFsCancel() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.thumb(id: 5, item: "ino:5", size: 512))
+        XCTAssertTrue(pump { host.pendingThumbs.count == 1 })
+        guard !host.pendingThumbs.isEmpty else { return }
+        client.send(.cancel(id: 5))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertEqual(host.pendingThumbs.map(\.id), host.cancels)
+        XCTAssertEqual([.error(id: 5, code: "cancelled")], client.replies())
+    }
+
+    func testAThumbPastTheDeadlineAnswersTimeoutAndCancels() throws {
+        bridge.thumbDeadline = 0.05
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.thumb(id: 6, item: "ino:6", size: 512))
+        guard pump(timeout: 2, { !client.replies().isEmpty }) else { return }
+        XCTAssertEqual([.error(id: 6, code: "timeout")], client.replies())
+        XCTAssertEqual(host.pendingThumbs.map(\.id), host.cancels)
+    }
+
+    func testAClosedClientCancelsItsThumb() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.thumb(id: 9, item: "ino:9", size: 512))
+        XCTAssertTrue(pump { host.pendingThumbs.count == 1 })
+        guard let fsID = host.pendingThumbs.first?.id else { return XCTFail("no thumb") }
+        client.shutdown()
+        XCTAssertTrue(pump { host.cancels == [fsID] })
     }
 }

@@ -21,12 +21,40 @@ object NotifyEvents {
     /** The Live Update chip's own cap (docs/design/notify.md). */
     const val MAX_CHIP = 16
 
+    /** Ids one `notify.snapshot` may name; the Mac keeps at most 200 banners. */
+    const val MAX_SNAPSHOT_IDS = 200
+
     /**
      * `Notification.FLAG_PROMOTED_ONGOING`: the system promoted this ongoing
      * notification into an Android 16 Live Update. Kept as a literal so the
      * rule is JVM-tested; the constant itself is API 36.
      */
     const val FLAG_PROMOTED_ONGOING = 0x00040000
+
+    /** `Notification.FLAG_ONLY_ALERT_ONCE`: the app asks for one alert per key. */
+    const val FLAG_ONLY_ALERT_ONCE = 0x00000008
+
+    /** `Notification.FLAG_GROUP_SUMMARY`: this notification summarises its group. */
+    const val FLAG_GROUP_SUMMARY = 0x00000200
+
+    /** `Notification.GROUP_ALERT_*`: which member of a group may alert (row 13). */
+    const val GROUP_ALERT_ALL = 0
+    const val GROUP_ALERT_SUMMARY = 1
+    const val GROUP_ALERT_CHILDREN = 2
+
+    /**
+     * A summary forwarded on its own alerts unless the app asked for a
+     * children-only group (row 13, NOTIFY-20). Children keep their own
+     * decision: a child that supersedes the summary still alerts.
+     */
+    fun summaryAlerts(groupAlertBehavior: Int): Boolean = groupAlertBehavior != GROUP_ALERT_CHILDREN
+
+    /** `NotificationManager.IMPORTANCE_*`, read from the channel's ranking (rows 5/20). */
+    const val IMPORTANCE_MIN = 1
+    const val IMPORTANCE_LOW = 2
+    const val IMPORTANCE_DEFAULT = 3
+    const val IMPORTANCE_HIGH = 4
+    const val IMPORTANCE_MAX = 5
 
     /** The marker a debug build's test poster puts on its own notifications. */
     const val DEBUG_POSTER_EXTRA = "dev.pocketdeck.debug.poster"
@@ -107,6 +135,63 @@ object NotifyEvents {
         ongoing && flags and FLAG_PROMOTED_ONGOING != 0
 
     /**
+     * Whether a post may present a banner on the Mac (NOTIFY-19), the same way
+     * Android decides to alert: the first post of a key always does, an update
+     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]), the
+     * title and text did not change since the last forwarded post, or the only
+     * thing that moved was a progress bar ([progressOnly]).
+     */
+    fun alerts(
+        firstPost: Boolean,
+        onlyAlertOnce: Boolean,
+        contentChanged: Boolean,
+        progressOnly: Boolean,
+    ): Boolean = firstPost || (!onlyAlertOnce && contentChanged && !progressOnly)
+
+    /**
+     * An update only moves a bar (NOTIFY-19): both posts carry a progress bar
+     * and the title stayed, so "12 MB of 50 MB" → "13 MB of 50 MB" is not news.
+     * The post that drops the bar has no bar, so it is not progress-only.
+     */
+    fun progressOnly(
+        previousHadBar: Boolean,
+        hadBar: Boolean,
+        previousTitleHash: String?,
+        titleHash: String,
+    ): Boolean = previousHadBar && hadBar && previousTitleHash == titleHash
+
+    /**
+     * A LOW or MIN channel never presents (rows 5/20): Android's shade shows it
+     * in the silent section, so the Mac lists it quietly rather than dropping
+     * it. DEFAULT and above keep today's rules; an unknown ranking does too.
+     */
+    fun quietByImportance(importance: Int?): Boolean = importance != null && importance <= IMPORTANCE_LOW
+
+    /** 64 bits of SHA-256 over the content: updates are compared by this, never by text. */
+    fun contentHash(title: String?, text: String?): String = digest("content", title.orEmpty(), text.orEmpty())
+
+    /** 64 bits of SHA-256 over the title alone (the progress tick rule). */
+    fun titleHash(title: String?): String = digest("title", title.orEmpty())
+
+    /**
+     * The wire's `group`: 64 bits of SHA-256 over the package and the Android
+     * group key, which apps fill with a chat or a folder name — the key itself
+     * never leaves the phone (NOTIFY-20, privacy).
+     */
+    fun groupHash(pkg: String, groupKey: String): String = digest("group", pkg, groupKey)
+
+    private fun digest(domain: String, vararg parts: String): String {
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
+        sha.update(domain.toByteArray(Charsets.UTF_8))
+        for (part in parts) {
+            // A separator keeps "ab"+"c" and "a"+"bc" apart.
+            sha.update(0)
+            sha.update(part.toByteArray(Charsets.UTF_8))
+        }
+        return sha.digest().take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    /**
      * A ProgressStyle fraction: `progress / max`, clamped. `max` is the style's
      * own maximum, which is the sum of the segment lengths for a segmented
      * style. Null when there is no usable maximum (indeterminate or absent).
@@ -150,7 +235,8 @@ object NotifyEvents {
     /**
      * One posted notification. Null when the message would be empty or a string
      * broke a cap: the phone never sends malformed events instead of policing
-     * them at the other end.
+     * them at the other end. `alert` (NOTIFY-19) is required on every post;
+     * `group` (NOTIFY-20) only for a notification that has a group.
      */
     fun notificationEvent(
         id: String,
@@ -158,10 +244,12 @@ object NotifyEvents {
         title: String?,
         text: String?,
         when_: Long,
+        alert: Boolean,
         actions: List<ActionCandidate> = emptyList(),
         ongoing: Boolean = false,
         debugPoster: Boolean = false,
         live: Map<String, Any?>? = null,
+        group: String? = null,
     ): Map<String, Any?>? {
         val validPkg = validPackage(pkg) ?: return null
         if (id.isEmpty() || id.length > 64) return null
@@ -179,8 +267,10 @@ object NotifyEvents {
             cleanTitle?.let { put("title", it) }
             cleanText?.let { put("text", it) }
             if (when_ > 0L) put("when", when_)
+            put("alert", alert)
             if (ongoing) put("ongoing", true)
             live?.let { put("live", it) }
+            group?.let { put("group", it) }
             val wire = actionWire(actions)
             if (wire.isNotEmpty()) put("actions", wire)
         }
@@ -188,6 +278,22 @@ object NotifyEvents {
 
     fun removedEvent(id: String): Map<String, Any?>? =
         if (id.isEmpty() || id.length > 64 || id.any { !it.isLetterOrDigit() && it !in "-._" }) null else mapOf("t" to "notify.remove", "id" to id)
+
+    /**
+     * `notify.snapshot` (NOTIFY-1/PATH-6): the ids the phone's active set still
+     * holds, sent once after the snapshot's own posts. The Mac drops every row
+     * and banner this list does not name. Ids are bounded and each one is the
+     * opaque token a `notify.post` carried, never content.
+     */
+    fun snapshotEvent(ids: List<String>): Map<String, Any?> = mapOf(
+        "t" to "notify.snapshot",
+        "ids" to ids.asSequence()
+            .filter { it.isNotEmpty() && it.length <= 64 }
+            .filter { id -> id.all { it.isLetterOrDigit() || it in "-._" } }
+            .distinct()
+            .take(MAX_SNAPSHOT_IDS)
+            .toList(),
+    )
 
     /**
      * The chosen session's state; null clears Now Playing. `positionMs` is the
@@ -230,4 +336,100 @@ object NotifyEvents {
     /** Transport, seek and volume commands; anything else is not a command. */
     fun validMediaCommand(action: String): String? =
         action.takeIf { it in MediaControl.actions }
+}
+
+/** A package+group's forwarding phase (NOTIFY-20). */
+enum class NotifyGroupPhase { EMPTY, CHILDREN, SUMMARY }
+
+/** One package+group's state: the forwarded children, or its summary (NOTIFY-20). */
+data class NotifyGroupState(
+    val phase: NotifyGroupPhase = NotifyGroupPhase.EMPTY,
+    val children: Set<String> = emptySet(),
+    val summaryId: String? = null,
+) {
+    /**
+     * The child set after a post of `id`: a known child keeps its place (a chat
+     * updates its one notification per message, which is not a new child), and
+     * the oldest id is dropped past [MAX_CHILDREN] like the other maps.
+     */
+    fun withChild(id: String): NotifyGroupState {
+        val next = LinkedHashSet(children)
+        next.remove(id)
+        next.add(id)
+        while (next.size > MAX_CHILDREN) {
+            val oldest = next.firstOrNull() ?: break
+            next.remove(oldest)
+        }
+        return copy(phase = NotifyGroupPhase.CHILDREN, children = next, summaryId = null)
+    }
+
+    /** The state after `id` left; the group is empty when no child is left. */
+    fun withoutChild(id: String): NotifyGroupState {
+        val next = LinkedHashSet(children)
+        next.remove(id)
+        return if (next.isEmpty()) NotifyGroupState() else copy(children = next)
+    }
+
+    companion object {
+        /** More forwarded children than the forwarded-id map keeps. */
+        const val MAX_CHILDREN = 200
+    }
+}
+
+/** What happened to one notification of a group. */
+sealed interface NotifyGroupEvent {
+    /** A child of the group was posted by its app (an update of one too). */
+    data class ChildPosted(val id: String) : NotifyGroupEvent
+    /** A forwarded child left (the app, the person or a timeout). */
+    data class ChildGone(val id: String) : NotifyGroupEvent
+    /** The app posted the group's summary. */
+    data class SummaryPosted(val id: String) : NotifyGroupEvent
+    /** A forwarded summary left. */
+    data object SummaryGone : NotifyGroupEvent
+}
+
+/** What the listener must do with a group notification. */
+sealed interface NotifyGroupAction {
+    /** Send the post. */
+    data object Forward : NotifyGroupAction
+    /** Keep it on the phone: its children are on the Mac already. */
+    data object Skip : NotifyGroupAction
+    /** Send `notify.remove` for a forwarded summary a child just superseded. */
+    data class RemoveSummary(val id: String) : NotifyGroupAction
+}
+
+/**
+ * The phone's per-package-group forwarding machine (NOTIFY-20): a summary would
+ * land a second banner on top of its children, so it is forwarded only while
+ * the group has none, and a child that arrives after a summary takes it away
+ * first. Pure, so every transition is JVM-tested; the listener performs the
+ * returned actions.
+ */
+object NotifyGroups {
+
+    fun transition(
+        state: NotifyGroupState,
+        event: NotifyGroupEvent,
+    ): Pair<NotifyGroupState, List<NotifyGroupAction>> = when (event) {
+        is NotifyGroupEvent.ChildPosted -> when (state.phase) {
+            NotifyGroupPhase.EMPTY -> state.withChild(event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.CHILDREN -> state.withChild(event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.SUMMARY -> state.withChild(event.id) to
+                listOfNotNull(state.summaryId?.let { NotifyGroupAction.RemoveSummary(it) }, NotifyGroupAction.Forward)
+        }
+        is NotifyGroupEvent.ChildGone -> when (state.phase) {
+            NotifyGroupPhase.CHILDREN -> state.withoutChild(event.id) to emptyList()
+            NotifyGroupPhase.EMPTY, NotifyGroupPhase.SUMMARY -> state to emptyList()
+        }
+        is NotifyGroupEvent.SummaryPosted -> when (state.phase) {
+            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.SUMMARY, emptySet(), event.id) to
+                listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.SUMMARY -> state.copy(summaryId = event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.CHILDREN -> state to listOf(NotifyGroupAction.Skip)
+        }
+        is NotifyGroupEvent.SummaryGone -> when (state.phase) {
+            NotifyGroupPhase.SUMMARY -> NotifyGroupState() to emptyList()
+            NotifyGroupPhase.EMPTY, NotifyGroupPhase.CHILDREN -> state to emptyList()
+        }
+    }
 }
