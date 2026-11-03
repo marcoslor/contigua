@@ -56,6 +56,70 @@ a file over 1 MiB is read and decoded off the main thread. Everything else sends
   shell-made clip depends on ClipboardService URI grants — verified on the emulator; worst case the
   image still exists in the folder.
 
+## Paste and drop into an app (planned: SHARE-16–18)
+
+⌘V in an app's window stops being a text-only key. The pasteboard is classified once, in this
+order: a file copy (`public.file-url`) takes the drop path; an image with no text takes the
+clipboard-image path and then a paste key; plain text keeps today's `text` frame.
+
+**V1, an image.** The Mac sends the image as `clip.image.*` (the same 8 MiB cap and hash rule).
+The phone writes it to its clipboard and answers `{"t":"clip.image.done","id":N,"ok":true}`
+(PROTOCOL.md "Clipboard images"); only then does the Mac send one `KEY` frame with keycode
+279 (`KEYCODE_PASTE`) and `metaState` 0 to the window's stream. The wait is 3 s; a refusal,
+a disconnect or the timeout sends no key and shows "Nothing pasted. Share instead".
+
+The paste key comes from AOSP, read on 2026-11-03: `TextView.onKeyDown` handles
+`case KeyEvent.KEYCODE_PASTE` when `event.hasNoModifiers()` and calls
+`onTextContextMenuItem(ID_PASTE)` (`core/java/android/widget/TextView.java`). Ctrl+V is also
+handled: `TextView.onKeyShortcut` handles `META_CTRL_ON` + `KEYCODE_V`, and
+`ViewRootImpl.ViewPostImeInputStage` turns a modified key into a shortcut event. `KEYCODE_PASTE`
+is the direct one, needs no modifiers, and `AndroidInjector.pasteViaClipboard` already injects
+it at shell UID for non-ASCII typing. Known unknowns for the real-phone spike: a Compose field
+and a WebView do not use `TextView.onKeyDown`, an app may swallow the key, and the focused field
+may not be the one the person means. `[NEEDS CLARIFICATION]` per app, as above.
+
+The phone cannot see a field refuse the image, so the fallback is the person's own action: after
+the key the Mac shows a 5 s pill, "Image pasted. Nothing there? Share instead"; a refusal or a
+timeout says "Nothing pasted. Share instead". Both have a button whose help tag and VoiceOver
+label name ⇧⌘V. ⇧⌘V writes the same image to a temp PNG and sends it through the drop path to
+the window's app, so the app receives it as a shared attachment.
+
+**V2, files.** A file copy, or a drop of files, on an app's window transfers each file through
+the existing `drop.*` path (one at a time, 200 MiB) and names the window's package in a new
+optional `drop.start.target` field. `AppWindowController.pkg` is the source (the phone's
+`window.title.pkg` is what named the window). `WindowManager.onFilesDropped` and
+`ConnectionController.dropFiles` grow a target argument; the Deck, a phone-mode window and a
+link window pass none. On the phone
+`android/app/src/main/java/dev/pocketdeck/server/ShellLanding.kt`'s `offerSend` adds
+`--es target <pkg>` to the `am start` of
+`android/app/src/main/java/dev/pocketdeck/drop/ShareTrampoline.kt`; its `offer` builds the SEND
+intent, calls `setPackage(pkg)`, and shows the intent only when `resolveActivity` returns a
+component for it; otherwise it clears the package and shows today's chooser. Several URIs become
+`ACTION_SEND` with one `EXTRA_STREAM` or `ACTION_SEND_MULTIPLE` with a list, each with
+`FLAG_GRANT_READ_URI_PERMISSION` and the same `ClipData`. No paste key is sent for files.
+
+**V3, sources.** `VideoLayerView.registerForDraggedTypes` gains `.URL`, the image types
+(`public.png`, `public.tiff`, `public.jpeg`, `public.image`) and
+`NSFilePromiseReceiver.readableDraggedTypes`; the Deck's `.dropDestination(for: URL.self)` is
+replaced by a drop view that reads the same sources (SwiftUI's URL-only destination cannot see
+image data or promises). Each source becomes a temp file for the drop path:
+
+- image data: the first `NSImage` is encoded as PNG (the existing `NSImage.pngData()`);
+- an `http(s)` URL: `URLSession` download, stop at 8 MiB or 10 s; an image answer becomes the temp
+  file, and a non-image answer is refused on a window with "That link isn't an image. Drop the
+  link itself to open it." (on the Deck it keeps SHARE-8/11's link route);
+- a file promise: `NSFilePromiseReceiver.receivePromisedFiles` into the same temp folder,
+  awaited up to 30 s.
+
+Temp files live in `FileManager.default.temporaryDirectory/PocketDeck-drop-<uuid>/`, one folder
+per gesture. The folder is deleted when every file of that gesture has its `drop.result`, on a
+cancel, and on session end; folders older than 24 h are swept at launch. Nothing about a file's
+name or path is logged.
+
+Visual items for prototypes: the drop target's highlight for the new types, the refusal line
+for a non-image URL, and the paste fallback pill (light and dark, Reduce Motion and Reduce
+Transparency).
+
 ## Drag out (design only, not built)
 The window exposes a file-promise drag (qualifier: a mouse-side long-press, since the input mapper
 owns ordinary drags). On demand the phone sends `share.file` + `SHARE_DATA` on a fresh share id into
