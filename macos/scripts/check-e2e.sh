@@ -9387,15 +9387,32 @@ check_multiwin() {
         local file="$WORK/shots/$appearance-$1.png"
         screencapture -x "$file" && say "shot: $file" || bad "MULTIWIN no screenshot $1"
     }
+    # A boot is budgeted, so PD_E2E_SHOT_APPEARANCE=both takes each shot twice,
+    # in the guest's own dark and light appearance (the app follows the system
+    # when no --appearance is passed).
+    set_look() {
+        local dark=false
+        [ "$1" = dark ] && dark=true
+        gui_run osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark" \
+            >/dev/null 2>&1 || bad "MULTIWIN could not set the $1 appearance"
+        sleep 1.2
+    }
+    shot_both() {
+        [ "$appearance" = both ] || { shot "$1"; return; }
+        appearance=dark; set_look dark; shot "$1"
+        appearance=light; set_look light; shot "$1"
+        appearance=both; set_look dark
+    }
     # menu_shot NAME MENU — one of the app's own menus, held open by the same
     # tracking loop a click starts, while the whole screen is captured.
     menu_shot() {
-        local name="$1" menu="$2" report="$WORK/shots/$appearance-$1.json"
-        control menutrack "$report" "$menu" 4 \
+        local name="$1" menu="$2" report="$WORK/shots/$appearance-$1.json" seconds=4
+        [ "$appearance" = both ] && seconds=10
+        control menutrack "$report" "$menu" "$seconds" \
             || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
         sleep 1.4
-        shot "$name"
-        wait_until 10 [ -s "$report" ] || bad "MULTIWIN menutrack $menu never reported"
+        shot_both "$name"
+        wait_until 15 [ -s "$report" ] || bad "MULTIWIN menutrack $menu never reported"
         sleep 0.4
     }
     # The app's windows at menu level: a popup menu is its own window (layer
@@ -9454,7 +9471,12 @@ check_multiwin() {
         while [ "$i" -lt 20 ]; do
             control open --open "$pkg" >/dev/null 2>&1 || true
             sleep 0.5
-            [ "$(front_title)" = "$want" ] && return 0
+            if [ "$(front_title)" = "$want" ]; then
+                # A shim finishing its launch can activate itself a moment
+                # later; the window must still be front after that.
+                sleep 1.5
+                [ "$(front_title)" = "$want" ] && return 0
+            fi
             i=$((i + 1))
         done
         bad "MULTIWIN focus: $pkg never came front ('$(front_title)')"
@@ -9496,7 +9518,7 @@ PY
 
     # ---- Launch 1: the default cap (4), two windows, ⌘N, the menus, ⌘` ------
     local look=()
-    [ "$VISIBLE" = 1 ] && look=(--appearance "$appearance")
+    [ "$VISIBLE" = 1 ] && [ "$appearance" != both ] && look=(--appearance "$appearance")
     FAKE_ARGS="--label-after-window 2 --label-to Docs,Mail --tls-identity $WORK/phone.identity" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$ctl" \
         ${look[@]+"${look[@]}"} \
@@ -9611,7 +9633,7 @@ PY
         # hides the title outside full screen; the Window menu and the Dock
         # shim name them). 5 and 2: the Window and File menus, held open the
         # way a click opens them.
-        shot 1-two-windows
+        shot_both 1-two-windows
         menu_shot 5-window-menu Window
         menu_shot 2-file-menu File
     else
@@ -9621,7 +9643,7 @@ PY
     # [WIN-26] the Dock shim's menu and the Deck cell's rows are the same list,
     # with the front window's row checked.
     wait_until 25 grep -q "Chrome — Docs" "$ctl/dockmenu-com.android.chrome.json" 2>/dev/null \
-        || bad "[WIN-26] the shim never got both windows' rows"
+        || bad "[WIN-26] the shim never got both windows' rows ($(ls "$ctl" 2>/dev/null | tr '\n' ' '))"
     python3 - "$ctl/dockmenu-com.android.chrome.json" <<'PY' && ok "[WIN-26] the Dock shim's menu is New + both windows, front to back, the front one checked" \
         || bad "[WIN-26] the Dock shim's menu is not the design"
 import json, sys
@@ -9640,8 +9662,9 @@ PY
         # shows (the Dock owns that click; the shim pops the same buildMenu).
         printf '7' > "$ctl/dockmenu-com.android.chrome-show"
         sleep 1.5
-        shot 3-dock-shim-menu
+        shot_both 3-dock-shim-menu
         sleep 6
+        focus_app com.android.chrome "Chrome (FakePhone)" || true
     else
         skip "MULTIWIN the Dock shim's menu shot" "the Dock owns its icon's click; the rows are the dump above and K2 AppWindowMenuTests"
     fi
@@ -9674,7 +9697,7 @@ PY
             [ "$(menu_windows)" -gt "$menus_before" ] \
                 && ok "[WIN-26] a real secondary click on the Deck cell opened its menu" \
                 || bad "[WIN-26] the Deck cell's right click opened no menu ($menus_before menus before)"
-            shot 4-deck-cell-menu
+            shot_both 4-deck-cell-menu
             cg_input key --keycode 53
             sleep 0.6
         else
