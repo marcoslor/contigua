@@ -12,13 +12,14 @@
 # one call. Pairing is poc.py's prompt-and-Allow path, once.
 #
 # A2: the real ShellClipboard writes an image clip from a clip.image.* transfer
-# (empty-text item); KEYCODE_PASTE in a plain EditText pastes nothing, while an
+# (a URI-only item); KEYCODE_PASTE in a plain EditText pastes nothing, while an
 # EditText whose OnReceiveContentListener takes image/* receives the image. The
-# URI-only item is then set by the debug activity for comparison: it pastes the
-# content:// string, which is the risk A2 removes.
+# debug activity sets the same URI-only item in both fields to show what each
+# gets (boots 3/4: the plain field pasted nothing, the image field got it).
 #
-# SHARE-17: a drop with target org.fossify.messages opens that app with no
-# chooser; the same drop without a target opens the system chooser.
+# SHARE-17: a drop with a target opens that installed SEND app with no chooser
+# (POCKETDECK_DROP_TARGET overrides the first installed one); the same drop
+# without a target opens the system chooser.
 set -u
 
 MODE=run
@@ -195,10 +196,9 @@ fi
 back
 
 # The URI-only item, first in the plain field and then in the image field: the
-# brief asks what each gets. On API 36 a content:// URI cannot be opened as
-# text/*, so coerceToText gives null and the plain field pastes nothing (the
-# empty text makes that explicit rather than provider-dependent); the image
-# field must still take the URI.
+# brief asks what each gets. Measured on API 36 (boots 3/4): a content:// URI
+# that cannot serve text coerces to null, so the plain field pastes nothing;
+# the image field still takes the URI.
 clear_debug_log
 start_debug --es item uri --es field plain
 URI_TOP="$(debug_top)"
