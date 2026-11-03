@@ -36,7 +36,7 @@ internal class ShellClipboard(
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
         val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
             .getOrNull() as? ClipData ?: return null
         if (clip.itemCount == 0) return null
         val text = clip.getItemAt(0).text?.toString() ?: return null
@@ -48,7 +48,7 @@ internal class ShellClipboard(
         val set = ClipboardApi.calls(log).set ?: return
         val clip = ClipData.newPlainText(CLIP_LABEL, text)
         runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-            .onFailure { log("clipboard: setPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: setPrimaryClip failed: ${failureClasses(it)}") }
     }
 
     // ---- images (docs/design/dragdrop.md): first image item only ---------------
@@ -65,7 +65,7 @@ internal class ShellClipboard(
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
         val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: $it") }
+            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
             .getOrNull() as? ClipData ?: return null
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
@@ -77,7 +77,7 @@ internal class ShellClipboard(
         val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: return null
         val source = resolver ?: return null
         val bytes = runCatching { source.openInputStream(contentUri)?.use { s -> s.readBytes() } }
-            .onFailure { log("clipboard: unreadable clip image ($mime, $contentUri): $it") }
+            .onFailure { log("clipboard: unreadable clip image ($mime): ${failureClasses(it)}") }
             .getOrNull() ?: return null
         return ClipImage(bytes, mime.lowercase())
     }
@@ -114,7 +114,7 @@ internal class ShellClipboard(
         }
         val attempt = runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
         attempt.exceptionOrNull()?.let {
-            log("clipboard: setPrimaryClip(image) failed: ${it.javaClass.simpleName}")
+            log("clipboard: setPrimaryClip(image) failed: ${failureClasses(it)}")
         }
         if (attempt.isSuccess) log("clipboard: image clip ($mime)")
         return attempt.isSuccess
@@ -147,7 +147,7 @@ internal class ShellClipboard(
         }
         val added = runCatching { add.invoke(svc, *argsFor(add, iface, proxy)) }
         added.exceptionOrNull()?.let {
-            log("clipboard: addPrimaryClipChangedListener failed: $it")
+            log("clipboard: addPrimaryClipChangedListener failed: ${failureClasses(it)}")
             this.onChange = null
             return
         }
@@ -163,7 +163,7 @@ internal class ShellClipboard(
         val remove = calls.remove ?: return
         val iface = calls.listenerIface ?: return
         runCatching { remove.invoke(svc, *argsFor(remove, iface, proxy)) }
-            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: $it") }
+            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: ${failureClasses(it)}") }
     }
 
     /** The system's own "this is a secret" mark on a clip's description. */

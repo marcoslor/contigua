@@ -1,5 +1,6 @@
 package dev.pocketdeck.drop
 
+import dev.pocketdeck.server.failureClasses
 import java.io.File
 
 /**
@@ -15,7 +16,7 @@ object ShareCache {
     const val MAX_BYTES = 500L * 1024 * 1024
 
     /** Copies [source] into [dir] under its own name; null when the copy fails. */
-    fun put(dir: File, source: File): File? = runCatching {
+    fun put(dir: File, source: File, log: (String) -> Unit = {}): File? = runCatching {
         dir.mkdirs()
         val copy = File(dir, source.name)
         source.inputStream().use { input ->
@@ -23,7 +24,7 @@ object ShareCache {
         }
         evict(dir, keep = copy)
         copy
-    }.getOrNull()
+    }.onFailure { log("share cache: copy failed: ${failureClasses(it)}") }.getOrNull()
 
     /**
      * Deletes the oldest entries until the folder holds ≤ [MAX_FILES] files and
