@@ -311,4 +311,85 @@ final class SessionOrphanTests: XCTestCase {
         XCTAssertEqual(.ready, session.state)
         session.closeAndWait()
     }
+
+    /// NOTIFY-1/PATH-6 (ISS-5): a same-session rejoin after an outage is the
+    /// reconnect the ready branch never sees. The Mac repeats its notify
+    /// opt-in once the rejoined path is current, so the phone answers with its
+    /// active set; a session that never lost every path sends nothing.
+    func testARejoinAfterAnOutageRepeatsTheNotifyOptIn() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var foundingSession: String?
+        var founder: FakeServer.Connection?
+        var joinConnection: FakeServer.Connection?
+        var enables = 0
+        var rejoinEnables = 0
+        var rejoined = false
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload) else { return }
+            if message.t == "notify.enable" {
+                lock.lock()
+                enables += 1
+                if rejoined { rejoinEnables += 1 }
+                lock.unlock()
+                return
+            }
+            guard message.t == "hello" else { return }
+            if let join = message.string("join") {
+                lock.lock(); let session = foundingSession; lock.unlock()
+                guard join == session else { return }
+                lock.lock(); joinConnection = connection; rejoined = true; lock.unlock()
+                connection.sendJSON(Self.welcomeJSON(session: join))
+                return
+            }
+            let session = PathIds.sessionId()
+            lock.lock(); foundingSession = session; founder = connection; lock.unlock()
+            connection.sendJSON(Self.welcomeJSON(session: session))
+        }
+        let record = PinnedPhoneV2(deviceId: "phone-1",
+                                   phoneFingerprintHex: server.phoneFingerprintHex,
+                                   certPem: phoneIdentity.certPem)
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: "phone-1",
+                              clientId: "test-client", identity: macIdentity.identity,
+                              pinnedPhone: record, connectTimeout: 2)
+        session.pairingPolicy = .never
+        var reconnecting = false
+        session.onEvent = { event in
+            if case .pathsReconnecting(true) = event {
+                lock.lock(); reconnecting = true; lock.unlock()
+            }
+        }
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        // The controller's ready branch asks once, like a fresh welcome.
+        session.enableNotifications(true)
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return enables == 1
+        }, "the ready-time notify.enable never went out")
+        lock.lock(); let founderConnection = founder; lock.unlock()
+        founderConnection?.close()
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return reconnecting
+        }, "the session never went orphaned")
+        XCTAssertTrue(waitFor(timeout: 8) {
+            lock.lock(); defer { lock.unlock() }
+            return joinConnection != nil
+        }, "the orphan never re-dialed a join")
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return rejoinEnables == 1
+        }, "the rejoin never repeated the notify opt-in")
+        lock.lock()
+        let total = enables
+        let afterRejoin = rejoinEnables
+        lock.unlock()
+        XCTAssertEqual(1, afterRejoin, "one repeat for one rejoin")
+        XCTAssertEqual(2, total, "the ready-time ask plus the rejoin's")
+        XCTAssertEqual(.ready, session.state)
+        session.closeAndWait()
+    }
 }

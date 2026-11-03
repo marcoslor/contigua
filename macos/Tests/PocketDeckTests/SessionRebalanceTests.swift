@@ -123,66 +123,78 @@ final class SessionRebalanceTests: XCTestCase {
         var joins: [FakeServer.Connection] = []
         var welcomes = 0
         var markers = 0
+        var enables = 0
         var founderPath: String?
         var joinedPath: String?
         let start = Date()
         // The founder is the slow path; the join is withheld until the founder
         // has two pongs (the ranking's own election), then answers fast.
         server.onFrame = { connection, frame in
-            if frame.type == MessageType.json.rawValue,
-               let message = JSONFrame.decode(payload: frame.payload) {
-                if message.t == "hello" {
-                    if let join = message.string("join") {
-                        lock.lock(); let session = foundingSession; lock.unlock()
-                        guard join == session else { return }
-                        lock.lock(); joinedPath = message.string("path"); joins.append(connection)
-                        welcomes += 1; lock.unlock()
-                        connection.sendJSON(Self.welcomeJSON(session: join))
-                    } else {
-                        let session = PathIds.sessionId()
-                        lock.lock(); founderPath = message.string("path")
-                        plain += 1; foundingSession = session; welcomes += 1; lock.unlock()
-                        connection.sendJSON(Self.welcomeJSON(session: session))
-                    }
-                    return
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload) else { return }
+            if message.t == "notify.enable" {
+                // NOTIFY-1: the ready-time ask only; a planned switch is not
+                // a reconnect and sends nothing.
+                lock.lock(); enables += 1; lock.unlock()
+                return
+            }
+            if message.t == "hello" {
+                if let join = message.string("join") {
+                    lock.lock(); let session = foundingSession; lock.unlock()
+                    guard join == session else { return }
+                    lock.lock(); joinedPath = message.string("path"); joins.append(connection)
+                    welcomes += 1; lock.unlock()
+                    connection.sendJSON(Self.welcomeJSON(session: join))
+                } else {
+                    let session = PathIds.sessionId()
+                    lock.lock(); founderPath = message.string("path")
+                    plain += 1; foundingSession = session; welcomes += 1; lock.unlock()
+                    connection.sendJSON(Self.welcomeJSON(session: session))
                 }
-                if message.t == "path.switch" {
-                    // The Mac's own marker: the phone's marker is the last
-                    // frame it sends on the old path.
-                    guard let target = message.string("path") else { return }
-                    lock.lock(); markers += 1; lock.unlock()
-                    let echo = Frame(type: MessageType.json.rawValue, stream: 0,
-                                     payload: JSONFrame.payload([
-                                         "t": "path.switch", "path": target, "seq": 2,
-                                     ]))
-                    if let wrapped = try? PathCodec.encodeReliable(seq: 1, inner: echo).encoded,
-                       let frame = Frame(encoded: wrapped) {
-                        connection.send(frame)
-                    }
-                    return
+                return
+            }
+            if message.t == "path.switch" {
+                // The Mac's own marker: the phone's marker is the last frame
+                // it sends on the old path.
+                guard let target = message.string("path") else { return }
+                lock.lock(); markers += 1; lock.unlock()
+                let echo = Frame(type: MessageType.json.rawValue, stream: 0,
+                                 payload: JSONFrame.payload([
+                                     "t": "path.switch", "path": target, "seq": 2,
+                                 ]))
+                if let wrapped = try? PathCodec.encodeReliable(seq: 1, inner: echo).encoded,
+                   let frame = Frame(encoded: wrapped) {
+                    connection.send(frame)
                 }
-                guard message.t == "path.ping", let path = message.string("path"),
-                      let ts = message.int("ts") else { return }
-                lock.lock()
-                let isFounder = path == founderPath
-                let joinedAt = joinedPath == path ? start : nil
-                lock.unlock()
-                var delay: TimeInterval = 0
-                if isFounder {
-                    delay = 0.15
-                } else if let joinedAt {
-                    // Withhold the first two rounds so the founder is elected;
-                    // after the join the first ping comes from the second round.
-                    delay = Date().timeIntervalSince(joinedAt) < 4.5 ? 30 : 0
-                }
-                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                    connection.sendJSON(["t": "path.pong", "path": path, "ts": ts])
-                }
+                return
+            }
+            guard message.t == "path.ping", let path = message.string("path"),
+                  let ts = message.int("ts") else { return }
+            lock.lock()
+            let isFounder = path == founderPath
+            let joinedAt = joinedPath == path ? start : nil
+            lock.unlock()
+            var delay: TimeInterval = 0
+            if isFounder {
+                delay = 0.15
+            } else if let joinedAt {
+                // Withhold the first two rounds so the founder is elected;
+                // after the join the first ping comes from the second round.
+                delay = Date().timeIntervalSince(joinedAt) < 4.5 ? 30 : 0
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                connection.sendJSON(["t": "path.pong", "path": path, "ts": ts])
             }
         }
         let session = makeSession(port: server.port)
         session.start()
         XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        // The per-phone switch is on: the ready-time ask goes out once.
+        session.enableNotifications(true)
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return enables == 1
+        }, "the ready-time notify.enable never went out")
         XCTAssertTrue(waitFor {
             lock.lock(); defer { lock.unlock() }
             return welcomes >= 2
@@ -199,9 +211,11 @@ final class SessionRebalanceTests: XCTestCase {
         lock.lock()
         let plains = plain
         let joinCount = joins.count
+        let optIns = enables
         lock.unlock()
         XCTAssertEqual(1, plains, "a second session started after the switch")
         XCTAssertGreaterThanOrEqual(joinCount, 2)
+        XCTAssertEqual(1, optIns, "a planned switch repeated the notify opt-in")
         XCTAssertEqual(.ready, session.state, "the session ended during the switch")
         session.closeAndWait()
     }

@@ -192,6 +192,26 @@ class NotifySessionTest {
     }
 
     @Test
+    fun `a repeated enable announces the gate again so the phone resends its active set`() {
+        connect()
+        authenticate()
+        listenerAccess = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals(true, readUntil("notify.state")["on"])
+        assertEquals(listOf(true), forwards.toList())
+        // NOTIFY-1/PATH-6 (ISS-5): a same-session rejoin repeats the opt-in.
+        // The app process hears the gate's answer on every enable and answers
+        // the second one with its active set; one announcement per enable.
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals(true, readUntil("notify.state")["on"])
+        assertEquals(listOf(true, true), forwards.toList())
+        // A third enable is not coalesced either: each one is a rejoin's ask.
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        assertEquals(listOf(true, true, true), forwards.toList())
+    }
+
+    @Test
     fun `turning sharing off clears no_access on the phone`() {
         connect()
         authenticate()

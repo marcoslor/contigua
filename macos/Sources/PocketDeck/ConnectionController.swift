@@ -3293,6 +3293,13 @@ final class ConnectionController {
             // from inside the poll would hold the reply the check waits for.
             Task { @MainActor in target.chrome.openingCover.press(title) }
             return nil
+        case "livedump":
+            // The menu bar's LIVE section at an arbitrary moment (the notify
+            // and path checks read the rows before and after an outage).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "livedump needs an absolute PATH"
+            }
+            return writeLiveDump(path) ? nil : "livedump could not write \(path)"
         case "keywindow":
             // Which window a raise actually put in front: a read, for a check
             // that must not infer it from the CG window list's order.
