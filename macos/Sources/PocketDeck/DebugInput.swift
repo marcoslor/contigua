@@ -38,6 +38,8 @@
 //                                  an .apk keeps its install route)
 //   deckdrop PATH                  the same drag, but fed to the Deck's drop
 //                                  handler: no app window, so no share target
+//   pastefiles PATH...             a Finder file copy on the pasteboard (the
+//                                  paths, plus the first one's name as text)
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
 //                                  in the dwell pill's hot zone); over the video it is
 //                                  a mouse hover on the phone
@@ -86,6 +88,9 @@
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
+//   keyraw [cmd+][shift+][ctrl+][opt+]NAME   the key straight to the stream's
+//                                  view: an inactive quiet run's menu can eat a
+//                                  modified key before it ever gets there
 // NX/NY are video-space coordinates in 0...1 with a top-left origin.
 
 import AppKit
@@ -130,11 +135,15 @@ enum DebugInputAction: Equatable {
     /// Open the Settings window (⌘,).
     case openSettings
     case fullScreen
+    /// A key sent straight to the video view (the menu is skipped).
+    case rawKey(KeyStroke)
     /// An app's density override; nil is "Default" (clear it).
     case density(pkg: String, value: Double?)
     case dropFile(String)
     /// The same file fed to the Deck's drop handler (no app-window target).
     case deckDrop(String)
+    /// The pasteboard as a Finder file copy of these files.
+    case pasteFiles([URL])
     case hover(NormalizedPoint)
     case hoverOut
     case hoverSetting(Bool)
@@ -374,6 +383,26 @@ enum DebugInputScript {
                 throw LineError(message: "dropfile: no such file: \(path)")
             }
             return .dropFile(path)
+        case "pastefiles":
+            guard !args.isEmpty else {
+                throw LineError(message: "pastefiles needs at least one absolute PATH")
+            }
+            var urls: [URL] = []
+            for arg in args {
+                var path = arg
+                if path.hasPrefix("~") {
+                    path = String(path.dropFirst(1))
+                    path = FileManager.default.homeDirectoryForCurrentUser.path + path
+                }
+                guard path.hasPrefix("/") else {
+                    throw LineError(message: "pastefiles needs absolute PATHs (got relative '\(arg)')")
+                }
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw LineError(message: "pastefiles: no such file: \(path)")
+                }
+                urls.append(URL(fileURLWithPath: path))
+            }
+            return .pasteFiles(urls)
         case "deckdrop":
             guard args.count == 1, !args[0].isEmpty else {
                 throw LineError(message: "deckdrop needs an absolute PATH")
@@ -461,6 +490,9 @@ enum DebugInputScript {
         case "key":
             guard args.count == 1 else { throw LineError(message: "key needs one key name") }
             return .key(try keyStroke(args[0].lowercased()))
+        case "keyraw":
+            guard args.count == 1 else { throw LineError(message: "keyraw needs one key name") }
+            return .rawKey(try keyStroke(args[0].lowercased()))
         default:
             throw LineError(message: "unknown action '\(verb)'")
         }
@@ -743,6 +775,15 @@ final class DebugInputDriver {
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .deckDrop(let path):
             deckDrop?([URL(fileURLWithPath: path)])
+        case .pasteFiles(let urls):
+            let board = NSPasteboard.general
+            board.clearContents()
+            _ = board.writeObjects(urls as [NSURL])
+            // A Finder copy also puts the file's name on the pasteboard as
+            // text; the path under test must ignore it (SHARE-2).
+            if let name = urls.first?.lastPathComponent {
+                board.setString(name, forType: .string)
+            }
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
@@ -863,6 +904,18 @@ final class DebugInputDriver {
             // a lowercased one would match ⌘H (Hide) in the menu instead.
             press(keyCode: stroke.keyCode, characters: stroke.characters,
                   ignoring: stroke.characters, flags: flags, in: view)
+        case .rawKey(let stroke):
+            guard let window = view.window else { return }
+            focus(window)
+            var flags: NSEvent.ModifierFlags = []
+            if stroke.command { flags.insert(.command) }
+            if stroke.shift { flags.insert(.shift) }
+            if stroke.control { flags.insert(.control) }
+            if stroke.option { flags.insert(.option) }
+            // No menu bar: an inactive quiet run has no validated Edit menu, so
+            // its Paste equivalent can eat ⌘V before the view ever sees it.
+            press(keyCode: stroke.keyCode, characters: stroke.characters,
+                  ignoring: stroke.characters, flags: flags, in: view, menu: false)
         }
     }
 
@@ -1085,7 +1138,8 @@ final class DebugInputDriver {
     }
 
     private func press(keyCode: UInt16, characters: String, ignoring: String,
-                       flags: NSEvent.ModifierFlags, in view: VideoLayerView) {
+                       flags: NSEvent.ModifierFlags, in view: VideoLayerView,
+                       menu: Bool = true) {
         let windowNumber = view.window?.windowNumber ?? 0
         var menuAte = false
         for type in [NSEvent.EventType.keyDown, .keyUp] {
@@ -1099,7 +1153,7 @@ final class DebugInputDriver {
                 // equivalents (⌥⌘F's Toggle Window Style) are AppKit's own
                 // dispatch. An equivalent, not matched by any menu, goes on to
                 // the view as before.
-                if !flags.isEmpty, NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                if menu, !flags.isEmpty, NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
                     menuAte = true
                     continue
                 }

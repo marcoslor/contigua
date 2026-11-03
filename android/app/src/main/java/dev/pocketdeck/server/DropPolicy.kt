@@ -17,6 +17,13 @@ object DropPolicy {
     private val SHA = Regex("[0-9a-f]{64}")
     const val NAME_MAX_CHARS = 100
 
+    /** A gesture's batch: the Mac sends each file's position on `drop.start`. */
+    const val MAX_BATCH_FILES = 1000
+
+    /** The package of the app window a drop landed on (SHARE-17). */
+    private val PACKAGE = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
+    const val TARGET_MAX_BYTES = 255
+
     /** The extension is split off before cleaning, so a foreign name keeps "jpg", not its stem. */
     class Name(val stem: String, val ext: String) {
         override fun toString(): String = if (ext.isEmpty()) stem else "$stem.$ext"
@@ -25,7 +32,18 @@ object DropPolicy {
     class Rejected(val code: String, msg: String) : Exception(msg)
 
     /** The announced drop, after its name is sanitised and the rest is shaped up. */
-    data class Desk(val name: Name, val size: Long, val mime: String, val sha256: String)
+    data class Desk(
+        val name: Name,
+        val size: Long,
+        val mime: String,
+        val sha256: String,
+        /** The app window's package; null on the Deck, a phone window and a link. */
+        val target: String? = null,
+        /** This file's position in the gesture, 1-based. */
+        val index: Int = 1,
+        /** How many files the gesture carries. */
+        val count: Int = 1,
+    )
 
     /** A `drop.start` plus its id: every reply carries the id it belongs to. */
     data class Transfer(val id: Long, val desk: Desk)
@@ -43,7 +61,31 @@ object DropPolicy {
             throw Rejected("too_large", "size must be 1..$MAX_FILE_BYTES bytes")
         }
         if (!SHA.matches(sha)) throw Rejected("bad_request", "sha256 must be 64 lowercase hex")
-        return Transfer(id, Desk(sanitize(rawName, mime), size, mime, sha))
+        val target = when (val raw = obj["target"]) {
+            null -> null
+            is String -> packageName(raw)
+                ?: throw Rejected("bad_request", "target must be a package name")
+            else -> throw Rejected("bad_request", "target must be a package name")
+        }
+        val index = batchField(obj, "index") ?: 1L
+        val count = batchField(obj, "count") ?: 1L
+        if (count !in 1..MAX_BATCH_FILES.toLong() || index !in 1..count) {
+            throw Rejected("bad_request", "index must be 1..count (at most $MAX_BATCH_FILES files)")
+        }
+        return Transfer(id, Desk(sanitize(rawName, mime), size, mime, sha, target,
+                                 index.toInt(), count.toInt()))
+    }
+
+    /** The target when it is a package name of at most 255 bytes, else null. */
+    fun packageName(raw: String?): String? = raw?.takeIf {
+        it.toByteArray(Charsets.UTF_8).size <= TARGET_MAX_BYTES && PACKAGE.matches(it)
+    }
+
+    /** An optional batch field: absent is null, anything but a number is refused. */
+    private fun batchField(obj: Map<String, Any?>, key: String): Long? = when (val raw = obj[key]) {
+        null -> null
+        is Number -> raw.toLong()
+        else -> throw Rejected("bad_request", "$key must be a number")
     }
 
     /**

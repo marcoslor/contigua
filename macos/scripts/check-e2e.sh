@@ -6501,6 +6501,15 @@ with open(os.path.join(work, "drop-3mb.bin"), "wb") as f:
 # The negative case: the trip stands in for a file over the cap.
 with open(os.path.join(work, "tripped.bin"), "wb") as f:
     f.write(b"PD_FAKE_DOWNSIZE" + os.urandom(64 * 1024))
+# SHARE-17: one app-window drop with a target, one Deck drop without, and the
+# three files a Finder copy + ⌘V turns into one batch.
+with open(os.path.join(work, "drop-target.bin"), "wb") as f:
+    f.write(b"target" + os.urandom(1024))
+with open(os.path.join(work, "deck-drop.bin"), "wb") as f:
+    f.write(b"deck" + os.urandom(1024))
+for index in range(1, 4):
+    with open(os.path.join(work, "paste-%d.txt" % index), "wb") as f:
+        f.write(("paste %d" % index).encode())
 PY
 
     # drop_event <name> <ok|bad> — the first event for that file and outcome.
@@ -6521,13 +6530,64 @@ sys.exit(1)
 PY
     }
     drop_found() { drop_event "$@" >/dev/null; }
+    # drop_start_event <name> - the first `drop.start` for that file.
+    drop_start_event() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+name = sys.argv[2]
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop.start" and e.get("name") == name:
+        print(json.dumps(e))
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    drop_start_found() { drop_start_event "$@" >/dev/null; }
+    # batch_starts - the three ⌘V files each name the window and their i of 3.
+    batch_starts() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+seen = {}
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop.start" and str(e.get("name", "")).startswith("paste-"):
+        seen[e["name"]] = (e.get("target"), e.get("index"), e.get("count"))
+want = {"paste-%d.txt" % i: ("com.android.settings", i, 3) for i in range(1, 4)}
+sys.exit(0 if seen == want else 1)
+PY
+    }
+    batch_results() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+ok = set()
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop" and e.get("ok") and e.get("files"):
+        ok.add(e["files"][0].get("name"))
+sys.exit(0 if {"paste-%d.txt" % i for i in (1, 2, 3)} <= ok else 1)
+PY
+    }
     log_has() { drop_log | grep -qF -- "$1"; }
     fake_log_has() { grep -qF -- "$1" "$WORK/fake.log" "$WORK/fake.err" 2>/dev/null; }
 
     # The waits keep the drops apart: FileDropSender takes one file at a time
     # and would refuse the next while the one before is still in flight.
     printf '%s\n' "dropfile $WORK/drop-32mb.bin" "wait 20" \
-        "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
+        "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 12" \
+        "dropfile $WORK/drop-target.bin" "wait 10" \
+        "deckdrop $WORK/deck-drop.bin" "wait 8" \
+        "pastefiles $WORK/paste-1.txt $WORK/paste-2.txt $WORK/paste-3.txt" \
+        "keyraw cmd+v" "wait 20" \
         > "$WORK/drop.txt"
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/drop.txt" || return 1
@@ -6603,6 +6663,33 @@ PY
     else
         bad "[FILES-14] DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
     fi
+
+    # SHARE-17: the app window's package rides drop.start; the Deck's drop is
+    # the same path with no target. The dropped file's own fields are 1 of 1.
+    if wait_until 40 drop_start_found drop-target.bin; then
+        event="$(drop_start_event drop-target.bin)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e.get("target")=="com.android.settings" and e.get("index")==1 and e.get("count")==1 else 1)' \
+            && ok "[SHARE-17] DROP an app window's drop names its package (index 1 of 1)" \
+            || bad "[SHARE-17] DROP the app window's target/batch is wrong: $event"
+    else
+        bad "[SHARE-17] DROP no drop.start for the app-window drop"
+    fi
+    if wait_until 40 drop_start_found deck-drop.bin; then
+        event="$(drop_start_event deck-drop.bin)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e.get("target") is None and e.get("index")==1 and e.get("count")==1 else 1)' \
+            && ok "[SHARE-17] DROP a Deck drop carries no target (the chooser stays)" \
+            || bad "[SHARE-17] DROP the Deck drop named a target: $event"
+    else
+        bad "[SHARE-17] DROP no drop.start for the Deck drop"
+    fi
+    if wait_until 60 batch_starts; then
+        ok "[SHARE-17] DROP ⌘V with a 3-file copy sent 3 drop.start with target and i of 3"
+    else
+        bad "[SHARE-17] DROP the ⌘V batch did not send 3 drop.start: $(grep -h 'drop.start' "$WORK/events.jsonl" | tail -3)"
+    fi
+    wait_until 30 batch_results \
+        && ok "[SHARE-17] DROP the phone saved all 3 files of the ⌘V batch" \
+        || bad "[SHARE-17] DROP not every ⌘V file got a successful drop.result"
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "DROP the app survived the failed drop (one instance)" \

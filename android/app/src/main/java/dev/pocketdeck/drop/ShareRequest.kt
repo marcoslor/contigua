@@ -41,6 +41,25 @@ object ShareRequest {
      * [DropPolicy.NAME_MAX_CHARS] characters — and [mime] either absent or a
      * plain `type/subtype`.
      */
+    /**
+     * One gesture's checked request (SHARE-17): 1 to [ShareCache.MAX_FILES]
+     * bare names and their matching mime types. Null when any one is refused,
+     * so the trampoline shares all of them or none.
+     */
+    fun parseBatch(names: List<String>?, mimes: List<String>?): List<Target>? {
+        val raw = names?.takeIf { it.isNotEmpty() } ?: return null
+        if (raw.size > ShareCache.MAX_FILES) return null
+        val types = when {
+            mimes.isNullOrEmpty() -> List(raw.size) { DEFAULT_MIME }
+            mimes.size == raw.size -> mimes
+            else -> return null
+        }
+        return raw.zip(types).map { (name, mime) -> parse(name, mime) ?: return null }
+    }
+
+    /** The window's package when it is a package name; anything else means the chooser. */
+    fun parseTarget(raw: String?): String? = DropPolicy.packageName(raw)
+
     fun parse(name: String?, mime: String?): Target? {
         val raw = name?.takeIf { it.isNotEmpty() } ?: return null
         val type = mime?.takeIf { it.isNotEmpty() } ?: DEFAULT_MIME

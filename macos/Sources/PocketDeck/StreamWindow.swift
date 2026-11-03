@@ -236,9 +236,22 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.barKeyUp = { [weak self] event in self?.handleBarKey(event) ?? false }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
+        // ⌘V with files is the drop path with this window's app as the target
+        // (SHARE-17); the image half is SHARE-16 and lands here next.
+        mapper.onPaste = { [weak self] paste in
+            guard let self else { return false }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+                return true
+            case .image:
+                return false
+            }
+        }
         mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
-        videoView.onDroppedFiles = { [weak manager] urls in
-            manager?.onFilesDropped?(urls, nil)
+        videoView.onDroppedFiles = { [weak self] urls in
+            guard let self else { return }
+            self.manager.onFilesDropped?(urls, self.dropTargetPackage)
         }
         videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }

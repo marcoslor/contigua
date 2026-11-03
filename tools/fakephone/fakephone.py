@@ -737,6 +737,8 @@ APK_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 APK_MAX_BYTES = 1 << 30
 APK_FAKE_PKG = "dev.pocketdeck.fake.installed"
 DROP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,100}$")
+DROP_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+DROP_MAX_BATCH = 1000
 DROP_MAX_BYTES = 200 * 1024 * 1024
 # The drop's PD_FAKE_DOWNGRADE: a chunk carrying these bytes answers too_large,
 # so the cap rule is testable without a 200 MiB file.
@@ -1023,6 +1025,11 @@ class EventLog(object):
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
+
+    def drop_start(self, drop_id, name, target, index, count):
+        """The batch fields of one `drop.start`, so a check can tell i of n."""
+        self._emit({"ev": "drop.start", "id": drop_id, "name": name, "target": target,
+                    "index": index, "count": count, "ts": time.time()})
 
     def drop_progress(self, drop_id, bytes_received):
         """Every 8 MiB a file drop has received, so a check can cut the path
@@ -3130,14 +3137,30 @@ class Session(object):
             self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "busy",
                         "message": "another drop is running"})
             return
-        if not isinstance(drop_id, int) or drop_id <= 0 or not DROP_NAME.match(str(name or "")) \
+        if not isinstance(drop_id, int) or isinstance(drop_id, bool) or drop_id <= 0 \
+                or not DROP_NAME.match(str(name or "")) \
                 or not re.fullmatch(r"[0-9a-f]{64}", str(sha or "")):
             self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "bad_request",
                         "message": "drop.start needs id, name, size, sha256"})
             return
-        if not isinstance(size, int) or size <= 0 or size > DROP_MAX_BYTES:
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0 \
+                or size > DROP_MAX_BYTES:
             self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "too_large",
                         "message": "size must be 1..%d bytes" % DROP_MAX_BYTES})
+            return
+        target = msg.get("target")
+        if target is not None and not (isinstance(target, str) and
+                                       len(target.encode("utf-8")) <= 255 and
+                                       DROP_TARGET.fullmatch(target)):
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "bad_request",
+                        "message": "target must be a package name"})
+            return
+        index, count = msg.get("index", 1), msg.get("count", 1)
+        if not isinstance(index, int) or isinstance(index, bool) \
+                or not isinstance(count, int) or isinstance(count, bool) \
+                or count < 1 or count > DROP_MAX_BATCH or index < 1 or index > count:
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "bad_request",
+                        "message": "index must be 1..count"})
             return
         if int(msg.get("resume") or 0) > 0:
             # The fake keeps no temp between drops, so it answers like a phone
@@ -3146,7 +3169,8 @@ class Session(object):
                              % (drop_id, msg["resume"]))
         self._drop = {"id": drop_id, "name": name, "mime": msg.get("mime") or "application/octet-stream",
                       "size": size, "sha": sha, "data": bytearray(), "last": 0.0,
-                      "last_progress": 0}
+                      "last_progress": 0, "target": target, "index": index, "count": count}
+        self.phone.events.drop_start(drop_id, name, target, index, count)
         self.phone._finished_drops.clear()
         self._send({"t": "drop.progress", "id": drop_id, "bytes": 0})
 

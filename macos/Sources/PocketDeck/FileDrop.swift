@@ -261,8 +261,8 @@ final class FileDropSender {
         setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
-                          sha256: next.sha256, resume: resume, target: nil, index: 1,
-                          count: 1)
+                          sha256: next.sha256, resume: resume, target: target,
+                          index: batchCount - queue.count, count: batchCount)
     }
 
     private func resume(sha256: String) -> Int {
@@ -335,7 +335,11 @@ final class FileDropSender {
         if result.ok, let path = result.path {
             let name = path.split(separator: "/").last.map(String.init) ?? ""
             if queue.isEmpty {
-                finish("Saved on the phone: \(name)", ok: true, outcome: .saved)
+                // One gesture is one pill: a batch says how many files landed,
+                // not the name of its last file (>5 are saved, never shared).
+                let text = batchCount > 1 ? "Saved \(batchCount) files on the phone."
+                                          : "Saved on the phone: \(name)"
+                finish(text, ok: true, outcome: .saved)
             } else {
                 finish("Saved \(name), sending the next file…", ok: true, outcome: .saved, keepState: true)
                 next()
