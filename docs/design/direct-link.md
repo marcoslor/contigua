@@ -6,6 +6,14 @@ Design for epic "direct link", phase P0. Implements decisions D6–D9 of
 (`DIRECT-n`). The evidence is `docs/research/wifi-aware-direct-link/` (the
 README, the 2026-10-30 proof, and the probe sources it names).
 
+This provider lives on `feature/direct-link` only, and may never merge: on
+2026-11-02 the person decided "we may never merge", because the Mac half needs
+SIP off and an AMFI boot argument and can never be a store build. `main` keeps
+the paths layer (`docs/design/paths.md`) and none of what this document
+describes — no `pocketdeck-directd`, no POCKETDECK_DIRECT source, no Aware
+code, no `src/direct/` on the phone. Work that needs the direct provider
+branches from `feature/direct-link`; protocol, paths and session stay shared.
+
 The short version of the research: the Mac already contains a working Wi-Fi
 Aware (NAN) stack — `nan0`, `wifip2pd`, the private `WiFiPeerToPeer` toolkit —
 and a data path (NDP) to a stock Android phone comes up with a PSK. What does
@@ -209,6 +217,7 @@ plus one file descriptor where a link is handed over.
 | `{"op":"hello","v":1}` | `{"ok":true,"v":1,"toolkit":{"publish":true,"subscribe":true,"dataLinks":16}}` |
 | `{"op":"probe"}` | `{"ok":true,"ready":false,"codes":["amfi_enabled"],"detail":"…"}` |
 | `{"op":"dial","peer":"<32 hex>","svc":"_pocketdeck-nan._tcp","psk":"<64 hex>","port":<u16>}` | `{"ok":true,"link":"<16 hex>","mtu":1500}` **+ one fd** |
+| `{"op":"peer","if":"feth0","mac":"<17>","ll":"<ipv6>"}` | `{"ok":true}` — **test only**, see below |
 | `{"op":"close","link":"<16 hex>"}` | `{"ok":true}` |
 | `{"op":"links"}` | `{"ok":true,"links":[{"link":"<16 hex>","peer":"<32 hex>","state":"up","rttMs":11}]}` |
 | anything else | `{"ok":false,"code":"bad_request","message":"…"}` |
@@ -218,6 +227,14 @@ plus one file descriptor where a link is handed over.
   reads and writes it as an ordinary socket; **TLS lives in the app**, so the
   helper only ever moves ciphertext (D2). The helper bridges it to one lwIP
   `tcp_pcb` connected to the peer's link-local on `port`.
+- **`peer` is the test-only static peer** (P2; §7.2). There is no data session
+  in this round, so the harness tells the helper what the NAN data session
+  would have: the peer's MAC and link-local on the interface named by `if`.
+  It is accepted only with `POCKETDECK_DIRECT_TEST=1`; anywhere else it answers
+  `not_ready`. Round 2's NAN code fills the same fields from the data session
+  and the request never comes from the app. In test mode a `dial` may omit
+  `peer`, `svc` and `psk` — the static peer supplies the address — while a
+  normal dial carries all three for the NDP.
 - `psk` is the 32-byte NDP key as 64 hex; the helper derives the passphrase
   (§5), uses it for the NDP and wipes both buffers at once. It never appears in
   a log, an error message or the reply.
