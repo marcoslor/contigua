@@ -181,7 +181,7 @@ class ClipImageLand(
             else log("clip image: clipboard write refused")
             ok
         } catch (e: Exception) {
-            log("clip image failed: ${e.message}")
+            log("clip image failed: ${failureClasses(e)}")
             false
         }
     }

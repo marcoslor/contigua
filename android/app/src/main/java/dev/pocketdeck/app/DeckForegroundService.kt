@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
+import dev.pocketdeck.server.failureClasses
 
 /**
  * Keeps the deck reachable: binds the shell user service, starts the TCP server,
@@ -169,7 +170,7 @@ class DeckForegroundService : Service() {
             try {
                 svc.setGates(Prefs.isAllowConnections(this), Prefs.isAllowPairings(this))
             } catch (e: Throwable) {
-                Log.i(TAG, "setGates unavailable; stopping the un-gated server: ${e.message}")
+                Log.i(TAG, "setGates unavailable; stopping the un-gated server: ${failureClasses(e)}")  // log-ok: class names only
                 runCatching { svc.stopServer() }
                 serviceReady = false
                 DeckState.port = -1
@@ -191,7 +192,7 @@ class DeckForegroundService : Service() {
             // current value over so the session can answer `notify.state`.
             syncListenerAccess()
         } catch (e: Throwable) {
-            Log.i(TAG, "startServer failed: ${e.message}")
+            Log.i(TAG, "startServer failed: ${failureClasses(e)}")  // log-ok: class names only
         }
     }
 

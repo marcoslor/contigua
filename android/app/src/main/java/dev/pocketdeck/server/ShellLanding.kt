@@ -73,7 +73,7 @@ class ShellLanding(
             proc.outputStream.close()
             val out = proc.inputStream.bufferedReader().readText()
             out to proc.waitFor()
-        }.onFailure { log("drop: am start failed: ${it.message}") }
+        }.onFailure { log("drop: am start failed: ${failureClasses(it)}") }
         val (out, code) = started.getOrNull() ?: return
         if (code != 0 || out.contains("Error", ignoreCase = true)) {
             log("drop: SEND not offered (${out.trim().take(200)})")
@@ -87,7 +87,7 @@ class ShellLanding(
         val name = stageName(dir, file.name, mime)
         file.copyTo(File(dir, name), overwrite = true)
         name
-    }.onFailure { log("drop: staging failed: ${it.message}") }.getOrNull()
+    }.onFailure { log("drop: staging failed: ${failureClasses(it)}") }.getOrNull()
 
     /**
      * The trampoline copies a staged file once and deletes it; anything older is

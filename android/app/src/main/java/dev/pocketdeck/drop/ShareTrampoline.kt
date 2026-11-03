@@ -44,7 +44,7 @@ class ShareTrampoline : Activity() {
         }
         val shared = mutableListOf<File>()
         for (source in sources) {
-            val copy = ShareCache.put(ShareRequest.cacheDir(this), source!!)
+            val copy = ShareCache.put(ShareRequest.cacheDir(this), source!!, ::log)
             if (copy == null) {
                 Log.i(TAG, "share refused: cannot copy ${targets.size} file(s)")
                 return finish()
@@ -65,6 +65,8 @@ class ShareTrampoline : Activity() {
     }
 
     /** The checked batch; an older single-name extra is still understood. */
+    private fun log(message: String) = Log.i(TAG, message)
+
     private fun requests(): List<ShareRequest.Target>? {
         val names = intent.getStringArrayExtra(EXTRA_NAMES)
         if (names != null) {
