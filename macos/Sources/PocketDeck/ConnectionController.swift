@@ -1551,7 +1551,10 @@ final class ConnectionController {
             break
         case .bind:
             if let pid {
-                dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                // The phone is part of the binding: the shim's menu is looked up
+                // by the record's device id (WIN-26), and a bind without one
+                // sends no menu until the next window-set change.
+                dockApps.bind(pid: pid, stream: stream, pkg: pkg, deviceId: deviceId)
                 Log.app.notice("dock auto: bound shim \(pid, privacy: .public) to stream \(stream, privacy: .public)")
             }
         case .quitWindowClosed:
