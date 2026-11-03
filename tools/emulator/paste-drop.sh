@@ -173,9 +173,9 @@ printf '%s\n' "$PLAIN" > "$OUT/paste-drop-a2-plain.log"
 if ! printf '%s' "$PLAIN_TOP" | grep -q 'PasteDebugActivity'; then
   section a2-plain FAIL "the debug activity is not on top: $PLAIN_TOP"
 elif printf '%s\n' "$PLAIN" | grep -q 'plain text length=[1-9]'; then
-  section a2-plain FAIL "the empty-text item pasted text: $(printf '%s\n' "$PLAIN" | grep 'plain text length=' | tail -1)"
+  section a2-plain FAIL "the image item pasted text: $(printf '%s\n' "$PLAIN" | grep 'plain text length=' | tail -1)"
 else
-  section a2-plain PASS "KEYCODE_PASTE in a plain field pasted nothing (text length stayed 0)"
+  section a2-plain PASS "KEYCODE_PASTE with the image item pasted nothing in a plain field (text length stayed 0)"
 fi
 back
 
