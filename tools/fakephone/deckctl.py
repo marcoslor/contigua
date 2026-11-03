@@ -2009,6 +2009,84 @@ def cmd_ring(client, args):
     raise DeckError("no ring.state within %ss" % args.wait)
 
 
+def _mime_of(path):
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".pdf": "application/pdf", ".txt": "text/plain", ".zip": "application/zip",
+        ".mp4": "video/mp4", ".mp3": "audio/mpeg",
+    }.get(ext, "application/octet-stream")
+
+
+def _wait_json(client, deadline, wanted, ident=None):
+    """The next JSON message of a wanted type (and id), or an error at the deadline."""
+    while time.time() < deadline:
+        frame = client.recv(1.0)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed while waiting for %s" % "/".join(wanted))
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") in wanted and (ident is None or msg.get("id") == ident):
+            return msg
+    raise DeckError("timed out waiting for %s" % "/".join(wanted))
+
+
+def cmd_clipimage(client, args):
+    """Put an image on the phone's clipboard through the real clip.image.* path.
+
+    `paste:true` is A1's explicit ⌘V: the phone's sync gate steps aside and the
+    answer is clip.image.done. Prints the bytes and the phone's answer.
+    """
+    with open(args.path, "rb") as handle:
+        data = handle.read()
+    mime = _mime_of(args.path)
+    if not data or mime not in ("image/png", "image/jpeg"):
+        raise DeckError("clipimage needs a non-empty PNG or JPEG")
+    client.send_json({"t": "clip.image.start", "id": args.id, "mime": mime,
+                      "size": len(data), "paste": True})
+    offset = 0
+    while offset < len(data):
+        end = min(offset + (256 << 10), len(data))
+        client.send_raw(proto.pack_frame(proto.TYPE_CLIP_DATA, args.id, data[offset:end]))
+        offset = end
+    client.send_json({"t": "clip.image.end", "id": args.id, "size": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest()})
+    msg = _wait_json(client, time.time() + args.timeout, {"clip.image.done"}, args.id)
+    print("clip.image.done id=%d ok=%s bytes=%d mime=%s"
+          % (args.id, msg.get("ok"), len(data), mime))
+    return 0 if msg.get("ok") is True else 1
+
+
+def cmd_drop(client, args):
+    """Send one file drop as the Mac, with the window's target and batch fields."""
+    with open(args.path, "rb") as handle:
+        data = handle.read()
+    if not data:
+        raise DeckError("drop needs a non-empty file")
+    name = os.path.basename(args.path)
+    mime = _mime_of(args.path)
+    message = {"t": "drop.start", "id": args.id, "name": name, "mime": mime,
+               "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+               "index": args.index, "count": args.count}
+    if args.target:
+        message["target"] = args.target
+    client.send_json(message)
+    _wait_json(client, time.time() + 15, {"drop.progress"}, args.id)
+    offset = 0
+    while offset < len(data):
+        end = min(offset + (256 << 10), len(data))
+        client.send_raw(proto.pack_frame(proto.TYPE_DROP_DATA, args.id, data[offset:end]))
+        offset = end
+    msg = _wait_json(client, time.time() + args.timeout, {"drop.result"}, args.id)
+    print("drop id=%d name=%s target=%s index=%d/%d ok=%s code=%s path=%s"
+          % (args.id, name, args.target or "-", args.index, args.count,
+             msg.get("ok"), msg.get("code") or "-", msg.get("path") or "-"))
+    return 0 if msg.get("ok") is True else 1
+
+
 def cmd_clip_watch(client, args):
     """Print every `clip.set` the phone sends, for `--seconds`."""
     deadline = time.time() + args.seconds
@@ -2903,6 +2981,19 @@ def build_parser():
     sp = sub.add_parser("clip-set", help="send clip.set TEXT: put TEXT on the phone's clipboard", **spp)
     sp.add_argument("text")
 
+    sp = sub.add_parser("clipimage", help="send an image through clip.image.* (paste:true), print the done answer", **spp)
+    sp.add_argument("path")
+    sp.add_argument("--id", type=int, default=9001)
+    sp.add_argument("--timeout", type=float, default=20.0)
+
+    sp = sub.add_parser("drop", help="send one drop.start + DROP_DATA, print the result", **spp)
+    sp.add_argument("path")
+    sp.add_argument("--target", default=None, help="the app window's package (SHARE-17)")
+    sp.add_argument("--index", type=int, default=1)
+    sp.add_argument("--count", type=int, default=1)
+    sp.add_argument("--id", type=int, default=9002)
+    sp.add_argument("--timeout", type=float, default=90.0)
+
     sp = sub.add_parser("ring", help="phone.ring: ring the phone (or --stop), print ring.state", **spp)
     sp.add_argument("--seconds", type=int, default=30, help="ring for 1..30 s (default 30)")
     sp.add_argument("--stop", action="store_true", help="send phone.ring.stop instead")
@@ -3133,6 +3224,8 @@ COMMANDS = {
     "panel-press": cmd_panel_press,
     "panel-test": cmd_panel_test,
     "clip-set": cmd_clip_set,
+    "clipimage": cmd_clipimage,
+    "drop": cmd_drop,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,
     "media": cmd_media,
