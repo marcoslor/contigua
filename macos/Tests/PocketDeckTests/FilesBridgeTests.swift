@@ -841,7 +841,7 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertEqual([.error(id: 4, code: "cancelled")], client.replies())
         Thread.sleep(forTimeInterval: 0.2)
         XCTAssertEqual(3, host.pendingThumbs.count)
-        XCTAssertEqual([1, 2, 3], host.pendingThumbs.map { Int($0.id) })
+        XCTAssertEqual([100, 101, 102], host.pendingThumbs.map { Int($0.id) })
     }
 
     func testACancelledRunningThumbSendsFsCancel() throws {

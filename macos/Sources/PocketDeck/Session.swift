@@ -182,6 +182,7 @@ enum SessionEvent {
     case fsItem(id: UInt32, item: [String: Any])
     case fsData(id: UInt32, bytes: [UInt8])
     case fsReadEnd(id: UInt32, size: Int, sha256: String)
+    case fsThumbEnd(id: UInt32, mime: String, size: Int, sha256: String)
     /// A write's confirmed bytes (docs/PROTOCOL.md "Phone files").
     case fsProgress(id: UInt32, bytes: Int)
     /// A write or mutation finished; `item` is the new metadata on success.
@@ -1734,6 +1735,11 @@ final class Session {
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsReadEnd(id: id, size: message.int("size") ?? -1,
                             sha256: message.string("sha256") ?? ""))
+        case "fs.thumb.end":
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
+            emit(.fsThumbEnd(id: id, mime: message.string("mime") ?? "",
+                             size: message.int("size") ?? -1,
+                             sha256: message.string("sha256") ?? ""))
         case "fs.progress":
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsProgress(id: id, bytes: message.int("bytes") ?? 0))
@@ -2086,6 +2092,11 @@ final class Session {
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?) {
         var message: [String: Any] = ["t": "fs.read", "id": Int(id), "path": path,
                                       "offset": offset, "length": length]
+        if let etag { message["etag"] = etag }
+        sendJSON(message)
+    }
+    func fsThumb(id: UInt32, path: String, size: Int, etag: String?) {
+        var message: [String: Any] = ["t": "fs.thumb", "id": Int(id), "path": path, "size": size]
         if let etag { message["etag"] = etag }
         sendJSON(message)
     }

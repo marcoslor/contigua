@@ -1,24 +1,49 @@
 // Which items get a thumbnail request, and what a failure means to Finder
 // (docs/specs/files.md FILES-22, FILES-26; docs/design/files.md "Thumbnails
-// (S6)", R-1). Shared with the extension by bundle.sh; filled in by the next
-// commit, the tests land first.
+// (S6)"). Shared with the extension by bundle.sh: the app decides from the
+// mapped path, and the extension turns a failure into R-1's answer.
 
+import FileProvider
 import Foundation
+import UniformTypeIdentifiers
 
 enum FilesThumbPolicy {
     /// The most thumbnails in flight for one session (FILES-25).
     static let inFlightLimit = 3
+    /// The phone's whole answer is at most 256 KiB (PROTOCOL.md "Thumbnails").
+    static let maxBytes = 256 * 1024
+    /// The wire's own bound for the wanted long side.
+    static let maxLongSide = 4096
 
     /// True only for a type conforming to an image or a movie (FILES-22).
-    static func isMedia(contentTypeIdentifier: String) -> Bool { false }
+    static func isMedia(contentTypeIdentifier: String) -> Bool {
+        guard let type = UTType(contentTypeIdentifier) else { return false }
+        return type.conforms(to: .image) || type.conforms(to: .movie)
+    }
 
-    /// The policy for a mapped path (the app decides before any phone traffic).
-    static func pathIsMedia(_ path: String) -> Bool { false }
+    /// The policy for a mapped path, decided with no phone traffic: a name the
+    /// system would draw a type icon for is answered at once.
+    static func pathIsMedia(_ path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent
+        let type = FilesMap.contentTypeIdentifier(name: name, isDirectory: false)
+        return isMedia(contentTypeIdentifier: type)
+    }
 
-    /// R-1: a lost thumbnail may be asked for again; a missing one may not.
-    static func isTransient(code: String) -> Bool { false }
+    /// R-1: the answers worth asking again for. The system may remember a nil
+    /// answer as "this version has no thumbnail", so only a lost request may be
+    /// retried; a timeout, a disconnected phone or a busy phone are lost.
+    static func isTransient(code: String) -> Bool {
+        switch code {
+        case "offline", "closed", "timeout", "fs_busy", "busy":
+            return true
+        default:
+            return false
+        }
+    }
 
     /// The per-thumbnail handler's error: serverUnreachable for a transient
-    /// failure, nil data otherwise.
-    static func error(for code: String) -> Error? { nil }
+    /// failure, which costs nothing to ask again; nil data otherwise.
+    static func error(for code: String) -> Error? {
+        isTransient(code: code) ? NSFileProviderError(.serverUnreachable) : nil
+    }
 }

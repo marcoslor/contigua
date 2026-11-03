@@ -2428,6 +2428,9 @@ final class ConnectionController {
         case .fsReadEnd(let id, let size, let sha256):
             fsClient?.readEnd(id: id, size: size, sha256: sha256)
             filesBridgeClient?.readEnd(id: id, size: size, sha256: sha256)
+        case .fsThumbEnd(let id, let mime, let size, let sha256):
+            fsClient?.thumbEnd(id: id, mime: mime, size: size, sha256: sha256)
+            filesBridgeClient?.thumbEnd(id: id, mime: mime, size: size, sha256: sha256)
         case .fsProgress(let id, let bytes):
             fsClient?.progress(id: id, bytes: bytes)
             filesBridgeClient?.progress(id: id, bytes: bytes)
