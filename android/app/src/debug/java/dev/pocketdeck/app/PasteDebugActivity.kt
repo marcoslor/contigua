@@ -28,6 +28,10 @@ import java.io.File
  *   am start -n dev.pocketdeck/.app.PasteDebugActivity --es field plain
  *   adb shell input keyevent 279
  *
+ * `--es action copy --es text <string>` writes a plain-text primary clip as the
+ * focused app; `--es action exists` reads the primary clip's description (never
+ * its content) and logs whether one exists. Both log lengths and flags only.
+ *
  * `--es item empty|uri` first puts the debug image on the clipboard in that
  * item shape (the comparison the review asks for); without it the clipboard is
  * whatever the real ShellClipboard wrote from a clip.image.* transfer. The
@@ -72,6 +76,21 @@ class PasteDebugActivity : Activity() {
         when (intent.getStringExtra("item")) {
             "empty" -> setClip(ClipData.Item("", null, imageUri()), "image/png", plain)
             "uri" -> setClip(ClipData.Item(imageUri()), "image/png", plain)
+            else -> Unit
+        }
+
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        when (intent.getStringExtra("action")) {
+            "copy" -> {
+                val text = intent.getStringExtra("text") ?: ""
+                clipboard.setPrimaryClip(ClipData.newPlainText("Paste debug", text))
+                Log.i(TAG, "copy length=${text.length}")  // log-ok: a length only, never the text
+            }
+            "exists" -> {
+                // The description has no owner check and carries no content.
+                val description = clipboard.primaryClipDescription
+                Log.i(TAG, "clip exists=${description != null} mimes=${description?.mimeTypeCount ?: 0}")
+            }
             else -> Unit
         }
 
