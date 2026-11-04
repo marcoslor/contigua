@@ -1,11 +1,14 @@
 package dev.pocketdeck.server
 
-/** What the platform encoder accepts: size ceiling and alignment. */
+/**
+ * What the platform encoder accepts: size ceiling and the alignment each axis
+ * takes. The defaults are the old phone's 16 px macroblock grid, used only when
+ * the codec's own capabilities cannot be read.
+ */
 internal data class EncoderLimits(
     val maxW: Int = Int.MAX_VALUE,
     val maxH: Int = Int.MAX_VALUE,
-    val align: Int = EncoderSizes.ALIGN,
-    /** The codec's own steps: a mirror's frame keeps them, not the 16 that app windows use. */
+    /** The codec's own steps: app windows and mirrors both keep them (ISS-39). */
     val widthAlign: Int = EncoderSizes.ALIGN,
     val heightAlign: Int = EncoderSizes.ALIGN,
 )
@@ -17,33 +20,28 @@ internal object EncoderSizes {
     private const val SHRINK_TRIES = 8
 
     /**
-     * The stream size for a requested window size: aligned down to the encoder's
-     * macroblock grid, scaled down to fit under the encoder's ceiling (aspect
-     * kept), and shrunk further while [supported] still rejects it. A size the
-     * encoder cannot take must not reach `configure`, which would throw with the
-     * old encoder already gone.
+     * The stream size for a requested window size: aligned down to the codec's
+     * own alignment on each axis (ISS-39, not lcm(codec, 16)), scaled down to
+     * fit under the encoder's ceiling (aspect kept), and shrunk further while
+     * [supported] still rejects it. A size the encoder cannot take must not
+     * reach `configure`, which would throw with the old encoder already gone.
      */
     fun fit(w: Int, h: Int, limits: EncoderLimits, supported: (Int, Int) -> Boolean = { _, _ -> true }): IntSize {
-        val align = maxOf(limits.align, ALIGN).let { lcm16(it) }
         var scale = minOf(1.0, limits.maxW.toDouble() / maxOf(w, 1), limits.maxH.toDouble() / maxOf(h, 1))
-        var size = aligned(w, h, scale, align)
+        var size = aligned(w, h, scale, maxOf(1, limits.widthAlign), maxOf(1, limits.heightAlign))
         var tries = 0
         while (!supported(size.w, size.h) && tries < SHRINK_TRIES) {
             scale *= SHRINK
-            size = aligned(w, h, scale, align)
+            size = aligned(w, h, scale, maxOf(1, limits.widthAlign), maxOf(1, limits.heightAlign))
             tries++
         }
         return size
     }
 
-    private fun aligned(w: Int, h: Int, scale: Double, align: Int): IntSize =
-        IntSize(alignDown((w * scale).toInt(), align), alignDown((h * scale).toInt(), align))
+    private fun aligned(w: Int, h: Int, scale: Double, widthAlign: Int, heightAlign: Int): IntSize =
+        IntSize(alignDown((w * scale).toInt(), widthAlign), alignDown((h * scale).toInt(), heightAlign))
 
     private fun alignDown(v: Int, align: Int): Int = maxOf(MIN_SIDE, (v / align) * align)
-
-    private fun lcm16(a: Int): Int = if (a % ALIGN == 0) a else a * ALIGN / gcd(a, ALIGN)
-
-    private fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
 }
 
 /**
