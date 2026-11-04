@@ -40,9 +40,9 @@ Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windo
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
 Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
-percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
+percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
-standard items plus Enter Full Screen ⌃⌘F and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
+standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
 Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. A control that cannot work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
@@ -67,8 +67,8 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    stream, with rounded corners and a shadow, no title bar, and the desktop shows right up to it; a rest at its top-left (350 ms by default; Settings →
    General → **Reveal controls after** picks Instantly, Short or Long) fades in a small clear-glass pill with the traffic lights (Back · Home · Recents
    join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades out 600 ms after the pointer
-   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. Native full screen lives in the Window menu
-   (**Enter Full Screen** / **Exit Full Screen**, 🌐F, or the green light); the stream fills the screen in
+   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. Native full screen is macOS's own View item
+   (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the screen in
    either style; the bar macOS reveals at the top edge is the system's, with the window's title centred and the standard traffic lights. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
@@ -316,7 +316,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘[ | Back | Navigate |
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |
-| ⌃⌘F | Enter / Exit Full Screen | Window |
+| ⌃⌘F | Enter / Exit Full Screen (the system's own) | View |
 | ⌘N | New <App> Window: one more window of the key window's app | File |
 | ⌘` | Next Window: the next window of the key window's app, wrapping | Window |
 | ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
