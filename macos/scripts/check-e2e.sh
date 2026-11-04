@@ -3037,8 +3037,16 @@ if len([i for i in mine if i.get("hidden")]) > 1:
 bar = root.get("displayed")
 if not bar:
     print("%s: no displayed menu bar" % label); sys.exit(1)
+def tiling_heading(menu, item):
+    # Window's tiling group can be a disabled childless heading (its submenu
+    # appears only when tiling is available); it is not a second command.
+    return (menu == "Window" and not item.get("submenu")
+            and item["title"] in ("Full Screen Tile", "Enter Full Screen", "Exit Full Screen")
+            and not item["enabled"])
+
 hits = [(m["title"], i) for m in bar for i in walk(m.get("submenu") or [])
-        if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and not i.get("submenu")]
+        if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and not i.get("submenu")
+        and not tiling_heading(m["title"], i)]
 if len(hits) > 1:
     print("%s: %d full-screen items on the bar: %r"
           % (label, len(hits), [(m, i["title"]) for m, i in hits]))
