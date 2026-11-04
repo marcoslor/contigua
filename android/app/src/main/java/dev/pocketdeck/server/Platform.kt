@@ -255,6 +255,34 @@ fun interface TaskPresence {
      * phone cannot read it or the display has no task yet.
      */
     fun taskId(displayId: Int): Int? = null
+
+    /**
+     * A task's own description (`RecentTaskInfo.taskDescription.label`) by id,
+     * for `window.task` (WIN-44); null when the phone describes none.
+     */
+    fun taskLabel(taskId: Int): String? = null
+}
+
+/** One task-stack callback the phone's system reports (WIN-44, WIN-48, WIN-49). */
+sealed class TaskStackEvent {
+    /** A task was created. [pkg] may be null on the first callback for an id. */
+    data class Created(val taskId: Int, val pkg: String?) : TaskStackEvent()
+
+    /** An existing task changed display; the id is unchanged. */
+    data class DisplayChanged(val taskId: Int, val displayId: Int) : TaskStackEvent()
+
+    /** A task was removed. */
+    data class Removed(val taskId: Int) : TaskStackEvent()
+}
+
+/**
+ * The system's task-stack listener at shell UID (`ITaskStackListener`).
+ * `start` answers false when the phone refuses registration: there is then no
+ * report path, and nothing else changes (WIN-44).
+ */
+interface TaskStackEvents {
+    fun start(onEvent: (TaskStackEvent) -> Unit): Boolean
+    fun stop()
 }
 
 /** Owns the VirtualDisplay + encoder for one window stream. */
@@ -467,6 +495,14 @@ interface TaskMove {
 
     /** Moves an existing task to a display. false means the system refused: relaunch instead. */
     fun move(taskId: Int, displayId: Int): Boolean
+
+    /**
+     * WIN-46: moves a task the app started itself onto [displayId] with
+     * `startActivityFromRecents` and a launch display. Unlike [move] it also
+     * accepts a task that is a child of a split root. false means the system
+     * refused, the task is gone, or it did not land on the display.
+     */
+    fun adopt(taskId: Int, displayId: Int): Boolean = false
 
     /**
      * WIN-31: the task ids the phone remembers in Recents, whether or not the

@@ -22,7 +22,7 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
 
     override fun topTask(displayId: Int): TopTask? {
         val info = firstTask(displayId) ?: return null
-        return topTaskOf(info, ::label, ::descriptionLabel)
+        return topTaskOf(info, ::label, ::taskLabel)
     }
 
     /**
@@ -52,9 +52,10 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
     /**
      * A task list read without extras can arrive with a description that carries
      * only colours: ask the task manager for the description by id then. Null
-     * when this phone has neither, and the app's label is the fallback.
+     * when this phone has neither, and the app's label is the fallback. Also the
+     * `window.task` label (WIN-44).
      */
-    private fun descriptionLabel(taskId: Int): String? {
+    override fun taskLabel(taskId: Int): String? {
         if (taskId <= 0) return null
         val manager = atm ?: return null
         val cls = Hidden.iface("android.app.IActivityTaskManager") ?: return null

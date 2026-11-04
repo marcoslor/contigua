@@ -1,7 +1,9 @@
 package dev.pocketdeck.server
 
+import android.app.ActivityOptions
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Bundle
 
 /**
  * The system's task list and its task-to-display move, through reflection at
@@ -87,6 +89,40 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         val landed = runCatching { tasks() }.getOrNull()
         val verified = landed != null && landed.any { it.taskId == taskId && it.displayId == displayId }
         if (!verified) log("move: task $taskId did not report display $displayId after the call")
+        return verified
+    }
+
+    /**
+     * WIN-46: adopts a task the app started itself. `moveRootTaskToDisplay`
+     * refuses a task that is a child of the adjacent split, but Recents with a
+     * launch display reparents it into the target display's fullscreen root
+     * (docs/research/in-stream-window.md). The service's return code is not the
+     * proof: the task list is re-read and the id must report the display.
+     */
+    override fun adopt(taskId: Int, displayId: Int): Boolean {
+        if (taskId <= 0 || displayId < 0) return false
+        val tm = taskManager ?: return false
+        val cls = taskManagerClass ?: return false
+        val method = Hidden.method(cls, "startActivityFromRecents", Hidden.T_INT, Bundle::class.java)
+            ?: run { log("no IActivityTaskManager.startActivityFromRecents"); return false }
+        val options = ActivityOptions.makeBasic()
+        options.setLaunchDisplayId(displayId)
+        val fullscreen = runCatching {
+            options.javaClass
+                .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                .invoke(options, WINDOWING_FULLSCREEN)
+        }.isSuccess
+        val result = try {
+            method.invoke(tm, taskId, options.toBundle())
+        } catch (e: Throwable) {
+            val cause = (e as? java.lang.reflect.InvocationTargetException)?.cause ?: e
+            log("startActivityFromRecents($taskId -> $displayId) refused: ${cause.message ?: cause}")
+            return false
+        }
+        val landed = runCatching { tasks() }.getOrNull()
+        val verified = landed != null && landed.any { it.taskId == taskId && it.displayId == displayId }
+        log("adopt task=$taskId display=$displayId result=$result fullscreen=$fullscreen verified=$verified")
+        if (!verified) log("adopt: task $taskId did not report display $displayId after the call")
         return verified
     }
 
@@ -278,5 +314,8 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
 
         /** How long a removed task may still be listed while the system settles. */
         const val REMOVE_VERIFY_MS = 1_000L
+
+        /** `ActivityOptions`' hidden fullscreen windowing mode. */
+        const val WINDOWING_FULLSCREEN = 1
     }
 }

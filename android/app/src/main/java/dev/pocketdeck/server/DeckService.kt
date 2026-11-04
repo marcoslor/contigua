@@ -187,6 +187,7 @@ class DeckService(private val appContext: Context?) :
                 clipImageHost = this,
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
+                taskEvents = AndroidTaskStackEvents(::log),
                 dropLanding = ShellLanding(appContext, staging, ::log),
                 // The shared storage root. Environment.getExternalStorageDirectory()
                 // asks StorageManager, which refuses a caller that is not the
