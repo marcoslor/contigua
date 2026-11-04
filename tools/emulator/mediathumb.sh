@@ -69,18 +69,32 @@ done
 [ "$(emu shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] \
     || die "emulator did not finish booting (see $WORK/emulator.log)"
 step "booted: Android $(emu shell getprop ro.build.version.release | tr -d '\r') (api $(emu shell getprop ro.build.version.sdk | tr -d '\r'))"
-# A rig PIN keeps /sdcard (FBE) unmounted until the test user is unlocked; the
-# spike only needs storage, not the app. Prove the mount before pushing.
-storage_ready() { emu shell 'test -d /sdcard/DCIM' >/dev/null 2>&1; }
-if ! storage_ready; then
-    step "storage is not mounted yet; unlocking the test user"
+# A rig PIN keeps /sdcard (FBE) mounted as a stub until the test user is
+# unlocked; `test -d` passes on the stub, so prove a write. The 19:59 and 21:09
+# boots both passed a directory test and then every create answered EPERM.
+storage_writable() {
+    emu shell 'echo pd > /sdcard/DCIM/.pd-write-probe && rm -f /sdcard/DCIM/.pd-write-probe' \
+        >/dev/null 2>&1
+}
+if ! storage_writable; then
+    step "storage is not writable yet; unlocking the test user"
     bash "$EMU_DIR/unlock.sh" > "$WORK/unlock.log" 2>&1 || tail -3 "$WORK/unlock.log"
     for _ in $(seq 1 30); do
-        storage_ready && break
+        storage_writable && break
         sleep 2
     done
 fi
-storage_ready || die "/sdcard is not mounted; see $WORK/unlock.log"
+ROOTED=0
+if ! storage_writable; then
+    # A userdebug emulator can write as root; this is measurement-only tooling
+    # and the spike still runs at shell UID because we unroot before it.
+    step "shell cannot write /sdcard; pushing as root only"
+    emu root > "$WORK/root.log" 2>&1 || true
+    emu wait-for-device >/dev/null 2>&1 || true
+    sleep 3
+    storage_writable || die "/sdcard is not writable at shell or root UID; see $WORK/unlock.log and $WORK/root.log"
+    ROOTED=1
+fi
 
 command -v ffmpeg >/dev/null || die "ffmpeg is needed to make the fixtures"
 step "fixtures: $COUNT generated 4032x3024 JPEGs"
@@ -95,10 +109,27 @@ while [ "$i" -lt "$COUNT" ]; do
     cp "$WORK/$PREFIX-base.jpg" "$WORK/push/$(printf '%s-%04d.jpg' "$PREFIX" "$i")"
 done
 emu shell mkdir -p "/sdcard/$FOLDER" >/dev/null 2>&1 || true
-step "pushing $COUNT files in one pass"
-if ! emu push "$WORK/push/." "/sdcard/$FOLDER/" > "$WORK/push.log" 2>&1; then
+step "pushing $COUNT files to /data/local/tmp in one pass"
+emu shell rm -rf /data/local/tmp/pdspike-push >/dev/null 2>&1 || true
+if ! emu push "$WORK/push" /data/local/tmp/pdspike-push > "$WORK/push.log" 2>&1; then
     tail -3 "$WORK/push.log"
-    die "could not push the fixtures (see $WORK/push.log)"
+    die "could not push the fixtures to /data/local/tmp (see $WORK/push.log)"
+fi
+# One `cp` per file through the FUSE mount: a directory push creates its own
+# entries and the first FUSE refusal stops the whole batch midway (21:09).
+step "copying them into /sdcard/$FOLDER"
+copied="$(emu shell "mkdir -p /sdcard/$FOLDER; n=0; for f in /data/local/tmp/pdspike-push/*.jpg; do cp \"\$f\" /sdcard/$FOLDER/ || exit 1; n=\$((n+1)); done; echo \$n" \
+    2>> "$WORK/push.log" | tr -d '\r')"
+if [ "${copied:-0}" != "$COUNT" ]; then
+    tail -3 "$WORK/push.log"
+    die "copied ${copied:-0} of $COUNT fixtures (see $WORK/push.log)"
+fi
+emu shell rm -rf /data/local/tmp/pdspike-push >/dev/null 2>&1 || true
+if [ "$ROOTED" = 1 ]; then
+    emu unroot >/dev/null 2>&1 || true
+    emu wait-for-device >/dev/null 2>&1 || true
+    sleep 3
+    step "unrooted before the measurement"
 fi
 step "scanning them into MediaStore"
 emu shell "for f in /sdcard/$FOLDER/$PREFIX-*.jpg; do am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d \"file://\$f\" >/dev/null 2>&1; done" >/dev/null 2>&1 || true
