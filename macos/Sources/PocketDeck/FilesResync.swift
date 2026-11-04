@@ -3,7 +3,8 @@
 // `fs.digest` over the folders in the record, most recently touched first and
 // at most 64. Only the folders whose digest differs from the recorded one (or
 // that have no digest yet) are re-listed; a folder the phone says is gone is
-// reported deleted with everything the record holds under it, and a phone
+// reported deleted with everything the record holds under it, but only when
+// the root's digest in the same reply shows the storage readable. A phone
 // without `fs.digest` lists them all as before.
 //
 // One explicit machine, no flags: idle → digesting → relisting → done. A
@@ -71,6 +72,17 @@ struct FilesResync: Equatable {
             state = .digesting(folders)
             return .ask(folders.map(\.path))
         case (.digesting, .digests(let answers)):
+            // A not_found only means "gone" when the same reply proves the
+            // storage readable: the root answered a digest. A phone that
+            // rebooted and isn't unlocked yet answers not_found for every
+            // path, and reporting those deleted would empty Finder and take
+            // its downloaded copies with it. Without that proof each one is
+            // listed instead, and a failed listing deletes nothing.
+            let readable = answers.contains { answer in
+                guard answer.folder.id == FilesMap.rootIdentifier,
+                      case .digest = answer.digest else { return false }
+                return true
+            }
             var deletions: [String] = []
             var relist: Set<String> = []
             for answer in answers {
@@ -85,10 +97,9 @@ struct FilesResync: Equatable {
                         relist.insert(answer.folder.id)
                     }
                 case .notFound:
-                    // The root is never reported deleted: a phone whose storage
-                    // is not mounted yet answers not_found, and emptying Finder
-                    // is worse than a stale folder. A listing then repairs it.
-                    if answer.folder.id == FilesMap.rootIdentifier {
+                    // The root is never reported deleted, and nothing is
+                    // without a readable root (above). A listing repairs it.
+                    if answer.folder.id == FilesMap.rootIdentifier || !readable {
                         relist.insert(answer.folder.id)
                     } else {
                         // The host reports the folder and everything the record

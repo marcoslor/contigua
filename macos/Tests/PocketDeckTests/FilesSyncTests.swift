@@ -183,10 +183,19 @@ final class FilesSyncTests: XCTestCase {
         var touched: TimeInterval
     }
 
+    /// The root's digest in the fixtures: the record holds it and
+    /// `answerDigest` answers it, so the storage reads as mounted.
+    private var rootDigest: String { hex(0) }
+
     /// The record an earlier ready left: folders by identifier, with the
-    /// digest of their last complete listing.
+    /// digest of their last complete listing. The root is recorded too unless
+    /// the test gives its own.
     private func saveRecord(_ folders: [String: Recorded]) {
         var replica = FilesReplica()
+        var folders = folders
+        if folders[root] == nil {
+            folders[root] = Recorded(children: [], digest: rootDigest, touched: 0)
+        }
         for (identifier, entry) in folders {
             replica.folders[identifier] = FilesFolderRecord(
                 children: byID(entry.children), touched: entry.touched, digest: entry.digest)
@@ -204,7 +213,11 @@ final class FilesSyncTests: XCTestCase {
         FilesIdMap.save(map, to: mapURL)
     }
 
+    /// The phone's digest reply; the root answers its recorded digest unless
+    /// the test gives its own answer for it.
     private func answerDigest(_ values: [String: String]) {
+        var values = values
+        if values[""] == nil { values[""] = rootDigest }
         client.digests(id: channel.digests.last!.id, values: values)
     }
 
@@ -518,8 +531,8 @@ final class FilesSyncTests: XCTestCase {
         host.sessionReady()
 
         XCTAssertEqual(channel.digests.count, 1, "one fs.digest for the whole ready")
-        XCTAssertEqual(channel.digests.first?.paths, ["C", "B", "A"],
-                       "the most recently touched folders are asked first")
+        XCTAssertEqual(channel.digests.first?.paths, ["", "C", "B", "A"],
+                       "the root, then the most recently touched folders")
         XCTAssertEqual(channel.lists.count, 0, "nothing is listed before the answer")
 
         answerDigest(["A": hex(1), "B": hex(9), "C": hex(3)])
@@ -589,6 +602,38 @@ final class FilesSyncTests: XCTestCase {
         answerPendingLists([:], digest: hex(9))
     }
 
+    /// A phone that rebooted and isn't unlocked yet answers not_found for every
+    /// path, the root too. Nothing is reported deleted: each folder is listed
+    /// instead, and those listings failing deletes nothing either.
+    func testNotFoundEverywhereDeletesNothing() throws {
+        let a = folder("A", ino: 100)
+        let b = folder("B", ino: 200)
+        saveRecord([
+            root: Recorded(children: [a, b], digest: hex(9), touched: 3),
+            a.identifier: Recorded(children: [item("a1.txt", ino: 101, parent: a.identifier)],
+                                   digest: hex(1), touched: 1),
+            b.identifier: Recorded(children: [item("b1.txt", ino: 201, parent: b.identifier)],
+                                   digest: hex(2), touched: 2),
+        ])
+        rememberPaths([a.identifier: "A", b.identifier: "B"])
+        let signals = Signals()
+        let host = makeHost(signals)
+        host.sessionReady()
+        XCTAssertEqual(channel.digests.first?.paths, ["", "B", "A"])
+        answerDigest(["": "not_found", "A": "not_found", "B": "not_found"])
+        answerPendingStats()
+        XCTAssertEqual(Set(channel.lists.map(\.path)), ["", "A", "B"],
+                       "each folder is listed instead of deleted")
+        for request in channel.lists {
+            client.failure(id: request.id, code: "fs_not_found", message: nil)
+        }
+        XCTAssertEqual(host.replica.log.changes(from: nil, container: nil)?.deleted ?? [], [])
+        XCTAssertNotNil(host.replica.folders[a.identifier]?.children["ino:101"])
+        XCTAssertNotNil(host.replica.folders[b.identifier]?.children["ino:201"])
+        XCTAssertEqual(host.replica.folders[root]?.children.count, 2)
+        XCTAssertEqual(signals.count, 0)
+    }
+
     /// (c) `fs_unknown`: the phone has no digest, so every folder is listed.
     func testAnUnknownDigestRelistsEveryRecordedFolder() throws {
         let a = folder("A", ino: 100)
@@ -605,11 +650,12 @@ final class FilesSyncTests: XCTestCase {
         host.sessionReady()
         client.failure(id: channel.digests.last!.id, code: "fs_unknown", message: nil)
         answerPendingStats()
-        XCTAssertEqual(channel.lists.count, 3)
-        XCTAssertEqual(Set(channel.lists.map(\.path)), ["A", "B", "C"])
+        XCTAssertEqual(channel.lists.count, 4)
+        XCTAssertEqual(Set(channel.lists.map(\.path)), ["", "A", "B", "C"])
     }
 
-    /// (d) More than 64 recorded folders: only the 64 most recently touched.
+    /// (d) More than 64 recorded folders: the root and the 63 most recently
+    /// touched.
     func testOnlyTheSixtyFourMostRecentlyTouchedFoldersAreAsked() throws {
         var folders: [String: Recorded] = [:]
         var paths: [String: String] = [:]
@@ -627,8 +673,9 @@ final class FilesSyncTests: XCTestCase {
         host.sessionReady()
         let asked = channel.digests.first?.paths ?? []
         XCTAssertEqual(asked.count, 64)
-        XCTAssertEqual(Set(asked), Set((7...70).map { "F\($0)" }),
-                       "the 64 most recently touched, the rest wait for their next touch")
+        XCTAssertEqual(asked.first, "", "the root is always asked: it vouches for a not_found")
+        XCTAssertEqual(Set(asked.dropFirst()), Set((8...70).map { "F\($0)" }),
+                       "the 63 most recently touched, the rest wait for their next touch")
         answerDigest(Dictionary(uniqueKeysWithValues: asked.map {
             ($0, hex(Int($0.dropFirst()) ?? 0))
         }))

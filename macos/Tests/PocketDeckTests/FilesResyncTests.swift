@@ -60,10 +60,12 @@ final class FilesResyncTests: XCTestCase {
 
     func testANotFoundFolderIsDeleted() {
         var machine = FilesResync()
+        let root = recorded(FilesMap.rootIdentifier, "", "rr")
         let a = recorded("a", "A", "aa")
         let b = recorded("b", "B", "bb")
-        _ = machine.apply(.ready([a, b]))
-        let action = machine.apply(.digests([answer(a, .digest("aa")),
+        _ = machine.apply(.ready([root, a, b]))
+        let action = machine.apply(.digests([answer(root, .digest("rr")),
+                                             answer(a, .digest("aa")),
                                              answer(b, .notFound)]))
         guard case .apply(let deletions, let relist) = action else {
             return XCTFail("expected a deletion, got \(action)")
@@ -71,6 +73,37 @@ final class FilesResyncTests: XCTestCase {
         XCTAssertEqual(deletions, ["b"], "the host adds everything the record holds under it")
         XCTAssertEqual(relist, [])
         XCTAssertEqual(machine.state, .done)
+    }
+
+    /// A phone that rebooted and isn't unlocked yet can't read its shared
+    /// storage, so every path answers not_found. Without the root's digest in
+    /// the same reply nothing proves the storage readable: no folder is
+    /// deleted (Finder would empty, its downloaded copies with it); each is
+    /// listed instead, and a failed listing deletes nothing either.
+    func testNotFoundEverywhereDeletesNothingWithoutAReadableRoot() {
+        var machine = FilesResync()
+        let root = recorded(FilesMap.rootIdentifier, "", "rr")
+        let a = recorded("a", "A", "aa")
+        let b = recorded("b", "B", "bb")
+        _ = machine.apply(.ready([root, a, b]))
+        let action = machine.apply(.digests([answer(root, .notFound),
+                                             answer(a, .notFound),
+                                             answer(b, .notFound)]))
+        guard case .apply(let deletions, let relist) = action else {
+            return XCTFail("expected listings, got \(action)")
+        }
+        XCTAssertEqual(deletions, [])
+        XCTAssertEqual(Set(relist), [FilesMap.rootIdentifier, "a", "b"])
+    }
+
+    func testANotFoundIsNoDeletionWhenTheReplyLacksTheRoot() {
+        var machine = FilesResync()
+        let a = recorded("a", "A", "aa")
+        let b = recorded("b", "B", "bb")
+        _ = machine.apply(.ready([a, b]))
+        let action = machine.apply(.digests([answer(a, .digest("aa")),
+                                             answer(b, .notFound)]))
+        XCTAssertEqual(action, .apply(deletions: [], relist: ["b"]))
     }
 
     func testANotFoundRootIsRelistedNeverDeleted() {

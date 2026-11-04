@@ -1060,9 +1060,13 @@ final class SessionBridgeHost: FilesBridgeHost {
         Log.files.notice("resync: dropped")
     }
 
+    /// The record's folders, most recently touched first, at most 64. The root
+    /// is always one of them when there are any: its digest is what lets the
+    /// machine trust a not_found for the others.
     private func resyncCandidates() -> [FilesResync.Folder] {
+        let root = FilesMap.rootIdentifier
         let ordered = replica.folders
-            .filter { !filesSystemContainer($0.key) }
+            .filter { !filesSystemContainer($0.key) && $0.key != root }
             .sorted { left, right in
                 if left.value.touched != right.value.touched {
                     return left.value.touched > right.value.touched
@@ -1070,13 +1074,15 @@ final class SessionBridgeHost: FilesBridgeHost {
                 return left.key < right.key
             }
         var folders: [FilesResync.Folder] = []
-        var seen = Set<String>()
-        for (identifier, record) in ordered where folders.count < FilesResync.folderLimit {
+        var seen: Set<String> = [""]
+        for (identifier, record) in ordered where folders.count < FilesResync.folderLimit - 1 {
             guard let path = map.path(for: identifier), seen.insert(path).inserted else { continue }
             folders.append(FilesResync.Folder(id: identifier, path: path,
                                               recorded: record.digest))
         }
-        return folders
+        guard !folders.isEmpty || replica.folders[root] != nil else { return [] }
+        return [FilesResync.Folder(id: root, path: "",
+                                   recorded: replica.folders[root]?.digest)] + folders
     }
 
     private func stepResync(_ event: FilesResync.Event, generation: Int) {
