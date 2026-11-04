@@ -413,6 +413,7 @@ Mac → phone (after `welcome`):
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` before a display exists (see "Several windows of one app") |
+| `window.adopt` | `stream`, `taskId`, `w`, `h`, `dpi` | create a display for a task the app started itself, like `window.open`, and move that task onto it with `startActivityFromRecents` (`setLaunchDisplayId` + fullscreen; permission `START_TASKS_FROM_RECENTS`). `window.opened` answers as for any stream, with the adopted task's `taskId` and `started: "moved"`; a refusal or a task that is gone answers `error cannot_adopt` and leaves the task where it was (never a relaunch). See "Several windows of one app" |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG); one the phone cannot apply answers `refused` |
 | `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up. It is the last message the Mac sends for that stream: anything later is answered `error no_stream` (the Mac gates it out, WIN-38) |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
@@ -460,8 +461,9 @@ Phone → Mac:
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apps` | `apps`: `[{"pkg","label","activity","multi"}]` — launchable activities, sorted by label; `multi` says whether a second instance can run (WIN-24): the launcher activity declares `android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` (read per component with `PackageManager.getProperty`, API 35+, false on older phones) **and** its `launchMode` is not `singleTask`/`singleInstance` **and** its `documentLaunchMode` is not `never`; an allow-list covers apps found to work without the property (empty today) |
 | `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
-| `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
-| `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
+| `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept — the normal answer to `window.open` and the only answer to a successful `window.adopt`) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost; never sent for `window.adopt`) |
+| `window.task` | `stream`, `taskId`, `pkg`, `label` — the app started a task of its own while one of its apps was streamed (WIN-44): the new task's id, its package and its own label. Sent once per task, at most once a second per package, only for a fresh `onTaskCreated` that the phone itself did not launch or move; the only other stream message is `window.title`'s app/pkgs (WIN-48). `label` is phone content: never logged, never used as a file name. The Mac decides with the New-item rule and answers with `window.adopt` (WIN-45) |
+| `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`moved_to_phone`/`error`) — `moved_to_phone` is the person opening the streamed app on the phone's own screen: the display's task (same id) changed display and left the streamed display empty (WIN-49); `app_exited` stays for `onTaskRemoved` or a real exit |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
 | `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's task and its app: `pkg` is the task's own app (the root's package from `baseActivity`, then `baseIntent.component`), and only a task that reports no root falls back to its top activity, then `topActivityInfo`; another package's activity on top of the task never becomes the app (WIN-28). Every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
@@ -520,6 +522,28 @@ and what a window costs is `.agent/multiwin/spike.md`.
   outlives its display is removed by id, and a task another window of the session
   still shows is never removed. The app is never stopped, so its other windows
   and the session keep running.
+- An app may start another task of its own — a browser's "New window" — while
+  one of its apps is streamed. The phone registers
+  `ITaskStackListener.onTaskCreated` (`MANAGE_ACTIVITY_TASKS`) and reports a
+  fresh task id whose package has an open app stream, unless the phone itself
+  launched it (`window.open`, `window.launch`) or moved it (`task.continue`,
+  `window.adopt`): `{"t":"window.task","stream":N,"taskId":214,"pkg":"…","label":"…"}`.
+  The report never moves the task; the Mac decides with the same New-item rule
+  as ⌘N and sends `window.adopt` when it may act. An event for a task the phone
+  did not create is not a report: the person's Home, launcher and Recents never
+  produce a fresh id on the fixtures measured (WIN-48).
+- `window.adopt` creates the display first, then calls
+  `IActivityTaskManager.startActivityFromRecents(taskId, options)` with
+  `ActivityOptions.setLaunchDisplayId(displayId)` and the hidden fullscreen
+  windowing mode (the call `moveRootTaskToDisplay` cannot make for a task that
+  is a split child; see `docs/research/in-stream-window.md`). The move is
+  verified against the task list: only a task now on the new display answers
+  `window.opened started: "moved"`; anything else answers `error cannot_adopt`,
+  closes the display and leaves the task where it was.
+- When the person opens the streamed app on the phone's own screen, its task
+  keeps its id and changes display; the streamed display is left empty. The
+  phone closes that stream with `window.closed reason: "moved_to_phone"`, not
+  `app_exited`, and reports no task.
 
 ## Clipboard sync
 
