@@ -226,7 +226,10 @@ def main():
     contrast_h = contrast(cap_luma, mapped("horizontal"), vertical=False)
 
     if args.save_crop:
-        write_png(args.save_crop, w, h, cap)
+        # The capture may carry alpha; the PNG written is RGB, so each row keeps
+        # its first three channels.
+        rgb = [b"".join(row[col * cap_c:col * cap_c + 3] for col in range(w)) for row in cap]
+        write_png(args.save_crop, w, h, rgb)
     if args.save_zoom:
         # A 64x64 patch around the text block's centre, nearest-neighbour 4x:
         # the reviewer's record of the glyph edges.
