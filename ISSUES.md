@@ -18,6 +18,18 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 ## 2. Bugs you can see
 
+- **ISS-39 App windows are drawn slightly scaled, so text is soft.** The virtual display is the window's pixel size floored to 16 px and capped at 2560 px on the long side (`VideoSize.displayPixels`), and the Mac stretches the frame over the whole window (`Letterbox` `.stretch`). So unless both sides are exact multiples of 16, every frame is resampled by up to 15 px, and a window wider than 2560 px is upscaled. The person's WhatsApp window came at 2560×1488.
+  - The person's encoder (`c2.qti.avc.encoder`, 2026-11-04) takes any even size (`alignment 2x2`) up to 8192×8192, so neither rule is needed there.
+  - Fix: the phone reports its encoder's alignment and maximum size, the Mac asks for the window's exact pixels within them, and draws 1:1 (no stretch).
+  - Test first, plus a crispness metric that must move: the Mac's displayed frame against the phone's lossless capture of the same display (`screencap -d <id>`), as PSNR/SSIM over a text-heavy screen.
+- **ISS-40 Crispness beyond 1:1** (the person asked, 2026-11-04). Today: H.264, 4:2:0, VBR, 60 fps, capped at 8 Mbps; the code's own formula wants about 27 Mbps for a 2560×1488 window. A still screen keeps the quality of the frame it last changed in, because the repeated frames don't refine it. The person's link already shows backpressure at 8 Mbps (`stream 7 backpressure: dropping deltas`), so more bits alone may not help.
+  - Options for one prototype round on the real phone, side by side on the same text screen, with ISS-39's metric and the bitrate each costs:
+    - (a) today;
+    - (b) a higher cap, about 25 Mbps;
+    - (c) HEVC (`c2.qti.hevc.encoder`; the Mac decodes it in hardware), about 30–50 % better per bit;
+    - (d) a refresh when the screen goes still: one high-quality frame about 300 ms after the motion stops;
+    - (e) lossless still frames: the exact pixels the phone drew, colour included, with no 4:2:0 fringes.
+  - After ISS-39.
 - **ISS-3 An app window fades to black when the phone wakes.** Root-caused on the real phone (2026-11-03): [docs/research/lock-fade.md](docs/research/lock-fade.md).
   - One UI keeps PocketDeck's virtual displays in the panel's display group. So while a window is open on a locked phone, PocketDeck keeps that group awake with the panel blacked out, and Android counts the phone as awake.
   - A wake press is then a sleep press to Android: it runs its screen-off fade (ColorFade, about 330 ms) on the window's virtual display too, turns the display off, and PocketDeck's hand-back wakes everything again about 0.65 s after the press. The Mac shows the fade, a dark moment, then the picture, together with the phone's screen.
