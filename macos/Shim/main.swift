@@ -319,11 +319,24 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
             ?? NSScreen.screens.first?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         NSApp.activate(ignoringOtherApps: true)
-        // The menu's top-left goes at the middle of the screen: the old point
-        // sat 120 pt from the right edge, off it on a 1024 pt screen, and the
-        // menu never appeared in the VM's shot (round 5, boot 5).
-        menu.popUp(positioning: nil,
-                   at: NSPoint(x: screen.midX, y: screen.midY), in: nil)
+        // Activation lands on the next run-loop pass, and an activation event
+        // processed inside the menu's own tracking loop closes the menu at once:
+        // rounds 3-5 found the `-show` menu gone before every capture while the
+        // shim's dump and presses kept working. Pop after the activation has
+        // landed, and pop once more when the first loop died at once - that was
+        // the same race, not a person's click.
+        let popAfterActivation = Timer(timeInterval: 0.2, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                let point = NSPoint(x: screen.midX, y: screen.midY)
+                let began = Date()
+                menu.popUp(positioning: nil, at: point, in: nil)
+                if Date().timeIntervalSince(began) < 1, close.isValid {
+                    menu.popUp(positioning: nil, at: point, in: nil)
+                }
+            }
+        }
+        RunLoop.main.add(popAfterActivation, forMode: .common)
+        RunLoop.main.add(popAfterActivation, forMode: .eventTracking)
     }
 
     private func pollPress() {
