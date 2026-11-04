@@ -54,8 +54,6 @@ struct MenuSnapshot: Equatable {
 
     var hasStream = false
     var style: WindowStyle = .standard
-    var fullScreen = false
-    var fullScreenAllowed = true
     var showTouches = false
     var liveText = false
     var frozen = false
@@ -82,8 +80,6 @@ struct MenuSnapshot: Equatable {
     init(stream: StreamMenuState, phone: Phone) {
         hasStream = stream.hasStream
         style = stream.style
-        fullScreen = stream.fullScreen
-        fullScreenAllowed = stream.fullScreenAllowed
         showTouches = stream.showTouches
         liveText = stream.liveText
         frozen = stream.frozen

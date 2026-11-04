@@ -2,9 +2,8 @@
 //
 // AppKit puts an item in Help that the app did not write: "Send <app> Feedback
 // …" (the design keeps Help empty). SwiftUI puts a separator where it places
-// one command group between two of its own: Window's Enter Full Screen group
-// leaves two in a row before Bring All to Front, and neither framework offers
-// a way to say "this group takes no separator".
+// one command group between two of its own, and neither framework offers a way
+// to say "this group takes no separator".
 //
 // This pass only removes: the feedback item, every separator in Help (its only
 // other content), and a separator that directly follows another. It never
@@ -21,21 +20,16 @@ import AppKit
 
 enum MenuCleanup {
     /// A menu's items as far as the rules care: title, whether it is a
-    /// separator, its key equivalent, and a submenu.
+    /// separator, and a submenu.
     struct Item: Equatable {
         var title: String
         var isSeparator: Bool
         var children: [Item] = []
-        /// The item's own shortcut, empty for none: AppKit's duplicate
-        /// full-screen item carries none, the app's carries ⌃⌘F (MENU-7).
-        var keyEquivalent: String = ""
 
-        init(title: String, isSeparator: Bool = false, children: [Item] = [],
-             keyEquivalent: String = "") {
+        init(title: String, isSeparator: Bool = false, children: [Item] = []) {
             self.title = title
             self.isSeparator = isSeparator
             self.children = children
-            self.keyEquivalent = keyEquivalent
         }
     }
 
@@ -58,21 +52,11 @@ enum MenuCleanup {
                     path: path + [index], into: &out)
         }
         var removed = Set<Int>()
-        // AppKit adds its own Enter Full Screen to the Window menu; after a
-        // SwiftUI rebuild the bar can show it beside the app's ⌃⌘F item, so the
-        // person reads the command twice. The keyed item is the app's and stays;
-        // the key-less one is a leftover (MENU-7, MENU-11).
         if menu == "Window" {
-            let fullScreen = items.enumerated().filter {
-                !$0.element.isSeparator && isFullScreen($0.element.title)
-            }
-            if fullScreen.contains(where: { !$0.element.keyEquivalent.isEmpty }) {
-                for case let (index, item) in fullScreen where item.keyEquivalent.isEmpty {
-                    removed.insert(index)
-                }
-            }
             // AppKit's own "Cycle Through Windows" owns ⌘`: the app's own
             // "Next Window" is the one item for that key (MENU-7, WIN-29).
+            // AppKit's full-screen item and its tiling submenu are the system's
+            // and are never touched.
             for (index, item) in items.enumerated() where !item.isSeparator
                 && item.title == "Cycle Through Windows" {
                 removed.insert(index)
@@ -103,10 +87,6 @@ enum MenuCleanup {
         (title.hasPrefix("Send ") && title.contains("Feedback")) || title.contains("Feedback to Apple")
     }
 
-    /// AppKit's full-screen item and the app's: the same two titles.
-    static func isFullScreen(_ title: String) -> Bool {
-        title == "Enter Full Screen" || title == "Exit Full Screen"
-    }
 }
 
 // MARK: - Applying them
@@ -182,8 +162,7 @@ extension MenuCleanup {
         menu.items.map { item in
             Item(title: item.title,
                  isSeparator: item.isSeparatorItem,
-                 children: item.submenu.map { snapshot(of: $0) } ?? [],
-                 keyEquivalent: item.keyEquivalent)
+                 children: item.submenu.map { snapshot(of: $0) } ?? [])
         }
     }
 
