@@ -49,7 +49,11 @@ internal sealed class TaskArrivalEvent {
 
     data class Removed(val taskId: Int) : TaskArrivalEvent()
 
-    /** The answer to [TaskArrivalAction.ProbeDisplay]. */
+    /**
+     * The answer to [TaskArrivalAction.ProbeDisplay] when the display has a
+     * task but its top id could not be read; a readable top task answers with
+     * [StreamTask] instead, and an empty display with [DisplayEmpty].
+     */
     data class MoveCheck(val stream: Int, val displayStillHasTask: Boolean) : TaskArrivalEvent()
 
     /** The session's own exit poll found the stream's display empty. */
@@ -126,6 +130,9 @@ internal object TaskArrivalMachine {
                         streams = state.streams + (event.stream to existing.copy(taskId = event.taskId)),
                         ownTasks = own,
                         unresolved = state.unresolved - event.taskId,
+                        // A task is back on the display: the display-change
+                        // probe no longer has an empty display to report.
+                        moveChecks = state.moveChecks - event.stream,
                     ),
                     emptyList(),
                 )
@@ -187,7 +194,13 @@ internal object TaskArrivalMachine {
                 if (stream == null) {
                     TaskArrivalStep(state.copy(unresolved = state.unresolved - event.taskId), emptyList())
                 } else {
-                    TaskArrivalStep(closed(state, stream.stream), listOf(TaskArrivalAction.CloseAppExited(stream.stream)))
+                    // The removed task may have been a share sheet on top of
+                    // the app's own task (ISS-33): only an empty display is
+                    // the app's exit.
+                    TaskArrivalStep(
+                        state,
+                        listOf(TaskArrivalAction.ProbeDisplay(stream.stream, stream.displayId)),
+                    )
                 }
             }
 
@@ -203,11 +216,15 @@ internal object TaskArrivalMachine {
 
             is TaskArrivalEvent.DisplayEmpty -> {
                 val stream = state.streams[event.stream] ?: return TaskArrivalStep(state, emptyList())
-                if (event.stream in state.moveChecks) return TaskArrivalStep(state, emptyList())
-                TaskArrivalStep(
-                    closed(state, stream.stream),
-                    listOf(TaskArrivalAction.CloseAppExited(stream.stream)),
-                )
+                // The stream's task went to the phone and the display it left
+                // is empty: that close is `moved_to_phone`. Otherwise the app
+                // itself ended, even when its last top task was a share sheet.
+                val action = if (event.stream in state.moveChecks) {
+                    TaskArrivalAction.CloseMovedToPhone(stream.stream)
+                } else {
+                    TaskArrivalAction.CloseAppExited(stream.stream)
+                }
+                TaskArrivalStep(closed(state, stream.stream), listOf(action))
             }
         }
     }

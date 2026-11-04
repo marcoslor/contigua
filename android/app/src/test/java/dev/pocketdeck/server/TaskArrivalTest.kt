@@ -115,10 +115,12 @@ class TaskArrivalTest {
     }
 
     @Test
-    fun aRemovedStreamTaskIsARealExit() {
+    fun aRemovedTaskAsksWhetherItsDisplayIsEmptyBeforeClosing() {
         val machine = watching()
-        assertEquals(listOf(TaskArrivalAction.CloseAppExited(stream = 1)),
+        assertEquals(listOf(TaskArrivalAction.ProbeDisplay(stream = 1, displayId = 100)),
             machine.on(TaskArrivalEvent.Removed(taskId = 7)))
+        assertEquals(listOf(TaskArrivalAction.CloseAppExited(stream = 1)),
+            machine.on(TaskArrivalEvent.DisplayEmpty(stream = 1)))
     }
 
     @Test
@@ -129,12 +131,48 @@ class TaskArrivalTest {
     }
 
     @Test
-    fun anEmptyDisplayWhileAMoveIsProbedWaitsForTheProbe() {
+    fun anEmptyDisplayWhileAMoveIsProbedClosesMovedToPhone() {
         val machine = watching()
         machine.on(TaskArrivalEvent.DisplayChanged(7, 0, 1_000))
-        assertEquals(emptyList<TaskArrivalAction>(), machine.on(TaskArrivalEvent.DisplayEmpty(stream = 1)))
         assertEquals(listOf(TaskArrivalAction.CloseMovedToPhone(stream = 1)),
-            machine.on(TaskArrivalEvent.MoveCheck(stream = 1, displayStillHasTask = false)))
+            machine.on(TaskArrivalEvent.DisplayEmpty(stream = 1)))
+    }
+
+    @Test
+    fun aSheetClosingOverTheAppsTaskRepointsInsteadOfClosing() {
+        val machine = watching()
+        // The system's own picker became the display's top task: the report
+        // path learned that id exactly as the title poll does.
+        machine.on(TaskArrivalEvent.StreamTask(stream = 1, taskId = 42))
+        assertEquals(listOf(TaskArrivalAction.ProbeDisplay(stream = 1, displayId = 100)),
+            machine.on(TaskArrivalEvent.Removed(taskId = 42)))
+        // The display still has the app's task: the stream follows it again.
+        assertEquals(emptyList<TaskArrivalAction>(),
+            machine.on(TaskArrivalEvent.StreamTask(stream = 1, taskId = 7)))
+        assertEquals(7, machine.streamTask(1))
+    }
+
+    @Test
+    fun aSheetClosedBeforeTheAppItselfExitsStillCloses() {
+        val machine = watching()
+        machine.on(TaskArrivalEvent.StreamTask(stream = 1, taskId = 42))
+        machine.on(TaskArrivalEvent.Removed(taskId = 42))
+        machine.on(TaskArrivalEvent.StreamTask(stream = 1, taskId = 7))
+        assertEquals(listOf(TaskArrivalAction.ProbeDisplay(stream = 1, displayId = 100)),
+            machine.on(TaskArrivalEvent.Removed(taskId = 7)))
+        assertEquals(listOf(TaskArrivalAction.CloseAppExited(stream = 1)),
+            machine.on(TaskArrivalEvent.DisplayEmpty(stream = 1)))
+    }
+
+    @Test
+    fun aTaskBackOnTheDisplayResolvesAMoveProbe() {
+        val machine = watching()
+        machine.on(TaskArrivalEvent.DisplayChanged(7, 0, 1_000))
+        // Another task is on the streamed display: the move probe is answered
+        // by the report path itself, and a later empty display is an exit.
+        machine.on(TaskArrivalEvent.StreamTask(stream = 1, taskId = 42))
+        assertEquals(listOf(TaskArrivalAction.CloseAppExited(stream = 1)),
+            machine.on(TaskArrivalEvent.DisplayEmpty(stream = 1)))
     }
 
     @Test

@@ -184,15 +184,18 @@ class DropReceiver(
             if (!temp.renameTo(File(target))) {
                 return finish(job, temp, keep = false, "failed", "could not name the file in the folder")
             }
+            // R-PRIV-1: the hand-off's exception text can name the file; only
+            // its classes may reach the log.
             runCatching {
                 landing.land(File(target), job.desk.mime, job.desk.target,
                              job.desk.index, job.desk.count)
-            }
-            log("drop ${job.id}: saved $target")
+            }.onFailure { log("drop ${job.id}: landing failed: ${failureClasses(it)}") }
+            log("drop ${job.id}: saved (${job.desk.size} bytes, ${job.desk.mime})")
             send(mapOf("t" to "drop.result", "id" to job.id, "ok" to true, "path" to target))
             synchronized(lock) { if (this.job === job) this.job = null }
         } catch (e: Exception) {
-            log("drop ${job.id} failed: ${e.message}")
+            // R-PRIV-1: a write error's message carries the temp path.
+            log("drop ${job.id} failed: ${failureClasses(e)}")
             finish(job, temp, keep = job.abandoned && temp.isFile, "failed", e.message ?: "write failed")
         }
     }

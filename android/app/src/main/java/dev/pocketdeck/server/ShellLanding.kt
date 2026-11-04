@@ -81,7 +81,8 @@ class ShellLanding(
         }.onFailure { log("drop: am start failed: ${failureClasses(it)}") }
         val (out, code) = started.getOrNull() ?: return
         if (code != 0 || out.contains("Error", ignoreCase = true)) {
-            log("drop: SEND not offered (${out.trim().take(200)})")
+            // R-PRIV-1: `am`'s output can echo the intent's extras or a path.
+            log("drop: SEND not offered (exit=$code)")
         } else {
             log("drop: SEND offered for ${names.size} file(s)")
         }

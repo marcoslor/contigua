@@ -15,6 +15,7 @@ import android.util.Log
 import android.widget.Toast
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.server.ShareStatus
+import dev.pocketdeck.server.failureClasses
 import java.io.InputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -59,7 +60,7 @@ class ShareActivity : Activity() {
         Thread({
             bound.await(BIND_TIMEOUT_S, TimeUnit.SECONDS)
             val status = runCatching { ShareDispatch.send(item, images, service.get()?.let(::ServiceTarget)) }
-                .onFailure { Log.i(TAG, "share failed: ${it.message}") }
+                .onFailure { Log.i(TAG, "share failed: ${failureClasses(it)}") }  // log-ok: exception classes only
                 .getOrDefault(ShareStatus.NO_SESSION)
             Log.i(TAG, "share ${item::class.simpleName}: status $status")
             toast(app, ShareIntent.message(status, item))
@@ -77,7 +78,7 @@ class ShareActivity : Activity() {
         // Any app can start this activity: a file: URI or one of our own providers would
         // make us read (and send) our private files on its behalf.
         if (!isForeignContent(uri)) {
-            Log.i(TAG, "refusing stream $uri")
+            Log.i(TAG, "refusing stream: ${uri.scheme ?: "no scheme"}")  // log-ok: a URI scheme, not the URI
             return@mapIndexedNotNull null
         }
         runCatching {
@@ -93,7 +94,7 @@ class ShareActivity : Activity() {
             val mime = contentResolver.getType(uri)?.takeIf { it.startsWith("image/") } ?: item.mime
             val input = contentResolver.openInputStream(uri) ?: return@runCatching null
             OpenedImage(name ?: uri.lastPathSegment ?: "image-${i + 1}", mime, size, input)
-        }.onFailure { Log.i(TAG, "cannot open $uri: ${it.message}") }.getOrNull()
+        }.onFailure { Log.i(TAG, "cannot open ${uri.scheme ?: "no scheme"}: ${failureClasses(it)}") }.getOrNull()  // log-ok: a scheme and exception classes only
     }
 
     private fun isForeignContent(uri: Uri): Boolean {
