@@ -5524,16 +5524,18 @@ def build_parser():
     p.add_argument("--text-frame", metavar="WORD", default=None,
                    help="draw WORD large on a white band in every app stream "
                         "(a stable frame for the Live Text check)")
-    p.add_argument("--encoder-align", type=int, default=16, metavar="N",
-                   help="an app stream's size alignment (the encoder's own; default 16, "
-                        "the old phone's macroblock grid)")
-    p.add_argument("--encoder-max", type=size_arg, default=(8192, 8192), metavar="WxH",
-                   help="the encoder's maximum frame (default 8192x8192)")
-    p.add_argument("--encoder-pixels", type=int, default=8192 * 8192, metavar="N",
-                   help="the encoder's largest pixel count at 60 fps (default 8192x8192)")
-    p.add_argument("--encoder-report", action="store_true",
-                   help="report the encoder's limits in welcome.device.encoder (ISS-39); "
-                        "absent emulates a phone that predates the report")
+    p.add_argument("--encoder-align", type=int, default=2, metavar="N",
+                   help="an app stream's size alignment (the encoder's own; default 2)")
+    p.add_argument("--encoder-max", type=size_arg, default=(2560, 2560), metavar="WxH",
+                   help="the encoder's maximum frame (default 2560x2560, the same cap "
+                        "the old Mac rule used)")
+    p.add_argument("--encoder-pixels", type=int, default=4_096_000, metavar="N",
+                   help="the encoder's largest pixel count at 60 fps (default 4096000)")
+    p.add_argument("--encoder-report", dest="encoder_report", action="store_true", default=True,
+                   help="report the encoder's limits in welcome.device.encoder (ISS-39); on by default")
+    p.add_argument("--no-encoder-report", dest="encoder_report", action="store_false",
+                   help="emulate a phone that predates the encoder report (the Mac's old "
+                        "16 px / 2560 px rule)")
     p.add_argument("--crisp-pattern", metavar="DIR", default=None,
                    help="app streams draw a still 1 px-line and small-text pattern, and DIR "
                         "gets the lossless source PNG + region map (ISS-39's crispness metric)")

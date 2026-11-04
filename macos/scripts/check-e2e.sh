@@ -1547,8 +1547,8 @@ check_resize() {
         skip "C6 the tall shape" "no 2x mode on this screen has 952 pt of visible height, so a ${w}x${h} pt window would be clamped"
     else
         open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
-            ok "[WIN-5] C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1800'; then
+            ok "[WIN-5] C6 tall shape resized to 1200x1800 (${w}x${h} pt at ${scale}x, the encoder's 2 px alignment)"
         else
             bad "[WIN-5] C6 no tall config (last video $(last_video_size))"
         fi
@@ -1582,7 +1582,7 @@ check_resize() {
     FAKE_ARGS=""
     launch_shared --connect "127.0.0.1:$PORT" || return 1
     local fw=640 fh=640 bar=28 edges win ew eh
-    ew=$((fw * scale / 16 * 16)); eh=$((fh * scale / 16 * 16))
+    ew=$((fw * scale)); eh=$((fh * scale))
     open_shared --open com.android.settings --float-windows \
         --resize-stream "1:${fw}x${fh}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
@@ -2624,11 +2624,12 @@ check_chrome() {
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
     "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
     local backdrop=$!
-    # The stream's video pixels: 900x600 pt at the run's backing scale, floored
-    # to 16 (VideoGeometry.displayPixels) — 1792x1200 in a 2x run, the one size
-    # the phone is told and the display keeps through every style and switch.
+    # The stream's video pixels: 900x600 pt at the run's backing scale, the
+    # window's exact pixels at the encoder's 2 px alignment — 1800x1200 in a 2x
+    # run, the one size the phone is told and the display keeps through every
+    # style and switch.
     local wake hake
-    wake=$((900 * RUN_SCALE / 16 * 16)); hake=$((600 * RUN_SCALE / 16 * 16))
+    wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
 
     # --- Framed: the permanent bar over the stream ---
     # The pointer rests in the window, below the bar.
@@ -3867,7 +3868,7 @@ check_density() {
         && ok "C16 the old-phone window is key before the burst" \
         || bad "C16 the old-phone window is not key before the burst ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
     local press pw0 top0
-    pw0=$((900 * RUN_SCALE / 16 * 16))
+    pw0=$((900 * RUN_SCALE))
     top0=$(python3 -c "print(int(160 * $pw0 / 900 * 1.5 + 0.5))")
     for press in 1 2 3 4 5 6 7 8 9 10; do
         control key "cmd+=" || bad "C16 old-phone burst press $press: $CONTROL_REPLY"
@@ -3880,10 +3881,10 @@ check_density() {
     end_shared
 
     begin_shared || return 1
-    # The app's dpi: 160 × the quantised video width / the 900 pt stream, at
-    # the run's backing scale (VideoGeometry.dpi).
+    # The app's dpi: 160 × the exact video width / the 900 pt stream, at the
+    # run's backing scale (VideoGeometry.dpi).
     local pw base high
-    pw=$((900 * RUN_SCALE / 16 * 16))
+    pw=$((900 * RUN_SCALE))
     base=$(python3 -c "print(int(160 * $pw / 900 + 0.5))")
     high=$(python3 -c "print(int(160 * $pw / 900 * 1.25 + 0.5))")
     rm -f "$WORK/density-step-restore"
