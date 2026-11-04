@@ -1,5 +1,6 @@
 // The defaults the app registers before AppKit builds the bar.
 
+import AppKit
 import XCTest
 @testable import PocketDeck
 
@@ -12,5 +13,13 @@ final class AppDefaultsTests: XCTestCase {
                      "forcing AppKit's full-screen item off empties View's last item (MENU-4)")
         XCTAssertEqual(AppDefaults.registered["ApplePersistenceIgnoreState"] as? Bool, true)
         XCTAssertEqual(AppDefaults.registered["NSQuitAlwaysKeepsWindows"] as? Bool, false)
+    }
+
+    /// Automatic tabbing adds Show Tab Bar and Show All Tabs to View once a
+    /// window enters full screen; the design has no tab items (MENU-4).
+    func testAutomaticWindowTabbingIsOff() {
+        NSWindow.allowsAutomaticWindowTabbing = true
+        AppDefaults.disableAutomaticWindowTabbing()
+        XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
     }
 }

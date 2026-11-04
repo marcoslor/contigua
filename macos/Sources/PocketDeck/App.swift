@@ -601,6 +601,13 @@ enum AppDefaults {
         // NSFullScreenMenuItemEverywhere stays at its default, so AppKit places
         // its own Enter Full Screen last in View (MENU-4).
     ]
+
+    /// One window per thing (CONV-MAC-11). AppKit's automatic tabbing would add
+    /// Show Tab Bar and Show All Tabs to View once a window enters full screen,
+    /// and the design has no tab items (MENU-4). Set before any window exists.
+    static func disableAutomaticWindowTabbing() {
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
 }
 
 /// The app's entry point: the defaults AppKit and SwiftUI read while they build
@@ -642,6 +649,7 @@ enum PocketDeckMain {
         }
         #endif
         UserDefaults.standard.register(defaults: AppDefaults.registered)
+        AppDefaults.disableAutomaticWindowTabbing()
         PocketDeckApp.main()
     }
 }
