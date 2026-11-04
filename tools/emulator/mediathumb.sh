@@ -146,7 +146,7 @@ emu shell "CLASSPATH=/data/local/tmp/pdspike.dex app_process /system/bin pdspike
 
 step "results"
 for tag in RESOLVER MEDIA_QUERY MEDIA_ROWS LOAD_THUMB THUMB_TABLE THUMB_ROWS_BEFORE THUMB_ROWS_AFTER \
-           today_cold today_warm mediastore_cold mediastore_warm MEDIASTORE; do
+           TODAY_FAIL today_cold today_warm mediastore_cold mediastore_warm MEDIASTORE; do
     grep -E "^$tag" "$WORK/spike.txt" || true
 done
 
