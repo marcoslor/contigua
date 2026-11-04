@@ -21,9 +21,21 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
 
     override fun topTask(displayId: Int): TopTask? {
         val info = firstTask(displayId) ?: return null
+        return topTaskOf(info, ::label, ::descriptionLabel)
+    }
+
+    /**
+     * `topTask`'s assembly without the task query, so the field choice behind a
+     * window's app is testable without the hidden service.
+     */
+    internal fun topTaskOf(
+        info: Any,
+        labelOf: (String) -> String,
+        taskLabelById: (Int) -> String?,
+    ): TopTask? {
         val pkg = packageOf(info) ?: return null
         val taskId = runCatching { info.javaClass.getField("taskId").get(info) as? Int }.getOrNull() ?: 0
-        return TopTask(pkg, label(pkg), taskId, taskLabel(info) ?: descriptionLabel(taskId))
+        return TopTask(pkg, labelOf(pkg), taskId, taskLabel(info) ?: taskLabelById(taskId))
     }
 
     /**
@@ -109,17 +121,30 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
         return args
     }
 
-    private fun packageOf(info: Any): String? {
-        for (name in listOf("topActivity", "baseActivity", "baseIntent")) {
-            val component = runCatching { info.javaClass.getField(name).get(info) }.getOrNull() ?: continue
-            when (component) {
-                is ComponentName -> return component.packageName
-                is android.content.Intent -> component.component?.packageName?.let { return it }
+    private fun packageOf(info: Any): String? = taskAppPackage(appFields(info))
+
+    /**
+     * One `RecentTaskInfo` reduced to the packages its app can come from. The
+     * fields are read by reflection because the class is hidden.
+     */
+    private fun appFields(info: Any): TaskAppFields {
+        fun componentPackage(name: String): String? {
+            val value = runCatching { info.javaClass.getField(name).get(info) }.getOrNull() ?: return null
+            return when (value) {
+                is ComponentName -> value.packageName
+                is android.content.Intent -> value.component?.packageName
+                else -> null
             }
         }
-        return runCatching {
+        val topInfo = runCatching {
             (info.javaClass.getField("topActivityInfo").get(info) as? android.content.pm.ActivityInfo)?.packageName
         }.getOrNull()
+        return TaskAppFields(
+            baseActivity = componentPackage("baseActivity"),
+            baseIntent = componentPackage("baseIntent"),
+            topActivity = componentPackage("topActivity"),
+            topActivityInfo = topInfo,
+        )
     }
 
     private fun label(pkg: String): String = runCatching {
@@ -127,3 +152,15 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
         pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
     }.getOrDefault(pkg)
 }
+
+/** The packages one `RecentTaskInfo` offers, most specific first as it stands today. */
+internal data class TaskAppFields(
+    val baseActivity: String? = null,
+    val baseIntent: String? = null,
+    val topActivity: String? = null,
+    val topActivityInfo: String? = null,
+)
+
+/** The task's app: today the top activity first, then the task's root, then its info. */
+internal fun taskAppPackage(fields: TaskAppFields): String? =
+    fields.topActivity ?: fields.baseActivity ?: fields.baseIntent ?: fields.topActivityInfo
