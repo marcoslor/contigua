@@ -12,9 +12,10 @@
 # The APK must already be built with the Docker K1
 # (`k1-docker.sh <android> :app:assembleDebug`); start.sh runs with --no-build so
 # no JVM runs on the host. The driver opens one session, focuses Settings' search
-# field on display 0, opens an app window and taps the field again, then reads
-# the display's flags. It never logs a task label, a title, typed text or a path:
-# lengths, ids and states only.
+# field on display 0, opens app windows and taps the field again, then proves the
+# windows' own typing, TextRuns text, image paste, drop and title still work. It
+# never logs a task label, a title, typed text or a path: lengths, ids and
+# states only.
 set -u
 
 MODE=run
