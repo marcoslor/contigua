@@ -6,9 +6,10 @@ import java.lang.reflect.Method
 
 /**
  * Best-effort task lookup on a hidden `IActivityTaskManager.getTasks`: the top
- * app (for `window.title`) and whether the display still has any task (for
- * app-exit detection). The signature varies across releases, so every candidate
- * is tried and any failure yields null (no title sent / no exit decision).
+ * app of each display (for `window.title`) and whether the display still has
+ * any task (for app-exit detection). The signature varies across releases, so
+ * every candidate is tried and any failure yields null (no title sent / no exit
+ * decision).
  */
 internal class AndroidWindowObserver(private val ctx: Context, private val log: (String) -> Unit) : WindowObserver, TaskPresence {
 
@@ -121,6 +122,7 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
         return args
     }
 
+    /** The task's own app: an activity from another package can sit on top of it. */
     private fun packageOf(info: Any): String? = taskAppPackage(appFields(info))
 
     /**
@@ -161,6 +163,6 @@ internal data class TaskAppFields(
     val topActivityInfo: String? = null,
 )
 
-/** The task's app: today the top activity first, then the task's root, then its info. */
+/** The task's app: its root first, then the top activity, then its info (WIN-28). */
 internal fun taskAppPackage(fields: TaskAppFields): String? =
-    fields.topActivity ?: fields.baseActivity ?: fields.baseIntent ?: fields.topActivityInfo
+    fields.baseActivity ?: fields.baseIntent ?: fields.topActivity ?: fields.topActivityInfo
