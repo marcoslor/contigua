@@ -590,6 +590,167 @@ final class StreamChromeImmersiveTests: XCTestCase {
         pump(0.1)
         XCTAssertEqual(controller.videoView.frame.size, window.frame.size, "immersive at rest again")
     }
+
+    // MARK: The opening cover behaves like immersive (WIN-11)
+
+    private func lightFrame(_ window: NSWindow, _ type: NSWindow.ButtonType) throws -> NSRect {
+        let light = try XCTUnwrap(window.standardWindowButton(type))
+        return light.convert(light.bounds, to: nil)
+    }
+
+    /// While a framed window's cover is up, the pointer's rest in the hot zone
+    /// brings the pill and the lights exactly as an immersive window of the
+    /// same size does; hovering the pill is Mac UI, not a phone hover.
+    func testTheCoverDwellsLikeAnImmersiveWindow() throws {
+        // The reference: an immersive window the same size as the framed
+        // window's content (900 x 628), so the pill's frames compare directly.
+        let immersive = makeManager(choose: .immersive)
+        let reference = AppWindowController(stream: 2, pkg: "com.example.app", activity: nil,
+                                            label: "Reference", manager: immersive)
+        defer { reference.window?.close() }
+        let referenceWindow = try XCTUnwrap(reference.window)
+        reference.present()
+        referenceWindow.setContentSize(NSSize(width: 900, height: 628))
+        reference.chrome.layoutChrome()
+        reference.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 620))
+        pump(0.5)
+        XCTAssertTrue(reference.chrome.showsPill, "the immersive reference shows its pill")
+        let referencePill = reference.chrome.pill.frame
+        let referenceClose = try lightFrame(referenceWindow, .closeButton)
+
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.present()
+        XCTAssertEqual(controller.style, .framed, "the window's stored style is framed")
+        XCTAssertEqual(controller.chrome.barHeight, 0, "the cover wears the immersive geometry")
+        XCTAssertTrue(controller.videoView.hoverFeedActive(),
+                      "the window feed carries the pointer, as in immersive")
+        XCTAssertFalse(controller.chrome.showsPill, "nothing shows at rest")
+
+        // The screen feed is the real pointer's path in immersive.
+        controller.pointerMoved(toScreen: window.convertPoint(toScreen: NSPoint(x: 20, y: 620)))
+        pump(0.5)
+        XCTAssertTrue(controller.dwell.shown, "the rest in the hot zone brings the pill")
+        XCTAssertTrue(controller.chrome.showsPill)
+        XCTAssertTrue(trafficLightsShown(window), "the pill carries the lights")
+        XCTAssertEqual(controller.chrome.pill.frame, referencePill,
+                       "the pill is laid out exactly as immersive lays it out")
+        XCTAssertEqual(try lightFrame(window, .closeButton), referenceClose,
+                       "and the lights ride its row in the same place")
+        // The pill is Mac UI drawn over the picture, not a phone hover.
+        let centre = NSPoint(x: referencePill.midX, y: referencePill.midY)
+        XCTAssertEqual(controller.videoView.macUIAtWindowPoint?(centre), true)
+
+        // The first frame: the cover goes, the framed bar returns with its
+        // lights, and the framed window has no dwell to run afterwards.
+        controller.noteFirstFrame()
+        pump(0.25)
+        XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height, "the framed bar comes back")
+        XCTAssertFalse(controller.chrome.showsPill, "the cover's pill goes with the cover")
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
+        XCTAssertEqual(try lightFrame(window, .closeButton).midY,
+                       window.frame.height - ChromeBar.height / 2, accuracy: 0.5,
+                       "the lights are back on the bar's line")
+        XCTAssertFalse(controller.videoView.hoverFeedActive(), "the framed window's tracking area feeds hover again")
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 620))
+        pump(0.5)
+        XCTAssertFalse(controller.chrome.showsPill, "no dwell runs after the cover (framed has none)")
+        XCTAssertFalse(controller.dwell.shown)
+    }
+
+    /// "Always Visible" shows the cover's lights and pill at once, and they
+    /// stay up — the framed window has no dwell even while the cover is up.
+    func testAlwaysVisibleShowsTheCoversChromeAtOnce() throws {
+        let manager = makeManager()
+        manager.setRevealDelay(.alwaysVisible)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.present()
+        pump(0.25)
+        XCTAssertEqual(controller.chrome.barHeight, 0, "the cover still wears the immersive geometry")
+        XCTAssertTrue(controller.chrome.showsPill, "Always Visible shows the pill at once")
+        XCTAssertTrue(trafficLightsShown(window), "and the lights with it")
+        XCTAssertEqual(controller.chrome.pill.frame.minX, DwellChrome.pillInset, accuracy: 0.5)
+        XCTAssertEqual(try lightFrame(window, .closeButton).midX,
+                       DwellChrome.pillLightInset + ChromeBar.trafficLightButtonSide / 2, accuracy: 0.5)
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 500, y: 300))
+        pump(0.8)
+        XCTAssertTrue(controller.chrome.showsPill, "there is no dwell to hide it")
+        XCTAssertTrue(trafficLightsShown(window))
+    }
+
+    /// The first frame while the pill is up takes the pill away and returns the
+    /// framed bar and its lights; the cover's visibility reconfigures the dwell.
+    func testTheFirstFrameTakesTheCoverPillAway() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.present()
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 620))
+        pump(0.5)
+        XCTAssertTrue(controller.chrome.showsPill, "the dwell pill is up over the cover")
+
+        controller.noteFirstFrame()
+        pump(0.25)
+        XCTAssertTrue(controller.chrome.openingCover.isHidden, "the cover is over")
+        XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height)
+        XCTAssertFalse(controller.chrome.showsPill)
+        XCTAssertTrue(trafficLightsShown(window), "the framed bar keeps its lights")
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
+        XCTAssertEqual(try lightFrame(window, .closeButton).midY,
+                       window.frame.height - ChromeBar.height / 2, accuracy: 0.5)
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 620))
+        pump(0.5)
+        XCTAssertFalse(controller.chrome.showsPill, "the pill never comes back in a framed window")
+    }
+
+    /// A framed window that is already live has no dwell at all (unchanged by
+    /// the cover's immersive behaviour).
+    func testALiveFramedWindowNeverDwells() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.present()
+        controller.noteFirstFrame()
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
+        XCTAssertFalse(controller.videoView.hoverFeedActive())
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.5)
+        XCTAssertFalse(controller.chrome.showsPill)
+        XCTAssertFalse(controller.dwell.shown)
+        XCTAssertTrue(trafficLightsShown(window), "the framed bar's lights stay up")
+        XCTAssertEqual(try lightFrame(window, .closeButton).midY,
+                       window.frame.height - ChromeBar.height / 2, accuracy: 0.5)
+    }
+
+    /// A touch that reaches the app through the cover's hot zone restarts the
+    /// rest, exactly as it does in an immersive window.
+    func testACoverTouchInTheHotZoneRestartsTheRest() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        _ = try XCTUnwrap(controller.window)
+        controller.present()
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 620))
+        pump(0.3)
+        let bounds = controller.videoBounds()
+        controller.touchInHotZone(TouchEvent(action: .down, nx: Float(20 / bounds.width),
+                                             ny: Float(8 / bounds.height)))
+        pump(0.1)
+        XCTAssertFalse(controller.chrome.showsPill, "the touch reset the rest (300 ms is no rest)")
+        pump(0.4)
+        XCTAssertTrue(controller.chrome.showsPill, "350 ms of quiet after the touch shows the pill")
+    }
 }
 
 
