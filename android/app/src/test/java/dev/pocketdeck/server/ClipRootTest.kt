@@ -247,18 +247,13 @@ class ClipRootTest : SessionFixture() {
 
     /** The helper as a process running as the real shell user. */
     private class FakeClipHelper(private val service: FakeClipboardService) : ClipboardHelperPort {
-        private var onChange: ((ClipText) -> Unit)? = null
         override val available: Boolean = true
 
         override fun start() = Unit
         override fun stop() = Unit
 
-        override fun listen(onChange: (ClipText) -> Unit) {
-            this.onChange = onChange
-            service.addClipListener {
-                val clip = getText() ?: return@addClipListener
-                onChange(clip)
-            }
+        override fun listen(onChange: () -> Unit) {
+            service.addClipListener { onChange() }
         }
 
         override fun getText(): ClipText? {
