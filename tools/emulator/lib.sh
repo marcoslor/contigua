@@ -15,6 +15,10 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 EMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EMU_DIR/../.." && pwd)"
 CACHE_DIR="$EMU_DIR/.cache"
+# Downloaded fixtures (Shizuku, the F-Droid test apps) are shared by every
+# checkout: a fresh worktree's empty .cache used to fetch them again after the
+# boot and lose it to GitHub's rate limit (403). Run state stays in CACHE_DIR.
+FIXTURE_DIR="${POCKETDECK_FIXTURES:-$HOME/.cache/pocketdeck-emulator}"
 ADB="$ANDROID_HOME/platform-tools/adb"
 # shellcheck disable=SC2034 # library value: start.sh boots $AVD_NAME
 EMULATOR="$ANDROID_HOME/emulator/emulator"
@@ -27,7 +31,7 @@ AGENT_DIR="${POCKETDECK_AGENT_DIR:-$REPO_ROOT/.agent/emu}"
 
 CACHE_DIR="$CACHE_DIR"
 AGENT_DIR="$AGENT_DIR"
-mkdir -p "$CACHE_DIR" "$AGENT_DIR"
+mkdir -p "$CACHE_DIR" "$AGENT_DIR" "$FIXTURE_DIR/apks"
 
 # The v2 handshake is TLS 1.3, which the macOS system Python (3.9 + LibreSSL)
 # cannot do. Prefer an interpreter whose ssl can enforce it; POCKETDECK_PYTHON

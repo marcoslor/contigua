@@ -129,7 +129,7 @@ install_apk() { # install_apk <path> <pkg>
   FRESH_APPS="$FRESH_APPS $pkg"
 }
 
-SHIZUKU_APK="$CACHE_DIR/shizuku.apk"
+SHIZUKU_APK="$FIXTURE_DIR/shizuku.apk"
 if [ ! -s "$SHIZUKU_APK" ]; then
   url="$(github_release_asset "RikkaApps/Shizuku" 'release\.apk$')" || die "cannot reach the Shizuku release feed"
   [ -n "$url" ] || die "no Shizuku release APK found"
@@ -139,8 +139,8 @@ install_apk "$SHIZUKU_APK" "$SHIZUKU_PKG"
 
 install_fdroid() { # install_fdroid <pkg>
   local fpkg="$1"
-  local fdst="$CACHE_DIR/apks/${fpkg}.apk"
-  mkdir -p "$CACHE_DIR/apks"
+  local fdst="$FIXTURE_DIR/apks/${fpkg}.apk"
+  mkdir -p "$FIXTURE_DIR/apks"
   if [ ! -s "$fdst" ]; then
     local furl
     furl="$(fdroid_latest_url "$fpkg")" || die "cannot resolve the latest $fpkg on f-droid.org"
