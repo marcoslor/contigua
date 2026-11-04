@@ -65,6 +65,20 @@ internal const val CLIP_HELPER_MAX_ATTEMPTS = 4
 internal const val CLIP_HELPER_HEALTHY_MS = 60_000L
 
 /**
+ * Debug builds may shorten the healthy window through this system property, so
+ * an emulator whose guest kills the helper every few seconds still exercises the
+ * refill. It is read once, when the helper is built; a shipped build ignores it.
+ */
+internal const val CLIP_HELPER_HEALTHY_PROP = "debug.pocketdeck.clip_healthy_ms"
+
+/** The live window: the constant, or a debug build's shorter positive value. */
+internal fun clipHelperHealthyMs(debug: Boolean, property: String?): Long {
+    if (!debug) return CLIP_HELPER_HEALTHY_MS
+    val ms = property?.trim()?.toLongOrNull() ?: return CLIP_HELPER_HEALTHY_MS
+    return if (ms in 1..CLIP_HELPER_HEALTHY_MS) ms else CLIP_HELPER_HEALTHY_MS
+}
+
+/**
  * The two ways to start the helper, in order: a root manager's `su` takes
  * `-c`, AOSP's userdebug `su` takes `sh -c` (it has no `-c` of its own). The
  * first form is unchanged, so a device where it works behaves exactly as
@@ -78,7 +92,11 @@ internal fun clipHelperSpawnForms(cmd: String): List<List<String>> = listOf(
 )
 
 /** One machine step; every state/event pair is exhaustive here. */
-internal fun clipHelperStep(state: ClipHelperState, event: ClipHelperEvent): ClipHelperStep = when (state) {
+internal fun clipHelperStep(
+    state: ClipHelperState,
+    event: ClipHelperEvent,
+    healthyMs: Long = CLIP_HELPER_HEALTHY_MS,
+): ClipHelperStep = when (state) {
     ClipHelperState.Off -> when (event) {
         ClipHelperEvent.Start -> ClipHelperStep(
             ClipHelperState.Starting(1, 1),
@@ -122,7 +140,7 @@ internal fun clipHelperStep(state: ClipHelperState, event: ClipHelperEvent): Cli
     is ClipHelperState.Ready -> when (event) {
         is ClipHelperEvent.Died ->
             if (event.attempt == state.attempt && event.form == state.form) {
-                clipHelperReadyDied(state, event)
+                clipHelperReadyDied(state, event, healthyMs)
             } else {
                 ClipHelperStep(state, emptyList())
             }
@@ -165,13 +183,17 @@ private fun clipHelperRestart(attempt: Int, form: Int, reason: String): ClipHelp
     }
 
 /**
- * A death after ready: a run that lasted [CLIP_HELPER_HEALTHY_MS] starts the
- * count again, so the next spawn is attempt 2 however many deaths came before.
- * A shorter one spends a restart like a crash loop should.
+ * A death after ready: a run that lasted [healthyMs] starts the count again,
+ * so the next spawn is attempt 2 however many deaths came before. A shorter one
+ * spends a restart like a crash loop should.
  */
-private fun clipHelperReadyDied(state: ClipHelperState.Ready, event: ClipHelperEvent.Died): ClipHelperStep =
+private fun clipHelperReadyDied(
+    state: ClipHelperState.Ready,
+    event: ClipHelperEvent.Died,
+    healthyMs: Long,
+): ClipHelperStep =
     clipHelperRestart(
-        attempt = if (event.readyMs >= CLIP_HELPER_HEALTHY_MS) 1 else state.attempt,
+        attempt = if (event.readyMs >= healthyMs) 1 else state.attempt,
         form = state.form,
         reason = event.reason,
     )
@@ -294,6 +316,11 @@ internal class ClipHelper(
     private val requestTimeoutMs: Long = 5_000L,
     /** Monotonic, so a wall-clock change cannot make a short death look healthy. */
     private val nowMs: () -> Long = { SystemClock.elapsedRealtime() },
+    /** Read once, when the server builds the helper; debug builds may shorten it. */
+    private val healthyMs: Long = clipHelperHealthyMs(
+        dev.pocketdeck.BuildConfig.DEBUG,
+        Hidden.systemProperty(CLIP_HELPER_HEALTHY_PROP),
+    ),
 ) : ClipboardHelperPort {
 
     @Volatile private var state: ClipHelperState = ClipHelperState.Off
@@ -358,7 +385,7 @@ internal class ClipHelper(
     private fun onEvent(event: ClipHelperEvent) {
         val (previous, step, eventEpoch) = synchronized(lock) {
             val before = state
-            val next = clipHelperStep(before, event)
+            val next = clipHelperStep(before, event, healthyMs)
             state = next.state
             if (before != next.state) epoch += 1
             // The healthy window is measured from the accepted READY, so a

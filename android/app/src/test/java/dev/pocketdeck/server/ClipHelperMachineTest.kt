@@ -323,6 +323,27 @@ class ClipHelperMachineTest {
         assertEquals("stop", ClipHelperEvent.Stop.label())
     }
 
+    /** The debug knob can only shorten the window, and only in a debug build. */
+    @Test
+    fun onlyADebugBuildMayShortenTheHealthyWindow() {
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = false, property = "2000"))
+        assertEquals(2_000, clipHelperHealthyMs(debug = true, property = "2000"))
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = true, property = null))
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = true, property = ""))
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = true, property = "0"))
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = true, property = "junk"))
+        assertEquals(CLIP_HELPER_HEALTHY_MS, clipHelperHealthyMs(debug = true, property = "60001"))
+        // The short window reaches the machine: 2.5 s of ready is healthy at 2 s.
+        assertEquals(
+            ClipHelperState.Restarting(2, 1),
+            clipHelperStep(
+                ClipHelperState.Ready(3, 1),
+                ClipHelperEvent.Died(3, 1, "exit 137", 2_500),
+                healthyMs = 2_000,
+            ).state,
+        )
+    }
+
     @Test
     fun theBackoffIsCapped() {        assertEquals(500, clipHelperBackoffMs(2))
         assertEquals(1_000, clipHelperBackoffMs(3))
