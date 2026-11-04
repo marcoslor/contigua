@@ -354,10 +354,9 @@ struct AppCommands: Commands {
             }
             .disabled(!phone.installEnabled)
         }
-        // Full screen is AppKit's own item, moved into the Window menu at
-        // launch (FullScreenMenu.swift): only a system-provided item can carry
-        // the standard 🌐F shortcut. Its title and symbol follow the key
-        // window through StreamMenuState.
+        // Enter Full Screen is AppKit's own, last in View: only a system item
+        // can carry the standard fn‑F shortcut, and AppKit follows the key
+        // window itself, disabling it for the Phone Mirror (MENU-4).
         CommandMenu("Navigate") {
             Button {
                 send(#selector(StreamWindowController.navigateBack(_:)))
@@ -381,23 +380,9 @@ struct AppCommands: Commands {
             .keyboardShortcut(.upArrow, modifiers: .command)
             .disabled(menu.frozen || menu.phoneOffline)
         }
-        // Window ▸ Enter/Exit Full Screen: ⌃⌘F, the system's own full-screen
-        // shortcut, and the title follows the key window. The phone window opts
-        // out of full screen (it would letterbox the mirror), so the item is
-        // disabled for it rather than doing nothing.
+        // Window ▸ Next Window and nothing of the app's for full screen: the
+        // system's own item lives last in View and follows the key window.
         CommandGroup(after: .windowSize) {
-            Button {
-                guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
-                      FullScreenMenu.allowsFullScreen(window) else { return }
-                window.toggleFullScreen(nil)
-            } label: {
-                Label(MenuModel.fullScreenTitle(fullScreen: menu.fullScreen),
-                      systemImage: MenuModel.fullScreenSymbol(fullScreen: menu.fullScreen))
-            }
-            .keyboardShortcut("f", modifiers: [.control, .command])
-            // The phone window opts out of full screen, so the item is disabled
-            // for it; the action asks the key window again before it acts.
-            .disabled(!menu.fullScreenAllowed)
             // Window ▸ Next Window ⌘` (MENU-7, WIN-29, WIN-30): the next
             // window of the key app in front-to-back order, wrapping; nothing
             // reaches the phone. Enabled only while the key app has two or more

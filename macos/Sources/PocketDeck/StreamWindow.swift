@@ -884,13 +884,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // A window that opted out of full screen cannot keep the Window menu's
-        // item disabled once it is gone: nothing may become key after it in a
-        // quiet app, and the answer it published would stay behind.
-        if self is PhoneWindowController || (window?.isKeyWindow ?? false) {
-            StreamMenuState.shared.fullScreenAllowed = true
-            StreamMenuState.shared.fullScreen = false
-        }
         liveText.exit(.close)
         stopZoomAnimation()
         openingTimer?.invalidate()
@@ -1162,8 +1155,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.hasStream = true
         state.showTouches = manager.showTouches
         state.style = style
-        state.fullScreen = window?.styleMask.contains(.fullScreen) ?? false
-        state.fullScreenAllowed = FullScreenMenu.allowsFullScreen(window)
         state.densityPackage = densityPackage
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
@@ -1186,11 +1177,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         resetBarFocus()
         let state = StreamMenuState.shared
         state.hasStream = false
-        state.fullScreen = false
-        // The window that takes over is the Deck or another stream window, and
-        // both may go full screen; a phone window publishes its own refusal
-        // when it becomes key.
-        state.fullScreenAllowed = true
         state.densityPackage = nil
         state.densityOverride = nil
         state.liveText = false
@@ -1325,7 +1311,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
             + " collection=\(window?.collectionBehavior.rawValue ?? 0)"
             + " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
-            + " menu_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
+            + " can_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
             + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
             + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
@@ -1411,7 +1397,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
-        updateFullScreenMenuState(true)
         chromeLayoutChanged()
     }
 
@@ -1423,7 +1408,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
-        updateFullScreenMenuState(false)
         applyChromeConfig(fullScreen: false)
         if let window, let frame = windowedFrame, window.frame != frame {
             window.setFrame(frame, display: true)
@@ -1434,21 +1418,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         windowedFrame = nil
-        updateFullScreenMenuState(false)
         applyChromeConfig(fullScreen: false)
         chromeLayoutChanged()
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {
-        updateFullScreenMenuState(true)
         applyChromeConfig(fullScreen: true)
         chromeLayoutChanged()
-    }
-
-    /// The Window menu's Enter/Exit Full Screen title follows the key window.
-    private func updateFullScreenMenuState(_ fullScreen: Bool) {
-        guard window?.isKeyWindow ?? false else { return }
-        StreamMenuState.shared.fullScreen = fullScreen
     }
 
     /// Full screen drops the bar in either style and leaves the dwell alone:

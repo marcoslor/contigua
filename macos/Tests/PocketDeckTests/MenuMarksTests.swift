@@ -40,8 +40,6 @@ final class MenuMarksTests: XCTestCase {
 
     private func state(style: WindowStyle = .framed,
                        reveal: RevealDelay = .short,
-                       fullScreen: Bool = false,
-                       allowed: Bool = true,
                        touches: Bool = false,
                        liveText: Bool = false,
                        hasStream: Bool = true,
@@ -50,8 +48,6 @@ final class MenuMarksTests: XCTestCase {
         let state = StreamMenuState()
         state.style = style
         state.revealDelay = reveal
-        state.fullScreen = fullScreen
-        state.fullScreenAllowed = allowed
         state.showTouches = touches
         state.liveText = liveText
         state.hasStream = hasStream
@@ -149,18 +145,32 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertTrue(writes.contains(.mark(["Density", "Default (100%)"], true)))
     }
 
-    // MARK: The Window menu
+    // MARK: The system's full-screen items
 
-    func testTheFullScreenItemReadsWhatItWillDo() {
-        let inSpace = edits(state(fullScreen: true), menu: "Window")
-        XCTAssertTrue(inSpace.contains(.retitle(["Enter Full Screen"], "Exit Full Screen")))
-        XCTAssertTrue(inSpace.contains(.enable(["Enter Full Screen"], true)))
+    /// AppKit's own Enter Full Screen (View, last) and its Window tiling
+    /// submenu follow the key window themselves. The app writes nothing on
+    /// them — a retitle or disable here would fight the system (MENU-4,
+    /// MENU-7, MENU-11).
+    func testTheSystemFullScreenItemsGetNoEdits() {
+        let view = [MenuMarks.Item(title: "Find Apps"),
+                    MenuMarks.Item(title: "", isSeparator: true),
+                    MenuMarks.Item(title: "Enter Full Screen")]
+        XCTAssertEqual(MenuMarks.edits(menu: "View", items: view, state: state()), [])
 
-        let windowed = edits(state(fullScreen: false), menu: "Window")
-        XCTAssertTrue(windowed.contains(.retitle(["Enter Full Screen"], "Enter Full Screen")))
-
-        let phone = edits(state(fullScreen: false, allowed: false), menu: "Window")
-        XCTAssertTrue(phone.contains(.enable(["Enter Full Screen"], false)))
+        let window = [MenuMarks.Item(title: "Minimize"),
+                      MenuMarks.Item(title: "Zoom"),
+                      MenuMarks.Item(title: "Full Screen Tile", children: [
+                          MenuMarks.Item(title: "Left of Screen"),
+                          MenuMarks.Item(title: "Right of Screen"),
+                      ]),
+                      // macOS 26 has shown the same group as an
+                      // "Enter Full Screen" parent with children.
+                      MenuMarks.Item(title: "Enter Full Screen", children: [
+                          MenuMarks.Item(title: "Left of Screen"),
+                          MenuMarks.Item(title: "Right of Screen"),
+                      ]),
+                      MenuMarks.Item(title: "Bring All to Front")]
+        XCTAssertEqual(MenuMarks.edits(menu: "Window", items: window, state: state()), [])
     }
 
     func testAMenuThatIsNotOursGetsNoEdits() {
@@ -187,17 +197,14 @@ final class MenuMarksTests: XCTestCase {
     func testApplyingWritesTheValuesOntoSwiftUIsOwnItems() {
         let shared = StreamMenuState.shared
         let saved = (shared.style, shared.revealDelay, shared.showTouches, shared.liveText,
-                     shared.fullScreen, shared.fullScreenAllowed, shared.hasStream,
-                     shared.densityPackage, shared.densityOverride)
+                     shared.hasStream, shared.densityPackage, shared.densityOverride)
         defer {
             shared.style = saved.0; shared.revealDelay = saved.1; shared.showTouches = saved.2
-            shared.liveText = saved.3; shared.fullScreen = saved.4; shared.fullScreenAllowed = saved.5
-            shared.hasStream = saved.6; shared.densityPackage = saved.7; shared.densityOverride = saved.8
+            shared.liveText = saved.3; shared.hasStream = saved.4; shared.densityPackage = saved.5
+            shared.densityOverride = saved.6
         }
         shared.style = .immersive
         shared.revealDelay = .alwaysVisible
-        shared.fullScreen = true
-        shared.fullScreenAllowed = true
         shared.hasStream = true
         shared.densityPackage = "com.android.settings"
         shared.densityOverride = nil
@@ -225,7 +232,9 @@ final class MenuMarksTests: XCTestCase {
         main.addItem(viewItem)
 
         let window = NSMenu(title: "Window")
-        window.addItem(withTitle: "Enter Full Screen", action: nil, keyEquivalent: "f")
+        let systemFullScreen = NSMenuItem(title: "Enter Full Screen", action: nil, keyEquivalent: "")
+        systemFullScreen.isEnabled = false
+        window.addItem(systemFullScreen)
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         windowItem.submenu = window
         main.addItem(windowItem)
@@ -245,7 +254,9 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on)
         XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
         XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
-        XCTAssertEqual(window.items.first { $0.title.contains("Full Screen") }?.title, "Exit Full Screen")
+        // The system's item keeps its own title and enablement (MENU-4).
+        XCTAssertEqual(systemFullScreen.title, "Enter Full Screen")
+        XCTAssertFalse(systemFullScreen.isEnabled)
     }
 
     /// Phone ▸ Phone Mirror (⌘P) is enabled exactly while the phone is online,

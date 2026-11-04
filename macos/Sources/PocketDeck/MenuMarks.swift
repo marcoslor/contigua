@@ -49,7 +49,9 @@ enum MenuMarks {
     }
 
     /// The menus whose items carry a mark or a title that follows the window.
-    static let menus = ["View", "Window"]
+    /// Window's own items are AppKit's (the next-window flag is written below,
+    /// and full screen is the system's: MENU-4, MENU-7).
+    static let menus = ["View"]
 
     /// The Density item that names the Settings default: its own title carries
     /// the percentage, so a rule addresses it by this marker and the applier
@@ -97,9 +99,6 @@ enum MenuMarks {
                         edits.append(.mark([item.title, child.title], state.densityOverride == option.value))
                     }
                 }
-            case ("Window", let title) where title.contains("Full Screen"):
-                edits.append(.retitle([title], MenuModel.fullScreenTitle(fullScreen: state.fullScreen)))
-                edits.append(.enable([title], state.fullScreenAllowed))
             default:
                 break
             }
