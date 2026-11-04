@@ -6292,6 +6292,10 @@ PY
     wait_until 30 stream_video && wait_until 15 windows_at_least 2 \
         && ok "[SHARE-8] LINKS a stream window opened with video ($(windows | wc -l | tr -d ' ') windows)" \
         || bad "[SHARE-8] LINKS no stream window/video for the link"
+    local link_want="$((900 * RUN_SCALE))x$((600 * RUN_SCALE))"
+    wait_until 5 [ "$(rx_size link.open)" = "$link_want" ] \
+        && ok "[WIN-5] LINKS the link window asked for its 900x600 pt stream ($link_want)" \
+        || bad "[WIN-5] LINKS link.open asked for $(rx_size link.open), not $link_want"
 
     open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
     sleep 3
@@ -9303,6 +9307,26 @@ sys.exit(1)
 PY
 }
 
+# rx_size <type> — the last message of that type the phone received, as WxH
+# pixels from its own w/h fields (a link or handoff open's stream size).
+rx_size() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+size = "none"
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "rx":
+        continue
+    msg = event.get("msg") or {}
+    if msg.get("t") == sys.argv[2]:
+        size = "%sx%s" % (msg.get("w"), msg.get("h"))
+print(size)
+PY
+}
+
 # stream_after_close <stream> — what the fakephone received for that stream
 # after the Mac's window.close for it, as the message types in arrival order
 # ("none" when nothing). The phone forgets a stream at its close, so anything
@@ -11734,6 +11758,10 @@ check_handoff() {
 
     wait_until 30 events_have '"t":"task.continue"' \
         && ok "[SHARE-10] HO the Mac sent task.continue" || bad "[SHARE-10] HO no task.continue reached the phone"
+    local ho_want="$((900 * RUN_SCALE))x$((600 * RUN_SCALE))"
+    wait_until 5 [ "$(rx_size task.continue)" = "$ho_want" ] \
+        && ok "[WIN-5] HO the handoff window asked for its 900x600 pt stream ($ho_want)" \
+        || bad "[WIN-5] HO task.continue asked for $(rx_size task.continue), not $ho_want"
     wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"moved"' \
         && ok "[SHARE-10] HO the phone moved the foreground app (started=moved)" \
         || bad "[SHARE-10] HO no moved answer: $(tail -2 "$WORK/events.jsonl" | tr '\n' ' ')"
