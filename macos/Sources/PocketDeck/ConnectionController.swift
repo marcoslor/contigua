@@ -2594,12 +2594,15 @@ final class ConnectionController {
         case .shareFileAbort(let id):
             shareInbox.fileAbort(id: id)        case .ready(let info, _, let address):
             ready(info, address: address)
-        case .fsItems(let id, let page, let items):
-            fsClient?.items(id: id, page: page, items: items)
-            filesBridgeClient?.items(id: id, page: page, items: items)
+        case .fsItems(let id, let page, let digest, let items):
+            fsClient?.items(id: id, page: page, digest: digest, items: items)
+            filesBridgeClient?.items(id: id, page: page, digest: digest, items: items)
         case .fsItem(let id, let item):
             fsClient?.item(id: id, item: item)
             filesBridgeClient?.item(id: id, item: item)
+        case .fsDigest(let id, let digests):
+            fsClient?.digests(id: id, values: digests)
+            filesBridgeClient?.digests(id: id, values: digests)
         case .fsData(let id, let bytes):
             fsClient?.data(id: id, bytes: bytes)
             filesBridgeClient?.data(id: id, bytes: bytes)

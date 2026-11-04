@@ -58,6 +58,51 @@ class FsViewTest {
         assertEquals(listOf(".nomedia", "a.jpg"), view.list("DCIM", null).items.map { it.name })
     }
 
+    /**
+     * FILES-35: Android's own transient entries (a move in flight, a delete
+     * awaiting the Trash) are never phone files a person means, at any depth.
+     */
+    @Test
+    fun transientEntriesAreLeftOutAtEveryDepth() {
+        val view = view()
+        File(root, "DCIM/Camera").mkdirs()
+        File(root, "DCIM/.trashed-100").writeText("x")
+        File(root, "DCIM/.pending-200").writeText("x")
+        File(root, "DCIM/Camera/.trashed-300").writeText("x")
+        File(root, "DCIM/Camera/.pending-400").writeText("x")
+        File(root, "DCIM/Camera/keep.jpg").writeText("jpg")
+        assertEquals(listOf("Camera"), view.list("DCIM", null).items.map { it.name })
+        assertEquals(listOf("keep.jpg"), view.list("DCIM/Camera", null).items.map { it.name })
+    }
+
+    /**
+     * FILES-35: a transient entry is not an item, so it neither fills a page
+     * nor moves the cursor; the real entries still come out one page at a time.
+     */
+    @Test
+    fun transientEntriesDoNotConsumeAPageSlotOrMoveTheCursor() {
+        root = tmp.newFolder("sdcard-pages")
+        val view = FsView(FsPaths(root), maxPageItems = 2)
+        File(root, "F").mkdirs()
+        repeat(5) { File(root, "F/f$it.txt").writeText("") }
+        repeat(3) { File(root, "F/.trashed-$it").writeText("") }
+        repeat(3) { File(root, "F/.pending-$it").writeText("") }
+
+        val seen = mutableListOf<String>()
+        var page: String? = null
+        var pages = 0
+        do {
+            val result = view.list("F", page)
+            assertTrue(result.items.size <= 2)
+            seen += result.items.map { it.name }
+            page = result.next
+            pages++
+            assertTrue("paging did not terminate", pages <= 3)
+        } while (page != null)
+        assertEquals(3, pages)
+        assertEquals(listOf("f0.txt", "f1.txt", "f2.txt", "f3.txt", "f4.txt"), seen)
+    }
+
     @Test
     fun aDirectRequestForADeniedEntryIsRefused() {
         val view = view()
