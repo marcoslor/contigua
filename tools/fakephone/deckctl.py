@@ -2916,6 +2916,27 @@ def build_parser():
     sp.add_argument("--seconds", type=float, default=3.0)
     sp.add_argument("--out", help="write raw Annex-B H.264 here")
 
+    sp = sub.add_parser("adopt",
+                        help="tap the app's own New window, adopt the reported task and "
+                             "prove both streams, Back/close and the launcher case (WIN-44…49)",
+                        **spp)
+    sp.add_argument("--pkg", default="com.android.chrome")
+    sp.add_argument("--w", type=int, default=1280)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--source-stream", type=int, default=1, dest="source_stream")
+    sp.add_argument("--adopt-stream", type=int, default=2, dest="adopt_stream")
+    sp.add_argument("--settle", type=float, default=2.0,
+                    help="seconds to let the page load before the menu tap")
+    sp.add_argument("--attempts", type=int, default=3)
+    sp.add_argument("--task-timeout", type=float, default=8.0, dest="task_timeout")
+    sp.add_argument("--adopt-timeout", type=float, default=25.0, dest="adopt_timeout")
+    sp.add_argument("--phase-seconds", type=float, default=5.0, dest="phase_seconds")
+    sp.add_argument("--out-prefix", default="/tmp/deckctl-adopt", dest="out_prefix")
+    sp.add_argument("--adb", default="adb", help="adb binary for the launcher case")
+    sp.add_argument("--serial", default="emulator-5554")
+    sp.add_argument("--skip-launcher", action="store_true", dest="skip_launcher")
+
     sp = sub.add_parser("resize-test", help="open, resize, check new CONFIG + keyframe", **spp)
     sp.add_argument("--w", type=int, default=1080)
     sp.add_argument("--h", type=int, default=2340)
@@ -3179,6 +3200,291 @@ def build_parser():
     return p
 
 
+# --- adopt: the app's own New window becomes another window (WIN-44…WIN-49) --
+#
+# The tap path the spike proved on the 1280×800 rig: Chrome's ⋮ at (1249, 68)
+# and "New window" at (1068, 228), both normalised so the command follows the
+# stream's own size.
+TAP_MENU = (1249.0 / 1280.0, 68.0 / 800.0)
+TAP_NEW_WINDOW = (1068.0 / 1280.0, 228.0 / 800.0)
+
+
+def _adopt_tap(client, stream, point):
+    nx, ny = point
+    client.send_raw(proto.pack_touch(stream, proto.TOUCH_DOWN, 0, nx, ny))
+    time.sleep(0.06)
+    client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, nx, ny))
+
+
+def _adopt_poke(client, stream, direction=3.0):
+    client.send_raw(proto.pack_scroll(stream, 0.5, 0.5, 0.0, direction))
+
+
+def _adopt_messages(rec):
+    with rec.lock:
+        return list(rec.messages)
+
+
+def _adopt_wait(rec, predicate, timeout, what):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        rec.raise_if_broken(what)
+        for message in _adopt_messages(rec):
+            if predicate(message):
+                return message
+        time.sleep(0.05)
+    return None
+
+
+def _adopt_closed(rec, stream):
+    with rec.lock:
+        return rec.closed_reason.get(stream)
+
+
+def _adopt_wait_closed(rec, stream, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        reason = _adopt_closed(rec, stream)
+        if reason is not None:
+            return reason
+        rec.raise_if_broken("waiting for stream %d to close" % stream)
+        time.sleep(0.05)
+    return None
+
+
+def _adopt_phase(rec, client, streams, seconds, prefix, name):
+    """Poke each stream and count what it drew; decode the last frame."""
+    for stream in streams:
+        rec.begin_phase(stream, "%s-s%d-%s.h264" % (prefix, stream, name))
+        client.send_json({"t": "window.keyframe", "stream": stream})
+    deadline = time.time() + seconds
+    direction = 3.0
+    while time.time() < deadline:
+        for stream in streams:
+            _adopt_poke(client, stream, direction)
+        direction = -direction
+        time.sleep(0.4)
+    frames = {}
+    for stream in streams:
+        frames[stream] = rec.end_phase(stream)
+        path = "%s-s%d-%s.h264" % (prefix, stream, name)
+        if frames[stream] > 0:
+            try:
+                dump_last_frame(path, "%s-s%d-%s.png" % (prefix, stream, name))
+            except DeckError:
+                pass
+    return frames
+
+
+def _adb_input(args, *command):
+    if not args.adb:
+        return False
+    result = subprocess.run([args.adb, "-s", args.serial, "shell"] + [str(c) for c in command],
+                            capture_output=True, text=True, timeout=60)
+    return result.returncode == 0
+
+
+def _adb_shell(args, *command, timeout=90):
+    if not args.adb:
+        return None
+    return subprocess.run([args.adb, "-s", args.serial, "shell"] + [str(c) for c in command],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _dump_ui(args, display, path):
+    """A display's hierarchy; tries every spelling uiautomator has had."""
+    remote = "/data/local/tmp/pd-deckctl-ui.xml"
+    for command in (("uiautomator", "dump", "--display", str(display), remote),
+                    ("uiautomator", "dump", remote, "--display", str(display)),
+                    ("uiautomator", "dump", remote)):
+        _adb_shell(args, *command)
+        cat = _adb_shell(args, "cat", remote)
+        text = (cat.stdout if cat else "") or ""
+        if text.startswith("<?xml") or "<hierarchy" in text:
+            try:
+                with open(path, "w") as fp:
+                    fp.write(text)
+            except OSError:
+                pass
+            return text
+    return None
+
+
+def _ui_nodes(text):
+    nodes = []
+    for match in re.finditer(r"<node [^>]*>", text or ""):
+        tag = match.group(0)
+        node = {}
+        for name in ("text", "content-desc", "resource-id", "bounds"):
+            found = re.search(r'%s="([^"]*)"' % name, tag)
+            node[name] = found.group(1) if found else ""
+        nodes.append(node)
+    return nodes
+
+
+def _toolbar_desc(text):
+    """Chrome's ⋮ label on this dump, or None. The resource id is exact; the
+    description is "More options", with an update banner in front when one is
+    pending (boot 9). A first-run screen has neither."""
+    for node in _ui_nodes(text):
+        desc = node["content-desc"].strip()
+        if node["resource-id"].endswith(":id/menu_button") or "more options" in desc.lower():
+            return desc or node["resource-id"]
+    return None
+
+
+def _adopt_toolbar(args, display, prefix):
+    """Prove the streamed page has Chrome's toolbar before the New-window taps.
+
+    Boot 3 burned a boot on a cleared Chrome sitting on its first-run screen:
+    no toolbar, so the ⋮ tap hit nothing and no task was ever created. This
+    names that state instead of retrying the tap three times."""
+    if not args.adb:
+        return None
+    path = "%s-s%d-toolbar.xml" % (prefix, display)
+    for attempt in range(3):
+        label = _toolbar_desc(_dump_ui(args, display, path))
+        if label is not None:
+            return label
+        if attempt < 2:
+            time.sleep(2.0)
+    return None
+
+
+def cmd_adopt(client, args):
+    """Stream the app, tap its own New window, adopt the reported task, and prove
+    both streams, Back/close and the launcher's moved_to_phone (WIN-44…WIN-49)."""
+    source = args.source_stream
+    adopted_stream = args.adopt_stream
+    prefix = args.out_prefix or "/tmp/deckctl-adopt"
+    rec = StreamRecorder(client).start()
+    task_reports = []
+
+    def report(message):
+        return message.get("t") == "window.task" and message.get("stream") == source
+
+    try:
+        client.send_json({"t": "window.open", "stream": source, "w": args.w,
+                          "h": args.h, "dpi": args.dpi, "pkg": args.pkg})
+        size = rec.wait_for_size(source, 25.0)
+        print("source stream=%d size=%dx%d" % (source, size[0], size[1]), flush=True)
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            with rec.lock:
+                if source in rec.first_frame_at:
+                    break
+            rec.raise_if_broken("waiting for the source's first frame")
+            time.sleep(0.05)
+        else:
+            raise DeckError("the source stream drew no first frame")
+        time.sleep(max(0.0, args.settle))
+
+        # A fresh Chrome shows a notification promo; one Back dismisses it and
+        # is a no-op on the new-tab page. The toolbar probe follows it: while
+        # the promo's modal is up, uiautomator's dump contains that window
+        # only, so a correct page would look toolbar-less (boot 4, 11:49).
+        client.send_json({"t": "nav", "stream": source, "action": "back"})
+        time.sleep(1.0)
+
+        toolbar = _adopt_toolbar(args, source, prefix)
+        if toolbar is None:
+            raise DeckError(
+                "no Chrome toolbar on stream %d after the first-run warm "
+                "(uiautomator found no menu_button in %s-s%d-toolbar.xml); "
+                "stopping before the New-window trigger"
+                % (source, prefix, source))
+        print("toolbar on stream %d: %s" % (source, toolbar), flush=True)
+
+        task = None
+        for attempt in range(1, args.attempts + 1):
+            _adopt_tap(client, source, TAP_MENU)
+            time.sleep(1.2)
+            _adopt_tap(client, source, TAP_NEW_WINDOW)
+            task = _adopt_wait(rec, report, args.task_timeout, "waiting for window.task")
+            if task is not None:
+                break
+            print("attempt %d: no window.task; closing the menu" % attempt, flush=True)
+            client.send_json({"t": "nav", "stream": source, "action": "back"})
+            time.sleep(1.0)
+        if task is None:
+            raise DeckError("no window.task after %d attempts" % args.attempts)
+        task_reports.append(task)
+        print("PASS [WIN-44] window.task once stream=%s taskId=%s pkg=%s labelLen=%d"
+              % (task.get("stream"), task.get("taskId"), task.get("pkg"),
+                 len(task.get("label") or "")), flush=True)
+        task_id = task.get("taskId")
+
+        client.send_json({"t": "window.adopt", "stream": adopted_stream,
+                          "taskId": task_id, "pkg": task.get("pkg"),
+                          "w": args.w, "h": args.h, "dpi": args.dpi})
+        opened = _adopt_wait(rec, lambda m: m.get("t") == "window.opened"
+                             and m.get("stream") == adopted_stream,
+                             args.adopt_timeout, "waiting for the adopt's window.opened")
+        if opened is None:
+            raise DeckError("window.adopt got no window.opened")
+        if opened.get("started") != "moved" or opened.get("taskId") != task_id:
+            raise DeckError("window.adopt answered started=%r taskId=%r, expected moved/%r"
+                            % (opened.get("started"), opened.get("taskId"), task_id))
+        print("PASS [WIN-46] window.opened stream=%s displayId=%s taskId=%s started=moved"
+              % (opened.get("stream"), opened.get("displayId"), opened.get("taskId")), flush=True)
+
+        frames = _adopt_phase(rec, client, [source, adopted_stream],
+                              args.phase_seconds, prefix, "both")
+        print("phase both: source frames=%d adopted frames=%d"
+              % (frames[source], frames[adopted_stream]), flush=True)
+        if frames[source] < 3 or frames[adopted_stream] < 3:
+            raise DeckError("both streams did not draw (source %d, adopted %d)"
+                            % (frames[source], frames[adopted_stream]))
+        print("PASS [WIN-47] both streams drew after the adopt", flush=True)
+
+        for press in (1, 2):
+            client.send_json({"t": "nav", "stream": adopted_stream, "action": "back"})
+            time.sleep(1.5)
+            reason = _adopt_closed(rec, adopted_stream)
+            print("adopted Back %d: closed=%s" % (press, reason), flush=True)
+            if reason is not None:
+                break
+        if _adopt_closed(rec, adopted_stream) is None:
+            client.send_json({"t": "window.close", "stream": adopted_stream})
+            reason = _adopt_wait_closed(rec, adopted_stream, 10.0)
+            if reason is None:
+                raise DeckError("the adopted window did not close")
+            print("adopted window.close answered reason=%s" % reason, flush=True)
+
+        source_frames = _adopt_phase(rec, client, [source], args.phase_seconds, prefix,
+                                     "source-after")
+        print("phase source-after: frames=%d" % source_frames[source], flush=True)
+        if source_frames[source] < 1:
+            raise DeckError("the first stream stopped drawing after the adopted window closed")
+        print("PASS [WIN-47] the first stream kept its picture", flush=True)
+
+        if not args.skip_launcher:
+            # The person opens the streamed app from the phone's launcher: the
+            # same task id changes display. This is Home, then the Chrome icon
+            # (the spike's own path); monkey is the fallback if the icon moved.
+            _adb_input(args, "input", "-d", "0", "keyevent", "3")
+            time.sleep(1.5)
+            _adb_input(args, "input", "-d", "0", "tap", "663", "1970")
+            reason = _adopt_wait_closed(rec, source, 12.0)
+            if reason is None:
+                _adb_input(args, "monkey", "-p", args.pkg, "-c",
+                           "android.intent.category.LAUNCHER", "1")
+                reason = _adopt_wait_closed(rec, source, 12.0)
+            if reason != "moved_to_phone":
+                raise DeckError("the launcher case closed the source as %r, expected moved_to_phone"
+                                % (reason,))
+            task_reports = [m for m in _adopt_messages(rec) if report(m)]
+            if len(task_reports) != 1:
+                raise DeckError("the launcher case reported %d tasks, expected none beyond the one"
+                                % (len(task_reports) - 1))
+            print("PASS [WIN-49] the launcher moved the task to the phone "
+                  "(window.closed moved_to_phone) with no window.task", flush=True)
+        print("ADOPT OK", flush=True)
+        return 0
+    finally:
+        rec.stop()
+
+
 def cmd_version(client, _args):
     print("hello.v=%s session=%s path=%s protocol=4"
           % (client.hello_v, client.session_id, client.path_id))
@@ -3297,6 +3603,7 @@ COMMANDS = {
     "media": cmd_media,
     "probe": cmd_probe,
     "multi": cmd_multi,
+    "adopt": cmd_adopt,
     "resize-stress": cmd_resize_stress,
     "density-burst": cmd_density_burst,
     "exit-test": cmd_exit_test,

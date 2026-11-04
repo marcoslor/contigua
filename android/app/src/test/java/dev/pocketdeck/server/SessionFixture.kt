@@ -29,9 +29,11 @@ abstract class SessionFixture {
         taskPresence: TaskPresence = TaskPresence { null },
         taskMove: TaskMove? = null,
         titleObserver: WindowObserver? = null,
+        taskEvents: TaskStackEvents? = null,
         clipboard: ClipboardPort? = null,
         clipImages: ClipboardImagePort? = null,
         log: (String) -> Unit = {},
+        exitPollIntervalMs: Long = 50,
     ) {
         platform = FakePlatform()
         serverSocket = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
@@ -59,11 +61,12 @@ abstract class SessionFixture {
                 clipImages = clipImages,
                 packages = null,
                 taskMove = taskMove,
+                taskEvents = taskEvents,
                 now = { clock++ },
                 log = log,
                 handshakeTimeoutMs = 3_000,
                 pairDecisionTimeoutMs = 30_000,
-                exitPollIntervalMs = 50,
+                exitPollIntervalMs = exitPollIntervalMs,
                 tlsView = TlsV2Fixture.view,
                 gateProvider = { GateSettings(true, true) },
             )

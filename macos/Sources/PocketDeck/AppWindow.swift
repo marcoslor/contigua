@@ -81,6 +81,14 @@ final class AppWindowController: StreamWindowController {
                         newInstance: newInstance)
     }
 
+    /// WIN-46: one `window.adopt` for the task the app started, at this
+    /// window's own stream size, exactly as `window.open` would ask.
+    func sendAdopt(taskId: Int) {
+        let pixels = displayPixels()
+        session.adoptTask(stream: stream, taskId: taskId, pkg: pkg,
+                          width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
+    }
+
     override var frameKey: String { "app.\(pkg)" }
 
     /// The app list arrived (or was corrected): the window's short name.

@@ -488,6 +488,56 @@ final class WindowManager {
         return controller
     }
 
+    /// WIN-45: the phone reported a task the app started itself. The same
+    /// New-item rule as ⌘N decides: one more cascaded window and one
+    /// `window.adopt` when it may act; nothing when a single-window app, a down
+    /// link or a window still opening blocks it; at the cap the task stays on
+    /// the phone and the Deck carries WIN-32's sentence.
+    @discardableResult
+    func noteTaskArrival(stream: UInt32, taskId: Int, pkg: String, label: String?) -> AppWindowController? {
+        guard taskId > 0, !pkg.isEmpty else { return nil }
+        let item = newWindowItem(for: pkg)
+        guard item.enabled else {
+            if item.blocker == .atCap {
+                let app = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
+                onTooManyWindows?(NewWindowBlocker.atCap.sentence(app: app) ?? "")
+            }
+            return nil
+        }
+        return adoptAdditional(sourceStream: stream, taskId: taskId, pkg: pkg, label: label)
+    }
+
+    /// The window an adopted task opens in: the app's front window's frame
+    /// cascaded 28 pt, its task's label, one `window.adopt` (WIN-45, WIN-46).
+    @discardableResult
+    func adoptAdditional(sourceStream: UInt32, taskId: Int, pkg: String, label: String?,
+                         deviceId: String? = nil) -> AppWindowController? {
+        let phone = deviceId ?? activeDeviceId
+        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
+        let appLabel = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
+        let stream = allocateStream()
+        let adopted = AppWindowController(stream: stream, pkg: pkg, activity: nil,
+                                          label: appLabel, deviceId: phone, manager: self)
+        adopted.remembersFrame = false
+        let anchor = appWindows(pkg: pkg, deviceId: phone).first?.window?.frame
+            ?? self.controller(for: sourceStream)?.window?.frame
+        if let anchor {
+            adopted.placementOverride = NSRect(x: anchor.minX + 28, y: anchor.minY - 28,
+                                               width: anchor.width, height: anchor.height)
+        }
+        store(adopted, stream: stream)
+        adopted.setDropPill(dropPill)
+        if linkIsDown { adopted.setLinkDown(true) }
+        adopted.setTaskLabel(label)
+        adopted.present()
+        adopted.sendAdopt(taskId: taskId)
+        noteFront(stream)
+        refreshTitles()
+        onChange?()
+        onAppWindowOpened?(pkg, adopted.stream)
+        return adopted
+    }
+
     /// The windows of one app on one phone, front to back (WIN-29, WIN-30).
     func appWindows(pkg: String, deviceId: String? = nil) -> [AppWindowController] {
         let phone = deviceId ?? activeDeviceId
@@ -1035,9 +1085,18 @@ final class WindowManager {
             }
         case .windowTask(let stream, let taskId):
             (controller(for: stream) as? AppWindowController)?.taskId = taskId
+        case .appTaskArrived(let stream, let taskId, let pkg, let label):
+            noteTaskArrival(stream: stream, taskId: taskId, pkg: pkg, label: label)
         case .maxWindows(let cap):
             setMaxWindows(cap)
         case .phoneError(let code, _, let stream):
+            if code == "cannot_adopt" {
+                // WIN-46: the phone could not move that task. That window goes
+                // quietly — no launcher notice, and the task stays where it is.
+                Log.app.info("adopt refused for stream \(stream, privacy: .public)")
+                controller(for: stream)?.closeFromRemote()
+                return
+            }
             if code == "too_many_windows" {
                 // The phone refused the extra window (WIN-32): it closes, no
                 // window.close is sent for a window that never opened, and the

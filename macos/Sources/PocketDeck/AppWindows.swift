@@ -116,6 +116,9 @@ struct NewWindowItem: Equatable {
     var title: String
     var enabled: Bool
     var help: String?
+    /// Why it cannot act, for the callers that must tell the cap apart from
+    /// the silent blocks (an adopted task at the cap shows the Deck's notice).
+    var blocker: NewWindowBlocker? = nil
 
     /// The item for the key app, `app` being its label ("Chrome") or nil when
     /// no app window is key (then it reads "New Window").
@@ -127,7 +130,7 @@ struct NewWindowItem: Equatable {
     static func make(app: String?, windowCount: Int, multi: Bool, opening: Bool,
                      cap: Int, link: PhoneLinkPhase) -> NewWindowItem {
         guard let app else {
-            return NewWindowItem(title: "New Window", enabled: false, help: nil)
+            return NewWindowItem(title: "New Window", enabled: false, help: nil, blocker: .noApp)
         }
         let blocker: NewWindowBlocker?
         if link != .up {
@@ -143,7 +146,8 @@ struct NewWindowItem: Equatable {
         }
         return NewWindowItem(title: "New \(app) Window",
                              enabled: blocker == nil,
-                             help: blocker?.sentence(app: app))
+                             help: blocker?.sentence(app: app),
+                             blocker: blocker)
     }
 }
 
