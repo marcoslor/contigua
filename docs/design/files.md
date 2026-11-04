@@ -1168,6 +1168,56 @@ Mac + phone pass stays with the reviewer).
   installs the extension, and (only for a bundle that carries it) registers the
   installed copy and its `Files.appex`.
 
+## Sync integrity (ISS-37, 2026-11-04)
+
+**What the person saw.** On the real phone, Finder listed 568 entries in `DCIM/Camera`; the phone had 109. The other 459 were photos moved off or deleted on the phone over five months, plus 15 of Android's `.trashed-…` files. Finder showed them, asked thumbnails for them, and 334 of 446 asks came back `fs_not_found`. New phone files can be missed the same way. The person: "files go out of sync continuously … architectural, not trivial".
+
+**Why: the Mac only tells the system what it sees happen.**
+1. **A first listing is a silent baseline.** `FilesBridge.baseline` lists a folder the first time this app process touches it, fills `snapshots`, and records nothing. Only a phone push after that is diffed (`refresh`). So whatever changed while this process wasn't watching the folder never reaches the system: adds, edits and deletions alike. That covers every app start, reconnect, phone update, and any change more than 10 minutes after Finder last touched the folder.
+2. **The system deletes only when told** (S5 round 3: `didDeleteItemsWithIdentifiers`; a re-enumeration that lacks an item isn't a deletion). So a missed deletion is permanent.
+3. **The anchor log lives in memory, with a per-process epoch.** Every app start expires the system's anchor. The full re-enumeration then answers only this process's cached listings (`working set items=0` after a start), so it can't repair anything either.
+
+Watching only touched folders, and nothing while away, is right for the battery (§5). It just can't be the guarantee.
+
+**Principle.** A phone push is the fast path; **comparison with a durable record of what the system was told is the guarantee**. Every complete phone listing is the truth for its folder.
+
+**Design.**
+1. **The replica record** (Mac app, per profile, beside the id map and in the same coalesced write). Per folder identifier, it keeps:
+   - the children's identifiers and the `FileItem` each was last reported with;
+   - the folder's phone **digest** (below) at that report;
+   - the last-touched time.
+
+   It's the app's belief about the system's replica. A deletion for an item the system doesn't know is a no-op, so the belief may be generous.
+2. **Every complete listing diffs, the first one included.** When the last page of a folder's listing arrives, `FilesDiff.delta(old: record[folder], new: listing)` goes into the change log, and the working set is signalled. The baseline stops being silent. An incomplete page walk (an error or a cancel mid-walk) reports additions and edits only, never a deletion.
+   - **Guards, so a diff never deletes a real file:**
+     - an item with a pending or in-flight upload is never deleted by a listing;
+     - nor is an item the record gained or changed after the walk's first page was asked (a Mac write racing the walk);
+     - a walk that would delete more than half of a folder's recorded items, and more than 20, is repeated once after 2 s, and only the deletions both walks agree on go out. The person's 459-of-568 case passes that; a phone whose storage isn't mounted yet doesn't empty Finder.
+3. **A durable change log.** The log (sequence, container, delta; 512 entries, as now) and its epoch persist with the record, so an app start no longer expires the system's anchor. If an anchor expires anyway, the working set's full enumeration answers every item in the record, not just this process's cache.
+4. **A resync on reconnect.** On session-ready, and once after an app start, the app checks the folders in the record, most recently touched first, at most 64 (the watch cap).
+   - One new `fs.digest {id, paths}` answers `{path: digest | "not_found"}`.
+   - The app re-lists exactly the folders whose digest differs from the recorded one; pass 2 then diffs them.
+   - A `not_found` folder is reported deleted, and so is everything under it in the record.
+   - Folders beyond the 64 are checked on their next touch.
+5. **Errors repair.** A `fs_not_found` for an item's thumbnail, read or stat reports that item deleted and re-lists its folder.
+6. **Android's transient entries** (`.trashed-*`, `.pending-*`) are left out of every listing and digest, at any depth, as Android's own Files app does. They're not files a person calls theirs.
+
+**The digest.** The phone computes it, and the Mac only stores and compares it, so no hash format has to match across platforms.
+- It's the first 16 bytes, as hex, of the SHA-256 of the folder's visible entries (the `fs.list` filter), sorted by name bytes, each written `name \0 ino \0 size \0 mtime \n`. It's deterministic across phone restarts.
+- A listing's last page carries the folder's digest, so a complete listing also refreshes the record's digest.
+- Cost: one `readdir` plus a stat per entry, which is exactly one tick of today's 2 s watch poll. A reconnect costs at most 64 such ticks, once.
+- An older phone without `fs.digest` answers `fs_unknown`. The app then re-lists the 64 folders instead, paged as today.
+
+**Battery.** Nothing new runs while no Mac is connected, or between reconnects. The phone's idle rule (§5) is unchanged.
+
+**Slices** (each test first):
+1. **Mac only, which fixes the person's case on the next visit:** the record, every listing diffs, and not-found repair.
+   - K2: a record persisted from an earlier run, two of five files deleted and one added on the phone while the app was off → the first listing reports two deletions and one add and signals; an incomplete walk reports no deletion; a not-found thumbnail reports a deletion.
+   - Host `files-watch`: the fake phone deletes while the app is down; after the restart and a listing, the mount loses the files within 5 s.
+2. **The durable log:** K2, an app restart keeps the anchor valid.
+3. **`fs.digest` and the reconnect resync** (phone and Mac): K1, K2, and host `files-watch`. Disconnect, add and delete on the phone in a folder Finder isn't showing, reconnect → the mount is right within 10 s, without opening the folder.
+4. **Real phone:** open `DCIM/Camera`, and Finder shows the phone's 109 entries.
+
 ## Alternatives rejected
 
 - **The extension dials the phone itself.** One session per phone (`busy`), and the keys/pins
