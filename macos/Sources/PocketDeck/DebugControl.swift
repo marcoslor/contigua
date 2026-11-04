@@ -15,6 +15,7 @@
 //                    --resize-stream, --minimize-stream, --deminimize-stream,
 //                    --close-stream (timers count from the command)
 //   wake-phone       the phone window's Wake Screen button (phone mode)
+//   activate         bring the app front for a real-key check (setup, no action)
 //   menudump PATH    the main menu tree as JSON (MenuDump.swift), for a dump at
 //                    a moment no debug-input script is running (the e2e menus
 //                    check reads the bar after the last window closed)

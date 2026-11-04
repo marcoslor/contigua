@@ -78,8 +78,8 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 - No full screen for the Phone Mirror. A phone mirror across a whole display is
   letterboxed or stretched (the stream keeps the phone's aspect), and the
   person's report is that it looks bad. The window opts out with
-  `.fullScreenNone`: no green-button full-screen mode, no Window ▸ Enter Full
-  Screen (disabled for it), no ⌃⌘F. The green button zooms to the phone's
+  `.fullScreenNone`: no green-button full-screen mode, no View ▸ Enter Full
+  Screen (disabled for it), no fn‑F or ⌃⌘F. The green button zooms to the phone's
   aspect fit inside the screen's visible frame instead. App windows keep full
   screen.
 - Failure → `error` `mirror_unavailable` (pre-14 phones).

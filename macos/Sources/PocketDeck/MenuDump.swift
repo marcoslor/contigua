@@ -34,6 +34,8 @@ enum MenuDump {
         var submenu: [Item]?
         /// AppKit's hidden flag: an item the menu keeps but does not show.
         var hidden: Bool = false
+        /// Whether a hidden item keeps its key equivalent (the ⌃⌘F alternate).
+        var allowsKeyWhenHidden: Bool = false
         /// The item's help tag (a disabled New Window item's sentence, WIN-27).
         var toolTip: String?
         /// The selector the item sends, named: an item with no action cannot be
@@ -59,6 +61,7 @@ enum MenuDump {
                     targetClass: menuItem.target.map { String(describing: type(of: $0)) },
                     submenu: menuItem.submenu.map(snapshot),
                     hidden: menuItem.isHidden,
+                    allowsKeyWhenHidden: menuItem.allowsKeyEquivalentWhenHidden,
                     toolTip: menuItem.toolTip,
                     action: menuItem.action.map(NSStringFromSelector))
     }
@@ -147,7 +150,14 @@ enum MenuDump {
             // pass a person's open runs (MenuCleanup, on tracking) runs, and the
             // second read is what the person sees open.
             _ = displayedItems()
-            MainActor.assumeIsolated { MenuCleanup.clean(NSApp.mainMenu) }
+            MainActor.assumeIsolated {
+                // The first read makes AppKit validate and rebuild; SwiftUI
+                // may then have rebuilt the commands, losing the marks and the
+                // hidden full-screen alternate. Apply both passes again so the
+                // second read is what a person's open menu shows.
+                MenuCleanup.clean(NSApp.mainMenu)
+                MenuMarks.apply(to: NSApp.mainMenu)
+            }
             shown = displayedItems()
         }
         let encoder = JSONEncoder()

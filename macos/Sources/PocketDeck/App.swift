@@ -475,7 +475,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // MENU-17): both follow AppKit's own tracking notifications.
         MenuTracking.start()
         MenuBarModel.shared.start(controller: environment.controller)
-        FullScreenMenu.start()
         WindowListMenu.start()
         WindowFrameLimit.start()
         // VisionKit's analyser service is slow and unreliable on its first
@@ -591,6 +590,26 @@ enum DeckWindow {
 
 // MARK: - Scenes
 
+/// The defaults registered before AppKit builds the bar. Registered, never
+/// written: nothing here lands in the person's own defaults.
+enum AppDefaults {
+    static let registered: [String: Any] = [
+        // Window state saved by an older build (or by a copy started without a
+        // window) must never leave the app without its Deck.
+        "ApplePersistenceIgnoreState": true,
+        "NSQuitAlwaysKeepsWindows": false,
+        // NSFullScreenMenuItemEverywhere stays at its default, so AppKit places
+        // its own Enter Full Screen last in View (MENU-4).
+    ]
+
+    /// One window per thing (CONV-MAC-11). AppKit's automatic tabbing would add
+    /// Show Tab Bar and Show All Tabs to View once a window enters full screen,
+    /// and the design has no tab items (MENU-4). Set before any window exists.
+    static func disableAutomaticWindowTabbing() {
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+}
+
 /// The app's entry point: the defaults AppKit and SwiftUI read while they build
 /// the first window and the menu bar are registered here, before either runs.
 @main
@@ -629,17 +648,8 @@ enum PocketDeckMain {
             }
         }
         #endif
-        // Window state saved by an older build (or by a copy started without a
-        // window) must never leave the app without its Deck. Registered, not
-        // written: nothing lands in the user's defaults.
-        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true,
-                                                  "NSQuitAlwaysKeepsWindows": false])
-        // AppKit's own Enter Full Screen in any menu titled View would duplicate
-        // the Window menu's item (MenuBar.swift). AppKit reads this while the
-        // bar is built, so it is registered before NSApplicationMain, not in
-        // applicationDidFinishLaunching (there the bar is already built and the
-        // item stays). Registered, not set: the person's defaults stay untouched.
-        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
+        UserDefaults.standard.register(defaults: AppDefaults.registered)
+        AppDefaults.disableAutomaticWindowTabbing()
         PocketDeckApp.main()
     }
 }

@@ -35,7 +35,7 @@
 //       move the app's windows (or the one titled TITLE) through Accessibility,
 //       the path a tiler takes, and print each window's position read back
 //   swift scripts/cgevent-input.swift type   --text hi
-//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift] [--hold 0.04]
+//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift] [--ctrl] [--option] [--fn] [--hold 0.04]
 //   swift scripts/cgevent-input.swift release-all
 //       lifts every key the checks press (and the modifiers) plus every mouse
 //       button, for a run that finds a key or button left down
@@ -608,6 +608,11 @@ case "key":
     var keyFlags: CGEventFlags = []
     if hasFlag("--cmd") { keyFlags.insert(.maskCommand) }
     if hasFlag("--shift") { keyFlags.insert(.maskShift) }
+    if hasFlag("--ctrl") { keyFlags.insert(.maskControl) }
+    if hasFlag("--option") { keyFlags.insert(.maskAlternate) }
+    // fn-F is the system's own full-screen shortcut; the globe key is
+    // maskSecondaryFn, which AppKit reads as the function modifier.
+    if hasFlag("--fn") { keyFlags.insert(.maskSecondaryFn) }
     pressKey(CGKeyCode(code), flags: keyFlags, hold: doubleArgument("--hold") ?? 0.04)
 default:
     FileHandle.standardError.write(Data("usage: cgevent-input.swift list|release-all|click|rclick|clickat|rclickat|drag|scroll|type|key ...\n".utf8))
