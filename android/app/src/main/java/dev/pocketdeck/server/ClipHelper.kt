@@ -466,18 +466,18 @@ internal class ClipHelper(
     }
 }
 
-private fun ClipHelperState.label(): String = when (this) {
+internal fun ClipHelperState.label(): String = when (this) {
     ClipHelperState.Off -> "off"
-    is ClipHelperState.Starting -> "starting($attempt)"
-    is ClipHelperState.Restarting -> "restarting($attempt)"
-    is ClipHelperState.Ready -> "ready($attempt)"
+    is ClipHelperState.Starting -> "starting($attempt, form $form)"
+    is ClipHelperState.Restarting -> "restarting($attempt, form $form)"
+    is ClipHelperState.Ready -> "ready($attempt, form $form)"
     is ClipHelperState.Failed -> "failed($reason)"
 }
 
-private fun ClipHelperEvent.label(): String = when (this) {
+internal fun ClipHelperEvent.label(): String = when (this) {
     ClipHelperEvent.Start -> "start"
-    is ClipHelperEvent.Started -> "started($attempt)"
-    is ClipHelperEvent.Died -> "died($reason)"
+    is ClipHelperEvent.Started -> "started($attempt, form $form)"
+    is ClipHelperEvent.Died -> "died($reason, form $form)"
     ClipHelperEvent.Stop -> "stop"
 }
 

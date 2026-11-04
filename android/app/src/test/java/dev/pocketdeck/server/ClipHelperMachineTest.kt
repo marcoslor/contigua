@@ -242,9 +242,22 @@ class ClipHelperMachineTest {
         )
     }
 
+    /** Each transition line names the form, and nothing a command line carries. */
     @Test
-    fun theBackoffIsCapped() {
-        assertEquals(500, clipHelperBackoffMs(2))
+    fun everyLabelNamesTheForm() {
+        assertEquals("off", ClipHelperState.Off.label())
+        assertEquals("starting(1, form 2)", ClipHelperState.Starting(1, 2).label())
+        assertEquals("restarting(2, form 1)", ClipHelperState.Restarting(2, 1).label())
+        assertEquals("ready(1, form 2)", ClipHelperState.Ready(1, 2).label())
+        assertEquals("failed(no su form)", ClipHelperState.Failed("no su form").label())
+        assertEquals("start", ClipHelperEvent.Start.label())
+        assertEquals("started(1, form 2)", ClipHelperEvent.Started(1, 2).label())
+        assertEquals("died(exit 1, form 1)", ClipHelperEvent.Died(1, 1, "exit 1").label())
+        assertEquals("stop", ClipHelperEvent.Stop.label())
+    }
+
+    @Test
+    fun theBackoffIsCapped() {        assertEquals(500, clipHelperBackoffMs(2))
         assertEquals(1_000, clipHelperBackoffMs(3))
         assertEquals(2_000, clipHelperBackoffMs(4))
         assertEquals(2_000, clipHelperBackoffMs(8))
