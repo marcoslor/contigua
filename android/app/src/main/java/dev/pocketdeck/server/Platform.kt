@@ -229,6 +229,8 @@ interface AudioCaptureLayer {
  * The top task on a display: the app (phone-mode titles, the audio follow) and
  * the task's own label (an app stream's `window.title`, WIN-28).
  *
+ * @property pkg the task's own app — its root's package, not the package of an
+ *   activity another app put on top of the task.
  * @property taskId the phone's task id, 0 when unknown.
  * @property taskLabel `taskDescription.label` — the window's own title (a
  *   browser page's, a conversation's); null when the phone described none and
