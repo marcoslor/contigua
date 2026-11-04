@@ -109,7 +109,18 @@ The person reports that a DeX session doesn't show the fade. With DeX on a cable
      - who owns the association: reuse the shell's, or create PocketDeck's own, which is a lasting change that needs the person's OK;
      - and how this behaves on a phone where the service runs as the shell user, not with root privileges.
 
-     **Next:** a spike on the phone, one real window on a device display, before any product change.
+   - **Window spike on the phone: done, 2026-11-04 (`spike/vd-window`, `dev.pocketdeck.debug.VdWindowSpike`).** One virtual device (association 25, run as the shell user), one 1080×1920 display with `0xf5cb` in a group of its own (9), driven step by step through a FIFO.
+     - **Launch:** the device's own `launchPendingIntent` started Samsung Clock (result 0). On One UI a plain `am start --display <id>` onto the device display also worked, as the shell user and with root privileges (the October AOSP run refused it), so today's launcher path can stay.
+     - **Frames and input:** about 60 frames a second while drawing; injected taps and key events with the display id reached the apps (Calculator: `42`, then `+ 1 =` → `43`; a text field took `pdvdw42`). The activity listener reported each top app on the display.
+     - **IME:** with the default policy, a tap in a text field opened the phone's own soft keyboard **inside the window**. `setDisplayImePolicy(hide)` stopped that, and typing still arrived. The move needs that policy.
+     - **Lock and wake, the question:** the person locked the phone at 16:05:12 and woke it at 16:08:51. The window drew all along (the cursor's two frames a second), its brightness never changed (luma 20 throughout), and the display reported no pause or stop. **No fade, and the window stays live while the phone is locked.**
+     - **The phone's own keyboard:** while the window was up, the phone's own apps still showed their keyboard 0.5 s after asking. Injected typing moved the top focus to the device display (`mTopFocusedDisplayId=23`), the same mechanism ISS-35 fixed for today's displays with `STEAL_TOP_FOCUS_DISABLED` (WIN-51), and that flag belongs on the device display too.
+     - **Clipboard:** Ctrl+V into the window typed a plain `v`: the device's own clipboard was empty with the default policy. The `POLICY_TYPE_CLIPBOARD = DEVICE_POLICY_CUSTOM` run (share the phone's clipboard) wasn't reached and is the first check of the move.
+     - **Secure windows** (Samsung Internet marks its window secure) draw black, as on today's displays.
+     - Cleanup: `Number of active virtual devices: 0`, no spike display, files removed.
+   - **Still open for the move:** the shared clipboard run, audio (where an app on the device display plays, and the per-device capture October found), recents, the association owner (reuse the shell's, or PocketDeck's own with the person's OK), and phones where the service runs as the shell user.
+
+     **Next:** the move itself, as a planned epic: requirements and a design for the device-display path first (launch, IME hide, `STEAL_TOP_FOCUS_DISABLED`, shared clipboard, the dark-panel hold retired), then the build.
 2. **Hide it in the stream.**
    - Hold the last good picture from the press until the app has redrawn after the hand-back.
    - The press is known 12–14 ms after it happens, and the fade's first frame comes 37–99 ms after it, so the trigger is in time.
