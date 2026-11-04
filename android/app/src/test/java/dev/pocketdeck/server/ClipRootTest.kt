@@ -66,6 +66,24 @@ class ClipRootTest : SessionFixture() {
         port.stop(registration)
     }
 
+    /**
+     * The image poll on a text copy, as the shell user (the direct path, and the
+     * helper's own process): the description has no image type, so
+     * `filterMimeTypes` answers null. That is "no image", never a throw. On a
+     * phone the throw killed the helper on every poll (ISS-27, 2026-11-04).
+     */
+    @Test
+    fun uid2000ImagePollOnATextCopyIsNoImage() {
+        val service = service()
+        val port = shell(2000, service)
+        service.copy("synthetic-text-" + "c".repeat(7))
+
+        repeat(3) { assertEquals("a text copy read as an image", null, port.readImage()) }
+
+        assertEquals("the probe let a text copy reach getPrimaryClip", 0, service.gets.get())
+        assertTrue("the phone's copy was wiped", service.present())
+    }
+
     /** UID 0 with a helper: the shell user reads, and the copy goes out once. */
     @Test
     fun uid0WithHelperSendsTheCopyOnce() {
