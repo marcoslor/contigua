@@ -59,10 +59,18 @@ protocol FilesWriteSink: AnyObject {
     func cancel()
 }
 
-/// One page of a listing; `next` is the phone's cursor for the next page.
+/// One page of a listing; `next` is the phone's cursor for the next page, and
+/// the last page also carries the folder's digest (FILES-35).
 struct FsPage: Equatable {
     var items: [FsItem]
     var next: String?
+    var digest: String? = nil
+}
+
+/// One folder's answer to `fs.digest`: its 32-hex digest, or not_found.
+enum FsDigestReply: Equatable {
+    case digest(String)
+    case notFound
 }
 
 /// A completed read: the range's length and the SHA-256 the phone announced.

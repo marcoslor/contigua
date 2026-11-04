@@ -17,6 +17,7 @@ import Foundation
 protocol FsChannel: AnyObject {
     func fsList(id: UInt32, path: String, page: String?)
     func fsStat(id: UInt32, path: String)
+    func fsDigest(id: UInt32, paths: [String])
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?)
     func fsThumb(id: UInt32, path: String, size: Int, etag: String?)
     func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
@@ -147,6 +148,7 @@ final class FsClient {
     private enum Pending {
         case list((Result<FsPage, FsError>) -> Void)
         case stat((Result<FsItem, FsError>) -> Void)
+        case digest((Result<[String: FsDigestReply], FsError>) -> Void)
         case read(Read)
         case thumb(Thumb)
         case write(FsWrite)
@@ -243,6 +245,16 @@ final class FsClient {
         guard let id = freshID() else { return completion(.failure(FsError(code: "busy"))) }
         pending[id] = .stat(completion)
         channel?.fsStat(id: id, path: path)
+    }
+
+    /// One `fs.digest` for up to 64 folder paths (FILES-35); the reply maps each
+    /// path to its digest or not_found. A code outside the reply's vocabulary is
+    /// left out, so the caller lists that folder instead of guessing.
+    func digest(paths: [String],
+                completion: @escaping (Result<[String: FsDigestReply], FsError>) -> Void) {
+        guard let id = freshID() else { return completion(.failure(FsError(code: "busy"))) }
+        pending[id] = .digest(completion)
+        channel?.fsDigest(id: id, paths: paths)
     }
 
     /// Reads `length` bytes from `offset` into `url`. With `offset == nil` the
@@ -406,6 +418,7 @@ final class FsClient {
             job.cancel()
         case .list(let completion): completion(.failure(FsError(code: "cancelled")))
         case .stat(let completion): completion(.failure(FsError(code: "cancelled")))
+        case .digest(let completion): completion(.failure(FsError(code: "cancelled")))
         case .mutation(let completion): completion(.failure(FsError(code: "cancelled")))
         }
     }
@@ -416,12 +429,30 @@ final class FsClient {
 
     // MARK: Responses
 
-    func items(id: UInt32, page: String?, items: [[String: Any]]) {
+    func items(id: UInt32, page: String?, digest: String? = nil, items: [[String: Any]]) {
         guard case .list(let completion)? = pending.removeValue(forKey: id) else {
             return unknown(id)
         }
         let parsed = items.compactMap(FsItem.init(json:))
-        completion(.success(FsPage(items: parsed, next: page)))
+        completion(.success(FsPage(items: parsed, next: page, digest: digest)))
+    }
+
+    /// `fs.digest`: path → 32 hex characters, or not_found. The whole answer is
+    /// one map, with no per-path ordering to preserve.
+    func digests(id: UInt32, values: [String: Any]) {
+        guard case .digest(let completion)? = pending.removeValue(forKey: id) else {
+            return unknown(id)
+        }
+        var replies: [String: FsDigestReply] = [:]
+        for (path, raw) in values {
+            guard let text = raw as? String else { continue }
+            if text == "not_found" {
+                replies[path] = .notFound
+            } else if text.count == 32, text.allSatisfy({ $0.isHexDigit }) {
+                replies[path] = .digest(text.lowercased())
+            }
+        }
+        completion(.success(replies))
     }
 
     func item(id: UInt32, item: [String: Any]) {
@@ -524,6 +555,7 @@ final class FsClient {
             completion(.success(item.flatMap(FsItem.init(json:))))
         case .list(let completion): completion(.failure(error))
         case .stat(let completion): completion(.failure(error))
+        case .digest(let completion): completion(.failure(error))
         case .read(let job):
             job.discard()
             finish(job, .failure(error))
@@ -539,6 +571,7 @@ final class FsClient {
         switch entry {
         case .list(let completion): completion(.failure(error))
         case .stat(let completion): completion(.failure(error))
+        case .digest(let completion): completion(.failure(error))
         case .read(let job):
             job.cancelTimer?.cancel()
             job.discard()
@@ -560,6 +593,7 @@ final class FsClient {
             switch entry {
             case .list(let completion): completion(.failure(error))
             case .stat(let completion): completion(.failure(error))
+            case .digest(let completion): completion(.failure(error))
             case .read(let job):
                 job.cancelTimer?.cancel()
                 job.discard()
