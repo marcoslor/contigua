@@ -897,11 +897,17 @@ final class WindowManager {
     }
 
     /// A window became key or was raised: it is the front one from now on.
+    /// A new front changes every menu that lists the app's windows (WIN-26),
+    /// so the change is announced like any other window-set change; without
+    /// this a raise reordered the Deck cell's live menu but left the Dock
+    /// shim's pushed copy on the old front.
     func noteFront(_ stream: UInt32) {
         lock.lock()
+        let changed = frontOrder.first != stream
         frontOrder.removeAll { $0 == stream }
         frontOrder.insert(stream, at: 0)
         lock.unlock()
+        if changed { onChange?() }
     }
 
     private func store(_ controller: StreamWindowController, stream: UInt32) {

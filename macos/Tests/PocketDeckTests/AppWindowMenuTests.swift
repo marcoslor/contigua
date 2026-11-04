@@ -64,6 +64,25 @@ final class AppWindowMenuTests: XCTestCase {
         XCTAssertNil(fixture.manager.windowMenuRows(pkg: MultiWindowFixture.chrome.pkg).first?.help)
     }
 
+    /// Every front change reaches the shim's menu. A raise used to reorder the
+    /// front without firing `onChange`, so the Dock's menu kept the previous
+    /// window checked while the Deck cell's menu had the new one (boot 6,
+    /// 11-04: shim Mail checked, Deck Docs checked for ten seconds).
+    func testARaisePushesTheNewFrontToTheMenus() {
+        let a = fixture.open(taskLabel: "Docs")
+        let b = fixture.add(taskLabel: "Mail")!
+        XCTAssertEqual(fixture.manager.appWindows(pkg: MultiWindowFixture.chrome.pkg).first?.stream,
+                       b.stream, "the newer window is front")
+        var changes = 0
+        fixture.manager.onChange = { changes += 1 }
+        let docs = fixture.manager.windowMenuRows(pkg: MultiWindowFixture.chrome.pkg)
+            .first { $0.title == "Chrome — Docs" }
+        XCTAssertTrue(fixture.manager.pickWindowMenuRow(docs!, pkg: MultiWindowFixture.chrome.pkg))
+        XCTAssertEqual(changes, 1, "the raise did not tell the menus")
+        XCTAssertEqual(fixture.manager.windowMenuRows(pkg: MultiWindowFixture.chrome.pkg).map(\.checked),
+                       [false, true, false], "the raised window's row is the checked one")
+    }
+
     /// A pick of a window row raises that window and asks the phone for
     /// nothing; a pick of a disabled New row is not a pick at all (WIN-27).
     func testAPickRaisesAndADisabledRowSendsNothing() {
