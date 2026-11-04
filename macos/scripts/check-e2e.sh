@@ -10008,7 +10008,23 @@ PY
     pw_opens() { count_events '"t":"window.open"' | head -1; }
     pw_instances() { count_events '"newInstance":true' | head -1; }
     pw_closes() { count_events '"t":"window.close"' | head -1; }
+    pw_adopts() { count_events '"t":"window.adopt"' | head -1; }
     pw_input() { fake_counter input; }
+    # One fake-phone window event kind (compact JSON lines).
+    win_events() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "window" and event.get("kind") == sys.argv[2]:
+        count += 1
+print(count)
+PY
+    }
     pw_opens_grew() { [ "$(pw_opens)" -gt "$1" ]; }
     pw_instances_at_least() { [ "$(pw_instances)" -ge "$1" ]; }
     pw_closes_grew() { [ "$(pw_closes)" -gt "$1" ]; }
@@ -10565,6 +10581,119 @@ for line in open(sys.argv[1]):
 if opens != [False, True]:
     print("flags:", opens); sys.exit(1)
 PY
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # ---- Launch 5: the app's own New window (WIN-44…WIN-49) ----------------
+    # The fake reports a task of the streamed app as the phone's listener
+    # would; the New-item rule decides. The three cases below are one report
+    # each: adopted, refused, and at the Mac's cap.
+    chrome_windows() { window_titles "$APP_PID" | grep -c "Chrome"; }
+
+    # A: the report becomes one more window and one adopt; the person then
+    # opens the streamed app on the phone and that window closes quietly.
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    FAKE_ARGS="--report-task-after 5 --moved-to-phone-after 6 --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" --debug-banner "$banner" --quit-after 180
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN adopt: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    local adopts_before
+    adopts_before="$(pw_adopts)"
+    wait_until 30 eval '[ "$(win_events task.report)" -ge 1 ]' \
+        && ok "[WIN-44] the fake phone reported the app's own task once" \
+        || bad "[WIN-44] no window.task reached the Mac"
+    wait_until 20 eval '[ "$(pw_adopts)" -gt '"$adopts_before"' ]' \
+        && ok "[WIN-45] the reported task sent one window.adopt" \
+        || bad "[WIN-45] the Mac sent no window.adopt"
+    [ "$(( $(pw_adopts) - adopts_before ))" = "1" ] \
+        && ok "[WIN-45] exactly one adopt for one reported task" \
+        || bad "[WIN-45] the Mac sent $(( $(pw_adopts) - adopts_before )) adopts for one task"
+    wait_until 25 eval '[ "$(chrome_windows)" = "2" ]' \
+        && ok "[WIN-45] the reported task opened one more window" \
+        || bad "[WIN-45] the window count is $(chrome_windows), expected 2"
+    wait_until 20 titles_have "Chrome — New tab (FakePhone)" \
+        && ok "[WIN-45] the adopted window takes its task's label (WIN-28)" \
+        || bad "[WIN-45] the adopted window is not titled by its task: $(window_titles "$APP_PID" | tr '\n' '|')"
+    local closes_before
+    closes_before="$(pw_closes)"
+    wait_until 20 events_have '"kind":"moved_to_phone"' \
+        && ok "[WIN-49] the fake phone moved the source task to its own screen" \
+        || bad "[WIN-49] no moved_to_phone close reached the Mac"
+    wait_until 15 eval '[ "$(chrome_windows)" = "1" ]' \
+        && ok "[WIN-49] the moved window closed and the adopted one stayed" \
+        || bad "[WIN-49] the moved window did not close (windows $(chrome_windows))"
+    [ "$(pw_closes)" = "$closes_before" ] \
+        && ok "[WIN-49] the moved window closed without a window.close back" \
+        || bad "[WIN-49] the Mac answered moved_to_phone with a window.close"
+    [ ! -s "$banner" ] \
+        && ok "[WIN-49] moved_to_phone showed no launcher notice" \
+        || bad "[WIN-49] the banner reads '$(tail -1 "$banner" 2>/dev/null)'"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # B: the phone refuses the move; that window closes quietly.
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    FAKE_ARGS="--report-task-after 5 --refuse-adopt --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" --debug-banner "$banner" --quit-after 180
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN refusal: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    adopts_before="$(pw_adopts)"
+    wait_until 20 eval '[ "$(pw_adopts)" -gt '"$adopts_before"' ]' \
+        && ok "[WIN-46] the Mac asked the phone to adopt the task" \
+        || bad "[WIN-46] the Mac sent no window.adopt"
+    wait_until 20 events_have '"kind":"refused"' \
+        && ok "[WIN-46] the fake phone refused the adopt" \
+        || bad "[WIN-46] the fake never refused"
+    wait_until 15 eval '[ "$(chrome_windows)" = "1" ]' \
+        && ok "[WIN-46] cannot_adopt closed that window quietly" \
+        || bad "[WIN-46] the refused window stayed open (windows $(chrome_windows))"
+    [ ! -s "$banner" ] \
+        && ok "[WIN-46] a refused adopt showed no launcher notice" \
+        || bad "[WIN-46] the banner reads '$(tail -1 "$banner" 2>/dev/null)'"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # C: at the Mac's own cap, the task stays and the Deck says why.
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    FAKE_ARGS="--report-task-after 15 --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" --debug-banner "$banner" --quit-after 180
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN cap-adopt: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    local n
+    for n in 1 2 3; do
+        pick_new_window
+        sleep 1.5
+    done
+    sleep 2
+    adopts_before="$(pw_adopts)"
+    wait_until 30 eval '[ "$(win_events task.report)" -ge 1 ]' \
+        && ok "[WIN-44] the report reached the Mac at the cap" \
+        || bad "[WIN-44] no report at the cap"
+    sleep 2
+    [ "$(pw_adopts)" = "$adopts_before" ] \
+        && ok "[WIN-45] at the Mac's cap the report sent no adopt" \
+        || bad "[WIN-45] a window.adopt left the Mac at the cap"
+    [ "$(chrome_windows)" = "4" ] \
+        && ok "[WIN-45] at the cap the task opened no another window" \
+        || bad "[WIN-45] the cap opened another window (windows $(chrome_windows))"
+    wait_until 10 grep -qF "Close a Chrome window to open another." "$banner" \
+        && ok "[WIN-45] the Deck carries the cap's sentence at the cap" \
+        || bad "[WIN-45] the banner reads '$(tail -1 "$banner" 2>/dev/null)'"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
