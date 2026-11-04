@@ -65,7 +65,9 @@ struct FilesPage: Equatable {
 /// The one phone-page cache of an extension process, keyed by container and the
 /// phone's cursor.
 ///
-/// **Lifetime: one enumeration pass, at most 30 s.** The system walks a folder's
+/// **Lifetime: one enumeration pass, at most 30 s.** A pass starts at offset 0
+/// of the folder's first page, which drops the container's pages first, so a
+/// new pass never replays the last one (FilesPageReader.enumerate). The system walks a folder's
 /// pages back to back — the VM's 12-page pass over 3,000 names took 16.3 s,
 /// with 1.2-1.5 s of the system's own time between pages — so 30 s covers a
 /// pass with margin. It is also short enough that a page the system re-reads
@@ -201,6 +203,13 @@ final class FilesPageReader {
                    deliver: @escaping (Delivery) -> Void,
                    fail: @escaping (FilesFailure) -> Void) {
         let started = clock()
+        // Offset 0 of the first page starts a new pass: forget the last pass's
+        // pages. The app signals the system about a change before this
+        // extension's own push may have arrived, so a replayed first page (or a
+        // later page whose items have shifted since) would hide the change.
+        if token.cursor == nil && token.offset == 0 {
+            cache.drop(containers: [container])
+        }
         if let page = cache.page(container: container, cursor: token.cursor, now: started) {
             deliverNow(page.items, page.next, token: token, fetched: false,
                        started: started, deliver: deliver)

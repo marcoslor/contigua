@@ -894,8 +894,10 @@ folder is enumerated in 250-item batches with the page cursor carrying the
 offset (`b<offset>@<phone page>`), and the phone page is cached in one cache per
 extension process, keyed by container and cursor (at most 4 pages, each at most
 30 s old — one pass over 3,000 names took 16.3 s in the VM — and dropped when
-that folder's change push arrives, with in-flight fetches invalidated by a
-generation counter), so each phone page costs one `fs.list` per pass instead of
+that folder's change push arrives or a new pass starts at the folder's first
+page, with in-flight fetches invalidated by a generation counter: the app may
+signal the system before the extension's own push arrives, so a pass never
+reuses another pass's pages), so each phone page costs one `fs.list` per pass instead of
 one per Finder batch; the id-map JSON is written once per quarter second instead
 of once per item.
 Checks: K2 849/0; host `files-watch` 29/0 (working-set updates with the real
