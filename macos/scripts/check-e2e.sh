@@ -9417,41 +9417,72 @@ check_multiwin() {
     # same tracking loop a click starts, while the whole screen is captured. With
     # ITEM, the menu is positioned so that row's own corner is at a known point
     # (MenuTrack), the check moves the real pointer into it, waits up to 3 s for
-    # its help tag, and only then takes the shot (WIN-27's sentences). The check
-    # caps the menu at 10 s and closes it before the next step: a menu left
-    # tracking would hold the app's main thread and wedge the run (round 3).
+    # its help tag, and only then takes the shot (WIN-27's sentences).
+    #
+    # The capture happens while the menu is confirmed on screen: a hover shot
+    # keeps the menu up for 10 s (MenuTrack's maximum) and the check reads the
+    # menu's own layer-101 window right before the shutter and again right after
+    # it. A capture that raced the menu's cap is not a proof, so it is retaken
+    # once, after the first menu has reported and closed. The run logs each
+    # capture's elapsed time against that cap.
     menu_shot() {
         local name="$1" menu="$2" hover="${3:-}" report="$WORK/shots/$appearance-$1.json" seconds=4
-        local point="$WORK/shots/$appearance-$1.point"
-        [ -n "$hover" ] && seconds=8
-        local args=(menutrack "$report" "$menu" "$seconds")
-        [ -n "$hover" ] && args+=("$hover" "$point")
-        control "${args[@]}" \
-            || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
-        if [ -n "$hover" ]; then
-            # The menu is up and the app wrote the row's own corner: a real
-            # pointer move onto it, then a wait for the help tag (a small window
-            # of its own). If none appears in 3 s the shot is still taken — the
-            # report carries the sentence — and the run says so.
-            if wait_until 4 [ -s "$point" ]; then
-                local px py before="$WORK/shots/$appearance-$1.before"
-                read -r px py < "$point"
-                app_window_ids > "$before"
-                cg_input moveat --x "$px" --y "$py" \
-                    || bad "MULTIWIN the pointer move onto '$hover' did not post"
-                if wait_until 3 help_tag_up "$before"; then
-                    ok "MULTIWIN the $menu help tag is on screen for shot $name"
+        local point="$WORK/shots/$appearance-$1.point" attempt opened_at elapsed
+        [ -n "$hover" ] && seconds=10
+        for attempt in 1 2; do
+            opened_at=$SECONDS
+            local args=(menutrack "$report" "$menu" "$seconds")
+            [ -n "$hover" ] && args+=("$hover" "$point")
+            control "${args[@]}" \
+                || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
+            if [ -n "$hover" ]; then
+                # The menu is up and the app wrote the row's own corner: a real
+                # pointer move onto it, then a wait for the help tag (a small
+                # window of its own). If none appears in 3 s the shot is still
+                # taken — the report carries the sentence — and the run says so.
+                if wait_until 4 [ -s "$point" ]; then
+                    local px py before="$WORK/shots/$appearance-$1.before"
+                    read -r px py < "$point"
+                    app_window_ids > "$before"
+                    cg_input moveat --x "$px" --y "$py" \
+                        || bad "MULTIWIN the pointer move onto '$hover' did not post"
+                    if wait_until 3 help_tag_up "$before"; then
+                        ok "MULTIWIN the $menu help tag is on screen for shot $name"
+                    else
+                        skip "MULTIWIN the $menu help tag" "no new window within 3 s; the shot is kept and its report carries the sentence"
+                        "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed 's/^/  app window: /'
+                    fi
                 else
-                    skip "MULTIWIN the $menu help tag" "no new window within 3 s; the shot is kept and its report carries the sentence"
-                    "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed 's/^/  app window: /'
+                    bad "MULTIWIN menutrack $menu wrote no hover point"
                 fi
             else
-                bad "MULTIWIN menutrack $menu wrote no hover point"
+                sleep 1.4
             fi
-        else
-            sleep 1.4
-        fi
-        shot "$name"
+            elapsed=$((SECONDS - opened_at))
+            if [ "$(open_menu_windows)" -le 0 ]; then
+                # The menu closed before the shutter: the picture would be the
+                # windows behind it (round 5, light 7).
+                bad "MULTIWIN shot $name: no menu on screen at +${elapsed}s of its ${seconds}s cap"
+            else
+                shot "$name"
+                if [ "$(open_menu_windows)" -gt 0 ]; then
+                    say "MULTIWIN shot $name: captured at +${elapsed}s of the menu's ${seconds}s cap"
+                    break
+                fi
+                bad "MULTIWIN shot $name: the menu closed during the capture (+${elapsed}s of its ${seconds}s cap)"
+            fi
+            # The retry must not open a second menu over the first: wait for
+            # this menu's report (the timer that writes it also cancels
+            # tracking) and for its popup to be gone.
+            wait_until 15 [ -s "$report" ] \
+                || { bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
+                     cg_input key --keycode 53 >/dev/null 2>&1 || true; return 1; }
+            wait_until 8 eval '[ "$(popup_windows)" -eq 0 ]' \
+                || { bad "MULTIWIN the $menu menu was still open before the retry"
+                     cg_input key --keycode 53 >/dev/null 2>&1 || true; return 1; }
+            [ "$attempt" = 1 ] || break
+            skip "MULTIWIN shot $name" "the first capture raced the menu's close; taking it again"
+        done
         if ! wait_until 15 [ -s "$report" ]; then
             bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
             # The tracking loop still takes events when a timer is late: Escape
@@ -9502,6 +9533,17 @@ PY
         "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
             $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
                 if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
+            END { print n + 0 }'
+    }
+    # The app's open menus, layer 101 only: a help tag is a small window of
+    # its own (layer 103) that dies with the menu, so a capture guard must ask
+    # for the menu, not for anything the menu left behind. Shot 7 reads this on
+    # both sides of the shutter (round 5's light 7 had a report but no menu in
+    # the frame).
+    open_menu_windows() {
+        "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
+            $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] == 101) n++ } } }
             END { print n + 0 }'
     }
     # Any process's popup window (a menu tracks in one, layer >= 100): the
@@ -9654,7 +9696,11 @@ PY
     if [ "$VISIBLE" = 1 ]; then
         # 7: an app that opens one window: New Settings Window disabled, its
         # help tag ("Settings opens one window at a time.") held on screen by a
-        # real pointer over the item.
+        # real pointer over the item. The fresh Settings shim can finish its
+        # launch by activating itself, which takes an open menu down with it
+        # (round 5's light 7 lost its menu exactly here); re-assert the front
+        # window as setup right before the menu opens.
+        focus_app com.android.settings "Settings (FakePhone)" || true
         menu_shot 7-settings-one-window File "New Settings Window"
     else
         skip "MULTIWIN the Settings shot" "needs the VM's screen; the disabled item and its sentence are asserted above and in K2 NewWindowTests"
@@ -9752,16 +9798,39 @@ PY
     if [ "$VISIBLE" = 1 ]; then
         # 3: the shim's own menu, the New + windows list a Dock right click
         # shows (the Dock owns that click; the shim pops the same buildMenu).
-        # The shim polls its debug directory on its own timer, so wait for its
-        # menu window to appear instead of shooting after a fixed sleep (boot
-        # 5's shot was an empty screen). The shim's own 10 s cap closes it.
-        local popups
-        popups="$(popup_windows)"
-        printf '8' > "$ctl/dockmenu-com.android.chrome-show"
-        wait_until 8 eval '[ "$(popup_windows)" -gt '"$popups"' ]' \
-            && ok "[WIN-26] the Dock shim's own menu opened for its shot" \
-            || bad "MULTIWIN the shim's menu never appeared for its shot"
-        shot 3-dock-shim-menu
+        # The shim polls its debug directory every 0.2 s, so the check waits for
+        # its popup window and captures at once, while the popup is confirmed on
+        # screen on both sides of the shutter and before its 10 s cap (round 5,
+        # light 3 shot an empty screen after a popup that never appeared). The
+        # shim consumes the request file even when it cannot open the menu, so a
+        # miss is retried once with a fresh request, never stacked on a menu
+        # that is still up.
+        local base wrote_at elapsed attempt
+        base="$(popup_windows)"
+        for attempt in 1 2; do
+            wrote_at=$SECONDS
+            printf '10' > "$ctl/dockmenu-com.android.chrome-show"
+            if ! wait_until 7 eval '[ "$(popup_windows)" -gt '"$base"' ]'; then
+                # A popup that is late is still a popup: one more look.
+                sleep 1.2
+            fi
+            elapsed=$((SECONDS - wrote_at))
+            if [ "$(popup_windows)" -gt "$base" ]; then
+                shot 3-dock-shim-menu
+                if [ "$(popup_windows)" -gt "$base" ]; then
+                    ok "[WIN-26] the Dock shim's own menu opened for its shot"
+                    say "MULTIWIN shot 3-dock-shim-menu: captured at +${elapsed}s of the shim's 10s cap"
+                    break
+                fi
+                bad "MULTIWIN the shim's menu closed during the capture (+${elapsed}s of its 10s cap)"
+            else
+                bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
+            fi
+            [ "$attempt" = 1 ] || break
+            wait_until 10 eval '[ "$(popup_windows)" -le '"$base"' ]' \
+                || { bad "MULTIWIN the shim's menu was still open before the retry"; break; }
+            skip "MULTIWIN the shim's menu shot" "the first request produced no popup; asking again"
+        done
         wait_until 12 eval '[ "$(popup_windows)" -eq 0 ]' \
             || bad "MULTIWIN the shim's menu stayed open after its cap"
         focus_app com.android.chrome "Chrome" || true
