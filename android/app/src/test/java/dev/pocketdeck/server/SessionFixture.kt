@@ -158,7 +158,7 @@ abstract class SessionFixture {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return
-            Thread.sleep(5)
+            Thread.sleep(5) // real-time: poll a condition the session reaches on its own thread
         }
         check(condition()) { "condition never became true" }
     }

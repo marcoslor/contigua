@@ -115,7 +115,7 @@ class ClipRootTest : SessionFixture() {
         check(service.listening)
 
         service.copy("synthetic-gate-" + "d".repeat(5))
-        Thread.sleep(1_300) // at least one image-poll tick
+        Thread.sleep(1_300) // real-time: at least one 1 s image-poll tick
 
         assertEquals("a read happened while the gate was off", 0, service.gets.get())
         assertEquals("an image probe happened while the gate was off", 0, service.descriptions.get())

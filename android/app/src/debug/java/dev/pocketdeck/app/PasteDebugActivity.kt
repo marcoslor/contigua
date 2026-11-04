@@ -89,7 +89,7 @@ class PasteDebugActivity : Activity() {
             "exists" -> {
                 // The description has no owner check and carries no content.
                 val description = clipboard.primaryClipDescription
-                Log.i(TAG, "clip exists=${description != null} mimes=${description?.mimeTypeCount ?: 0}")
+                Log.i(TAG, "clip exists=${description != null} mimes=${description?.mimeTypeCount ?: 0}")  // log-ok: a state and a count, never the clip
             }
             else -> Unit
         }
