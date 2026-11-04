@@ -94,10 +94,18 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         /** A write's hidden temp: `<TEMP_PREFIX><random><TEMP_SUFFIX>`. */
         const val TEMP_PREFIX = ".pocketdeck-"
         const val TEMP_SUFFIX = ".part"
+        /**
+         * Android's transient names (FILES-35): a file being moved into the
+         * Trash, or a staged delete. They are not phone files at any depth.
+         */
+        val TRANSIENT_PREFIXES = listOf(".trashed-", ".pending-")
 
         fun isTempName(name: String): Boolean =
             name.length > TEMP_PREFIX.length + TEMP_SUFFIX.length &&
                 name.startsWith(TEMP_PREFIX) && name.endsWith(TEMP_SUFFIX)
+
+        fun isTransientName(name: String): Boolean =
+            TRANSIENT_PREFIXES.any { name.startsWith(it) }
 
         fun denied(why: String) = FsFailure("fs_denied", "denied: $why")
         fun notFound() = FsFailure("fs_not_found", "no such file")
