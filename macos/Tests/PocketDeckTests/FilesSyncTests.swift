@@ -24,6 +24,7 @@ private final class ReplicaChannel: FsChannel {
     private(set) var mkdirs: [(id: UInt32, path: String)] = []
     private(set) var setAttrs: [(id: UInt32, path: String, mtime: Int)] = []
     private(set) var watches: [(id: UInt32, paths: [String], on: Bool)] = []
+    private(set) var digests: [(id: UInt32, paths: [String])] = []
     private(set) var cancels: [UInt32] = []
 
     func fsList(id: UInt32, path: String, page: String?) {
@@ -81,6 +82,11 @@ private final class ReplicaChannel: FsChannel {
         watches.append((id, paths, on))
     }
 
+    func fsDigest(id: UInt32, paths: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        digests.append((id, paths))
+    }
+
     func fsCancel(id: UInt32) {
         lock.lock(); defer { lock.unlock() }
         cancels.append(id)
@@ -99,6 +105,10 @@ final class FilesSyncTests: XCTestCase {
     private var directory: URL!
     private var channel: ReplicaChannel!
     private var client: FsClient!
+    /// The answer helpers' place in the request log (the resync lists more than
+    /// one folder).
+    private var answeredStats = 0
+    private var answeredLists = 0
 
     private var root: String { FilesMap.rootIdentifier }
     private var mapURL: URL { directory.appendingPathComponent("files-ids.json") }
@@ -110,6 +120,8 @@ final class FilesSyncTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         channel = ReplicaChannel()
         client = FsClient(channel: channel)
+        answeredStats = 0
+        answeredLists = 0
     }
 
     override func tearDown() async throws {
@@ -150,13 +162,75 @@ final class FilesSyncTests: XCTestCase {
                           signal: { signals.record($0) })
     }
 
-    private func answerList(_ items: [FsItem], next: String? = nil) {
+    private func answerList(_ items: [FsItem], next: String? = nil, digest: String? = nil) {
         let request = channel.lists.last!
-        client.items(id: request.id, page: next, items: items.map(\.jsonObject))
+        client.items(id: request.id, page: next, digest: digest, items: items.map(\.jsonObject))
     }
 
     private func answerStat(_ fs: FsItem) {
         client.item(id: channel.stats.last!.id, item: fs.jsonObject)
+    }
+
+    // MARK: The reconnect resync's fixtures (FILES-33)
+
+    private func folder(_ name: String, ino: Int) -> FileItem {
+        FilesMap.item(path: name, parentIdentifier: root, fs: fs(name, ino: ino, dir: true))
+    }
+
+    private struct Recorded {
+        var children: [FileItem]
+        var digest: String?
+        var touched: TimeInterval
+    }
+
+    /// The record an earlier ready left: folders by identifier, with the
+    /// digest of their last complete listing.
+    private func saveRecord(_ folders: [String: Recorded]) {
+        var replica = FilesReplica()
+        for (identifier, entry) in folders {
+            replica.folders[identifier] = FilesFolderRecord(
+                children: byID(entry.children), touched: entry.touched, digest: entry.digest)
+        }
+        FilesReplica.save(replica, to: replicaURL)
+    }
+
+    /// The id map an earlier run left: the resync's identifiers must resolve to
+    /// the phone's paths.
+    private func rememberPaths(_ paths: [String: String]) {
+        var map = FilesIdMap()
+        for (identifier, path) in paths {
+            map.remember(identifier: identifier, path: path, parentIdentifier: root)
+        }
+        FilesIdMap.save(map, to: mapURL)
+    }
+
+    private func answerDigest(_ values: [String: String]) {
+        client.digests(id: channel.digests.last!.id, values: values)
+    }
+
+    /// A 32-hex digest the FsClient accepts as the phone's answer.
+    private func hex(_ value: Int) -> String { String(format: "%032x", value) }
+
+    /// Every folder the resync re-lists is resolved with one stat first.
+    private func answerPendingStats() {
+        while answeredStats < channel.stats.count {
+            let request = channel.stats[answeredStats]
+            answeredStats += 1
+            let name = (request.path as NSString).lastPathComponent
+            client.item(id: request.id,
+                        item: fs(name.isEmpty ? "root" : name, ino: 900 + answeredStats,
+                                 dir: true).jsonObject)
+        }
+    }
+
+    /// Answers every list request still waiting, from its folder's path.
+    private func answerPendingLists(_ itemsByPath: [String: [FsItem]], digest: String? = nil) {
+        while answeredLists < channel.lists.count {
+            let request = channel.lists[answeredLists]
+            answeredLists += 1
+            client.items(id: request.id, page: nil, digest: digest,
+                         items: (itemsByPath[request.path] ?? []).map(\.jsonObject))
+        }
     }
 
     // MARK: The first listing
@@ -418,6 +492,193 @@ final class FilesSyncTests: XCTestCase {
         XCTAssertNil(host.replica.folders[root]?.children["ino:6"])
         let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
         XCTAssertEqual(replay.deleted, ["ino:6"])
+    }
+
+    // MARK: The reconnect resync (FILES-33)
+
+    /// (a) Three recorded folders, one digest differs: one `fs.digest` for all
+    /// of them, exactly one listing, and its deletions reach the log.
+    func testAReadyAsksEveryRecordedFolderAndRelistsOnlyTheOneThatMoved() throws {
+        let a = folder("A", ino: 100)
+        let b = folder("B", ino: 200)
+        let c = folder("C", ino: 300)
+        saveRecord([
+            a.identifier: Recorded(children: [item("a1.txt", ino: 101, parent: a.identifier)],
+                                   digest: hex(1), touched: 1),
+            b.identifier: Recorded(children: [item("b1.txt", ino: 201, parent: b.identifier),
+                                              item("b2.txt", ino: 202, parent: b.identifier)],
+                                   digest: hex(2), touched: 2),
+            c.identifier: Recorded(children: [item("c1.txt", ino: 301, parent: c.identifier)],
+                                   digest: hex(3), touched: 3),
+        ])
+        rememberPaths([a.identifier: "A", b.identifier: "B", c.identifier: "C"])
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        host.sessionReady()
+
+        XCTAssertEqual(channel.digests.count, 1, "one fs.digest for the whole ready")
+        XCTAssertEqual(channel.digests.first?.paths, ["C", "B", "A"],
+                       "the most recently touched folders are asked first")
+        XCTAssertEqual(channel.lists.count, 0, "nothing is listed before the answer")
+
+        answerDigest(["A": hex(1), "B": hex(9), "C": hex(3)])
+        answerPendingStats()
+        XCTAssertEqual(channel.lists.count, 1, "only the moved folder is re-listed")
+        XCTAssertEqual(channel.lists.last?.path, "B")
+        XCTAssertEqual(channel.lists.last?.page, nil)
+
+        answerPendingLists(["B": [fs("b3.txt", ino: 203), fs("b4.txt", ino: 204)]],
+                           digest: hex(12))
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertEqual(Set(replay.deleted), ["ino:201", "ino:202"])
+        XCTAssertEqual(Set(replay.items.map(\.name)), ["b3.txt", "b4.txt"])
+        XCTAssertEqual(host.replica.folders[b.identifier]?.digest, hex(12),
+                       "(f) the last page's digest lands in the record")
+        XCTAssertEqual(signals.count, 1)
+        XCTAssertNotNil(host.replica.folders[a.identifier]?.children["ino:101"],
+                        "an unchanged folder keeps its record and is not listed")
+    }
+
+    /// (b) A folder the phone answers `not_found` for is reported deleted with
+    /// everything the record holds under it, as one delta.
+    func testANotFoundFolderIsDeletedWithEverythingTheRecordHoldsUnderIt() throws {
+        let a = folder("A", ino: 100)
+        let b = folder("B", ino: 200)
+        let d = FilesMap.item(path: "B/D", parentIdentifier: b.identifier,
+                              fs: fs("D", ino: 210, dir: true))
+        saveRecord([
+            a.identifier: Recorded(children: [item("a1.txt", ino: 101, parent: a.identifier)],
+                                   digest: hex(1), touched: 1),
+            b.identifier: Recorded(children: [item("b1.txt", ino: 201, parent: b.identifier), d],
+                                   digest: hex(2), touched: 2),
+            d.identifier: Recorded(children: [item("d1.txt", ino: 211, parent: d.identifier)],
+                                   digest: hex(4), touched: 1),
+        ])
+        rememberPaths([a.identifier: "A", b.identifier: "B", d.identifier: "B/D"])
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        host.sessionReady()
+        answerDigest(["A": hex(1), "B": "not_found", "B/D": hex(4)])
+
+        XCTAssertEqual(channel.lists.count, 0, "no listing: the folder is gone")
+        XCTAssertNil(host.replica.folders[b.identifier])
+        XCTAssertNil(host.replica.folders[d.identifier])
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertEqual(Set(replay.deleted),
+                       [b.identifier, "ino:201", d.identifier, "ino:211"],
+                       "the folder and its recorded children are one delta")
+        XCTAssertEqual(signals.count, 1)
+    }
+
+    /// A phone whose storage is not mounted answers not_found for the root:
+    /// that must never empty Finder.
+    func testANotFoundRootIsRelistedNeverDeleted() throws {
+        let a = folder("A", ino: 100)
+        saveRecord([
+            root: Recorded(children: [], digest: hex(9), touched: 2),
+            a.identifier: Recorded(children: [], digest: hex(1), touched: 1),
+        ])
+        rememberPaths([a.identifier: "A"])
+        let host = makeHost(Signals())
+        host.sessionReady()
+        answerDigest(["": "not_found", "A": hex(1)])
+        XCTAssertNotNil(host.replica.folders[root], "the root is never deleted")
+        XCTAssertEqual(channel.lists.count, 1, "the root is re-listed instead")
+        answerPendingLists([:], digest: hex(9))
+    }
+
+    /// (c) `fs_unknown`: the phone has no digest, so every folder is listed.
+    func testAnUnknownDigestRelistsEveryRecordedFolder() throws {
+        let a = folder("A", ino: 100)
+        let b = folder("B", ino: 200)
+        let c = folder("C", ino: 300)
+        saveRecord([
+            a.identifier: Recorded(children: [], digest: hex(1), touched: 1),
+            b.identifier: Recorded(children: [], digest: hex(2), touched: 2),
+            c.identifier: Recorded(children: [], digest: hex(3), touched: 3),
+        ])
+        rememberPaths([a.identifier: "A", b.identifier: "B", c.identifier: "C"])
+
+        let host = makeHost(Signals())
+        host.sessionReady()
+        client.failure(id: channel.digests.last!.id, code: "fs_unknown", message: nil)
+        answerPendingStats()
+        XCTAssertEqual(channel.lists.count, 3)
+        XCTAssertEqual(Set(channel.lists.map(\.path)), ["A", "B", "C"])
+    }
+
+    /// (d) More than 64 recorded folders: only the 64 most recently touched.
+    func testOnlyTheSixtyFourMostRecentlyTouchedFoldersAreAsked() throws {
+        var folders: [String: Recorded] = [:]
+        var paths: [String: String] = [:]
+        for index in 1...70 {
+            let name = "F\(index)"
+            let recorded = FilesMap.item(path: name, parentIdentifier: root,
+                                         fs: fs(name, ino: 1_000 + index, dir: true))
+            folders[recorded.identifier] = Recorded(children: [], digest: hex(index),
+                                                    touched: Double(index))
+            paths[recorded.identifier] = name
+        }
+        saveRecord(folders)
+        rememberPaths(paths)
+        let host = makeHost(Signals())
+        host.sessionReady()
+        let asked = channel.digests.first?.paths ?? []
+        XCTAssertEqual(asked.count, 64)
+        XCTAssertEqual(Set(asked), Set((7...70).map { "F\($0)" }),
+                       "the 64 most recently touched, the rest wait for their next touch")
+        answerDigest(Dictionary(uniqueKeysWithValues: asked.map {
+            ($0, hex(Int($0.dropFirst()) ?? 0))
+        }))
+        XCTAssertEqual(channel.lists.count, 0)
+    }
+
+    /// (e) A session drop mid-relist stops the work; the next ready starts over.
+    func testADropDuringRelistingHoldsUntilTheNextReady() {
+        let a = folder("A", ino: 100)
+        let b = folder("B", ino: 200)
+        let c = folder("C", ino: 300)
+        saveRecord([
+            a.identifier: Recorded(children: [], digest: hex(1), touched: 1),
+            b.identifier: Recorded(children: [], digest: hex(2), touched: 2),
+            c.identifier: Recorded(children: [], digest: hex(3), touched: 3),
+        ])
+        rememberPaths([a.identifier: "A", b.identifier: "B", c.identifier: "C"])
+        let host = makeHost(Signals())
+        host.sessionReady()
+        answerDigest(["A": hex(1), "B": hex(9), "C": hex(10)])
+        answerPendingStats()
+        XCTAssertEqual(channel.lists.count, 2)
+
+        host.sessionDropped()
+        answerPendingLists([:], digest: hex(20))
+        XCTAssertEqual(channel.lists.count, 2, "a dropped session asks nothing more")
+        XCTAssertEqual(channel.digests.count, 1)
+
+        host.sessionReady()
+        XCTAssertEqual(channel.digests.count, 2, "the next ready starts over")
+        answerDigest(["A": hex(1), "B": hex(9), "C": hex(10)])
+    }
+
+    /// (f) A digest is stored only by a complete listing, from its last page.
+    func testOnlyTheLastPageOfACompleteWalkStoresTheDigest() throws {
+        let host = makeHost(Signals())
+        host.list(item: root, page: nil) { _ in }
+        answerList([fs("a.txt", ino: 6)], next: "p2", digest: "first-page")
+        XCTAssertEqual(host.replica.folders[root]?.digest, nil,
+                       "a page that is not the last carries no digest into the record")
+        host.list(item: root, page: "p2") { _ in }
+        answerList([fs("b.txt", ino: 7)], digest: "last-page")
+        XCTAssertEqual(host.replica.folders[root]?.digest, "last-page")
+
+        // An incomplete walk leaves the digest of the last complete one alone.
+        host.list(item: root, page: nil) { _ in }
+        answerList([fs("a.txt", ino: 6)], next: "p3", digest: "partial")
+        host.list(item: root, page: "p3") { _ in }
+        client.failure(id: channel.lists.last!.id, code: "io", message: nil)
+        XCTAssertEqual(host.replica.folders[root]?.digest, "last-page")
     }
 
     // MARK: The durable anchor (FILES-32)

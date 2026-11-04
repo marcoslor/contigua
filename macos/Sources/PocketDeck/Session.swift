@@ -198,8 +198,10 @@ enum SessionEvent {
     case shareFileEnd(id: UInt32, size: Int, sha256: String)
     case shareFileAbort(id: UInt32)
     /// Read-only phone files (docs/design/files.md): list/stat/read replies.
-    case fsItems(id: UInt32, page: String?, items: [[String: Any]])
+    case fsItems(id: UInt32, page: String?, digest: String?, items: [[String: Any]])
     case fsItem(id: UInt32, item: [String: Any])
+    /// One `fs.digest` reply: path → a hex digest or "not_found".
+    case fsDigest(id: UInt32, digests: [String: Any])
     case fsData(id: UInt32, bytes: [UInt8])
     case fsReadEnd(id: UInt32, size: Int, sha256: String)
     case fsThumbEnd(id: UInt32, mime: String, size: Int, sha256: String)
@@ -1770,10 +1772,15 @@ final class Session {
         case "fs.items":
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsItems(id: id, page: message.string("page"),
+                          digest: message.string("digest"),
                           items: message.array("items") ?? []))
         case "fs.item":
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0, let item = message.object("item") else { return }
             emit(.fsItem(id: id, item: item))
+        case "fs.digest":
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0,
+                  let digests = message.object("digests") else { return }
+            emit(.fsDigest(id: id, digests: digests))
         case "fs.read.end":
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsReadEnd(id: id, size: message.int("size") ?? -1,
@@ -2173,6 +2180,9 @@ final class Session {
     }
     func fsStat(id: UInt32, path: String) {
         sendJSON(["t": "fs.stat", "id": Int(id), "path": path])
+    }
+    func fsDigest(id: UInt32, paths: [String]) {
+        sendJSON(["t": "fs.digest", "id": Int(id), "paths": paths])
     }
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?) {
         var message: [String: Any] = ["t": "fs.read", "id": Int(id), "path": path,
