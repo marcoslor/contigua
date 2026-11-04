@@ -1756,9 +1756,22 @@ def cmd_panel_press(client, args):
 
 
 def cmd_clip_set(client, args):
-    """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
+    """Send `clip.set` as the Mac: the phone's clipboard takes the text.
+
+    Waits for the phone to ACK the reliable frame before closing: a socket
+    closed with unread frames can RST the connection and discard the clip.set
+    still queued, so an early return would report a copy the phone never got.
+    Prints only the length, never the text.
+    """
+    seq = client.out_seq
     client.send_json({"t": "clip.set", "text": args.text})
-    print("sent clip.set %s" % json.dumps(args.text, ensure_ascii=False))
+    deadline = time.time() + DEFAULT_TIMEOUT
+    while seq in client.unacked:
+        if time.time() >= deadline:
+            raise DeckError("the phone did not acknowledge clip.set")
+        if client.recv(0.25) is None:
+            raise DeckError("phone closed before acknowledging clip.set")
+    print("sent clip.set chars=%d" % len(args.text))
     return 0
 
 
@@ -2121,7 +2134,17 @@ def cmd_dropbatch(client, args):
 
 
 def cmd_clip_watch(client, args):
-    """Print every `clip.set` the phone sends, for `--seconds`."""
+    """Print every `clip.set` the phone sends for `--seconds`, length only.
+
+    `--enable` first turns the Mac's clipboard gate on and waits for a pong, so
+    the phone has applied it before the caller copies. Never prints clip text.
+    """
+    if args.enable:
+        client.send_json({"t": "clip.enable", "on": True})
+        client.send_json({"t": "ping", "ts": 7301})
+        # Pong carries the ping's ts, not an id, and FIFO proves the gate applied.
+        _wait_json(client, time.time() + 10, {"pong"})
+        print("clip.enable on")
     deadline = time.time() + args.seconds
     while time.time() < deadline:
         frame = client.recv(0.25)
@@ -2133,8 +2156,8 @@ def cmd_clip_watch(client, args):
             continue
         msg = proto.unpack_json(frame)
         if msg.get("t") == "clip.set":
-            print("%s clip.set %s" % (time.strftime("%H:%M:%S"),
-                                      json.dumps(msg.get("text"), ensure_ascii=False)))
+            print("%s clip.set chars=%d" % (time.strftime("%H:%M:%S"),
+                                            len(msg.get("text") or "")))
     return 0
 
 
@@ -3039,8 +3062,10 @@ def build_parser():
     sp.add_argument("--stop", action="store_true", help="send phone.ring.stop instead")
     sp.add_argument("--wait", type=float, default=10.0, help="seconds to wait for ring.state")
 
-    sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends", **spp)
+    sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends (lengths only)", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
+    sp.add_argument("--enable", action="store_true",
+                    help="turn the Mac's clipboard gate on first")
 
     sp = sub.add_parser("notify", help="notifications: enable/action/dismiss/watch/image/live/end (ids and lengths only)", **spp)
     sp.add_argument("what", choices=["enable", "action", "dismiss", "watch", "image", "live", "end"])

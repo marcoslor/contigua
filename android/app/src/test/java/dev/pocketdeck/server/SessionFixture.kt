@@ -29,6 +29,9 @@ abstract class SessionFixture {
         taskPresence: TaskPresence = TaskPresence { null },
         taskMove: TaskMove? = null,
         titleObserver: WindowObserver? = null,
+        clipboard: ClipboardPort? = null,
+        clipImages: ClipboardImagePort? = null,
+        log: (String) -> Unit = {},
     ) {
         platform = FakePlatform()
         serverSocket = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
@@ -52,11 +55,12 @@ abstract class SessionFixture {
                 callback = platform,
                 titleObserver = titleObserver,
                 taskPresence = taskPresence,
-                clipboard = platform,
+                clipboard = clipboard ?: platform,
+                clipImages = clipImages,
                 packages = null,
                 taskMove = taskMove,
                 now = { clock++ },
-                log = {},
+                log = log,
                 handshakeTimeoutMs = 3_000,
                 pairDecisionTimeoutMs = 30_000,
                 exitPollIntervalMs = 50,
@@ -147,6 +151,16 @@ abstract class SessionFixture {
             if (m["t"] == t) return m
         }
         error("never received '$t'")
+    }
+
+    /** Waits for a condition the session reaches on its own threads. */
+    protected fun await(timeoutMs: Long = 2_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(5) // real-time: poll a condition the session reaches on its own thread
+        }
+        check(condition()) { "condition never became true" }
     }
 
     /** The window.open request every case uses; a 640×480 stream at dpi 160. */

@@ -7927,6 +7927,449 @@ PY
     wait_until 5 no_fakephone
 }
 
+# --- Thumbnails at scale (FILES-30, files-thumbs-scale) ---------------------
+#
+# The person's report: a folder of thousands of images, scrolled far, and the
+# thumbnails did not follow. One VM boot opens 3,000 small JPEGs in Finder's
+# icon view, then scrolls to the middle and to the end. The fake phone answers
+# one thumbnail at a time, 300 ms each (a real phone's pace), so the ~20 icons
+# on a screen form a queue rather than filling at once.
+#
+# Records, ids/counts/sizes/durations only (FILES-27): the listing time for
+# 3,000 names, Finder's batch sizes and cancels (the extension's `thumb batch`
+# lines), and the time from the open / each scroll to the first picture on
+# screen.
+check_files_thumbs_scale() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        bad "FILES-THUMBS-SCALE refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-thumbs-scale"
+        return
+    fi
+    clean
+    local appex; appex="$(files_appex)"
+    command -v ffmpeg >/dev/null || { bad "FILES-THUMBS-SCALE ffmpeg is needed to make the fixtures"; return 1; }
+    files_tree
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=lime:s=64x64" \
+        -frames:v 1 -q:v 4 "$WORK/thumb.jpg" >/dev/null 2>&1 \
+        || { bad "FILES-THUMBS-SCALE could not make the thumbnail fixture"; return 1; }
+    # Fixture names only: 3,000 tiny JPEGs are the listing's weight, not the
+    # picture's (the fake serves its own green fixture for any image name).
+    python3 - "$WORK/fsroot" "$WORK/thumb.jpg" <<'PY'
+import os, sys
+root = os.path.join(sys.argv[1], "bulk")
+os.makedirs(root, exist_ok=True)
+data = open(sys.argv[2], "rb").read()
+for i in range(3000):
+    with open(os.path.join(root, "img%04d.jpg" % i), "wb") as handle:
+        handle.write(data)
+PY
+
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-thumb $WORK/thumb.jpg --fs-thumb-delay-ms 300" start_fake || return 1
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
+    files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    wait_until 60 eval '! stale_domain_folder' \
+        || bad "FILES-THUMBS-SCALE the removed domain's folder is still in CloudStorage after 60 s"
+
+    launch --connect "127.0.0.1:$PORT" --files-domain add
+    wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
+        && ok "FILES-THUMBS-SCALE NSFileProviderManager.add ok" \
+        || { bad "FILES-THUMBS-SCALE add failed"; stop_app; stop_fakephone; return 1; }
+    wait_until 20 file_has "files-domain bridge group: ok" "$WORK/app.log" \
+        || bad "FILES-THUMBS-SCALE no App Group bridge socket"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "FILES-THUMBS-SCALE the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    files_list
+    local root; root="$(files_domain_path)"
+    files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
+    # The domain becomes "PocketDeck (<phone>)" once the session knows the
+    # phone, and its CloudStorage folder is renamed under the URL cached at add.
+    # The first run waited its whole window on the old name (the folder was
+    # already "PocketDeck-PocketDeck(FakePhone)" and the extension listed fine).
+    # Re-read the URL on every try, and take the folder the rename left.
+    domain_root_lists() {
+        if [ ! -d "$root" ]; then
+            files_list
+            local fresh; fresh="$(files_domain_path)"
+            [ -n "$fresh" ] && root="$fresh"
+            [ -d "$root" ] \
+                || root="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+        fi
+        files_root_lists "$root"
+    }
+    wait_until "$FILES_SWITCH_WAIT_S" domain_root_lists \
+        && ok "FILES-THUMBS-SCALE the extension is enabled and the domain enumerates" \
+        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch (folder $(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1))"; stop_app; stop_fakephone; return 1; }
+
+    # -- The listing's weight ------------------------------------------------
+    # 120 s, not 20: the first run killed `ls` at 20 s and recorded 0 names for
+    # a listing that was still enumerating, and a client killed inside a
+    # readdir left Finder's window on that folder empty. The 5 s limit below is
+    # the assertion; this cap only stops a hung mount.
+    local bulk="$root/bulk" t0 t1 names listing_ms
+    t0="$(now_ms)"
+    names=0
+    local listing_deadline
+    listing_deadline=$((SECONDS + 120))
+    # `ls` on a File Provider mount returns the names that have arrived so far
+    # and can exit with none while the system is still walking the pages (the
+    # 00:50 run: 0 names after 9.9 s, then the extension delivered 12 pages over
+    # the next 6.5 s). Poll until the whole folder is there; the time from the
+    # first request to that observation is what a person waits for. The 5 s
+    # assertion below is unchanged.
+    while [ $SECONDS -lt "$listing_deadline" ]; do
+        run_limited 30 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
+        names="$(wc -l < "$WORK/bulk-ls.txt" | tr -d ' ')"
+        [ "${names:-0}" = "3000" ] && break
+        sleep 0.5
+    done
+    t1="$(now_ms)"
+    listing_ms=$((t1 - t0))
+    say "FILES-THUMBS-SCALE listing: names=$names ms=$listing_ms"
+    if [ "${names:-0}" = "3000" ] && [ "$listing_ms" -le 5000 ]; then
+        ok "FILES-THUMBS-SCALE [FILES-30] 3,000 names listed in ${listing_ms} ms"
+    else
+        bad "FILES-THUMBS-SCALE listed ${names:-0} names in ${listing_ms} ms (want 3000 within 5000 ms)"
+    fi
+
+    # -- The listing's per-page breakdown ------------------------------------
+    # One line per Finder page from the extension (count, hit|fetch, and
+    # request→deliver ms) and the app's "bridge: list page" stamp. The app's
+    # stamp splits a fetch into phone + relay (start → app reply) and our
+    # delivery (app reply → Finder); consecutive starts give the system's gap
+    # before it asked for the next page. Counts and durations only (FILES-27).
+    files_log > "$WORK/listing-log.txt" 2>/dev/null || true
+    # bash 3.2 scans a heredoc inside "$(...)" for quotes: write the
+    # parser first, then run it.
+    cat > "$WORK/listing-breakdown.py" <<'PY'
+import re, sys
+from datetime import datetime, timedelta
+
+def stamp(line):
+    text = line.strip()
+    m = re.match(r"^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)\.(\d{3,6})", text)
+    if m:
+        y, mo, d, h, mi, s, frac = m.groups()
+        return datetime(int(y), int(mo), int(d), int(h), int(mi), int(s),
+                        int(frac.ljust(6, "0")[:6]))
+    m = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2}) (\d\d):(\d\d):(\d\d)\.(\d{3,6})", text)
+    if m:
+        now = datetime.now()
+        month = datetime.strptime(m.group(1), "%b").month
+        return datetime(now.year, month, int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)),
+                        int(m.group(6).ljust(6, "0")[:6]))
+    return None
+
+pages, relays = [], []
+try:
+    source = open(sys.argv[1], errors="replace")
+except OSError:
+    source = []
+for line in source:
+    at = stamp(line)
+    m = re.search(r"enumerate page n=(\d+) phone=(hit|fetch) ms=(\d+)", line)
+    if m:
+        pages.append((at, int(m.group(1)), m.group(2), int(m.group(3))))
+        continue
+    m = re.search(r"bridge: list page items=(\d+)", line)
+    if m:
+        relays.append((at, int(m.group(1))))
+if not pages:
+    print("unavailable")
+    raise SystemExit
+rows = ["%d:%s:%d" % (n, phone, ms) for _, n, phone, ms in pages]
+fetch = sum(1 for page in pages if page[2] == "fetch")
+if any(at is None for at, _, _, _ in pages):
+    # No usable log timestamps: the counts and each page's own duration are
+    # still the measurement; only the gap needs the clock.
+    print("pages=%d fetch=%d hit=%d ms_sum=%d per=%s"
+          % (len(pages), fetch, len(pages) - fetch,
+             sum(page[3] for page in pages), ",".join(rows[:16])))
+    raise SystemExit
+pages.sort()
+relays = sorted(relay for relay in relays if relay[0] is not None)
+# Split into passes wherever the system paused for more than 3 s (the root
+# folder's pages and the measured folder's pages are different passes). Report
+# the pass with the most items: that is the folder under test.
+groups = []
+for page in pages:
+    start = page[0] - timedelta(milliseconds=page[3])
+    if groups and start - groups[-1][-1][0] <= timedelta(seconds=2):
+        groups[-1].append(page)
+    else:
+        groups.append([page])
+group = max(groups, key=lambda g: (sum(p[1] for p in g), len(g)))
+relay = ours = gap = 0
+used = set()
+previous = None
+for at, n, phone, ms in group:
+    start = at - timedelta(milliseconds=ms)
+    if previous is not None:
+        gap += max(0, int((start - previous).total_seconds() * 1000))
+    previous = at
+    if phone == "fetch":
+        match = None
+        for index, (reply_at, _) in enumerate(relays):
+            if index in used or reply_at < start or reply_at > at:
+                continue
+            match = index
+        if match is not None:
+            used.add(match)
+            relay += int((relays[match][0] - start).total_seconds() * 1000)
+            ours += int((at - relays[match][0]).total_seconds() * 1000)
+        else:
+            ours += ms
+    else:
+        ours += ms
+span = int((group[-1][0] - (group[0][0] - timedelta(milliseconds=group[0][3])))
+           .total_seconds() * 1000)
+print("pages=%d fetch=%d hit=%d relay_ms=%d our_ms=%d gap_ms=%d span_ms=%d per=%s"
+      % (len(group), sum(1 for p in group if p[2] == "fetch"),
+         sum(1 for p in group if p[2] != "fetch"), relay, ours, gap, span,
+         ",".join("%d:%s:%d" % (n, phone, ms) for _, n, phone, ms in group[:16])))
+PY
+    local breakdown
+    breakdown="$(python3 "$WORK/listing-breakdown.py" "$WORK/listing-log.txt")"
+    say "FILES-THUMBS-SCALE listing breakdown: ${breakdown:-unavailable}"
+
+    # -- Finder's icon view --------------------------------------------------
+    finder_folder() {
+        open -a Finder "$1" >/dev/null 2>&1 || true
+        local deadline=$((SECONDS + 30)) id
+        while [ $SECONDS -lt $deadline ]; do
+            id="$("$CGBIN" list --owner Finder | head -1 | cut -f1)"
+            [ -n "$id" ] && break
+            sleep 0.5
+        done
+        osascript - "$1" <<'OSA'
+on run argv
+    with timeout of 30 seconds
+        tell application "Finder"
+            activate
+            try
+                set theWindow to front window
+                set current view of theWindow to icon view
+                set icon size of theWindow's icon view options to 128
+                set bounds of theWindow to {80, 80, 900, 700}
+                set toolbar visible of theWindow to false
+                set statusbar visible of theWindow to false
+            end try
+        end tell
+    end timeout
+end run
+OSA
+    }
+    finder_close() {
+        osascript >/dev/null 2>&1 <<'OSA' || true
+with timeout of 20 seconds
+    tell application "Finder" to close every window
+end timeout
+OSA
+    }
+    finder_id() { "$CGBIN" list --owner Finder | head -1 | cut -f1; }
+    # The extension's batch lines, one count per call: the movement signal and
+    # the record (ids and counts only, FILES-27). It refreshes the log first;
+    # a call costs a `log show`, so the scroll paths use it sparingly.
+    batch_count() {
+        files_log > "$WORK/scale-log.txt" 2>/dev/null || true
+        grep -c "$1" "$WORK/scale-log.txt" 2>/dev/null || true
+    }
+    finder_shot() {
+        local id; id="$(finder_id)"
+        [ -n "$id" ] && screencapture -x -o -l"$id" "$1" 2>/dev/null
+    }
+    # The fake's picture is pure green; the sidebar is skipped so Finder's own
+    # icons cannot count as one of ours.
+    green_pixels() {
+        local png="$1" skip="$2" width height
+        width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$png" 2>/dev/null)"
+        height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$png" 2>/dev/null)"
+        [ -n "$width" ] && [ -n "$height" ] || { echo 0; return; }
+        ffmpeg -hide_banner -loglevel error -y -i "$png" -f rawvideo -pix_fmt rgb24 "$WORK/shot.rgb" >/dev/null 2>&1 || { echo 0; return; }
+        python3 - "$WORK/shot.rgb" "$width" "$height" "$skip" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+width, height, skip = int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+start = int(width * skip)
+count = 0
+for y in range(height):
+    row = y * width * 3
+    for x in range(start, width):
+        i = row + x * 3
+        if data[i + 1] >= 200 and data[i] <= 90 and data[i + 2] <= 90:
+            count += 1
+print(count)
+PY
+    }
+    wait_first_picture() { # <label> <start_ms> <limit_s> -> "ms pixels" or "-1 pixels"
+        local label="$1" start="$2" limit="$3" png
+        png="$SHOTS/first-$label.png"
+        local deadline=$((SECONDS + limit)) px=0
+        while [ $SECONDS -lt $deadline ]; do
+            if finder_shot "$png"; then
+                px="$(green_pixels "$png" 0.35)"
+                if [ "${px:-0}" -ge 1000 ]; then
+                    echo "$(( $(now_ms) - start )) ${px:-0}"
+                    return 0
+                fi
+            fi
+            sleep 0.2
+        done
+        echo "-1 ${px:-0}"
+        return 1
+    }
+
+    finder_close
+    local open_start open_line start_ms start_px
+    open_start="$(now_ms)"
+    finder_folder "$bulk"
+    if open_line="$(wait_first_picture start "$open_start" 40)"; then
+        read -r start_ms start_px <<< "$open_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $start_ms ms after the view opened (${start_px} px)"
+    else
+        read -r start_ms start_px <<< "$open_line"
+        bad "FILES-THUMBS-SCALE no picture within 40 s of opening the view (${start_px} px)"
+        start_ms=-1
+    fi
+
+    # -- The scrolls ---------------------------------------------------------
+    # 240 px per event: 200 events = 48,000 px, about half of the grid's
+    # ~600 rows; the end is another 72,000 px, which clamps on the last row.
+    scroll_finder() { # <events> [amount] [pixels|line]
+        local id; id="$(finder_id)"
+        [ -n "$id" ] || return 1
+        if [ "${3:-pixels}" = "line" ]; then
+            cg_input scroll --window "$id" --owner Finder --dy -"${2:-20}" --repeat "$1" --delay-ms 8
+        else
+            cg_input scroll --window "$id" --owner Finder --dy -"${2:-240}" --repeat "$1" --delay-ms 8 --pixels
+        fi
+    }
+    scroll_picture() { # <label> <events> <limit_s> -> "ms pixels"
+        local label="$1" events="$2" limit="$3" start png
+        png="$SHOTS/scroll-$label.png"
+        local before after
+        before="$(batch_count 'thumb batch open')"
+        start="$(now_ms)"
+        scroll_finder "$events" || return 1
+        sleep 1
+        after="$(batch_count 'thumb batch open')"
+        if [ "${after:-0}" -le "${before:-0}" ]; then
+            # The pixel gesture moved nothing (some views ignore pixel units):
+            # a line gesture is the wheel every other check uses.
+            scroll_finder 60 20 line
+        fi
+        local deadline=$((SECONDS + limit)) px=0
+        while [ $SECONDS -lt $deadline ]; do
+            if finder_shot "$png"; then
+                px="$(green_pixels "$png" 0.35)"
+                if [ "${px:-0}" -ge 1000 ]; then
+                    echo "$(( $(now_ms) - start )) ${px:-0}"
+                    return 0
+                fi
+            fi
+            sleep 0.2
+        done
+        echo "-1 ${px:-0}"
+        return 1
+    }
+
+    local middle_line middle_ms middle_px
+    if middle_line="$(scroll_picture middle 200 20)"; then
+        read -r middle_ms middle_px <<< "$middle_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $middle_ms ms after the middle scroll (${middle_px} px)"
+    else
+        read -r middle_ms middle_px <<< "$middle_line"
+        bad "FILES-THUMBS-SCALE no picture at the middle within 20 s (${middle_px} px)"
+        middle_ms=-1
+    fi
+    sleep 2
+    local end_line end_ms end_px
+    if end_line="$(scroll_picture end 300 20)"; then
+        read -r end_ms end_px <<< "$end_line"
+        ok "FILES-THUMBS-SCALE [FILES-30] first picture $end_ms ms after the end scroll (${end_px} px)"
+    else
+        read -r end_ms end_px <<< "$end_line"
+        bad "FILES-THUMBS-SCALE no picture at the end within 20 s (${end_px} px)"
+        end_ms=-1
+    fi
+    finder_shot "$SHOTS/after-files-thumbs-scale-end.png" \
+        && { cp "$SHOTS/after-files-thumbs-scale-end.png" "$WORK/" 2>/dev/null || true; \
+             ok "FILES-THUMBS-SCALE screenshot: $SHOTS/after-files-thumbs-scale-end.png"; }
+
+    # -- Scroll back to the start --------------------------------------------
+    # Does Finder re-ask a cancelled id when it scrolls back over it? New batch
+    # lines after the up-scroll are the only evidence the extension can see,
+    # and they carry ids and counts only (FILES-27).
+    sleep 2
+    local back_before back_after
+    back_before="$(batch_count 'thumb batch open')"
+    scroll_back_finder() {
+        local id; id="$(finder_id)"
+        [ -n "$id" ] || return 1
+        # 400 x 240 px, then wheel lines: the two gestures the other scrolls
+        # fall back between, so a view that ignores pixel units still moves.
+        cg_input scroll --window "$id" --owner Finder --dy 240 --repeat 400 --delay-ms 8 --pixels
+        cg_input scroll --window "$id" --owner Finder --dy 20 --repeat 300 --delay-ms 8
+    }
+    scroll_back_finder || true
+    sleep 3
+    back_after="$(batch_count 'thumb batch open')"
+    say "FILES-THUMBS-SCALE recorded: scroll-back opened $(( ${back_after:-0} - ${back_before:-0} )) new batches (Finder re-asks a cancelled id if > 0)"
+
+    # -- What Finder asked and cancelled -------------------------------------
+    sleep 5
+    finder_close
+    local opens cancels dones sizes
+    opens="$(batch_count 'thumb batch open')"; opens="${opens:-0}"
+    # Every batch completes once, including the ones the scroll cancelled: the
+    # extension's done line follows the last answer. A base build without the
+    # lines records 0/0, which the before run reads as "not logged".
+    local waited=0
+    while [ "$waited" -lt 30 ]; do
+        dones="$(batch_count 'thumb batch done')"; dones="${dones:-0}"
+        if [ "$opens" = "0" ] || [ "$dones" -ge "$opens" ]; then break; fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    cancels="$(batch_count 'thumb batch cancel')"; cancels="${cancels:-0}"
+    sizes="$(sed -n 's/.*thumb batch open id=[0-9]* n=\([0-9]*\) .*/n=\1/p' "$WORK/scale-log.txt" | sort | uniq -c | tr '\n' ' ')"
+    say "FILES-THUMBS-SCALE batches: open=$opens cancel=$cancels done=$dones sizes=${sizes:-none}"
+    if [ "$opens" = "0" ]; then
+        say "FILES-THUMBS-SCALE recorded: the build has no batch lines (before run)"
+    elif [ "$dones" -ge "$opens" ]; then
+        ok "FILES-THUMBS-SCALE [FILES-25] every batch completed ($dones of $opens)"
+    else
+        bad "FILES-THUMBS-SCALE $dones of $opens batches completed"
+    fi
+    say "FILES-THUMBS-SCALE recorded: batch sizes ${sizes:-none}; cancels $cancels"
+    say "FILES-THUMBS-SCALE recorded: first picture start=${start_ms} ms middle=${middle_ms} ms end=${end_ms} ms"
+
+    if grep -Eq 'img[0-9]{4}\.jpg' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE [FILES-27] a file name appears in the thumbnail log"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-27] the thumbnail log carries no file name"
+    fi
+    if grep -q 'fetch done' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE [FILES-23] the thumbnail materialized the file"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-23] no fetchContents: the items stayed undownloaded"
+    fi
+    if grep -q 'thumb failed code=fs_busy' "$WORK/scale-log.txt"; then
+        bad "FILES-THUMBS-SCALE the Mac exceeded the phone's 3 live thumb ids"
+    else
+        ok "FILES-THUMBS-SCALE [FILES-25] the phone never answered fs_busy"
+    fi
+
+    stop_app
+    files_oneshot remove "$WORK/remove.txt" >/dev/null 2>&1 || true
+    unregister_files >/dev/null 2>&1 || true
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_files_domain() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
         bad "FILES-DOMAIN refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-domain"
@@ -10397,6 +10840,126 @@ check_windows() {
     stop_app
     stop_fakephone
 }
+
+# --- Cover bar: WIN-11's opening cover in the immersive geometry ------------
+#
+# The visual record for the person's 11-03 report: a framed window with no
+# first frame looks exactly as the same window does in immersive — one sheet
+# over the whole window, the bar's band included — and the framed bar returns
+# with the first frame. A quiet run captures the run's own virtual display;
+# the record the reviewer sees is the VM's visible run. The two check names are
+# the two appearances.
+
+check_cover_bar() {
+    local appearance="$1" shots="$SHOTS/cover-bar" id
+    clean
+    mkdir -p "$shots"
+
+    # The framed window while opening: the fake holds the first frame — and
+    # the video config with it, so a scripted input driver (armed on the first
+    # config) cannot run here. The dwell shot moves the real pointer in the
+    # visible run instead; a quiet run skips it and takes the rest.
+    FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    wait_until 20 chrome_has "loading=1 cover_phase=opening" \
+        || bad "COVER-BAR $appearance no framed opening state: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no framed window"
+    sleep 0.6
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-opening-$appearance.png" \
+            && ok "COVER-BAR $appearance framed opening shot: $shots/framed-opening-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed opening shot"
+    fi
+    # The cover's dwell: the same hot zone and the same rest as immersive, so
+    # the pill and the lights come up over the cover. A real pointer move is a
+    # visible run's step; a quiet one has no pointer to spare.
+    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
+        cg_input move --window "$id" --dx -430 --top 8
+        wait_until 8 chrome_has "pill=shown" \
+            || bad "COVER-BAR $appearance the cover's dwell brought no pill: $(chrome_state)"
+        sleep 0.15
+        shot_window "$id" "$shots/framed-dwell-$appearance.png" \
+            && ok "COVER-BAR $appearance framed dwell shot: $shots/framed-dwell-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed dwell shot"
+        cg_input move --window "$id" --dx 0 --dy 0
+        wait_until 8 chrome_has "pill=hidden" \
+            || bad "COVER-BAR $appearance the cover's pill stayed up: $(chrome_state)"
+        # The pill's fade is 0.12 s: let the window finish it before the slow
+        # state's shot, or the two frames are the same pixels.
+        sleep 0.4
+    else
+        skip_visible "COVER-BAR $appearance framed dwell shot"
+    fi
+    wait_until 8 chrome_has "cover_phase=slow cover_buttons=cancel" \
+        || bad "COVER-BAR $appearance no slow state: $(chrome_state)"
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-slow-$appearance.png" \
+            && ok "COVER-BAR $appearance framed slow shot: $shots/framed-slow-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed slow shot"
+    fi
+    stop_app
+
+    # The same app in immersive while opening: the style is stored per package.
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    # The chrome state's fields are not adjacent: test them one at a time.
+    wait_until 20 chrome_has "style=immersive" \
+        || bad "COVER-BAR $appearance no immersive opening state: $(chrome_state)"
+    wait_until 5 chrome_has "loading=1" \
+        || bad "COVER-BAR $appearance the cover is not up: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 600')" || bad "COVER-BAR $appearance no immersive window"
+    sleep 0.6
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/immersive-opening-$appearance.png" \
+            && ok "COVER-BAR $appearance immersive opening shot: $shots/immersive-opening-$appearance.png" \
+            || bad "COVER-BAR $appearance no immersive opening shot"
+    fi
+    # The same pointer at the same point: the reference the cover's shot is
+    # compared with.
+    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
+        cg_input move --window "$id" --dx -430 --top 8
+        wait_until 8 chrome_has "pill=shown" \
+            || bad "COVER-BAR $appearance the immersive dwell brought no pill: $(chrome_state)"
+        sleep 0.15
+        shot_window "$id" "$shots/immersive-dwell-$appearance.png" \
+            && ok "COVER-BAR $appearance immersive dwell shot: $shots/immersive-dwell-$appearance.png" \
+            || bad "COVER-BAR $appearance no immersive dwell shot"
+    else
+        skip_visible "COVER-BAR $appearance immersive dwell shot"
+    fi
+    stop_app
+    stop_fakephone
+
+    # The first frame: the framed bar is back, its mirror and haze over it.
+    clean
+    mkdir -p "$shots"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    wait_until 20 events_have '"ev":"video"' || bad "COVER-BAR $appearance no video"
+    cover_bar_live() { chrome_has "loading=0" && chrome_has "haze=1"; }
+    wait_until 15 cover_bar_live \
+        || bad "COVER-BAR $appearance the first frame did not restore the framed bar: $(chrome_state)"
+    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no live framed window"
+    sleep 0.5
+    if [ -n "$id" ]; then
+        shot_window "$id" "$shots/framed-live-$appearance.png" \
+            && ok "COVER-BAR $appearance framed first-frame shot: $shots/framed-live-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed first-frame shot"
+    fi
+    stop_app
+    stop_fakephone
+
+    # The VM run copies $WORK back to the host, not the run's shot dir.
+    mkdir -p "$WORK/cover-bar"
+    cp -R "$shots/." "$WORK/cover-bar/"
+    say "shots: $WORK/cover-bar ($appearance)"
+}
+
+check_cover_bar_dark() { check_cover_bar dark; }
+check_cover_bar_light() { check_cover_bar light; }
 
 # --- Zoom: a stream window's double-click resize ----------------------------
 

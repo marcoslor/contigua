@@ -207,8 +207,15 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 ### Opening a window
 
 The loading state (L1 "Splash"): the app's large icon centred on the window's
-dark background, a 2 pt accent line sweeping under the title bar (indeterminate,
-never a made-up percentage) and the title **<App> — opening on <phone>**.
+dark background, a 2 pt accent line sweeping under the window's top edge
+(indeterminate, never a made-up percentage) and the title **<App> — opening on
+<phone>**.
+
+The cover is the whole window in either style: one sheet from the top edge,
+with the traffic lights and the action pill laid out as Immersive lays them out
+and the icon, title and line where Immersive puts them. A framed window's bar —
+its mirror, blur and haze — arrives with the first frame, so the loading state
+looks the same in Framed and Immersive; the stored style does not change.
 
 - 0–5 s: the icon, the line and the title.
 - 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel
