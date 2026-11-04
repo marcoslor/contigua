@@ -122,7 +122,7 @@ kill` only.
    -gpu swiftshader_indirect`) and waits for `sys.boot_completed`. If a rig PIN
    is set it unlocks first: userdata (and so `run-as`) is only reachable after
    the first unlock.
-2. Installs, from `tools/emulator/.cache/` (downloaded once):
+2. Installs, from `~/.cache/pocketdeck-emulator/` (`$POCKETDECK_FIXTURES`; downloaded once and shared by every checkout, so a new worktree needs no network):
    - **Shizuku** — newest release APK from its GitHub release feed;
    - **dev.pocketdeck** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
      where the installed versionCode must then equal the APK's;
@@ -232,8 +232,9 @@ Frames and raw H.264 land in `.agent/emu/frames/` (gitignored).
   WebView browser.
 - `adb root` works on this `google_apis` (non-Play) image, but the rig
   deliberately never roots: Shizuku and the server must run as the shell user.
-- `tools/emulator/.cache/` holds the downloads (Shizuku APK, F-Droid APKs, the
-  seeded prefs, deckctl's state) and is gitignored.
+- `tools/emulator/.cache/` holds one checkout's run state (the seeded prefs,
+  deckctl's state) and is gitignored. The downloads (Shizuku APK, F-Droid
+  APKs) live in the shared `~/.cache/pocketdeck-emulator/`.
 - The first device run of the media section (2026-10-20) delivered its three
   debug broadcasts and got no media messages back at all, so media control on a
   real listener is still unverified (docs/design/notify.md says what is open).

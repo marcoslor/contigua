@@ -105,9 +105,9 @@ start_shizuku() {
   [ -n "$(shizuku_pid)" ] && return 0
   code_path="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
     sed -n 's/.*codePath=//p' | head -1 | tr -d '\r')"
-  if [ -z "$code_path" ] && [ -s "$CACHE_DIR/shizuku.apk" ]; then
+  if [ -z "$code_path" ] && [ -s "$FIXTURE_DIR/shizuku.apk" ]; then
     step "installing the cached Shizuku manager"
-    emu install -r -g "$CACHE_DIR/shizuku.apk" >/dev/null 2>&1 || true
+    emu install -r -g "$FIXTURE_DIR/shizuku.apk" >/dev/null 2>&1 || true
     code_path="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
       sed -n 's/.*codePath=//p' | head -1 | tr -d '\r')"
   fi
