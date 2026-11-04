@@ -124,6 +124,17 @@ final class StreamChromeView: NSView {
     var onLiveTextToggle: (() -> Void)?
     var liveTextDragProvider: (() -> URL?)?
 
+    /// The window closed: AppKit keeps a closed window in `NSApp.windows`, and
+    /// with the window this controller — so the chrome's glass, its layers and
+    /// the mirrored video go now instead of living until the app quits
+    /// (WIN-33). Nothing is drawn again from a released chrome.
+    func releaseGraphics() {
+        ext.contentView = nil
+        subviews.forEach { $0.removeFromSuperview() }
+        layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
+        layer?.contents = nil
+    }
+
     init(video: VideoLayerView, style: WindowStyle, barBlur: BarBlurTuner = BarBlurTuner()) {
         self.video = video
         self.style = style

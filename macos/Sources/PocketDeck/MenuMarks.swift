@@ -20,11 +20,16 @@ enum MenuMarks {
         let title: String
         let isSeparator: Bool
         var children: [Item] = []
+        /// The item's key, empty for none: File's New item is addressed by its
+        /// ⌘N, because its title is what changes (MENU-2).
+        var keyEquivalent: String
 
-        init(title: String, isSeparator: Bool = false, children: [Item] = []) {
+        init(title: String, isSeparator: Bool = false, children: [Item] = [],
+             keyEquivalent: String = "") {
             self.title = title
             self.isSeparator = isSeparator
             self.children = children
+            self.keyEquivalent = keyEquivalent
         }
     }
 
@@ -33,6 +38,14 @@ enum MenuMarks {
         case mark([String], Bool)
         case enable([String], Bool)
         case retitle([String], String)
+    }
+
+    /// File ▸ New <App> Window's one correction: SwiftUI built the item at
+    /// launch, when no app window was key, so its title, flag and sentence are
+    /// written onto the item the person's menu already holds (MENU-2, WIN-25,
+    /// WIN-27, WIN-32, WIN-34).
+    static func fileNew(_ item: NewWindowItem) -> (title: String, enabled: Bool, help: String?) {
+        (item.title, item.enabled, item.help)
     }
 
     /// The menus whose items carry a mark or a title that follows the window.
@@ -95,6 +108,17 @@ enum MenuMarks {
     }
 }
 
+// MARK: - The one action SwiftUI leaves out
+
+/// Window ▸ Next Window's target. SwiftUI builds that item inert, so the app
+/// supplies the method it names when the menu opens (see `MenuMarks.apply`).
+@MainActor
+final class NextWindowAction: NSObject {
+    static let shared = NextWindowAction()
+
+    @objc func cycle(_ sender: Any?) { AppEnvironment.shared.controller.cycleWindow() }
+}
+
 // MARK: - Applying them
 
 @MainActor
@@ -128,6 +152,35 @@ extension MenuMarks {
                 apply(edit, in: phone)
             }
         }
+        // Window ▸ Next Window follows how many windows the key app has, which
+        // this value does not carry: the running window set decides (WIN-29).
+        if let window = mainMenu.items.first(where: { $0.title == "Window" })?.submenu,
+           let next = window.items.first(where: { $0.title == "Next Window" }) {
+            next.isEnabled = AppEnvironment.shared.controller.windows.canCycleWindows
+            // SwiftUI builds this one item without a target and an action at
+            // all (measured: `action == nil` beside an Enter Full Screen that
+            // has its own), so a person's click and its ⌘` would do nothing.
+            // The app attaches the one method the item names, on SwiftUI's own
+            // item — the same rule as the marks above, never a new item.
+            if next.action == nil {
+                next.target = NextWindowAction.shared
+                next.action = #selector(NextWindowAction.cycle(_:))
+            }
+        }
+        // File ▸ New <App> Window: addressed by its ⌘N, because the title is
+        // one of the values that follows the key app.
+        if let file = mainMenu.items.first(where: { $0.title == "File" })?.submenu {
+            let item = AppEnvironment.shared.controller.windows.keyNewWindowItem
+            let wanted = fileNew(item)
+            if let new = file.items.first(where: {
+                !$0.isSeparatorItem && $0.keyEquivalent == "n"
+                    && $0.keyEquivalentModifierMask.intersection([.shift, .option, .control]).isEmpty
+            }) {
+                if new.title != wanted.title { new.title = wanted.title }
+                new.isEnabled = wanted.enabled
+                new.toolTip = wanted.help
+            }
+        }
     }
 
     /// Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online, read when
@@ -151,7 +204,8 @@ extension MenuMarks {
         menu.items.map { item in
             Item(title: item.title,
                  isSeparator: item.isSeparatorItem,
-                 children: item.submenu.map { snapshot(of: $0) } ?? [])
+                 children: item.submenu.map { snapshot(of: $0) } ?? [],
+                 keyEquivalent: item.keyEquivalent)
         }
     }
 

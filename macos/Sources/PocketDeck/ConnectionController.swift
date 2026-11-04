@@ -544,7 +544,10 @@ final class ConnectionController {
         rememberedPhones = remembered.all
         audio.statsFile = options.audioStatsFile
         windows.onChange = { [weak self] in
-            MainActor.assumeIsolated { self?.syncAudio() }
+            MainActor.assumeIsolated {
+                self?.syncAudio()
+                self?.windowSetChanged()
+            }
         }
         windows.onDensityOverridesChanged = { [weak self] in
             MainActor.assumeIsolated { self?.refreshDensityOverrides() }
@@ -700,8 +703,24 @@ final class ConnectionController {
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
         }
+        // The phone refused an extra window at its cap (WIN-32): the Deck says
+        // so in the same words the menu item would have.
+        windows.onTooManyWindows = { [weak self] sentence in
+            MainActor.assumeIsolated { self?.showTransient(sentence) }
+        }
+        // Every window change re-reads the shim menus and the marks that follow
+        // the key app (WIN-26, WIN-29) — see `windowSetChanged`.
         dockApps.onOpen = { [weak self] deviceId, pkg, pid in self?.openFromDock(deviceId: deviceId, pkg: pkg, pid: pid) }
         dockApps.onShimQuit = { [weak self] stream in self?.windows.controller(for: stream)?.window?.close() }
+        // The Dock shim's secondary-click menu is the host's rows, rendered by
+        // the shim (WIN-26); a pick comes back here.
+        dockApps.windowMenu = { [weak self] deviceId, pkg in
+            self?.windows.windowMenuRows(pkg: pkg, deviceId: deviceId) ?? []
+        }
+        dockApps.onPick = { [weak self] _, pkg, row in
+            MainActor.assumeIsolated { self?.pickWindowMenuRow(row, pkg: pkg) }
+        }
+        dockApps.menuDebugDir = options.debugControl
         dockApps.start()
         discovery.onChange = { [weak self] phones in self?.discoveryChanged(phones) }
         discovery.onDenied = { [weak self] denied in self?.discoveryDenied(denied) }
@@ -919,6 +938,43 @@ final class ConnectionController {
     func openApp(_ app: AppInfo) {
         guard link.isOnline else { return }
         windows.openOrRaise(pkg: app.pkg, activity: app.activity)
+    }
+
+    /// File ▸ New <App> Window (⌘N, the Dock shim's menu, the Deck cell's
+    /// menu): one more window of the key app on the phone in use (WIN-25).
+    /// Every other entry point raises (WIN-36).
+    func newWindow() {
+        guard link.isOnline, let pkg = windows.keyApp else { return }
+        windows.openAdditional(pkg: pkg)
+    }
+
+    /// ⌘N pressed with one of the app's windows key: the same item's action.
+    func newWindowActivity() { newWindow() }
+
+    /// Window ▸ Next Window (⌘`): the key app's next window, wrapping
+    /// (WIN-29, WIN-30). Nothing reaches the phone.
+    func cycleWindow() {
+        windows.cycleKeyWindow()
+    }
+
+    /// A Dock shim's or the Deck cell's menu row was picked (WIN-26).
+    func pickWindowMenuRow(_ row: AppWindowMenuRow, pkg: String) {
+        guard link.isOnline else { return }
+        windows.pickWindowMenuRow(row, pkg: pkg)
+    }
+
+    /// The Deck cell's secondary-click menu for an app (WIN-26): the same rows
+    /// the Dock shim shows, in the same order.
+    func windowMenuRows(for pkg: String) -> [AppWindowMenuRow] {
+        windows.windowMenuRows(pkg: pkg)
+    }
+
+    /// The set of open app windows changed (opened, closed, retitled, raised):
+    /// every shim of those apps gets its new menu, and the Window menu's ⌘`
+    /// item follows the key app's count at once (WIN-26, WIN-29).
+    private func windowSetChanged() {
+        MenuMarks.apply(to: NSApp.mainMenu)
+        dockApps.refreshWindowMenus()
     }
 
     func openPhoneWindow() {
@@ -1399,7 +1455,8 @@ final class ConnectionController {
             }
         }
         if let (pid, pkg) = dockApps.binding(stream: stream),
-           let next = windows.openAppWindows.first(where: { $0.pkg == pkg && $0.stream != stream })?.stream {
+           let next = DockWindowFollow.survivor(closing: stream, pkg: pkg,
+                                                windows: windows.openAppWindows) {
             dockApps.rebind(pid: pid, to: next)
             return
         }
@@ -1494,7 +1551,10 @@ final class ConnectionController {
             break
         case .bind:
             if let pid {
-                dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                // The phone is part of the binding: the shim's menu is looked up
+                // by the record's device id (WIN-26), and a bind without one
+                // sends no menu until the next window-set change.
+                dockApps.bind(pid: pid, stream: stream, pkg: pkg, deviceId: deviceId)
                 Log.app.notice("dock auto: bound shim \(pid, privacy: .public) to stream \(stream, privacy: .public)")
             }
         case .quitWindowClosed:
@@ -1611,12 +1671,17 @@ final class ConnectionController {
     /// and reuse the Deck's paths: an open window, the pending-open queue that
     /// Spotlight clicks use, the link route and the drop sender.
 
-    func intentsOpenApp(_ pkg: String, on deviceId: String) {
+    func intentsOpenApp(_ pkg: String, on deviceId: String, newWindow: Bool = false) {
         if link.isOnline, link.phone?.id == deviceId {
-            windows.openOrRaise(pkg: pkg)
+            // Only an explicit new-window argument adds one (WIN-36).
+            if newWindow {
+                windows.openAdditional(pkg: pkg)
+            } else {
+                windows.openOrRaise(pkg: pkg)
+            }
             return
         }
-        pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg)
+        pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg, newWindow: newWindow)
         if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
     }
 
@@ -3008,7 +3073,11 @@ final class ConnectionController {
         }
         if let request = pendingOpen, request.deviceId == info.id {
             pendingOpen = nil
-            windows.openOrRaise(pkg: request.pkg)
+            if request.newWindow {
+                windows.openAdditional(pkg: request.pkg)
+            } else {
+                windows.openOrRaise(pkg: request.pkg)
+            }
         }
         openPendingLink(readyPhone: info.id)
         openPendingDock(readyPhone: info.id)
@@ -3311,12 +3380,25 @@ final class ConnectionController {
             return sendKey(stroke)
         case "menutrack":
             // The e2e menus check: hold one of the app's real menus open and
-            // report what happened while it was up (MenuTrack.swift).
-            guard arguments.count == 3, arguments[0].hasPrefix("/"),
+            // report what happened while it was up (MenuTrack.swift). An
+            // optional ITEM names a row to hover (the WIN-27 shots): the menu
+            // is positioned so that row is at a known point, which is written
+            // to POINT_PATH for the check's real pointer move.
+            guard arguments.count >= 3, arguments[0].hasPrefix("/"),
                   let seconds = Double(arguments[2]) else {
-                return "menutrack needs PATH View/Density SECONDS"
+                return "menutrack needs PATH View/Density SECONDS [ITEM POINT_PATH]"
             }
-            return MenuTrack.start(path: arguments[0], itemPath: arguments[1], seconds: seconds)
+            var hover: String?
+            var hoverPath: String?
+            if arguments.count > 3 {
+                guard arguments.count >= 5, let last = arguments.last, last.hasPrefix("/") else {
+                    return "menutrack needs PATH MENU SECONDS ITEM POINT_PATH"
+                }
+                hoverPath = last
+                hover = arguments[3..<(arguments.count - 1)].joined(separator: " ")
+            }
+            return MenuTrack.start(path: arguments[0], itemPath: arguments[1], seconds: seconds,
+                                   hover: hover, hoverPath: hoverPath)
         case "menu-burst":
             // The state changes the check makes while the menu is open: a
             // battery report, a Now Playing change and an occlusion flip.
@@ -3339,6 +3421,12 @@ final class ConnectionController {
                 return "deckfocus needs search|grid"
             }
             guard let deck = DeckWindow.window else { return "no deck window" }
+            // A real right click on a cell (multiwin's WIN-26 shot) opens its
+            // context menu only when the Deck's app is already front: the
+            // click that activates a background app is used up activating it.
+            // An automatic Dock shim can hold the front after a window launch.
+            // Background mode keeps the person's front app (no activation).
+            BackgroundMode.activateApp()
             deck.makeKeyAndOrderFront(nil)
             if what == "search" {
                 DeckSearch.focusAndSelect(in: deck) { requestSearchFocus() }
@@ -3360,6 +3448,20 @@ final class ConnectionController {
             let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "deckcellpoint":
+            // The cell's own place in Quartz coordinates (a read): the check
+            // posts a real right click there, so the cell's menu is the one a
+            // person's click opens (WIN-26).
+            guard arguments.count == 2, let path = arguments.last, path.hasPrefix("/") else {
+                return "deckcellpoint needs LABEL /absolute/path"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            guard let point = DeckCellClick.centre(label: arguments[0]) else {
+                return "no Deck cell labelled \(arguments[0])"
+            }
+            let text = "\(point.x) \(point.y)\n"
+            return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckcellpoint failed" : nil
         case "deckmenu":
             // The cell's own context menu, through a secondary click at its
             // drawn place (for the quiet screenshots; setup, not a check).
@@ -3529,6 +3631,37 @@ final class ConnectionController {
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
+        case "menupick":
+            // One of the app's own menu items, by title path: the item's
+            // target and action after the same validation an open menu runs
+            // (`DebugInput`'s script verb; here for a check that reads the bar
+            // between two steps). Titles carry spaces, so the path is the rest
+            // of the line.
+            let path = arguments.joined(separator: " ")
+            guard !path.isEmpty, path.contains("/") else { return "menupick needs a title path" }
+            NSApp.mainMenu?.update()
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
+            guard let item = DebugInputDriver.menuItem(at: path, in: NSApp.mainMenu) else {
+                return "no item at \(path)"
+            }
+            guard item.isEnabled else { return "item disabled at \(path)" }
+            guard let action = item.action else { return "item has no action at \(path)" }
+            NSApp.sendAction(action, to: item.target, from: item)
+            return nil
+        case "windowmenu":
+            // The Deck cell's (and the Dock shim's) rows for an app, as the one
+            // menu rule builds them (WIN-26). A quiet run cannot right-click a
+            // Deck cell, so the check reads the rows here and drives the raise
+            // through the shim's own menu item.
+            guard arguments.count == 2, arguments[0].hasPrefix("/") else {
+                return "windowmenu needs PATH and PKG"
+            }
+            let rows = windows.windowMenuRows(pkg: arguments[1]).map(\.message)
+            guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]) else {
+                return "windowmenu failed"
+            }
+            return (try? data.write(to: URL(fileURLWithPath: arguments[0]), options: .atomic)) == nil
+                ? "windowmenu failed" : nil
         case "visibleframe":
             // The visible frame of the screen the key window is on, "W H" in
             // points: the e2e chrome check compares an Accessibility resize

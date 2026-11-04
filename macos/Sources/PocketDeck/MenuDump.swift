@@ -34,6 +34,11 @@ enum MenuDump {
         var submenu: [Item]?
         /// AppKit's hidden flag: an item the menu keeps but does not show.
         var hidden: Bool = false
+        /// The item's help tag (a disabled New Window item's sentence, WIN-27).
+        var toolTip: String?
+        /// The selector the item sends, named: an item with no action cannot be
+        /// chosen, however enabled it looks (MENU-8).
+        var action: String?
     }
 
     /// The whole menu bar (an NSMenu's items), in AppKit's order.
@@ -53,7 +58,9 @@ enum MenuDump {
                     enabled: menuItem.isEnabled,
                     targetClass: menuItem.target.map { String(describing: type(of: $0)) },
                     submenu: menuItem.submenu.map(snapshot),
-                    hidden: menuItem.isHidden)
+                    hidden: menuItem.isHidden,
+                    toolTip: menuItem.toolTip,
+                    action: menuItem.action.map(NSStringFromSelector))
     }
 
     /// Stable names, in the order AppKit's own menus show them. An item with no

@@ -1733,12 +1733,21 @@ struct AppCell: View {
     }
 }
 
-/// "Add to Dock" on an app (docs/design/dock.md).
+/// The Deck cell's secondary-click menu (docs/design/dock.md, WIN-26): New
+/// <App> Window and the app's open windows, then the cell's own "Add to Dock".
+/// The rows come from the same rule the Dock shim renders, so the two menus
+/// cannot disagree.
 struct DockMenuItems: View {
     @Environment(ConnectionController.self) private var controller
     let app: AppInfo
 
     var body: some View {
+        let rows = controller.windowMenuRows(for: app.pkg)
+        ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+            if index == 1 { Divider() }
+            windowRow(row)
+        }
+        Divider()
         if controller.isInDock(app) {
             Button("Remove from Dock App") { controller.removeFromDock(app) }
                 .help("Stop this app having its own icon in the Dock. The shortcut in Applications stays.")
@@ -1754,6 +1763,24 @@ struct DockMenuItems: View {
             Button("Add to Applications") { controller.addToApplications(app) }
                 .disabled(!controller.canAddToApplications)
                 .help("Add this app as a real Mac app in Applications, listed by Launchpad, Spotlight and other launchers.")
+        }
+    }
+
+    /// One row: the New item carries ⌘N while it may act; a window row is
+    /// checked when it is the front one. A disabled row says why in its help
+    /// tag and accessibility hint and sends nothing (WIN-27).
+    @ViewBuilder
+    private func windowRow(_ row: AppWindowMenuRow) -> some View {
+        switch row.action {
+        case .newWindow:
+            Button(row.title) { controller.pickWindowMenuRow(row, pkg: app.pkg) }
+                .keyboardShortcut("n")
+                .disabled(!row.enabled)
+                .help(row.help ?? "Open another window of this app on your phone.")
+                .accessibilityHint(row.help ?? "")
+        case .raise:
+            Toggle(row.title, isOn: Binding(get: { row.checked },
+                                            set: { _ in controller.pickWindowMenuRow(row, pkg: app.pkg) }))
         }
     }
 }

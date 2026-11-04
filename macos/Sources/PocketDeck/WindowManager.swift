@@ -21,6 +21,17 @@ final class WindowManager {
     /// app and link window titles carry it — "WhatsApp (Nicky)".
     private(set) var phoneName = ""
 
+    /// The phone's cap on app windows at once (`state.maxWindows`, WIN-32); a
+    /// phone that reports none counts as 4. It counts every app stream on the
+    /// phone — the Phone Mirror is a separate encoder and is not counted.
+    private(set) var maxWindows = 4
+    static let defaultMaxWindows = 4
+
+    /// The windows front to back, as the person sees them: maintained here
+    /// rather than read from `NSApp.orderedWindows` so the Window menu, ⌘` and
+    /// the tests share one order (WIN-29, WIN-30).
+    private var frontOrder: [UInt32] = []
+
     /// Fired when the set of open windows or the icon cache changes.
     var onChange: (() -> Void)?
 
@@ -67,16 +78,71 @@ final class WindowManager {
 
     /// True while the link is down: stream windows show a "Reconnecting…" pill
     /// over their last frame and drop input (docs/design/mac-redesign.md §3.7).
-    private(set) var linkIsDown = false
+    /// The phase is the phone's, shared by every window and the New items
+    /// ("Reconnecting…" after 1 s, "Phone offline" after 15 s; WIN-16, WIN-34).
+    private(set) var linkPhase = PhoneLinkPhase.up
+    private var linkClock = LinkPhaseClock()
+    private var linkOfflineTimer: Timer?
+    var linkIsDown: Bool { linkPhase != .up }
+
+    /// A window of an app was refused because the phone is at its cap: the
+    /// Deck's banner carries the same sentence the New item would (WIN-32).
+    var onTooManyWindows: ((String) -> Void)?
 
     func linkLost() {
-        linkIsDown = true
-        for controller in allControllers() { controller.setLinkDown(true) }
+        linkLost(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives the two steps without waiting.
+    func linkLost(at time: TimeInterval) {
+        guard !shuttingDown else { return }
+        linkClock.linkLost(at: time)
+        publishLinkPhase()
+        for controller in allControllers() { controller.setLinkDown(true, at: time) }
+        // The one timer behind "Phone offline": a one-shot per phase change, so
+        // no window or menu keeps a second copy of the rule.
+        linkOfflineTimer?.invalidate()
+        linkOfflineTimer = nil
+        let current = ProcessInfo.processInfo.systemUptime
+        if let next = linkClock.nextChange(at: current) {
+            let timer = Timer(timeInterval: max(next.at - current, 0),
+                              repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.linkPhaseTicked() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            linkOfflineTimer = timer
+        }
     }
 
     func linkRestored() {
-        linkIsDown = false
+        linkOfflineTimer?.invalidate()
+        linkOfflineTimer = nil
+        linkClock.linkRestored()
+        publishLinkPhase()
         for controller in allControllers() { controller.setLinkDown(false) }
+    }
+
+    private func linkPhaseTicked() {
+        linkPhaseTicked(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit tick: the New items say "Phone offline" once 15 s
+    /// have passed since the drop.
+    func linkPhaseTicked(at time: TimeInterval) {
+        linkClock.tick(at: time)
+        publishLinkPhase()
+    }
+
+    private func publishLinkPhase() {
+        guard linkPhase != linkClock.phase else { return }
+        linkPhase = linkClock.phase
+        onChange?()
+    }
+
+    /// `state.maxWindows`: the phone's cap, 4 when it sends none (WIN-32).
+    func setMaxWindows(_ value: Int?) {
+        maxWindows = max(1, value ?? Self.defaultMaxWindows)
+        onChange?()
     }
 
     /// `power.locked`: the phone's own power press with app streams up. Every
@@ -137,6 +203,7 @@ final class WindowManager {
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: defaults)
         StreamMenuState.shared.revealDelay = RevealDelay.stored(in: defaults)
+        observeKeyWindows()
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -342,12 +409,24 @@ final class WindowManager {
         store(controller, stream: stream)
         // A window opened while a drop runs or its outcome is up shows the pill.
         controller.setDropPill(dropPill)
+        if linkIsDown { controller.setLinkDown(true) }
         controller.setDropFailure(dropFailure)
         controller.present()
         controller.sendOpen()
+        noteFront(stream)
+        refreshTitles()
         onChange?()
         return controller
     }
+
+    /// The phone in use, for the keying every window function takes (phase 2
+    /// writes one phone; epic 2 renames `deviceId` to a `WindowKey`).
+    var activeDeviceId: String { phone?.id ?? remoteDeviceId }
+
+    /// The device id this manager's windows belong to when no phone is
+    /// connected yet (`remembered.active`); windows opened before `welcome`
+    /// keep their phone once it arrives.
+    var remoteDeviceId = ""
 
     /// The one way a phone app reaches a Mac window (CONV-MAC-11, WIN-2).
     /// Every entry point — a Deck tile, Find Apps' Return, the Dock shim,
@@ -358,22 +437,212 @@ final class WindowManager {
     /// window is still opening this also stops the v104 thrash (seven opens of
     /// Chrome in 77 s, each a launch on the phone, none making the picture come
     /// sooner).
-    ///
-    /// A future explicit "New Window" adds one parameter here (`newWindow:
-    /// Bool = false`); until it is built there is no second window of one app.
     @discardableResult
-    func openOrRaise(pkg: String, activity: String? = nil) -> AppWindowController {
-        if let existing = allControllers().compactMap({ $0 as? AppWindowController })
-            .first(where: { $0.pkg == pkg }) {
+    func openOrRaise(pkg: String, activity: String? = nil, deviceId: String? = nil) -> AppWindowController {
+        if let existing = appWindows(pkg: pkg, deviceId: deviceId).first {
             raise(existing)
             return existing
         }
         let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
         let controller = open {
-            AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label, manager: self)
+            AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label,
+                                deviceId: deviceId ?? activeDeviceId, manager: self)
         }
         onAppWindowOpened?(pkg, controller.stream)
         return controller
+    }
+
+    /// The explicit "New <App> Window" (WIN-25): one more window of `pkg` on
+    /// the phone in use, one `window.open` carrying `newInstance`, cascaded
+    /// 28 pt from the app's front window and never remembered as the app's
+    /// frame (WIN-13, WIN-36). Nothing is sent when the item is disabled —
+    /// the cap, a single-window app, an opening window or a link that is down
+    /// (WIN-27, WIN-32, WIN-34).
+    @discardableResult
+    func openAdditional(pkg: String, activity: String? = nil, deviceId: String? = nil) -> AppWindowController? {
+        let phone = deviceId ?? activeDeviceId
+        let existing = appWindows(pkg: pkg, deviceId: phone)
+        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
+        if existing.isEmpty { return openOrRaise(pkg: pkg, activity: activity, deviceId: phone) }
+        let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
+        let stream = allocateStream()
+        let controller = AppWindowController(stream: stream, pkg: pkg, activity: activity,
+                                             label: label, deviceId: phone, manager: self)
+        // The extra window is not the app's remembered frame: it follows the
+        // front one, 28 pt down and right, and forgets its own place when it
+        // closes (WIN-13).
+        controller.remembersFrame = false
+        if let front = existing.first?.window?.frame {
+            controller.placementOverride = NSRect(x: front.minX + 28, y: front.minY - 28,
+                                                  width: front.width, height: front.height)
+        }
+        store(controller, stream: stream)
+        controller.setDropPill(dropPill)
+        if linkIsDown { controller.setLinkDown(true) }
+        controller.present()
+        controller.sendOpen(newInstance: true)
+        noteFront(stream)
+        refreshTitles()
+        onChange?()
+        onAppWindowOpened?(pkg, controller.stream)
+        return controller
+    }
+
+    /// The windows of one app on one phone, front to back (WIN-29, WIN-30).
+    func appWindows(pkg: String, deviceId: String? = nil) -> [AppWindowController] {
+        let phone = deviceId ?? activeDeviceId
+        return frontToBack(allControllers().compactMap { $0 as? AppWindowController })
+            .filter { $0.pkg == pkg && $0.deviceId == phone }
+    }
+
+    /// Every app window on one phone, front to back.
+    func appWindows(deviceId: String? = nil) -> [AppWindowController] {
+        let phone = deviceId ?? activeDeviceId
+        return frontToBack(allControllers().compactMap { $0 as? AppWindowController })
+            .filter { $0.deviceId == phone }
+    }
+
+    /// The stream window the app last made key. Read instead of
+    /// `NSApp.keyWindow` on demand: a menu item's action can arrive while the
+    /// menu itself is the key window, and the answer must still be the window
+    /// the person was working in (MENU-2, WIN-25).
+    private(set) var keyStream: UInt32?
+    private var keyObservers: [NSObjectProtocol] = []
+
+    /// Follows the key window by AppKit's own notifications rather than the
+    /// window delegate: a quiet run's emulated key window posts them, and a
+    /// delegate method is only called for the notifications AppKit makes
+    /// itself (MENU-2's title and enabled flag hang on this).
+    private func observeKeyWindows() {
+        guard keyObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        keyObservers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                                               object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let controller = (note.object as? NSWindow)?.windowController as? StreamWindowController
+                else { return }
+                self.noteFront(controller.stream)
+                self.noteKey(controller.stream)
+            }
+        })
+        keyObservers.append(center.addObserver(forName: NSWindow.didResignKeyNotification,
+                                               object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let controller = (note.object as? NSWindow)?.windowController as? StreamWindowController
+                else { return }
+                self.noteKeyLost(controller.stream)
+            }
+        })
+    }
+
+    func noteKey(_ stream: UInt32) { keyStream = stream }
+    func noteKeyLost(_ stream: UInt32) {
+        if keyStream == stream { keyStream = nil }
+    }
+
+    /// The app whose window is key ("Chrome"), or nil for the Deck, a phone
+    /// view or a link window with no package.
+    var keyApp: String? {
+        if let stream = keyStream,
+           let app = controller(for: stream) as? AppWindowController,
+           app.window?.isVisible == true {
+            return app.pkg
+        }
+        guard let app = NSApp.keyWindow?.windowController as? AppWindowController else { return nil }
+        return app.pkg
+    }
+
+    /// The File menu's New item, from the phone's answer and the app's state
+    /// (MENU-2, WIN-25, WIN-27, WIN-32, WIN-34).
+    func newWindowItem(for pkg: String?, deviceId: String? = nil) -> NewWindowItem {
+        guard let pkg, let info = appsByPkg[pkg] else {
+            return NewWindowItem.make(app: nil, windowCount: 0, multi: false, opening: false,
+                                      cap: maxWindows, link: linkPhase)
+        }
+        let windows = appWindows(pkg: pkg, deviceId: deviceId)
+        return NewWindowItem.make(app: info.label,
+                                  windowCount: appWindows(deviceId: deviceId).count,
+                                  multi: info.multi,
+                                  opening: windows.contains { $0.isOpening },
+                                  cap: maxWindows,
+                                  link: linkPhase)
+    }
+
+    /// The key app's New item, for the File menu's snapshot.
+    var keyNewWindowItem: NewWindowItem { newWindowItem(for: keyApp) }
+
+    /// Window ▸ Next Window ⌘`: the next window of `pkg` in front-to-back
+    /// order, wrapping; nothing to the phone, and nothing at all with one
+    /// window (WIN-30).
+    ///
+    /// The cycle keeps one order for the whole run: the app's windows newest
+    /// first, which is their front-to-back order before anyone raises one. The
+    /// raises themselves would reorder the list on every press, so a cycle
+    /// read from the live order would bounce between the top two windows.
+    @discardableResult
+    func cycleWindows(pkg: String, deviceId: String? = nil) -> AppWindowController? {
+        let windows = appWindows(pkg: pkg, deviceId: deviceId)
+        guard windows.count > 1, let front = windows.first else { return nil }
+        let order = windows.sorted { $0.stream > $1.stream }
+        guard let index = order.firstIndex(where: { $0.stream == front.stream }) else { return nil }
+        let next = order[(index + 1) % order.count]
+        raise(next)
+        return next
+    }
+
+    /// Window ▸ Next Window from the keyboard or the menu: the key app's.
+    @discardableResult
+    func cycleKeyWindow() -> AppWindowController? {
+        guard let pkg = keyApp else { return nil }
+        return cycleWindows(pkg: pkg)
+    }
+
+    /// Whether ⌘` has somewhere to go: two or more windows of the key app.
+    var canCycleWindows: Bool {
+        guard let pkg = keyApp else { return false }
+        return appWindows(pkg: pkg).count > 1
+    }
+
+    /// The Dock shim's and the Deck cell's menu for an app (WIN-26).
+    func windowMenuRows(pkg: String, deviceId: String? = nil) -> [AppWindowMenuRow] {
+        let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
+        let windows = appWindows(pkg: pkg, deviceId: deviceId).map { (stream: $0.stream, label: $0.taskLabel) }
+        return AppWindowMenu.rows(app: label, windows: windows,
+                                  newWindow: newWindowItem(for: pkg, deviceId: deviceId))
+    }
+
+    /// A picked row: the New item adds one window, a window row raises it.
+    @discardableResult
+    func pickWindowMenuRow(_ row: AppWindowMenuRow, pkg: String, deviceId: String? = nil) -> Bool {
+        switch row.action {
+        case .newWindow:
+            return openAdditional(pkg: pkg, deviceId: deviceId) != nil
+        case .raise(let stream):
+            guard let controller = controller(for: stream) else { return false }
+            raise(controller)
+            return true
+        }
+    }
+
+    /// The app's task label reached a window (`window.title` on an app stream):
+    /// retitle it and the menus that list it (WIN-28).
+    func setTaskLabel(_ label: String?, stream: UInt32) {
+        guard let app = controller(for: stream) as? AppWindowController else { return }
+        guard app.setTaskLabel(label) else { return }
+        refreshTitles()
+        onChange?()
+    }
+
+    /// Every window's title from the app's window count and the phone's name
+    /// (WIN-3, WIN-28). Cheap enough to run on every change; it only writes
+    /// when the value differs.
+    func refreshTitles() {
+        for app in appWindows() { app.retitle() }
+        for controller in allControllers() where !(controller is AppWindowController) {
+            controller.retitle()
+        }
     }
 
     @discardableResult
@@ -416,6 +685,7 @@ final class WindowManager {
         guard let window = controller.window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
+        noteFront(controller.stream)
         BackgroundMode.activateApp()
     }
 
@@ -522,8 +792,16 @@ final class WindowManager {
         lock.lock()
         let removed = streams.removeValue(forKey: stream) != nil
         firstFrameNoted.remove(stream)
+        frontOrder.removeAll { $0 == stream }
         lock.unlock()
         if removed { onStreamClosed?(stream) }
+        refreshTitles()
+        // A closed key window hands the keyboard to another window. AppKit
+        // does this itself; a quiet run's emulated key window would otherwise
+        // stay nil, and the menu commands would act on nothing (WIN-31).
+        if keyStream == nil, let next = appWindows().first {
+            raise(next)
+        }
         onChange?()
     }
 
@@ -531,6 +809,7 @@ final class WindowManager {
         lock.lock()
         let controllers = Array(streams.values)
         streams.removeAll()
+        frontOrder.removeAll()
         lock.unlock()
         for controller in controllers {
             onStreamClosed?(controller.stream)
@@ -552,6 +831,12 @@ final class WindowManager {
         cascadePoint = .zero
         floatWindows = false
         chromeStateFile = nil
+        frontOrder = []
+        linkOfflineTimer?.invalidate()
+        linkOfflineTimer = nil
+        linkClock = LinkPhaseClock()
+        linkPhase = .up
+        maxWindows = Self.defaultMaxWindows
         guard forgetPrefs else { return }
         frames.removeObject(forKey: Self.framesKey)
         frames.removeObject(forKey: Self.showTouchesKey)
@@ -567,9 +852,20 @@ final class WindowManager {
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: frames)
     }
 
-    /// Re-issue window.open for every open window (used after a reconnect).
+    /// Re-issue window.open for every open window (used after a reconnect):
+    /// per app front to back, with `newInstance` on every window of that app
+    /// but its first, so the phone gives each its own task again (WIN-34).
     func reopenAll() {
-        for controller in allControllers() { controller.sendOpen() }
+        var seen = Set<String>()
+        for controller in frontToBack(allControllers()) {
+            guard let app = controller as? AppWindowController else {
+                controller.sendOpen()
+                continue
+            }
+            let key = "\(app.deviceId)/\(app.pkg)"
+            let first = seen.insert(key).inserted
+            app.sendOpen(newInstance: !first)
+        }
     }
 
     /// PATH-5: after a switch every open video stream asks for one keyframe
@@ -584,8 +880,34 @@ final class WindowManager {
         for controller in allControllers() {
             guard let app = controller as? AppWindowController,
                   let info = appsByPkg[app.pkg] else { continue }
-            app.setSubject(info.label)
+            app.setAppLabel(info.label)
         }
+        refreshTitles()
+        onChange?()
+    }
+
+    /// The windows in the order the person last saw them. A stream that is not
+    /// in the order yet (it was just created) goes to the front.
+    private func frontToBack<T: StreamWindowController>(_ controllers: [T]) -> [T] {
+        lock.lock()
+        let order = frontOrder
+        lock.unlock()
+        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        return controllers.sorted { (rank[$0.stream] ?? Int.max) < (rank[$1.stream] ?? Int.max) }
+    }
+
+    /// A window became key or was raised: it is the front one from now on.
+    /// A new front changes every menu that lists the app's windows (WIN-26),
+    /// so the change is announced like any other window-set change; without
+    /// this a raise reordered the Deck cell's live menu but left the Dock
+    /// shim's pushed copy on the old front.
+    func noteFront(_ stream: UInt32) {
+        lock.lock()
+        let changed = frontOrder.first != stream
+        frontOrder.removeAll { $0 == stream }
+        frontOrder.insert(stream, at: 0)
+        lock.unlock()
+        if changed { onChange?() }
     }
 
     private func store(_ controller: StreamWindowController, stream: UInt32) {
@@ -632,7 +954,15 @@ final class WindowManager {
             let first = firstFrameNoted.insert(stream).inserted
             lock.unlock()
             if first, let controller {
-                DispatchQueue.main.async { [weak controller] in controller?.noteFirstFrame() }
+                // One hop from the session's video queue to the main thread,
+                // where the window's cover and the menus live.
+                DispatchQueue.main.async { [weak self, weak controller] in  // gcd: off the video queue
+                    controller?.noteFirstFrame()
+                    // The New Window items say "Opening on your phone…" until
+                    // this moment: the menus and the Dock shim read it now
+                    // (WIN-27).
+                    self?.onChange?()
+                }
             }
         }
     }
@@ -666,14 +996,24 @@ final class WindowManager {
 
     func handle(_ event: SessionEvent) {
         switch event {
-        case .windowTitle(let stream, let label, let pkg):
-            (controller(for: stream) as? PhoneWindowController)?.setSubject(label)
-            (controller(for: stream) as? AppWindowController)?.setSubject(label)
+        case .windowTitle(let stream, let label, let pkg, let title):
+            // An app window names its task (`title`, falling back to the app's
+            // own name, WIN-28); the phone, link and handoff windows name the
+            // app the display shows (`label`), never the page it is on
+            // (WIN-3), and a message that names no app leaves it standing.
+            if controller(for: stream) is AppWindowController {
+                let task = title ?? (label.isEmpty ? nil : label)
+                if task != nil { setTaskLabel(task, stream: stream) }
+            } else if !label.isEmpty {
+                (controller(for: stream) as? PhoneWindowController)?.setSubject(label)
+            }
             (controller(for: stream) as? HandoffWindowController)?.adopt(pkg: pkg)
-            (controller(for: stream) as? HandoffWindowController)?.setSubject(label)
+            if !label.isEmpty {
+                (controller(for: stream) as? HandoffWindowController)?.setSubject(label)
+            }
             if let link = controller(for: stream) as? LinkWindowController {
                 let unknown = link.pkg == nil
-                link.setSubject(label)
+                if !label.isEmpty { link.setSubject(label) }
                 link.adopt(pkg: pkg)
                 if unknown, !pkg.isEmpty {
                     onAppWindowOpened?(pkg, stream)
@@ -693,7 +1033,21 @@ final class WindowManager {
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
             }
+        case .windowTask(let stream, let taskId):
+            (controller(for: stream) as? AppWindowController)?.taskId = taskId
+        case .maxWindows(let cap):
+            setMaxWindows(cap)
         case .phoneError(let code, _, let stream):
+            if code == "too_many_windows" {
+                // The phone refused the extra window (WIN-32): it closes, no
+                // window.close is sent for a window that never opened, and the
+                // Deck carries the cap's sentence.
+                let app = (controller(for: stream) as? AppWindowController)
+                    .map { appsByPkg[$0.pkg]?.label ?? $0.appLabel } ?? ""
+                controller(for: stream)?.closeFromRemote()
+                onTooManyWindows?(NewWindowBlocker.atCap.sentence(app: app) ?? "")
+                return
+            }
             if code == "no_stream" {
                 // The phone has forgotten the stream (WIN-38). What to do
                 // depends on the window, never on a launcher notice.

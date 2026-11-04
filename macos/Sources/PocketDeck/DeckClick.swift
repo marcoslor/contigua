@@ -32,6 +32,15 @@ enum DeckCellClick {
         return nil
     }
 
+    /// The cell's centre in Quartz global coordinates (the top-left origin the
+    /// window server uses), for a check that posts a real right click there: a
+    /// SwiftUI context menu only tracks for a pointer's own click.
+    @MainActor
+    static func centre(label: String) -> CGPoint? {
+        guard let cell = findCell(label: label), let frame = screenFrame(of: cell) else { return nil }
+        return CGPoint(x: frame.midX, y: frame.midY)
+    }
+
     /// Opens the cell's own context menu with a secondary click at the cell's
     /// drawn place, through the window's event handling (a quiet shot cannot
     /// use the pointer). The menu tracks the run loop, so the click is queued

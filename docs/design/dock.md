@@ -158,6 +158,25 @@ app for a scheme (with several copies registered — the installed app, a dev bu
 build — the wrong one would get it) and it gives no way to answer. XPC/Mach services need a
 launchd job; Apple Events need an automation permission prompt.
 
+## The shim's menu: New Window and the open windows (WIN-26)
+
+A secondary click on the shim's Dock icon shows the app's own window menu. The
+content is the host's: whenever the app's windows change (opened, closed,
+retitled, raised) the host posts `dev.pocketdeck.dock.menu` (userInfo pid, rows)
+with the rows as values — **New <App> Window** ⌘N first, then one **<App> — <task
+label>** row per open window front to back, the front one checked. The shim only
+renders them (`Shim/main.swift`), so the Dock menu and the Deck cell's menu are
+one rule (`AppWindowMenu`) and cannot disagree. A disabled New row carries the
+host's sentence as its tooltip — **<App> opens one window at a time.**, **Close a
+<App> window to open another.**, **Opening on your phone…**, **Reconnecting…** or
+**Phone offline** — and sends nothing.
+
+A pick posts `dev.pocketdeck.dock.pick` with the shim's token and the chosen row;
+the host raises that window, or opens one more for the New row. The e2e's
+`--debug-control` build also has the shim write the menu it built and press one
+of its items through the item's own target and action (a quiet run cannot
+right-click a Dock icon); a person's click takes the same path.
+
 ## Quit ↔ close
 
 - Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `dev.pocketdeck.dock.quit`;
