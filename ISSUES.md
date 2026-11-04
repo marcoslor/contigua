@@ -57,7 +57,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced as multi-window phase 2: WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`.
   - **The phone half** is on `main` (2026-10-28): `multi`, `newInstance`, `taskId`, `maxWindows`, task labels and closing one task.
   - **The Mac half** (⌘N, File/Dock/Deck menus, titles per task, the cap, offline) is **merged to main 2026-11-04** (6175837b; WIN-24…36, MENU-2/7/8/13). On the merged tree: K2 1778/0; host e2e `multiwin` 29/0, `menus` 72/0, `windows` 32/0. VM review shots in `.agent/mw-mac/shots/r5/`.
-    - **Not installed yet:** after the merge, the `deck` check's zoom-drag limit (DECK-5, 21 ms) failed in 3 of 4 runs (22–28 ms) against 2 of 2 passing before it (18–19 ms). Being measured and bisected (`.agent/deck-perf/`).
+    - **No Deck slowdown:** 10 alternating `deck` runs at load < 4 (`.agent/deck-perf/`): median zoom-drag p95 19 ms before the merge, 18 ms after (ISS-31 for the limit's margin).
   - **The app's own in-stream "New window"** is the case the person hit. Spec draft and emulator spike on `epic/mw-mac` (`.agent/mw-mac/spec-draft-in-stream.md`).
     - **Spike boot 4 (2026-11-04):** Chrome's ⋮ ▸ New window on a streamed display did **not** stay on it. Chrome started a new task on the phone's own display, in a split-screen pair with PocketDeck. The stream kept the old task, and no `window.title` arrived. So the fix must catch the new task wherever it lands, move it to a display of its own, and open a Mac window for it.
     - **Next:** an emulator boot to prove the move on API 36 (`cmd activity display move-stack`, which wants a root task; Chrome's new task sits inside the split container), and Back/close on it.
@@ -92,6 +92,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **ISS-20 One unnamed K2 flake.** One assertion failed once in 1340 tests on 2026-10-31 and passed on the rerun. Log the test name the next time it happens.
 - **ISS-21 Older rig items.** Re-check each one: the `controls` check's gear AX order (PANEL-7), the fake phone's pause test, the Finder delete-warning proof in the VM, and the panel-yield sequencing steps.
 - **ISS-30 VM review shots never switch to light.** `PD_E2E_SHOT_APPEARANCE=light` boots draw dark menus and a dark bar (r5's "light" multiwin set and both fsmenu sheets, 2026-11-04), so light mode has never been reviewed in the VM. Find where the appearance should be set in the guest (`vm-e2e.sh` passes it through) and prove it with one light shot of a Finder menu.
+- **ISS-31 The Deck's zoom-drag limit has a thin margin.** DECK-5 allows 21 ms (drag p95). At load < 4, main's runs sit at 18–21 ms and one in ten reaches 22–23 ms; at load 5–6 it was 28 ms twice (2026-11-04, `.agent/deck-perf/`). Every run also has about 6 frames at 33 ms (dropped). Either measure the limit again on a quiet host, or have the check wait for its load gate (as deck-perf did: 5-min load < 4, free memory ≥ 37 %, no swap-outs for 30 s). `_common.md`'s swap < 2 GB gate can't be met on the 8 GB Mac after any e2e.
 
 ## 5. Features, in order
 
