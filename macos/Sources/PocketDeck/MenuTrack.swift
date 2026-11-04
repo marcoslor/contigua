@@ -205,7 +205,7 @@ enum MenuTrack {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
+        return value as! AXUIElement  // unrecoverable: CFGetTypeID above proves the type
     }
 
     private static func axChildren(_ element: AXUIElement) -> [AXUIElement] {
@@ -224,13 +224,15 @@ enum MenuTrack {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let positionValue = value as! AXValue  // unrecoverable: CFGetTypeID above proves the type
         var origin = CGPoint.zero
-        guard AXValueGetValue(value as! AXValue, .cgPoint, &origin) else { return nil }
+        guard AXValueGetValue(positionValue, .cgPoint, &origin) else { return nil }
         var sizeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
               let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        let boundsValue = sizeValue as! AXValue  // unrecoverable: CFGetTypeID above proves the type
         var size = CGSize.zero
-        guard AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+        guard AXValueGetValue(boundsValue, .cgSize, &size),
               size.width > 1, size.height > 1 else { return nil }
         return NSRect(origin: origin, size: size)
     }
