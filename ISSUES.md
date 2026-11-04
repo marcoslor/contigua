@@ -66,7 +66,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
     - **Apple's convention:** Finder, Safari and TextEdit all put "Enter Full Screen" last in **View**, shown with **fn‑F** (Globe F), and the Window menu keeps the system's "Full Screen Tile ›" (Left of Screen, Right of Screen). In this run the submenu read "Full Screen Tile", not "Enter Full Screen" as in r5, so the doubled title may depend on state; the misplacement doesn't.
     - **Options:** A, our item last in View (⌃⌘F, our symbol); B, macOS's own item (identical to Apple's apps: fn‑F, Apple's symbol, disabled for the Phone Mirror by itself). Whether ⌃⌘F still works under B is unproven: check it first in the build.
     - **Spec fix either way:** MENU-7 says the item is disabled for the Deck, but the code lets the Deck go full screen (only the Phone Mirror opts out) and the system's tile submenu is enabled for it. Fix the spec to match.
-    - **Waiting on the person's pick.**
+    - **The person picked B (2026-11-04).** Being built on `fix/fsmenu` (`.agent/fsmenu/`): ⌃⌘F proven in the VM first, kept as a hidden alternate if macOS drops it.
 - **ISS-7 A shared app stops responding after ⌘K under load.** The shared app's control channel stalls after a ⌘K launch while WindowServer is busy. Seen in 3 of about 10 e2e runs on 2026-11-01, none since.
 - **ISS-8 A revoked Mac fails silently.** A Mac whose pairing was removed on the phone waits through a 16 s handshake timeout instead of being told. Re-check.
 - **ISS-9 "Busy" sticks after a network drop.** The phone kept reporting a busy session after a drop. Re-check: the paths layer (E-10, 2026-11-02) frees the slot.
