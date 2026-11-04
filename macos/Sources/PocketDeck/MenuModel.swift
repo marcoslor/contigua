@@ -21,16 +21,6 @@ enum MenuModel {
     /// Always Visible).
     static let hideControls: [ImmersiveMenuItem] = ImmersiveMenuModel.items
 
-    /// The Window menu's full-screen item: its title and symbol follow the key
-    /// window, so the person reads what the item will do.
-    static func fullScreenTitle(fullScreen: Bool) -> String {
-        fullScreen ? "Exit Full Screen" : "Enter Full Screen"
-    }
-
-    static func fullScreenSymbol(fullScreen: Bool) -> String {
-        fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
-    }
-
     /// The Density item that clears the app's override. It names the Settings
     /// default, so the person knows what "Default" restores.
     static func densityDefaultTitle(settings: Double) -> String {

@@ -23,13 +23,17 @@ enum MenuMarks {
         /// The item's key, empty for none: File's New item is addressed by its
         /// ⌘N, because its title is what changes (MENU-2).
         var keyEquivalent: String
+        /// The item's own modifiers: the full-screen alternate is the only item
+        /// with ⌃⌘F, AppKit's is fn-F (MENU-8).
+        var modifiers: NSEvent.ModifierFlags
 
         init(title: String, isSeparator: Bool = false, children: [Item] = [],
-             keyEquivalent: String = "") {
+             keyEquivalent: String = "", modifiers: NSEvent.ModifierFlags = []) {
             self.title = title
             self.isSeparator = isSeparator
             self.children = children
             self.keyEquivalent = keyEquivalent
+            self.modifiers = modifiers
         }
     }
 
@@ -38,6 +42,8 @@ enum MenuMarks {
         case mark([String], Bool)
         case enable([String], Bool)
         case retitle([String], String)
+        /// Hide the app's ⌃⌘F alternate but keep its key equivalent.
+        case hide
     }
 
     /// File ▸ New <App> Window's one correction: SwiftUI built the item at
@@ -49,7 +55,9 @@ enum MenuMarks {
     }
 
     /// The menus whose items carry a mark or a title that follows the window.
-    static let menus = ["View", "Window"]
+    /// Window's own items are AppKit's (the next-window flag is written below,
+    /// and full screen is the system's: MENU-4, MENU-7).
+    static let menus = ["View"]
 
     /// The Density item that names the Settings default: its own title carries
     /// the percentage, so a rule addresses it by this marker and the applier
@@ -97,9 +105,13 @@ enum MenuMarks {
                         edits.append(.mark([item.title, child.title], state.densityOverride == option.value))
                     }
                 }
-            case ("Window", let title) where title.contains("Full Screen"):
-                edits.append(.retitle([title], MenuModel.fullScreenTitle(fullScreen: state.fullScreen)))
-                edits.append(.enable([title], state.fullScreenAllowed))
+            case ("View", "Enter Full Screen")
+                where item.keyEquivalent == "f"
+                    && item.modifiers.isSuperset(of: [.control, .command]):
+                // The app's ⌃⌘F alternate: hidden, but allowed to take its key
+                // while hidden. AppKit's own fn-F item has no ⌃⌘F and is never
+                // touched (MENU-4, MENU-8, MENU-11).
+                edits.append(.hide)
             default:
                 break
             }
@@ -205,7 +217,8 @@ extension MenuMarks {
             Item(title: item.title,
                  isSeparator: item.isSeparatorItem,
                  children: item.submenu.map { snapshot(of: $0) } ?? [],
-                 keyEquivalent: item.keyEquivalent)
+                 keyEquivalent: item.keyEquivalent,
+                 modifiers: item.keyEquivalent.isEmpty ? [] : item.keyEquivalentModifierMask)
         }
     }
 
@@ -217,6 +230,17 @@ extension MenuMarks {
             resolve(path, in: menu)?.isEnabled = on
         case .retitle(let path, let title):
             resolve(path, in: menu)?.title = title
+        case .hide:
+            // By the shortcut, never by title alone: AppKit's own item shares
+            // the title and must stay visible (MENU-11).
+            guard let item = menu.items.first(where: {
+                $0.keyEquivalent == "f"
+                    && $0.keyEquivalentModifierMask.isSuperset(of: [.control, .command])
+            }) else { return }
+            item.isHidden = true
+            // A hidden item normally gives up its key; this one is the app's
+            // ⌃⌘F route while the person reads macOS's own fn-F item.
+            item.allowsKeyEquivalentWhenHidden = true
         }
     }
 

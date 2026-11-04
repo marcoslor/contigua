@@ -59,7 +59,6 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(MenuSnapshot(stream: stream(), phone: MenuSnapshot.Phone(moved)), reference)
 
         var stalled = stream()
-        stalled.fullScreen = false
         stalled.frozen = false
         XCTAssertEqual(MenuSnapshot(stream: stalled, phone: MenuSnapshot.Phone(moved)), reference)
     }
