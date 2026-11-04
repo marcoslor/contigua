@@ -22,6 +22,58 @@ saved to `~/Downloads/PocketDeck/` and put on the clipboard.
   must pick the session with the latest inbound frame.
 - Multiple images (`SEND_MULTIPLE`): up to 10, sent one after another as separate files.
 
+## Reading the clipboard (SHARE-19)
+
+AOSP's `ClipboardService.getPrimaryClip` runs `addActiveOwnerLocked(intendingUid, …,
+pkg)`: when the caller's UID does not own `pkg`, the service logs `Could not grant
+permission to primary clip. Clearing clipboard.`, **sets the primary clip to null** and
+returns null. `setPrimaryClip` has no owner check, and `getPrimaryClipDescription` has
+none either. The shell server therefore never reads from a UID that would fail the
+check (ISS-27).
+
+One pure policy decides a read (`ClipReader.kt`), from the process UID and whether the
+helper is ready:
+
+| Process UID | Helper | Reader | Effect |
+|---|---|---|---|
+| 2000 (`com.android.shell`) | any | `Direct` | reads the hidden `IClipboard` directly |
+| 0 (with root privileges) | ready | `Helper` | asks the helper, which runs at UID 2000 |
+| 0 (with root privileges) | not ready or absent | `Off("uid 0, no helper")` | never calls `getPrimaryClip`; one log line names the uid and the missing helper |
+| any other | any | `Off(reason)` | the same: no read, one line with the reason |
+
+`ShellClipboard`, the image poll (`Session.clipImageLoop`) and `AndroidInjector`'s
+save/restore around a non-ASCII paste all take reads through it; on `Helper` or `Off`
+nothing in the server process calls `getPrimaryClip`. Writes are safe at any UID and
+still go through `setPrimaryClip`.
+
+Images are probed first: `getPrimaryClipDescription` is safe at every UID, and no
+`image/*` MIME means no image read. That also keeps a text clip away from
+`getPrimaryClip` at UID 2000, halving the poll's reads.
+
+The listener is a change signal, not a read. `Session` calls `getText()` only while the
+Mac's clipboard gate is on (`clip.enable`, SHARE-13), and `clipImageLoop` checks the
+same gate before any probe.
+
+### The helper
+
+- Started only when the server's UID is 0: `su 2000 -c 'CLASSPATH=<apk path> exec
+  app_process /system/bin dev.pocketdeck.server.ClipHelperMain'`, with the APK path the
+  watchdog already uses (`appApkPath`).
+- One explicit machine, `Off → Starting → Ready → Failed(reason)`. A death restarts at
+  most three times with 500 ms, 1 s and 2 s backoff, then `Failed`. `Stop` kills it and
+  returns to `Off`; every transition is logged. A missing or refused `su` ends in
+  `Failed`, and the reader policy is `Off("no helper")` — never a crash.
+- It registers the real shell user's primary-clip listener at startup, then answers
+  requests on stdin/stdout: `[length][type][id][payload]`, binary-safe for images up to
+  the existing 8 MiB cap, with `text`, `image`, `text reply`, `image reply`, `changed`
+  and `ready` types. It sends `changed` events; it sends no clip unless asked.
+- It exits on stdin EOF, so it dies with the server; `stop` closes stdin and only
+  destroys the process as a guard.
+- It is stopped with the clipboard sync, which the session ends.
+- Privacy: frames carry clip text and bytes only between two local processes. Logs carry
+  lengths, codes and counts, never text or bytes; the helper's stderr is drained and
+  reduced to a line count plus fatal/exception/error counts.
+
 ## Protocol (phone → Mac)
 - `{"t":"share.text","text":"..."}`: UTF-8, ≤ 1 MiB, not empty. The phone does not label it:
   the Mac decides link vs text.
