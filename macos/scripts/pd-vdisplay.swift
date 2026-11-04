@@ -9,13 +9,17 @@
 // several times, `all` about 45.
 //
 // The display is the same identity the app itself used (vendor/product ids,
-// serial = the profile's hash), so macOS sees no new display: no extra ColourSync
-// profile, no new arrangement entry. It is placed past the right edge of every
-// one of the person's screens (a corner can land inside a second display); the
-// 16 pt gap it asks for is snapped away by WindowServer, so quiet-watch ignores
-// shared edges of ≤ 2 pt.
+// serial = the fixed test identity's hash: "e2e", whatever the profile), so
+// macOS sees no new display: no extra ColourSync profile, no new arrangement
+// entry. It is placed past the right edge of every one of the person's screens
+// (a corner can land inside a second display); the 16 pt gap it asks for is
+// snapped away by WindowServer, so quiet-watch ignores shared edges of ≤ 2 pt.
 //
 //   pd-vdisplay --profile NAME
+//
+// `--profile` names the run; it is not part of the identity. Every test run
+// draws on the one identity (VirtualDisplay.testIdentityProfile in the app), so
+// a worker profile cannot add a display of its own (ISS-28).
 //
 // Prints one line once the display is configured —
 //   id=123 w=1280 h=800 scale=1
@@ -38,7 +42,7 @@ func argument(_ name: String) -> String? {
     arguments.indices.first { arguments[$0] == name && $0 + 1 < arguments.count }.map { arguments[$0 + 1] }
 }
 
-guard let profile = argument("--profile") else {
+guard argument("--profile") != nil else {
     FileHandle.standardError.write(Data("usage: pd-vdisplay --profile NAME [--size WxH]\n".utf8))
     exit(2)
 }
@@ -74,8 +78,13 @@ func screen() -> Screen {
     return screen
 }
 
-/// FNV-1a of the profile name, the app's function (VirtualDisplaySerialTests):
-/// one stable identity per profile.
+/// The app's VirtualDisplay.testIdentityProfile: every test run draws on this
+/// one identity, whatever `--profile` / PD_E2E_PROFILE says (ISS-28).
+let testIdentityProfile = "e2e"
+
+/// FNV-1a of the profile name, the app's function (VirtualDisplaySerialTests).
+/// The e2e helper always hashes `testIdentityProfile`, the app's
+/// VirtualDisplay.testIdentityProfile, so a run's display has one identity.
 func serialNumber(profile: String) -> UInt32 {
     var hash: UInt32 = 0x811C_9DC5
     for byte in profile.utf8 {
@@ -203,7 +212,7 @@ descriptor.setValue(size.height * scale, forKey: "maxPixelsHigh")
 descriptor.setValue(NSValue(size: NSSize(width: 340, height: 212)), forKey: "sizeInMillimeters")
 descriptor.setValue(vendorID, forKey: "vendorID")
 descriptor.setValue(productID, forKey: "productID")
-descriptor.setValue(serialNumber(profile: profile), forKey: "serialNum")
+descriptor.setValue(serialNumber(profile: testIdentityProfile), forKey: "serialNum")
 // The display is created after the descriptor is filled in: init reads it.
 guard let handle = makeDisplay(descriptor) else {
     fail("CGVirtualDisplay init failed")
