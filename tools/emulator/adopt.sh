@@ -51,11 +51,19 @@ import importlib.util, sys
 sys.path.insert(0, "$WT/tools/fakephone")
 import deckctl, proto
 assert hasattr(deckctl, "cmd_adopt"), "deckctl has no adopt command"
+assert hasattr(deckctl, "_adopt_toolbar"), "deckctl has no toolbar fail-fast"
 assert hasattr(deckctl, "StreamRecorder") and hasattr(proto, "pack_touch")
 spec = importlib.util.spec_from_file_location("mw", "$WT/tools/emulator/multiwin.py")
 mw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mw)
 assert hasattr(mw, "warm_chrome") and hasattr(mw, "Dev"), "multiwin has no warm_chrome"
+# The toolbar probe must follow the promo Back: the promo's modal is the only
+# window uiautomator dumps while it is up, and boot 4 lost its boot to that.
+adopt_src = open(deckctl.__file__).read()
+i_adopt = adopt_src.find("def cmd_adopt")
+i_back = adopt_src.find('"action": "back"', i_adopt)
+i_probe = adopt_src.find("_adopt_toolbar(args, source", i_adopt)
+assert 0 < i_back < i_probe, "the toolbar probe must come after the promo Back"
 print("CHECK OK: deckctl adopt + proto + multiwin warm symbols")
 PY
   # The exact global-flags then subcommand shape the boot uses: a global flag
@@ -63,6 +71,17 @@ PY
   "$PYTHON" "$CLIENT" --host 127.0.0.1 --port 1 --state /dev/null \
     adopt --adb "$ADB" --serial emulator-5554 --help >/dev/null 2>&1 \
     || { echo "CHECK FAIL: deckctl adopt argument order"; rc=1; }
+  # The spike's reset order, copied exactly: clear, 1.5 s, warm, then the
+  # stream. Boot 3 skipped the warm; the sleep is the spike's own gap.
+  "$PYTHON" - "$0" <<'PY' || { echo "CHECK FAIL: clear/sleep/warm order"; rc=1; }
+import sys
+text = open(sys.argv[1]).read()
+order = ["pm clear com.android.chrome", "sleep 1.5",
+         "warm Chrome past its first run"]
+pos = [text.find(needle) for needle in order]
+if not all(p >= 0 for p in pos) or pos != sorted(pos):
+    raise SystemExit(1)
+PY
   command -v ffmpeg >/dev/null || { echo "CHECK FAIL: no ffmpeg"; rc=1; }
   [ -x "$ADB" ] || { echo "CHECK FAIL: no adb at $ADB"; rc=1; }
   [ -x "$EMULATOR" ] || { echo "CHECK FAIL: no emulator at $EMULATOR"; rc=1; }
@@ -123,14 +142,17 @@ step "pairing state: $(basename "$STATE") (new this run)"
 pair_phone || { echo "[adopt] error: could not pair with the rig" >&2; exit 1; }
 
 # Chrome's own five-window cap hides "New window"; a fresh clear brings it back
-# to one window (the spike's own reset).
+# to one window. The server restart above closed every open stream, so the
+# spike's order holds from here: clear, 1.5 s, warm, then open the stream.
 step "pm clear com.android.chrome"
 emu shell pm clear com.android.chrome >"$OUT/pm-clear.txt" 2>&1 || true
+sleep 1.5
 
 # A cleared Chrome starts on its first-run screen: no toolbar, so the ⋮ tap
 # finds no menu (boot 3, 11:29). The spike's warm launch accepts/dismisses the
 # first run on the phone's own display and force-stops it; every streamed
-# window after that has a real page (WIN-44).
+# window after that has a real page (WIN-44). The client then proves the ⋮ is
+# on the stream before it taps anything.
 step "warm Chrome past its first run"
 "$PYTHON" - <<PY || { echo "[adopt] error: Chrome's first run did not clear" >&2; exit 1; }
 import importlib.util

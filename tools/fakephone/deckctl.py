@@ -3284,6 +3284,73 @@ def _adb_input(args, *command):
     return result.returncode == 0
 
 
+def _adb_shell(args, *command, timeout=90):
+    if not args.adb:
+        return None
+    return subprocess.run([args.adb, "-s", args.serial, "shell"] + [str(c) for c in command],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _dump_ui(args, display, path):
+    """A display's hierarchy; tries every spelling uiautomator has had."""
+    remote = "/data/local/tmp/pd-deckctl-ui.xml"
+    for command in (("uiautomator", "dump", "--display", str(display), remote),
+                    ("uiautomator", "dump", remote, "--display", str(display)),
+                    ("uiautomator", "dump", remote)):
+        _adb_shell(args, *command)
+        cat = _adb_shell(args, "cat", remote)
+        text = (cat.stdout if cat else "") or ""
+        if text.startswith("<?xml") or "<hierarchy" in text:
+            try:
+                with open(path, "w") as fp:
+                    fp.write(text)
+            except OSError:
+                pass
+            return text
+    return None
+
+
+def _ui_nodes(text):
+    nodes = []
+    for match in re.finditer(r"<node [^>]*>", text or ""):
+        tag = match.group(0)
+        node = {}
+        for name in ("text", "content-desc", "resource-id", "bounds"):
+            found = re.search(r'%s="([^"]*)"' % name, tag)
+            node[name] = found.group(1) if found else ""
+        nodes.append(node)
+    return nodes
+
+
+def _toolbar_desc(text):
+    """Chrome's ⋮ label on this dump, or None. The resource id is exact; the
+    description is "More options", with an update banner in front when one is
+    pending (boot 9). A first-run screen has neither."""
+    for node in _ui_nodes(text):
+        desc = node["content-desc"].strip()
+        if node["resource-id"].endswith(":id/menu_button") or "more options" in desc.lower():
+            return desc or node["resource-id"]
+    return None
+
+
+def _adopt_toolbar(args, display, prefix):
+    """Prove the streamed page has Chrome's toolbar before the New-window taps.
+
+    Boot 3 burned a boot on a cleared Chrome sitting on its first-run screen:
+    no toolbar, so the ⋮ tap hit nothing and no task was ever created. This
+    names that state instead of retrying the tap three times."""
+    if not args.adb:
+        return None
+    path = "%s-s%d-toolbar.xml" % (prefix, display)
+    for attempt in range(3):
+        label = _toolbar_desc(_dump_ui(args, display, path))
+        if label is not None:
+            return label
+        if attempt < 2:
+            time.sleep(2.0)
+    return None
+
+
 def cmd_adopt(client, args):
     """Stream the app, tap its own New window, adopt the reported task, and prove
     both streams, Back/close and the launcher's moved_to_phone (WIN-44…WIN-49)."""
@@ -3313,9 +3380,20 @@ def cmd_adopt(client, args):
         time.sleep(max(0.0, args.settle))
 
         # A fresh Chrome shows a notification promo; one Back dismisses it and
-        # is a no-op on the new-tab page.
+        # is a no-op on the new-tab page. The toolbar probe follows it: while
+        # the promo's modal is up, uiautomator's dump contains that window
+        # only, so a correct page would look toolbar-less (boot 4, 11:49).
         client.send_json({"t": "nav", "stream": source, "action": "back"})
         time.sleep(1.0)
+
+        toolbar = _adopt_toolbar(args, source, prefix)
+        if toolbar is None:
+            raise DeckError(
+                "no Chrome toolbar on stream %d after the first-run warm "
+                "(uiautomator found no menu_button in %s-s%d-toolbar.xml); "
+                "stopping before the New-window trigger"
+                % (source, prefix, source))
+        print("toolbar on stream %d: %s" % (source, toolbar), flush=True)
 
         task = None
         for attempt in range(1, args.attempts + 1):
