@@ -98,25 +98,85 @@ class ClipHelperMachineTest {
             ClipHelperState.Restarting(2, 1),
             listOf(ClipHelperAction.SpawnAfter(2, 1, 500)),
             ClipHelperState.Ready(1, 1),
-            ClipHelperEvent.Died(1, 1, "exit 1"),
+            ClipHelperEvent.Died(1, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Restarting(3, 1),
             listOf(ClipHelperAction.SpawnAfter(3, 1, 1_000)),
             ClipHelperState.Restarting(2, 1),
-            ClipHelperEvent.Died(2, 1, "exit 1"),
+            ClipHelperEvent.Died(2, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Restarting(4, 1),
             listOf(ClipHelperAction.SpawnAfter(4, 1, 2_000)),
             ClipHelperState.Restarting(3, 1),
-            ClipHelperEvent.Died(3, 1, "exit 1"),
+            ClipHelperEvent.Died(3, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Failed("exit 1"),
             ignored,
             ClipHelperState.Restarting(4, 1),
-            ClipHelperEvent.Died(4, 1, "exit 1"),
+            ClipHelperEvent.Died(4, 1, "exit 1", 0),
+        )
+    }
+
+    /**
+     * A death after a healthy run starts the count again: however many deaths
+     * came before, the next spawn is attempt 2, not attempt 10.
+     */
+    @Test
+    fun aHealthyDeathStartsTheRestartCountAgain() {
+        assertStep(
+            ClipHelperState.Restarting(2, 1),
+            listOf(ClipHelperAction.SpawnAfter(2, 1, 500)),
+            ClipHelperState.Ready(9, 1),
+            ClipHelperEvent.Died(9, 1, "exit 137", CLIP_HELPER_HEALTHY_MS),
+        )
+        // The same after a restart was already spent: the attempt before the
+        // healthy one no longer matters.
+        assertStep(
+            ClipHelperState.Restarting(2, 2),
+            listOf(ClipHelperAction.SpawnAfter(2, 2, 500)),
+            ClipHelperState.Ready(4, 2),
+            ClipHelperEvent.Died(4, 2, "exit 137", CLIP_HELPER_HEALTHY_MS + 1),
+        )
+        // One millisecond short of the window is not a healthy run: it spends
+        // the restart at the bound and fails.
+        assertStep(
+            ClipHelperState.Failed("exit 137"),
+            ignored,
+            ClipHelperState.Ready(4, 2),
+            ClipHelperEvent.Died(4, 2, "exit 137", CLIP_HELPER_HEALTHY_MS - 1),
+        )
+        assertEquals(60_000, CLIP_HELPER_HEALTHY_MS)
+    }
+
+    /** Short deaths still spend a restart each and end in Failed after three. */
+    @Test
+    fun shortDeathsStillSpendRestartsAndEndFailed() {
+        assertStep(
+            ClipHelperState.Restarting(2, 1),
+            listOf(ClipHelperAction.SpawnAfter(2, 1, 500)),
+            ClipHelperState.Ready(1, 1),
+            ClipHelperEvent.Died(1, 1, "exit 137", 0),
+        )
+        assertStep(
+            ClipHelperState.Restarting(3, 1),
+            listOf(ClipHelperAction.SpawnAfter(3, 1, 1_000)),
+            ClipHelperState.Restarting(2, 1),
+            ClipHelperEvent.Died(2, 1, "exit 137", 0),
+        )
+        assertStep(
+            ClipHelperState.Restarting(4, 1),
+            listOf(ClipHelperAction.SpawnAfter(4, 1, 2_000)),
+            ClipHelperState.Restarting(3, 1),
+            ClipHelperEvent.Died(3, 1, "exit 137", 0),
+        )
+        assertStep(
+            ClipHelperState.Failed("exit 137"),
+            ignored,
+            ClipHelperState.Restarting(4, 1),
+            ClipHelperEvent.Died(4, 1, "exit 137", CLIP_HELPER_HEALTHY_MS - 1),
         )
     }
 
@@ -130,7 +190,7 @@ class ClipHelperMachineTest {
             ClipHelperState.Starting(1, 2),
             listOf(ClipHelperAction.Spawn(1, 2)),
             ClipHelperState.Starting(1, 1),
-            ClipHelperEvent.Died(1, 1, "exit 1"),
+            ClipHelperEvent.Died(1, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Ready(1, 2),
@@ -142,7 +202,7 @@ class ClipHelperMachineTest {
             ClipHelperState.Restarting(2, 2),
             listOf(ClipHelperAction.SpawnAfter(2, 2, 500)),
             ClipHelperState.Ready(1, 2),
-            ClipHelperEvent.Died(1, 2, "exit 1"),
+            ClipHelperEvent.Died(1, 2, "exit 1", 0),
         )
     }
 
@@ -153,13 +213,13 @@ class ClipHelperMachineTest {
             ClipHelperState.Failed("no su form"),
             ignored,
             ClipHelperState.Starting(1, 2),
-            ClipHelperEvent.Died(1, 2, "exit 1"),
+            ClipHelperEvent.Died(1, 2, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Failed("no su form"),
             ignored,
             ClipHelperState.Failed("no su form"),
-            ClipHelperEvent.Died(1, 2, "exit 1"),
+            ClipHelperEvent.Died(1, 2, "exit 1", 0),
         )
         // A new session starts over with the first form.
         assertStep(
@@ -177,25 +237,32 @@ class ClipHelperMachineTest {
             ClipHelperState.Starting(1, 2),
             ignored,
             ClipHelperState.Starting(1, 2),
-            ClipHelperEvent.Died(1, 1, "exit 1"),
+            ClipHelperEvent.Died(1, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Starting(1, 2),
             ignored,
             ClipHelperState.Starting(1, 2),
-            ClipHelperEvent.Died(2, 2, "exit 1"),
+            ClipHelperEvent.Died(2, 2, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Ready(1, 2),
             ignored,
             ClipHelperState.Ready(1, 2),
-            ClipHelperEvent.Died(1, 1, "exit 1"),
+            ClipHelperEvent.Died(1, 1, "exit 1", 0),
         )
         assertStep(
             ClipHelperState.Restarting(2, 2),
             ignored,
             ClipHelperState.Restarting(2, 2),
-            ClipHelperEvent.Died(2, 1, "exit 1"),
+            ClipHelperEvent.Died(2, 1, "exit 1", 0),
+        )
+        // A healthy death from another attempt still changes nothing.
+        assertStep(
+            ClipHelperState.Ready(9, 1),
+            ignored,
+            ClipHelperState.Ready(9, 1),
+            ClipHelperEvent.Died(8, 1, "exit 137", CLIP_HELPER_HEALTHY_MS),
         )
     }
 
@@ -227,7 +294,7 @@ class ClipHelperMachineTest {
     @Test
     fun eventsThatMeanNothingInAStateAreIgnored() {
         assertStep(ClipHelperState.Off, ignored, ClipHelperState.Off, ClipHelperEvent.Started(1, 1))
-        assertStep(ClipHelperState.Off, ignored, ClipHelperState.Off, ClipHelperEvent.Died(1, 1, "exit 1"))
+        assertStep(ClipHelperState.Off, ignored, ClipHelperState.Off, ClipHelperEvent.Died(1, 1, "exit 1", 0))
         assertStep(
             ClipHelperState.Failed("no su form"),
             ignored,
@@ -252,7 +319,7 @@ class ClipHelperMachineTest {
         assertEquals("failed(no su form)", ClipHelperState.Failed("no su form").label())
         assertEquals("start", ClipHelperEvent.Start.label())
         assertEquals("started(1, form 2)", ClipHelperEvent.Started(1, 2).label())
-        assertEquals("died(exit 1, form 1)", ClipHelperEvent.Died(1, 1, "exit 1").label())
+        assertEquals("died(exit 1, form 1)", ClipHelperEvent.Died(1, 1, "exit 1", 0).label())
         assertEquals("stop", ClipHelperEvent.Stop.label())
     }
 
