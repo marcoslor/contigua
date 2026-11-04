@@ -141,6 +141,9 @@ enum SessionEvent {
     /// `window.opened`'s `taskId` (WIN-25): the phone's own task for the
     /// display, kept to name and close the right window.
     case windowTask(stream: UInt32, taskId: Int)
+    /// `window.task` (WIN-44): the app started a task of its own while one of
+    /// its apps was streamed. The Mac decides with the New-item rule (WIN-45).
+    case appTaskArrived(stream: UInt32, taskId: Int, pkg: String, label: String?)
     /// `state.maxWindows`: the most app windows the phone allows at once
     /// (WIN-32); a phone that reports none never sends this.
     case maxWindows(Int)
@@ -1606,6 +1609,11 @@ final class Session {
                                   height: message.int("h") ?? 0,
                                   dpi: message.int("dpi") ?? 0,
                                   outcome: message.string("outcome") ?? ""))
+        case "window.task":
+            emit(.appTaskArrived(stream: UInt32(message.int("stream") ?? 0),
+                                 taskId: message.int("taskId") ?? 0,
+                                 pkg: message.string("pkg") ?? "",
+                                 label: message.string("label")))
         case "window.closed":
             let closed = UInt32(message.int("stream") ?? 0)
             // RRR-5: the phone ended it, so it is no longer an open stream
@@ -2026,6 +2034,11 @@ final class Session {
         // the one that is there.
         if newInstance { message["newInstance"] = true }
         sendJSON(message)
+    }
+    /// WIN-46: one more window for a task the app started itself.
+    func adoptTask(stream: UInt32, taskId: Int, pkg: String, width: Int, height: Int, dpi: Double) {
+        sendJSON(["t": "window.adopt", "stream": Int(stream), "taskId": taskId, "pkg": pkg,
+                  "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
     func openLink(stream: UInt32, url: String, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "link.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "url": url])
