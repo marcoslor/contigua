@@ -491,6 +491,8 @@ data class ClipText(val text: String, val sensitive: Boolean = false)
 /**
  * The device clipboard as plain text. [listen] callbacks arrive on a platform
  * thread and fire for every primary-clip change, including our own [setText].
+ * The callback carries the signal only: the session decides whether the gate
+ * allows a read (ISS-27).
  */
 interface ClipboardPort {
     /** The primary clip's text, or null when it holds no text. */
@@ -498,11 +500,11 @@ interface ClipboardPort {
     fun setText(text: String)
 
     /**
-     * Starts delivering text changes to [onChange] and returns this listener's
-     * handle. The port has one live listener: this replaces any earlier one,
-     * whose handle becomes stale.
+     * Starts delivering change signals to [onChange] and returns this
+     * listener's handle. The port has one live listener: this replaces any
+     * earlier one, whose handle becomes stale.
      */
-    fun listen(onChange: (ClipText) -> Unit): ClipRegistration
+    fun listen(onChange: () -> Unit): ClipRegistration
 
     /**
      * Stops delivery for [registration], but only while it is the live one. A
@@ -516,7 +518,7 @@ interface ClipboardPort {
  * One clipboard listener registration (ISS-13): the handle [ClipboardPort.listen]
  * hands back. Only the owner of the live registration may stop it.
  */
-class ClipRegistration internal constructor(internal val onChange: (ClipText) -> Unit) {
+class ClipRegistration internal constructor(internal val onChange: () -> Unit) {
     /** The platform listener this registration installed, if any. */
     internal var listener: Any? = null
 }

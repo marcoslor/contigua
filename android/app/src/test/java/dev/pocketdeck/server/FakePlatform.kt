@@ -332,11 +332,11 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     override fun setText(text: String) {
         clipText = text
         clipSensitive = false
-        clipRegistration?.onChange?.invoke(ClipText(text, false))
+        clipRegistration?.onChange?.invoke()
         clipWrites.add(text)
     }
 
-    override fun listen(onChange: (ClipText) -> Unit): ClipRegistration {
+    override fun listen(onChange: () -> Unit): ClipRegistration {
         val reg = ClipRegistration(onChange)
         clipRegistration = reg
         clipListenCalls.incrementAndGet()
@@ -365,7 +365,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     fun changeClip(text: String, sensitive: Boolean = false) {
         clipText = text
         clipSensitive = sensitive
-        clipRegistration?.onChange?.invoke(ClipText(text, sensitive))
+        clipRegistration?.onChange?.invoke()
     }
 
     // ---- PairingStore -------------------------------------------------

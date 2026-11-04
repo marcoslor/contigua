@@ -87,7 +87,7 @@ internal class ShellClipboard(
         return ClipImage(bytes, mime.lowercase())
     }
 
-    override fun listen(onChange: (ClipText) -> Unit): ClipRegistration {
+    override fun listen(onChange: () -> Unit): ClipRegistration {
         val reg = ClipRegistration(onChange)
         // The new registration is live before the old one is removed: a
         // dispatch in flight from the old listener must not reach it.
@@ -99,12 +99,13 @@ internal class ShellClipboard(
         }
         // Same shape as the keyguard listener in AndroidDeviceState: system_server
         // marshals the listener through asBinder() and calls transaction 1 (the
-        // one-way dispatchPrimaryClipChanged) on the Binder we hand back.
+        // one-way dispatchPrimaryClipChanged) on the Binder we hand back. The
+        // signal carries no clip: the session reads only when its gate is on.
         val listener = ClipChangeListener {
             // A late dispatch from a replaced registration is not this
             // session's clip (ISS-13).
             if (live !== reg) return@ClipChangeListener
-            getText()?.let(reg.onChange)
+            reg.onChange()
         }
         reg.listener = listener
         if (!svc.addClipListener(listener)) {
@@ -183,7 +184,7 @@ internal interface ClipboardHelperPort {
     val available: Boolean
     fun start()
     fun stop()
-    fun listen(onChange: (ClipText) -> Unit)
+    fun listen(onChange: () -> Unit)
     fun getText(): ClipText?
     fun readImage(): ClipImage?
 }

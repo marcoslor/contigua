@@ -1937,8 +1937,11 @@ class Session(
     /** Local changes after welcome go out as `clip.set`; the text present at welcome does not. */
     private fun startClipboardSync() {
         val port = clipboard ?: return
-        clipRegistration = port.listen { clip ->
+        clipRegistration = port.listen {
+            // The signal is not the clip: read only while the Mac's gate is on,
+            // so sharing off never touches the primary clip (ISS-27, SHARE-19).
             if (clipGateState == ClipGate.OFF) return@listen
+            val clip = port.getText() ?: return@listen
             if (clip.sensitive) {
                 // A password manager's item: the count only, never its text.
                 sensitiveClipsSkipped += 1
