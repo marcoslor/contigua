@@ -27,12 +27,14 @@ phone stays locked**. LAN only. Open source.
 
 ## The phone side: the app process and the shell server
 
-**Two processes, one job each.** Shizuku runs our server code as UID 2000
-(`com.android.shell`), the same uid as `adb shell`. The app process (`dev.pocketdeck`)
-does everything a normal Android app can: UI, pairing prompt, the foreground
-service, the notification listener, NSD advertising, battery/lock relays. It
-cannot create virtual displays or read notifications at will — that is why the
-capability lives in the shell process.
+**Two processes, one job each.** Without root privileges, Shizuku runs our server
+code as UID 2000 (`com.android.shell`), the same uid as `adb shell`; with root
+privileges it runs as UID 0, which owns no package, so clipboard reads go through
+a helper started as UID 2000 (docs/design/sharein.md, SHARE-19). The app process
+(`dev.pocketdeck`) does everything a normal Android app can: UI, pairing prompt,
+the foreground service, the notification listener, NSD advertising, battery/lock
+relays. It cannot create virtual displays or read notifications at will — that is
+why the capability lives in the shell process.
 
 The app binds the user service over Shizuku and talks to it over AIDL:
 
