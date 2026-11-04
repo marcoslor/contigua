@@ -2,14 +2,18 @@ package dev.pocketdeck.server
 
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.Collections
+import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The `drop.*` rules (docs/design/dragdrop.md): validation, chunking, progress,
@@ -257,6 +261,49 @@ class DropReceiverTest {
         }
         assertEquals(listOf("file-1.pdf", "file-2.pdf", "file-3.pdf"),
             shared.single().map { it.name })
+    }
+
+    /**
+     * R-PRIV-1 (ISS-34): the drop never logs the file's name or a path — the
+     * success line, the landing failure and its exception text all carry ids,
+     * sizes, mime types and class names only.
+     */
+    @Test
+    fun theDropLogsCarryNoFileNameOrPath() {
+        val logs = CopyOnWriteArrayList<String>()
+        val name = "pd-priv-${UUID.randomUUID()}.png"
+        val bytes = generated(8)
+        val stem = name.substringBeforeLast('.')
+        fun assertClean() {
+            for (line in logs) {
+                assertFalse("the file name reached the log: $line", line.contains(name))
+                assertFalse("the file's stem reached the log: $line", line.contains(stem))
+                assertFalse("a path reached the log: $line", line.contains(tmp.root.absolutePath))
+            }
+        }
+
+        val receiver = DropReceiver(landing, { frames += it }, log = { logs += it })
+        receiver.begin(startWith(name, bytes))
+        receiver.data(7, bytes)
+        assertEquals(true, awaitResult()["ok"])
+        assertTrue(logs.isNotEmpty())
+        assertClean()
+
+        // The hand-off's own failure text names the landed file; only the
+        // exception classes may reach the log.
+        frames.clear()
+        val failing = DropReceiver(
+            DropReceiver.Landing { file, _, _, _, _ ->
+                throw IOException("cannot hand over ${file.absolutePath}")
+            },
+            { frames += it },
+            log = { logs += it },
+        )
+        failing.begin(startWith(name, bytes))
+        failing.data(7, bytes)
+        assertEquals(true, awaitResult()["ok"])
+        assertTrue(logs.any { it.startsWith("drop 7: landing failed: IOException") })
+        assertClean()
     }
 
     @Test
