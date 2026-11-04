@@ -156,6 +156,16 @@ final class FilesPageCache {
     }
 }
 
+/// The one line the extension writes per Finder page (FILES-27, FILES-30):
+/// count, cache hit or fetch, and the time from the enumeration request to the
+/// delivery. The app's own relay timing plus this line give the listing's
+/// breakdown: phone time, our time, and the system's gap to the next page.
+enum FilesPageLog {
+    static func line(count: Int, fetched: Bool, milliseconds: Int) -> String {
+        "enumerate page n=\(count) phone=\(fetched ? "fetch" : "hit") ms=\(milliseconds)"
+    }
+}
+
 /// One folder's Finder batch. The system builds a fresh enumerator for every
 /// batch and hands the previous batch's token over; every reader of one
 /// extension process shares its `FilesPageCache`, so a phone page costs one
