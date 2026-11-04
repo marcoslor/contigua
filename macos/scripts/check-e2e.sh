@@ -9413,16 +9413,44 @@ check_multiwin() {
         local file="$WORK/shots/$appearance-$1.png"
         screencapture -x "$file" && say "shot: $file" || bad "MULTIWIN no screenshot $1"
     }
-    # menu_shot NAME MENU — one of the app's own menus, held open by the same
-    # tracking loop a click starts, while the whole screen is captured. The
-    # check caps it at 10 s and closes it before the next step: a menu left
+    # menu_shot NAME MENU [ITEM] — one of the app's own menus, held open by the
+    # same tracking loop a click starts, while the whole screen is captured. With
+    # ITEM, the menu is positioned so that row's own corner is at a known point
+    # (MenuTrack), the check moves the real pointer into it, waits up to 3 s for
+    # its help tag, and only then takes the shot (WIN-27's sentences). The check
+    # caps the menu at 10 s and closes it before the next step: a menu left
     # tracking would hold the app's main thread and wedge the run (round 3).
     menu_shot() {
-        local name="$1" menu="$2" report="$WORK/shots/$appearance-$1.json" seconds=4
-        [ "$seconds" -le 10 ] || seconds=10
-        control menutrack "$report" "$menu" "$seconds" \
+        local name="$1" menu="$2" hover="${3:-}" report="$WORK/shots/$appearance-$1.json" seconds=4
+        local point="$WORK/shots/$appearance-$1.point"
+        [ -n "$hover" ] && seconds=8
+        local args=(menutrack "$report" "$menu" "$seconds")
+        [ -n "$hover" ] && args+=("$hover" "$point")
+        control "${args[@]}" \
             || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
-        sleep 1.4
+        if [ -n "$hover" ]; then
+            # The menu is up and the app wrote the row's own corner: a real
+            # pointer move onto it, then a wait for the help tag (a small window
+            # of its own). If none appears in 3 s the shot is still taken — the
+            # report carries the sentence — and the run says so.
+            if wait_until 4 [ -s "$point" ]; then
+                local px py before="$WORK/shots/$appearance-$1.before"
+                read -r px py < "$point"
+                app_window_ids > "$before"
+                cg_input moveat --x "$px" --y "$py" \
+                    || bad "MULTIWIN the pointer move onto '$hover' did not post"
+                if wait_until 3 help_tag_up "$before"; then
+                    ok "MULTIWIN the $menu help tag is on screen for shot $name"
+                else
+                    skip "MULTIWIN the $menu help tag" "no new window within 3 s; the shot is kept and its report carries the sentence"
+                    "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed 's/^/  app window: /'
+                fi
+            else
+                bad "MULTIWIN menutrack $menu wrote no hover point"
+            fi
+        else
+            sleep 1.4
+        fi
         shot "$name"
         if ! wait_until 15 [ -s "$report" ]; then
             bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
@@ -9431,6 +9459,9 @@ check_multiwin() {
             cg_input key --keycode 53 >/dev/null 2>&1 || true
             return 1
         fi
+        if [ -n "$hover" ]; then
+            say "MULTIWIN $name help tag: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("help_tag",""))' "$report")"
+        fi
         # The check closes its own menu before the next step: the report is
         # written by the timer that also cancels tracking, so this is the proof
         # the bar is free again (a popup is a layer-100 window of its own).
@@ -9438,6 +9469,32 @@ check_multiwin() {
             || { bad "MULTIWIN the $menu menu was still open after its track"
                  cg_input key --keycode 53 >/dev/null 2>&1 || true; }
         sleep 0.2
+    }
+    # The ids of the app's on-screen windows: the menu is one of them, so a
+    # window that appears after the pointer move is the help tag.
+    app_window_ids() {
+        "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed -n 's/.* id=\([0-9]*\) .*/\1/p'
+    }
+    # help_tag_up BEFORE_FILE — a small new window of the app: the menu item's
+    # help tag. Prints the window's id, layer and bounds, for the run log.
+    help_tag_up() {
+        "$CGBIN" all 2>/dev/null | python3 - "$APP_PID" "$1" <<'PY'
+import re, sys
+pid, before = sys.argv[1], sys.argv[2]
+known = set(open(before).read().split())
+for line in sys.stdin:
+    if ("pid=" + pid + " ") not in line:
+        continue
+    m = re.search(r"id=(\d+) layer=(-?\d+) bounds=\{\{(-?[\d.]+), (-?[\d.]+)\}, \{(-?[\d.]+), (-?[\d.]+)\}\}", line)
+    if not m:
+        continue
+    ident, layer, x, y, w, h = m.groups()
+    if ident in known or float(h) > 150 or float(w) > 900:
+        continue
+    print("help tag: id=%s layer=%s bounds=%s,%s %sx%s" % (ident, layer, x, y, w, h))
+    sys.exit(0)
+sys.exit(1)
+PY
     }
     # The app's windows at menu level: a popup menu is its own window (layer
     # 101), which is how a check sees that a right click opened one.
@@ -9588,9 +9645,10 @@ if item.get("toolTip") != "Settings opens one window at a time.":
     print("help", item.get("toolTip")); sys.exit(1)
 PY
     if [ "$VISIBLE" = 1 ]; then
-        # 7: an app that opens one window: New Settings Window disabled (the
-        # sentence is the item's help tag, read above).
-        menu_shot 7-settings-one-window File
+        # 7: an app that opens one window: New Settings Window disabled, its
+        # help tag ("Settings opens one window at a time.") held on screen by a
+        # real pointer over the item.
+        menu_shot 7-settings-one-window File "New Settings Window"
     else
         skip "MULTIWIN the Settings shot" "needs the VM's screen; the disabled item and its sentence are asserted above and in K2 NewWindowTests"
     fi
@@ -9831,9 +9889,9 @@ if item.get("toolTip") != "Close a Chrome window to open another.":
     print("help", item.get("toolTip")); sys.exit(1)
 PY
     if [ "$VISIBLE" = 1 ]; then
-        # 6: at the cap, New Chrome Window disabled (its help tag carries the
-        # sentence read above).
-        menu_shot 6-at-the-cap File
+        # 6: at the cap, New Chrome Window disabled with its help tag ("Close a
+        # Chrome window to open another.") held on screen by a real pointer.
+        menu_shot 6-at-the-cap File "New Chrome Window"
     else
         skip "MULTIWIN the shot at the cap" "needs the VM's screen; the disabled item and its sentence are asserted above"
     fi

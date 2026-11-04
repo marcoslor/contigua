@@ -3380,12 +3380,25 @@ final class ConnectionController {
             return sendKey(stroke)
         case "menutrack":
             // The e2e menus check: hold one of the app's real menus open and
-            // report what happened while it was up (MenuTrack.swift).
-            guard arguments.count == 3, arguments[0].hasPrefix("/"),
+            // report what happened while it was up (MenuTrack.swift). An
+            // optional ITEM names a row to hover (the WIN-27 shots): the menu
+            // is positioned so that row is at a known point, which is written
+            // to POINT_PATH for the check's real pointer move.
+            guard arguments.count >= 3, arguments[0].hasPrefix("/"),
                   let seconds = Double(arguments[2]) else {
-                return "menutrack needs PATH View/Density SECONDS"
+                return "menutrack needs PATH View/Density SECONDS [ITEM POINT_PATH]"
             }
-            return MenuTrack.start(path: arguments[0], itemPath: arguments[1], seconds: seconds)
+            var hover: String?
+            var hoverPath: String?
+            if arguments.count > 3 {
+                guard arguments.count >= 5, let last = arguments.last, last.hasPrefix("/") else {
+                    return "menutrack needs PATH MENU SECONDS ITEM POINT_PATH"
+                }
+                hoverPath = last
+                hover = arguments[3..<(arguments.count - 1)].joined(separator: " ")
+            }
+            return MenuTrack.start(path: arguments[0], itemPath: arguments[1], seconds: seconds,
+                                   hover: hover, hoverPath: hoverPath)
         case "menu-burst":
             // The state changes the check makes while the menu is open: a
             // battery report, a Now Playing change and an occlusion flip.

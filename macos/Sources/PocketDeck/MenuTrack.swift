@@ -11,7 +11,10 @@
 // The menu is opened with `NSMenu.popUp`, which is the same tracking loop a
 // click runs; it is not AX's `AXPress` on the menu bar item because that
 // activates a background app and takes the person's keyboard for the length of
-// the run (the quiet rule in .agent/_common.md). Nothing moves the pointer.
+// the run (the quiet rule in .agent/_common.md). Nothing moves the pointer
+// unless the caller names an item to hover (WIN-27's shots): then the menu is
+// positioned so that item's corner is known, the check puts the real pointer
+// there, and the report says which item the tracking loop highlighted.
 
 import AppKit
 
@@ -28,11 +31,17 @@ enum MenuTrack {
     private static var openedSubmenu = false
     private static var stateChanges = 0
     private static var trackingPaths: Set<String> = []
+    private static var hoverTitle = ""
     private static var timers: [Timer] = []
     private static var observers: [NSObjectProtocol] = []
 
     /// Starts one tracked session. Returns why it could not start, else nil.
-    static func start(path resultPath: String, itemPath: String, seconds wait: TimeInterval) -> String? {
+    /// `hover` names an item of `itemPath`'s menu whose help tag the caller
+    /// wants on screen: the menu is positioned so that item's own corner sits
+    /// at a known point, and `hoverPath` receives that point in Quartz
+    /// coordinates for the caller's real pointer move.
+    static func start(path resultPath: String, itemPath: String, seconds wait: TimeInterval,
+                      hover: String? = nil, hoverPath: String? = nil) -> String? {
         guard !running else { return "a menu track is already running" }
         guard wait > 0, wait <= 10 else { return "menutrack needs 0 < SECONDS <= 10" }
         let item = resolve(itemPath: itemPath)
@@ -40,10 +49,20 @@ enum MenuTrack {
         guard let submenu = item.submenu else { return "menutrack: \(itemPath) has no submenu" }
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
               let view = window.contentView else { return "menutrack: no window to show a menu over" }
+        let hoverItem: NSMenuItem?
+        if let hover {
+            guard let found = submenu.items.first(where: { !$0.isSeparatorItem && $0.title == hover }) else {
+                return "menutrack: no item '\(hover)' in \(itemPath)"
+            }
+            hoverItem = found
+        } else {
+            hoverItem = nil
+        }
 
         running = true
         path = resultPath
         MenuTrack.itemPath = itemPath
+        MenuTrack.hoverTitle = hoverItem?.title ?? ""
         seconds = wait
         buildsBefore = Menus.builds
         itemsBefore = identities(in: NSApp.mainMenu)
@@ -52,6 +71,10 @@ enum MenuTrack {
         openedSubmenu = false
         stateChanges = 0
         trackingPaths = []
+        // The item's own top-left corner lands at this point (popUp's
+        // positioning-item rule), so the caller can put the pointer inside the
+        // item without guessing a menu's layout.
+        let anchor = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
         observe()
 
         // The menu must be opened from the run loop, not from this command: the
@@ -59,14 +82,25 @@ enum MenuTrack {
         // enters the tracking loop.
         schedule(after: 0.4) {
             opened = true
-            submenu.popUp(positioning: nil,
-                          at: NSPoint(x: 40, y: max(40, (view.bounds.height) - 40)),
-                          in: view)
+            if let hoverItem {
+                submenu.popUp(positioning: hoverItem, at: anchor, in: view)
+            } else {
+                submenu.popUp(positioning: nil,
+                              at: NSPoint(x: 40, y: max(40, (view.bounds.height) - 40)),
+                              in: view)
+            }
             // The tracking loop ended (a click, Escape or the close timer).
             // Write now if the report timer never ran: the next step must never
             // be refused as "a menu track is already running" (the VM's sleep
             // wedge, round 3).
             if running { write() }
+        }
+        if hoverItem != nil, let hoverPath {
+            schedule(after: 1.0) {
+                let point = pointerPoint(window: window, view: view, anchor: anchor)
+                let line = "\(point.x) \(point.y)\n"
+                try? line.write(toFile: hoverPath, atomically: true, encoding: .utf8)
+            }
         }
         schedule(after: 0.4 + wait) {
             openedSubmenu = trackingPaths.contains(itemPath)
@@ -124,6 +158,16 @@ enum MenuTrack {
 
     // MARK: - Reading the bar
 
+    /// The Quartz point 40 pt in from a hovered item's left edge and 11 pt
+    /// below its top edge. `popUp` puts the item's own top-left corner at
+    /// `anchor` in `view`, so this is exact: both edges are the item's.
+    private static func pointerPoint(window: NSWindow, view: NSView, anchor: NSPoint) -> NSPoint {
+        let inWindow = view.convert(anchor, to: nil)
+        let screen = window.convertPoint(toScreen: inWindow)
+        let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
+        return NSPoint(x: screen.x + 40, y: top - (screen.y - 11))
+    }
+
     private static func resolve(itemPath: String) -> NSMenuItem? {
         var items = NSApp.mainMenu?.items ?? []
         var found: NSMenuItem?
@@ -166,6 +210,8 @@ enum MenuTrack {
 
     private static func write() {
         let item = resolve(itemPath: MenuTrack.itemPath)
+        let hover = hoverTitle.isEmpty ? nil
+            : item?.submenu?.items.first(where: { $0.title == hoverTitle })
         let now = identities(in: NSApp.mainMenu)
         let report: [String: Any] = [
             "opened": opened,
@@ -178,6 +224,14 @@ enum MenuTrack {
             "submenu_same_object": item?.submenu.map(ObjectIdentifier.init) == submenuBefore,
             "submenu_opened": openedSubmenu || trackingPaths.contains(MenuTrack.itemPath),
             "tracking_at_end": trackingPaths.sorted(),
+            // The item the open menu had under the pointer when the report was
+            // written: the caller's pointer move landed on the hovered item.
+            "highlighted_item": item?.submenu?.highlightedItem?.title ?? "",
+            // The sentence the hovered item carries as its help tag (WIN-27),
+            // for the shot's sidecar report: the screenshot shows the tag, this
+            // is its text even when a capture misses it.
+            "hover_item": hoverTitle,
+            "help_tag": hover?.toolTip ?? "",
         ]
         if let data = try? JSONSerialization.data(withJSONObject: report,
                                                   options: [.prettyPrinted, .sortedKeys]) {
