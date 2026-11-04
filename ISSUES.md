@@ -98,22 +98,25 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
 
 - **ISS-41 A web client: PocketDeck for Windows and Linux (a very big epic; the person, 2026-11-04).** macOS stays the first-class, native app. Windows and Linux get a web client, and no native app.
   - **The person's constraints:**
-    - **No install.** Open a URL and it works: no helper app, no extension, no browser flag. Everything else follows from this.
-    - **Local first.** Traffic stays on the LAN, or goes through our own native piece (the phone app); never a third-party cloud.
-    - **Not a port.** It's another application, shaped by what browsers allow. Where a browser can't do something, the web client doesn't have it.
-  - **So the phone hosts it.** The PC opens the phone's address (shown in the phone app; `http://<name>.local` where mDNS resolves, else the IP). The page comes from the phone, and the session's traffic goes straight to the phone. Pairing is by a code shown on the phone.
-  - **A page from the phone over plain `http` is not a secure context** (MDN, checked 2026-11-04):
-    - **Switched off:** WebCodecs, WebGPU, Web Crypto, the async Clipboard API, Notifications, service workers (so no PWA), the Keyboard API (Keyboard Lock), WebTransport and File System Access. Cross-origin isolation needs a secure context too, so there's no `SharedArrayBuffer` and no threaded wasm.
-    - **Still available:** WebRTC (`RTCPeerConnection`), WebSockets, Media Source Extensions, WebGL2, Pointer Lock, Fullscreen, IndexedDB, and paste, copy and drag-and-drop events.
-  - **What that implies:**
-    - **Video and input over WebRTC:** host candidates only, with no STUN or TURN; signalling over a same-origin WebSocket; the browser's own decoder; input and transfers on data channels. The phone needs a WebRTC stack (libdatachannel is the light candidate; libwebrtc the heavy one). The fallback is Media Source Extensions with fragmented MP4 over the WebSocket, at higher latency.
-    - **Clipboard:** text and images on the person's own copy and paste gestures (the event `clipboardData`), never read in the background. Files go in by drag-and-drop or `<input type=file>` and out as downloads.
-    - **No browser notifications.** Live Updates and notifications show in the page while it's open.
-    - **Browser shortcuts stay the browser's.** The client offers its own keys for them.
-    - **Security:** WebRTC's DTLS is pinned to the pairing, so the session is end to end. The page's own code travels over plain `http` on the LAN, as a router's admin page does: write down that risk and the mitigations.
-    - **UI toolkit:** a DOM app is the default, since GPUI's web build wants WebGPU (or WebGL2) and threads. Nothing needs to move off SwiftUI on the Mac for this. What's shared is the protocol, the fake-phone conformance checks, and the visual language (colours, type, icons).
-  - **Optional later, never required:** the phone serving `https` under a real certificate for a hostname that resolves to its LAN address (the Plex `*.plex.direct` pattern). That unlocks WebCodecs, the async clipboard and notifications, and the traffic stays local. It needs a small certificate service of ours, and some routers' DNS-rebind protection blocks it.
-  - **First step, a spike:** a Windows or Linux browser opens the phone's address with nothing installed and pairs by code. It plays one stream over WebRTC (and the MSE fallback) with keyboard and pointer input, and measures latency and CPU against the Mac app. It also checks `.local` resolution on Windows and Linux, and whether the phone's WebRTC stack fits the app's size and memory.
+    - **No install:** open a URL and it works; no helper app and no extension.
+    - **Not a port:** it's another application, shaped by what browsers allow. Where a browser can't do something, the web client doesn't have it.
+    - **Local first, but not a constraint:** an `https`-served web app plus our own rendezvous server is fine, and so is a session that is 100 % relayed. The direct LAN path is the preference.
+  - **The shape (as WhatsApp Web):** the client is a static `https` site of ours, so it is a secure context: WebCodecs, WebGPU, Web Crypto, the async Clipboard API, Notifications while open, service workers and Keyboard Lock all work, and the page's own code arrives intact.
+    - **Pairing:** the page shows a QR code (a one-time rendezvous id plus the browser's public key, held as a non-extractable WebCrypto key in IndexedDB), and the phone app scans it with its camera.
+    - **Connection:** WebRTC, with signalling through our rendezvous server over `wss`. The SDP fingerprints are signed with the pairing keys, so the rendezvous only relays and cannot sit in the middle; the session is end to end.
+    - **ICE order:** a direct LAN path first (host and mDNS candidates), then STUN, then a TURN relay.
+    - **On the phone:** a WebRTC stack. libdatachannel (ICE, DTLS, SCTP, RTP) is the light candidate.
+  - **Video, two candidates for the spike:**
+    - an RTP media track decoded by the browser's WebRTC pipeline;
+    - or today's H.264 frames and PocketDeck's own protocol over a data channel, decoded with WebCodecs. That keeps the phone's MediaCodec path and protocol, but a lossy relay hurts it more.
+  - **What stays browser-shaped:**
+    - shortcuts the browser keeps (⌃W, ⌃T, ⌃N) unless Keyboard Lock is on in full screen (Chromium only);
+    - files by drag-and-drop, `<input type=file>`, downloads, and File System Access where it exists;
+    - notifications only while the page is open, unless we add Web Push later;
+    - each app window is a browser window or tab.
+  - **What we'd run:** the static site (GitHub Pages fits our GitHub-only distribution), a small rendezvous service, and TURN (coturn or a hosted TURN). The traffic in it is end-to-end encrypted.
+  - **UI toolkit:** open again, since GPUI's web build needs WebGPU (or WebGL2) and cross-origin isolation, which our own origin can serve. It's still experimental (one canvas per page, no menus, canvas text and IME). A DOM app is the safer default. Decide by one prototype round: the Deck and one stream window in each. Nothing needs to move off SwiftUI on the Mac. What's shared regardless is the protocol, the fake-phone conformance checks and the visual language.
+  - **First step, a spike:** a Windows or Linux browser opens the site with nothing installed and pairs by QR. It plays one stream both ways (RTP track and data channel with WebCodecs), with keyboard and pointer input, on the LAN and through a TURN relay. It measures latency, CPU and the phone's added size and memory against the Mac app.
 
 ## 6. On their own branches
 
