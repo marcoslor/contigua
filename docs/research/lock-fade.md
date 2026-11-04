@@ -1,6 +1,6 @@
 # Why an app window fades to black when the phone wakes (ISS-3)
 
-Status, 2026-11-03: **root-caused on the real phone, not fixed.** The fade is Android's own screen-off animation, drawn on the virtual display that streams the window. The options are at the end; whether any of them can remove it on One UI is still open.
+Status, 2026-11-03: **root-caused on the real phone, not fixed.** The fade is Android's own screen-off animation, drawn on the virtual display that streams the window. The options are at the end. The cheap one, a display flag that earns its own group, was probed on the phone and none does; whether options 1 or 2 can remove it on One UI is still open.
 
 Measured on an SM-S936B (One UI 8.5) running v131, with one app window streaming to the Mac, and on the 2026-11-01 field log from the same phone. The emulator runs of `fix/flicker` (8 boots, 2026-11-03) are compared at the end.
 
@@ -75,11 +75,13 @@ The person reports that a DeX session doesn't show the fade. With DeX on a cable
 
 ## Can it go away?
 
-0. **A group probe on the real phone first** (cheap, nothing stays). Create short-lived virtual displays from the shell service, one per variant, read each one's `displayGroupId`, and release them. The variants:
-   - each Samsung flag above that may earn a group (`REMOTE_APP`, `BACKGROUND_DISPLAY`, `CARLIFE`, `SPEG_DISPLAY`), each with and without `OWN_DISPLAY_GROUP`;
-   - a group name, if the hidden config allows one.
-
-   Any variant that lands outside group 0 is the fix, with no pairing.
+0. **A group probe on the real phone: done, 2026-11-03. No flag earns a group of its own.**
+   - The debug-only `dev.pocketdeck.debug.GroupProbe` (branch `spike/group-probe`) created a 64×64 virtual display per variant through the same config path as the stream, read its group, and released it. No probe display was left behind.
+   - The variants: today's flags; today's flags without `OWN_DISPLAY_GROUP`; each Samsung flag (`REMOTE_APP`, `BACKGROUND_DISPLAY`, `CARLIFE`, `SPEG_DISPLAY`, `HIDDEN_SPACE`, `VIEW_COVER`) with and without it; and `DEVICE_DISPLAY_GROUP`.
+   - **Every display that was created sat in group 0.** The display info kept `OWN_DISPLAY_GROUP` where it was asked for, which confirms that the mapper ignores it.
+   - `CARLIFE` was refused with a `SecurityException`, with and without `OWN_DISPLAY_GROUP`. The probe ran with root privileges, so the refusal is not a shell-permission gap. A run as the system user stopped earlier, because the probe presents itself as the shell package. So whether a CarLife display would get its own group (group 4) is still open. It could only ever help a rooted phone.
+   - `DEVICE_DISPLAY_GROUP` without a virtual device behaves like the base flags.
+   - So option 0 is closed. The options below remain.
 1. **Give the virtual displays a group of their own through a virtual device.**
    - On the SM-S936B the shell user holds `CREATE_VIRTUAL_DEVICE` (granted by role).
    - On AOSP 16, displays created by a virtual device with `DEVICE_DISPLAY_GROUP` join that device's own group, not group 0 (display-groups.md, the Android 16 note).

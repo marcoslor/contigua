@@ -211,6 +211,10 @@ struct OpeningCover: Equatable {
 final class OpeningCoverView: NSView {
     var onCancel: (() -> Void)?
     var onClose: (() -> Void)?
+    /// The cover came or went: the chrome lays out with the immersive geometry
+    /// while it is up (WIN-11). Fires only on a visibility change, never per
+    /// phase tick.
+    var onVisibilityChange: (() -> Void)?
 
     private let ground = NSView()
     private let iconView = NSImageView()
@@ -306,6 +310,10 @@ final class OpeningCoverView: NSView {
     /// Shows what the machine says, or takes the cover away (nil: the picture
     /// is in or the person closed it).
     func show(_ display: OpeningCover.Display?, icon: NSImage?) {
+        let wasUp = !isHidden
+        defer {
+            if (!isHidden) != wasUp { onVisibilityChange?() }
+        }
         guard let display else {
             isHidden = true
             stopSweep()

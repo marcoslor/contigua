@@ -202,6 +202,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
+        // The cover's coming or going changes the chrome's effective style: the
+        // dwell follows the same place the layout reads (WIN-11). One
+        // reconfigure per visibility change, never per frame.
+        chrome.onEffectiveStyleChange = { [weak self] in self?.configureDwell() }
         // Where AppKit put the standard buttons before the chrome moves them;
         // full screen gives them back (applyChromeConfig).
         captureStandardLights()
@@ -306,10 +310,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // the tracking area would report the same ones twice.
         videoView.hoverFeedActive = { [weak self] in
             guard let self else { return false }
-            return self.style == .immersive && !(self.window?.styleMask.contains(.fullScreen) ?? false)
+            return self.chrome.effectiveStyle == .immersive
+                && !(self.window?.styleMask.contains(.fullScreen) ?? false)
         }
         videoView.macUIAtWindowPoint = { [weak self] point in
-            guard let self, self.style == .immersive, self.chrome.showsPill else { return false }
+            guard let self, self.chrome.effectiveStyle == .immersive, self.chrome.showsPill else { return false }
             let height = self.chrome.bounds.height
             let streamPoint = CGPoint(x: point.x, y: height - point.y)
             return self.chrome.pillStreamRect.insetBy(dx: -4, dy: -4).contains(streamPoint)
@@ -607,7 +612,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// otherwise and any shown pill is taken away. With Always Visible there
     /// is no dwell at all: the lights and the capsules stay up.
     private func configureDwell() {
-        let immersive = style == .immersive && !(window?.styleMask.contains(.fullScreen) ?? false)
+        let immersive = chrome.effectiveStyle == .immersive
+            && !(window?.styleMask.contains(.fullScreen) ?? false)
         let always = ImmersiveChrome.alwaysVisible(manager.revealDelay)
         chromeAlwaysVisible = immersive && always
         if immersive && ImmersiveChrome.usesDwell(alwaysVisible: always) {
@@ -652,7 +658,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func pointerMoved(toScreen point: NSPoint) {
-        guard let window, window.isVisible, style == .immersive,
+        guard let window, window.isVisible, chrome.effectiveStyle == .immersive,
               window.styleMask.contains(.fullScreen) == false else { return }
         pointerMoved(toWindowPoint: window.convertPoint(fromScreen: point))
     }
@@ -1239,7 +1245,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The pointer moved to a point in the window (also the scripted driver's
     /// hover): the immersive dwell's feed, and the phone's mouse hover.
     func pointerMoved(toWindowPoint point: CGPoint) {
-        if style == .immersive && !chromeAlwaysVisible {
+        if chrome.effectiveStyle == .immersive && !chromeAlwaysVisible {
             // DwellChrome's zone is in stream coordinates, top-left origin: in
             // immersive the window is exactly the stream.
             let height = chrome.bounds.height
@@ -1732,7 +1738,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// (DwellPill.clickReachedApp; the touch itself goes on as normal input,
     /// with no added delay). Doubles as the scripted check's path.
     func touchInHotZone(_ event: TouchEvent) {
-        guard !chromeAlwaysVisible, style == .immersive, let window, window.isVisible,
+        guard !chromeAlwaysVisible, chrome.effectiveStyle == .immersive, let window, window.isVisible,
               window.styleMask.contains(.fullScreen) == false, event.action == .down else { return }
         let bounds = videoBounds()
         guard bounds.width > 0, bounds.height > 0 else { return }

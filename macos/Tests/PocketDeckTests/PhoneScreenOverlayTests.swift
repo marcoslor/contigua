@@ -234,6 +234,9 @@ final class PhoneScreenOverlayTests: XCTestCase {
 
         var commands: [InputMapper.Command] = []
         phone.noteFirstFrame()
+        // The cover's coming or going relayouts the chrome at once; let the
+        // overlay's own subviews take the new bounds before the click.
+        phone.chrome.layoutSubtreeIfNeeded()
         phone.videoView.inputMapper?.send = { commands.append($0) }
         // The frozen frame blocks every input path, not just the click.
         phone.videoView.inputMapper?.mouseDown(click())
