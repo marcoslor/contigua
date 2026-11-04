@@ -179,4 +179,37 @@ final class ThumbSchedulerTests: XCTestCase {
         XCTAssertEqual("new1", phone.asks.last?.item,
                        "a newer batch's first id waited behind the older batch")
     }
+
+    /// The load test's "asked after its cancel" (K2 on the merge, 2026-11-04):
+    /// the pool took an id under its lock and asked the phone after letting go,
+    /// so a cancel landing in between still sent that ask. Here the cancel
+    /// lands exactly there, every time: after `cancel` returns, the phone hears
+    /// nothing more for the batch, and the slot is free for the next one.
+    func testACancelBetweenTakingAnIdAndAskingSendsNoAsk() {
+        let scheduler = FilesThumbScheduler(limit: 1)
+        let phone = FakePhone()
+        let recorder = Recorder()
+        var cancelled = false
+        var batch = 0
+        scheduler.willStartForTesting = { [self] id in
+            guard id == batch, phone.asks.count == 1, !cancelled else { return }
+            cancelled = true
+            scheduler.cancel(id)
+        }
+        batch = recorder.open(scheduler, ids: ["a0", "a1", "a2"], phone: phone)
+        XCTAssertEqual(["a0"], phone.asks.map(\.item))
+
+        // a0's answer frees the slot; the pool takes a1, and the cancel lands
+        // before a1's ask goes out.
+        phone.finish(0, data: Data([1]))
+        XCTAssertTrue(cancelled, "the hook never ran between the take and the ask")
+        XCTAssertEqual(["a0"], phone.asks.map(\.item), "the phone was asked after the batch's cancel")
+        XCTAssertEqual(1, recorder.doneCount)
+        XCTAssertEqual(NSUserCancelledError, errorCode(recorder.doneErrors.first ?? nil))
+
+        // The never-sent ask gave its slot back.
+        let next = Recorder()
+        _ = next.open(scheduler, ids: ["b0"], phone: phone)
+        XCTAssertEqual("b0", phone.asks.last?.item, "the cancelled take kept the pool's only slot")
+    }
 }
