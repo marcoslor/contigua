@@ -59,6 +59,10 @@ public final class Spike {
                         listing[i], new Size(size, size), new CancellationSignal());
             } catch (Throwable failure) {
                 todayFail++;
+                if (todayFail == 1) {
+                    System.out.println("TODAY_FAIL=" + failure.getClass().getSimpleName()
+                            + " CAUSE=" + causeClass(failure));
+                }
             }
             todayCold[i] = (System.nanoTime() - started) / 1_000_000;
             if (bitmap != null) bitmap.recycle();
@@ -124,20 +128,31 @@ public final class Spike {
     }
 
     /// The system context without a manifest: the path every app_process shell
-    /// tool takes to a ContentResolver at UID 2000.
+    /// tool takes to a ContentResolver at UID 2000. Android 16's systemMain
+    /// needs a prepared main looper; the cause's class (never its message,
+    /// which can carry a path) says why a boot fails.
     private static ContentResolver resolver() {
         try {
+            android.os.Looper.prepareMainLooper();
             Class<?> threadClass = Class.forName("android.app.ActivityThread");
             Method systemMain = threadClass.getMethod("systemMain");
             Object thread = systemMain.invoke(null);
             Method systemContext = threadClass.getMethod("getSystemContext");
             Context context = (Context) systemContext.invoke(thread);
-            System.out.println("RESOLVER=ok");
+            System.out.println("RESOLVER=ok uid=" + android.os.Process.myUid());
             return context.getContentResolver();
         } catch (Throwable failure) {
-            System.out.println("RESOLVER=blocked " + failure.getClass().getSimpleName());
+            System.out.println("RESOLVER=blocked " + failure.getClass().getSimpleName()
+                    + " CAUSE=" + causeClass(failure));
             return null;
         }
+    }
+
+    /// The first cause's class name; exception messages may carry a path, so
+    /// they are never printed (FILES-27 applies to this tool too).
+    private static String causeClass(Throwable failure) {
+        Throwable cause = failure.getCause();
+        return cause == null ? "none" : cause.getClass().getSimpleName();
     }
 
     private static void mapIds(ContentResolver resolver, File[] files, List<Long> ids) {
