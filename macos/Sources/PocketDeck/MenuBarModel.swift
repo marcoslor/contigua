@@ -66,6 +66,12 @@ struct MenuSnapshot: Equatable {
     var densityPackage: String?
     var densityOverride: Double?
     var settingsDensity = 1.0
+    /// File ▸ New <App> Window: the key app's title, enablement and the one
+    /// sentence when it cannot act (MENU-2, WIN-25, WIN-27, WIN-32, WIN-34).
+    var newWindow = NewWindowItem(title: "New Window", enabled: false, help: nil)
+    /// Window ▸ Next Window ⌘`: enabled only while the key app has two or more
+    /// windows open (WIN-29, WIN-30).
+    var nextWindowEnabled = false
     var phone = Phone()
 
     init() {}
@@ -184,8 +190,14 @@ final class MenuBarModel {
 
     private func currentSnapshot(_ controller: ConnectionController? = nil) -> MenuSnapshot {
         let controller = controller ?? self.controller ?? AppEnvironment.shared.controller
-        return MenuSnapshot(stream: StreamMenuState.shared,
-                            phone: MenuSnapshot.Phone(PhoneControlsState(controller: controller)))
+        var snapshot = MenuSnapshot(stream: StreamMenuState.shared,
+                                    phone: MenuSnapshot.Phone(PhoneControlsState(controller: controller)))
+        // The two window items read the running app's own window set, which
+        // SwiftUI's commands cannot see (MENU-2, MENU-7).
+        let windows = controller.windows
+        snapshot.newWindow = windows.keyNewWindowItem
+        snapshot.nextWindowEnabled = windows.canCycleWindows
+        return snapshot
     }
 
     // MARK: Tracking

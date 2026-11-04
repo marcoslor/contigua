@@ -11,9 +11,13 @@
 // The menu is opened with `NSMenu.popUp`, which is the same tracking loop a
 // click runs; it is not AX's `AXPress` on the menu bar item because that
 // activates a background app and takes the person's keyboard for the length of
-// the run (the quiet rule in .agent/_common.md). Nothing moves the pointer.
+// the run (the quiet rule in .agent/_common.md). Nothing moves the pointer
+// unless the caller names an item to hover (WIN-27's shots): then the menu is
+// positioned so that item's corner is known, the check puts the real pointer
+// there, and the report says which item the tracking loop highlighted.
 
 import AppKit
+import ApplicationServices
 
 @MainActor
 enum MenuTrack {
@@ -28,22 +32,42 @@ enum MenuTrack {
     private static var openedSubmenu = false
     private static var stateChanges = 0
     private static var trackingPaths: Set<String> = []
+    private static var hoverTitle = ""
+    private static var hoverPointSource = ""
+    private static var hoverPointText = ""
     private static var timers: [Timer] = []
     private static var observers: [NSObjectProtocol] = []
 
     /// Starts one tracked session. Returns why it could not start, else nil.
-    static func start(path resultPath: String, itemPath: String, seconds wait: TimeInterval) -> String? {
+    /// `hover` names an item of `itemPath`'s menu whose help tag the caller
+    /// wants on screen: the menu is positioned so that item's own corner sits
+    /// at a known point, and `hoverPath` receives that point in Quartz
+    /// coordinates for the caller's real pointer move.
+    static func start(path resultPath: String, itemPath: String, seconds wait: TimeInterval,
+                      hover: String? = nil, hoverPath: String? = nil) -> String? {
         guard !running else { return "a menu track is already running" }
-        guard wait > 0, wait <= 30 else { return "menutrack needs 0 < SECONDS <= 30" }
+        guard wait > 0, wait <= 10 else { return "menutrack needs 0 < SECONDS <= 10" }
         let item = resolve(itemPath: itemPath)
         guard let item else { return "menutrack: no menu item at \(itemPath)" }
         guard let submenu = item.submenu else { return "menutrack: \(itemPath) has no submenu" }
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }),
               let view = window.contentView else { return "menutrack: no window to show a menu over" }
+        let hoverItem: NSMenuItem?
+        if let hover {
+            guard let found = submenu.items.first(where: { !$0.isSeparatorItem && $0.title == hover }) else {
+                return "menutrack: no item '\(hover)' in \(itemPath)"
+            }
+            hoverItem = found
+        } else {
+            hoverItem = nil
+        }
 
         running = true
         path = resultPath
         MenuTrack.itemPath = itemPath
+        MenuTrack.hoverTitle = hoverItem?.title ?? ""
+        hoverPointSource = ""
+        hoverPointText = ""
         seconds = wait
         buildsBefore = Menus.builds
         itemsBefore = identities(in: NSApp.mainMenu)
@@ -52,6 +76,10 @@ enum MenuTrack {
         openedSubmenu = false
         stateChanges = 0
         trackingPaths = []
+        // The item's own top-left corner lands at this point (popUp's
+        // positioning-item rule), so the caller can put the pointer inside the
+        // item without guessing a menu's layout.
+        let anchor = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
         observe()
 
         // The menu must be opened from the run loop, not from this command: the
@@ -59,15 +87,34 @@ enum MenuTrack {
         // enters the tracking loop.
         schedule(after: 0.4) {
             opened = true
-            submenu.popUp(positioning: nil,
-                          at: NSPoint(x: 40, y: max(40, (view.bounds.height) - 40)),
-                          in: view)
+            if let hoverItem {
+                submenu.popUp(positioning: hoverItem, at: anchor, in: view)
+            } else {
+                submenu.popUp(positioning: nil,
+                              at: NSPoint(x: 40, y: max(40, (view.bounds.height) - 40)),
+                              in: view)
+            }
+            // The tracking loop ended (a click, Escape or the close timer).
+            // Write now if the report timer never ran: the next step must never
+            // be refused as "a menu track is already running" (the VM's sleep
+            // wedge, round 3).
+            if running { write() }
+        }
+        if hoverItem != nil, let hoverPath {
+            schedule(after: 1.0) {
+                let point = pointerPoint(window: window, view: view, anchor: anchor,
+                                         menu: itemPath, item: hoverTitle)
+                let line = "\(point.x) \(point.y)\n"
+                try? line.write(toFile: hoverPath, atomically: true, encoding: .utf8)
+            }
         }
         schedule(after: 0.4 + wait) {
             openedSubmenu = trackingPaths.contains(itemPath)
+            // write() invalidates every scheduled timer, so the close must run
+            // in this same closure: the round-3 split pair had the write timer
+            // invalidate the cancel timer before it fired, and the menu stayed
+            // tracking into the next step.
             write()
-        }
-        schedule(after: 0.4 + wait) {
             submenu.cancelTracking()
             NSApp.mainMenu?.cancelTracking()
         }
@@ -87,6 +134,10 @@ enum MenuTrack {
             MainActor.assumeIsolated { work() }
         }
         RunLoop.main.add(timer, forMode: .common)
+        // A menu's own tracking loop runs in the event-tracking mode; a mode
+        // that forgot to inherit common modes would never fire the close and
+        // would leave the app's main thread inside NSMenu (round 3's wedge).
+        RunLoop.main.add(timer, forMode: .eventTracking)
         timers.append(timer)
     }
 
@@ -112,6 +163,79 @@ enum MenuTrack {
     }
 
     // MARK: - Reading the bar
+
+    /// The point the check moves the real pointer to: the hovered item's own
+    /// centre from the open menu's Accessibility frame. AppKit may move a menu
+    /// that would not fit at the requested anchor, so the anchor (the item's
+    /// corner plus a little in and down) is only the fallback.
+    private static func pointerPoint(window: NSWindow, view: NSView, anchor: NSPoint,
+                                     menu itemPath: String, item: String) -> NSPoint {
+        if let frame = axItemFrame(menu: itemPath, item: item) {
+            hoverPointSource = "ax"
+            hoverPointText = "\(frame.midX) \(frame.midY)"
+            return NSPoint(x: frame.midX, y: frame.midY)
+        }
+        let inWindow = view.convert(anchor, to: nil)
+        let screen = window.convertPoint(toScreen: inWindow)
+        let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
+        let point = NSPoint(x: screen.x + 40, y: top - (screen.y - 11))
+        hoverPointSource = "anchor"
+        hoverPointText = "\(point.x) \(point.y)"
+        return point
+    }
+
+    /// The menu item's frame while the menu is open. The bar's Accessibility
+    /// tree is the one MenuDump already reads; a menu item carries its screen
+    /// frame only while it is displayed.
+    private static func axItemFrame(menu itemPath: String, item: String) -> NSRect? {
+        let menuTitle = itemPath.split(separator: "/").first.map(String.init) ?? itemPath
+        let app = AXUIElementCreateApplication(getpid())
+        guard let bar = axElement(app, kAXMenuBarAttribute as String) else { return nil }
+        for barItem in axChildren(bar) where axString(barItem, kAXTitleAttribute as String) == menuTitle {
+            guard let menu = axChildren(barItem).first else { continue }
+            for element in axChildren(menu) where axString(element, kAXTitleAttribute as String) == item {
+                guard let frame = axFrame(element) else { continue }
+                return frame
+            }
+        }
+        return nil
+    }
+
+    private static func axElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return value as! AXUIElement  // unrecoverable: CFGetTypeID above proves the type
+    }
+
+    private static func axChildren(_ element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success else { return [] }
+        return value as? [AXUIElement] ?? []
+    }
+
+    private static func axString(_ element: AXUIElement, _ attribute: String) -> String {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
+    private static func axFrame(_ element: AXUIElement) -> NSRect? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let positionValue = value as! AXValue  // unrecoverable: CFGetTypeID above proves the type
+        var origin = CGPoint.zero
+        guard AXValueGetValue(positionValue, .cgPoint, &origin) else { return nil }
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        let boundsValue = sizeValue as! AXValue  // unrecoverable: CFGetTypeID above proves the type
+        var size = CGSize.zero
+        guard AXValueGetValue(boundsValue, .cgSize, &size),
+              size.width > 1, size.height > 1 else { return nil }
+        return NSRect(origin: origin, size: size)
+    }
 
     private static func resolve(itemPath: String) -> NSMenuItem? {
         var items = NSApp.mainMenu?.items ?? []
@@ -155,6 +279,8 @@ enum MenuTrack {
 
     private static func write() {
         let item = resolve(itemPath: MenuTrack.itemPath)
+        let hover = hoverTitle.isEmpty ? nil
+            : item?.submenu?.items.first(where: { $0.title == hoverTitle })
         let now = identities(in: NSApp.mainMenu)
         let report: [String: Any] = [
             "opened": opened,
@@ -167,6 +293,18 @@ enum MenuTrack {
             "submenu_same_object": item?.submenu.map(ObjectIdentifier.init) == submenuBefore,
             "submenu_opened": openedSubmenu || trackingPaths.contains(MenuTrack.itemPath),
             "tracking_at_end": trackingPaths.sorted(),
+            // The item the open menu had under the pointer when the report was
+            // written: the caller's pointer move landed on the hovered item.
+            "highlighted_item": item?.submenu?.highlightedItem?.title ?? "",
+            // The sentence the hovered item carries as its help tag (WIN-27),
+            // for the shot's sidecar report: the screenshot shows the tag, this
+            // is its text even when a capture misses it.
+            "hover_item": hoverTitle,
+            "help_tag": hover?.toolTip ?? "",
+            // Where the pointer move was aimed (Quartz) and how it was read:
+            // "ax" is the open item's own frame, "anchor" the popUp fallback.
+            "hover_point": hoverPointText,
+            "hover_point_source": hoverPointSource,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: report,
                                                   options: [.prettyPrinted, .sortedKeys]) {

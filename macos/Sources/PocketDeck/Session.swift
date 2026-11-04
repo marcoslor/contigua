@@ -84,12 +84,17 @@ struct AppInfo: Equatable {
     var pkg: String
     var label: String
     var activity: String?
+    /// Whether the phone can run a second instance of the app (WIN-24): the
+    /// launcher declares it and the platform allows another task. A phone that
+    /// says nothing counts as "one window at a time".
+    var multi = false
 
     init?(json: [String: Any]) {
         guard let pkg = json["pkg"] as? String else { return nil }
         self.pkg = pkg
         label = json["label"] as? String ?? pkg
         activity = json["activity"] as? String
+        multi = json["multi"] as? Bool ?? false
     }
 
     /// The identity a list entry is drawn and chosen by. A package can be
@@ -133,11 +138,21 @@ enum SessionEvent {
     case icon(pkg: String, png: Data, fg: Data?, bg: Data?, mono: Data?)
     case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int,
                       started: HandoffStart)
+    /// `window.opened`'s `taskId` (WIN-25): the phone's own task for the
+    /// display, kept to name and close the right window.
+    case windowTask(stream: UInt32, taskId: Int)
+    /// `state.maxWindows`: the most app windows the phone allows at once
+    /// (WIN-32); a phone that reports none never sends this.
+    case maxWindows(Int)
     case windowClosed(stream: UInt32, reason: String)
     /// `window.resize.ack`: the phone answered a `window.resize` with what it
     /// did (resized, density only, same, or refused).
     case windowResizeAck(stream: UInt32, width: Int, height: Int, dpi: Int, outcome: String)
-    case windowTitle(stream: UInt32, label: String, pkg: String)
+    /// `window.title`: the app the display shows (`label`, `pkg`) and, on an
+    /// app or link stream, the task's own label (`title`, WIN-28). The two
+    /// stay apart: a link or handoff window names its app, an app window names
+    /// its task.
+    case windowTitle(stream: UInt32, label: String, pkg: String, title: String?)
     /// `window.still`: the stream is live but its encoder produced no output
     /// (PHONE-21). A picture heartbeat, never a first frame.
     case windowStill(stream: UInt32)
@@ -1327,7 +1342,7 @@ final class Session {
                 Log.session.error("unparseable JSON frame")
                 return
             }
-            handleJSON(message)
+            receive(message)
         case .videoConfig:
             guard let config = try? VideoConfig(payload: frame.payload) else {
                 Log.session.error("bad VIDEO_CONFIG payload")
@@ -1381,7 +1396,9 @@ final class Session {
         pendingPictures[UInt32(stream)] = PictureRect(x: x, y: y, w: w, h: h)
     }
 
-    private func handleJSON(_ message: JSONMessage) {
+    /// One decoded message from the phone. `internal` so a check can prove a
+    /// message's parse without a socket (WIN-28: `label` and `title` apart).
+    func receive(_ message: JSONMessage) {
         switch message.t {
         case "window.content":
             handleWindowContent(message)
@@ -1572,11 +1589,15 @@ final class Session {
                            fg: message.data("fg"), bg: message.data("bg"), mono: message.data("mono")))
             }
         case "window.opened":
-            emit(.windowOpened(stream: UInt32(message.int("stream") ?? 0),
+            let stream = UInt32(message.int("stream") ?? 0)
+            emit(.windowOpened(stream: stream,
                                displayId: message.int("displayId") ?? 0,
                                width: message.int("w") ?? 0,
                                height: message.int("h") ?? 0,
                                started: message.string("started") == "fresh" ? .fresh : .moved))
+            if let taskId = message.int("taskId") {
+                emit(.windowTask(stream: stream, taskId: taskId))
+            }
         case "window.resize.ack":
             // The phone applied (or refused) a `window.resize`: the coalescer
             // may send the value that waited behind it (PROTOCOL.md).
@@ -1594,13 +1615,20 @@ final class Session {
             emit(.windowClosed(stream: closed,
                                reason: message.string("reason") ?? ""))
         case "window.title":
+            // `label` names the app the display shows; `title`, on an app or
+            // link stream, its task (WIN-28). They are never folded together:
+            // a link window's subject is the app, not the page.
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
                               label: message.string("label") ?? "",
-                              pkg: message.string("pkg") ?? ""))
+                              pkg: message.string("pkg") ?? "",
+                              title: message.string("title")))
         case "window.still":
             emit(.windowStill(stream: UInt32(message.int("stream") ?? 0)))
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
+            if let cap = message.int("maxWindows") {
+                emit(.maxWindows(cap))
+            }
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
                              charging: message.bool("charging") ?? false,
@@ -1923,6 +1951,11 @@ final class Session {
 
     @discardableResult
     func sendJSON(_ object: [String: Any]) -> Bool {
+        #if PD_TEST_HOOKS
+        // Test hook: what the Mac asked the phone for, in order, so a window
+        // test can prove an item sent nothing (WIN-27) as well as what it sent.
+        sentLock.lock(); sentMessages.append(object); sentLock.unlock()
+        #endif
         // RRR-5: an opened stream counts as activity only once its send is
         // accepted; a `window.open` dropped before founding (E-2) is not open.
         var opening: UInt32?
@@ -1961,6 +1994,22 @@ final class Session {
         closedStreamsLock.unlock()
     }
 
+    #if PD_TEST_HOOKS
+    private let sentLock = NSLock()
+    private var sentMessages: [[String: Any]] = []
+
+    /// Every message asked for under this type (`"window.open"`), oldest first.
+    func sent(_ type: String) -> [[String: Any]] {
+        sentLock.lock(); defer { sentLock.unlock() }
+        return sentMessages.filter { $0["t"] as? String == type }
+    }
+
+    /// Forget what was asked: a test reads the messages of one phase.
+    func clearSent() {
+        sentLock.lock(); sentMessages.removeAll(); sentLock.unlock()
+    }
+    #endif
+
     func requestApps() { sendJSON(["t": "apps.list"]) }
     /// `px` is the pixel side of the 108 dp layer the Mac will draw (docs/PROTOCOL.md);
     /// an older phone ignores it and answers at 216.
@@ -1969,9 +2018,13 @@ final class Session {
         if let px { message["px"] = px }
         sendJSON(message)
     }
-    func openApp(stream: UInt32, pkg: String, activity: String?, width: Int, height: Int, dpi: Double) {
+    func openApp(stream: UInt32, pkg: String, activity: String?, width: Int, height: Int, dpi: Double,
+                 newInstance: Bool = false) {
         var message: [String: Any] = ["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "pkg": pkg]
         if let activity { message["activity"] = activity }
+        // WIN-25: another task of the app on this display, never a reuse of
+        // the one that is there.
+        if newInstance { message["newInstance"] = true }
         sendJSON(message)
     }
     func openLink(stream: UInt32, url: String, width: Int, height: Int, dpi: Double) {

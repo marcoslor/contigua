@@ -112,10 +112,13 @@ struct OpenPhoneAppIntent: AppIntent {
     @Parameter(title: "Phone")
     var phone: PhoneEntity?
 
+    @Parameter(title: "Open Another Window", default: false)
+    var newWindow: Bool
+
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let target = try IntentsBridge.resolve(phone?.id)
-        return .result(dialog: "\(try IntentsBridge.openApp(app.id, on: target))")
+        return .result(dialog: "\(try IntentsBridge.openApp(app.id, on: target, newWindow: newWindow))")
     }
 }
 

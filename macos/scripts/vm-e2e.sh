@@ -23,6 +23,13 @@
 # macos/build/vm-e2e/<list>/ (run.log, work/ for a single check; checks/<name>/
 # run.log + work/ for a list). Exit code is the check's, or the number of
 # failed checks for a list (0 when all passed).
+#
+# A visible run's review shots (work/shots/*.png and their .json reports) are
+# copied out to PD_VM_SHOT_DIR/<appearance>/ while the heavy lock is still
+# held, before the next boot's `rm -rf` of the output dir: a lost work dir must
+# never lose the shots again. PD_VM_SHOT_DIR defaults to
+# $ROOT/.agent/mw-mac/shots/r5b; the destination is merged into, never
+# removed, so no boot deletes an earlier boot's copy.
 set -uo pipefail
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
@@ -54,12 +61,19 @@ for c in "${CHECKS[@]}"; do
 done
 [ "${#CHECKS[@]}" -gt 0 ] || { say "$usage"; exit 2; }
 
+# One appearance per boot: a mid-run appearance flip made round 3's shots come
+# out with the previous look, and a boot is the expensive part.
+case "${PD_E2E_SHOT_APPEARANCE:-dark}" in
+    dark|light) SHOT_APPEARANCE="${PD_E2E_SHOT_APPEARANCE:-dark}" ;;
+    *) say "PD_E2E_SHOT_APPEARANCE must be dark or light (got '${PD_E2E_SHOT_APPEARANCE:-}')"; exit 2 ;;
+esac
+
 vm_exists || { say "no VM '$VM'; run macos/scripts/vm-prepare.sh first"; exit 3; }
 [ -f "$VM_KEY" ] || { say "no ssh key at $VM_KEY; run macos/scripts/vm-prepare.sh first"; exit 3; }
 if [ "$CHECK_ONLY" = 1 ]; then
     # Rehearsal: the same arguments and paths a boot would use, without
     # taking the lock or starting the VM (a boot is budgeted).
-    say "rehearsal ok: $raw (profile ${PD_E2E_PROFILE:-e2e}, visible ${PD_VM_VISIBLE:-1}, port $VM_PORT)"
+    say "rehearsal ok: $raw (profile ${PD_E2E_PROFILE:-e2e}, visible ${PD_VM_VISIBLE:-1}, appearance ${PD_E2E_SHOT_APPEARANCE:-dark}, port $VM_PORT)"
     exit 0
 fi
 
@@ -116,6 +130,12 @@ cat > "$OUT/run-check.sh" <<'EOS'
 set -uo pipefail
 export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 cd "$(dirname "$0")/macos" || exit 3
+# The guest's display must stay awake for the whole run: a sleeping display
+# makes screencapture fail and can hold an NSMenu tracking loop (round 3's
+# wedge). caffeinate runs in this GUI session and is stopped with the script.
+caffeinate -dimsu &
+caffeinate_pid=$!
+trap 'kill "$caffeinate_pid" 2>/dev/null' EXIT INT TERM
 visible="$1"
 port="$2"
 profile="$3"
@@ -177,7 +197,7 @@ exit "$failed"
 EOS
 
 rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
-run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin env PD_VM_CHECK_SECS=${PD_VM_CHECK_SECS:-2400} bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${PD_E2E_PROFILE:-e2e} ${CHECKS[*]}"
+run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin env PD_VM_CHECK_SECS=${PD_VM_CHECK_SECS:-2400} PD_E2E_SHOT_APPEARANCE=${PD_E2E_SHOT_APPEARANCE:-dark} bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${PD_E2E_PROFILE:-e2e} ${CHECKS[*]}"
 ssh_guest "$run_cmd" 2>&1 | tee "$OUT/run.log"
 rc=${PIPESTATUS[0]}
 
@@ -197,6 +217,22 @@ fi
 if ssh_guest "test -f $art_guest/session.log" 2>/dev/null; then
     rsync_from_guest "$art_guest/session.log" "$OUT/session.log" || say "session log copy failed"
 fi
+
+# The review shots and their sidecar reports leave the work dir here, still
+# inside the heavy lock: this is the last moment before the next boot's
+# `rm -rf "$OUT"` can lose them (round 5). One folder per appearance, and the
+# helper merges instead of replacing, so boot 9 cannot delete boot 8's set.
+shot_root="${PD_VM_SHOT_DIR:-$ROOT/.agent/mw-mac/shots/r5b}"
+shot_dest="$shot_root/$SHOT_APPEARANCE"
+shot_rc=0
+if [ "${#CHECKS[@]}" = 1 ]; then
+    vm_copy_shots "$OUT/work/shots" "$shot_dest" || shot_rc=1
+else
+    for c in "${CHECKS[@]}"; do
+        vm_copy_shots "$OUT/checks/$c/work/shots" "$shot_dest/$c" || shot_rc=1
+    done
+fi
+[ "$shot_rc" = 0 ] || { say "FAIL the review shots did not leave the work dir"; [ "$rc" = 0 ] && rc=3; }
 
 vm_stop
 say ""

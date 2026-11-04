@@ -1,8 +1,15 @@
 // A Dock app's executable (docs/design/dock.md): a windowless regular app whose
 // only job is to be one phone app's Dock/⌘-Tab identity. It asks PocketDeck to
-// open the window and exits when the window closes. The lifecycle itself is
-// DockShimMachine (DockMessages.swift), which is also unit-tested by K2: this
-// file only reads the bundle, drives the machine and performs its actions.
+// open the window, shows the app's window menu on a secondary click, and exits
+// when the window closes. The lifecycle itself is DockShimMachine
+// (DockMessages.swift), which is also unit-tested by K2: this file only reads
+// the bundle, drives the machine and performs its actions.
+//
+// The menu's content is the host's: PocketDeck sends the app's rows (New <App>
+// Window, then one item per open window with the front one checked — WIN-26)
+// whenever they change, and this shim only renders them. A pick goes back as
+// one message; the host raises or opens. That keeps one rule for the menu in
+// the host, where the windows and the phone's cap live.
 
 import AppKit
 import Dispatch
@@ -33,6 +40,11 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     /// (the e2e starts the app by exec); a process source fires for SIGTERM
     /// and SIGKILL alike and is the guarantee.
     private var hostWatch: DispatchSourceProcess?
+    /// e2e only: where the built menu is dumped and a press read (Info.plist).
+    private let menuDebugDir: String?
+    /// The app's window menu, front to back (the host's rows).
+    private var rows: [AppWindowMenuRow] = []
+    private var debugTimer: Timer?
 
     override init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -41,6 +53,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         profile = info[DockMessage.plistProfile] as? String ?? "default"
         token = info[DockMessage.plistToken] as? String ?? ""
         hostURL = (info[DockMessage.plistHostPath] as? String).map { URL(fileURLWithPath: $0) }
+        menuDebugDir = info[DockMessage.plistMenuDebugDir] as? String
         super.init()
         guard !deviceId.isEmpty, !pkg.isEmpty else { return }
         // As early as possible: the bind answers once, and a late registration
@@ -82,6 +95,9 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
                            object: profile, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,
                            object: profile, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(menuReceived(_:)), name: DockMessage.menu,
+                           object: profile, suspensionBehavior: .deliverImmediately)
+        if menuDebugDir != nil { startDebugPoll() }
         // DOCK-19 (ISS-6): the host's process is the shim's reason to exist. A
         // quit, a crash and a force quit all post this; matching the bundle
         // (not a pid) survives a relaunch racing the notification.
@@ -193,6 +209,149 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
               app.bundleURL?.standardizedFileURL == hostURL.standardizedFileURL else { return }
         apply(.hostExited)
     }
+
+    // MARK: The Dock menu (WIN-26)
+
+    /// What a secondary click on the Dock icon shows: New <App> Window ⌘N, a
+    /// rule, then one item per open window, the front one checked. A disabled
+    /// item carries the host's sentence as its tooltip and sends nothing.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        guard !rows.isEmpty else { return nil }
+        return buildMenu()
+    }
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        for (index, row) in rows.enumerated() {
+            if index == 1 { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: row.title, action: #selector(pick(_:)),
+                                  keyEquivalent: row.key ?? "")
+            if let key = row.key, !key.isEmpty { item.keyEquivalentModifierMask = .command }
+            item.target = self
+            item.tag = index
+            item.isEnabled = row.enabled
+            item.state = row.checked ? .on : .off
+            item.toolTip = row.help
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func pick(_ sender: NSMenuItem) {
+        guard rows.indices.contains(sender.tag) else { return }
+        postPick(rows[sender.tag])
+    }
+
+    private func postPick(_ row: AppWindowMenuRow) {
+        center.postNotificationName(DockMessage.pick, object: profile,
+                                    userInfo: [DockMessage.deviceIdKey: deviceId,
+                                               DockMessage.pkgKey: pkg,
+                                               DockMessage.pidKey: pid,
+                                               DockMessage.tokenKey: token,
+                                               DockMessage.rowsKey: [row.message]],
+                                    deliverImmediately: true)
+    }
+
+    @objc private func menuReceived(_ notification: Notification) {
+        guard isMine(notification),
+              let messages = notification.userInfo?[DockMessage.rowsKey] as? [[String: Any]]
+        else { return }
+        rows = messages.compactMap(AppWindowMenuRow.init(message:))
+        writeMenuDump()
+    }
+
+    // MARK: e2e (`--debug-control`): the built menu, and a press through it
+
+    /// A quiet e2e run cannot right-click the Dock. With a debug directory the
+    /// shim dumps the menu it builds (the same `buildMenu` the Dock is handed)
+    /// and, when the check writes `-press.cmd` with an index, presses that item
+    /// through `performActionForItem` — the item's own target and action, not
+    /// the host's code.
+    private func menuDumpPath() -> String? {
+        menuDebugDir.map { ($0 as NSString).appendingPathComponent("dockmenu-\(pkg).json") }
+    }
+
+    private func writeMenuDump() {
+        guard let path = menuDumpPath() else { return }
+        let menu = buildMenu()
+        let items: [[String: Any]] = menu.items.map { item in
+            if item.isSeparatorItem { return ["separator": true] }
+            return ["title": item.title, "enabled": item.isEnabled,
+                    "checked": item.state == .on, "key": item.keyEquivalent,
+                    "help": item.toolTip ?? ""]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: items, options: [.sortedKeys]) else { return }
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    private func startDebugPoll() {
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.pollPress()
+                self?.pollShow()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        debugTimer = timer
+    }
+
+    /// e2e (`--debug-control`): `dockmenu-<pkg>-show` pops the menu the Dock
+    /// hands it for the seconds in the file. The Dock owns a secondary click on
+    /// its own icon, so a check cannot post a person's right click; this shows
+    /// the same `buildMenu`, for the review's shot.
+    private func pollShow() {
+        guard let directory = menuDebugDir else { return }
+        let path = (directory as NSString).appendingPathComponent("dockmenu-\(pkg)-show")
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(atPath: path)
+        guard let seconds = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              seconds > 0, seconds <= 10, !rows.isEmpty else { return }
+        let menu = buildMenu()
+        // The tracking loop owns this thread until the timer cancels it, so the
+        // timer goes in before the menu is up. Event tracking is where a menu's
+        // own loop runs: the cap must fire there, not only in common modes.
+        let close = Timer(timeInterval: seconds, repeats: false) { _ in
+            MainActor.assumeIsolated { menu.cancelTracking() }
+        }
+        RunLoop.main.add(close, forMode: .common)
+        RunLoop.main.add(close, forMode: .eventTracking)
+        let screen = NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        NSApp.activate(ignoringOtherApps: true)
+        // Activation lands on the next run-loop pass, and an activation event
+        // processed inside the menu's own tracking loop closes the menu at once:
+        // rounds 3-5 found the `-show` menu gone before every capture while the
+        // shim's dump and presses kept working. Pop after the activation has
+        // landed, and pop once more when the first loop died at once - that was
+        // the same race, not a person's click.
+        let popAfterActivation = Timer(timeInterval: 0.2, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                let point = NSPoint(x: screen.midX, y: screen.midY)
+                let began = Date()
+                menu.popUp(positioning: nil, at: point, in: nil)
+                if Date().timeIntervalSince(began) < 1, close.isValid {
+                    menu.popUp(positioning: nil, at: point, in: nil)
+                }
+            }
+        }
+        RunLoop.main.add(popAfterActivation, forMode: .common)
+        RunLoop.main.add(popAfterActivation, forMode: .eventTracking)
+    }
+
+    private func pollPress() {
+        guard let directory = menuDebugDir else { return }
+        // No `.cmd` suffix: the host's own debug-control route owns those
+        // files, and it would consume this one first.
+        let path = (directory as NSString).appendingPathComponent("dockmenu-\(pkg)-press")
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(atPath: path)
+        guard let index = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              buildMenu().items.indices.contains(index) else { return }
+        buildMenu().performActionForItem(at: index)
+    }
+
+    // MARK: Host messages
 
     private func post(_ name: Notification.Name) {
         center.postNotificationName(name, object: profile,

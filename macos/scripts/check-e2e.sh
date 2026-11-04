@@ -759,6 +759,18 @@ windows() {
     if [ -n "${APP_PID:-}" ]; then "$CGBIN" list --pid "$APP_PID"; else "$CGBIN" list; fi
 }
 
+# popup_windows — menu and other popup windows on screen (layer >= 100), of any
+# app: a check uses it to prove that the menu it opened is closed again. The
+# Window Server's menu-bar window sits at a giant layer and is not a popup.
+popup_windows() {
+    "$CGBIN" all 2>/dev/null | awk '
+        $0 !~ /owner=Window Server/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "=")
+                    if (part[2] >= 100 && part[2] < 10000) n++ } } }
+        END { print n + 0 }'
+}
+
 # window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
 # line. A pid pins this run's app: other checkouts run their own PocketDeck.
 window_titles() { if [ -n "$1" ]; then "$CGBIN" titles --pid "$1"; else "$CGBIN" titles; fi; }
@@ -2940,7 +2952,10 @@ WANT = {
     "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
-    "File": ["Add Phone…", "—", "Close", "Close All"],
+    # File's New item names the key window's app ("New Chrome Window") and
+    # reads "New Window" with no app window key (MENU-2), so it is checked by
+    # its shape here and by name in the multiwin check.
+    "File": ["Add Phone…", "—", "New … Window", "—", "Close", "Close All"],
     "Help": [],
 }
 for title, want in WANT.items():
@@ -2949,6 +2964,9 @@ for title, want in WANT.items():
         problems.append("no %s menu" % title)
         continue
     seq = ["—" if item["isSeparator"] else item["title"] for item in menu["submenu"]]
+    if title == "File":
+        seq = ["—" if row == "—" else ("New … Window" if row.startswith("New ") and row.endswith(" Window") else row)
+               for row in seq]
     if seq != want:
         problems.append("%s: %r wanted %r" % (title, seq, want))
 view = next((i for i in root["items"] if i["title"] == "View"), None)
@@ -3609,6 +3627,15 @@ if not any(path.startswith("View/Density") for path in report.get("tracking_at_e
 print("; ".join(problems))
 sys.exit(1 if problems else 0)
 PY
+
+    # The same 10 s cap closes it (cancelTracking). The report is written while
+    # the menu is still open (that is what `tracking_at_end` measures), so a
+    # popup left on screen here is the round-3 wedge: the next step's menu
+    # would be refused as "a menu track is already running".
+    wait_until 10 eval '[ "$(popup_windows)" -eq 0 ]' \
+        && ok "[MENU-17] the tracked menu closed by its own cap" \
+        || { bad "[MENU-17] the menu the check opened was still tracking after its cap"
+             "$CGBIN" all 2>/dev/null | awk '$0 ~ /layer=[0-9]+/ { for (i = 1; i <= NF; i++) if ($i ~ /^layer=/) { split($i, p, "="); if (p[2] >= 100) print "  popup: " $0 } }'; }
 
 
     # A relaunch: the same bar, built once from scratch. The shared app is
@@ -9807,6 +9834,745 @@ check_shortcuts() {
     remove_dock_apps
     wait_until 5 no_fakephone
 }
+
+
+# --- multiwin: several windows of one app (WIN-24…WIN-36) ------------------
+#
+# One fake phone, one Chrome (the one fixture app that says `multi: true`) and
+# Settings (one window at a time). Every proof goes through the person's own
+# path: the Deck cell, ⌘N, ⌘`, ⌘W, the Dock shim's menu item (through the item's
+# own target and action) and the files the app writes for the quiet run. Steps
+# that would need a right click on the Deck cell print SKIP: K2
+# (AppWindowMenuTests) proves that menu's rows, and the VM round can click it.
+
+check_multiwin() {
+    clean
+    local dir="$WORK/dock-apps" ctl="$WORK-control" banner="$WORK/banner.txt"
+    rm -rf "$dir"; mkdir -p "$dir" "$ctl"; remove_dock_apps
+    rm -f "$WORK"/menus-*.json "$WORK"/wm-*.json "$WORK/chrome.txt"
+
+    # The review's shots (visible run only, one appearance per boot:
+    # PD_E2E_SHOT_APPEARANCE=dark|light, never both). They land in the work
+    # dir, which the VM copies back with the run.
+    local appearance="${PD_E2E_SHOT_APPEARANCE:-dark}"
+    case "$appearance" in
+        dark|light) ;;
+        *) bad "MULTIWIN PD_E2E_SHOT_APPEARANCE must be dark or light (got '$appearance')"
+           appearance=dark ;;
+    esac
+    mkdir -p "$WORK/shots"
+    shot() {
+        local file="$WORK/shots/$appearance-$1.png"
+        screencapture -x "$file" && say "shot: $file" || bad "MULTIWIN no screenshot $1"
+    }
+    # menu_shot NAME MENU [ITEM] — one of the app's own menus, held open by the
+    # same tracking loop a click starts, while the whole screen is captured. With
+    # ITEM, the menu is positioned so that row's own corner is at a known point
+    # (MenuTrack), the check moves the real pointer into it, waits up to 3 s for
+    # its help tag, and only then takes the shot (WIN-27's sentences).
+    #
+    # The capture happens while the menu is confirmed on screen: a hover shot
+    # keeps the menu up for 10 s (MenuTrack's maximum) and the check reads the
+    # menu's own layer-101 window immediately before the shutter. A menu that
+    # is already gone at that point is not a proof, so the shot is retaken once,
+    # after the first menu has reported and closed. The run logs each capture's
+    # elapsed time against that cap.
+    menu_shot() {
+        local name="$1" menu="$2" hover="${3:-}" report="$WORK/shots/$appearance-$1.json" seconds=4
+        local point="$WORK/shots/$appearance-$1.point" attempt opened_at elapsed
+        [ -n "$hover" ] && seconds=10
+        for attempt in 1 2; do
+            opened_at=$SECONDS
+            local args=(menutrack "$report" "$menu" "$seconds")
+            [ -n "$hover" ] && args+=("$hover" "$point")
+            control "${args[@]}" \
+                || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
+            if [ -n "$hover" ]; then
+                # The menu is up and the app wrote the row's own corner: a real
+                # pointer move onto it, then a wait for the help tag (a small
+                # window of its own). If none appears in 3 s the shot is still
+                # taken — the report carries the sentence — and the run says so.
+                if wait_until 4 [ -s "$point" ]; then
+                    local px py before="$WORK/shots/$appearance-$1.before"
+                    read -r px py < "$point"
+                    app_window_ids > "$before"
+                    cg_input moveat --x "$px" --y "$py" \
+                        || bad "MULTIWIN the pointer move onto '$hover' did not post"
+                    if wait_until 3 help_tag_up "$before"; then
+                        ok "MULTIWIN the $menu help tag is on screen for shot $name"
+                    else
+                        skip "MULTIWIN the $menu help tag" "no new window within 3 s; the shot is kept and its report carries the sentence"
+                        "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed 's/^/  app window: /'
+                    fi
+                else
+                    bad "MULTIWIN menutrack $menu wrote no hover point"
+                fi
+            else
+                sleep 1.4
+            fi
+            elapsed=$((SECONDS - opened_at))
+            if [ "$(open_menu_windows)" -le 0 ]; then
+                # The menu closed before the shutter: the picture would be the
+                # windows behind it (round 5, light 7).
+                bad "MULTIWIN shot $name: no menu on screen at +${elapsed}s of its ${seconds}s cap"
+            else
+                # The menu is on screen at the shutter: that is the capture's
+                # precondition. (A probe after the shutter is not: boot 8's
+                # dark-6 and dark-7 images show the menu and the tag although
+                # the menu was gone by the time screencapture returned.)
+                shot "$name"
+                say "MULTIWIN shot $name: captured at +${elapsed}s of the menu's ${seconds}s cap"
+                break
+            fi
+            # The retry must not open a second menu over the first: wait for
+            # this menu's report (the timer that writes it also cancels
+            # tracking) and for its popup to be gone.
+            wait_until 15 [ -s "$report" ] \
+                || { bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
+                     cg_input key --keycode 53 >/dev/null 2>&1 || true; return 1; }
+            wait_until 8 eval '[ "$(popup_windows)" -eq 0 ]' \
+                || { bad "MULTIWIN the $menu menu was still open before the retry"
+                     cg_input key --keycode 53 >/dev/null 2>&1 || true; return 1; }
+            [ "$attempt" = 1 ] || break
+            skip "MULTIWIN shot $name" "the first capture raced the menu's close; taking it again"
+        done
+        if ! wait_until 15 [ -s "$report" ]; then
+            bad "MULTIWIN menutrack $menu never reported and closed after ${seconds}s"
+            # The tracking loop still takes events when a timer is late: Escape
+            # closes the menu and gives the run its main thread back.
+            cg_input key --keycode 53 >/dev/null 2>&1 || true
+            return 1
+        fi
+        if [ -n "$hover" ]; then
+            say "MULTIWIN $name help tag: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("help_tag",""))' "$report")"
+        fi
+        # The check closes its own menu before the next step: the report is
+        # written by the timer that also cancels tracking, so this is the proof
+        # the bar is free again (a popup is a layer-100 window of its own).
+        wait_until 8 eval '[ "$(popup_windows)" -eq 0 ]' \
+            || { bad "MULTIWIN the $menu menu was still open after its track"
+                 cg_input key --keycode 53 >/dev/null 2>&1 || true; }
+        sleep 0.2
+    }
+    # The ids of the app's on-screen windows: the menu is one of them, so a
+    # window that appears after the pointer move is the help tag.
+    app_window_ids() {
+        "$CGBIN" all 2>/dev/null | grep -F "pid=$APP_PID " | sed -n 's/.* id=\([0-9]*\) .*/\1/p'
+    }
+    # help_tag_up BEFORE_FILE — a small new window of the app: the menu item's
+    # help tag. Prints the window's id, layer and bounds, for the run log.
+    help_tag_up() {
+        "$CGBIN" all 2>/dev/null | python3 - "$APP_PID" "$1" <<'PY'
+import re, sys
+pid, before = sys.argv[1], sys.argv[2]
+known = set(open(before).read().split())
+for line in sys.stdin:
+    if ("pid=" + pid + " ") not in line:
+        continue
+    m = re.search(r"id=(\d+) layer=(-?\d+) bounds=\{\{(-?[\d.]+), (-?[\d.]+)\}, \{(-?[\d.]+), (-?[\d.]+)\}\}", line)
+    if not m:
+        continue
+    ident, layer, x, y, w, h = m.groups()
+    if ident in known or float(h) > 150 or float(w) > 900:
+        continue
+    print("help tag: id=%s layer=%s bounds=%s,%s %sx%s" % (ident, layer, x, y, w, h))
+    sys.exit(0)
+sys.exit(1)
+PY
+    }
+    # The app's windows at menu level: a popup menu is its own window (layer
+    # 101), which is how a check sees that a right click opened one.
+    menu_windows() {
+        "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
+            $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
+            END { print n + 0 }'
+    }
+    # The app's open menus, layer 101 only: a help tag is a small window of
+    # its own (layer 103) that dies with the menu, so a capture guard must ask
+    # for the menu, not for anything the menu left behind. Shot 7 reads this on
+    # both sides of the shutter (round 5's light 7 had a report but no menu in
+    # the frame).
+    open_menu_windows() {
+        "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
+            $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] == 101) n++ } } }
+            END { print n + 0 }'
+    }
+    # Any process's popup window (a menu tracks in one, layer >= 100): the
+    # check waits for zero before it opens the next menu. See `popup_windows`
+    # at the top of the file.
+
+    # The count of window.open the phone saw, and of the ones asking for an
+    # extra task; `window.open` is logged verbatim by the fake.
+    pw_opens() { count_events '"t":"window.open"' | head -1; }
+    pw_instances() { count_events '"newInstance":true' | head -1; }
+    pw_closes() { count_events '"t":"window.close"' | head -1; }
+    pw_input() { fake_counter input; }
+    pw_opens_grew() { [ "$(pw_opens)" -gt "$1" ]; }
+    pw_instances_at_least() { [ "$(pw_instances)" -ge "$1" ]; }
+    pw_closes_grew() { [ "$(pw_closes)" -gt "$1" ]; }
+    pw_input_grew() { [ "$(pw_input)" -gt "$1" ]; }
+    chrome_window_opens() { [ "$(window_open_count com.android.chrome)" -eq "$1" ]; }
+    pw_opens_reached() { [ "$(pw_opens)" -ge "$1" ]; }
+    # The app's control route, retried while the session is still coming up.
+    # The Deck itself opens half a second into a launch and can take the
+    # keyboard after a window that opened first; asking for the same app again
+    # raises its window (WIN-2), which focuses it the way a person's click does.
+    ctl_open() {
+        local tries=60
+        while ! control open "$@"; do
+            if [ "$CONTROL_REPLY" != "not online" ]; then
+                bad "MULTIWIN open $*: $CONTROL_REPLY"; return 1
+            fi
+            tries=$((tries - 1))
+            [ "$tries" -gt 0 ] || { bad "MULTIWIN open $*: never online"; return 1; }
+            sleep 0.5
+        done
+        sleep 1.5
+        control open "$@" >/dev/null 2>&1 || true
+        sleep 0.5
+    }
+    # The front window's title, as the app itself reports it (the key window).
+    front_title() {
+        rm -f "$WORK/wm-key.txt"
+        control keywindow "$WORK/wm-key.txt" >/dev/null 2>&1
+        sed -n 2p "$WORK/wm-key.txt"
+    }
+    # The app must be the frontmost one for NSApp.keyWindow to exist and for a
+    # real key to reach its menus. An automatic Dock shim no longer activates
+    # itself (DockApps.open), but a launch can still land during a raise; a
+    # person's next click would give the front back, so the check raises the
+    # window again (setup, never a step proved by the ids below). `want` is a
+    # title prefix: once the app has two windows the key one reads
+    # "Chrome — Docs (FakePhone)" and "Chrome" names the app, not one window.
+    focus_app() {
+        local pkg="$1" want="$2" i=0 title
+        [ "$VISIBLE" = 1 ] || return 0
+        while [ "$i" -lt 20 ]; do
+            control open --open "$pkg" >/dev/null 2>&1 || true
+            sleep 0.5
+            title="$(front_title)"
+            case "$title" in
+                "$want"*)
+                    # A shim finishing its launch can activate itself a moment
+                    # later; the window must still be front after that.
+                    sleep 1.5
+                    case "$(front_title)" in
+                        "$want"*) return 0 ;;
+                    esac
+                    ;;
+            esac
+            i=$((i + 1))
+        done
+        bad "MULTIWIN focus: $pkg never came front ('$(front_title)')"
+        return 1
+    }
+    # File ▸ New <App> Window, the same item ⌘N is on: its path from the dump.
+    pick_new_window() {
+        local expect="${1:-}" attempt item title
+        for attempt in 1 2 3 4 5 6 7 8; do
+            item="$(file_new_item)"
+            title="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("title",""))' "$item")"
+            [ -n "$title" ] || { bad "MULTIWIN no New item in File"; return 1; }
+            if control menupick "File/$title"; then
+                return 0
+            fi
+            # "disabled": the check wants the item to refuse the pick.
+            [ "$expect" = "disabled" ] && return 1
+            # The item may still be reading "Opening on your phone…" while the
+            # window's first frame is on its way.
+            sleep 1
+        done
+        bad "MULTIWIN File/$title: $CONTROL_REPLY (key window '$(front_title)')"
+        return 1
+    }
+
+    # The File menu's New item as an opened menu shows it.
+    file_new_item() {
+        control menudump "$WORK/wm-menu.json" || { echo ""; return 1; }
+        python3 - "$WORK/wm-menu.json" <<'PY'
+import json, sys
+root = json.load(open(sys.argv[1]))
+# The app's own tree: the help tag is an NSMenuItem's, and the Accessibility
+# tree a person reads does not carry it.
+file = next((i for i in root.get("items") or [] if i["title"] == "File"), None)
+item = next((i for i in (file or {}).get("submenu") or [] if i["title"].startswith("New")), None)
+print(json.dumps(item or {}))
+PY
+    }
+
+    # ---- Launch 1: the default cap (4), two windows, ⌘N, the menus, ⌘` ------
+    local look=()
+    [ "$VISIBLE" = 1 ] && look=(--appearance "$appearance")
+    FAKE_ARGS="--label-after-window 2 --label-to Docs,Mail --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$ctl" \
+        ${look[@]+"${look[@]}"} \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-banner "$banner" --quit-after 300
+    APP_PID="${APP_PID:-}"
+
+    # [WIN-24] an app the phone says opens one window: the New item is disabled
+    # with its sentence, and ⌘N sends nothing.
+    ctl_open --open com.android.settings || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.settings \
+        || { bad "MULTIWIN no window.open for Settings"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.settings "Settings (FakePhone)" || true
+    local before="$(pw_opens)"
+    pick_new_window disabled
+    sleep 2
+    [ "$(pw_opens)" = "$before" ] \
+        && ok "[WIN-24] multi:false: the New item sent no window.open for Settings" \
+        || bad "[WIN-24] multi:false: the New item sent a window.open ($before -> $(pw_opens))"
+    if [ "$VISIBLE" = 1 ]; then
+        # The person's own key: a real ⌘N on a window whose app has one
+        # instance. The disabled item eats the key, so nothing goes out.
+        before="$(pw_opens)"
+        cg_input key --keycode 45 --cmd || bad "MULTIWIN the ⌘N press on Settings did not post"
+        sleep 2
+        [ "$(pw_opens)" = "$before" ] \
+            && ok "[WIN-24] a real ⌘N on Settings sent no window.open" \
+            || bad "[WIN-24] a real ⌘N on Settings sent a window.open ($before -> $(pw_opens))"
+    else
+        skip "MULTIWIN ⌘N on the keyboard" "a quiet host app runs SwiftUI menu actions only through the item; the item's ⌘N is read back from the bar, K2 NewWindowTests and the VM round press the key"
+    fi
+    local item; item="$(file_new_item)"
+    python3 - "$item" <<'PY' && ok "[WIN-24] the File item reads New Settings Window, disabled, with its sentence" \
+        || bad "[WIN-24] the File item for Settings is not the design: $item"
+import json, sys
+item = json.loads(sys.argv[1])
+if item.get("title") != "New Settings Window": print("title", item.get("title")); sys.exit(1)
+if item.get("enabled") is not False: print("enabled", item.get("enabled")); sys.exit(1)
+if item.get("toolTip") != "Settings opens one window at a time.":
+    print("help", item.get("toolTip")); sys.exit(1)
+PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 7: an app that opens one window: New Settings Window disabled, its
+        # help tag ("Settings opens one window at a time.") held on screen by a
+        # real pointer over the item. The fresh Settings shim can finish its
+        # launch by activating itself, which takes an open menu down with it
+        # (round 5's light 7 lost its menu exactly here); re-assert the front
+        # window as setup right before the menu opens.
+        focus_app com.android.settings "Settings (FakePhone)" || true
+        menu_shot 7-settings-one-window File "New Settings Window"
+    else
+        skip "MULTIWIN the Settings shot" "needs the VM's screen; the disabled item and its sentence are asserted above and in K2 NewWindowTests"
+    fi
+    control menupick "File/Close" >/dev/null 2>&1   # the Settings window goes
+    sleep 1
+
+    # [WIN-36] every implicit entry point raises: the Deck cell twice and the
+    # debug route's --open send no second window.open.
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN no window.open for Chrome"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    before="$(window_open_count com.android.chrome)"
+    control deckclick Chrome >/dev/null 2>&1
+    control deckclick Chrome >/dev/null 2>&1
+    control open --open com.android.chrome >/dev/null 2>&1
+    sleep 2
+    [ "$(window_open_count com.android.chrome)" = "$before" ] \
+        && ok "[WIN-36] Deck cell ×2 and --open raised the one Chrome window (no window.open)" \
+        || bad "[WIN-36] an entry point opened a second window ($before -> $(window_open_count com.android.chrome))"
+    [ "$(front_title)" = "Chrome (FakePhone)" ] \
+        && ok "[WIN-36] the raise put that window in front" \
+        || bad "[WIN-36] the raise left '$(front_title)' in front"
+
+    # [WIN-25] the New item (⌘N): exactly one window.open carrying newInstance.
+    before="$(pw_opens)"
+    local instances_before
+    instances_before="$(pw_instances)"
+    if [ "$VISIBLE" = 1 ]; then
+        # The person's own press: a real ⌘N through the window server. First
+        # the Chrome window in front, so the key reaches this app's File menu.
+        cg_input key --keycode 45 --cmd || bad "MULTIWIN the ⌘N press did not post"
+        sleep 1.5
+    else
+        pick_new_window
+    fi
+    wait_until 20 eval '[ "$(pw_instances)" -gt "$instances_before" ]' \
+        && ok "[WIN-25] ⌘N sent one window.open with newInstance" \
+        || bad "[WIN-25] ⌘N sent no window.open with newInstance"
+    [ "$(( $(pw_opens) - before ))" = "1" ] \
+        && ok "[WIN-25] the New item sent exactly one window.open" \
+        || bad "[WIN-25] the New item sent $(( $(pw_opens) - before )) window.open"
+    control menudump "$WORK/wm-menu.json" >/dev/null 2>&1
+    python3 - "$WORK/wm-menu.json" <<'PY' && ok "[WIN-25] the item carries ⌘N and its title names the key app" \
+        || bad "[WIN-25] the New item's key or title is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+file = [i for i in root["displayed"] if i["title"] == "File"][0]
+new = [i for i in file["submenu"] if i["keyEquivalent"] == "n"
+       and "shift" not in i["modifiers"]][0]
+if new["title"] != "New Chrome Window": print("title", new["title"]); sys.exit(1)
+if new["modifiers"] != ["command"]: print("modifiers", new["modifiers"]); sys.exit(1)
+PY
+    wait_until 25 titles_have "Chrome — Docs (FakePhone)" \
+        || true
+
+    # The phone renames the two tasks (--label-after-window 2): each window
+    # takes its own label (WIN-28).
+    wait_until 30 titles_have "Chrome — Docs (FakePhone)" \
+        && wait_until 10 titles_have "Chrome — Mail (FakePhone)" \
+        && ok "[WIN-28] window.title retitled both windows by their tasks" \
+        || bad "[WIN-28] the windows did not take their task labels: $(window_titles "$APP_PID" | tr '\n' '|')"
+
+    if [ "$VISIBLE" = 1 ]; then
+        # 1: two windows of one app, both live, named by their tasks (the bar
+        # hides the title outside full screen; the Window menu and the Dock
+        # shim name them). 5 and 2: the Window and File menus, held open the
+        # way a click opens them.
+        shot 1-two-windows
+        menu_shot 5-window-menu Window
+        menu_shot 2-file-menu File
+    else
+        skip "MULTIWIN the shots of the two windows and the File and Window menus" "visible VM run only (PD_E2E_SHOT_APPEARANCE=dark|light)"
+    fi
+
+    # [WIN-26] the Dock shim's menu and the Deck cell's rows are the same list,
+    # with the front window's row checked.
+    wait_until 25 grep -q "Chrome — Docs" "$ctl/dockmenu-com.android.chrome.json" 2>/dev/null \
+        || bad "[WIN-26] the shim never got both windows' rows ($(ls "$ctl" 2>/dev/null | tr '\n' ' '))"
+    python3 - "$ctl/dockmenu-com.android.chrome.json" <<'PY' && ok "[WIN-26] the Dock shim's menu is New + both windows, front to back, the front one checked" \
+        || bad "[WIN-26] the Dock shim's menu is not the design"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+titles = ["—" if r.get("separator") else r.get("title") for r in rows]
+if titles != ["New Chrome Window", "—", "Chrome — Mail", "Chrome — Docs"]:
+    print("titles:", titles); sys.exit(1)
+windows = rows[2:]
+if [r.get("checked") for r in windows] != [True, False]:
+    print("checked:", [r.get("checked") for r in windows]); sys.exit(1)
+if not all(r.get("enabled") for r in rows if not r.get("separator")):
+    print("a row is disabled"); sys.exit(1)
+PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 3: the shim's own menu, the New + windows list a Dock right click
+        # shows (the Dock owns that click; the shim pops the same buildMenu).
+        # The shim polls its debug directory every 0.2 s, so the check waits for
+        # its popup window and captures at once, with the popup confirmed on
+        # screen at the shutter and its 10 s cap still ahead (round 5, light 3
+        # shot an empty screen after a popup that never appeared). The shim
+        # consumes the request file even when it cannot open the menu, so a miss
+        # is retried once with a fresh request, never stacked on a menu that is
+        # still up.
+        local base wrote_at elapsed attempt
+        base="$(popup_windows)"
+        for attempt in 1 2; do
+            wrote_at=$SECONDS
+            printf '10' > "$ctl/dockmenu-com.android.chrome-show"
+            if ! wait_until 7 eval '[ "$(popup_windows)" -gt '"$base"' ]'; then
+                # A popup that is late is still a popup: one more look.
+                sleep 1.2
+            fi
+            elapsed=$((SECONDS - wrote_at))
+            if [ "$(popup_windows)" -gt "$base" ]; then
+                shot 3-dock-shim-menu
+                ok "[WIN-26] the Dock shim's own menu opened for its shot"
+                say "MULTIWIN shot 3-dock-shim-menu: captured at +${elapsed}s of the shim's 10s cap"
+                break
+            fi
+            if [ "$attempt" = 1 ]; then
+                # A request the shim consumed without a popup is a rig miss, not
+                # a miss of the menu: the retry is the proof. Only the last
+                # attempt's miss counts.
+                skip "MULTIWIN the shim's menu shot" "the first request produced no popup; asking again"
+                wait_until 10 eval '[ "$(popup_windows)" -le '"$base"' ]' \
+                    || { bad "MULTIWIN the shim's menu was still open before the retry"; break; }
+            else
+                bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
+            fi
+        done
+        wait_until 12 eval '[ "$(popup_windows)" -eq 0 ]' \
+            || bad "MULTIWIN the shim's menu stayed open after its cap"
+        focus_app com.android.chrome "Chrome" || true
+    else
+        skip "MULTIWIN the Dock shim's menu shot" "the Dock owns its icon's click; the rows are the dump above and K2 AppWindowMenuTests"
+    fi
+    # The live Deck list and the shim's own built menu are one rule read at the
+    # same moment: the raise above refreshes the shim's menu (windowSetChanged),
+    # so the comparison must read the shim's dump again, not a copy taken
+    # before the shot. With two windows the front one decides the order, and
+    # the old fixed titles assumed which window that was.
+    deck_matches_shim() {
+        control windowmenu "$WORK/wm-deck.json" com.android.chrome >/dev/null 2>&1 || return 1
+        python3 - "$ctl/dockmenu-com.android.chrome.json" "$WORK/wm-deck.json" <<'PY'
+import json, sys
+shim = json.load(open(sys.argv[1]))
+deck = json.load(open(sys.argv[2]))
+def rows(items):
+    return [(i["title"], i["enabled"], i["checked"]) for i in items if not i.get("separator")]
+if rows(shim) != rows(deck):
+    print("shim:", rows(shim)); print("deck:", rows(deck)); sys.exit(1)
+if len(rows(deck)) != 3:
+    print("rows:", [r[0] for r in rows(deck)]); sys.exit(1)
+PY
+    }
+    wait_until 10 deck_matches_shim \
+        && ok "[WIN-26] the Deck cell's rows are the same New + windows list, front one checked" \
+        || bad "[WIN-26] the Deck cell's rows differ from the shim's menu"
+    if [ "$VISIBLE" = 1 ]; then
+        # The cell's own menu: the Deck in front, then a real pointer's
+        # secondary click at the cell's place. A popup menu is a window of its
+        # own (layer 101), which is how the click is proved; the shot shows the
+        # rows.
+        local menus_before cx cy
+        control deckfocus grid || bad "MULTIWIN deckfocus for the right click: $CONTROL_REPLY"
+        sleep 0.8
+        control deckcellpoint Chrome "$WORK/deckpoint.txt" \
+            || bad "MULTIWIN deckcellpoint: $CONTROL_REPLY"
+        if [ -s "$WORK/deckpoint.txt" ]; then
+            read -r cx cy < "$WORK/deckpoint.txt"
+            menus_before="$(menu_windows)"
+            cg_input rclickat --x "$cx" --y "$cy" || bad "MULTIWIN the right click did not post"
+            sleep 1
+            [ "$(menu_windows)" -gt "$menus_before" ] \
+                && ok "[WIN-26] a real secondary click on the Deck cell opened its menu" \
+                || bad "[WIN-26] the Deck cell's right click opened no menu ($menus_before menus before)"
+            shot 4-deck-cell-menu
+            cg_input key --keycode 53
+            # The check closes its own menu before the next step takes the app.
+            wait_until 8 eval '[ "$(menu_windows)" -eq "$menus_before" ]' \
+                || bad "MULTIWIN the Deck cell's menu stayed open after Escape"
+            sleep 0.2
+        else
+            bad "MULTIWIN no Deck cell point for the right click"
+        fi
+    else
+        skip "MULTIWIN the Deck cell's right click" "needs a real pointer; K2 AppWindowMenuTests covers the same rows, the VM round clicks the cell"
+    fi
+    # A pick raises through the shim's own menu item (its target and action).
+    # The row is read from the shim's live dump: the window that is not checked
+    # is the one the pick has to raise. A fixed index 3 named Docs only while
+    # the list kept its order; the Deck cell's right click above is a raise, and
+    # the shim re-reads the front window on a raise (df7a162e), so in round 5b's
+    # boots 8 and 9 index 3 already named the window in front and the pick
+    # looked like it did nothing.
+    local pick_index="" pick_title=""
+    if python3 - "$ctl/dockmenu-com.android.chrome.json" "$WORK/wm-pick.txt" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+for index, row in enumerate(rows):
+    if row.get("separator") or row.get("checked") or not row.get("enabled"):
+        continue
+    title = row.get("title", "")
+    if title.startswith("Chrome — ") and title.count(" — ") == 1:
+        with open(sys.argv[2], "w") as out:
+            out.write("%d\n%s\n" % (index, title))
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+        read -r pick_index < "$WORK/wm-pick.txt"
+        pick_title="$(sed -n 2p "$WORK/wm-pick.txt")"
+    fi
+    if [ -n "$pick_title" ]; then
+        printf '%s' "$pick_index" > "$ctl/dockmenu-com.android.chrome-press"
+        wait_until 15 eval '[ "$(front_title)" = "'"$pick_title"' (FakePhone)" ]' \
+            && ok "[WIN-26] picking the other window's row ($pick_title) raised that window" \
+            || bad "[WIN-26] the pick of $pick_title left '$(front_title)' in front"
+    else
+        bad "MULTIWIN no unchecked Chrome window row in the shim's menu"
+    fi
+
+    # [WIN-29] one ⌘` per press, in front-to-back order, wrapping.
+    local first second
+    first="$(front_title)"
+    local cycle_reply
+    # The key itself: NSApp dispatches it to the item's ⌘` (the item's own
+    # action), which is the path a person's press takes.
+    if control key 'cmd+`'; then cycle_reply="pressed"; else cycle_reply="$CONTROL_REPLY"; fi
+    sleep 1
+    second="$(front_title)"
+    [ "$second" != "$first" ] \
+        && ok "[WIN-29] ⌘\` raised the next window ($first -> $second)" \
+        || bad "[WIN-29] ⌘\` did nothing ($first; $cycle_reply)"
+    control key 'cmd+`' >/dev/null 2>&1
+    sleep 1
+    [ "$(front_title)" = "$first" ] \
+        && ok "[WIN-29] ⌘\` wrapped back to the first window" \
+        || bad "[WIN-29] ⌘\` did not wrap ($(front_title))"
+    control menudump "$WORK/wm-window.json" >/dev/null 2>&1
+    python3 - "$WORK/wm-window.json" <<'PY' && ok "[WIN-29] Window holds one Next Window item, enabled with two windows, carrying ⌘\`" \
+        || bad "[WIN-29] the Window menu's Next Window item is not the design"
+import json, sys
+root = json.load(open(sys.argv[1]))
+window = [i for i in root["displayed"] if i["title"] == "Window"][0]
+items = [i for i in window["submenu"] if i["title"] == "Next Window"]
+if len(items) != 1: print("Next Window items:", len(items)); sys.exit(1)
+if not items[0]["enabled"]: print("disabled"); sys.exit(1)
+if items[0]["keyEquivalent"] != "`" or items[0]["modifiers"] != ["command"]:
+    print("key", repr(items[0]["keyEquivalent"]), items[0]["modifiers"]); sys.exit(1)
+cycles = [i for i in window["submenu"] if i["title"] == "Cycle Through Windows"]
+if cycles: print("AppKit's Cycle Through Windows is still there"); sys.exit(1)
+PY
+
+    # [WIN-30] ⌘` sends nothing to the phone: no input, no window request.
+    local input_before opens_before instances_before
+    input_before="$(pw_input)"; opens_before="$(pw_opens)"; instances_before="$(pw_instances)"
+    control key 'cmd+`' >/dev/null 2>&1 || true
+    sleep 2
+    [ "$(pw_input)" = "$input_before" ] && [ "$(pw_opens)" = "$opens_before" ] \
+        && [ "$(pw_instances)" = "$instances_before" ] \
+        && ok "[WIN-30] ⌘\` sent no input and no window.open" \
+        || bad "[WIN-30] ⌘\` sent input=$(( $(pw_input) - input_before )) opens=$(( $(pw_opens) - opens_before ))"
+
+    # [WIN-31] ⌘W closes one window: one window.close, the other streams and
+    # takes input.
+    local closes_before
+    closes_before="$(pw_closes)"
+    control menupick "File/Close" >/dev/null 2>&1
+    wait_until 15 pw_closes_grew "$closes_before" \
+        && ok "[WIN-31] ⌘W sent one window.close" \
+        || bad "[WIN-31] ⌘W sent no window.close"
+    [ "$(( $(pw_closes) - closes_before ))" = "1" ] \
+        && ok "[WIN-31] exactly one window.close, for the window that closed" \
+        || bad "[WIN-31] $(( $(pw_closes) - closes_before )) window.close for one ⌘W"
+    input_before="$(pw_input)"
+    control key "cmd+f" >/dev/null 2>&1
+    wait_until 10 pw_input_grew "$input_before" \
+        && ok "[WIN-31] the surviving window still takes input" \
+        || bad "[WIN-31] the survivor stopped taking input"
+    [ "$(front_title)" = "Chrome (FakePhone)" ] \
+        && ok "[WIN-28] the lone survivor went back to the short title" \
+        || bad "[WIN-28] the survivor reads '$(front_title)'"
+
+    # [WIN-32] at the cap the Mac refuses the fifth window itself; [WIN-27] the
+    # item reads the cap's sentence.
+    local n
+    for n in 1 2 3; do
+        pick_new_window
+        sleep 1.5
+    done
+    sleep 2
+    before="$(pw_opens)"
+    pick_new_window disabled
+    sleep 2
+    [ "$(pw_opens)" = "$before" ] \
+        && ok "[WIN-32] at the phone's cap of 4 the Mac sent no window.open" \
+        || bad "[WIN-32] a fifth window.open left the Mac ($before -> $(pw_opens))"
+    item="$(file_new_item)"
+    python3 - "$item" <<'PY' && ok "[WIN-27] at the cap the item reads \"Close a Chrome window to open another.\"" \
+        || bad "[WIN-27] the cap's sentence is not on the item: $item"
+import json, sys
+item = json.loads(sys.argv[1])
+if item.get("enabled") is not False: print("enabled", item.get("enabled")); sys.exit(1)
+if item.get("toolTip") != "Close a Chrome window to open another.":
+    print("help", item.get("toolTip")); sys.exit(1)
+PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 6: at the cap, New Chrome Window disabled with its help tag ("Close a
+        # Chrome window to open another.") held on screen by a real pointer.
+        menu_shot 6-at-the-cap File "New Chrome Window"
+    else
+        skip "MULTIWIN the shot at the cap" "needs the VM's screen; the disabled item and its sentence are asserted above"
+    fi
+    stop_app
+    remove_dock_apps
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # ---- Launch 2: the cap follows the phone's number (WIN-32) -------------
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--max-windows 2 --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" \
+        --debug-banner "$banner" --quit-after 120
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN cap 2: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    pick_new_window
+    wait_until 15 pw_instances_at_least 1 \
+        && ok "[WIN-32] a phone at cap 2 still allows the second window" \
+        || bad "[WIN-32] the second window was refused at cap 2"
+    before="$(pw_opens)"
+    pick_new_window disabled
+    sleep 2
+    [ "$(pw_opens)" = "$before" ] \
+        && ok "[WIN-32] the cap follows the phone's number: the third open was refused" \
+        || bad "[WIN-32] the Mac asked for a third window past a cap of 2"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # ---- Launch 3: a forced refusal closes the window and banners (WIN-32) --
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    FAKE_ARGS="--force-too-many-windows --tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" \
+        --debug-banner "$banner" --quit-after 120
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN forced: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    pick_new_window
+    wait_until 20 events_have '"kind":"refused"' \
+        && ok "[WIN-32] the fake phone refused the extra window below its cap" \
+        || bad "[WIN-32] the fake never refused"
+    wait_until 15 grep -qF "Close a Chrome window to open another." "$banner" \
+        && ok "[WIN-32] the Deck banner carries the cap's sentence" \
+        || bad "[WIN-32] the banner reads '$(cat "$banner" 2>/dev/null | tail -1)'"
+    # The window that asked closes; the phone's log keeps the refused request,
+    # so count the Mac's windows, not the requests.
+    chrome_windows() { window_titles "$APP_PID" | grep -c "Chrome"; }
+    wait_until 15 eval '[ "$(window_titles "$APP_PID" | grep -c "Chrome")" = "1" ]' \
+        && ok "[WIN-32] the refused window closed" \
+        || bad "[WIN-32] the refused window stayed open ($(window_titles "$APP_PID" | tr '\n' '|'))"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # ---- Launch 4: a drop with two windows reopens two streams (WIN-34) ----
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    # The phone keeps its TLS identity across the restart (a new one would be a
+    # different phone, and the Mac would refuse its own pin — `bad_pin`).
+    FAKE_ARGS="--tls-identity $WORK/phone.identity" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" --quit-after 180
+    ctl_open --open com.android.chrome || { stop_app; stop_fakephone; return 1; }
+    wait_until 20 window_rx window.open com.android.chrome \
+        || { bad "MULTIWIN drop: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    focus_app com.android.chrome "Chrome (FakePhone)" || true
+    pick_new_window
+    wait_until 15 pw_instances_at_least 1 \
+        || { bad "MULTIWIN drop: the second window never opened"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    stop_fakephone
+    sleep 2
+    # The restarted phone opens the event log afresh, so what it holds after
+    # this point is the reconnect's own traffic.
+    FAKE_ARGS="--tls-identity $WORK/phone.identity" start_fake || return 1
+    wait_until 90 pw_opens_reached 2 \
+        && ok "[WIN-34] after the drop both windows re-opened their streams" \
+        || bad "[WIN-34] the reconnect re-opened $(pw_opens) streams, not 2"
+    python3 - "$WORK/events.jsonl" <<'PY' && ok "[WIN-34] the second window asks for its own task, the first does not" \
+        || bad "[WIN-34] the reconnect's newInstance flags are wrong"
+import json, sys
+opens = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "window.open" and msg.get("pkg") == "com.android.chrome":
+        opens.append(bool(msg.get("newInstance")))
+if opens != [False, True]:
+    print("flags:", opens); sys.exit(1)
+PY
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    remove_dock_apps
+}
+
+
+
 
 # --- Windows: one window per app, and the opening cover ---------------------
 

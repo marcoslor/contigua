@@ -124,7 +124,9 @@ final class MCPCoreTests: XCTestCase {
         let cases: [(String, [String: Any], MCPCall)] = [
             ("phone_status", [:], .phoneStatus),
             ("list_apps", [:], .listApps),
-            ("open_app", ["app": "com.android.settings"], .openApp("com.android.settings")),
+            ("open_app", ["app": "com.android.settings"], .openApp("com.android.settings", newWindow: false)),
+            ("open_app", ["app": "com.android.chrome", "newWindow": true],
+             .openApp("com.android.chrome", newWindow: true)),
             ("list_windows", [:], .listWindows),
             ("screenshot", ["window": 3], .screenshot(window: 3)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),

@@ -71,6 +71,12 @@ enum MenuCleanup {
                     removed.insert(index)
                 }
             }
+            // AppKit's own "Cycle Through Windows" owns ⌘`: the app's own
+            // "Next Window" is the one item for that key (MENU-7, WIN-29).
+            for (index, item) in items.enumerated() where !item.isSeparator
+                && item.title == "Cycle Through Windows" {
+                removed.insert(index)
+            }
         }
         if menu == "Help" {
             for (index, item) in items.enumerated() where !item.isSeparator && isSystemFeedback(item.title) {

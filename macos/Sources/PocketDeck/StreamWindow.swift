@@ -824,10 +824,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Presence
 
     /// Where this window opens: the frame it had last time, else a cascade
-    /// step from the previous stream window (never on top of the Deck).
+    /// step from the previous stream window (never on top of the Deck). An
+    /// added window of an app opens where the caller placed it, 28 pt from the
+    /// app's front window (WIN-13).
     func present() {
         if let window {
-            if let saved = manager.savedFrame(forKey: frameKey), saved.size.width >= 240, saved.size.height >= 160 {
+            if let placed = placementOverride {
+                window.setFrame(manager.clampedToScreen(placed), display: false)
+            } else if remembersFrame,
+                      let saved = manager.savedFrame(forKey: frameKey),
+                      saved.size.width >= 240, saved.size.height >= 160 {
                 window.setFrame(manager.clampedToScreen(saved), display: false)
             } else {
                 window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
@@ -850,14 +856,24 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Frames are remembered per app (or "phone") in the profile's defaults.
     var frameKey: String { "stream" }
 
+    /// Whether this window's frame is remembered for its subject. Only an
+    /// app's first window is: an added window cascades from it and forgets its
+    /// own place (WIN-13).
+    var remembersFrame: Bool { true }
+
+    /// Where this window opens when a caller placed it relative to another (an
+    /// added window of an app): read by `present()` (WIN-13).
+    var placementOverride: NSRect? { nil }
+
     func windowDidMove(_ notification: Notification) { rememberFrame() }
 
     private func rememberFrame() {
         // Never the screen-sized frame full screen moves the window to: the
         // next open would come back too big. A resize in progress (a drag's
         // steps, a zoom's animation) is not a frame to come back to either:
-        // its end remembers the settled one.
-        guard let window, window.isVisible, !closingFromRemote, !isLiveResizing,
+        // its end remembers the settled one. An added window of an app is not
+        // the app's frame either (WIN-13).
+        guard remembersFrame, let window, window.isVisible, !closingFromRemote, !isLiveResizing,
               !window.styleMask.contains(.fullScreen), windowedFrame == nil else { return }
         manager.saveFrame(window.frame, forKey: frameKey)
     }
@@ -884,9 +900,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         resizeWork?.cancel()
         settleTimer?.invalidate()
         settleTimer = nil
+        manager.noteKeyLost(stream)
         if !closingFromRemote { sendClose() }
         let count = stills
         Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
+        // AppKit keeps a closed window in `NSApp.windows`, and with it the whole
+        // layer tree under its content view — including the display layer and
+        // the picture it holds. A closed window holds no picture (WIN-33).
+        chrome.releaseGraphics()
+        videoView.releasePicture()
+        window?.contentView = nil
+        window?.delegate = nil
         manager.remove(stream: stream)
     }
 
@@ -1132,6 +1156,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Focus
 
     func windowDidBecomeKey(_ notification: Notification) {
+        manager.noteFront(stream)
+        manager.noteKey(stream)
         let state = StreamMenuState.shared
         state.hasStream = true
         state.showTouches = manager.showTouches
@@ -1156,6 +1182,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // The keyboard left the window: the bar's ring goes with it, and its
         // keys are the phone's again when the window comes back.
+        manager.noteKeyLost(stream)
         resetBarFocus()
         let state = StreamMenuState.shared
         state.hasStream = false
@@ -1309,6 +1336,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
             + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
             + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
+            + " paused=\(isPaused ? 1 : 0) expecting=\(expectsFrames ? 1 : 0) opening=\(isOpening ? 1 : 0)"
+            + " frame_age_ms=\(frameClock.lastFrame.map { Int(((now() - $0) * 1000).rounded()) } ?? -1)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " drop_refusal=\(dropFailure ?? "none")"
             + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"

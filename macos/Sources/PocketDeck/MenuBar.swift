@@ -155,8 +155,11 @@ struct AppCommands: Commands {
         let _ = DeckWindow.openAction = { openWindow(id: DeckWindow.id) }
 
         // ⌘P is "Phone Mirror" (docs/design/mac-redesign.md §5); the app prints
-        // nothing, so File is Add Phone…, Close and Close All.
-        CommandGroup(after: .newItem) {
+        // nothing. File is Add Phone… ⇧⌘N · rule · New <App> Window ⌘N · rule ·
+        // Close ⌘W · Close All ⌥⌘W (MENU-2). The two rules are the items'
+        // own: SwiftUI's group separator disappears when its groups are
+        // rebuilt, and an open menu is never rebuilt to fix one.
+        CommandGroup(replacing: .newItem) {
             Button {
                 show()
                 controller.sheet = .addPhone
@@ -164,6 +167,22 @@ struct AppCommands: Commands {
                 Label("Add Phone…", systemImage: "plus")
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            Divider()
+            // One more window of the key app on the phone in use (WIN-25). It
+            // reads what it will do, and while it cannot act the sentence that
+            // says why is its help tag and VoiceOver hint (WIN-27, WIN-32,
+            // WIN-34). SwiftUI builds the item once and keeps its values, so
+            // MenuMarks writes the title, flag and sentence when the menu opens
+            // (and on every window change).
+            Button {
+                controller.newWindow()
+            } label: {
+                Label(menu.newWindow.title, systemImage: "plus.rectangle.on.rectangle")
+            }
+            .keyboardShortcut("n")
+            .disabled(!menu.newWindow.enabled)
+            .help(menu.newWindow.help ?? "Open another window of an app on your phone.")
+            .accessibilityHint(menu.newWindow.help ?? "")
         }
         CommandGroup(after: .toolbar) {
             Button {
@@ -379,6 +398,17 @@ struct AppCommands: Commands {
             // The phone window opts out of full screen, so the item is disabled
             // for it; the action asks the key window again before it acts.
             .disabled(!menu.fullScreenAllowed)
+            // Window ▸ Next Window ⌘` (MENU-7, WIN-29, WIN-30): the next
+            // window of the key app in front-to-back order, wrapping; nothing
+            // reaches the phone. Enabled only while the key app has two or more
+            // windows, and MenuMarks writes that flag when the menu opens.
+            // AppKit's own "Cycle Through Windows" is removed by MenuCleanup,
+            // so ⌘` has one owner.
+            Button("Next Window") {
+                controller.windows.cycleKeyWindow()
+            }
+            .keyboardShortcut(KeyEquivalent("`"), modifiers: [.command])
+            .disabled(!menu.nextWindowEnabled)
         }
         // Help has no help book and the app has no public issue tracker, so the
         // menu is empty rather than carrying a dead item (AGENTS "Honest
