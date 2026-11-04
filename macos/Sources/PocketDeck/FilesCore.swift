@@ -703,8 +703,10 @@ func filesSystemContainer(_ identifier: String) -> Bool {
 /// successful write, move, delete and mkdir updates it.
 struct FilesIdMap: Equatable {
     /// The persisted shape. A different version is a fresh map: S3's ids carried
-    /// a path and are not worth migrating.
-    static let formatVersion = 2
+    /// a path and are not worth migrating. Version 3 added the replica record
+    /// (FilesReplica, same version): the domain is replaced once so the system
+    /// drops items no record can explain.
+    static let formatVersion = 3
 
     private(set) var pathByIdentifier: [String: String] = [FilesMap.rootIdentifier: ""]
     private(set) var identifierByPath: [String: String] = ["": FilesMap.rootIdentifier]
@@ -796,8 +798,10 @@ struct FilesIdMap: Equatable {
     func parent(for identifier: String) -> String? { parentByIdentifier[identifier] }
 
     /// Forgets a path and everything below it (a delete, or a folder whose
-    /// listing is about to be re-read).
-    mutating func invalidate(subtree path: String) {
+    /// listing is about to be re-read). Returns the identifiers it removed, so
+    /// the replica record can drop their records too.
+    @discardableResult
+    mutating func invalidate(subtree path: String) -> [String] {
         let prefix = path.isEmpty ? "" : path + "/"
         let doomed = pathByIdentifier.filter { id, known in
             id != FilesMap.rootIdentifier && (known == path || known.hasPrefix(prefix))
@@ -809,6 +813,7 @@ struct FilesIdMap: Equatable {
             inoByPath.removeValue(forKey: known)
             loadedPaths.remove(known)
         }
+        return Array(doomed.keys)
     }
 
     /// A rename keeps the identifier: only the path (and its descendants')
@@ -884,16 +889,22 @@ struct FilesIdMap: Equatable {
     }
 
     static func save(_ map: FilesIdMap, to url: URL) {
+        FilesPrivateStore.write(map.encoded(), to: url)
+    }
+}
+
+/// One private JSON file in the profile's support folder: the id map and the
+/// replica record share it. It is written to a fresh temp that is 0600 from the
+/// moment it exists and renamed over the target: `Data.write(.atomic)` followed
+/// by chmod leaves a window in which the umask decides the permissions.
+enum FilesPrivateStore {
+    static func write(_ data: Data, to url: URL) {
         let directory = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
-        // The id map says which phone files the person has; it is theirs alone.
-        // It is written to a fresh temp that is 0600 from the moment it exists
-        // and renamed over the target: `Data.write(.atomic)` followed by chmod
-        // leaves a window in which the umask decides the permissions.
         let temp = directory.appendingPathComponent(
             ".\(url.lastPathComponent).\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: temp.path, contents: map.encoded(),
+        guard FileManager.default.createFile(atPath: temp.path, contents: data,
                                              attributes: [.posixPermissions: 0o600]) else {
             return
         }

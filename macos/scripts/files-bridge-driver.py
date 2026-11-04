@@ -1300,6 +1300,71 @@ def phase_thumb_slow(socket_path, fixture):
             bridge.close()
 
 
+def phase_persist(bridge, root, work, stage):
+    """FILES-31: the record outlives the app. Before the stop, list the folder
+    and save its ids and the working-set anchor; after the restart, watch and
+    list it and read the change set from the old anchor. The phone lost two
+    files and gained one while the app was down, so the first listing after the
+    restart must report exactly that, within 5 s.
+    """
+    state_path = os.path.join(work, "persist.json")
+    folder = os.path.join(root, "P")
+    on_disk = set(os.listdir(folder))
+    if stage == "before":
+        p = item_id(bridge, "P")
+        if not p:
+            report(False, "PERSIST [FILES-31] the fake tree has folder P")
+            return
+        reply, items = bridge.list_item_all(p)
+        names = {entry.get("name") for entry in items}
+        report(reply.get("t") == "items" and names == on_disk and len(items) == 5,
+               "PERSIST [FILES-31] the first run listed the folder's 5 files (%d)"
+               % len(items))
+        anchor = sync_anchor(bridge, WORKING_SET)
+        report(anchor is not None,
+               "PERSIST [FILES-31] the working set has an anchor before the stop")
+        if anchor is None:
+            return
+        state = {"folder": p, "anchor": anchor,
+                 "ids": {entry.get("name"): entry.get("id") for entry in items}}
+        with open(state_path, "w") as handle:
+            json.dump(state, handle)
+        return
+
+    with open(state_path) as handle:
+        saved = json.load(handle)
+    p = saved["folder"]
+    old_names = set(saved["ids"])
+    missing = old_names - on_disk
+    added = on_disk - old_names
+    report(len(missing) == 2 and len(added) == 1,
+           "PERSIST [FILES-31] the phone lost 2 files and gained 1 while the app was down")
+
+    started = time.time()
+    reply = watch_folders(bridge, [p], True)
+    report(reply.get("t") == "ok",
+           "PERSIST [FILES-31] the restarted app watches the folder again")
+    listing, items = bridge.list_item_all(p)
+    names = {entry.get("name") for entry in items}
+    elapsed = time.time() - started
+    report(listing.get("t") == "items" and names == on_disk and len(items) == 4
+           and elapsed <= 5.0,
+           "PERSIST [FILES-31] the first listing after the restart is the phone's 4 "
+           "in %.2f s" % elapsed)
+
+    reply = await_change(bridge, WORKING_SET, saved["anchor"],
+                         lambda changed, deleted: len(deleted) == 2 and len(changed) == 1,
+                         timeout=5.0)
+    changed = reply.get("items") or [] if reply.get("t") == "changes" else []
+    deleted = reply.get("deleted") or [] if reply.get("t") == "changes" else []
+    expected = {saved["ids"][name] for name in missing}
+    report(reply.get("t") == "changes" and reply.get("expired") is False
+           and set(deleted) == expected and len(changed) == 1
+           and changed[0].get("name") in added,
+           "PERSIST [FILES-31] the old anchor replays the 2 deletions and 1 add "
+           "(%d deleted, %d items)" % (len(deleted), len(changed)))
+
+
 def phase_kill(bridge, root, fake_pid):
     hello = bridge.hello()
     report(hello.get("connected") is True, "WRITE hello: connected")
@@ -1344,16 +1409,31 @@ def main():
     parser.add_argument("--thumb-fixture", default=None)
     parser.add_argument("--phase",
                         choices=["online", "read", "offline", "write", "kill",
-                                 "watch", "watchset", "thumb", "thumb-hold",
+                                 "watch", "watchset", "persist", "thumb", "thumb-hold",
                                  "thumb-once", "thumb-timeout", "thumb-slow",
                                  "thumb-none"],
                         required=True)
     parser.add_argument("--ttl", type=float, default=20.0)
     parser.add_argument("--watch-folders", default="")
+    parser.add_argument("--stage", choices=["before", "after"], default="before")
     args = parser.parse_args()
 
     if args.phase == "offline":
         check_offline(args.socket)
+        return 0
+    if args.phase == "persist":
+        try:
+            bridge = Bridge(args.socket, timeout=60.0)
+        except OSError as error:
+            report(False, "PERSIST cannot connect to the bridge socket (%s)" % error)
+            return 1
+        try:
+            phase_persist(bridge, args.root, args.work, args.stage)
+        except (BridgeError, socket.timeout, OSError) as error:
+            report(False, "PERSIST the bridge stopped answering (%s)" % error)
+            return 1
+        finally:
+            bridge.close()
         return 0
     if args.phase in ("watch", "watchset"):
         try:

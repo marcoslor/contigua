@@ -7381,12 +7381,21 @@ for folder in ("A", "B"):
     os.makedirs(os.path.join(root, folder), exist_ok=True)
 open(os.path.join(root, "A", "seed.txt"), "wb").write(b"seed\n")
 open(os.path.join(root, "B", "other.txt"), "wb").write(b"other\n")
+# [FILES-31] the folder the record outlives the app for: five files now, two
+# gone and one added while the app is stopped.
+os.makedirs(os.path.join(root, "P"), exist_ok=True)
+for index in range(1, 6):
+    open(os.path.join(root, "P", "p%d.txt" % index), "wb").write(b"file\n")
 # 65 folders for the watch-set cap: the 65th touch drops the least recently
 # touched and the phone never watches more than 64.
 for index in range(65):
     os.makedirs(os.path.join(root, "W%02d" % index), exist_ok=True)
 PY
     WATCH_FOLDERS="$(python3 -c 'print(",".join("W%02d" % i for i in range(65)))')"
+    # The record and log are per profile and outlive a run: start from none so
+    # the first listing's diff is this run's.
+    rm -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/files-ids.json" \
+          "$HOME/Library/Application Support/PocketDeck-$PROFILE/files-replica.json"
     FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || return 1
     # The ten minutes are shortened for this run only (design "S5 round 3").
     PD_FILES_WATCH_TTL=20 launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
@@ -7451,6 +7460,39 @@ PY
         ok "WATCH the app log carries no file names"
     else
         bad "WATCH a file name appears in the app log"
+    fi
+    # [FILES-31] The replica record outlives the app: the phone loses two files
+    # and gains one while the app is stopped, and the first listing after the
+    # restart must report exactly that within 5 s.
+    files_bridge_driver persist --stage before
+    sleep 1  # the record and log are written in one coalesced save (250 ms)
+    stop_app
+    python3 - "$WORK" <<'PY'
+import os, sys
+folder = os.path.join(sys.argv[1], "fsroot", "P")
+names = sorted(os.listdir(folder))
+os.unlink(os.path.join(folder, names[0]))
+os.unlink(os.path.join(folder, names[1]))
+open(os.path.join(folder, "p6.txt"), "wb").write(b"six\n")
+PY
+    PD_FILES_WATCH_TTL=20 launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
+    wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
+        && ok "PERSIST the restarted app listens on the test bridge socket" \
+        || bad "PERSIST no bridge socket after the restart: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
+    files_bridge_driver persist --stage after
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -o 'bridge: .*' > "$WORK/persist-log.txt" 2>/dev/null || true
+    if python3 - "$WORK/persist-log.txt" <<'PY'
+import sys
+text = open(sys.argv[1], errors="replace").read()
+names = ("P", "p1.txt", "p6.txt")
+sys.exit(1 if any(("/" + name) in text or ('"' + name + '"') in text for name in names) else 0)
+PY
+    then
+        ok "PERSIST [FILES-31] the app log carries no file names"
+    else
+        bad "PERSIST [FILES-31] a file name appears in the app log"
     fi
     stop_app
     stop_fakephone

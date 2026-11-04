@@ -353,10 +353,10 @@ final class FilesIdMapTests: XCTestCase {
     }
 
     func testAMapFromBeforeTheInodeWasRecordedIsCheckedToo() {
-        // A map written before inodes were persisted has no "i": the first
-        // listing is what says whether its path still holds that file.
+        // A map without the inode check: the first listing is what says whether
+        // its path still holds that file.
         let legacy = Data("""
-        {"version":2,"ids":{".rootContainer":{"p":"","n":".rootContainer"},"ino:6":{"p":"a.txt","n":".rootContainer"}}}
+        {"version":\(FilesIdMap.formatVersion),"ids":{".rootContainer":{"p":"","n":".rootContainer"},"ino:6":{"p":"a.txt","n":".rootContainer"}}}
         """.utf8)
         var map = FilesIdMap.decode(legacy)!
         let listed = map.insert(fs: fs("a.txt", ino: 7), path: "a.txt",
