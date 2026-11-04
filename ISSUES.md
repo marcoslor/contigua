@@ -96,20 +96,24 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
 6. **Phone photos on the Mac.** Recent photos and screenshots in Finder or a Recents strip, with drag-out. Needs ISS-2.
 7. Then: the phone as a key, Shortcuts both ways, the phone as a Mac remote, Mac-to-phone notifications, Focus modes and the Batteries widget, Wi-Fi password sharing and last-seen location.
 
-- **ISS-41 A web client: PocketDeck for Windows and Linux (a very big epic; the person, 2026-11-04).** macOS stays the first-class, native app. Windows and Linux get a well-built web client (installable as a PWA), with no native app there. SwiftUI may be deprecated in favour of components shared between the Mac and the web.
-  - **What a browser makes hard,** whatever the UI toolkit:
-    - **Reaching the phone on a LAN:** a page can't open raw sockets. It needs WebSocket, WebTransport or WebRTC, and WebCodecs and WebGPU need a secure context. An `https` page can't call an `http://` LAN address (mixed content, and Chrome's local-network permission). Options: WebRTC with the pairing's fingerprint pinned; the phone serving `https` under a real certificate (the Plex `*.plex.direct` pattern, which needs a small certificate service but carries no traffic); or a self-signed warning (poor).
-    - **Video:** WebCodecs `VideoDecoder` (H.264 everywhere, HEVC where the hardware has it) into a canvas or WebGPU texture.
-    - **Input:** browsers keep some shortcuts (⌃W, ⌃T, ⌃N) unless the Keyboard Lock API is available in full screen (Chromium only). Also pointer lock, IME composition, and clipboard permissions (images are limited).
-    - **Files:** no Finder-like integration; File System Access (Chromium), and drag-and-drop into the page.
-    - **Notifications:** only while the page or PWA is open; Web Push needs a push service.
-    - **Windows:** each app window is a browser window.
-  - **GPUI in the browser (checked 2026-11-04):** upstream Zed has an experimental `gpui_web` crate (WebGPU with a WebGL2 fallback; nightly Rust; cross-origin isolation for threads). It has one canvas and one window per page, no app menus, and canvas-drawn text (IME and accessibility weaker than the DOM). Zed itself doesn't ship on the web. Unknown: whether it can show an external video frame, which a stream window needs.
-  - **Shared code:**
-    - The deep Mac integrations (File Provider, Notification Center, menu bar, Dock, Live Text) stay Swift whatever happens. So "shared components" means the UI surfaces (Deck, stream window, Settings, pairing, live updates), plus a shared core: protocol, session, E2EE, input mapping and transfer.
-    - A Rust core works on this Mac (native compile, plus a `wasm32` target), bridged to Swift (UniFFI) and to the web (wasm-bindgen).
-    - Kotlin Multiplatform is out here: Kotlin/Native's macOS targets need a JVM on the host, and this Mac runs no JVM.
-  - **First step, a spike** (no UI decision yet): a page on a Windows or Linux machine reaches the paired phone on the LAN with no cloud in the traffic path, opens one stream decoded by WebCodecs with input, and measures latency against the Mac app. Then one prototype round for the UI toolkit (GPUI web vs a DOM framework), showing the Deck and one stream window, and a written decision.
+- **ISS-41 A web client: PocketDeck for Windows and Linux (a very big epic; the person, 2026-11-04).** macOS stays the first-class, native app. Windows and Linux get a web client, and no native app.
+  - **The person's constraints:**
+    - **No install.** Open a URL and it works: no helper app, no extension, no browser flag. Everything else follows from this.
+    - **Local first.** Traffic stays on the LAN, or goes through our own native piece (the phone app); never a third-party cloud.
+    - **Not a port.** It's another application, shaped by what browsers allow. Where a browser can't do something, the web client doesn't have it.
+  - **So the phone hosts it.** The PC opens the phone's address (shown in the phone app; `http://<name>.local` where mDNS resolves, else the IP). The page comes from the phone, and the session's traffic goes straight to the phone. Pairing is by a code shown on the phone.
+  - **A page from the phone over plain `http` is not a secure context** (MDN, checked 2026-11-04):
+    - **Switched off:** WebCodecs, WebGPU, Web Crypto, the async Clipboard API, Notifications, service workers (so no PWA), the Keyboard API (Keyboard Lock), WebTransport and File System Access. Cross-origin isolation needs a secure context too, so there's no `SharedArrayBuffer` and no threaded wasm.
+    - **Still available:** WebRTC (`RTCPeerConnection`), WebSockets, Media Source Extensions, WebGL2, Pointer Lock, Fullscreen, IndexedDB, and paste, copy and drag-and-drop events.
+  - **What that implies:**
+    - **Video and input over WebRTC:** host candidates only, with no STUN or TURN; signalling over a same-origin WebSocket; the browser's own decoder; input and transfers on data channels. The phone needs a WebRTC stack (libdatachannel is the light candidate; libwebrtc the heavy one). The fallback is Media Source Extensions with fragmented MP4 over the WebSocket, at higher latency.
+    - **Clipboard:** text and images on the person's own copy and paste gestures (the event `clipboardData`), never read in the background. Files go in by drag-and-drop or `<input type=file>` and out as downloads.
+    - **No browser notifications.** Live Updates and notifications show in the page while it's open.
+    - **Browser shortcuts stay the browser's.** The client offers its own keys for them.
+    - **Security:** WebRTC's DTLS is pinned to the pairing, so the session is end to end. The page's own code travels over plain `http` on the LAN, as a router's admin page does: write down that risk and the mitigations.
+    - **UI toolkit:** a DOM app is the default, since GPUI's web build wants WebGPU (or WebGL2) and threads. Nothing needs to move off SwiftUI on the Mac for this. What's shared is the protocol, the fake-phone conformance checks, and the visual language (colours, type, icons).
+  - **Optional later, never required:** the phone serving `https` under a real certificate for a hostname that resolves to its LAN address (the Plex `*.plex.direct` pattern). That unlocks WebCodecs, the async clipboard and notifications, and the traffic stays local. It needs a small certificate service of ours, and some routers' DNS-rebind protection blocks it.
+  - **First step, a spike:** a Windows or Linux browser opens the phone's address with nothing installed and pairs by code. It plays one stream over WebRTC (and the MSE fallback) with keyboard and pointer input, and measures latency and CPU against the Mac app. It also checks `.local` resolution on Windows and Linux, and whether the phone's WebRTC stack fits the app's size and memory.
 
 ## 6. On their own branches
 
