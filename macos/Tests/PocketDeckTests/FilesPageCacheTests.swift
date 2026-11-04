@@ -113,15 +113,18 @@ final class FilesPageCacheTests: XCTestCase {
         let cache = FilesPageCache()
         let phone = FakePhone(count: 3000, pageSize: 1000)
         let token = FilesPageToken(cursor: nil)
+        // A later batch of the same phone page: offset 0 of the first page
+        // starts a new pass and always fetches (testANewPass…).
+        let later = FilesPageToken(cursor: nil, offset: FilesPageReader.batchSize)
         func reader() -> FilesPageReader { FilesPageReader(cache: cache, clock: { now }) }
         reader().enumerate(container: container, token: token, load: phone.load,
                            deliver: { _ in }, fail: { XCTFail("\($0.rawValue)") })
         now += FilesPageCache.lifetime - 1
-        reader().enumerate(container: container, token: token, load: phone.load,
+        reader().enumerate(container: container, token: later, load: phone.load,
                            deliver: { _ in }, fail: { XCTFail("\($0.rawValue)") })
         XCTAssertEqual(1, phone.pagesAsked, "a page inside the pass is reused")
         now += 2
-        reader().enumerate(container: container, token: token, load: phone.load,
+        reader().enumerate(container: container, token: later, load: phone.load,
                            deliver: { _ in }, fail: { XCTFail("\($0.rawValue)") })
         XCTAssertEqual(2, phone.pagesAsked, "a page older than the pass is fetched again")
     }
@@ -182,5 +185,31 @@ final class FilesPageCacheTests: XCTestCase {
                         .next(delivered: 250, of: 1000, nextPhonePage: "1000"))
         XCTAssertNil(FilesPageToken(cursor: "2000", offset: 750)
                         .next(delivered: 250, of: 1000, nextPhonePage: nil))
+    }
+    /// A new pass starts at the folder's first page and must never replay the
+    /// last pass's pages: the app signals the system about a change before the
+    /// extension's own push may have arrived, so a cached first page (or a
+    /// later page whose items shifted) would hide the change. Each pass still
+    /// asks each phone page once.
+    func testANewPassFetchesEveryPageAgainEvenWithoutAPush() {
+        let phone = FakePhone(count: 3000, pageSize: 1000)
+        let cache = FilesPageCache()
+        walk(phone, cache: cache)
+        XCTAssertEqual([nil, "1000", "2000"], phone.asks)
+
+        walk(phone, cache: cache)
+        XCTAssertEqual([nil, "1000", "2000", nil, "1000", "2000"], phone.asks,
+                       "the second pass replayed a cached page")
+    }
+
+    /// Inside one pass the first phone page's later batches still come from
+    /// the cache: only offset 0 of the first page starts a pass.
+    func testTheFirstPagesLaterBatchesAreHits() {
+        let phone = FakePhone(count: 900, pageSize: 1000)
+        let cache = FilesPageCache()
+        let result = walk(phone, cache: cache)
+        XCTAssertEqual(900, result.delivered)
+        XCTAssertEqual(4, result.batches)
+        XCTAssertEqual([nil], phone.asks)
     }
 }
