@@ -138,7 +138,7 @@ class DeckService(private val appContext: Context?) :
         }
         val shell = ShellContext(base)
         val display = AndroidDisplayLayer(shell, ::log)
-        val clip = ShellClipboard(shell, ::log)
+        val clip = ShellClipboard(shell, ::log, helper = ClipHelper(shell, ::log))
         val injector = AndroidInjector(::log, clipboard = clip)
         val launcher = AndroidLauncher(shell, ::log)
         val power = AndroidPower(base, ::log)
