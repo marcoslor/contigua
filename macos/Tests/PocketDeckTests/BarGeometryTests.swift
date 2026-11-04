@@ -39,6 +39,7 @@ final class BarGeometryTests: XCTestCase {
         defer { app.window?.close() }
         let window = try XCTUnwrap(app.window)
         window.orderFront(nil)
+        app.noteFirstFrame()
         app.chrome.layoutChrome()
         app.chrome.placeTrafficLights()
         let chrome = app.chrome

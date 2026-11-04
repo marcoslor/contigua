@@ -167,15 +167,7 @@ internal class Watchdog(private val ctx: Context?, private val log: (String) -> 
         runCatching { File(MARKER).delete() }
     }
 
-    private fun apkPath(): String? {
-        val fromPackage = runCatching {
-            ctx?.packageManager?.getApplicationInfo(APP_PACKAGE, 0)?.sourceDir
-        }.getOrNull()
-        if (fromPackage != null && File(fromPackage).isFile) return fromPackage
-        return runCatching {
-            DeckService::class.java.protectionDomain?.codeSource?.location?.path
-        }.getOrNull()?.takeIf { File(it).isFile }
-    }
+    private fun apkPath(): String? = appApkPath(ctx)
 
     companion object {        /** Written while the panel override is live, deleted when it is not. */
         const val MARKER = "/data/local/tmp/pocketdeck/panel-off"
@@ -183,7 +175,6 @@ internal class Watchdog(private val ctx: Context?, private val log: (String) -> 
         /** Sent on a clean stop; a bare EOF means the server died. */
         const val CLEAN_BYTE = 1
 
-        private const val APP_PACKAGE = "dev.pocketdeck"
         private const val APP_PROCESS = "/system/bin/app_process"
         private const val PROCESS_NAME = "pocketdeck-watchdog"
         private const val ACCEPT_TIMEOUT_MS = 5_000L

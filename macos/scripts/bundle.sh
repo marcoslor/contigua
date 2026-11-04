@@ -347,6 +347,7 @@ if [ "$WITH_FILES" = 1 ]; then
     swiftc -O -application-extension -module-name Files -target "$(uname -m)-apple-macos26.0" \
         -swift-version 5 Extensions/Files/Files.swift Sources/PocketDeck/FilesCore.swift \
         Sources/PocketDeck/FilesChanges.swift Sources/PocketDeck/FilesThumbPolicy.swift \
+        Sources/PocketDeck/FilesThumbScheduler.swift Sources/PocketDeck/FilesPageCache.swift \
         -Xlinker -e -Xlinker _NSExtensionMain -o "$FILES_APPEX/Contents/MacOS/Files"
     sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
         -e "s/__FILES_GROUP__/$FILES_GROUP/" \

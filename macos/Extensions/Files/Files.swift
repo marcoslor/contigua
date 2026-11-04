@@ -164,6 +164,9 @@ final class BridgeConnection {
 /// if the app restarts, the next enumerator call reconnects and re-subscribes.
 final class WatchChannel {
     private let domain: NSFileProviderDomain
+    /// Called for every change push, before the log, so a cache can be dropped
+    /// on the reader's own thread (FILES-30).
+    private let onChange: ([String]) -> Void
     private let lock = NSLock()
     private var items: Set<String> = []
     private var connection: BridgeConnection?
@@ -172,8 +175,9 @@ final class WatchChannel {
     /// subscribe (the app refuses a duplicate live id).
     private var nextID: UInt32 = 1
 
-    init(domain: NSFileProviderDomain) {
+    init(domain: NSFileProviderDomain, onChange: @escaping ([String]) -> Void = { _ in }) {
         self.domain = domain
+        self.onChange = onChange
     }
 
     /// Adds or removes one container. A container that is already in the set is
@@ -270,6 +274,7 @@ final class WatchChannel {
     /// set, and the app does that itself (design "S5 round 3"). The push is the
     /// fast path only, so there is nothing to do here but account for it.
     private func signal(_ containers: [String]) {
+        onChange(containers)
         log.notice("watch: changed containers=\(containers.count, privacy: .public)")
     }
 }
@@ -294,7 +299,7 @@ private func bridgeConnection(for domain: NSFileProviderDomain,
 
 // MARK: - Errors
 
-extension FilesFailure: Error {
+extension FilesFailure {
     /// The NSError classes the system documents for a replicated provider.
     var error: Error {
         switch self {
@@ -410,6 +415,15 @@ final class WriteState: @unchecked Sendable {
 final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     let domain: NSFileProviderDomain
     private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
+    /// One thumbnail pool for this extension process, shared by every Finder
+    /// batch it is asked for (FILES-25).
+    private let thumbs = FilesThumbScheduler()
+    /// One phone-page cache for every enumerator in this process (FILES-30):
+    /// the system builds a new enumerator per Finder batch, so a per-enumerator
+    /// cache fetched every 1,000-item phone page once per 250-item batch.
+    private let pages = FilesPageCache()
+    /// What a folder enumerator drives. Stateless: the pages live in `pages`.
+    lazy var reader = FilesPageReader(cache: pages)
     /// The anchor S3 answers with: no changes are reported (S5 adds them).
     let anchor = NSFileProviderSyncAnchor(Data("files-s3".utf8))
 
@@ -493,7 +507,12 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
     /// enumerator (or a listing, a stat, a write) touches it: the app keeps the
     /// folder on the phone for ten minutes after the last touch, so `invalidate`
     /// only ends the pushes, not the watch.
-    private lazy var watchChannel = WatchChannel(domain: domain)
+    private lazy var watchChannel = WatchChannel(domain: domain) { [weak self] containers in
+        // A change push invalidates that folder's cached pages at once: the
+        // next Finder page must ask the phone, never replay a page the change
+        // made stale (FILES-30).
+        self?.pages.drop(containers: containers)
+    }
 
     /// The system touched this container: the app watches it on the phone.
     func watch(_ identifier: String, on: Bool) {
@@ -1147,6 +1166,12 @@ final class ReadState {
 
 // MARK: - Thumbnails
 
+/// A batch's answered count, for Finder's progress; per-thumbnail answers may
+/// come from several threads at once.
+private final class ThumbAnswerCount: NSLock, @unchecked Sendable {
+    var count = 0
+}
+
 /// Who gets a picture at all: `FilesThumbPolicy` decides the type and the R-1
 /// answer in FilesCore's companion file, so K2 pins both.
 extension FilesExtension {
@@ -1158,63 +1183,55 @@ extension FilesExtension {
         progress.isCancellable = true
         let long = max(requestedSize.width, requestedSize.height)
         let size = min(FilesThumbPolicy.maxLongSide, max(1, Int(long.rounded(.up))))
-        work.async {
-            self.thumbBatch(ids: itemIdentifiers, size: size, progress: progress,
-                            per: perThumbnailCompletionHandler, done: completionHandler)
+        guard !itemIdentifiers.isEmpty else {
+            completionHandler(nil)
+            return progress
         }
-        return progress
-    }
-
-    /// At most three thumbnails run, one bridge connection each; every id gets
-    /// exactly one answer and the batch completes once.
-    private func thumbBatch(ids: [NSFileProviderItemIdentifier], size: Int, progress: Progress,
-                            per: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
-                            done: @escaping (Error?) -> Void) {
-        guard !ids.isEmpty else { return done(nil) }
-        let lock = NSLock()
-        var index = 0
-        var running = 0
-        var finished = 0
-        var stopped = false
-
-        func launchNext() {
-            lock.lock()
-            while !stopped && !progress.isCancelled && running < FilesThumbPolicy.inFlightLimit
-                    && index < ids.count {
-                let item = ids[index]
-                index += 1
-                running += 1
-                lock.unlock()
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    guard let self else { return }
-                    let answer = self.thumb(item: item.rawValue, size: size, progress: progress)
-                    lock.lock()
-                    running -= 1
-                    finished += 1
-                    let complete = finished == ids.count
-                    lock.unlock()
-                    progress.completedUnitCount = Int64(finished)
-                    per(item, answer.data, answer.error)
-                    if complete { done(nil) } else { launchNext() }
+        let started = Date()
+        let answered = ThumbAnswerCount()
+        // One pool for every batch: the scheduler decides what runs when, so
+        // several Finder batches cannot put 3 x N asks on the bridge, and a
+        // cancelled batch answers all of its ids and completes once.
+        let batchID = thumbs.open(
+            items: itemIdentifiers.map(\.rawValue),
+            start: { [weak self] item, isCancelled, completion in
+                DispatchQueue.global(qos: .utility).async {
+                    guard let self else {
+                        completion(nil, FilesThumbPolicy.error(for: "closed"))
+                        return
+                    }
+                    let answer = self.thumb(item: item, size: size, isCancelled: isCancelled)
+                    completion(answer.data, answer.error)
                 }
-                lock.lock()
-            }
-            lock.unlock()
+            },
+            per: { item, data, error in
+                perThumbnailCompletionHandler(NSFileProviderItemIdentifier(item), data, error)
+                answered.lock()
+                answered.count += 1
+                let count = answered.count
+                answered.unlock()
+                progress.completedUnitCount = Int64(count)
+            },
+            done: { error in
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                log.notice("thumb batch done n=\(itemIdentifiers.count, privacy: .public) ms=\(ms, privacy: .public)")
+                completionHandler(error)
+            })
+        progress.cancellationHandler = { [weak self] in
+            log.notice("thumb batch cancel id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public)")
+            self?.thumbs.cancel(batchID)
         }
-
-        progress.cancellationHandler = {
-            lock.lock()
-            stopped = true
-            lock.unlock()
-        }
-        launchNext()
+        // A cancel that landed before the handler was set: cancel is idempotent.
+        if progress.isCancelled { thumbs.cancel(batchID) }
+        log.notice("thumb batch open id=\(batchID, privacy: .public) n=\(itemIdentifiers.count, privacy: .public) size=\(size, privacy: .public)")
+        return progress
     }
 
     /// One item's thumbnail: one request, its data frames, its answer. The
     /// connection waits 120 s (FILES-29): the ask may sit in the app's queue
     /// behind a camera folder, and the socket must not time it out first.
     private func thumb(item: String, size: Int,
-                       progress: Progress) -> (data: Data?, error: Error?) {
+                       isCancelled: @escaping () -> Bool) -> (data: Data?, error: Error?) {
         guard case .success(let connection) = connect(readTimeout: FilesThumbPolicy.bridgeReadTimeout),
               hello(connection) else {
             log.notice("thumb failed code=offline")
@@ -1229,7 +1246,7 @@ extension FilesExtension {
         }
         var data = Data()
         while let frame = connection.next() {
-            if progress.isCancelled {
+            if isCancelled() {
                 state.cancel()
                 return (nil, nil)
             }
@@ -1297,71 +1314,30 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
     /// One `didEnumerate` batch. A phone page holds up to 1000 items; handing
     /// 1000 to the system in one callback made a 1500-entry folder list as
     /// empty in the round-2 VM run, so a page is delivered in batches of this
-    /// size and the page cursor carries the offset.
-    static let batchSize = 250
-
-    /// The phone page last fetched, so the four batches of one page cost one
-    /// listing.
-    private var cachedPage: (cursor: String?, items: [FileItem], next: String?)?
-
+    /// size and the page cursor carries the offset (FilesPageReader).
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
         guard let owner else {
             observer.finishEnumeratingWithError(FilesFailure.offline.error)
             return
         }
-        let (cursor, offset) = pageToken(page)
         let identifier = containerIdentifier
         owner.watch(identifier, on: true)
-        if let cache = cachedPage, cache.cursor == cursor {
-            deliver(cache.items, offset: offset, cursor: cursor,
-                    nextPhonePage: cache.next, identifier: identifier, observer: observer)
-            return
-        }
-        owner.loadListing(item: identifier, page: cursor) { result in
-            switch result {
-            case .success(let listing):
-                self.cachedPage = (cursor: cursor, items: listing.items, next: listing.next)
-                self.deliver(listing.items, offset: offset, cursor: cursor,
-                             nextPhonePage: listing.next, identifier: identifier,
-                             observer: observer)
-            case .failure(let failure):
+        owner.reader.enumerate(
+            container: identifier, token: FilesPageToken(page.rawValue),
+            load: { [weak owner] container, cursor, completion in
+                owner?.loadListing(item: container, page: cursor, completion: completion)
+            },
+            deliver: { delivery in
+                observer.didEnumerate(delivery.items.map(ProviderItem.init))
+                log.notice("\(FilesPageLog.line(count: delivery.items.count, fetched: delivery.fetched, milliseconds: delivery.milliseconds), privacy: .public)")
+                observer.finishEnumerating(
+                    upTo: delivery.next.map { NSFileProviderPage($0.page) })
+            },
+            fail: { failure in
                 log.notice("enumerate failed code=\(failure.rawValue, privacy: .public)")
                 observer.finishEnumeratingWithError(failure.error)
-            }
-        }
-    }
-
-    /// `b<offset>@<phone page>`; the initial pages are offset 0 of the first
-    /// phone page.
-    private func pageToken(_ page: NSFileProviderPage) -> (cursor: String?, offset: Int) {
-        let initialByName = NSFileProviderPage.initialPageSortedByName as Data
-        let initialByDate = NSFileProviderPage.initialPageSortedByDate as Data
-        guard page.rawValue as Data != initialByName,
-              page.rawValue as Data != initialByDate,
-              let text = String(data: page.rawValue, encoding: .utf8),
-              text.hasPrefix("b"),
-              let at = text.firstIndex(of: "@") else { return (nil, 0) }
-        let offset = Int(text[text.index(after: text.startIndex)..<at]) ?? 0
-        let rest = String(text[text.index(after: at)...])
-        return (rest.isEmpty ? nil : rest, offset)
-    }
-
-    private func deliver(_ items: [FileItem], offset: Int, cursor: String?,
-                         nextPhonePage: String?, identifier: String,
-                         observer: NSFileProviderEnumerationObserver) {
-        let slice = Array(items.dropFirst(max(0, offset)).prefix(Self.batchSize))
-        observer.didEnumerate(slice.map(ProviderItem.init))
-        let next: String?
-        if offset + slice.count < items.count {
-            next = "b\(offset + slice.count)@\(cursor ?? "")"
-        } else if let nextPhonePage {
-            next = "b0@\(nextPhonePage)"
-        } else {
-            next = nil
-        }
-        log.notice("enumerate items=\(slice.count, privacy: .public) more=\(next != nil, privacy: .public)")
-        observer.finishEnumerating(upTo: next.map { NSFileProviderPage(Data($0.utf8)) })
+            })
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver,
@@ -1487,7 +1463,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             self?.snapshot = items
             // The same batch size as a folder: 1000 items in one callback made
             // the system list nothing (round 2's 1500-entry folder).
-            let pageSize = FilesEnumerator.batchSize
+            let pageSize = FilesPageReader.batchSize
             let slice = Array(items.dropFirst(offset).prefix(pageSize))
             observer.didEnumerate(slice.map(ProviderItem.init))
             let next = offset + slice.count < items.count

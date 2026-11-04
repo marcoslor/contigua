@@ -96,6 +96,12 @@ final class FilesThumbQueue {
     private var running = 0
     private var scheduling = false
 
+    /// Where a transition line goes. Production logs it to the files category;
+    /// tests capture it, so both ends of the arrow are pinned (AGENTS.md).
+    var logTransition: (String) -> Void = { line in
+        Log.files.notice("\(line, privacy: .public)")  // log-ok: closed state and event tokens, never a value from the wire
+    }
+
     /// Accepts one ask; it starts now or waits its turn. The deadline is
     /// armed only when `fs.thumb` goes to the phone (FILES-29): a queued ask
     /// waits until it runs, Finder cancels it, or the session ends.
@@ -135,10 +141,11 @@ final class FilesThumbQueue {
 
     private func advance(_ key: Key, _ event: ThumbEvent) {
         guard let job = jobs[key], !job.settled else { return }
-        let (next, actions) = Self.transition(job.phase, event)
-        guard next != job.phase else { return }
+        let before = job.phase
+        let (next, actions) = Self.transition(before, event)
+        guard next != before else { return }
         job.phase = next
-        Log.files.notice("thumb: \(Self.token(job.phase), privacy: .public) --\(Self.token(event), privacy: .public)--> \(Self.token(next), privacy: .public)")  // log-ok: closed state and event tokens, never a value from the wire
+        logTransition(Self.transitionLine(from: before, event: event, to: next))
         for action in actions { perform(action, job) }
         if next == .done || next == .cancelled || next == .expired {
             settle(job)
@@ -233,6 +240,12 @@ final class FilesThumbQueue {
         case (.done, _), (.cancelled, _), (.expired, _):
             return (phase, [])
         }
+    }
+
+    /// The one-line record of a transition: the phase it left, the event, the
+    /// phase it entered. Pure so a test can pin both ends of the arrow.
+    static func transitionLine(from: ThumbPhase, event: ThumbEvent, to: ThumbPhase) -> String {
+        "thumb: \(token(from)) --\(token(event))--> \(token(to))"
     }
 
     private static func token(_ phase: ThumbPhase) -> String {

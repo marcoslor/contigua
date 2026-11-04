@@ -891,8 +891,15 @@ controller no longer signal containers. `FilesWatchSet` keeps a touched folder
 for ten minutes after the last touch, at most 64 (LRU), unit tested with an
 injected clock; `PD_FILES_WATCH_TTL` shortens the TTL for the host check. A big
 folder is enumerated in 250-item batches with the page cursor carrying the
-offset (`b<offset>@<phone page>`) and the phone page cached, and the id-map JSON
-is written once per quarter second instead of once per item.
+offset (`b<offset>@<phone page>`), and the phone page is cached in one cache per
+extension process, keyed by container and cursor (at most 4 pages, each at most
+30 s old — one pass over 3,000 names took 16.3 s in the VM — and dropped when
+that folder's change push arrives or a new pass starts at the folder's first
+page, with in-flight fetches invalidated by a generation counter: the app may
+signal the system before the extension's own push arrives, so a pass never
+reuses another pass's pages), so each phone page costs one `fs.list` per pass instead of
+one per Finder batch; the id-map JSON is written once per quarter second instead
+of once per item.
 Checks: K2 849/0; host `files-watch` 29/0 (working-set updates with the real
 parent, a delete, `.workingSet`/`.trashContainer` no phone traffic, 65 folders
 → 64, TTL → `watch off`); regressions `files-write` 24/0, `files-bridge` 19/0,
@@ -1031,14 +1038,24 @@ this path touches `PowerManager` or the display.
 **Limits (T4).** At most 3 thumbnails in flight per session on the Mac
 (`FilesThumbQueue` in the app: FIFO, 3 slots, an 8 s deadline per request
 measured from the `fs.thumb` send — a queued ask waits its turn; cancel either
-leaves the queue or sends one `fs.cancel`); the extension keeps its own 3 per
-batch so it never leans on the app's queue for pacing. The phone generates one
-at a time, accepts at most 3 live thumb ids (`fs_busy` past that) and puts the
-frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session writer's
-lowest-priority queue, drained after JSON, control, audio and video deltas with
-at most 1 MiB queued; the same `FS_DATA` type the paths layer counts as bulk
-(12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a grid
-of icons can never overtake a reply, delay a stream, or starve a drop.
+leaves the queue or sends one `fs.cancel`); the extension runs one 3-ask pool
+across all its Finder batches (`FilesThumbScheduler`): the newest batch's
+unstarted ids first, index order within a batch, a cancelled batch answering its
+unstarted ids and completing at once with `NSUserCancelledError` (the header's
+rule; an ask still in flight stops at its next frame, and its late answer only
+frees its slot). So what the person is looking at is asked
+next, the app's queue never holds more than 3 asks per extension, and several
+open batches cannot put 3 x N asks on the bridge. MEASURED (K2
+`ThumbSchedulerLoadTests.testTheScrollLoad`, 2026-11-03): 3,000 ids in 60
+batches of 50 against a 300 ms phone, a new batch opening and the previous one
+cancelling every 2 s → first ask of a new batch p50 149-159 ms, p95 289-302 ms,
+max 313-318 ms over two runs; the pending set peaked at 53 (3 in flight + one batch of 50). The phone
+generates one at a time, accepts at most 3 live thumb ids (`fs_busy` past that)
+and puts the frames on the **bulk lane** — `SendQueue.enqueueBulk`, the session
+writer's lowest-priority queue, drained after JSON, control, audio and video
+deltas with at most 1 MiB queued; the same `FS_DATA` type the paths layer counts
+as bulk (12 MiB unacked cap, 1 MiB window, no seq until the path has room). So a
+grid of icons can never overtake a reply, delay a stream, or starve a drop.
 
 The queue's one request, by state (`FilesThumbQueue.transition`):
 

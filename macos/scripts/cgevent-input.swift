@@ -9,7 +9,10 @@
 //   swift scripts/cgevent-input.swift click  --window ID [--dx N --dy N]
 //   swift scripts/cgevent-input.swift drag   --window ID --dx 200 --dy 0 [--steps 20]
 //   swift scripts/cgevent-input.swift drag   --window ID --right-edge --dx 100   (resize from the right edge)
-//   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0]
+//   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0] [--repeat N] [--delay-ms M] [--pixels]
+//       --repeat posts N wheel events in one gesture (a scripted scroll), with
+//       --delay-ms between them (default 0). --pixels counts the deltas in
+//       pixels instead of lines, so a check can move a known distance.
 //   swift scripts/cgevent-input.swift rclick --window ID
 //   swift scripts/cgevent-input.swift bpress --window ID [--button 3] [--dx N --dy N --steps N] [--hold 0.4]
 //       an extra mouse button's press: otherMouseDown with
@@ -227,10 +230,11 @@ func drag(from start: CGPoint, dx: Double, dy: Double, steps: Int) {
     HeldInputs.shared.lift(button: 0)
 }
 
-func scroll(_ point: CGPoint, dx: Double, dy: Double) {
+func scroll(_ point: CGPoint, dx: Double, dy: Double, pixels: Bool = false) {
     move(to: point)
     usleep(20_000)
-    guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2,
+    guard let event = CGEvent(scrollWheelEvent2Source: nil, units: pixels ? .pixel : .line,
+                              wheelCount: 2,
                               wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else { return }
     event.location = point
     post(event)
@@ -448,7 +452,17 @@ case "click", "rclick", "drag", "scroll", "move", "bpress":
             start = center
         }
         drag(from: start, dx: dx, dy: dy, steps: numberArgument("--steps") ?? 20)
-    case "scroll": scroll(point, dx: dx, dy: dy)
+    case "scroll":
+        // A scripted scroll: one process posts the whole gesture, so a check
+        // can span a folder of thousands of icons without spawning a process
+        // per line.
+        let times = max(1, numberArgument("--repeat") ?? 1)
+        let pause = UInt32(max(0, numberArgument("--delay-ms") ?? 0)) * 1000
+        let pixels = hasFlag("--pixels")
+        for _ in 0..<times {
+            scroll(point, dx: dx, dy: dy, pixels: pixels)
+            if pause > 0 { usleep(pause) }
+        }
     case "move":
         if let top = doubleArgument("--top") {
             move(to: CGPoint(x: center.x + dx, y: target.y + top))

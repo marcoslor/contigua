@@ -28,6 +28,13 @@ import java.io.File
  *   am start -n dev.pocketdeck/.app.PasteDebugActivity --es field plain
  *   adb shell input keyevent 279
  *
+ * `--es action copy --es text <string>` writes a plain-text primary clip as the
+ * focused app; `--es action exists` reads the primary clip's description (never
+ * its content) and logs whether one exists. The read waits for window focus:
+ * the app-facing clipboard API returns null to an unfocused app, so an onCreate
+ * read would report a clip that is there as absent. Both log lengths and flags
+ * only.
+ *
  * `--es item empty|uri` first puts the debug image on the clipboard in that
  * item shape (the comparison the review asks for); without it the clipboard is
  * whatever the real ShellClipboard wrote from a clip.image.* transfer. The
@@ -75,11 +82,41 @@ class PasteDebugActivity : Activity() {
             else -> Unit
         }
 
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        when (intent.getStringExtra("action")) {
+            "copy" -> {
+                val text = intent.getStringExtra("text") ?: ""
+                clipboard.setPrimaryClip(ClipData.newPlainText("Paste debug", text))
+                Log.i(TAG, "copy length=${text.length}")  // log-ok: a length only, never the text
+            }
+            "exists" ->
+                // Focus (not this onCreate) decides when the app may read: the
+                // clipboard API answers null to an unfocused app.
+                window.decorView.post { reportExistsIfFocused() }
+            else -> Unit
+        }
+
         val field = intent.getStringExtra("field")
         val target = if (field == "rich") rich else plain
         target.requestFocus()
         Log.i(TAG, "ready field=${if (field == "rich") "rich" else "plain"} " +  // log-ok: fixed state names, never text
             "item=${intent.getStringExtra("item") ?: "keep"}")
+    }
+
+    /** The exists probe runs once, only after this activity's window has focus. */
+    private var existsReported = false
+
+    private fun reportExistsIfFocused() {
+        if (existsReported || !hasWindowFocus()) return
+        existsReported = true
+        // The description has no owner check and carries no content.
+        val description = getSystemService(ClipboardManager::class.java).primaryClipDescription
+        Log.i(TAG, "clip exists=${description != null} mimes=${description?.mimeTypeCount ?: 0}")  // log-ok: a state and a count, never the clip
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) reportExistsIfFocused()
     }
 
     /** Numbers only: proves whether the injected key reaches the field at all. */
