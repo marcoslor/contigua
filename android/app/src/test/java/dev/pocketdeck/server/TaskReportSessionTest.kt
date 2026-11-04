@@ -20,9 +20,10 @@ class TaskReportSessionTest : SessionFixture() {
         events: FakeTaskEvents,
         presence: TaskPresence,
         exitPollMs: Long = 60_000,
+        titles: WindowObserver? = null,
     ) {
         logs = CopyOnWriteArrayList()
-        connect(taskPresence = presence, taskEvents = events,
+        connect(taskPresence = presence, taskEvents = events, titleObserver = titles,
                 log = { logs.add(it) }, exitPollIntervalMs = exitPollMs)
     }
 
@@ -65,15 +66,55 @@ class TaskReportSessionTest : SessionFixture() {
     }
 
     @Test
-    fun aRemovedStreamTaskClosesAppExited() {
+    fun aRemovedStreamTaskWithAnEmptyDisplayClosesAppExited() {
         val events = FakeTaskEvents()
-        connectWithEvents(events, FixedPresence(hasTask = true, taskId = 7))
+        connectWithEvents(events, FixedPresence(hasTask = false, taskId = 7))
         openChrome()
 
         events.emit(TaskStackEvent.Removed(taskId = 7))
         val closed = readUntil("window.closed")
 
         assertEquals("app_exited", closed["reason"])
+    }
+
+    /**
+     * ISS-33: the app's own picker sits on the streamed display above the app's
+     * task; when the person backs out of it the picker's task is removed while
+     * the app's task is still there. The window stays, and its task is the
+     * app's again — removing that task is then the real exit.
+     */
+    @Test
+    fun aClosedSheetLeavesTheWindowAndRepointsToTheAppsTask() {
+        val events = FakeTaskEvents()
+        val presence = FixedPresence(hasTask = true, taskId = 7)
+        // The app's task is 7; its own picker became the display's top task.
+        var top = TopTask(chrome, "Share", 42)
+        connectWithEvents(events, presence, exitPollMs = 20, titles = { top })
+        openChrome()
+        readUntilTitle("Share")
+
+        // The person backs out: the picker's task is removed, the app's stays.
+        top = TopTask(chrome, "Chrome", 7)
+        presence.taskId = 7
+        events.emit(TaskStackEvent.Removed(taskId = 42))
+
+        assertFalse("a sheet closing must not close the window",
+            logs.any { it.startsWith("closed stream") })
+
+        // The stream is on the app's task again: its removal is the exit.
+        presence.hasTask = false
+        events.emit(TaskStackEvent.Removed(taskId = 7))
+        val closed = readUntil("window.closed")
+        assertEquals("app_exited", closed["reason"])
+    }
+
+    /** Reads until the title poll names [label]; it also proves the re-point. */
+    private fun readUntilTitle(label: String) {
+        repeat(40) {
+            val m = readJson()
+            if (m["t"] == "window.title" && m["title"] == label) return
+        }
+        error("never received the '$label' title")
     }
 
     @Test
