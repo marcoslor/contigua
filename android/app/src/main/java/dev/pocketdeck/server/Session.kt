@@ -65,8 +65,10 @@ class Session(
     private val clipboard: ClipboardPort? = null,
     /** APK installs at shell UID; null refuses them (docs/design/apk.md). */
     private val packages: PackageShell? = null,
-    /** Task list + task-to-display moves for `task.continue`; null refuses them. */
+    /** Task list + task-to-display moves for `task.continue` and `window.adopt`; null refuses them. */
     private val taskMove: TaskMove? = null,
+    /** The system's task-stack callbacks (WIN-44…WIN-49); null has no report path. */
+    private val taskEvents: TaskStackEvents? = null,
     /** File drops into /sdcard/Download/PocketDeck (docs/design/dragdrop.md); null refuses. */
     private val dropLanding: DropReceiver.Landing? = null,
     /** Shared-storage root for read-only phone files (docs/design/files.md); null refuses fs.*. */
@@ -216,6 +218,8 @@ class Session(
     @Volatile private var readerThread: Thread? = null
 
     private val streams = LinkedHashMap<Int, StreamState>()
+    /** The task-arrival rules (WIN-44, WIN-48, WIN-49); actions run in [performArrival]. */
+    private val arrival = TaskArrival { message -> log(message) }
     /**
      * `window.opened` before any video (PROTOCOL "Video rules"), while the opener
      * waits for the task id it carries.
@@ -983,6 +987,7 @@ class Session(
         runCatching { fsThumbnailer?.close() }
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
+        runCatching { taskEvents?.stop() }
         hoverExecutor.shutdownNow()
         // A removal already running finishes; no close can arrive now.
         closeTasks.shutdown()
@@ -995,7 +1000,10 @@ class Session(
             streams.clear()
             open
         }
-        for (s in closing) runCatching { display.close(s.stream) }
+        for (s in closing) {
+            arrival.on(TaskArrivalEvent.StreamClosed(s.stream))
+            runCatching { display.close(s.stream) }
+        }
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
         runCatching { power.onPanelChanged = null }
@@ -1448,6 +1456,7 @@ class Session(
         startStateWatch()
         startClipboardSync()
         startClipImagePoll()
+        startTaskListener()
     }
 
     /** A `welcome` on a joined path echoes the same session id (PATH-3). */
@@ -1486,6 +1495,7 @@ class Session(
                 "apps.list" -> onAppsList()
                 "apps.icon" -> onAppsIcon(obj)
                 "window.open" -> onWindowOpen(obj, frame)
+                "window.adopt" -> onWindowAdopt(obj, frame)
                 "link.open" -> onLinkOpen(obj, frame)
                 "window.resize" -> onWindowResize(obj, frame)
                 "window.close" -> onWindowClose(obj, frame)
@@ -1589,6 +1599,70 @@ class Session(
         openStream(obj, stream, content, newInstance = Json.bool(obj["newInstance"]) ?: false)
     }
 
+    /**
+     * WIN-46: a window for a task the app started itself. The display exists
+     * first (as for `window.open`), then the task is moved onto it with Recents
+     * and a launch display. A refusal closes that display and answers
+     * `cannot_adopt`; the task is never relaunched.
+     */
+    private fun onWindowAdopt(obj: Map<String, Any?>, frame: Frame) {
+        val stream = streamOf(obj, frame)
+        val taskId = Json.int(obj["taskId"]) ?: 0
+        val pkg = Json.str(obj["pkg"]) ?: run {
+            sendError("cannot_adopt", "window.adopt needs pkg", stream)
+            return
+        }
+        val w = floor16(Json.int(obj["w"]) ?: 0)
+        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val dpi = Json.int(obj["dpi"]) ?: 160
+        if (taskId <= 0 || w <= 0 || h <= 0) {
+            sendError("cannot_adopt", "window.adopt needs taskId and w,h", stream)
+            return
+        }
+        val mover = taskMove ?: run {
+            sendError("cannot_adopt", "this phone can't move tasks", stream)
+            return
+        }
+        if (!WindowCap.allows(openAppStreams(excluding = stream))) {
+            sendError("cannot_adopt", "the phone runs at most ${WindowCap.MAX_WINDOWS} app windows", stream)
+            return
+        }
+        if (synchronized(streams) { streams.containsKey(stream) }) {
+            display.close(stream)
+            gate.forget(stream)
+        }
+        gate.expect(stream)
+        val displayId = display.open(stream, w, h, dpi, this)
+        val state = StreamState(stream, displayId, IntSize(w, h)).also {
+            it.content = WindowContent.App(pkg, null)
+        }
+        synchronized(streams) { streams[stream] = state }
+        updatePower()
+        arrival.on(TaskArrivalEvent.OwnMove(taskId))
+        val moved = runCatching { mover.adopt(taskId, displayId) }.getOrDefault(false)
+        if (!moved) {
+            synchronized(streams) { streams.remove(stream) }
+            display.close(stream)
+            gate.forget(stream)
+            updatePower()
+            sendError("cannot_adopt", "the task could not be moved", stream)
+            log("adopt: refused stream=$stream task=$taskId")
+            return
+        }
+        state.taskId = taskId
+        gate.announce(stream) {
+            val fields = openedFields(stream, displayId, w, h, taskId)
+            fields["started"] = "moved"
+            sendJson(fields)
+        }
+        openArrival(state)
+        updatePower()
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
+        startStreamWatch()
+        notifyAudioWindowsChanged()
+        log("adopt: stream=$stream task=$taskId display=$displayId")
+    }
+
     private fun onLinkOpen(obj: Map<String, Any?>, frame: Frame) {
         val stream = streamOf(obj, frame)
         val url = LinkPolicy.validate(Json.str(obj["url"])) ?: run {
@@ -1644,10 +1718,14 @@ class Session(
         if (moved) {
             goHome()
             state.taskId = task.taskId
+            arrival.on(TaskArrivalEvent.OwnMove(task.taskId))
         } else {
+            arrival.on(TaskArrivalEvent.OwnLaunchStarted(task.pkg))
             launchOn(displayId, task.pkg, task.activity, newInstance = false)
             state.taskId = awaitTaskId(stream, displayId)
+            arrival.on(TaskArrivalEvent.OwnLaunchFinished(task.pkg, state.taskId))
         }
+        openArrival(state)
         gate.announce(stream) {
             val fields = openedFields(stream, displayId, w, h, state.taskId)
             fields["started"] = if (moved) "moved" else "fresh"
@@ -1710,6 +1788,10 @@ class Session(
             updatePower()
             // The launch next: `window.opened` names the task it made (WIN-32),
             // and video that arrived before this point waits in the gate.
+            // The launch creates a task of the phone's own making: its listener
+            // callback must never become a `window.task` (WIN-48).
+            val ownPkg = (content as? WindowContent.App)?.pkg
+            if (ownPkg != null) arrival.on(TaskArrivalEvent.OwnLaunchStarted(ownPkg))
             val launched = when (content) {
                 is WindowContent.App -> launchOn(displayId, content.pkg, content.activity, newInstance)
                 is WindowContent.Link -> viewOn(displayId, content.url)
@@ -1717,6 +1799,8 @@ class Session(
             }
             val taskId = awaitTaskId(stream, displayId)
             state.taskId = taskId
+            if (ownPkg != null) arrival.on(TaskArrivalEvent.OwnLaunchFinished(ownPkg, taskId))
+            openArrival(state)
             gate.announce(stream) { sendJson(openedFields(stream, displayId, w, h, taskId)) }
             if (!launched) {
                 when (content) {
@@ -1812,6 +1896,7 @@ class Session(
         }
         display.close(stream)
         gate.forget(stream)
+        arrival.on(TaskArrivalEvent.StreamClosed(stream))
         // The panel follows the session's windows, so it is settled before the
         // reply: a closed window never leaves the Mac on a held panel.
         updatePower()
@@ -1901,7 +1986,12 @@ class Session(
     private fun onWindowLaunch(obj: Map<String, Any?>, frame: Frame) {
         val state = requireState(streamOf(obj, frame)) ?: return
         val pkg = Json.str(obj["pkg"]) ?: return
-        if (!launchOn(state.displayId, pkg, Json.str(obj["activity"]), newInstance = false)) {
+        arrival.on(TaskArrivalEvent.OwnLaunchStarted(pkg))
+        val launched = launchOn(state.displayId, pkg, Json.str(obj["activity"]), newInstance = false)
+        // The id this launch made is the phone's own task, never a report.
+        val taskId = awaitTaskId(state.stream, state.displayId)
+        arrival.on(TaskArrivalEvent.OwnLaunchFinished(pkg, taskId))
+        if (!launched) {
             sendError("launch_failed", "could not launch $pkg", state.stream)
         }
         // The shown app changes: the audio follow decision refreshes once the
@@ -3237,7 +3327,10 @@ class Session(
                             s.lastTitle = top
                             titlesChanged = true
                         }
-                        if (top.taskId > 0) s.taskId = top.taskId
+                        if (top.taskId > 0 && s.taskId != top.taskId) {
+                            s.taskId = top.taskId
+                            arrival.on(TaskArrivalEvent.StreamTask(s.stream, top.taskId))
+                        }
                         when (s.content) {
                             is WindowContent.App, is WindowContent.Link -> {
                                 val due = tickAppTitle(s, top, appChanged, nowMs)
@@ -3325,19 +3418,93 @@ class Session(
             current[s.stream] = hasTask
             s.hadTask = hasTask
         }
-        for (stream in AppExit.exited(previous, current)) closeAppExited(stream)
+        for (stream in AppExit.exited(previous, current)) {
+            dispatchArrival(arrival.on(TaskArrivalEvent.DisplayEmpty(stream)))
+        }
     }
 
-    private fun closeAppExited(stream: Int) {
+    private fun closeAppExited(stream: Int) = closePhoneClosed(stream, "app_exited")
+
+    private fun closeMovedToPhone(stream: Int) = closePhoneClosed(stream, "moved_to_phone")
+
+    /**
+     * The phone ended a stream by itself: `app_exited` for a task that is gone,
+     * `moved_to_phone` for the person opening it on the phone's screen (WIN-49).
+     * The task is never removed here: the person's phone task must survive.
+     */
+    private fun closePhoneClosed(stream: Int, reason: String) {
         val state = synchronized(streams) { streams.remove(stream) } ?: return
         display.close(stream)
         gate.forget(stream)
-        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "app_exited"))
+        arrival.on(TaskArrivalEvent.StreamClosed(stream))
+        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to reason))
         updatePower()
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
-        log("closed stream $stream: app exited (display ${state.displayId})")
+        log("closed stream $stream: $reason (display ${state.displayId})")
+    }
+
+    // ------------------------------------------------------------------
+    // task arrival (WIN-44, WIN-48, WIN-49)
+    // ------------------------------------------------------------------
+
+    private fun openArrival(state: StreamState) {
+        val content = state.content ?: return
+        val pkg = when (content) {
+            is WindowContent.App -> content.pkg
+            is WindowContent.Link -> ""
+            WindowContent.Phone -> return
+        }
+        dispatchArrival(arrival.on(
+            TaskArrivalEvent.StreamOpened(state.stream, state.displayId, pkg, state.taskId),
+        ))
+    }
+
+    private fun onTaskStackEvent(event: TaskStackEvent) {
+        val mapped = when (event) {
+            is TaskStackEvent.Created -> TaskArrivalEvent.Created(event.taskId, event.pkg, now())
+            is TaskStackEvent.DisplayChanged -> TaskArrivalEvent.DisplayChanged(event.taskId, event.displayId, now())
+            is TaskStackEvent.Removed -> TaskArrivalEvent.Removed(event.taskId)
+        }
+        dispatchArrival(arrival.on(mapped))
+    }
+
+    private fun startTaskListener() {
+        val events = taskEvents ?: return
+        val started = runCatching { events.start(::onTaskStackEvent) }.getOrDefault(false)
+        // A refusal leaves the phone with no report path and nothing else changed.
+        if (!started) log("task listener: refused (no task reports)")
+    }
+
+    private fun dispatchArrival(actions: List<TaskArrivalAction>) {
+        for (action in actions) performArrival(action)
+    }
+
+    private fun performArrival(action: TaskArrivalAction) {
+        when (action) {
+            is TaskArrivalAction.Report -> {
+                val state = synchronized(streams) { streams[action.stream] } ?: return
+                val label = runCatching { taskPresence?.taskLabel(action.taskId) }.getOrNull()
+                    ?: state.lastTitle?.label
+                    ?: action.pkg
+                sendJson(
+                    mapOf(
+                        "t" to "window.task", "stream" to action.stream,
+                        "taskId" to action.taskId, "pkg" to action.pkg, "label" to label,
+                    ),
+                )
+                // R-PRIV-1: a label can be a page title — its length, never it.
+                log("window.task stream=${action.stream} task=${action.taskId} len=${label.length}")
+            }
+            is TaskArrivalAction.ProbeDisplay -> {
+                val still = runCatching { taskPresence?.hasTask(action.displayId) }.getOrNull()
+                // A failed query is not an empty display.
+                dispatchArrival(arrival.on(TaskArrivalEvent.MoveCheck(action.stream, still != false)))
+            }
+            is TaskArrivalAction.CloseMovedToPhone -> closeMovedToPhone(action.stream)
+            is TaskArrivalAction.CloseAppExited -> closeAppExited(action.stream)
+        }
     }
 
     /** One `state.secure` probe; a read failure leaves the last value alone. */
