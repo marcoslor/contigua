@@ -164,6 +164,9 @@ final class BridgeConnection {
 /// if the app restarts, the next enumerator call reconnects and re-subscribes.
 final class WatchChannel {
     private let domain: NSFileProviderDomain
+    /// Called for every change push, before the log, so a cache can be dropped
+    /// on the reader's own thread (FILES-30).
+    private let onChange: ([String]) -> Void
     private let lock = NSLock()
     private var items: Set<String> = []
     private var connection: BridgeConnection?
@@ -172,8 +175,9 @@ final class WatchChannel {
     /// subscribe (the app refuses a duplicate live id).
     private var nextID: UInt32 = 1
 
-    init(domain: NSFileProviderDomain) {
+    init(domain: NSFileProviderDomain, onChange: @escaping ([String]) -> Void = { _ in }) {
         self.domain = domain
+        self.onChange = onChange
     }
 
     /// Adds or removes one container. A container that is already in the set is
@@ -270,6 +274,7 @@ final class WatchChannel {
     /// set, and the app does that itself (design "S5 round 3"). The push is the
     /// fast path only, so there is nothing to do here but account for it.
     private func signal(_ containers: [String]) {
+        onChange(containers)
         log.notice("watch: changed containers=\(containers.count, privacy: .public)")
     }
 }
@@ -294,7 +299,7 @@ private func bridgeConnection(for domain: NSFileProviderDomain,
 
 // MARK: - Errors
 
-extension FilesFailure: Error {
+extension FilesFailure {
     /// The NSError classes the system documents for a replicated provider.
     var error: Error {
         switch self {
@@ -413,6 +418,12 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
     /// One thumbnail pool for this extension process, shared by every Finder
     /// batch it is asked for (FILES-25).
     private let thumbs = FilesThumbScheduler()
+    /// One phone-page cache for every enumerator in this process (FILES-30):
+    /// the system builds a new enumerator per Finder batch, so a per-enumerator
+    /// cache fetched every 1,000-item phone page once per 250-item batch.
+    private let pages = FilesPageCache()
+    /// What a folder enumerator drives. Stateless: the pages live in `pages`.
+    lazy var reader = FilesPageReader(cache: pages)
     /// The anchor S3 answers with: no changes are reported (S5 adds them).
     let anchor = NSFileProviderSyncAnchor(Data("files-s3".utf8))
 
@@ -496,7 +507,12 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
     /// enumerator (or a listing, a stat, a write) touches it: the app keeps the
     /// folder on the phone for ten minutes after the last touch, so `invalidate`
     /// only ends the pushes, not the watch.
-    private lazy var watchChannel = WatchChannel(domain: domain)
+    private lazy var watchChannel = WatchChannel(domain: domain) { [weak self] containers in
+        // A change push invalidates that folder's cached pages at once: the
+        // next Finder page must ask the phone, never replay a page the change
+        // made stale (FILES-30).
+        self?.pages.drop(containers: containers)
+    }
 
     /// The system touched this container: the app watches it on the phone.
     func watch(_ identifier: String, on: Bool) {
@@ -1298,71 +1314,30 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
     /// One `didEnumerate` batch. A phone page holds up to 1000 items; handing
     /// 1000 to the system in one callback made a 1500-entry folder list as
     /// empty in the round-2 VM run, so a page is delivered in batches of this
-    /// size and the page cursor carries the offset.
-    static let batchSize = 250
-
-    /// The phone page last fetched, so the four batches of one page cost one
-    /// listing.
-    private var cachedPage: (cursor: String?, items: [FileItem], next: String?)?
-
+    /// size and the page cursor carries the offset (FilesPageReader).
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
         guard let owner else {
             observer.finishEnumeratingWithError(FilesFailure.offline.error)
             return
         }
-        let (cursor, offset) = pageToken(page)
         let identifier = containerIdentifier
         owner.watch(identifier, on: true)
-        if let cache = cachedPage, cache.cursor == cursor {
-            deliver(cache.items, offset: offset, cursor: cursor,
-                    nextPhonePage: cache.next, identifier: identifier, observer: observer)
-            return
-        }
-        owner.loadListing(item: identifier, page: cursor) { result in
-            switch result {
-            case .success(let listing):
-                self.cachedPage = (cursor: cursor, items: listing.items, next: listing.next)
-                self.deliver(listing.items, offset: offset, cursor: cursor,
-                             nextPhonePage: listing.next, identifier: identifier,
-                             observer: observer)
-            case .failure(let failure):
+        owner.reader.enumerate(
+            container: identifier, token: FilesPageToken(page.rawValue),
+            load: { [weak owner] container, cursor, completion in
+                owner?.loadListing(item: container, page: cursor, completion: completion)
+            },
+            deliver: { delivery in
+                observer.didEnumerate(delivery.items.map(ProviderItem.init))
+                log.notice("enumerate items=\(delivery.items.count, privacy: .public) more=\(delivery.next != nil, privacy: .public)")
+                observer.finishEnumerating(
+                    upTo: delivery.next.map { NSFileProviderPage($0.page) })
+            },
+            fail: { failure in
                 log.notice("enumerate failed code=\(failure.rawValue, privacy: .public)")
                 observer.finishEnumeratingWithError(failure.error)
-            }
-        }
-    }
-
-    /// `b<offset>@<phone page>`; the initial pages are offset 0 of the first
-    /// phone page.
-    private func pageToken(_ page: NSFileProviderPage) -> (cursor: String?, offset: Int) {
-        let initialByName = NSFileProviderPage.initialPageSortedByName as Data
-        let initialByDate = NSFileProviderPage.initialPageSortedByDate as Data
-        guard page.rawValue as Data != initialByName,
-              page.rawValue as Data != initialByDate,
-              let text = String(data: page.rawValue, encoding: .utf8),
-              text.hasPrefix("b"),
-              let at = text.firstIndex(of: "@") else { return (nil, 0) }
-        let offset = Int(text[text.index(after: text.startIndex)..<at]) ?? 0
-        let rest = String(text[text.index(after: at)...])
-        return (rest.isEmpty ? nil : rest, offset)
-    }
-
-    private func deliver(_ items: [FileItem], offset: Int, cursor: String?,
-                         nextPhonePage: String?, identifier: String,
-                         observer: NSFileProviderEnumerationObserver) {
-        let slice = Array(items.dropFirst(max(0, offset)).prefix(Self.batchSize))
-        observer.didEnumerate(slice.map(ProviderItem.init))
-        let next: String?
-        if offset + slice.count < items.count {
-            next = "b\(offset + slice.count)@\(cursor ?? "")"
-        } else if let nextPhonePage {
-            next = "b0@\(nextPhonePage)"
-        } else {
-            next = nil
-        }
-        log.notice("enumerate items=\(slice.count, privacy: .public) more=\(next != nil, privacy: .public)")
-        observer.finishEnumerating(upTo: next.map { NSFileProviderPage(Data($0.utf8)) })
+            })
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver,
@@ -1488,7 +1463,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             self?.snapshot = items
             // The same batch size as a folder: 1000 items in one callback made
             // the system list nothing (round 2's 1500-entry folder).
-            let pageSize = FilesEnumerator.batchSize
+            let pageSize = FilesPageReader.batchSize
             let slice = Array(items.dropFirst(offset).prefix(pageSize))
             observer.didEnumerate(slice.map(ProviderItem.init))
             let next = offset + slice.count < items.count

@@ -997,7 +997,7 @@ enum FilesConflict {
 
 /// What a failure means to the File Provider. The extension turns these into
 /// the NSError classes the system documents; the mapping itself is testable.
-enum FilesFailure: String, CaseIterable {
+enum FilesFailure: String, CaseIterable, Error {
     /// No phone session: dataless items are unreachable, cached ones still open.
     case offline
     /// The phone says the item is gone.
