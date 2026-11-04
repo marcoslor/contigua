@@ -7983,9 +7983,22 @@ PY
     # the assertion; this cap only stops a hung mount.
     local bulk="$root/bulk" t0 t1 names listing_ms
     t0="$(now_ms)"
-    run_limited 120 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
+    names=0
+    local listing_deadline
+    listing_deadline=$((SECONDS + 120))
+    # `ls` on a File Provider mount returns the names that have arrived so far
+    # and can exit with none while the system is still walking the pages (the
+    # 00:50 run: 0 names after 9.9 s, then the extension delivered 12 pages over
+    # the next 6.5 s). Poll until the whole folder is there; the time from the
+    # first request to that observation is what a person waits for. The 5 s
+    # assertion below is unchanged.
+    while [ $SECONDS -lt "$listing_deadline" ]; do
+        run_limited 30 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
+        names="$(wc -l < "$WORK/bulk-ls.txt" | tr -d ' ')"
+        [ "${names:-0}" = "3000" ] && break
+        sleep 0.5
+    done
     t1="$(now_ms)"
-    names="$(wc -l < "$WORK/bulk-ls.txt" | tr -d ' ')"
     listing_ms=$((t1 - t0))
     say "FILES-THUMBS-SCALE listing: names=$names ms=$listing_ms"
     if [ "${names:-0}" = "3000" ] && [ "$listing_ms" -le 5000 ]; then
@@ -7993,6 +8006,107 @@ PY
     else
         bad "FILES-THUMBS-SCALE listed ${names:-0} names in ${listing_ms} ms (want 3000 within 5000 ms)"
     fi
+
+    # -- The listing's per-page breakdown ------------------------------------
+    # One line per Finder page from the extension (count, hit|fetch, and
+    # request→deliver ms) and the app's "bridge: list page" stamp. The app's
+    # stamp splits a fetch into phone + relay (start → app reply) and our
+    # delivery (app reply → Finder); consecutive starts give the system's gap
+    # before it asked for the next page. Counts and durations only (FILES-27).
+    files_log > "$WORK/listing-log.txt" 2>/dev/null || true
+    # bash 3.2 scans a heredoc inside "$(...)" for quotes: write the
+    # parser first, then run it.
+    cat > "$WORK/listing-breakdown.py" <<'PY'
+import re, sys
+from datetime import datetime, timedelta
+
+def stamp(line):
+    text = line.strip()
+    m = re.match(r"^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)\.(\d{3,6})", text)
+    if m:
+        y, mo, d, h, mi, s, frac = m.groups()
+        return datetime(int(y), int(mo), int(d), int(h), int(mi), int(s),
+                        int(frac.ljust(6, "0")[:6]))
+    m = re.match(r"^([A-Z][a-z]{2})\s+(\d{1,2}) (\d\d):(\d\d):(\d\d)\.(\d{3,6})", text)
+    if m:
+        now = datetime.now()
+        month = datetime.strptime(m.group(1), "%b").month
+        return datetime(now.year, month, int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)),
+                        int(m.group(6).ljust(6, "0")[:6]))
+    return None
+
+pages, relays = [], []
+try:
+    source = open(sys.argv[1], errors="replace")
+except OSError:
+    source = []
+for line in source:
+    at = stamp(line)
+    m = re.search(r"enumerate page n=(\d+) phone=(hit|fetch) ms=(\d+)", line)
+    if m:
+        pages.append((at, int(m.group(1)), m.group(2), int(m.group(3))))
+        continue
+    m = re.search(r"bridge: list page items=(\d+)", line)
+    if m:
+        relays.append((at, int(m.group(1))))
+if not pages:
+    print("unavailable")
+    raise SystemExit
+rows = ["%d:%s:%d" % (n, phone, ms) for _, n, phone, ms in pages]
+fetch = sum(1 for page in pages if page[2] == "fetch")
+if any(at is None for at, _, _, _ in pages):
+    # No usable log timestamps: the counts and each page's own duration are
+    # still the measurement; only the gap needs the clock.
+    print("pages=%d fetch=%d hit=%d ms_sum=%d per=%s"
+          % (len(pages), fetch, len(pages) - fetch,
+             sum(page[3] for page in pages), ",".join(rows[:16])))
+    raise SystemExit
+pages.sort()
+relays = sorted(relay for relay in relays if relay[0] is not None)
+# Split into passes wherever the system paused for more than 3 s (the root
+# folder's pages and the measured folder's pages are different passes). Report
+# the pass with the most items: that is the folder under test.
+groups = []
+for page in pages:
+    start = page[0] - timedelta(milliseconds=page[3])
+    if groups and start - groups[-1][-1][0] <= timedelta(seconds=2):
+        groups[-1].append(page)
+    else:
+        groups.append([page])
+group = max(groups, key=lambda g: (sum(p[1] for p in g), len(g)))
+relay = ours = gap = 0
+used = set()
+previous = None
+for at, n, phone, ms in group:
+    start = at - timedelta(milliseconds=ms)
+    if previous is not None:
+        gap += max(0, int((start - previous).total_seconds() * 1000))
+    previous = at
+    if phone == "fetch":
+        match = None
+        for index, (reply_at, _) in enumerate(relays):
+            if index in used or reply_at < start or reply_at > at:
+                continue
+            match = index
+        if match is not None:
+            used.add(match)
+            relay += int((relays[match][0] - start).total_seconds() * 1000)
+            ours += int((at - relays[match][0]).total_seconds() * 1000)
+        else:
+            ours += ms
+    else:
+        ours += ms
+span = int((group[-1][0] - (group[0][0] - timedelta(milliseconds=group[0][3])))
+           .total_seconds() * 1000)
+print("pages=%d fetch=%d hit=%d relay_ms=%d our_ms=%d gap_ms=%d span_ms=%d per=%s"
+      % (len(group), sum(1 for p in group if p[2] == "fetch"),
+         sum(1 for p in group if p[2] != "fetch"), relay, ours, gap, span,
+         ",".join("%d:%s:%d" % (n, phone, ms) for _, n, phone, ms in group[:16])))
+PY
+    local breakdown
+    breakdown="$(python3 "$WORK/listing-breakdown.py" "$WORK/listing-log.txt")"
+    say "FILES-THUMBS-SCALE listing breakdown: ${breakdown:-unavailable}"
 
     # -- Finder's icon view --------------------------------------------------
     finder_folder() {
@@ -8101,9 +8215,9 @@ PY
         local id; id="$(finder_id)"
         [ -n "$id" ] || return 1
         if [ "${3:-pixels}" = "line" ]; then
-            cg_input scroll --window "$id" --dy -"${2:-20}" --repeat "$1" --delay-ms 8
+            cg_input scroll --window "$id" --owner Finder --dy -"${2:-20}" --repeat "$1" --delay-ms 8
         else
-            cg_input scroll --window "$id" --dy -"${2:-240}" --repeat "$1" --delay-ms 8 --pixels
+            cg_input scroll --window "$id" --owner Finder --dy -"${2:-240}" --repeat "$1" --delay-ms 8 --pixels
         fi
     }
     scroll_picture() { # <label> <events> <limit_s> -> "ms pixels"
@@ -8157,6 +8271,26 @@ PY
     finder_shot "$SHOTS/after-files-thumbs-scale-end.png" \
         && { cp "$SHOTS/after-files-thumbs-scale-end.png" "$WORK/" 2>/dev/null || true; \
              ok "FILES-THUMBS-SCALE screenshot: $SHOTS/after-files-thumbs-scale-end.png"; }
+
+    # -- Scroll back to the start --------------------------------------------
+    # Does Finder re-ask a cancelled id when it scrolls back over it? New batch
+    # lines after the up-scroll are the only evidence the extension can see,
+    # and they carry ids and counts only (FILES-27).
+    sleep 2
+    local back_before back_after
+    back_before="$(batch_count 'thumb batch open')"
+    scroll_back_finder() {
+        local id; id="$(finder_id)"
+        [ -n "$id" ] || return 1
+        # 400 x 240 px, then wheel lines: the two gestures the other scrolls
+        # fall back between, so a view that ignores pixel units still moves.
+        cg_input scroll --window "$id" --owner Finder --dy 240 --repeat 400 --delay-ms 8 --pixels
+        cg_input scroll --window "$id" --owner Finder --dy 20 --repeat 300 --delay-ms 8
+    }
+    scroll_back_finder || true
+    sleep 3
+    back_after="$(batch_count 'thumb batch open')"
+    say "FILES-THUMBS-SCALE recorded: scroll-back opened $(( ${back_after:-0} - ${back_before:-0} )) new batches (Finder re-asks a cancelled id if > 0)"
 
     # -- What Finder asked and cancelled -------------------------------------
     sleep 5
