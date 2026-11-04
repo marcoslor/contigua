@@ -172,6 +172,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var closingFromRemote = false
     /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
     private var dwellTimer: Timer?
+    /// Rewrites the chrome state when the picture's own size changes, so the
+    /// e2e's `video=` rect is the settled one, not the pre-answer rectangle.
+    private var videoSizeObserver: NSObjectProtocol?
 
     init(stream: UInt32, contentSize: NSSize, manager: WindowManager, styleKey: String?) {
         self.stream = stream
@@ -202,6 +205,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // The phone's encoder limits decide how the picture is drawn and what
         // the window asks for (ISS-39).
         videoView.encoder = manager.phone?.encoder
+        videoSizeObserver = NotificationCenter.default.addObserver(
+            forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.writeChromeState() }
+        }
         window.delegate = self
         window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
@@ -905,6 +913,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         resizeWork?.cancel()
         settleTimer?.invalidate()
         settleTimer = nil
+        if let videoSizeObserver { NotificationCenter.default.removeObserver(videoSizeObserver) }
+        videoSizeObserver = nil
         manager.noteKeyLost(stream)
         if !closingFromRemote { sendClose() }
         let count = stills
