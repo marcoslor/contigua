@@ -47,12 +47,16 @@ if [ "$MODE" = check ]; then
   "$PYTHON" -m py_compile "$CLIENT" "$WT/tools/fakephone/fakephone.py" \
     || { echo "CHECK FAIL: py_compile"; rc=1; }
   "$PYTHON" - <<PY || { echo "CHECK FAIL: adopt symbols"; rc=1; }
-import sys
+import importlib.util, sys
 sys.path.insert(0, "$WT/tools/fakephone")
 import deckctl, proto
 assert hasattr(deckctl, "cmd_adopt"), "deckctl has no adopt command"
 assert hasattr(deckctl, "StreamRecorder") and hasattr(proto, "pack_touch")
-print("CHECK OK: deckctl adopt + proto symbols")
+spec = importlib.util.spec_from_file_location("mw", "$WT/tools/emulator/multiwin.py")
+mw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mw)
+assert hasattr(mw, "warm_chrome") and hasattr(mw, "Dev"), "multiwin has no warm_chrome"
+print("CHECK OK: deckctl adopt + proto + multiwin warm symbols")
 PY
   # The exact global-flags then subcommand shape the boot uses: a global flag
   # after `adopt` made argparse read it as the command on boot 2 (11-16).
@@ -122,6 +126,19 @@ pair_phone || { echo "[adopt] error: could not pair with the rig" >&2; exit 1; }
 # to one window (the spike's own reset).
 step "pm clear com.android.chrome"
 emu shell pm clear com.android.chrome >"$OUT/pm-clear.txt" 2>&1 || true
+
+# A cleared Chrome starts on its first-run screen: no toolbar, so the ⋮ tap
+# finds no menu (boot 3, 11:29). The spike's warm launch accepts/dismisses the
+# first run on the phone's own display and force-stops it; every streamed
+# window after that has a real page (WIN-44).
+step "warm Chrome past its first run"
+"$PYTHON" - <<PY || { echo "[adopt] error: Chrome's first run did not clear" >&2; exit 1; }
+import importlib.util
+spec = importlib.util.spec_from_file_location("mw", "$WT/tools/emulator/multiwin.py")
+mw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mw)
+raise SystemExit(0 if mw.warm_chrome(mw.Dev("$ADB", "$SERIAL", "$OUT")) else 1)
+PY
 emu logcat -c >/dev/null 2>&1 || true
 
 step "adopt checks"
