@@ -78,8 +78,10 @@ final class ThumbSchedulerLoadTests: XCTestCase {
             if due > now { Thread.sleep(forTimeInterval: due - now) }  // real-time: the NFR's phone turn and scroll interval are the measurement
             if index > 0 {
                 let previous = index - 1
-                cancelled.with { $0[previous] = Date().timeIntervalSince1970 }
+                // The contract is "nothing new once cancel returns": an ask the
+                // pool was already starting may finish starting during the call.
                 scheduler.cancel(batchIDs.with { $0[previous] })
+                cancelled.with { $0[previous] = Date().timeIntervalSince1970 }
             }
             let items = (0..<size).map { "b\(index)-\($0)" }
             opened.with { $0[index] = Date().timeIntervalSince1970 }
