@@ -37,10 +37,10 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **Tried, not merged:** `fix/flicker`'s phone-side gate. It released on the first key frame after the edge, and that frame was itself black (the display turns on before the app draws).
   - **DeX never fades:** its screen sits in display group 2. One UI's group mapper hands out groups by its own rules (DeX, CarLife, per virtual device) and ignores `FLAG_OWN_DISPLAY_GROUP` for ours (lock-fade.md § Why DeX never fades).
   - **Group probe done on the phone (2026-11-03, `spike/group-probe`): no display flag earns a group of its own.** Every variant sat in group 0, and `CARLIFE` was refused (lock-fade.md, option 0).
-  - **Next, the person's call:**
-    - the virtual device path (the shell holds `CREATE_VIRTUAL_DEVICE`; it needs a companion-device association, a visible and lasting change on the phone, and One UI may ignore that group too);
-    - or hold the Mac's picture from the press until the app has redrawn (Mac-side, any phone; the window stands still for about 0.7 s instead of fading);
-    - or live with it.
+  - **Next: the virtual device path, a phone probe first (the person OK'd it, 2026-11-04).** Being built on `spike/vd-probe` (`.agent/vd-probe/`).
+    - The shell user already holds `CREATE_VIRTUAL_DEVICE` by role, and already owns an app-streaming companion association. So the probe reuses that association and adds nothing to the phone.
+    - It creates a virtual device and a few displays on it, reads their groups, watches one through a lock and a wake, then releases everything.
+    - If a device display gets a group of its own, plan the move. If One UI ignores it too, fall back to holding the Mac's picture from the press until the app has redrawn (Mac-side, any phone; the window stands still for about 0.7 s instead of fading).
 - **ISS-24 Waking the phone sometimes takes two presses while a window is open.** PocketDeck's relight after a lock press runs a panel-off step of about 2.5 s (`relight … +2521ms panel off returned`). A wake press inside it is slept by Android (with the fade), and PocketDeck never hands the panel back, so the phone's screen and the Mac window stay dark until a second press. Seen twice on 2026-11-03, 2.0 s and 2.5 s after a lock press (lock-fade.md § The two-press wake). Fix: hand the panel back on a press seen during the relight's own panel-off step. Test first. **On hold (the person, 2026-11-03):** if the group probe (ISS-3) finds an own display group, the relight goes away and this bug with it.
 - **ISS-4 Chrome's "New window" doesn't open a new window.** It should give one more Mac window running a new instance of the app. Specced as multi-window phase 2: WIN-24…36, MENU-2/7/8/13 and the New Window table in `docs/specs/app-windows.md`.
   - **The phone half** is on `main` (2026-10-28): `multi`, `newInstance`, `taskId`, `maxWindows`, task labels and closing one task.
