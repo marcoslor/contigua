@@ -194,7 +194,11 @@ final class FilesThumbScheduler {
         return nil
     }
 
+    /// K2 only: runs between taking an id and asking for it, where a cancel can land.
+    var willStartForTesting: ((_ batchID: Int) -> Void)?
+
     private func startOne(_ batch: Batch, item: String) {
+        willStartForTesting?(batch.id)
         let once = Once()
         batch.start(item, { [weak self] in self?.isCancelled(batch) ?? true }) { [weak self] data, error in
             guard once.claim() else { return }
