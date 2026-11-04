@@ -48,6 +48,10 @@ final class FilesThumbScheduler {
         /// thumbnail block), even when a cancel races a late answer.
         let deliveryLock = NSLock()
         var doneSent = false
+        /// Held while an ask is being started and while a cancel marks the
+        /// batch, so no ask leaves after `cancel` returns. Always taken before
+        /// the scheduler's own lock, never inside it.
+        let startLock = NSLock()
 
         init(id: Int, items: [String], start: @escaping Start,
              per: @escaping PerThumbnail, done: @escaping Done) {
@@ -116,9 +120,17 @@ final class FilesThumbScheduler {
     /// dropped, because the batch is already complete (FILES-25).
     func cancel(_ id: Int) {
         lock.lock()
-        guard let batch = batches.first(where: { $0.id == id }),
-              !batch.cancelled, !batch.completed else {
+        let found = batches.first(where: { $0.id == id })
+        lock.unlock()
+        guard let batch = found else { return }
+        // An ask being started for this batch finishes starting first; any
+        // later one sees the flag under the same lock and is never sent. The
+        // lock covers the flag only: Finder's handlers below run outside it.
+        batch.startLock.lock()
+        lock.lock()
+        guard !batch.cancelled, !batch.completed else {
             lock.unlock()
+            batch.startLock.unlock()
             return
         }
         batch.cancelled = true
@@ -128,6 +140,7 @@ final class FilesThumbScheduler {
         batch.answered += unstarted.count
         batches.removeAll { $0 === batch }
         lock.unlock()
+        batch.startLock.unlock()
         let error = Self.cancelledError
         for item in unstarted {
             deliver(batch, item: item, data: nil, error: error)
@@ -199,6 +212,14 @@ final class FilesThumbScheduler {
 
     private func startOne(_ batch: Batch, item: String) {
         willStartForTesting?(batch.id)
+        batch.startLock.lock()
+        defer { batch.startLock.unlock() }
+        if isCancelled(batch) {
+            // Cancelled between the take and the ask: nothing is sent, and the
+            // cancel's completion already covers this id. Give the slot back.
+            finish(batch, item: item, data: nil, error: Self.cancelledError)
+            return
+        }
         let once = Once()
         batch.start(item, { [weak self] in self?.isCancelled(batch) ?? true }) { [weak self] data, error in
             guard once.claim() else { return }
