@@ -1,6 +1,5 @@
 package dev.pocketdeck.server
 
-import android.content.ClipData
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
@@ -36,17 +35,6 @@ internal class AndroidInjector(
 
     private val setDisplayId: Method? =
         runCatching { InputEvent::class.java.getMethod("setDisplayId", Hidden.T_INT) }.getOrNull()
-
-    private val clipboardService: Any? = Hidden.proxy("android.os.IClipboard", "clipboard")
-    private val clipboardClass = Hidden.iface("android.os.IClipboard")
-
-    private val setPrimaryClipMethod: Method? =
-        Hidden.method(clipboardClass, "setPrimaryClip", ClipData::class.java, String::class.java, Hidden.T_INT)
-            ?: Hidden.method(clipboardClass, "setPrimaryClip", ClipData::class.java, String::class.java, String::class.java, Hidden.T_INT)
-
-    private val getPrimaryClipMethod: Method? =
-        Hidden.method(clipboardClass, "getPrimaryClip", String::class.java, Hidden.T_INT)
-            ?: Hidden.method(clipboardClass, "getPrimaryClip", String::class.java, String::class.java, Hidden.T_INT)
 
     /**
      * Restores the previous clipboard text a moment after a paste. The paste key
@@ -231,30 +219,14 @@ internal class AndroidInjector(
         key(displayId, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_PASTE, 0, t, t + 1)
     }
 
+    /** The save/restore goes through the session's one clipboard port (ISS-27). */
     private fun setClipText(s: String): Boolean {
-        val m = setPrimaryClipMethod ?: return false
-        return runCatching {
-            val clip = ClipData.newPlainText("pocketdeck", s)
-            if (m.parameterTypes.size == 3) {
-                m.invoke(clipboardService, clip, CLIP_PACKAGE, 0)
-            } else {
-                m.invoke(clipboardService, clip, CLIP_PACKAGE, null as String?, 0)
-            }
-            true
-        }.getOrDefault(false)
+        val port = clipboard ?: return false
+        port.setText(s)
+        return true
     }
 
-    private fun getClipText(): String? {
-        val m = getPrimaryClipMethod ?: return null
-        return runCatching {
-            val data = if (m.parameterTypes.size == 2) {
-                m.invoke(clipboardService, CLIP_PACKAGE, 0)
-            } else {
-                m.invoke(clipboardService, CLIP_PACKAGE, null as String?, 0)
-            }
-            (data as? ClipData)?.getItemAt(0)?.text?.toString()
-        }.getOrNull()
-    }
+    private fun getClipText(): String? = clipboard?.getText()?.text
 
     private fun deliver(e: InputEvent, displayId: Int) {
         sink?.let {
@@ -275,7 +247,6 @@ internal class AndroidInjector(
 
     private companion object {
         const val INJECT_MODE_ASYNC = 0
-        const val CLIP_PACKAGE = "com.android.shell"
         const val CLIPBOARD_RESTORE_DELAY_MS = 400L
     }
 }

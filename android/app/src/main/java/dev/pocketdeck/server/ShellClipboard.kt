@@ -43,7 +43,19 @@ internal class ShellClipboard(
      */
     private val liveLock = Any()
 
-    override fun getText(): ClipText? {
+    /** One "reads off" line per sync start, never one per poll tick. */
+    @Volatile private var offLogged = false
+
+    override fun getText(): ClipText? = when (val reader = reader()) {
+        ClipReader.Direct -> directText()
+        ClipReader.Helper -> helper?.getText()
+        is ClipReader.Off -> {
+            logOffOnce(reader.reason)
+            null
+        }
+    }
+
+    private fun directText(): ClipText? {
         val svc = service ?: return null
         val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
@@ -67,8 +79,24 @@ internal class ShellClipboard(
      * item is text (text wins: the text sync owns it) or the item's URI is not
      * readable at shell UID. A null is "nothing to sync", never an error.
      */
-    override fun readImage(): ClipImage? {
+    override fun readImage(): ClipImage? = when (val reader = reader()) {
+        ClipReader.Direct -> directImage()
+        ClipReader.Helper -> helper?.readImage()
+        is ClipReader.Off -> {
+            logOffOnce(reader.reason)
+            null
+        }
+    }
+
+    /**
+     * The primary clip's description has no owner check, so it is the safe MIME
+     * probe at every UID: a text clip never reaches `getPrimaryClip`, which
+     * halves the poll's reads and keeps a text copy untouched at UID 2000 too.
+     */
+    private fun directImage(): ClipImage? {
         val svc = service ?: return null
+        val description = svc.getPrimaryClipDescription(SHELL_PACKAGE, callerUid) ?: return null
+        val probe = description.filterMimeTypes("image/*").firstOrNull() ?: return null
         val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
@@ -79,12 +107,20 @@ internal class ShellClipboard(
         if (isOurClip(contentUri)) return null
         // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
         // later call than this code's floor).
-        val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: return null
+        val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: probe
         val source = resolver ?: return null
         val bytes = runCatching { source.openInputStream(contentUri)?.use { s -> s.readBytes() } }
             .onFailure { log("clipboard: unreadable clip image ($mime): ${failureClasses(it)}") }
             .getOrNull() ?: return null
         return ClipImage(bytes, mime.lowercase())
+    }
+
+    private fun reader(): ClipReader = clipReader(callerUid, helper?.available == true)
+
+    private fun logOffOnce(reason: String) {
+        if (offLogged) return
+        offLogged = true
+        log("clipboard: reads off ($reason)")
     }
 
     override fun listen(onChange: () -> Unit): ClipRegistration {
@@ -93,6 +129,26 @@ internal class ShellClipboard(
         // dispatch in flight from the old listener must not reach it.
         val previous = synchronized(liveLock) { live.also { live = reg } }
         if (previous != null) remove(previous)
+        offLogged = false
+        if (callerUid == 0) {
+            val shellReader = helper
+            if (shellReader == null) {
+                logOffOnce((clipReader(callerUid, helperAvailable = false) as ClipReader.Off).reason)
+                return reg
+            }
+            // The helper keeps its own listener as the shell user; it signals
+            // changes only, and the session reads when its gate is on.
+            shellReader.listen {
+                if (live !== reg) return@listen
+                reg.onChange()
+            }
+            shellReader.start()
+            return reg
+        }
+        if (callerUid != SHELL_UID) {
+            logOffOnce((clipReader(callerUid, helperAvailable = false) as ClipReader.Off).reason)
+            return reg
+        }
         val svc = service ?: run {
             log("clipboard: no clipboard service; sync off")
             return reg
@@ -132,6 +188,9 @@ internal class ShellClipboard(
             return
         }
         remove(reg)
+        // The helper has no listener left to serve; it dies with its stdin, and
+        // the next sync starts a fresh one.
+        if (callerUid == 0) helper?.stop()
     }
 
     /** Removes the platform listener a registration installed, if any. */

@@ -138,7 +138,8 @@ class DeckService(private val appContext: Context?) :
         }
         val shell = ShellContext(base)
         val display = AndroidDisplayLayer(shell, ::log)
-        val injector = AndroidInjector(::log)
+        val clip = ShellClipboard(shell, ::log)
+        val injector = AndroidInjector(::log, clipboard = clip)
         val launcher = AndroidLauncher(shell, ::log)
         val power = AndroidPower(base, ::log)
         this.power = power
@@ -163,7 +164,6 @@ class DeckService(private val appContext: Context?) :
         val uids = AppUids(base, ::log)
         val audio = AudioCapture(shell, ::log, uids::uidOf)
         val taskMove = AndroidTaskMove(shell, ::log)
-        val clip = ShellClipboard(shell, ::log)
 
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
