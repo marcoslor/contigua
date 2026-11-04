@@ -891,8 +891,13 @@ controller no longer signal containers. `FilesWatchSet` keeps a touched folder
 for ten minutes after the last touch, at most 64 (LRU), unit tested with an
 injected clock; `PD_FILES_WATCH_TTL` shortens the TTL for the host check. A big
 folder is enumerated in 250-item batches with the page cursor carrying the
-offset (`b<offset>@<phone page>`) and the phone page cached, and the id-map JSON
-is written once per quarter second instead of once per item.
+offset (`b<offset>@<phone page>`), and the phone page is cached in one cache per
+extension process, keyed by container and cursor (at most 4 pages, each at most
+30 s old — one pass over 3,000 names took 16.3 s in the VM — and dropped when
+that folder's change push arrives, with in-flight fetches invalidated by a
+generation counter), so each phone page costs one `fs.list` per pass instead of
+one per Finder batch; the id-map JSON is written once per quarter second instead
+of once per item.
 Checks: K2 849/0; host `files-watch` 29/0 (working-set updates with the real
 parent, a delete, `.workingSet`/`.trashContainer` no phone traffic, 65 folders
 → 64, TTL → `watch off`); regressions `files-write` 24/0, `files-bridge` 19/0,
