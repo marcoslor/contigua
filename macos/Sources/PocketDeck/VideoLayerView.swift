@@ -48,8 +48,12 @@ final class VideoLayerView: NSView {
     /// the old 16 px rule for a phone that reports none.
     var encoder: EncoderSpec?
     /// The alignment the phone actually snaps app streams to: the encoder's
-    /// own, or 16 when it reports none.
-    private var alignment: Int { encoder?.widthAlign ?? VideoSize.granularity }
+    /// own (the larger axis, so either axis' strip counts as one step), or 16
+    /// when it reports none.
+    private var alignment: Int {
+        guard let encoder else { return VideoSize.granularity }
+        return max(encoder.widthAlign, encoder.heightAlign)
+    }
 
     /// When the window last asked for a new size; until a config at that size
     /// arrives (or this passes) the last frame fills the view.

@@ -1799,7 +1799,9 @@ check_crisp() {
         if python3 - "$c_psnr" "$c_con" "$o_psnr" "$o_con" <<'PY'
 import sys
 control_psnr, control_con, odd_psnr, odd_con = (float(v) for v in sys.argv[1:5])
-# Measured on the fix: the two sizes are within 0.6 dB and 0.02 contrast.
+# The measured pair: 49.31 dB / 1.000 control and 52.66 dB / 1.000 on the
+# non-multiple size with the fix; 40.89 dB / 0.801 when it was stretched.
+# 1 dB and 0.03 leave room for one encoder keyframe's own noise.
 sys.exit(0 if odd_psnr >= control_psnr - 1.0 and odd_con >= control_con - 0.03 else 1)
 PY
         then
