@@ -2818,6 +2818,16 @@ def cmd_fs(client, args):
             raise DeckError("expected fs.item, got %r" % msg.get("t"))
         print(json.dumps(msg.get("item") or {}, indent=None, separators=(",", ":"), sort_keys=True))
         return 0
+    if args.action == "digest":
+        paths = list(args.paths or ([args.path] if args.path is not None else []))
+        fs_id = _fs_id()
+        client.send_json({"t": "fs.digest", "id": fs_id, "paths": paths})
+        msg = _fs_wait(client, fs_id)
+        if msg.get("t") != "fs.digest":
+            raise DeckError("expected fs.digest, got %r" % msg.get("t"))
+        print(json.dumps(msg.get("digests") or {}, indent=None, separators=(",", ":"),
+                         sort_keys=True))
+        return 0
     # read
     length = args.length
     if length is None:
@@ -3172,8 +3182,8 @@ def build_parser():
     sp.add_argument("--interval", type=float, default=2.5)
     sp.add_argument("--launch-settle", type=float, default=2.0)
 
-    sp = sub.add_parser("fs", help="phone files: list/stat/read/thumb/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
-    sp.add_argument("action", choices=["list", "stat", "read", "thumb", "write", "mkdir", "move",
+    sp = sub.add_parser("fs", help="phone files: list/stat/digest/read/thumb/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
+    sp.add_argument("action", choices=["list", "stat", "digest", "read", "thumb", "write", "mkdir", "move",
                                        "delete", "setattrs", "watch", "unwatch", "changes"])
     sp.add_argument("path", nargs="?", help="path relative to the phone's shared storage ('' = the root)")
     sp.add_argument("out", nargs="?", help="read: write the range here; write: the local file")

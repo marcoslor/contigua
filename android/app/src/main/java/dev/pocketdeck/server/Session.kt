@@ -1515,6 +1515,7 @@ class Session(
                 "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
+                "fs.digest" -> onFsDigest(obj)
                 "fs.read" -> onFsRead(obj)
                 "fs.thumb" -> onFsThumb(obj)
                 "fs.write" -> fsWriter?.begin(obj)
@@ -1547,7 +1548,20 @@ class Session(
                 "phone.volume" -> onPhoneVolume(obj)
                 "phone.wake" -> onPhoneWake()
                 "phone.panel" -> onPhonePanel(obj)
-                else -> logOnce("unknown message '$t'")
+                else -> {
+                    // An fs.* message this build does not know answers
+                    // `fs_unknown` so the Mac can compare by listing instead
+                    // (FILES-33); anything else stays the logged no-reply.
+                    val unknown = fsId(obj)
+                    if (t.startsWith("fs.") && unknown != null) {
+                        log("fs: id=$unknown fs_unknown")
+                        sendJson(mapOf("t" to "error", "code" to "fs_unknown",
+                            "message" to "this phone does not know that request",
+                            "id" to unknown))
+                    } else {
+                        logOnce("unknown message '$t'")
+                    }
+                }
             }
         } catch (e: Throwable) {
             // A broken VM is not a message failure; let run() end the session.
@@ -2775,12 +2789,16 @@ class Session(
         val view = files ?: return fsError(id, FsPaths.denied("files are not served"))
         try {
             val page = view.list(Json.str(obj["path"]), Json.str(obj["page"]))
-            sendJson(mapOf(
+            val reply = mutableMapOf<String, Any?>(
                 "t" to "fs.items",
                 "id" to id,
                 "page" to page.next,
                 "items" to page.items.map { it.toJson() },
-            ))
+            )
+            // The last page carries the folder's digest, so a complete listing
+            // refreshes the Mac's record (FILES-35).
+            page.digest?.let { reply["digest"] = it }
+            sendJson(reply)
             log("fs: list id=$id ${page.items.size} items, next=${page.next != null}")
         } catch (e: FsFailure) {
             fsError(id, e)
@@ -2790,6 +2808,39 @@ class Session(
             log("fs: list id=$id failed: ${e.javaClass.simpleName}")
             fsError(id, FsFailure("internal", "the listing failed"))
         }
+    }
+
+    /**
+     * `fs.digest` (FILES-35): one reply for at most 64 folders. A path that is
+     * not a folder answers `not_found`; a path the shape rules refuse fails the
+     * whole request, so the Mac never mistakes a refusal for a deleted folder.
+     */
+    private fun onFsDigest(obj: Map<String, Any?>) {
+        val id = fsId(obj) ?: return
+        val view = files ?: return fsError(id, FsPaths.denied("files are not served"))
+        val requested = obj["paths"] as? List<*>
+            ?: return fsError(id, FsPaths.denied("bad paths"))
+        if (requested.size > FsView.MAX_DIGEST_PATHS || requested.any { it !is String }) {
+            return fsError(id, FsPaths.denied("bad paths"))
+        }
+        val digests = LinkedHashMap<String, Any?>()
+        try {
+            for (path in requested) {
+                val key = path as String
+                digests[key] = try {
+                    view.digest(key)
+                } catch (e: FsFailure) {
+                    if (e.code == "fs_not_found" || e.code == "fs_not_a_dir") "not_found" else throw e
+                }
+            }
+        } catch (e: FsFailure) {
+            return fsError(id, e)
+        } catch (e: Exception) {
+            log("fs: digest id=$id failed: ${e.javaClass.simpleName}")
+            return fsError(id, FsFailure("internal", "the digest failed"))
+        }
+        sendJson(mapOf("t" to "fs.digest", "id" to id, "digests" to digests))
+        log("fs: digest id=$id ${digests.size} folders")
     }
 
     private fun onFsRead(obj: Map<String, Any?>) {
