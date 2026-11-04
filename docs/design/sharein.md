@@ -69,8 +69,12 @@ same gate before any probe.
   tries the next form at once and spends no restart; when every form has died the state
   is `Failed("no su form")` and reads stay off. The form that reached ready is the one
   every later restart uses: at most three, with 500 ms, 1 s and 2 s backoff, then
-  `Failed`. `Stop` kills it and returns to `Off`; every transition is logged with its
-  form. A missing or refused `su` ends in `Failed`, and the reader policy is
+  `Failed`. A death after at least a minute of ready is a healthy run: the count starts
+  over, so a helper that dies once a day no longer ends the sync for the session. The
+  healthy time runs from the accepted `ready` frame on a monotonic clock; a debug build
+  may shorten the minute through a system property for one test boot, and shipped builds
+  always keep it. `Stop` kills it and returns to `Off`; every transition is logged with
+  its form. A missing or refused `su` ends in `Failed`, and the reader policy is
   `Off("no helper")` — never a crash.
 - It registers the real shell user's primary-clip listener at startup, then answers
   requests on stdin/stdout: `[length][type][id][payload]`, binary-safe for images up to
