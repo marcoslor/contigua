@@ -58,7 +58,7 @@ fun Map<String, Any?>.intValue(key: String): Int = (this[key] as? Number)?.toInt
 /** A display-presence seam whose answers a test can change. */
 class FixedPresence(
     @Volatile var hasTask: Boolean? = true,
-    private val taskId: Int? = 7,
+    @Volatile var taskId: Int? = 7,
     private val label: String? = null,
 ) : TaskPresence {
     override fun hasTask(displayId: Int): Boolean? = hasTask

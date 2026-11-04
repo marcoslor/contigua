@@ -3498,9 +3498,28 @@ class Session(
                 log("window.task stream=${action.stream} task=${action.taskId} len=${label.length}")
             }
             is TaskArrivalAction.ProbeDisplay -> {
-                val still = runCatching { taskPresence?.hasTask(action.displayId) }.getOrNull()
-                // A failed query is not an empty display.
-                dispatchArrival(arrival.on(TaskArrivalEvent.MoveCheck(action.stream, still != false)))
+                val presence = taskPresence
+                val still = runCatching { presence?.hasTask(action.displayId) }.getOrNull()
+                if (still == false) {
+                    // The only task is gone: an exit, or a move when the
+                    // display change put the stream's task on the phone.
+                    dispatchArrival(arrival.on(TaskArrivalEvent.DisplayEmpty(action.stream)))
+                    return
+                }
+                val top = if (still == true) {
+                    runCatching { presence?.taskId(action.displayId) }.getOrNull()
+                } else {
+                    null
+                }
+                if (top != null && top > 0) {
+                    // A sheet closed over the app's task: follow the display's
+                    // top task again (ISS-33).
+                    dispatchArrival(arrival.on(TaskArrivalEvent.StreamTask(action.stream, top)))
+                } else {
+                    // A failed query is not an empty display, and neither is a
+                    // display whose top id this phone cannot read.
+                    dispatchArrival(arrival.on(TaskArrivalEvent.MoveCheck(action.stream, true)))
+                }
             }
             is TaskArrivalAction.CloseMovedToPhone -> closeMovedToPhone(action.stream)
             is TaskArrivalAction.CloseAppExited -> closeAppExited(action.stream)
