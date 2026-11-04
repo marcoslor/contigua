@@ -61,6 +61,8 @@ struct PhoneInfo: Equatable {
     var locked: Bool
     var battery: Int?
     var charging: Bool?
+    /// The encoder's own limits (ISS-39); nil on a phone that sends no report.
+    var encoder: EncoderSpec?
 
     var screenSize: CGSize { CGSize(width: screenWidth, height: screenHeight) }
 
@@ -77,6 +79,7 @@ struct PhoneInfo: Equatable {
         locked = (device["locked"] as? NSNumber)?.boolValue ?? false
         battery = (device["battery"] as? NSNumber)?.intValue
         charging = (device["charging"] as? NSNumber)?.boolValue
+        encoder = EncoderSpec(json: device["encoder"])
     }
 }
 

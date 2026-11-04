@@ -50,6 +50,83 @@ final class GeometryTests: XCTestCase {
         }
     }
 
+    // MARK: The encoder's own limits (ISS-39)
+
+    private let modern = EncoderSpec(widthAlign: 2, heightAlign: 2, maxWidth: 8192, maxHeight: 8192,
+                                     maxPixelsAt60: 8192 * 8192)
+
+    func testTheExactWindowPixelsAreAskedForWithAModernEncoder() {
+        // 1203 x 693 pt at 2x is 2406 x 1386 px: neither is a multiple of 16,
+        // both are even, so a 2 px alignment keeps the window's own pixels.
+        let size = VideoSize.displayPixels(bounds: CGSize(width: 1203, height: 693),
+                                           backingScale: 2, encoder: modern)
+        XCTAssertEqual(size.width, 2406)
+        XCTAssertEqual(size.height, 1386)
+    }
+
+    func testAnOddBackingSizeRoundsDownToTheEncodersAlignment() {
+        // 1x: an odd window's pixels cannot all be shown at an even alignment;
+        // the phone gets the even size below it and the Mac leaves the strip.
+        let size = VideoSize.displayPixels(bounds: CGSize(width: 1203, height: 857),
+                                           backingScale: 1, encoder: modern)
+        XCTAssertEqual(size.width, 1202)
+        XCTAssertEqual(size.height, 856)
+    }
+
+    func testTheReportedCapsScaleTheWindowDownKeepingItsAspect() {
+        let spec = EncoderSpec(widthAlign: 2, heightAlign: 2, maxWidth: 2560, maxHeight: 1440,
+                               maxPixelsAt60: 2560 * 1440)
+        // 3000 x 1000 pt at 2x: the width ceiling scales it by 2560/6000.
+        let wide = VideoSize.displayPixels(bounds: CGSize(width: 3000, height: 1000),
+                                           backingScale: 2, encoder: spec)
+        XCTAssertEqual(wide.width, 2560)
+        XCTAssertEqual(wide.height, 852)
+    }
+
+    func testTheSixtyFpsPixelCountCapsASquareWindow() {
+        let spec = EncoderSpec(widthAlign: 2, heightAlign: 2, maxWidth: 8192, maxHeight: 8192,
+                               maxPixelsAt60: 4_000_000)
+        let size = VideoSize.displayPixels(bounds: CGSize(width: 3000, height: 3000),
+                                           backingScale: 2, encoder: spec)
+        XCTAssertLessThanOrEqual(Int(size.width * size.height), 4_000_000)
+        XCTAssertEqual(Int(size.width) % 2, 0)
+        XCTAssertEqual(Int(size.height) % 2, 0)
+        XCTAssertEqual(size.width, size.height, "the aspect is kept")
+    }
+
+    func testAPhoneWithoutTheReportKeepsTheSixteenAnd2560Rule() {
+        let size = VideoSize.displayPixels(bounds: CGSize(width: 2000, height: 1800),
+                                           backingScale: 2, encoder: nil)
+        XCTAssertEqual(size.width, 2560)
+        XCTAssertEqual(size.height, 2304)
+    }
+
+    func testTheDPIOfAnExactTwoXWindowKeepsTheAppsDPSize() {
+        let bounds = CGSize(width: 900, height: 600)
+        let pixels = VideoSize.displayPixels(bounds: bounds, backingScale: 2, encoder: modern)
+        XCTAssertEqual(pixels.width, 1800)
+        let dpi = VideoSize.dpi(pixels: pixels, bounds: bounds, density: 1.0)
+        XCTAssertEqual(dpi, 320)
+        // dp = px / (dpi / 160): the app lays out for the window's own points.
+        XCTAssertEqual(Double(pixels.width) / (dpi / 160), 900, accuracy: 0.001)
+        // The old floor-to-16 rule kept the same dp width with a lower dpi.
+        let oldPixels = VideoSize.displayPixels(bounds: bounds, backingScale: 2, encoder: nil)
+        let oldDpi = VideoSize.dpi(pixels: oldPixels, bounds: bounds, density: 1.0)
+        XCTAssertEqual(Double(oldPixels.width) / (oldDpi / 160), 900, accuracy: 0.001)
+    }
+
+    func testTheWelcomeReportParsesAndAMissingOneIsNil() {
+        let spec = EncoderSpec(json: ["widthAlign": 2, "heightAlign": 4, "maxWidth": 4096,
+                                      "maxHeight": 2160, "maxPixels60": 8_294_400])
+        XCTAssertEqual(spec?.widthAlign, 2)
+        XCTAssertEqual(spec?.heightAlign, 4)
+        XCTAssertEqual(spec?.maxWidth, 4096)
+        XCTAssertEqual(spec?.maxHeight, 2160)
+        XCTAssertEqual(spec?.maxPixelsAt60, 8_294_400)
+        XCTAssertNil(EncoderSpec(json: nil))
+        XCTAssertNil(EncoderSpec(json: ["widthAlign": 2]), "a partial report is no report")
+    }
+
     // MARK: dpi
 
     func testDPIFormula() {

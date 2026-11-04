@@ -1467,19 +1467,26 @@ class Session(
         hub.sendJSONOn(pathId, welcomeMessage(), priority = true)
     }
 
+    /** The encoder's limits, probed once per session (ISS-39). */
+    private val encoderReport: EncoderReport? by lazy { EncoderReport.probe() }
+
     private fun welcomeMessage(): Map<String, Any?> {
         val d = device.info()
+        val device = linkedMapOf<String, Any?>(
+            "id" to d.id,
+            "name" to d.name,
+            "model" to d.model,
+            "sdk" to d.sdk,
+            "screen" to mapOf("w" to d.screenW, "h" to d.screenH, "dpi" to d.dpi),
+            "locked" to d.locked,
+        )
+        // A phone that cannot probe its encoder sends none: the Mac keeps its
+        // 16 px / 2560 rule.
+        encoderReport?.let { device["encoder"] = it.wire() }
         return mapOf(
             "t" to "welcome",
             "session" to sessionId,
-            "device" to mapOf(
-                "id" to d.id,
-                "name" to d.name,
-                "model" to d.model,
-                "sdk" to d.sdk,
-                "screen" to mapOf("w" to d.screenW, "h" to d.screenH, "dpi" to d.dpi),
-                "locked" to d.locked,
-            ),
+            "device" to device,
         )
     }
 

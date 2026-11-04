@@ -152,8 +152,28 @@ class ResizePlanTest {
 
     @Test
     fun `a stricter encoder alignment wins`() {
-        val size = EncoderSizes.fit(1000, 1000, EncoderLimits(align = 32))
+        val size = EncoderSizes.fit(1000, 1000, EncoderLimits(widthAlign = 32, heightAlign = 32))
         assertEquals(IntSize(992, 992), size)
+    }
+
+    @Test
+    fun `an exact even size passes through the codec's own alignment unchanged`() {
+        val limits = EncoderLimits(maxW = 8192, maxH = 8192, widthAlign = 2, heightAlign = 2)
+        assertEquals(IntSize(2406, 1386), EncoderSizes.fit(2406, 1386, limits))
+        assertEquals(IntSize(1202, 856), EncoderSizes.fit(1202, 856, limits))
+    }
+
+    @Test
+    fun `an odd size rounds down to the codec's alignment`() {
+        val limits = EncoderLimits(maxW = 8192, maxH = 8192, widthAlign = 2, heightAlign = 2)
+        assertEquals(IntSize(2406, 1386), EncoderSizes.fit(2407, 1387, limits))
+    }
+
+    @Test
+    fun `each axis follows its own alignment`() {
+        val limits = EncoderLimits(widthAlign = 2, heightAlign = 4)
+        assertEquals(IntSize(1202, 856), EncoderSizes.fit(1203, 857, limits))
+        assertEquals(IntSize(1202, 856), EncoderSizes.fit(1203, 858, limits))
     }
 
     @Test

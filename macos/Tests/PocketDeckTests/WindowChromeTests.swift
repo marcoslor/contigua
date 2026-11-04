@@ -8,16 +8,20 @@ import XCTest
 @testable import PocketDeck
 
 final class LetterboxTests: XCTestCase {
-    func testQuantisationBarsAreFilledButRealLetterboxesKept() {
+    func testTheQuantisationStripIsLeftInsteadOfStretched() {
         let bounds = CGRect(x: 0, y: 0, width: 900, height: 600)
-        // 900 x 600 pt at 2x asks for 1792 x 1200: 4 px short each side.
-        XCTAssertEqual(Letterbox.videoRect(video: CGSize(width: 1792, height: 1200), in: bounds), bounds)
-        XCTAssertTrue(Letterbox.fills(video: CGSize(width: 1792, height: 1200), bounds: bounds.size))
+        // 900 x 600 pt at 2x is 1800 x 1200 px; an older phone answers
+        // 1792 x 1200 (16 px aligned). The picture is drawn 1:1 at its top
+        // left and the 4 pt strip stays background rather than every pixel
+        // being resampled.
+        let rect = Letterbox.videoRect(video: CGSize(width: 1792, height: 1200), in: bounds,
+                                       backingScale: 2, alignment: 16)
+        XCTAssertEqual(rect.width, 896, accuracy: 0.001)
+        XCTAssertEqual(rect.maxY, bounds.maxY, accuracy: 0.001)
         // A frame of a different shape (mid-resize) is still fitted, not stretched.
         let tall = Letterbox.videoRect(video: CGSize(width: 1080, height: 2400), in: bounds)
         XCTAssertEqual(tall.height, 600)
         XCTAssertEqual(tall.width, 270)
-        XCTAssertFalse(Letterbox.fills(video: .zero, bounds: bounds.size))
     }
 }
 
