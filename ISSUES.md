@@ -61,7 +61,12 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **The app's own in-stream "New window"** is the case the person hit. Spec draft and emulator spike on `epic/mw-mac` (`.agent/mw-mac/spec-draft-in-stream.md`).
     - **Spike boot 4 (2026-11-04):** Chrome's ⋮ ▸ New window on a streamed display did **not** stay on it. Chrome started a new task on the phone's own display, in a split-screen pair with PocketDeck. The stream kept the old task, and no `window.title` arrived. So the fix must catch the new task wherever it lands, move it to a display of its own, and open a Mac window for it.
     - **Next:** an emulator boot to prove the move on API 36 (`cmd activity display move-stack`, which wants a root task; Chrome's new task sits inside the split container), and Back/close on it.
-- **ISS-29 The Window menu reads "Enter Full Screen" twice on macOS 26.** The system's own "Enter Full Screen ›" submenu (beside Move & Resize) sits next to the app's "Enter Full Screen ⌃⌘F" (VM shot, 2026-11-04, `.agent/mw-mac/shots/r5/light-5-window-menu.png`). `MenuCleanup` removes only a key-less duplicate without children, so the system's submenu stays. On main too. Decide where the app's own command belongs (the View menu, as in Apple's apps?) with a prototype; MENU-7 and MENU-11.
+- **ISS-29 The Window menu reads "Enter Full Screen" twice on macOS 26.** The system's own "Enter Full Screen ›" submenu (beside Move & Resize) sits next to the app's "Enter Full Screen ⌃⌘F" (VM shot, 2026-11-04, `.agent/mw-mac/shots/r5/light-5-window-menu.png`). `MenuCleanup` removes only a key-less duplicate without children, so the system's submenu stays. On main too. MENU-7 and MENU-11.
+  - **Prototype round done (2026-11-04, `proto/fsmenu` 469a4650; sheets in `.agent/proto/fsmenu/`, pick sheet `fsmenu-pick.png`):**
+    - **Apple's convention:** Finder, Safari and TextEdit all put "Enter Full Screen" last in **View**, shown with **fn‑F** (Globe F), and the Window menu keeps the system's "Full Screen Tile ›" (Left of Screen, Right of Screen). In this run the submenu read "Full Screen Tile", not "Enter Full Screen" as in r5, so the doubled title may depend on state; the misplacement doesn't.
+    - **Options:** A, our item last in View (⌃⌘F, our symbol); B, macOS's own item (identical to Apple's apps: fn‑F, Apple's symbol, disabled for the Phone Mirror by itself). Whether ⌃⌘F still works under B is unproven: check it first in the build.
+    - **Spec fix either way:** MENU-7 says the item is disabled for the Deck, but the code lets the Deck go full screen (only the Phone Mirror opts out) and the system's tile submenu is enabled for it. Fix the spec to match.
+    - **Waiting on the person's pick.**
 - **ISS-7 A shared app stops responding after ⌘K under load.** The shared app's control channel stalls after a ⌘K launch while WindowServer is busy. Seen in 3 of about 10 e2e runs on 2026-11-01, none since.
 - **ISS-8 A revoked Mac fails silently.** A Mac whose pairing was removed on the phone waits through a 16 s handshake timeout instead of being told. Re-check.
 - **ISS-9 "Busy" sticks after a network drop.** The phone kept reporting a busy session after a drop. Re-check: the paths layer (E-10, 2026-11-02) frees the slot.
@@ -86,6 +91,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **ISS-19 The prototype screenshot tool lives on the prototype branch only.** Merge it into main's rig.
 - **ISS-20 One unnamed K2 flake.** One assertion failed once in 1340 tests on 2026-10-31 and passed on the rerun. Log the test name the next time it happens.
 - **ISS-21 Older rig items.** Re-check each one: the `controls` check's gear AX order (PANEL-7), the fake phone's pause test, the Finder delete-warning proof in the VM, and the panel-yield sequencing steps.
+- **ISS-30 VM review shots never switch to light.** `PD_E2E_SHOT_APPEARANCE=light` boots draw dark menus and a dark bar (r5's "light" multiwin set and both fsmenu sheets, 2026-11-04), so light mode has never been reviewed in the VM. Find where the appearance should be set in the guest (`vm-e2e.sh` passes it through) and prove it with one light shot of a Finder menu.
 
 ## 5. Features, in order
 
