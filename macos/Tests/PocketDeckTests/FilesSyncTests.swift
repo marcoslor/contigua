@@ -203,6 +203,70 @@ final class FilesSyncTests: XCTestCase {
                        "the record keeps the items the failed walk never saw")
     }
 
+    /// A restart's first visit to a folder: the system touches it (Finder shows
+    /// it), and nothing else may be needed for what changed on the phone while
+    /// the app was off to reach the system (design § Sync integrity, slice 1).
+    func testTheFirstTouchAfterARestartListsTheFolderAndReportsTheChanges() throws {
+        let fiveFS = (6...10).map { fs("f\($0).txt", ino: $0) }
+        let five = fiveFS.map { FilesMap.item(path: $0.name, parentIdentifier: root, fs: $0) }
+        let anchor = saveEarlierRun(five)
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        host.touch(item: root) { _ in }
+        guard channel.lists.count == 1 else {
+            return XCTFail("the first touch lists the folder once (lists=\(channel.lists.count))")
+        }
+        answerList([fiveFS[0], fiveFS[1], fiveFS[3]])
+
+        let replay = try XCTUnwrap(host.replica.log.changes(from: anchor, container: nil))
+        XCTAssertEqual(Set(replay.deleted), [five[2].identifier, five[4].identifier])
+        XCTAssertEqual(signals.count, 1)
+
+        host.touch(item: root) { _ in }
+        XCTAssertEqual(channel.lists.count, 1, "a second touch in this process lists nothing")
+    }
+
+    /// A Mac move to another folder: the system already knows the item's new
+    /// parent. Identifiers are domain-wide, so a deletion logged for the old
+    /// folder would delete the moved item itself on the next replay.
+    func testAMoveToAnotherFolderNeverLogsTheItemDeleted() throws {
+        let photo = item("photo.jpg", ino: 6)
+        let folderFS = fs("D", ino: 7, dir: true)
+        let folder = FilesMap.item(path: "D", parentIdentifier: root, fs: folderFS)
+        let anchor = saveEarlierRun([photo, folder])
+        var map = FilesIdMap()
+        map.remember(identifier: "ino:6", path: "photo.jpg", parentIdentifier: root)
+        map.remember(identifier: "ino:7", path: "D", parentIdentifier: root)
+        FilesIdMap.save(map, to: mapURL)
+
+        let host = makeHost(Signals())
+        var moved: Result<FileItem, FsError>?
+        host.modify(BridgeModify(item: "ino:6", base: "aa", content: false, name: nil,
+                                 parent: "ino:7", mtime: nil, size: 0, sha256: nil),
+                    ready: { _ in },
+                    completion: { moved = $0 })
+        // The source and the target folder are checked on the phone first.
+        var answered = 0
+        while channel.moves.isEmpty, channel.stats.count > answered, answered < 4 {
+            let request = channel.stats[answered]
+            answered += 1
+            client.item(id: request.id,
+                        item: (request.path == "D" ? folderFS : fs("photo.jpg", ino: 6)).jsonObject)
+        }
+        let request = try XCTUnwrap(channel.moves.last, "the move reached the phone")
+        XCTAssertEqual(request.to, "D/photo.jpg")
+        client.result(id: request.id, ok: true, item: fs("photo.jpg", ino: 6).jsonObject,
+                      code: nil, message: nil)
+
+        XCTAssertEqual(try moved?.get().parentIdentifier, "ino:7")
+        let replay = try XCTUnwrap(host.replica.log.changes(from: anchor, container: nil))
+        XCTAssertFalse(replay.deleted.contains("ino:6"),
+                       "the moved item is not reported deleted")
+        XCTAssertNil(host.replica.folders[root]?.children["ino:6"])
+        XCTAssertEqual(host.replica.folders["ino:7"]?.children["ino:6"]?.name, "photo.jpg")
+    }
+
     // MARK: Guards
 
     func testAnItemWithAnUploadInFlightIsNotDeleted() throws {

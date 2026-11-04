@@ -921,7 +921,10 @@ final class SessionBridgeHost: FilesBridgeHost {
                 case .success(let fs?):
                     let newParent = request.parent ?? oldParent
                     if newParent != oldParent {
-                        self.removeReported(request.item, from: oldParent)
+                        // The system made this move and knows the new parent.
+                        // Identifiers are domain-wide: a logged deletion here
+                        // would delete the moved item itself on a replay.
+                        self.dropReported(request.item, from: oldParent)
                     }
                     self.map.rename(identifier: request.item, to: newPath)
                     let item = self.remember(fs, path: newPath, item: request.item,
@@ -980,6 +983,16 @@ final class SessionBridgeHost: FilesBridgeHost {
         if replica.log.record(container: container, delta: delta) {
             signal([container])
         }
+        save()
+    }
+
+    /// The item left this folder's record without being gone (a Mac move to
+    /// another folder): nothing is logged, the system already knows.
+    private func dropReported(_ identifier: String, from container: String) {
+        guard var record = replica.folders[container],
+              record.children.removeValue(forKey: identifier) != nil else { return }
+        record.touched = clock()
+        replica.folders[container] = record
         save()
     }
 
@@ -1086,6 +1099,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                 }
                 self.pathByItem[item] = resolved.path
                 self.itemsByPath[resolved.path, default: []].insert(item)
+                self.visit(item)
                 self.client.watch(paths: [resolved.path], on: true, completion: completion)
             }
         }
@@ -1150,6 +1164,20 @@ final class SessionBridgeHost: FilesBridgeHost {
     func filesChanged(paths: [String]) {
         for path in paths {
             for item in itemsByPath[path] ?? [] { refresh(item) }
+        }
+    }
+
+    /// A folder starts being watched (its first touch in this process, or the
+    /// first since the watch set dropped it): list it once. The walk diffs the
+    /// listing against the record, so what changed on the phone while nothing
+    /// watched it reaches the system (design § Sync integrity, 2). Later touches
+    /// only keep the watch alive; the phone's pushes cover the rest.
+    private var visiting: Set<String> = []
+
+    private func visit(_ item: String) {
+        guard !refreshing.contains(item), visiting.insert(item).inserted else { return }
+        listPages(item: item) { [weak self] _ in
+            self?.visiting.remove(item)
         }
     }
 
