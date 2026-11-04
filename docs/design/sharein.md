@@ -56,13 +56,22 @@ same gate before any probe.
 
 ### The helper
 
-- Started only when the server's UID is 0: `su 2000 -c 'CLASSPATH=<apk path> exec
-  app_process /system/bin dev.pocketdeck.server.ClipHelperMain'`, with the APK path the
-  watchdog already uses (`appApkPath`).
-- One explicit machine, `Off → Starting → Ready → Failed(reason)`. A death restarts at
-  most three times with 500 ms, 1 s and 2 s backoff, then `Failed`. `Stop` kills it and
-  returns to `Off`; every transition is logged. A missing or refused `su` ends in
-  `Failed`, and the reader policy is `Off("no helper")` — never a crash.
+- Started only when the server's UID is 0. Two `su` forms are tried in this order:
+  1. `su 2000 -c '<cmd>'` — a root manager's syntax, and the one used before the second
+     form existed, so a device where it works starts exactly as it did;
+  2. `su 2000 sh -c '<cmd>'` — AOSP's userdebug `su` is `su [WHO [COMMAND...]]` and has
+     no `-c` of its own, so it runs the command through `sh` instead.
+
+  The command is `CLASSPATH=<apk path> exec app_process /system/bin
+  dev.pocketdeck.server.ClipHelperMain`, with the APK path the watchdog already uses
+  (`appApkPath`).
+- One explicit machine, `Off → Starting → Ready → Failed(reason)`. A death before ready
+  tries the next form at once and spends no restart; when every form has died the state
+  is `Failed("no su form")` and reads stay off. The form that reached ready is the one
+  every later restart uses: at most three, with 500 ms, 1 s and 2 s backoff, then
+  `Failed`. `Stop` kills it and returns to `Off`; every transition is logged with its
+  form. A missing or refused `su` ends in `Failed`, and the reader policy is
+  `Off("no helper")` — never a crash.
 - It registers the real shell user's primary-clip listener at startup, then answers
   requests on stdin/stdout: `[length][type][id][payload]`, binary-safe for images up to
   the existing 8 MiB cap, with `text`, `image`, `text reply`, `image reply`, `changed`
