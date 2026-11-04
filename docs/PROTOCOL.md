@@ -445,6 +445,7 @@ Mac → phone (after `welcome`):
 | `phone.panel` | `off`: bool, `ignorePower`?: bool | hold the mirrored panel off while the phone window keeps rendering, or give it back (`off: false`); `ignorePower` says a power press does not end the hold; see "Phone screen" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
+| `fs.digest` | `id`, `paths`: up to 64 folder paths | one reply with each folder's digest; see "Phone files" |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
 | `fs.cancel` | `id` | abandon a running `fs.read`; the phone stops streaming and drops what is queued |
 
@@ -692,7 +693,12 @@ running transfers.
   Anything missing is `fs_not_found`; a `fs.list` of a file is `fs_not_a_dir`.
 - **`fs.list`** answers one page of at most 1000 items and at most 1 MiB of
   JSON. `page` is an opaque string the phone chose; a page that is absent or
-  unknown starts at the first item. `fs.items.page` is `null` on the last page.
+  unknown starts at the first item. `fs.items.page` is `null` on the last page,
+  which also carries the folder's `digest` (below).
+- **Android's transient entries** — `.trashed-*` (a file moving into the Trash)
+  and `.pending-*` (a staged delete) — are left out of every listing and every
+  digest, at any depth, like our own `.pocketdeck-*.part` staging files. They
+  are not items, so they neither fill a page nor move the cursor.
 - **Items** are `{"name","dir","size","mtime","ino","etag"}`: `size` and
   `mtime` (ms) are the file's own, `ino` its inode (0 when unknown), `etag`
   16 bytes of `(ino, size, mtime)` as 32 lowercase hex characters — a weak
@@ -716,6 +722,32 @@ running transfers.
   that. Every reply carries its `id`; fs failures are the ordinary `error`
   message with an `id` field.
 - **Logs carry no names**: counts, lengths, depths and codes only, both sides.
+
+### Digests
+
+A digest lets the Mac compare a folder it is not showing without listing it
+(FILES-33): on every session ready it asks for the folders in its record and
+re-lists only the ones whose digest moved.
+
+| t | fields | meaning |
+|---|---|---|
+| `fs.digest` | `id`, `paths`: up to 64 folder paths | the folders to hash, in one request |
+| `fs.digest` | `id`, `digests`: `{path: "<32 hex>" \| "not_found"}` | the phone's one answer |
+
+The digest is the first 16 bytes, as 32 lowercase hex characters, of SHA-256
+over the folder's **visible** entries (the `fs.list` filter), sorted by name
+bytes (UTF-8), each written `name \0 ino \0 size \0 mtime \n` with `ino`,
+`size` and `mtime` (ms) in decimal ASCII. It is deterministic across phone
+restarts and costs one readdir plus one stat per entry, with no recursion.
+
+A path that is not a folder answers `"not_found"` (missing, or a file); the
+shape rules are checked as for `fs.list`, and a refused path fails the whole
+request with `fs_denied` rather than being mistaken for a deletion. More than
+64 paths, or a `paths` that is not a list of strings, is `fs_denied`.
+
+A phone that does not know an `fs.*` message answers `error` with code
+`fs_unknown` and the request's `id`; the Mac then re-lists every folder in its
+record instead (paged as today).
 
 ### Thumbnails
 

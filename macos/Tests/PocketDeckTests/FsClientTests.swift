@@ -30,6 +30,7 @@ private final class FakeFsChannel: FsChannel {
     private(set) var mkdirs: [(id: UInt32, path: String)] = []
     private(set) var setAttrs: [(id: UInt32, path: String, mtime: Int)] = []
     private(set) var watches: [(id: UInt32, paths: [String], on: Bool)] = []
+    private(set) var digests: [(id: UInt32, paths: [String])] = []
     /// The session's write completions, held so a test decides when a chunk landed.
     private(set) var sends: [(Int, @Sendable (Bool) -> Void)] = []
 
@@ -89,6 +90,11 @@ private final class FakeFsChannel: FsChannel {
     func fsWatch(id: UInt32, paths: [String], on: Bool) {
         lock.lock(); defer { lock.unlock() }
         watches.append((id, paths, on))
+    }
+
+    func fsDigest(id: UInt32, paths: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        digests.append((id, paths))
     }
 
     func fsCancel(id: UInt32) {
@@ -228,8 +234,33 @@ final class FsClientTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: out("out.bin").path))
     }
 
-    func testCancelSendsFsCancelAndDropsLaterFrames() throws {
-        var result: Result<FsReadResult, FsError>?
+    func testADigestReplyCarriesHexOrNotFound() {
+        var result: Result<[String: FsDigestReply], FsError>?
+        client.digest(paths: ["A", "B", "C"]) { result = $0 }
+        let request = channel.digests.last
+        XCTAssertEqual(["A", "B", "C"], request?.paths)
+
+        client.digests(id: request?.id ?? 0,
+                       values: ["A": "00112233445566778899aabbccddeeff",
+                                "B": "not_found",
+                                "C": "not a digest"])
+        guard case .success(let values) = result else {
+            return XCTFail("digest failed: \(String(describing: result))")
+        }
+        XCTAssertEqual(values["A"], .digest("00112233445566778899aabbccddeeff"))
+        XCTAssertEqual(values["B"], .notFound)
+        XCTAssertNil(values["C"], "a value that is neither is left for the folder's next touch")
+    }
+
+    func testAnUnknownDigestIsAFailureTheResyncCanRead() {
+        var result: Result<[String: FsDigestReply], FsError>?
+        client.digest(paths: ["A"]) { result = $0 }
+        client.failure(id: channel.digests.last?.id ?? 0, code: "fs_unknown", message: nil)
+        guard case .failure(let error) = result else { return XCTFail("expected a failure") }
+        XCTAssertEqual("fs_unknown", error.code)
+    }
+
+    func testCancelSendsFsCancelAndDropsLaterFrames() throws {        var result: Result<FsReadResult, FsError>?
         client.read(path: "a.bin", offset: 0, length: 100, etag: nil, to: out("out.bin")) {
             result = $0
         }

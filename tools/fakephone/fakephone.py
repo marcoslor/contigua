@@ -1111,6 +1111,21 @@ def fs_temp_name(name):
         and len(name) > len(FS_TEMP_PREFIX) + len(FS_TEMP_SUFFIX)
 
 
+# Android's transient names (FILES-35): a file being moved into the Trash, or a
+# staged delete. The real phone leaves them out at every depth; the fake must
+# agree, or host checks would pass on a listing the phone would not send.
+FS_TRANSIENT_PREFIXES = (".trashed-", ".pending-")
+
+
+def fs_transient_name(name):
+    return name.startswith(FS_TRANSIENT_PREFIXES)
+
+
+def fs_visible_name(name, top):
+    return not fs_temp_name(name) and not fs_transient_name(name) \
+        and (not top or not (name.startswith(".") or name == "Android"))
+
+
 # fs.thumb's own type check (docs/PROTOCOL.md "Thumbnails"): the fake serves a
 # fixture for an image or a video name and refuses everything else.
 FS_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif", "dng"}
@@ -1195,19 +1210,46 @@ class FsFake(object):
         return {"dir": is_dir, "size": size,
                 "mtime": st.st_mtime_ns // 1000000, "ino": st.st_ino, "etag": etag}
 
+    def visible(self, path):
+        """The entries a person sees: one readdir and the shared filter."""
+        top = path == self.root
+        try:
+            names = os.listdir(path)
+        except OSError:
+            raise FsError("fs_denied", "unreadable directory")
+        return [name for name in names if fs_visible_name(name, top)]
+
+    def digest(self, rel):
+        """FILES-35: 16 bytes of SHA-256 over `name \\0 ino \\0 size \\0 mtime
+        \\n` in name-byte order; one readdir and one stat per visible entry."""
+        return self.digest_path(self.resolve(rel))
+
+    def digest_path(self, path):
+        meta = self.meta(path)
+        if not meta["dir"]:
+            raise FsError("fs_not_found", "not a directory")
+        hash = hashlib.sha256()
+        for name in sorted(self.visible(path), key=lambda n: n.encode("utf-8")):
+            try:
+                m = self.meta(os.path.join(path, name))
+            except FsError:
+                continue  # deleted since the readdir
+            hash.update(name.encode("utf-8"))
+            hash.update(b"\x00")
+            hash.update(str(m["ino"]).encode("ascii"))
+            hash.update(b"\x00")
+            hash.update(str(m["size"]).encode("ascii"))
+            hash.update(b"\x00")
+            hash.update(str(m["mtime"]).encode("ascii"))
+            hash.update(b"\n")
+        return hash.hexdigest()[:32]
+
     def list(self, rel, page):
         path = self.resolve(rel)
         meta = self.meta(path)
         if not meta["dir"]:
             raise FsError("fs_not_a_dir", "not a directory")
-        try:
-            names = os.listdir(path)
-        except OSError:
-            raise FsError("fs_denied", "unreadable directory")
-        top = path == self.root
-        names = sorted(n for n in names
-                       if not fs_temp_name(n)
-                       and (not top or not (n.startswith(".") or n == "Android")))
+        names = sorted(self.visible(path))
         start = 0
         if isinstance(page, str) and page.isdigit() and int(page) < len(names):
             start = int(page)
@@ -1227,7 +1269,9 @@ class FsFake(object):
                 break
             items.append(item)
             used += cost
-        return {"items": items, "page": str(index) if index < len(names) else None}
+        last = index >= len(names)
+        return {"items": items, "page": None if last else str(index),
+                "digest": self.digest_path(path) if last else None}
 
     def stat(self, rel):
         path = self.resolve(rel)
@@ -2924,6 +2968,7 @@ class Session(object):
             "media.choose": self._on_media_choose,
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
+            "fs.digest": self._on_fs_digest,
             "fs.read": self._on_fs_read,
             "fs.thumb": self._on_fs_thumb,
             "fs.write": self._on_fs_write,
@@ -2956,6 +3001,14 @@ class Session(object):
         handlers["phone.ring.stop"] = self._on_phone_ring_stop
         handler = handlers.get(kind)
         if handler is None:
+            # An fs.* message this build does not know answers `fs_unknown`
+            # (FILES-33), like the phone; anything else is a logged no-reply.
+            read_id = _fs_id(msg)
+            if isinstance(kind, str) and kind.startswith("fs.") and read_id is not None:
+                self._send({"t": "error", "code": "fs_unknown",
+                            "message": "this phone does not know that request",
+                            "id": read_id})
+                return
             if kind not in self._unknown_types:
                 self._unknown_types.add(kind)
                 sys.stderr.write("fakephone: ignoring unknown message %r\n" % kind)
@@ -3343,9 +3396,39 @@ class Session(object):
             page = fs.list(msg.get("path"), msg.get("page"))
         except FsError as exc:
             return self._fs_error(read_id, exc)
-        self._send({"t": "fs.items", "id": read_id, "page": page["page"], "items": page["items"]})
+        reply = {"t": "fs.items", "id": read_id, "page": page["page"], "items": page["items"]}
+        if page.get("digest") is not None:
+            reply["digest"] = page["digest"]
+        self._send(reply)
         self.phone.events.fs("list", id=read_id, items=len(page["items"]),
                              more=page["page"] is not None)
+
+    def _on_fs_digest(self, msg):
+        """FILES-35: one reply for at most 64 folders; a file is `not_found`."""
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_error(read_id, FsError("fs_denied", "files are not served"))
+        paths = msg.get("paths")
+        if not isinstance(paths, list) or len(paths) > 64 \
+                or any(not isinstance(path, str) for path in paths):
+            return self._fs_error(read_id, FsError("fs_denied", "bad paths"))
+        digests = {}
+        try:
+            for path in paths:
+                try:
+                    digests[path] = fs.digest(path)
+                except FsError as exc:
+                    if exc.code in ("fs_not_found", "fs_not_a_dir"):
+                        digests[path] = "not_found"
+                    else:
+                        raise
+        except FsError as exc:
+            return self._fs_error(read_id, exc)
+        self._send({"t": "fs.digest", "id": read_id, "digests": digests})
+        self.phone.events.fs("digest", count=len(digests))
 
     def _on_fs_stat(self, msg):
         read_id = _fs_id(msg)

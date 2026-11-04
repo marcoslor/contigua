@@ -343,8 +343,19 @@ protocol FilesBridgeHost: AnyObject, FilesThumbHost {
     var onTouch: ((String) -> Void)? { get set }
     /// A watched folder moved: re-list, diff and signal the extension.
     func filesChanged(paths: [String])
+    /// The session became ready (every connect, and so once after an app start):
+    /// start the record's resync (FILES-33).
+    func sessionReady()
+    /// The session ended: abandon the resync; the next ready starts over.
+    func sessionDropped()
     func cancel(id: UInt32)
     func cancelAll()
+}
+
+extension FilesBridgeHost {
+    /// A host without a record (the bridge's own tests) has nothing to resync.
+    func sessionReady() {}
+    func sessionDropped() {}
 }
 
 /// The real host: one session, one FsClient, and the app-owned id ↔ path map.
@@ -385,6 +396,17 @@ final class SessionBridgeHost: FilesBridgeHost {
     private var uploadNames: [String: Set<String>] = [:]
     /// Folders already being re-listed after a `fs_not_found` (FILES-34).
     private var repairing: Set<String> = []
+    /// The reconnect resync (FILES-33): its phases and the record it reads.
+    private(set) var resync = FilesResync()
+    /// Which run of the machine is current: a drop or a new ready invalidates
+    /// the late callbacks of the old one.
+    private var resyncGeneration = 0
+    /// The record's folders this session's resync has taken responsibility for:
+    /// the bridge's re-watch touches must not list them again, because the
+    /// digest compare (or the resync's own listing) is that folder's check.
+    private var resyncCovered: Set<String> = []
+    /// The folders one `fs.digest` was asked about, for mapping path → folder.
+    private var resyncFolders: [FilesResync.Folder] = []
     /// The record's clock and the confirmation delay; tests move both by hand.
     var clock: () -> TimeInterval = { Date().timeIntervalSince1970 }
     var confirmDelay: TimeInterval = 2
@@ -544,7 +566,8 @@ final class SessionBridgeHost: FilesBridgeHost {
                         for mapped in items { pageItems[mapped.identifier] = mapped }
                         if listing.next == nil {
                             self.building.removeValue(forKey: item)
-                            self.finishWalk(item: item, listing: Array(pageItems.values))
+                            self.finishWalk(item: item, listing: Array(pageItems.values),
+                                            digest: listing.digest)
                         } else {
                             self.building[item] = pageItems
                         }
@@ -572,7 +595,10 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     /// The last page (or an error) of one walk: diff against the record, apply
     /// the guards, let the machine decide, then write what the system is told.
-    private func finishWalk(item: String, listing: [FileItem]? = nil, failed: Bool = false) {
+    /// A complete walk also stores the last page's digest (FILES-35); an
+    /// incomplete one keeps the record's previous digest.
+    private func finishWalk(item: String, listing: [FileItem]? = nil, failed: Bool = false,
+                            digest: String? = nil) {
         guard var walk = walks[item] else { return }
         let current = replica.folders[item]?.children ?? [:]
         let seen = listing ?? []
@@ -610,10 +636,11 @@ final class SessionBridgeHost: FilesBridgeHost {
         if before != walk.machine.state {
             Log.files.notice("walk: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(walk.machine.state.code, privacy: .public) items=\(delta.items.count, privacy: .public) deletions=\(delta.deleted.count, privacy: .public)")
         }
-        apply(action, item: item, current: current)
+        apply(action, item: item, current: current, digest: digest, failed: failed)
     }
 
-    private func apply(_ action: FilesWalk.Action, item: String, current: [String: FileItem]) {
+    private func apply(_ action: FilesWalk.Action, item: String, current: [String: FileItem],
+                       digest: String?, failed: Bool) {
         switch action {
         case .none:
             break
@@ -636,7 +663,9 @@ final class SessionBridgeHost: FilesBridgeHost {
             }
             replica.folders[item] = FilesFolderRecord(
                 children: children, touched: clock(),
-                digest: replica.folders[item]?.digest)
+                // Only a complete walk's last page names the folder's state; a
+                // failed one leaves the digest for the next compare.
+                digest: failed ? replica.folders[item]?.digest : digest)
             if replica.log.record(container: item, delta: delta) {
                 signal([item])
             }
@@ -1005,6 +1034,142 @@ final class SessionBridgeHost: FilesBridgeHost {
         save()
     }
 
+    // MARK: The reconnect resync (FILES-33)
+
+    /// The session is ready: one `fs.digest` over the record's folders, most
+    /// recently touched first and at most 64 (design § Sync integrity, 4).
+    /// Every connect comes through here, and so does an app start.
+    func sessionReady() {
+        resyncGeneration += 1
+        let generation = resyncGeneration
+        let candidates = resyncCandidates()
+        resyncFolders = candidates
+        resyncCovered = Set(candidates.map(\.id))
+        let action = resync.apply(.ready(candidates))
+        Log.files.notice("resync: ready folders=\(candidates.count, privacy: .public)")
+        runResync(action, generation: generation)
+    }
+
+    /// The session ended (or the switch went off): the resync goes back to idle
+    /// and the next ready starts over. A late phone reply is ignored.
+    func sessionDropped() {
+        resyncGeneration += 1
+        _ = resync.apply(.dropped)
+        resyncCovered.removeAll()
+        resyncFolders.removeAll()
+        Log.files.notice("resync: dropped")
+    }
+
+    /// The record's folders, most recently touched first, at most 64. The root
+    /// is always one of them when there are any: its digest is what lets the
+    /// machine trust a not_found for the others.
+    private func resyncCandidates() -> [FilesResync.Folder] {
+        let root = FilesMap.rootIdentifier
+        let ordered = replica.folders
+            .filter { !filesSystemContainer($0.key) && $0.key != root }
+            .sorted { left, right in
+                if left.value.touched != right.value.touched {
+                    return left.value.touched > right.value.touched
+                }
+                return left.key < right.key
+            }
+        var folders: [FilesResync.Folder] = []
+        var seen: Set<String> = [""]
+        for (identifier, record) in ordered where folders.count < FilesResync.folderLimit - 1 {
+            guard let path = map.path(for: identifier), seen.insert(path).inserted else { continue }
+            folders.append(FilesResync.Folder(id: identifier, path: path,
+                                              recorded: record.digest))
+        }
+        guard !folders.isEmpty || replica.folders[root] != nil else { return [] }
+        return [FilesResync.Folder(id: root, path: "",
+                                   recorded: replica.folders[root]?.digest)] + folders
+    }
+
+    private func stepResync(_ event: FilesResync.Event, generation: Int) {
+        guard generation == resyncGeneration else { return }
+        let before = resync.state
+        let action = resync.apply(event)
+        if before != resync.state {
+            Log.files.notice("resync: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(self.resync.state.code, privacy: .public)")
+        }
+        runResync(action, generation: generation)
+    }
+
+    private func runResync(_ action: FilesResync.Action, generation: Int) {
+        guard generation == resyncGeneration else { return }
+        switch action {
+        case .none, .finished:
+            break
+        case .ask(let paths):
+            client.digest(paths: paths) { [weak self] result in
+                MainActor.assumeIsolated {
+                    guard let self, generation == self.resyncGeneration else { return }
+                    switch result {
+                    case .success(let values):
+                        self.stepResync(.digests(self.answers(values)), generation: generation)
+                    case .failure(let error):
+                        // No usable digest (`fs_unknown`, or a refusal): compare
+                        // by listing every folder, as a phone without the
+                        // message would be handled.
+                        Log.files.notice("resync: digest failed code=\(error.code, privacy: .public)")
+                        self.stepResync(.unknown, generation: generation)
+                    }
+                }
+            }
+        case .apply(let deletions, let relist):
+            for identifier in Set(deletions) { deleteRecordSubtree(identifier) }
+            guard !relist.isEmpty else { return }
+            Log.files.notice("resync: relisting=\(relist.count, privacy: .public) deleted=\(Set(deletions).count, privacy: .public)")
+            for identifier in relist {
+                listPages(item: identifier) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.stepResync(.listed(identifier), generation: generation)
+                    }
+                }
+            }
+        }
+    }
+
+    private func answers(_ values: [String: FsDigestReply]) -> [FilesResync.Answer] {
+        resyncFolders.map { folder in
+            FilesResync.Answer(folder: folder, digest: values[folder.path])
+        }
+    }
+
+    /// A folder the phone says is gone: one delta in its parent's container
+    /// (so that enumerator sees it), with the folder and everything the record
+    /// held under it; then the records and the id map go.
+    private func deleteRecordSubtree(_ identifier: String) {
+        guard identifier != FilesMap.rootIdentifier,
+              !filesSystemContainer(identifier) else { return }
+        let container = parent(of: identifier)
+        var deleted: [String] = []
+        var seen: Set<String> = []
+        var frontier = [identifier]
+        while let next = frontier.popLast() {
+            guard let record = replica.folders.removeValue(forKey: next) else { continue }
+            if seen.insert(next).inserted { deleted.append(next) }
+            for (childID, child) in record.children {
+                if seen.insert(childID).inserted { deleted.append(childID) }
+                if child.isDirectory { frontier.append(childID) }
+            }
+        }
+        if var record = replica.folders[container] {
+            record.children.removeValue(forKey: identifier)
+            record.touched = clock()
+            replica.folders[container] = record
+        }
+        if let path = map.path(for: identifier) {
+            _ = map.invalidate(subtree: path)
+        }
+        let delta = FilesDelta(items: [], deleted: deleted)
+        if replica.log.record(container: container, delta: delta) {
+            signal([container])
+        }
+        save()
+        Log.files.notice("resync: folder gone items=\(deleted.count, privacy: .public)")
+    }
+
     // MARK: Uploads in flight (FILES-31)
 
     private func beginUpload(identifier: String?, parent: String, name: String?) {
@@ -1108,6 +1273,9 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// The ten minutes are over or the cap dropped this folder: the phone stops
     /// watching its path when no other container shares it.
     func unwatch(item: String, completion: @escaping (Result<Void, FsError>) -> Void) {
+        // A folder that leaves the watch set is compared by its next touch
+        // again: the resync's cover ends with the watch's life.
+        resyncCovered.remove(item)
         guard let path = pathByItem.removeValue(forKey: item) else {
             return completion(.success(()))
         }
@@ -1175,6 +1343,9 @@ final class SessionBridgeHost: FilesBridgeHost {
     private var visiting: Set<String> = []
 
     private func visit(_ item: String) {
+        // The resync already compared this folder against the phone (its digest,
+        // or its own listing): a re-watch touch must not list it a second time.
+        guard !resyncCovered.contains(item) else { return }
         guard !refreshing.contains(item), visiting.insert(item).inserted else { return }
         listPages(item: item) { [weak self] _ in
             self?.visiting.remove(item)
@@ -1318,6 +1489,7 @@ final class FilesBridge {
         listener = nil
         socketPath = nil
         thumbQueue.reset()
+        host?.sessionDropped()
         host?.cancelAll()
         liveIDs.removeAll()
         readIDs.removeAll()
@@ -1336,6 +1508,9 @@ final class FilesBridge {
         self.host?.cancelAll()
         self.host = host
         host.onTouch = { [weak self] item in self?.touchWatch(item) }
+        // The record's folders are compared before the watch set is re-sent, so
+        // a folder inside its ten minutes is checked once, not listed twice.
+        host.sessionReady()
         expireWatches()
         let wanted = watchSet.lastTouch.keys.sorted()
         for item in wanted {
@@ -1354,6 +1529,7 @@ final class FilesBridge {
     /// reconnect re-sends the folders that are still inside their ten minutes.
     func detach() {
         thumbQueue.reset()
+        host?.sessionDropped()
         host?.cancelAll()
         host = nil
         liveIDs.removeAll()
