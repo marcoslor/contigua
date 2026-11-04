@@ -22,6 +22,8 @@ internal class AndroidInjector(
     private val log: (String) -> Unit,
     /** Receives every event and its display instead of the input service; the JVM tests capture them here. */
     private val sink: ((InputEvent, Int) -> Unit)? = null,
+    /** The clipboard the paste path saves and restores through; null leaves it alone. */
+    private val clipboard: ClipboardPort? = null,
 ) : Injector {
 
     private val inputManager: Any? =
@@ -35,7 +37,7 @@ internal class AndroidInjector(
     private val setDisplayId: Method? =
         runCatching { InputEvent::class.java.getMethod("setDisplayId", Hidden.T_INT) }.getOrNull()
 
-    private val clipboard: Any? = Hidden.proxy("android.os.IClipboard", "clipboard")
+    private val clipboardService: Any? = Hidden.proxy("android.os.IClipboard", "clipboard")
     private val clipboardClass = Hidden.iface("android.os.IClipboard")
 
     private val setPrimaryClipMethod: Method? =
@@ -234,9 +236,9 @@ internal class AndroidInjector(
         return runCatching {
             val clip = ClipData.newPlainText("pocketdeck", s)
             if (m.parameterTypes.size == 3) {
-                m.invoke(clipboard, clip, CLIP_PACKAGE, 0)
+                m.invoke(clipboardService, clip, CLIP_PACKAGE, 0)
             } else {
-                m.invoke(clipboard, clip, CLIP_PACKAGE, null as String?, 0)
+                m.invoke(clipboardService, clip, CLIP_PACKAGE, null as String?, 0)
             }
             true
         }.getOrDefault(false)
@@ -246,9 +248,9 @@ internal class AndroidInjector(
         val m = getPrimaryClipMethod ?: return null
         return runCatching {
             val data = if (m.parameterTypes.size == 2) {
-                m.invoke(clipboard, CLIP_PACKAGE, 0)
+                m.invoke(clipboardService, CLIP_PACKAGE, 0)
             } else {
-                m.invoke(clipboard, CLIP_PACKAGE, null as String?, 0)
+                m.invoke(clipboardService, CLIP_PACKAGE, null as String?, 0)
             }
             (data as? ClipData)?.getItemAt(0)?.text?.toString()
         }.getOrNull()

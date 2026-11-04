@@ -13,20 +13,24 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
 /**
- * The primary clipboard, read and written as the shell user (UID 2000) through
- * the hidden `android.content.IClipboard` binder. The app process cannot read
- * the clipboard in the background; the shell package can.
+ * The primary clipboard, read and written through the hidden
+ * `android.content.IClipboard` binder.
  *
  * The hidden signatures change between Android releases, so each call is
  * probed by name and parameter shape (see [ClipboardApi]) instead of being
- * bound to one layout.
+ * bound to one layout. The caller's UID decides whether a read is safe: AOSP's
+ * `getPrimaryClip` clears the clip when the caller does not own the package it
+ * names, and root (UID 0) owns no package at all (ISS-27).
  */
 internal class ShellClipboard(
     private val ctx: Context?,
     private val log: (String) -> Unit,
+    /** This process's UID: 2000 under Shizuku, 0 when it runs with root privileges. */
+    private val callerUid: Int = Process.myUid(),
+    private val service: ClipboardService? = BinderClipboardService(log),
+    /** The shell-user reader for a root process; null when there is none. */
+    private val helper: ClipboardHelperPort? = null,
 ) : ClipboardPort, ClipboardImagePort {
-
-    private val service: Any? by lazy { Hidden.proxy(IFACE, "clipboard") }
 
     /** The one live registration; only its handle may stop it (ISS-13). */
     @Volatile private var live: ClipRegistration? = null
@@ -41,10 +45,7 @@ internal class ShellClipboard(
 
     override fun getText(): ClipText? {
         val svc = service ?: return null
-        val get = ClipboardApi.calls(log).get ?: return null
-        val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
-            .getOrNull() as? ClipData ?: return null
+        val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
         val text = clip.getItemAt(0).text?.toString() ?: return null
         return ClipText(text, isSensitive(clip.description))
@@ -52,15 +53,13 @@ internal class ShellClipboard(
 
     override fun setText(text: String) {
         val svc = service ?: return
-        val set = ClipboardApi.calls(log).set ?: return
         val clip = ClipData.newPlainText(CLIP_LABEL, text)
-        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
-            .onFailure { log("clipboard: setPrimaryClip failed: ${failureClasses(it)}") }
+        svc.setPrimaryClip(clip, SHELL_PACKAGE, callerUid)
     }
 
     // ---- images (docs/design/dragdrop.md): first image item only ---------------
 
-    private val resolver: android.content.ContentResolver?
+    private val resolver: ContentResolver?
         get() = ctx?.contentResolver
 
     /**
@@ -70,10 +69,7 @@ internal class ShellClipboard(
      */
     override fun readImage(): ClipImage? {
         val svc = service ?: return null
-        val get = ClipboardApi.calls(log).get ?: return null
-        val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
-            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
-            .getOrNull() as? ClipData ?: return null
+        val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
         if (item.text != null) return null
@@ -101,32 +97,19 @@ internal class ShellClipboard(
             log("clipboard: no clipboard service; sync off")
             return reg
         }
-        val calls = ClipboardApi.calls(log)
-        val add = calls.add ?: return reg
-        val iface = calls.listenerIface ?: return reg
         // Same shape as the keyguard listener in AndroidDeviceState: system_server
         // marshals the listener through asBinder() and calls transaction 1 (the
         // one-way dispatchPrimaryClipChanged) on the Binder we hand back.
-        val carrier = object : Binder() {
-            override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-                if (code != IBinder.FIRST_CALL_TRANSACTION) return super.onTransact(code, data, reply, flags)
-                data.enforceInterface(iface.name)
-                // A late dispatch from a replaced registration is not this
-                // session's clip (ISS-13).
-                if (live !== reg) return true
-                getText()?.let(reg.onChange)
-                return true
-            }
+        val listener = ClipChangeListener {
+            // A late dispatch from a replaced registration is not this
+            // session's clip (ISS-13).
+            if (live !== reg) return@ClipChangeListener
+            getText()?.let(reg.onChange)
         }
-        val proxy = Proxy.newProxyInstance(iface.classLoader, arrayOf(iface)) { _, method, _ ->
-            if (method.name == "asBinder") carrier else null
-        }
-        reg.listener = proxy
-        val added = runCatching { add.invoke(svc, *argsFor(add, iface, proxy)) }
-        added.exceptionOrNull()?.let {
-            log("clipboard: addPrimaryClipChangedListener failed: ${failureClasses(it)}")
+        reg.listener = listener
+        if (!svc.addClipListener(listener)) {
+            log("clipboard: addPrimaryClipChangedListener failed")
             reg.listener = null
-            return reg
         }
         return reg
     }
@@ -152,14 +135,10 @@ internal class ShellClipboard(
 
     /** Removes the platform listener a registration installed, if any. */
     private fun remove(reg: ClipRegistration) {
-        val proxy = reg.listener ?: return
+        val listener = reg.listener as? ClipChangeListener ?: return
         reg.listener = null
         val svc = service ?: return
-        val calls = ClipboardApi.calls(log)
-        val remove = calls.remove ?: return
-        val iface = calls.listenerIface ?: return
-        runCatching { remove.invoke(svc, *argsFor(remove, iface, proxy)) }
-            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: ${failureClasses(it)}") }
+        svc.removeClipListener(listener)
     }
 
     /** The system's own "this is a secret" mark on a clip's description. */
@@ -167,6 +146,46 @@ internal class ShellClipboard(
         val extras = description?.extras ?: return false
         return SENSITIVE_KEYS.any { key -> runCatching { extras.getBoolean(key, false) }.getOrDefault(false) }
     }
+}
+
+/**
+ * A primary-clip change as this process hears it: the signal only, never the
+ * clip (ISS-27). Reading is a separate decision.
+ */
+internal fun interface ClipChangeListener {
+    fun onPrimaryClipChanged()
+}
+
+/**
+ * The hidden clipboard service as this process sees it.
+ *
+ * [uid] is the caller's process UID. The binder call uses the caller's real
+ * identity, so production does not pass it; the JVM tests use it to model the
+ * AOSP owner check: `getPrimaryClip` clears the clip and returns null when the
+ * caller does not own [packageName], while `getPrimaryClipDescription` never
+ * checks.
+ */
+internal interface ClipboardService {
+    fun getPrimaryClip(packageName: String, uid: Int): ClipData?
+    fun getPrimaryClipDescription(packageName: String, uid: Int): ClipDescription?
+    fun setPrimaryClip(clip: ClipData, packageName: String, uid: Int)
+    fun addClipListener(listener: ClipChangeListener): Boolean
+    fun removeClipListener(listener: ClipChangeListener)
+}
+
+/**
+ * The clipboard reader that runs as the real shell user (UID 2000) for a
+ * process with root privileges. One request at a time; every method returns
+ * null when the helper is not ready, never a partial read.
+ */
+internal interface ClipboardHelperPort {
+    /** True while the helper process is up and has registered its listener. */
+    val available: Boolean
+    fun start()
+    fun stop()
+    fun listen(onChange: (ClipText) -> Unit)
+    fun getText(): ClipText?
+    fun readImage(): ClipImage?
 }
 
 /**
@@ -182,9 +201,9 @@ internal fun imageClipItem(uri: Uri): ClipData.Item = ClipData.Item(uri)
 internal fun imageClip(uri: Uri, mime: String): ClipData =
     ClipData(ClipDescription(CLIP_LABEL, arrayOf(mime)), imageClipItem(uri))
 
-private const val IFACE = "android.content.IClipboard"
-private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
-private const val SHELL_PACKAGE = "com.android.shell"
+internal const val IFACE = "android.content.IClipboard"
+internal const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
+internal const val SHELL_PACKAGE = "com.android.shell"
 private const val CLIP_LABEL = "PocketDeck"
 
 /**
@@ -201,6 +220,76 @@ private val SENSITIVE_KEYS = setOf(
 const val FILE_PROVIDER_AUTHORITY = "dev.pocketdeck.fileprovider"
 
 /**
+ * The production [ClipboardService]: the hidden binder, probed once per process.
+ * The chosen signatures are logged once, when they are first resolved.
+ */
+internal class BinderClipboardService(private val log: (String) -> Unit) : ClipboardService {
+
+    private val binder: Any? by lazy { Hidden.proxy(IFACE, "clipboard") }
+    private val api: ClipboardApi.Calls by lazy { ClipboardApi.calls(log) }
+    private val proxies = java.util.concurrent.ConcurrentHashMap<ClipChangeListener, Any>()
+
+    override fun getPrimaryClip(packageName: String, uid: Int): ClipData? {
+        val svc = binder ?: return null
+        val get = api.get ?: return null
+        return runCatching { get.invoke(svc, *argsFor(get, null, null, packageName)) }
+            .onFailure { log("clipboard: getPrimaryClip failed: ${failureClasses(it)}") }
+            .getOrNull() as? ClipData
+    }
+
+    override fun getPrimaryClipDescription(packageName: String, uid: Int): ClipDescription? {
+        val svc = binder ?: return null
+        val description = api.description ?: return null
+        return runCatching { description.invoke(svc, *argsFor(description, null, null, packageName)) }
+            .onFailure { log("clipboard: getPrimaryClipDescription failed: ${failureClasses(it)}") }
+            .getOrNull() as? ClipDescription
+    }
+
+    override fun setPrimaryClip(clip: ClipData, packageName: String, uid: Int) {
+        val svc = binder ?: return
+        val set = api.set ?: return
+        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip, packageName)) }
+            .onFailure { log("clipboard: setPrimaryClip failed: ${failureClasses(it)}") }
+    }
+
+    override fun addClipListener(listener: ClipChangeListener): Boolean {
+        val svc = binder ?: return false
+        val add = api.add ?: return false
+        val iface = api.listenerIface ?: return false
+        // system_server marshals the listener through asBinder() and calls
+        // transaction 1 (the one-way dispatchPrimaryClipChanged).
+        val carrier = object : Binder() {
+            override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+                if (code != IBinder.FIRST_CALL_TRANSACTION) return super.onTransact(code, data, reply, flags)
+                data.enforceInterface(iface.name)
+                listener.onPrimaryClipChanged()
+                return true
+            }
+        }
+        val proxy = Proxy.newProxyInstance(iface.classLoader, arrayOf(iface)) { _, method, _ ->
+            if (method.name == "asBinder") carrier else null
+        }
+        proxies[listener] = proxy
+        val added = runCatching { add.invoke(svc, *argsFor(add, iface, proxy, SHELL_PACKAGE)) }
+        added.exceptionOrNull()?.let {
+            log("clipboard: addPrimaryClipChangedListener failed: ${failureClasses(it)}")
+            proxies.remove(listener)
+            return false
+        }
+        return true
+    }
+
+    override fun removeClipListener(listener: ClipChangeListener) {
+        val proxy = proxies.remove(listener) ?: return
+        val svc = binder ?: return
+        val remove = api.remove ?: return
+        val iface = api.listenerIface ?: return
+        runCatching { remove.invoke(svc, *argsFor(remove, iface, proxy, SHELL_PACKAGE)) }
+            .onFailure { log("clipboard: removePrimaryClipChangedListener failed: ${failureClasses(it)}") }
+    }
+}
+
+/**
  * The hidden calls, probed once per process. The chosen signatures are logged
  * here, once, when they are first resolved.
  */
@@ -208,6 +297,7 @@ private object ClipboardApi {
     class Calls(
         val listenerIface: Class<*>?,
         val get: Method?,
+        val description: Method?,
         val set: Method?,
         val add: Method?,
         val remove: Method?,
@@ -224,12 +314,14 @@ private object ClipboardApi {
             val found = Calls(
                 listenerIface = listenerIface,
                 get = probe(iface, "getPrimaryClip", null),
+                description = probe(iface, "getPrimaryClipDescription", null),
                 set = probe(iface, "setPrimaryClip", ClipData::class.java),
                 add = probe(iface, "addPrimaryClipChangedListener", listenerIface),
                 remove = probe(iface, "removePrimaryClipChangedListener", listenerIface),
             )
             val names = listOf(
                 "getPrimaryClip" to found.get,
+                "getPrimaryClipDescription" to found.description,
                 "setPrimaryClip" to found.set,
                 "addPrimaryClipChangedListener" to found.add,
                 "removePrimaryClipChangedListener" to found.remove,
@@ -263,10 +355,10 @@ private object ClipboardApi {
 
 /**
  * Arguments for a probed call. [value] fills the parameter of [valueType]; the
- * first String is the calling package, later Strings are the null attribution
- * tag; ints are user 0 and device 0.
+ * first String is the calling [packageName], later Strings are the null
+ * attribution tag; ints are user 0 and device 0.
  */
-private fun argsFor(m: Method, valueType: Class<*>?, value: Any?): Array<Any?> {
+private fun argsFor(m: Method, valueType: Class<*>?, value: Any?, packageName: String): Array<Any?> {
     var strings = 0
     var valueUsed = false
     return Array(m.parameterCount) { i ->
@@ -276,7 +368,7 @@ private fun argsFor(m: Method, valueType: Class<*>?, value: Any?): Array<Any?> {
                 valueUsed = true
                 value
             }
-            p == String::class.java -> if (strings++ == 0) SHELL_PACKAGE else null
+            p == String::class.java -> if (strings++ == 0) packageName else null
             else -> 0
         }
     }
