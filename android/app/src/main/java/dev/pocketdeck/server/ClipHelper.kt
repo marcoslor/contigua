@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import android.content.Context
 import android.os.Process as AndroidProcess
+import android.os.SystemClock
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -39,8 +40,8 @@ internal sealed interface ClipHelperEvent {
     data object Start : ClipHelperEvent
     /** The spawned process answered ready; a stale form or attempt is ignored. */
     data class Started(val attempt: Int, val form: Int) : ClipHelperEvent
-    /** The process died or could not be started. */
-    data class Died(val attempt: Int, val form: Int, val reason: String) : ClipHelperEvent
+    /** The process died or could not be started; [readyMs] is how long it was ready, 0 if it never was. */
+    data class Died(val attempt: Int, val form: Int, val reason: String, val readyMs: Long) : ClipHelperEvent
     /** The clipboard sync ended. */
     data object Stop : ClipHelperEvent
 }
@@ -57,6 +58,27 @@ internal data class ClipHelperStep(val state: ClipHelperState, val actions: List
 internal const val CLIP_HELPER_MAX_ATTEMPTS = 4
 
 /**
+ * A death after this long ready is a healthy run: the restart count starts
+ * over, so a helper that dies once a day never runs out across a long session.
+ * Deaths sooner than this still spend one of the three restarts.
+ */
+internal const val CLIP_HELPER_HEALTHY_MS = 60_000L
+
+/**
+ * Debug builds may shorten the healthy window through this system property, so
+ * an emulator whose guest kills the helper every few seconds still exercises the
+ * refill. It is read once, when the helper is built; a shipped build ignores it.
+ */
+internal const val CLIP_HELPER_HEALTHY_PROP = "debug.pocketdeck.clip_healthy_ms"
+
+/** The live window: the constant, or a debug build's shorter positive value. */
+internal fun clipHelperHealthyMs(debug: Boolean, property: String?): Long {
+    if (!debug) return CLIP_HELPER_HEALTHY_MS
+    val ms = property?.trim()?.toLongOrNull() ?: return CLIP_HELPER_HEALTHY_MS
+    return if (ms in 1..CLIP_HELPER_HEALTHY_MS) ms else CLIP_HELPER_HEALTHY_MS
+}
+
+/**
  * The two ways to start the helper, in order: a root manager's `su` takes
  * `-c`, AOSP's userdebug `su` takes `sh -c` (it has no `-c` of its own). The
  * first form is unchanged, so a device where it works behaves exactly as
@@ -70,7 +92,11 @@ internal fun clipHelperSpawnForms(cmd: String): List<List<String>> = listOf(
 )
 
 /** One machine step; every state/event pair is exhaustive here. */
-internal fun clipHelperStep(state: ClipHelperState, event: ClipHelperEvent): ClipHelperStep = when (state) {
+internal fun clipHelperStep(
+    state: ClipHelperState,
+    event: ClipHelperEvent,
+    healthyMs: Long = CLIP_HELPER_HEALTHY_MS,
+): ClipHelperStep = when (state) {
     ClipHelperState.Off -> when (event) {
         ClipHelperEvent.Start -> ClipHelperStep(
             ClipHelperState.Starting(1, 1),
@@ -114,7 +140,7 @@ internal fun clipHelperStep(state: ClipHelperState, event: ClipHelperEvent): Cli
     is ClipHelperState.Ready -> when (event) {
         is ClipHelperEvent.Died ->
             if (event.attempt == state.attempt && event.form == state.form) {
-                clipHelperRestart(state.attempt, state.form, event.reason)
+                clipHelperReadyDied(state, event, healthyMs)
             } else {
                 ClipHelperStep(state, emptyList())
             }
@@ -144,7 +170,7 @@ private fun clipHelperFormDied(state: ClipHelperState.Starting): ClipHelperStep 
         ClipHelperStep(ClipHelperState.Failed("no su form"), emptyList())
     }
 
-/** A death after ready keeps its form and spends one of the three restarts. */
+/** A death at [attempt] spends one of the three restarts; the form is kept. */
 private fun clipHelperRestart(attempt: Int, form: Int, reason: String): ClipHelperStep =
     if (attempt < CLIP_HELPER_MAX_ATTEMPTS) {
         val next = attempt + 1
@@ -155,6 +181,22 @@ private fun clipHelperRestart(attempt: Int, form: Int, reason: String): ClipHelp
     } else {
         ClipHelperStep(ClipHelperState.Failed(reason), emptyList())
     }
+
+/**
+ * A death after ready: a run that lasted [healthyMs] starts the count again,
+ * so the next spawn is attempt 2 however many deaths came before. A shorter one
+ * spends a restart like a crash loop should.
+ */
+private fun clipHelperReadyDied(
+    state: ClipHelperState.Ready,
+    event: ClipHelperEvent.Died,
+    healthyMs: Long,
+): ClipHelperStep =
+    clipHelperRestart(
+        attempt = if (event.readyMs >= healthyMs) 1 else state.attempt,
+        form = state.form,
+        reason = event.reason,
+    )
 
 /** 500 ms, 1 s, 2 s: a short backoff, capped so a crash loop stays cheap. */
 internal fun clipHelperBackoffMs(attempt: Int): Long =
@@ -272,11 +314,20 @@ internal class ClipHelper(
     private val log: (String) -> Unit,
     private val isRoot: () -> Boolean = { AndroidProcess.myUid() == 0 },
     private val requestTimeoutMs: Long = 5_000L,
+    /** Monotonic, so a wall-clock change cannot make a short death look healthy. */
+    private val nowMs: () -> Long = { SystemClock.elapsedRealtime() },
+    /** Read once, when the server builds the helper; debug builds may shorten it. */
+    private val healthyMs: Long = clipHelperHealthyMs(
+        dev.pocketdeck.BuildConfig.DEBUG,
+        Hidden.systemProperty(CLIP_HELPER_HEALTHY_PROP),
+    ),
 ) : ClipboardHelperPort {
 
     @Volatile private var state: ClipHelperState = ClipHelperState.Off
     private val lock = Any()
     private var epoch = 0L
+    /** When the current process answered ready, 0 while it has not. */
+    private var readyAtMs = 0L
     @Volatile private var process: Process? = null
     @Volatile private var stdin: OutputStream? = null
     @Volatile private var onChange: (() -> Unit)? = null
@@ -334,9 +385,15 @@ internal class ClipHelper(
     private fun onEvent(event: ClipHelperEvent) {
         val (previous, step, eventEpoch) = synchronized(lock) {
             val before = state
-            val next = clipHelperStep(before, event)
+            val next = clipHelperStep(before, event, healthyMs)
             state = next.state
             if (before != next.state) epoch += 1
+            // The healthy window is measured from the accepted READY, so a
+            // stale ready from a replaced process never starts the clock.
+            readyAtMs = when (next.state) {
+                is ClipHelperState.Ready -> if (before is ClipHelperState.Ready) readyAtMs else nowMs()
+                else -> 0L
+            }
             Triple(before, next, epoch)
         }
         log("cliphelper: ${previous.label()} --${event.label()}--> ${step.state.label()}")
@@ -354,17 +411,17 @@ internal class ClipHelper(
     private fun spawn(attempt: Int, form: Int, eventEpoch: Long) {
         if (!currentSpawn(attempt, form) || epoch != eventEpoch) return
         if (!isRoot()) {
-            onEvent(ClipHelperEvent.Died(attempt, form, "not root"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "not root", 0))
             return
         }
         val apk = appApkPath(ctx) ?: run {
-            onEvent(ClipHelperEvent.Died(attempt, form, "no apk"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "no apk", 0))
             return
         }
         val command = clipHelperSpawnForms(clipHelperCommand(apk))[form - 1]
         val started = runCatching { ProcessBuilder(command).start() }.getOrNull()
         if (started == null) {
-            onEvent(ClipHelperEvent.Died(attempt, form, "no su"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "no su", 0))
             return
         }
         synchronized(lock) {
@@ -416,8 +473,13 @@ internal class ClipHelper(
             runCatching { Thread.sleep(20) }
             // A stopped or replaced process must not push the new attempt down.
             if (process !== started) return@Thread
-            onEvent(ClipHelperEvent.Died(attempt, form, "exit $code"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "exit $code", readyDurationMs()))
         }, "cliphelper-watcher").apply { isDaemon = true; start() }
+    }
+
+    /** How long the current process has been ready, 0 when it never was. */
+    private fun readyDurationMs(): Long = synchronized(lock) {
+        if (readyAtMs == 0L) 0L else (nowMs() - readyAtMs).coerceAtLeast(0L)
     }
 
     /** The helper's own stderr could carry a path or a line; keep counts only. */

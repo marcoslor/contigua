@@ -96,7 +96,9 @@ internal class ShellClipboard(
     private fun directImage(): ClipImage? {
         val svc = service ?: return null
         val description = svc.getPrimaryClipDescription(SHELL_PACKAGE, callerUid) ?: return null
-        val probe = description.filterMimeTypes("image/*").firstOrNull() ?: return null
+        // filterMimeTypes answers null, not an empty array, when no type
+        // matches (every text copy); a throw here killed the helper (ISS-27).
+        val probe = description.filterMimeTypes("image/*")?.firstOrNull() ?: return null
         val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
@@ -107,7 +109,7 @@ internal class ShellClipboard(
         if (isOurClip(contentUri)) return null
         // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
         // later call than this code's floor).
-        val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: probe
+        val mime = clip.description.filterMimeTypes("image/*")?.firstOrNull() ?: probe
         val source = resolver ?: return null
         val bytes = runCatching { source.openInputStream(contentUri)?.use { s -> s.readBytes() } }
             .onFailure { log("clipboard: unreadable clip image ($mime): ${failureClasses(it)}") }
