@@ -8,6 +8,7 @@
 //   list PATH                           one page
 //   listall PATH                        every page, following the phone's cursor
 //   stat PATH
+//   digest PATH                         the folder's fs.digest (one path)
 //   read PATH OUT                       the whole file into OUT
 //   read PATH OUT OFFSET LENGTH [ETAG [CANCEL_MS]]
 //                                       a range; ETAG is '-' (omit), 'stale'
@@ -28,6 +29,7 @@ enum FsScriptAction: Equatable {
     case list(String)
     case listAll(String)
     case stat(String)
+    case digest(String)
     case read(path: String, out: String, offset: Int?, length: Int?, etag: String?, cancelAfterMs: Int?)
 }
 
@@ -57,12 +59,13 @@ enum FsDebugScript {
 
     private static func parseLine(_ words: [String]) throws -> FsScriptAction {
         switch words.first?.lowercased() {
-        case "list", "listall", "stat":
+        case "list", "listall", "stat", "digest":
             guard words.count <= 2 else { throw LineError(message: "\(words[0]) takes at most one PATH") }
             let path = words.count == 2 ? words[1] : ""
             switch words[0].lowercased() {
             case "list": return .list(path)
             case "listall": return .listAll(path)
+            case "digest": return .digest(path)
             default: return .stat(path)
             }
         case "read":
@@ -159,6 +162,25 @@ final class FsDebugDriver {
                                "s": item.size, "e": item.etag])
                 case .failure(let error):
                     self.fail("stat", path: path, error)
+                }
+                self.step()
+            }
+        case .digest(let path):
+            client.digest(paths: [path]) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let values):
+                    switch values[path] {
+                    case .digest(let digest):
+                        self.emit(["op": "digest", "ok": true, "p": self.nameHash(path),
+                                   "digest": digest])
+                    case .notFound:
+                        self.fail("digest", path: path, FsError(code: "fs_not_found"))
+                    case nil:
+                        self.fail("digest", path: path, FsError(code: "protocol"))
+                    }
+                case .failure(let error):
+                    self.fail("digest", path: path, error)
                 }
                 self.step()
             }
