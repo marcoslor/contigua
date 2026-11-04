@@ -21,29 +21,33 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * The lifecycle of the clipboard helper (ISS-27), one explicit machine:
  * Off → Starting → Ready → Failed(reason), with a bounded restart on a death.
- * The transition is pure; the actions it returns are run by [ClipHelper].
+ * [ClipHelperState.Starting] is the first start, which tries each spawn form
+ * until one answers ready; [ClipHelperState.Restarting] is a bounded retry of
+ * the form that worked. The transition is pure; the actions it returns are run
+ * by [ClipHelper].
  */
 internal sealed interface ClipHelperState {
     data object Off : ClipHelperState
-    data class Starting(val attempt: Int) : ClipHelperState
-    data class Ready(val attempt: Int) : ClipHelperState
+    data class Starting(val attempt: Int, val form: Int) : ClipHelperState
+    data class Restarting(val attempt: Int, val form: Int) : ClipHelperState
+    data class Ready(val attempt: Int, val form: Int) : ClipHelperState
     data class Failed(val reason: String) : ClipHelperState
 }
 
 internal sealed interface ClipHelperEvent {
     /** The clipboard sync started. */
     data object Start : ClipHelperEvent
-    /** The spawned process answered ready; a stale attempt is ignored. */
-    data class Started(val attempt: Int) : ClipHelperEvent
+    /** The spawned process answered ready; a stale form or attempt is ignored. */
+    data class Started(val attempt: Int, val form: Int) : ClipHelperEvent
     /** The process died or could not be started. */
-    data class Died(val reason: String) : ClipHelperEvent
+    data class Died(val attempt: Int, val form: Int, val reason: String) : ClipHelperEvent
     /** The clipboard sync ended. */
     data object Stop : ClipHelperEvent
 }
 
 internal sealed interface ClipHelperAction {
-    data class Spawn(val attempt: Int) : ClipHelperAction
-    data class SpawnAfter(val attempt: Int, val delayMs: Long) : ClipHelperAction
+    data class Spawn(val attempt: Int, val form: Int) : ClipHelperAction
+    data class SpawnAfter(val attempt: Int, val form: Int, val delayMs: Long) : ClipHelperAction
     data object Kill : ClipHelperAction
 }
 
@@ -52,40 +56,101 @@ internal data class ClipHelperStep(val state: ClipHelperState, val actions: List
 /** The first start plus at most three restarts. */
 internal const val CLIP_HELPER_MAX_ATTEMPTS = 4
 
+/**
+ * The two ways to start the helper, in order: a root manager's `su` takes
+ * `-c`, AOSP's userdebug `su` takes `sh -c` (it has no `-c` of its own). The
+ * first form is unchanged, so a device where it works behaves exactly as
+ * before; the second is only tried when the first dies before ready.
+ */
+internal const val CLIP_HELPER_SPAWN_FORMS = 2
+
+internal fun clipHelperSpawnForms(cmd: String): List<List<String>> = listOf(
+    listOf("su", "2000", "-c", cmd),
+    listOf("su", "2000", "sh", "-c", cmd),
+)
+
 /** One machine step; every state/event pair is exhaustive here. */
 internal fun clipHelperStep(state: ClipHelperState, event: ClipHelperEvent): ClipHelperStep = when (state) {
     ClipHelperState.Off -> when (event) {
-        ClipHelperEvent.Start -> ClipHelperStep(ClipHelperState.Starting(1), listOf(ClipHelperAction.Spawn(1)))
+        ClipHelperEvent.Start -> ClipHelperStep(
+            ClipHelperState.Starting(1, 1),
+            listOf(ClipHelperAction.Spawn(1, 1)),
+        )
         ClipHelperEvent.Stop -> ClipHelperStep(state, emptyList())
         is ClipHelperEvent.Started, is ClipHelperEvent.Died -> ClipHelperStep(state, emptyList())
     }
     is ClipHelperState.Starting -> when (event) {
         is ClipHelperEvent.Started ->
-            if (event.attempt == state.attempt) ClipHelperStep(ClipHelperState.Ready(state.attempt), emptyList())
-            else ClipHelperStep(state, emptyList())
-        is ClipHelperEvent.Died -> clipHelperDied(state.attempt, event.reason)
+            if (event.attempt == state.attempt && event.form == state.form) {
+                ClipHelperStep(ClipHelperState.Ready(state.attempt, state.form), emptyList())
+            } else {
+                ClipHelperStep(state, emptyList())
+            }
+        is ClipHelperEvent.Died ->
+            if (event.attempt == state.attempt && event.form == state.form) {
+                clipHelperFormDied(state)
+            } else {
+                ClipHelperStep(state, emptyList())
+            }
+        ClipHelperEvent.Start -> ClipHelperStep(state, emptyList())
+        ClipHelperEvent.Stop -> ClipHelperStep(ClipHelperState.Off, listOf(ClipHelperAction.Kill))
+    }
+    is ClipHelperState.Restarting -> when (event) {
+        is ClipHelperEvent.Started ->
+            if (event.attempt == state.attempt && event.form == state.form) {
+                ClipHelperStep(ClipHelperState.Ready(state.attempt, state.form), emptyList())
+            } else {
+                ClipHelperStep(state, emptyList())
+            }
+        is ClipHelperEvent.Died ->
+            if (event.attempt == state.attempt && event.form == state.form) {
+                clipHelperRestart(state.attempt, state.form, event.reason)
+            } else {
+                ClipHelperStep(state, emptyList())
+            }
         ClipHelperEvent.Start -> ClipHelperStep(state, emptyList())
         ClipHelperEvent.Stop -> ClipHelperStep(ClipHelperState.Off, listOf(ClipHelperAction.Kill))
     }
     is ClipHelperState.Ready -> when (event) {
-        is ClipHelperEvent.Died -> clipHelperDied(state.attempt, event.reason)
+        is ClipHelperEvent.Died ->
+            if (event.attempt == state.attempt && event.form == state.form) {
+                clipHelperRestart(state.attempt, state.form, event.reason)
+            } else {
+                ClipHelperStep(state, emptyList())
+            }
         ClipHelperEvent.Stop -> ClipHelperStep(ClipHelperState.Off, listOf(ClipHelperAction.Kill))
         ClipHelperEvent.Start -> ClipHelperStep(state, emptyList())
         is ClipHelperEvent.Started -> ClipHelperStep(state, emptyList())
     }
     is ClipHelperState.Failed -> when (event) {
-        ClipHelperEvent.Start -> ClipHelperStep(ClipHelperState.Starting(1), listOf(ClipHelperAction.Spawn(1)))
+        ClipHelperEvent.Start -> ClipHelperStep(
+            ClipHelperState.Starting(1, 1),
+            listOf(ClipHelperAction.Spawn(1, 1)),
+        )
         ClipHelperEvent.Stop -> ClipHelperStep(ClipHelperState.Off, emptyList())
         is ClipHelperEvent.Started, is ClipHelperEvent.Died -> ClipHelperStep(state, emptyList())
     }
 }
 
-private fun clipHelperDied(attempt: Int, reason: String): ClipHelperStep =
+/** A death before ready moves to the next form, and only the last one fails. */
+private fun clipHelperFormDied(state: ClipHelperState.Starting): ClipHelperStep =
+    if (state.form < CLIP_HELPER_SPAWN_FORMS) {
+        val form = state.form + 1
+        ClipHelperStep(
+            ClipHelperState.Starting(state.attempt, form),
+            listOf(ClipHelperAction.Spawn(state.attempt, form)),
+        )
+    } else {
+        ClipHelperStep(ClipHelperState.Failed("no su form"), emptyList())
+    }
+
+/** A death after ready keeps its form and spends one of the three restarts. */
+private fun clipHelperRestart(attempt: Int, form: Int, reason: String): ClipHelperStep =
     if (attempt < CLIP_HELPER_MAX_ATTEMPTS) {
         val next = attempt + 1
         ClipHelperStep(
-            ClipHelperState.Starting(next),
-            listOf(ClipHelperAction.SpawnAfter(next, clipHelperBackoffMs(next))),
+            ClipHelperState.Restarting(next, form),
+            listOf(ClipHelperAction.SpawnAfter(next, form, clipHelperBackoffMs(next))),
         )
     } else {
         ClipHelperStep(ClipHelperState.Failed(reason), emptyList())
@@ -195,7 +260,9 @@ internal fun parseClipImageReply(payload: ByteArray): ClipImage? {
 /**
  * The clipboard helper (ISS-27): a tiny `app_process` started as the real shell
  * user through `su 2000`, because a process with root privileges has no package
- * that AOSP's clipboard owner check accepts. Requests and replies are framed on
+ * that AOSP's clipboard owner check accepts. [clipHelperSpawnForms] carries the
+ * two ways to ask `su`; the first one that answers ready is kept for restarts.
+ * Requests and replies are framed on
  * stdin/stdout; the process exits when its stdin reaches EOF, so it dies with
  * the server. Its stderr is drained and reduced to counts, never copied to a
  * log.
@@ -274,37 +341,34 @@ internal class ClipHelper(
         }
         log("cliphelper: ${previous.label()} --${event.label()}--> ${step.state.label()}")
         for (action in step.actions) when (action) {
-            is ClipHelperAction.Spawn -> spawnLater(action.attempt, 0, eventEpoch)
-            is ClipHelperAction.SpawnAfter -> spawnLater(action.attempt, action.delayMs, eventEpoch)
+            is ClipHelperAction.Spawn -> spawnLater(action.attempt, action.form, 0, eventEpoch)
+            is ClipHelperAction.SpawnAfter -> spawnLater(action.attempt, action.form, action.delayMs, eventEpoch)
             ClipHelperAction.Kill -> kill()
         }
     }
 
-    private fun spawnLater(attempt: Int, delayMs: Long, eventEpoch: Long) {
-        scheduler.schedule({ spawn(attempt, eventEpoch) }, delayMs, TimeUnit.MILLISECONDS)
+    private fun spawnLater(attempt: Int, form: Int, delayMs: Long, eventEpoch: Long) {
+        scheduler.schedule({ spawn(attempt, form, eventEpoch) }, delayMs, TimeUnit.MILLISECONDS)
     }
 
-    private fun spawn(attempt: Int, eventEpoch: Long) {
-        if (state != ClipHelperState.Starting(attempt) || epoch != eventEpoch) return
+    private fun spawn(attempt: Int, form: Int, eventEpoch: Long) {
+        if (!currentSpawn(attempt, form) || epoch != eventEpoch) return
         if (!isRoot()) {
-            onEvent(ClipHelperEvent.Died("not root"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "not root"))
             return
         }
         val apk = appApkPath(ctx) ?: run {
-            onEvent(ClipHelperEvent.Died("no apk"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "no apk"))
             return
         }
-        val command = listOf(
-            "su", "2000", "-c",
-            "CLASSPATH='${apk.replace("'", "'\\''")}' exec app_process /system/bin ${ClipHelperMain::class.java.name}",
-        )
+        val command = clipHelperSpawnForms(clipHelperCommand(apk))[form - 1]
         val started = runCatching { ProcessBuilder(command).start() }.getOrNull()
         if (started == null) {
-            onEvent(ClipHelperEvent.Died("no su"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "no su"))
             return
         }
         synchronized(lock) {
-            if (state != ClipHelperState.Starting(attempt) || epoch != eventEpoch) {
+            if (!currentSpawn(attempt, form) || epoch != eventEpoch) {
                 runCatching { started.destroy() }
                 return
             }
@@ -312,17 +376,28 @@ internal class ClipHelper(
             stdin = started.outputStream
         }
         drainErrors(started)
-        readReplies(started, attempt)
-        watchExit(started)
+        readReplies(started, attempt, form)
+        watchExit(started, attempt, form)
     }
 
-    private fun readReplies(started: Process, attempt: Int) {
+    /** The transition that asked for this process is still the current one. */
+    private fun currentSpawn(attempt: Int, form: Int): Boolean = when (val current = state) {
+        is ClipHelperState.Starting -> current.attempt == attempt && current.form == form
+        is ClipHelperState.Restarting -> current.attempt == attempt && current.form == form
+        else -> false
+    }
+
+    /** The one helper command line; the form only decides how `su` is asked. */
+    private fun clipHelperCommand(apk: String): String =
+        "CLASSPATH='${apk.replace("'", "'\\''")}' exec app_process /system/bin ${ClipHelperMain::class.java.name}"
+
+    private fun readReplies(started: Process, attempt: Int, form: Int) {
         Thread({
             runCatching {
                 while (true) {
                     val frame = ClipHelperFrames.read(started.inputStream) ?: break
                     when (frame.type) {
-                        ClipHelperFrames.READY -> onEvent(ClipHelperEvent.Started(attempt))
+                        ClipHelperFrames.READY -> onEvent(ClipHelperEvent.Started(attempt, form))
                         ClipHelperFrames.CHANGED -> changes.execute { onChange?.invoke() }
                         ClipHelperFrames.TEXT_REPLY, ClipHelperFrames.IMAGE_REPLY -> {
                             val waiter = pending
@@ -334,14 +409,14 @@ internal class ClipHelper(
         }, "cliphelper-reader").apply { isDaemon = true; start() }
     }
 
-    private fun watchExit(started: Process) {
+    private fun watchExit(started: Process, attempt: Int, form: Int) {
         Thread({
             val code = runCatching { started.waitFor() }.getOrDefault(-1)
             // Let the reader take the last frames before the state changes.
             runCatching { Thread.sleep(20) }
             // A stopped or replaced process must not push the new attempt down.
             if (process !== started) return@Thread
-            onEvent(ClipHelperEvent.Died("exit $code"))
+            onEvent(ClipHelperEvent.Died(attempt, form, "exit $code"))
         }, "cliphelper-watcher").apply { isDaemon = true; start() }
     }
 
@@ -391,17 +466,18 @@ internal class ClipHelper(
     }
 }
 
-private fun ClipHelperState.label(): String = when (this) {
+internal fun ClipHelperState.label(): String = when (this) {
     ClipHelperState.Off -> "off"
-    is ClipHelperState.Starting -> "starting($attempt)"
-    is ClipHelperState.Ready -> "ready($attempt)"
+    is ClipHelperState.Starting -> "starting($attempt, form $form)"
+    is ClipHelperState.Restarting -> "restarting($attempt, form $form)"
+    is ClipHelperState.Ready -> "ready($attempt, form $form)"
     is ClipHelperState.Failed -> "failed($reason)"
 }
 
-private fun ClipHelperEvent.label(): String = when (this) {
+internal fun ClipHelperEvent.label(): String = when (this) {
     ClipHelperEvent.Start -> "start"
-    is ClipHelperEvent.Started -> "started($attempt)"
-    is ClipHelperEvent.Died -> "died($reason)"
+    is ClipHelperEvent.Started -> "started($attempt, form $form)"
+    is ClipHelperEvent.Died -> "died($reason, form $form)"
     ClipHelperEvent.Stop -> "stop"
 }
 
