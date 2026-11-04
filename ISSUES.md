@@ -30,6 +30,12 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 ## 2. Bugs you can see
 
+- **ISS-27 With root privileges, the phone's clipboard is wiped every second and nothing reaches the Mac.** Found 2026-11-03 from a report that phone → Mac clipboard text never arrives, while Mac → phone works.
+  - **Cause:** the helper reads the clipboard as `com.android.shell`. `ClipboardService.getPrimaryClip` checks that the caller's uid owns that package (`addActiveOwnerLocked` → `isSameApp`). Run with root privileges, the caller is uid 0, which owns no package, so every read throws inside the service. The service logs `Could not grant permission to primary clip. Clearing clipboard.`, **clears the clipboard** and returns null. Writes have no owner check, which is why Mac → phone works.
+  - **Who reads:** the image poll (`clipImageLoop`, every `CLIP_IMAGE_POLL_MS` = 1 s while the gate is on; logged exactly once a second), the text listener (`ShellClipboard`'s carrier calls `getText()` on each change, *before* Session checks the gate, so even with sharing off each copy is wiped), and `AndroidInjector`'s save/restore around a paste.
+  - **Effect:** while a session is up, anything copied on the phone is gone within a second, on the phone too. That's data loss, not just a missing sync.
+  - **Not seen** at uid 2000 (emulator, K1, fake phone): there the shell does own `com.android.shell`.
+  - **Fix direction:** never call `getPrimaryClip` from a process whose uid doesn't own the package it passes. With root privileges, read through a helper started as uid 2000 (`su 2000`), and fall back to "reads off, with a reason" when there is none. `getPrimaryClipDescription` has no owner check, so it is safe for MIME probes. The gate is checked before any read.
 - **ISS-3 An app window fades to black when the phone wakes.** Root-caused on the real phone (2026-11-03): [docs/research/lock-fade.md](docs/research/lock-fade.md).
   - One UI keeps PocketDeck's virtual displays in the panel's display group. So while a window is open on a locked phone, PocketDeck keeps that group awake with the panel blacked out, and Android counts the phone as awake.
   - A wake press is then a sleep press to Android: it runs its screen-off fade (ColorFade, about 330 ms) on the window's virtual display too, turns the display off, and PocketDeck's hand-back wakes everything again about 0.65 s after the press. The Mac shows the fade, a dark moment, then the picture, together with the phone's screen.
