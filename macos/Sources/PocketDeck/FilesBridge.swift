@@ -1309,13 +1309,16 @@ final class FilesBridge {
         return "ok"
     }
 
+    /// The socket goes away (the Files switch turned off). The session's host
+    /// stays: only `detach` drops it, when the session ends. The session
+    /// attaches it once, when it becomes ready, so a switch turned on again
+    /// while the phone is connected must find it here.
     func stop() {
         listener?.stop()
         listener = nil
         socketPath = nil
         thumbQueue.reset()
         host?.cancelAll()
-        host = nil
         liveIDs.removeAll()
         readIDs.removeAll()
         writeSinks.removeAll()

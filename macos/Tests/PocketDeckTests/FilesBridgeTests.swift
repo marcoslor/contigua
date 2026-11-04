@@ -782,6 +782,24 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
     }
 
+    /// The Files switch turned off and on while the phone stays connected: the
+    /// domain controller stops the socket and starts it again. The session
+    /// attaches its host only when it becomes ready, so the restarted socket
+    /// must still answer through it (the person, 2026-11-04: Finder stayed
+    /// offline after an uncheck and a check).
+    func testARestartedSocketStillAnswersThroughTheSessionsHost() throws {
+        try start()
+        host.displayName = "Nicky"
+        bridge.attach(host: host)
+        bridge.stop()
+        try start()
+        let client = try connect()
+        client.send(.hello(id: 1, version: filesBridgeVersion))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        XCTAssertEqual([.hello(id: 1, version: filesBridgeVersion, name: "Nicky", connected: true)],
+                       client.replies())
+    }
+
     // MARK: Thumbnails (FILES-23/25/26/29, R-1)
 
     private let thumb = FilesThumb(data: [0xFF, 0xD8, 0xFF], mime: "image/jpeg", sha256: "ab")
