@@ -9646,8 +9646,10 @@ check_cover_bar() {
     clean
     mkdir -p "$shots"
 
-    # The framed window while opening: the fake holds the first frame, so the
-    # opening state and the 5 s slow one last long enough for their shots.
+    # The framed window while opening: the fake holds the first frame — and
+    # the video config with it, so a scripted input driver (armed on the first
+    # config) cannot run here. The dwell shot moves the real pointer in the
+    # visible run instead; a quiet run skips it and takes the rest.
     FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
@@ -9659,6 +9661,26 @@ check_cover_bar() {
         shot_window "$id" "$shots/framed-opening-$appearance.png" \
             && ok "COVER-BAR $appearance framed opening shot: $shots/framed-opening-$appearance.png" \
             || bad "COVER-BAR $appearance no framed opening shot"
+    fi
+    # The cover's dwell: the same hot zone and the same rest as immersive, so
+    # the pill and the lights come up over the cover. A real pointer move is a
+    # visible run's step; a quiet one has no pointer to spare.
+    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
+        cg_input move --window "$id" --dx -430 --top 8
+        wait_until 8 chrome_has "pill=shown" \
+            || bad "COVER-BAR $appearance the cover's dwell brought no pill: $(chrome_state)"
+        sleep 0.15
+        shot_window "$id" "$shots/framed-dwell-$appearance.png" \
+            && ok "COVER-BAR $appearance framed dwell shot: $shots/framed-dwell-$appearance.png" \
+            || bad "COVER-BAR $appearance no framed dwell shot"
+        cg_input move --window "$id" --dx 0 --dy 0
+        wait_until 8 chrome_has "pill=hidden" \
+            || bad "COVER-BAR $appearance the cover's pill stayed up: $(chrome_state)"
+        # The pill's fade is 0.12 s: let the window finish it before the slow
+        # state's shot, or the two frames are the same pixels.
+        sleep 0.4
+    else
+        skip_visible "COVER-BAR $appearance framed dwell shot"
     fi
     wait_until 8 chrome_has "cover_phase=slow cover_buttons=cancel" \
         || bad "COVER-BAR $appearance no slow state: $(chrome_state)"
@@ -9684,6 +9706,19 @@ check_cover_bar() {
         shot_window "$id" "$shots/immersive-opening-$appearance.png" \
             && ok "COVER-BAR $appearance immersive opening shot: $shots/immersive-opening-$appearance.png" \
             || bad "COVER-BAR $appearance no immersive opening shot"
+    fi
+    # The same pointer at the same point: the reference the cover's shot is
+    # compared with.
+    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
+        cg_input move --window "$id" --dx -430 --top 8
+        wait_until 8 chrome_has "pill=shown" \
+            || bad "COVER-BAR $appearance the immersive dwell brought no pill: $(chrome_state)"
+        sleep 0.15
+        shot_window "$id" "$shots/immersive-dwell-$appearance.png" \
+            && ok "COVER-BAR $appearance immersive dwell shot: $shots/immersive-dwell-$appearance.png" \
+            || bad "COVER-BAR $appearance no immersive dwell shot"
+    else
+        skip_visible "COVER-BAR $appearance immersive dwell shot"
     fi
     stop_app
     stop_fakephone
