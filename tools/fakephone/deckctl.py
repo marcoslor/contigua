@@ -1756,9 +1756,22 @@ def cmd_panel_press(client, args):
 
 
 def cmd_clip_set(client, args):
-    """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
+    """Send `clip.set` as the Mac: the phone's clipboard takes the text.
+
+    Waits for the phone to ACK the reliable frame before closing: a socket
+    closed with unread frames can RST the connection and discard the clip.set
+    still queued, so an early return would report a copy the phone never got.
+    Prints only the length, never the text.
+    """
+    seq = client.out_seq
     client.send_json({"t": "clip.set", "text": args.text})
-    print("sent clip.set %s" % json.dumps(args.text, ensure_ascii=False))
+    deadline = time.time() + DEFAULT_TIMEOUT
+    while seq in client.unacked:
+        if time.time() >= deadline:
+            raise DeckError("the phone did not acknowledge clip.set")
+        if client.recv(0.25) is None:
+            raise DeckError("phone closed before acknowledging clip.set")
+    print("sent clip.set chars=%d" % len(args.text))
     return 0
 
 
