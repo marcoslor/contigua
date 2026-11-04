@@ -404,7 +404,7 @@ check_mode() {
     fail "$SERIAL is already running; refusing to touch it"
     return 1
   fi
-  ok "check: syntax, APKs (versionCode $life_code), debug activity, deckctl --enable, preflight, 15 GB, $SERIAL free"
+  ok "check: syntax, APKs (versionCode $fixed_code), debug activity, deckctl --enable, preflight, 15 GB, $SERIAL free"
   echo "CHECK OK: run without --check boots once"
 }
 
