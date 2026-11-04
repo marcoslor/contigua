@@ -115,6 +115,10 @@ final class StreamChromeView: NSView {
     /// zoom); the e2e check counts them.
     var onBarPress: (() -> Void)?
 
+    /// The cover changed the chrome's effective style (WIN-11): the window's
+    /// dwell configuration follows it, alongside the layout below.
+    var onEffectiveStyleChange: (() -> Void)?
+
     /// The Live Text button: a click toggles the mode; the drag source is the
     /// frozen frame (nil while the mode is off).
     var onLiveTextToggle: (() -> Void)?
@@ -160,6 +164,7 @@ final class StreamChromeView: NSView {
             guard let self else { return }
             self.layoutChrome()
             self.placeTrafficLights()
+            self.onEffectiveStyleChange?()
         }
         addSubview(stallOverlay)
         stallOverlay.layer?.zPosition = 1.7
