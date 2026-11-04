@@ -353,29 +353,58 @@ final class SessionBridgeHost: FilesBridgeHost {
     private let client: FsClient
     private let name: String?
     private let mapURL: URL?
+    private let replicaURL: URL?
     private var map: FilesIdMap
+    /// What the system was last told each folder holds, plus the durable change
+    /// log and epoch (FILES-31/32). Written with the id map in one coalesced
+    /// save.
+    private(set) var replica: FilesReplica
     /// The app tells the extension which containers moved (design §5).
     private let signal: ([String]) -> Void
     /// The app's watch set keeps a touched folder on the phone for ten minutes.
     var onTouch: ((String) -> Void)?
 
-    /// The last listing handed out per container, and the page being built.
-    private var snapshots: [String: [String: FileItem]] = [:]
+    /// The page being built for a folder's listing.
     private var building: [String: [String: FileItem]] = [:]
-    /// One ordered delta log for the whole domain: the working set replays all
-    /// of it, a folder enumerator its own entries (design "S5 round 3").
-    private var log = FilesChangeLog()
     /// Which containers a folder belongs to, for a phone-side change.
     private var pathByItem: [String: String] = [:]
     private var itemsByPath: [String: Set<String>] = [:]
+
+    /// One listing walk per folder: the machine and the record as it was when
+    /// the walk's first page was asked (FILES-31's write-racing guard).
+    private struct ListingWalk {
+        var machine: FilesWalk
+        var start: [String: FileItem]
+    }
+    private var walks: [String: ListingWalk] = [:]
+    /// Folders whose confirmation re-list is pending or running.
+    private var confirming: Set<String> = []
+    /// Identifiers (and create names per folder) with an upload in flight: a
+    /// listing never deletes one (FILES-31).
+    private var uploading: Set<String> = []
+    private var uploadNames: [String: Set<String>] = [:]
+    /// Folders already being re-listed after a `fs_not_found` (FILES-34).
+    private var repairing: Set<String> = []
+    /// The record's clock and the confirmation delay; tests move both by hand.
+    var clock: () -> TimeInterval = { Date().timeIntervalSince1970 }
+    var confirmDelay: TimeInterval = 2
+    var confirmScheduler: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {  // gcd: one injected delay
+            MainActor.assumeIsolated { work() }
+        }
+    }
 
     init(client: FsClient, name: String?, mapURL: URL?,
          signal: @escaping ([String]) -> Void = { _ in }) {
         self.client = client
         self.name = name
         self.mapURL = mapURL
+        let replicaURL = mapURL?.deletingLastPathComponent()
+            .appendingPathComponent("files-replica.json")
+        self.replicaURL = replicaURL
         self.signal = signal
         self.map = mapURL.map(FilesIdMap.load) ?? FilesIdMap()
+        self.replica = replicaURL.map(FilesReplica.load) ?? FilesReplica()
     }
 
     var isConnected: Bool { true }
@@ -413,7 +442,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                 completion(.success((path, fs.dir)))
             case .failure(let error):
                 if error.code == "fs_not_found" {
-                    self.map.invalidate(subtree: path)
+                    self.forget(self.map.invalidate(subtree: path))
                     self.save()
                     return self.reresolveKind(identifier, completion: completion)
                 }
@@ -461,9 +490,10 @@ final class SessionBridgeHost: FilesBridgeHost {
         map.parent(for: identifier) ?? FilesMap.rootIdentifier
     }
 
-    /// Writing the id map is a cache update, not a durability promise: a big
-    /// listing (1500 entries, one `insert` per item) used to rewrite the whole
-    /// JSON file per item. Coalesce to one write per quarter second.
+    /// Writing the id map and the replica record is a cache update, not a
+    /// durability promise: a big listing (1500 entries, one `insert` per item)
+    /// used to rewrite the whole JSON file per item. Coalesce both files to one
+    /// write per quarter second.
     private var saveScheduled = false
     private var saveDirty = false
 
@@ -479,6 +509,9 @@ final class SessionBridgeHost: FilesBridgeHost {
                 guard self.saveDirty, let url = self.mapURL else { return }
                 self.saveDirty = false
                 FilesIdMap.save(self.map, to: url)
+                if let replicaURL = self.replicaURL {
+                    FilesReplica.save(self.replica, to: replicaURL)
+                }
             }
         }
     }
@@ -491,10 +524,14 @@ final class SessionBridgeHost: FilesBridgeHost {
             return completion(.failure(FsError(code: "fs_not_found")))
         }
         onTouch?(item)
+        if page == nil { beginWalk(item) }
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
+                let partial = Array((self.building[item] ?? [:]).values)
+                self.building.removeValue(forKey: item)
+                self.finishWalk(item: item, listing: partial, failed: true)
                 completion(.failure(error))
             case .success(let path):
                 self.client.list(path: path, page: page) { result in
@@ -503,23 +540,107 @@ final class SessionBridgeHost: FilesBridgeHost {
                         let items = self.map.insert(childrenOf: path, parentIdentifier: item,
                                                     items: listing.items)
                         self.save()
-                        // The listing the system was shown is the baseline a
-                        // change is diffed against; a page at a time.
-                        if page == nil { self.building[item] = [:] }
                         var pageItems = self.building[item] ?? [:]
                         for mapped in items { pageItems[mapped.identifier] = mapped }
                         if listing.next == nil {
-                            self.snapshots[item] = pageItems
                             self.building.removeValue(forKey: item)
+                            self.finishWalk(item: item, listing: Array(pageItems.values))
                         } else {
                             self.building[item] = pageItems
                         }
                         completion(.success((items, listing.next)))
                     case .failure(let error):
+                        let partial = Array((self.building[item] ?? [:]).values)
+                        self.building.removeValue(forKey: item)
+                        self.finishWalk(item: item, listing: partial, failed: true)
                         completion(.failure(error))
                     }
                 }
             }
+        }
+    }
+
+    /// The first page of a folder's walk starts the record comparison; the
+    /// confirmation re-list keeps the machine and the record it started from.
+    private func beginWalk(_ item: String) {
+        building[item] = [:]
+        guard !confirming.contains(item) else { return }
+        walks[item] = ListingWalk(
+            machine: FilesWalk(recorded: replica.folders[item]?.children.count ?? 0),
+            start: replica.folders[item]?.children ?? [:])
+    }
+
+    /// The last page (or an error) of one walk: diff against the record, apply
+    /// the guards, let the machine decide, then write what the system is told.
+    private func finishWalk(item: String, listing: [FileItem]? = nil, failed: Bool = false) {
+        guard var walk = walks[item] else { return }
+        let current = replica.folders[item]?.children ?? [:]
+        let seen = listing ?? []
+        var delta = FilesDiff.delta(old: current, new: seen)
+        var recordListing = seen
+        if failed {
+            // Additions and changes only: an unseen item is not a deletion.
+            delta.deleted = []
+            var merged = current
+            for child in seen { merged[child.identifier] = child }
+            recordListing = Array(merged.values)
+        } else {
+            delta.deleted = delta.deleted.filter { identifier in
+                guard let now = current[identifier], let then = walk.start[identifier]
+                else { return false }
+                // A Mac write during the walk already told the system; the
+                // listing that was asked before it cannot delete the item.
+                if now != then { return false }
+                if uploading.contains(identifier) { return false }
+                if let names = uploadNames[item], names.contains(now.name) { return false }
+                return true
+            }
+        }
+        let event: FilesWalk.Event
+        if walk.machine.isConfirming {
+            event = failed ? .confirmFailed(delta: delta, listing: recordListing)
+                           : .confirmed(delta: delta, listing: recordListing)
+        } else {
+            event = failed ? .failed(delta: delta, listing: recordListing)
+                           : .finished(delta: delta, listing: recordListing)
+        }
+        let before = walk.machine.state
+        let action = walk.machine.apply(event)
+        walks[item] = walk
+        if before != walk.machine.state {
+            Log.files.notice("walk: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(walk.machine.state.code, privacy: .public) items=\(delta.items.count, privacy: .public) deletions=\(delta.deleted.count, privacy: .public)")
+        }
+        apply(action, item: item, current: current)
+    }
+
+    private func apply(_ action: FilesWalk.Action, item: String, current: [String: FileItem]) {
+        switch action {
+        case .none:
+            break
+        case .confirm:
+            confirming.insert(item)
+            confirmScheduler(confirmDelay) { [weak self] in
+                guard let self else { return }
+                self.listPages(item: item) { [weak self] _ in
+                    self?.confirming.remove(item)
+                }
+            }
+        case .report(let delta, let listing):
+            var children: [String: FileItem] = [:]
+            for child in listing { children[child.identifier] = child }
+            // A guarded deletion keeps the item: the system still has it, and
+            // the next walk must still see it in the record.
+            for (identifier, old) in current
+            where children[identifier] == nil && !delta.deleted.contains(identifier) {
+                children[identifier] = old
+            }
+            replica.folders[item] = FilesFolderRecord(
+                children: children, touched: clock(),
+                digest: replica.folders[item]?.digest)
+            if replica.log.record(container: item, delta: delta) {
+                signal([item])
+            }
+            save()
         }
     }
 
@@ -536,6 +657,7 @@ final class SessionBridgeHost: FilesBridgeHost {
             guard let self else { return }
             switch result {
             case .failure(let error):
+                if error.code == "fs_not_found" { self.notFound(item) }
                 completion(.failure(error))
             case .success(let path):
                 self.client.stat(path: path) { result in
@@ -546,6 +668,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                         self.save()
                         completion(.success(mapped))
                     case .failure(let error):
+                        if error.code == "fs_not_found" { self.notFound(item, path: path) }
                         completion(.failure(error))
                     }
                 }
@@ -564,8 +687,13 @@ final class SessionBridgeHost: FilesBridgeHost {
         guard FilesThumbPolicy.pathIsMedia(path) else {
             return completion(.failure(FsError(code: "not_media")))
         }
-        client.streamThumb(path: path, size: size, etag: nil,
-                           onStart: onStart, completion: completion)
+        client.streamThumb(path: path, size: size, etag: nil, onStart: onStart) {
+            [weak self] result in
+            if case .failure(let error) = result, error.code == "fs_not_found" {
+                self?.notFound(item, path: path)
+            }
+            completion(result)
+        }
     }
 
     func streamRead(item: String, offset: Int, length: Int, etag: String?,
@@ -577,10 +705,16 @@ final class SessionBridgeHost: FilesBridgeHost {
             guard let self else { return }
             switch result {
             case .failure(let error):
+                if error.code == "fs_not_found" { self.notFound(item) }
                 completion(.failure(error))
             case .success(let path):
                 self.client.streamRead(path: path, offset: offset, length: length, etag: etag,
-                                       onStart: onStart, chunk: chunk, completion: completion)
+                                       onStart: onStart, chunk: chunk) { result in
+                    if case .failure(let error) = result, error.code == "fs_not_found" {
+                        self.notFound(item, path: path)
+                    }
+                    completion(result)
+                }
             }
         }
     }
@@ -607,6 +741,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                             let item = self.map.insert(fs: fs, path: path,
                                                        parentIdentifier: request.parent)
                             self.save()
+                            self.noteReported(item, in: request.parent)
                             completion(.success(item))
                         case .success(nil):
                             completion(.failure(FsError(code: "protocol")))
@@ -620,6 +755,14 @@ final class SessionBridgeHost: FilesBridgeHost {
                     ready(nil)
                     return completion(.failure(FsError(code: "fs_denied", message: "no digest")))
                 }
+                let identifier = self.map.identifier(for: path)
+                self.beginUpload(identifier: identifier, parent: request.parent,
+                                 name: request.name)
+                let finish: (Result<FileItem, FsError>) -> Void = { [weak self] result in
+                    self?.endUpload(identifier: identifier, parent: request.parent,
+                                    name: request.name)
+                    completion(result)
+                }
                 let sink = self.client.beginWrite(path: path, size: request.size, sha256: sha256,
                                                   etag: nil, exclusive: true) { result in
                     switch result {
@@ -628,9 +771,10 @@ final class SessionBridgeHost: FilesBridgeHost {
                         let item = self.map.insert(fs: fs, path: finalPath,
                                                    parentIdentifier: request.parent)
                         self.save()
-                        completion(.success(item))
+                        self.noteReported(item, in: request.parent)
+                        finish(.success(item))
                     case .failure(let error):
-                        completion(.failure(error))
+                        finish(.failure(error))
                     }
                 }
                 ready(sink)
@@ -643,14 +787,24 @@ final class SessionBridgeHost: FilesBridgeHost {
                 completion: @escaping (Result<FileItem, FsError>) -> Void) {
         onTouch?(parent(of: request.item))
         if let parent = request.parent { onTouch?(parent) }
+        let upload = request.hasContent
+        let container = parent(of: request.item)
+        let name = replica.folders[container]?.children[request.item]?.name
+        if upload { beginUpload(identifier: request.item, parent: container, name: name) }
+        let finish: (Result<FileItem, FsError>) -> Void = { [weak self] result in
+            if upload {
+                self?.endUpload(identifier: request.item, parent: container, name: name)
+            }
+            completion(result)
+        }
         resolve(request.item) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 ready(nil)
-                completion(.failure(error))
+                finish(.failure(error))
             case .success(let path):
-                self.performModify(request, path: path, ready: ready, completion: completion)
+                self.performModify(request, path: path, ready: ready, completion: finish)
             }
         }
     }
@@ -756,6 +910,7 @@ final class SessionBridgeHost: FilesBridgeHost {
     private func moveItem(_ request: BridgeModify, path: String, etag: String?,
                           completion: @escaping (Result<FileItem, FsError>) -> Void) {
         let name = request.name ?? (path as NSString).lastPathComponent
+        let oldParent = parent(of: request.item)
         let finishMove: (String) -> Void = { [weak self] parentPath in
             guard let self else { return }
             let newPath = FilesMap.childPath(parentPath, name)
@@ -764,10 +919,13 @@ final class SessionBridgeHost: FilesBridgeHost {
                 case .failure(let error):
                     completion(.failure(error))
                 case .success(let fs?):
+                    let newParent = request.parent ?? oldParent
+                    if newParent != oldParent {
+                        self.removeReported(request.item, from: oldParent)
+                    }
                     self.map.rename(identifier: request.item, to: newPath)
-                    let item = self.remember(fs, path: newPath,
-                                             item: request.item,
-                                             parentIdentifier: request.parent ?? self.parent(of: request.item))
+                    let item = self.remember(fs, path: newPath, item: request.item,
+                                             parentIdentifier: newParent)
                     self.save()
                     completion(.success(item))
                 case .success(nil):
@@ -793,16 +951,88 @@ final class SessionBridgeHost: FilesBridgeHost {
         // The item Finder knows keeps its identifier: a save may replace the
         // inode and a move may re-create the row, but the person's item is the
         // same one (design §3, S4).
-        let mapped = map.insert(fs: fs, path: path,
-                                parentIdentifier: parentIdentifier ?? parent(of: item),
+        let container = parentIdentifier ?? parent(of: item)
+        let mapped = map.insert(fs: fs, path: path, parentIdentifier: container,
                                 identifier: item)
-        save()
+        noteReported(mapped, in: container)
         return mapped
+    }
+
+    /// The system was told this item (a create, modify, move or setAttrs
+    /// completion): the record keeps it, so a listing that was asked before the
+    /// write cannot delete it (FILES-31).
+    private func noteReported(_ item: FileItem, in container: String) {
+        var record = replica.folders[container] ?? FilesFolderRecord()
+        record.children[item.identifier] = item
+        record.touched = clock()
+        replica.folders[container] = record
+        save()
+    }
+
+    /// The system was told the item is gone (a delete completion, or a
+    /// `fs_not_found` repair): drop it from the record and log the deletion.
+    private func removeReported(_ identifier: String, from container: String) {
+        guard var record = replica.folders[container],
+              record.children.removeValue(forKey: identifier) != nil else { return }
+        record.touched = clock()
+        replica.folders[container] = record
+        let delta = FilesDelta(items: [], deleted: [identifier])
+        if replica.log.record(container: container, delta: delta) {
+            signal([container])
+        }
+        save()
+    }
+
+    /// The folder was in the system's view: remember when, for the resync order
+    /// (design § Sync integrity, slice 3).
+    private func noteTouched(_ container: String) {
+        guard var record = replica.folders[container] else { return }
+        record.touched = clock()
+        replica.folders[container] = record
+        save()
+    }
+
+    // MARK: Uploads in flight (FILES-31)
+
+    private func beginUpload(identifier: String?, parent: String, name: String?) {
+        if let identifier { uploading.insert(identifier) }
+        if let name { uploadNames[parent, default: []].insert(name) }
+    }
+
+    private func endUpload(identifier: String?, parent: String, name: String?) {
+        if let identifier { uploading.remove(identifier) }
+        if let name {
+            uploadNames[parent]?.remove(name)
+            if uploadNames[parent]?.isEmpty != false { uploadNames.removeValue(forKey: parent) }
+        }
+    }
+
+    // MARK: Not-found repair (FILES-34)
+
+    /// The phone answered `fs_not_found` for an item's thumbnail, read or stat:
+    /// the item is gone. Report it deleted and re-list its parent once.
+    private func notFound(_ item: String, path: String? = nil) {
+        guard item != FilesMap.rootIdentifier, !filesSystemContainer(item) else { return }
+        if let path { forget(map.invalidate(subtree: path)) }
+        replica.folders.removeValue(forKey: item)
+        let container = parent(of: item)
+        removeReported(item, from: container)
+        Log.files.notice("bridge: not found repair")
+        guard repairing.insert(container).inserted else { return }
+        listPages(item: container) { [weak self] _ in
+            self?.repairing.remove(container)
+        }
+    }
+
+    /// A subtree the id map no longer knows: its folders' records are stale too.
+    private func forget(_ identifiers: [String]) {
+        for identifier in identifiers { replica.folders.removeValue(forKey: identifier) }
     }
 
     func delete(item: String, base: String, recursive: Bool,
                 completion: @escaping (Result<Void, FsError>) -> Void) {
         onTouch?(parent(of: item))
+        let container = parent(of: item)
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -816,7 +1046,9 @@ final class SessionBridgeHost: FilesBridgeHost {
                     case .failure(let error):
                         completion(.failure(error))
                     case .success:
-                        self.map.invalidate(subtree: path)
+                        self.forget(self.map.invalidate(subtree: path))
+                        self.replica.folders.removeValue(forKey: item)
+                        self.removeReported(item, from: container)
                         self.save()
                         completion(.success(()))
                     }
@@ -848,12 +1080,12 @@ final class SessionBridgeHost: FilesBridgeHost {
                 guard parent != item else { return completion(.success(())) }
                 self.touch(item: parent, completion: completion)
             case .success(let resolved):
+                self.noteTouched(item)
                 if self.pathByItem[item] == resolved.path {
                     return completion(.success(()))
                 }
                 self.pathByItem[item] = resolved.path
                 self.itemsByPath[resolved.path, default: []].insert(item)
-                self.baseline(item)
                 self.client.watch(paths: [resolved.path], on: true, completion: completion)
             }
         }
@@ -876,13 +1108,14 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     func changes(item: String, from: String?,
                  completion: @escaping (Result<FilesChangesReply, FsError>) -> Void) {
+        let log = replica.log
         if item == filesWorkingSetIdentifier {
-            // The working set's first enumeration: every item the app still has
-            // in a cached listing, not just what the delta log happens to keep.
+            // The working set's first enumeration: every item the record says
+            // the system has, not just this process's cache (FILES-32).
             if from == nil {
                 var seen: [String: FileItem] = [:]
-                for page in snapshots.values {
-                    for (identifier, mapped) in page { seen[identifier] = mapped }
+                for folder in replica.folders.values {
+                    for (identifier, mapped) in folder.children { seen[identifier] = mapped }
                 }
                 return completion(.success(FilesChangesReply(
                     anchor: log.anchor, delta: FilesDelta(items: Array(seen.values), deleted: []),
@@ -909,9 +1142,9 @@ final class SessionBridgeHost: FilesBridgeHost {
                 return completion(.failure(FsError(code: "fs_not_found")))
             }
             onTouch?(item)
-            return completion(.success(log.containerAnchor(item)))
+            return completion(.success(replica.log.containerAnchor(item)))
         }
-        completion(.success(log.anchor))
+        completion(.success(replica.log.anchor))
     }
 
     func filesChanged(paths: [String]) {
@@ -920,26 +1153,14 @@ final class SessionBridgeHost: FilesBridgeHost {
         }
     }
 
-    /// A watched folder that was never listed has nothing to diff against, so
-    /// a phone-side change to it could never be reported. List it once, quietly:
-    /// this baseline is not a change and is not signalled.
-    private var baselining: Set<String> = []
-
-    private func baseline(_ item: String) {
-        guard snapshots[item] == nil, !baselining.contains(item) else { return }
-        baselining.insert(item)
-        listPages(item: item) { [weak self] _ in
-            self?.baselining.remove(item)
-        }
-    }
-
     /// Containers being re-listed right now, and those that moved again while
     /// they were (a rename arrives as more than one notification).
     private var refreshing: Set<String> = []
     private var refreshAgain: Set<String> = []
 
-    /// Re-lists one container and records what moved. The extension is signalled
-    /// for every changed container; the delta rides in its anchor log.
+    /// Re-lists one container; the walk diffs it against the record and
+    /// signals when something moved (FILES-31). The extension is signalled for
+    /// every changed container; the delta rides in its anchor log.
     private func refresh(_ item: String) {
         if refreshing.contains(item) {
             // One listing at a time per folder: a burst is settled by the run
@@ -948,20 +1169,13 @@ final class SessionBridgeHost: FilesBridgeHost {
             return
         }
         refreshing.insert(item)
-        let before = snapshots[item]
         // A rename can reach us as a delete followed by an add a moment later;
         // settling briefly keeps one re-listing from reporting the file gone
         // between its two names.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self] in
             guard let self else { return }
-            self.listPages(item: item) { result in
+            self.listPages(item: item) { _ in
                 self.refreshing.remove(item)
-                if case .success = result, let before {
-                    let after = self.snapshots[item] ?? [:]
-                    let delta = FilesDiff.delta(old: before, new: Array(after.values))
-                    let moved = self.log.record(container: item, delta: delta)
-                    if moved { self.signal([item]) }
-                }
                 if self.refreshAgain.remove(item) != nil { self.refresh(item) }
             }
         }

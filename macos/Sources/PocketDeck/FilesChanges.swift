@@ -37,6 +37,111 @@ enum FilesDiff {
     }
 }
 
+/// One folder's listing walk and its one confirmation re-list (FILES-31). A
+/// complete walk reports its delta; a walk that would delete more than half of
+/// the recorded items and more than 20 is repeated once after a delay, and only
+/// the deletions both walks agree on go out. The transition is pure; the host
+/// runs the delay and writes the record from the returned action.
+struct FilesWalk: Equatable {
+    enum State: Equatable {
+        /// The first page walk is running.
+        case listing
+        /// The first walk was too destructive: a confirmation re-list runs.
+        case confirming(deletions: Set<String>)
+        case done
+    }
+
+    enum Event: Equatable {
+        /// The page walk reached its last page.
+        case finished(delta: FilesDelta, listing: [FileItem])
+        /// The page walk ended early (an error or a cancel).
+        case failed(delta: FilesDelta, listing: [FileItem])
+        /// The confirmation re-list reached its last page.
+        case confirmed(delta: FilesDelta, listing: [FileItem])
+        /// The confirmation re-list ended early.
+        case confirmFailed(delta: FilesDelta, listing: [FileItem])
+    }
+
+    enum Action: Equatable {
+        case report(FilesDelta, listing: [FileItem])
+        /// Re-list once after the host's delay; only then may a deletion go out.
+        case confirm
+        case none
+    }
+
+    /// More than 20 AND more than half of the recorded items: the person's
+    /// 459-of-568 case passes, a phone whose storage is not mounted yet does not
+    /// empty Finder.
+    static let deletionFloor = 20
+
+    private(set) var state: State = .listing
+    /// How many items the folder's record held when the walk began.
+    let recorded: Int
+
+    init(recorded: Int) {
+        self.recorded = recorded
+    }
+
+    var isConfirming: Bool {
+        if case .confirming = state { return true }
+        return false
+    }
+
+    mutating func apply(_ event: Event) -> Action {
+        switch (state, event) {
+        case (.listing, .finished(let delta, let listing)):
+            let deletions = Set(delta.deleted)
+            if deletions.count > Self.deletionFloor, deletions.count * 2 > recorded {
+                state = .confirming(deletions: deletions)
+                return .confirm
+            }
+            state = .done
+            return .report(delta, listing: listing)
+        case (.listing, .failed(let delta, let listing)):
+            // An incomplete walk reports additions and changes only.
+            state = .done
+            return .report(FilesDelta(items: delta.items, deleted: []), listing: listing)
+        case (.confirming(let first), .confirmed(let delta, let listing)):
+            state = .done
+            return .report(FilesDelta(items: delta.items,
+                                      deleted: delta.deleted.filter(first.contains)),
+                           listing: listing)
+        case (.confirming, .confirmFailed(let delta, let listing)):
+            state = .done
+            return .report(FilesDelta(items: delta.items, deleted: []), listing: listing)
+        case (.done, _):
+            return .none
+        case (.listing, .confirmed), (.listing, .confirmFailed),
+             (.confirming, .finished), (.confirming, .failed):
+            // An event from a walk this machine did not start: ignore it.
+            return .none
+        }
+    }
+}
+
+extension FilesWalk.State {
+    /// The log's closed-set code: 0 listing, 1 confirming, 2 done.
+    var code: Int {
+        switch self {
+        case .listing: return 0
+        case .confirming: return 1
+        case .done: return 2
+        }
+    }
+}
+
+extension FilesWalk.Event {
+    /// The log's closed-set code: 0 finished, 1 failed, 2 confirmed, 3 confirmFailed.
+    var code: Int {
+        switch self {
+        case .finished: return 0
+        case .failed: return 1
+        case .confirmed: return 2
+        case .confirmFailed: return 3
+        }
+    }
+}
+
 /// What the app answers a `changes` request with (one container, or the working
 /// set when the container is nil).
 struct FilesChangesReply: Equatable {
@@ -70,6 +175,23 @@ struct FilesChangeLog: Equatable {
 
     init(epoch: String = FilesChangeLog.newEpoch()) {
         self.epoch = epoch
+    }
+
+    /// A log restored from disk (FILES-32): the epoch and sequence continue, so
+    /// an anchor the system was given before the app stopped still answers. A
+    /// log whose entries do not fit its sequence is not one this app wrote.
+    init?(epoch: String, sequence: Int, entries: [Entry]) {
+        guard !epoch.isEmpty, sequence >= 0, entries.count <= Self.maxEntries else {
+            return nil
+        }
+        var last = 0
+        for entry in entries {
+            guard entry.sequence > last, entry.sequence <= sequence else { return nil }
+            last = entry.sequence
+        }
+        self.epoch = epoch
+        self.sequence = sequence
+        self.entries = entries
     }
 
     static func newEpoch() -> String {
