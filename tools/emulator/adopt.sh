@@ -54,6 +54,11 @@ assert hasattr(deckctl, "cmd_adopt"), "deckctl has no adopt command"
 assert hasattr(deckctl, "StreamRecorder") and hasattr(proto, "pack_touch")
 print("CHECK OK: deckctl adopt + proto symbols")
 PY
+  # The exact global-flags then subcommand shape the boot uses: a global flag
+  # after `adopt` made argparse read it as the command on boot 2 (11-16).
+  "$PYTHON" "$CLIENT" --host 127.0.0.1 --port 1 --state /dev/null \
+    adopt --adb "$ADB" --serial emulator-5554 --help >/dev/null 2>&1 \
+    || { echo "CHECK FAIL: deckctl adopt argument order"; rc=1; }
   command -v ffmpeg >/dev/null || { echo "CHECK FAIL: no ffmpeg"; rc=1; }
   [ -x "$ADB" ] || { echo "CHECK FAIL: no adb at $ADB"; rc=1; }
   [ -x "$EMULATOR" ] || { echo "CHECK FAIL: no emulator at $EMULATOR"; rc=1; }
@@ -121,8 +126,8 @@ emu logcat -c >/dev/null 2>&1 || true
 
 step "adopt checks"
 "$PYTHON" "$CLIENT" --host 127.0.0.1 --port "$PORT" --state "$STATE" \
-  --adb "$ADB" --serial "$SERIAL" \
-  adopt --out-prefix "$OUT/adopt" 2>&1 | tee "$OUT/adopt.log"
+  adopt --adb "$ADB" --serial "$SERIAL" \
+  --out-prefix "$OUT/adopt" 2>&1 | tee "$OUT/adopt.log"
 CLIENT_RC=${PIPESTATUS[0]}
 step "client exit $CLIENT_RC"
 
