@@ -43,7 +43,7 @@ func argument(_ name: String) -> String? {
 }
 
 guard argument("--profile") != nil else {
-    FileHandle.standardError.write(Data("usage: pd-vdisplay --profile NAME [--size WxH]\n".utf8))
+    FileHandle.standardError.write(Data("usage: pd-vdisplay --profile NAME [--size WxH] [--scale 1|2]\n".utf8))
     exit(2)
 }
 
@@ -61,20 +61,29 @@ let productID: UInt32 = 0xE2E0
 struct Screen {
     var width: UInt = 1280
     var height: UInt = 800
-    let scale: UInt = 1
+    /// Pixels per point. 1 everywhere except the crispness check, whose windows
+    /// must be described in Retina pixels (ISS-39).
+    var scale: UInt = 1
 }
 
 func screen() -> Screen {
     var screen = Screen()
-    guard let raw = argument("--size") else { return screen }
-    let parts = raw.split(separator: "x").map(String.init)
-    guard parts.count == 2, let width = UInt(parts[0]), let height = UInt(parts[1]),
-          width >= 640, height >= 480 else {
-        FileHandle.standardError.write(Data("pd-vdisplay: --size needs WxH, at least 640x480\n".utf8))
+    if let raw = argument("--size") {
+        let parts = raw.split(separator: "x").map(String.init)
+        guard parts.count == 2, let width = UInt(parts[0]), let height = UInt(parts[1]),
+              width >= 640, height >= 480 else {
+            FileHandle.standardError.write(Data("pd-vdisplay: --size needs WxH, at least 640x480\n".utf8))
+            exit(2)
+        }
+        screen.width = width
+        screen.height = height
+    }
+    if let raw = argument("--scale"), let scale = UInt(raw), scale == 1 || scale == 2 {
+        screen.scale = scale
+    } else if argument("--scale") != nil {
+        FileHandle.standardError.write(Data("pd-vdisplay: --scale needs 1 or 2\n".utf8))
         exit(2)
     }
-    screen.width = width
-    screen.height = height
     return screen
 }
 
@@ -111,12 +120,12 @@ func allocated(_ cls: AnyClass) -> AnyObject {
     return alloc(cls, selector).takeUnretainedValue()
 }
 
-func modeClass(width: UInt, height: UInt) -> NSObject? {
+func modeClass(width: UInt, height: UInt, refreshRate: Double = 60) -> NSObject? {
     let name = "CGVirtualDisplayMode"
     let selector = NSSelectorFromString("initWithWidth:height:refreshRate:")
     guard let cls = NSClassFromString(name), class_respondsToSelector(cls, selector) else { return nil }
     let initFn = unsafeBitCast(class_getMethodImplementation(cls, selector), to: InitModeFn.self)
-    return initFn(allocated(cls), selector, width, height, 60)?.takeRetainedValue() as? NSObject
+    return initFn(allocated(cls), selector, width, height, refreshRate)?.takeRetainedValue() as? NSObject
 }
 
 func displayMaker() -> ((NSObject) -> NSObject?)? {
@@ -157,7 +166,9 @@ func existingDisplay() -> CGDirectDisplayID? {
 /// create used: the checks then assert against the display the run really has.
 func describe(_ id: CGDirectDisplayID) -> String {
     let bounds = CGDisplayBounds(id)
-    let pixels = CGDisplayPixelsWide(id)
+    // CGDisplayPixelsWide is in points on a Retina display; the mode carries
+    // the backing pixels the window server really composites.
+    let pixels = CGDisplayCopyDisplayMode(id)?.pixelWidth ?? Int(CGDisplayPixelsWide(id))
     let scale = bounds.width > 0 ? (Double(pixels) / Double(bounds.width)).rounded() : 1
     return "id=\(id) w=\(Int(bounds.width)) h=\(Int(bounds.height)) scale=\(Int(max(scale, 1)))"
 }
@@ -200,16 +211,37 @@ while let leftover = existingDisplay() {
 let wanted = screen()
 let size = (width: wanted.width, height: wanted.height)
 let scale = wanted.scale
+// A 2x display: the first mode is the physical (backing) resolution, which is
+// what makes macOS treat it as Retina; the logical mode follows. One mode
+// alone is appended raw at 1x.
+let modes: [NSObject]
+if scale == 2 {
+    guard let anchor = modeClass(width: size.width * 2, height: size.height * 2),
+          let logical = modeClass(width: size.width, height: size.height) else {
+        fail("no CGVirtualDisplayMode on this macOS")
+    }
+    modes = [anchor, logical]
+} else {
+    guard let logical = modeClass(width: size.width, height: size.height) else {
+        fail("no CGVirtualDisplayMode on this macOS")
+    }
+    modes = [logical]
+}
 guard let descriptor = make("CGVirtualDisplayDescriptor"),
       let settings = make("CGVirtualDisplaySettings"),
-      let mode = modeClass(width: size.width, height: size.height),
       let makeDisplay = displayMaker() else {
     fail("no CGVirtualDisplay on this macOS")
 }
 descriptor.setValue("PocketDeck e2e", forKey: "name")
 descriptor.setValue(size.width * scale, forKey: "maxPixelsWide")
 descriptor.setValue(size.height * scale, forKey: "maxPixelsHigh")
-descriptor.setValue(NSValue(size: NSSize(width: 340, height: 212)), forKey: "sizeInMillimeters")
+// HiDPI is only recognised at 200 PPI or more, so the physical size shrinks
+// with the backing pixels (220 PPI keeps it safely above the threshold).
+let millimetres = scale == 2
+    ? NSSize(width: Double(size.width * 2) * 25.4 / 220.0,
+             height: Double(size.height * 2) * 25.4 / 220.0)
+    : NSSize(width: 340, height: 212)
+descriptor.setValue(NSValue(size: millimetres), forKey: "sizeInMillimeters")
 descriptor.setValue(vendorID, forKey: "vendorID")
 descriptor.setValue(productID, forKey: "productID")
 descriptor.setValue(serialNumber(profile: testIdentityProfile), forKey: "serialNum")
@@ -217,7 +249,7 @@ descriptor.setValue(serialNumber(profile: testIdentityProfile), forKey: "serialN
 guard let handle = makeDisplay(descriptor) else {
     fail("CGVirtualDisplay init failed")
 }
-settings.setValue([mode], forKey: "modes")
+settings.setValue(modes, forKey: "modes")
 settings.setValue(scale == 2 ? 1 : 0, forKey: "hiDPI")
 guard apply(settings, to: handle),
       let id = (handle.value(forKey: "displayID") as? NSNumber)?.uint32Value, id != 0 else {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -421,17 +421,28 @@ vdisplay_size_for() {
     esac
 }
 
+# vdisplay_scale_for <check> — the backing scale its assertions are written
+# against. The crispness check describes its windows in Retina pixels (ISS-39);
+# every other check runs at 1x, as before.
+vdisplay_scale_for() {
+    case "$1" in
+        crisp) echo 2 ;;
+        *) echo 1 ;;
+    esac
+}
+
 # ensure_vdisplay <check> — the display this check draws on, created or swapped
 # at the check boundary. A swap stops this run's app first: a window left on a
 # display that goes away jumps to the person's screen.
 ensure_vdisplay() {
-    local want
+    local want want_scale
     want="$(vdisplay_size_for "$1")"
-    [ "$want" = "${VDISPLAY_SIZE:-}" ] && return 0
+    want_scale="$(vdisplay_scale_for "$1")"
+    [ "$want" = "${VDISPLAY_SIZE:-}" ] && [ "$want_scale" = "${RUN_SCALE:-}" ] && return 0
     kill_e2e_app
     sleep 1
     stop_vdisplay
-    start_vdisplay "$want"
+    start_vdisplay "$want" "$want_scale"
 }
 
 # start_vdisplay — starts the helper and reads the one line it prints
@@ -445,7 +456,7 @@ ensure_vdisplay() {
 # "FAIL vdisplay: …" (and exits non-zero) when it cannot create one or finds one
 # of its identity already online; the run stops there, "all" included.
 start_vdisplay() {
-    local size="${1:-1280x800}"
+    local size="${1:-1280x800}" scale="${2:-1}"
     # A visible run is on the person's own screens: the app looks for no display
     # of its own there and makes none, so this run makes none either. Those
     # screens are Retina at 2x — the scale the numbers these checks have always
@@ -458,7 +469,7 @@ start_vdisplay() {
     fi
     VDISPLAY_FILE="$WORK-vdisplay.txt"
     rm -f "$VDISPLAY_FILE"
-    "$VDISPLAYBIN" --profile "$PROFILE" --size "$size" > "$VDISPLAY_FILE" 2>&1 &
+    "$VDISPLAYBIN" --profile "$PROFILE" --size "$size" --scale "$scale" > "$VDISPLAY_FILE" 2>&1 &
     VDISPLAY_PID=$!
     start_watchdog vdisplay "$VDISPLAY_PID"
     local tries=40
@@ -1677,6 +1688,128 @@ check_resize() {
     # The delayed phone must not serve the next check in a shared run.
     end_shared
     check_mirror_band
+}
+
+# --- C6b: crispness (ISS-39) ---------------------------------------------
+
+# The last app stream's video config, as "WxH" pixels.
+last_config_size() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+size = ""
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video" and event.get("config") and event.get("stream") == 1:
+        size = "%dx%d" % (event.get("w"), event.get("h"))
+print(size)
+PY
+}
+
+# config_changed_from <WxH> — the newest config is a different, real size.
+config_changed_from() {
+    local now
+    now="$(last_config_size)"
+    [ -n "$now" ] && [ "$now" != "$1" ]
+}
+
+# window_at <W> — the first window is W points wide and its first frame is up.
+window_at() {
+    python3 - "$(chrome_state)" "$1" <<'PY'
+import re, sys
+state, width = sys.argv[1], int(sys.argv[2])
+frame = re.search(r"frame=(\d+)x(\d+)", state)
+sys.exit(0 if frame and int(frame.group(1)) == width and "loading=0" in state else 1)
+PY
+}
+
+# check_crisp — the phone draws a still pattern of 1 px line pairs and small
+# text; the Mac's window is captured at backing pixels and compared with the
+# encoder's own source. The pair is one size whose pixels are not multiples of
+# 16 (2406x1386 at 2x) and one that is (2400x1376). On a phone that reports its
+# encoder alignment the moved metric is the proof (ISS-39).
+check_crisp() {
+    local control="1200x688" odd="1203x693"
+    local cr="$WORK/crisp" scale="$RUN_SCALE"
+    check_crisp_size() {
+        local label="$1" w="${2%x*}" h="${2#*x}"
+        local want_w=$((w * scale)) want_h=$((h * scale)) win crop gt initial metrics psnr contrast shot_h
+        rm -f "$WORK/chrome.txt"
+        open_shared --open com.android.settings --float-windows \
+            --resize-stream "1:${w}x${h}-pt" --debug-chrome-state "$WORK/chrome.txt" \
+            || { bad "[CRISP] $label: the window did not open"; return 1; }
+        initial="$(last_config_size)"
+        wait_until 30 config_changed_from "$initial" \
+            || { bad "[CRISP] $label: no config after the resize (still ${initial:-none})"; return 1; }
+        win="$(await_window "\$4 == $w")" \
+            || { bad "[CRISP] $label: no ${w}x${h} pt window"; return 1; }
+        # The answer's own frame, then a moment of stillness: the pattern is
+        # static, so this is the fresh keyframe the resize's new encoder sent.
+        wait_until 10 window_at "$w" \
+            || { bad "[CRISP] $label: the window never settled at ${w} pt wide ($(chrome_state | grep -oE ' frame=[0-9x]+' | tr '\n' ' '))"; return 1; }
+        sleep 1
+        shot_window "$win" "$WORK/crisp-$label-window.png" \
+            || { bad "[CRISP] $label: no window capture"; return 1; }
+        # The video is the window's bottom h*scale rows (the framed bar sits
+        # above it). This is the drawn rect for these two sizes both before
+        # the fix (the quantisation is stretched) and after it (1:1).
+        shot_h="$(sips -g pixelHeight "$WORK/crisp-$label-window.png" 2>/dev/null \
+            | awk '/pixelHeight/{print $2}')"
+        [ -n "$shot_h" ] || { bad "[CRISP] $label: cannot read the capture"; return 1; }
+        crop="0,$((shot_h / scale - h)),$w,$h"
+        gt="$(last_config_size)"
+        [ -f "$cr/pattern-$gt.png" ] \
+            || { bad "[CRISP] $label: the phone wrote no pattern for $gt (have: $(ls "$cr" 2>/dev/null | tr '\n' ' '))"; return 1; }
+        metrics="$(python3 "$MACOS/scripts/crisp-metric.py" \
+            --capture "$WORK/crisp-$label-window.png" --reference "$cr/pattern-$gt.png" \
+            --regions "$cr/pattern-$gt.json" --crop "$crop" --scale "$scale" \
+            --save-crop "$SHOTS/crisp-$label.png" \
+            --save-zoom "$SHOTS/crisp-$label-zoom4.png" 2>&1)" \
+            || { bad "[CRISP] $label: the metric failed: $metrics"; return 1; }
+        psnr="$(sed -n 's/.*psnr=\([0-9.]*\).*/\1/p' <<<"$metrics")"
+        contrast="$(sed -n 's/.*contrast=\([0-9.]*\).*/\1/p' <<<"$metrics")"
+        say "CRISP $label window=${w}x${h}pt stream=$gt $metrics"
+        echo "$psnr $contrast" > "$WORK/crisp-$label.txt"
+        [ "$gt" = "${want_w}x${want_h}" ] \
+            && ok "[CRISP] $label: the stream is the window's ${want_w}x${want_h} backing pixels" \
+            || bad "[CRISP] $label: the stream is $gt, not the window's ${want_w}x${want_h} backing pixels"
+    }
+
+    end_shared
+    rm -rf "$cr"
+    mkdir -p "$cr" "$SHOTS"
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--encoder-report --encoder-align 2 --crisp-pattern $cr" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" || return 1
+
+    check_crisp_size control "$control"
+    next_shared
+    check_crisp_size odd "$odd"
+
+    local c_psnr c_con o_psnr o_con
+    read -r c_psnr c_con < "$WORK/crisp-control.txt" 2>/dev/null || true
+    read -r o_psnr o_con < "$WORK/crisp-odd.txt" 2>/dev/null || true
+    if [ -n "${c_psnr:-}" ] && [ -n "${o_psnr:-}" ]; then
+        # The fixed non-multiple size must reach the control within this margin:
+        # the same encoder, bitrate and decoder, so the only difference left is
+        # the size's phase against the window's pixels.
+        if python3 - "$c_psnr" "$c_con" "$o_psnr" "$o_con" <<'PY'
+import sys
+control_psnr, control_con, odd_psnr, odd_con = (float(v) for v in sys.argv[1:5])
+# Measured on the fix: the two sizes are within 0.6 dB and 0.02 contrast.
+sys.exit(0 if odd_psnr >= control_psnr - 1.0 and odd_con >= control_con - 0.03 else 1)
+PY
+        then
+            ok "[CRISP] non-multiple size scores like the control (psnr ${o_psnr} vs ${c_psnr} dB, contrast ${o_con} vs ${c_con})"
+        else
+            bad "[CRISP] non-multiple size is worse than the control (psnr ${o_psnr} vs ${c_psnr} dB, contrast ${o_con} vs ${c_con})"
+        fi
+    fi
+    say "screenshots: $SHOTS/crisp-control.png $SHOTS/crisp-control-zoom4.png $SHOTS/crisp-odd.png $SHOTS/crisp-odd-zoom4.png"
+    end_shared
 }
 
 # --- C7: input ------------------------------------------------------------
@@ -15833,7 +15966,7 @@ build_vdisplay || exit 1
 build_load || exit 1
 init_watchdog
 start_load
-start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" || exit 1
+start_vdisplay "$(vdisplay_size_for "${CHECKS[0]}")" "$(vdisplay_scale_for "${CHECKS[0]}")" || exit 1
 start_watch
 for check in "${CHECKS[@]}"; do
     # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
