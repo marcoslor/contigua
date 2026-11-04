@@ -166,6 +166,13 @@ final class FilesPageCacheTests: XCTestCase {
         XCTAssertEqual(Data("b0@1000".utf8), FilesPageToken(cursor: "1000", offset: 0).page)
     }
 
+    func testThePageLineCarriesCountsAndDurationsOnly() {
+        XCTAssertEqual("enumerate page n=250 phone=fetch ms=1234",
+                       FilesPageLog.line(count: 250, fetched: true, milliseconds: 1234))
+        XCTAssertEqual("enumerate page n=250 phone=hit ms=0",
+                       FilesPageLog.line(count: 250, fetched: false, milliseconds: 0))
+    }
+
     func testTheNextTokenMovesInsideThePhonePageThenToTheNextOne() {
         let token = FilesPageToken(cursor: nil, offset: 0)
         XCTAssertEqual(FilesPageToken(cursor: nil, offset: 250),

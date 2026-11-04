@@ -1330,7 +1330,7 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
             },
             deliver: { delivery in
                 observer.didEnumerate(delivery.items.map(ProviderItem.init))
-                log.notice("enumerate items=\(delivery.items.count, privacy: .public) more=\(delivery.next != nil, privacy: .public)")
+                log.notice("\(FilesPageLog.line(count: delivery.items.count, fetched: delivery.fetched, milliseconds: delivery.milliseconds), privacy: .public)")
                 observer.finishEnumerating(
                     upTo: delivery.next.map { NSFileProviderPage($0.page) })
             },
