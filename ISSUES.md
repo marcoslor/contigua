@@ -96,6 +96,21 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
 6. **Phone photos on the Mac.** Recent photos and screenshots in Finder or a Recents strip, with drag-out. Needs ISS-2.
 7. Then: the phone as a key, Shortcuts both ways, the phone as a Mac remote, Mac-to-phone notifications, Focus modes and the Batteries widget, Wi-Fi password sharing and last-seen location.
 
+- **ISS-41 A web client: PocketDeck for Windows and Linux (a very big epic; the person, 2026-11-04).** macOS stays the first-class, native app. Windows and Linux get a well-built web client (installable as a PWA), with no native app there. SwiftUI may be deprecated in favour of components shared between the Mac and the web.
+  - **What a browser makes hard,** whatever the UI toolkit:
+    - **Reaching the phone on a LAN:** a page can't open raw sockets. It needs WebSocket, WebTransport or WebRTC, and WebCodecs and WebGPU need a secure context. An `https` page can't call an `http://` LAN address (mixed content, and Chrome's local-network permission). Options: WebRTC with the pairing's fingerprint pinned; the phone serving `https` under a real certificate (the Plex `*.plex.direct` pattern, which needs a small certificate service but carries no traffic); or a self-signed warning (poor).
+    - **Video:** WebCodecs `VideoDecoder` (H.264 everywhere, HEVC where the hardware has it) into a canvas or WebGPU texture.
+    - **Input:** browsers keep some shortcuts (⌃W, ⌃T, ⌃N) unless the Keyboard Lock API is available in full screen (Chromium only). Also pointer lock, IME composition, and clipboard permissions (images are limited).
+    - **Files:** no Finder-like integration; File System Access (Chromium), and drag-and-drop into the page.
+    - **Notifications:** only while the page or PWA is open; Web Push needs a push service.
+    - **Windows:** each app window is a browser window.
+  - **GPUI in the browser (checked 2026-11-04):** upstream Zed has an experimental `gpui_web` crate (WebGPU with a WebGL2 fallback; nightly Rust; cross-origin isolation for threads). It has one canvas and one window per page, no app menus, and canvas-drawn text (IME and accessibility weaker than the DOM). Zed itself doesn't ship on the web. Unknown: whether it can show an external video frame, which a stream window needs.
+  - **Shared code:**
+    - The deep Mac integrations (File Provider, Notification Center, menu bar, Dock, Live Text) stay Swift whatever happens. So "shared components" means the UI surfaces (Deck, stream window, Settings, pairing, live updates), plus a shared core: protocol, session, E2EE, input mapping and transfer.
+    - A Rust core works on this Mac (native compile, plus a `wasm32` target), bridged to Swift (UniFFI) and to the web (wasm-bindgen).
+    - Kotlin Multiplatform is out here: Kotlin/Native's macOS targets need a JVM on the host, and this Mac runs no JVM.
+  - **First step, a spike** (no UI decision yet): a page on a Windows or Linux machine reaches the paired phone on the LAN with no cloud in the traffic path, opens one stream decoded by WebCodecs with input, and measures latency against the Mac app. Then one prototype round for the UI toolkit (GPUI web vs a DOM framework), showing the Deck and one stream window, and a written decision.
+
 ## 6. On their own branches
 
 These need something the public build can't assume, so they stay off `main` (AGENTS.md).
