@@ -17,6 +17,7 @@
 // there, and the report says which item the tracking loop highlighted.
 
 import AppKit
+import ApplicationServices
 
 @MainActor
 enum MenuTrack {
@@ -32,6 +33,8 @@ enum MenuTrack {
     private static var stateChanges = 0
     private static var trackingPaths: Set<String> = []
     private static var hoverTitle = ""
+    private static var hoverPointSource = ""
+    private static var hoverPointText = ""
     private static var timers: [Timer] = []
     private static var observers: [NSObjectProtocol] = []
 
@@ -63,6 +66,8 @@ enum MenuTrack {
         path = resultPath
         MenuTrack.itemPath = itemPath
         MenuTrack.hoverTitle = hoverItem?.title ?? ""
+        hoverPointSource = ""
+        hoverPointText = ""
         seconds = wait
         buildsBefore = Menus.builds
         itemsBefore = identities(in: NSApp.mainMenu)
@@ -97,7 +102,8 @@ enum MenuTrack {
         }
         if hoverItem != nil, let hoverPath {
             schedule(after: 1.0) {
-                let point = pointerPoint(window: window, view: view, anchor: anchor)
+                let point = pointerPoint(window: window, view: view, anchor: anchor,
+                                         menu: itemPath, item: hoverTitle)
                 let line = "\(point.x) \(point.y)\n"
                 try? line.write(toFile: hoverPath, atomically: true, encoding: .utf8)
             }
@@ -158,14 +164,75 @@ enum MenuTrack {
 
     // MARK: - Reading the bar
 
-    /// The Quartz point 40 pt in from a hovered item's left edge and 11 pt
-    /// below its top edge. `popUp` puts the item's own top-left corner at
-    /// `anchor` in `view`, so this is exact: both edges are the item's.
-    private static func pointerPoint(window: NSWindow, view: NSView, anchor: NSPoint) -> NSPoint {
+    /// The point the check moves the real pointer to: the hovered item's own
+    /// centre from the open menu's Accessibility frame. AppKit may move a menu
+    /// that would not fit at the requested anchor, so the anchor (the item's
+    /// corner plus a little in and down) is only the fallback.
+    private static func pointerPoint(window: NSWindow, view: NSView, anchor: NSPoint,
+                                     menu itemPath: String, item: String) -> NSPoint {
+        if let frame = axItemFrame(menu: itemPath, item: item) {
+            hoverPointSource = "ax"
+            hoverPointText = "\(frame.midX) \(frame.midY)"
+            return NSPoint(x: frame.midX, y: frame.midY)
+        }
         let inWindow = view.convert(anchor, to: nil)
         let screen = window.convertPoint(toScreen: inWindow)
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
-        return NSPoint(x: screen.x + 40, y: top - (screen.y - 11))
+        let point = NSPoint(x: screen.x + 40, y: top - (screen.y - 11))
+        hoverPointSource = "anchor"
+        hoverPointText = "\(point.x) \(point.y)"
+        return point
+    }
+
+    /// The menu item's frame while the menu is open. The bar's Accessibility
+    /// tree is the one MenuDump already reads; a menu item carries its screen
+    /// frame only while it is displayed.
+    private static func axItemFrame(menu itemPath: String, item: String) -> NSRect? {
+        let menuTitle = itemPath.split(separator: "/").first.map(String.init) ?? itemPath
+        let app = AXUIElementCreateApplication(getpid())
+        guard let bar = axElement(app, kAXMenuBarAttribute as String) else { return nil }
+        for barItem in axChildren(bar) where axString(barItem, kAXTitleAttribute as String) == menuTitle {
+            guard let menu = axChildren(barItem).first else { continue }
+            for element in axChildren(menu) where axString(element, kAXTitleAttribute as String) == item {
+                guard let frame = axFrame(element) else { continue }
+                return frame
+            }
+        }
+        return nil
+    }
+
+    private static func axElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func axChildren(_ element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success else { return [] }
+        return value as? [AXUIElement] ?? []
+    }
+
+    private static func axString(_ element: AXUIElement, _ attribute: String) -> String {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
+    private static func axFrame(_ element: AXUIElement) -> NSRect? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero
+        guard AXValueGetValue(value as! AXValue, .cgPoint, &origin) else { return nil }
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        var size = CGSize.zero
+        guard AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+              size.width > 1, size.height > 1 else { return nil }
+        return NSRect(origin: origin, size: size)
     }
 
     private static func resolve(itemPath: String) -> NSMenuItem? {
@@ -232,6 +299,10 @@ enum MenuTrack {
             // is its text even when a capture misses it.
             "hover_item": hoverTitle,
             "help_tag": hover?.toolTip ?? "",
+            // Where the pointer move was aimed (Quartz) and how it was read:
+            // "ax" is the open item's own frame, "anchor" the popUp fallback.
+            "hover_point": hoverPointText,
+            "hover_point_source": hoverPointSource,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: report,
                                                   options: [.prettyPrinted, .sortedKeys]) {

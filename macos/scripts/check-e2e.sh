@@ -9548,19 +9548,26 @@ PY
     # real key to reach its menus. An automatic Dock shim no longer activates
     # itself (DockApps.open), but a launch can still land during a raise; a
     # person's next click would give the front back, so the check raises the
-    # window again (setup, never a step proved by the ids below).
+    # window again (setup, never a step proved by the ids below). `want` is a
+    # title prefix: once the app has two windows the key one reads
+    # "Chrome — Docs (FakePhone)" and "Chrome" names the app, not one window.
     focus_app() {
-        local pkg="$1" want="$2" i=0
+        local pkg="$1" want="$2" i=0 title
         [ "$VISIBLE" = 1 ] || return 0
         while [ "$i" -lt 20 ]; do
             control open --open "$pkg" >/dev/null 2>&1 || true
             sleep 0.5
-            if [ "$(front_title)" = "$want" ]; then
-                # A shim finishing its launch can activate itself a moment
-                # later; the window must still be front after that.
-                sleep 1.5
-                [ "$(front_title)" = "$want" ] && return 0
-            fi
+            title="$(front_title)"
+            case "$title" in
+                "$want"*)
+                    # A shim finishing its launch can activate itself a moment
+                    # later; the window must still be front after that.
+                    sleep 1.5
+                    case "$(front_title)" in
+                        "$want"*) return 0 ;;
+                    esac
+                    ;;
+            esac
             i=$((i + 1))
         done
         bad "MULTIWIN focus: $pkg never came front ('$(front_title)')"
@@ -9745,28 +9752,44 @@ PY
     if [ "$VISIBLE" = 1 ]; then
         # 3: the shim's own menu, the New + windows list a Dock right click
         # shows (the Dock owns that click; the shim pops the same buildMenu).
-        # The shim's own 10 s cap closes it; the check waits for it to be gone
-        # before the next step opens the Deck's.
-        printf '5' > "$ctl/dockmenu-com.android.chrome-show"
-        sleep 1.5
+        # The shim polls its debug directory on its own timer, so wait for its
+        # menu window to appear instead of shooting after a fixed sleep (boot
+        # 5's shot was an empty screen). The shim's own 10 s cap closes it.
+        local popups
+        popups="$(popup_windows)"
+        printf '8' > "$ctl/dockmenu-com.android.chrome-show"
+        wait_until 8 eval '[ "$(popup_windows)" -gt '"$popups"' ]' \
+            && ok "[WIN-26] the Dock shim's own menu opened for its shot" \
+            || bad "MULTIWIN the shim's menu never appeared for its shot"
         shot 3-dock-shim-menu
         wait_until 12 eval '[ "$(popup_windows)" -eq 0 ]' \
             || bad "MULTIWIN the shim's menu stayed open after its cap"
-        focus_app com.android.chrome "Chrome (FakePhone)" || true
+        focus_app com.android.chrome "Chrome" || true
     else
         skip "MULTIWIN the Dock shim's menu shot" "the Dock owns its icon's click; the rows are the dump above and K2 AppWindowMenuTests"
     fi
-    control windowmenu "$WORK/wm-deck.json" com.android.chrome >/dev/null 2>&1
-    python3 - "$WORK/wm-deck.json" <<'PY' && ok "[WIN-26] the Deck cell's rows are the same New + windows list" \
-        || bad "[WIN-26] the Deck cell's rows differ from the shim's menu"
+    # The live Deck list and the shim's own built menu are one rule read at the
+    # same moment: the raise above refreshes the shim's menu (windowSetChanged),
+    # so the comparison must read the shim's dump again, not a copy taken
+    # before the shot. With two windows the front one decides the order, and
+    # the old fixed titles assumed which window that was.
+    deck_matches_shim() {
+        control windowmenu "$WORK/wm-deck.json" com.android.chrome >/dev/null 2>&1 || return 1
+        python3 - "$ctl/dockmenu-com.android.chrome.json" "$WORK/wm-deck.json" <<'PY'
 import json, sys
-rows = json.load(open(sys.argv[1]))
-titles = [r["title"] for r in rows]
-if titles != ["New Chrome Window", "Chrome — Mail", "Chrome — Docs"]:
-    print("titles:", titles); sys.exit(1)
-if [r["checked"] for r in rows[1:]] != [True, False]:
-    print("checked:", [r["checked"] for r in rows[1:]]); sys.exit(1)
+shim = json.load(open(sys.argv[1]))
+deck = json.load(open(sys.argv[2]))
+def rows(items):
+    return [(i["title"], i["enabled"], i["checked"]) for i in items if not i.get("separator")]
+if rows(shim) != rows(deck):
+    print("shim:", rows(shim)); print("deck:", rows(deck)); sys.exit(1)
+if len(rows(deck)) != 3:
+    print("rows:", [r[0] for r in rows(deck)]); sys.exit(1)
 PY
+    }
+    wait_until 10 deck_matches_shim \
+        && ok "[WIN-26] the Deck cell's rows are the same New + windows list, front one checked" \
+        || bad "[WIN-26] the Deck cell's rows differ from the shim's menu"
     if [ "$VISIBLE" = 1 ]; then
         # The cell's own menu: the Deck in front, then a real pointer's
         # secondary click at the cell's place. A popup menu is a window of its

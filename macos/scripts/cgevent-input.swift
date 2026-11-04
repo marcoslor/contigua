@@ -381,8 +381,16 @@ case "titles":
     }
 case "all":
     // Debug aid: every on-screen window with owner, pid, layer and bounds.
+    // Bounds are printed as one "{{x, y}, {w, h}}" line (a CGWindowBounds
+    // dictionary's own description spans lines, which a check's parser cannot
+    // read): the menu shot's help-tag probe asks for the new window's bounds.
     for entry in (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [] {
-        print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(entry[kCGWindowBounds as String] ?? "?")")
+        var bounds = "?"
+        if let dict = entry[kCGWindowBounds as String] as? [String: Any],
+           let rect = CGRect(dictionaryRepresentation: dict as CFDictionary) {
+            bounds = "{{\(Int(rect.origin.x)), \(Int(rect.origin.y))}, {\(Int(rect.width)), \(Int(rect.height))}}"
+        }
+        print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(bounds)")
     }
 case "moveat", "clickat", "rclickat", "dragat":
     // Absolute Quartz points, for a window the CG list cannot see (the

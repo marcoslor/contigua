@@ -315,10 +315,15 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(close, forMode: .common)
         RunLoop.main.add(close, forMode: .eventTracking)
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let screen = NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         NSApp.activate(ignoringOtherApps: true)
+        // The menu's top-left goes at the middle of the screen: the old point
+        // sat 120 pt from the right edge, off it on a 1024 pt screen, and the
+        // menu never appeared in the VM's shot (round 5, boot 5).
         menu.popUp(positioning: nil,
-                   at: NSPoint(x: screen.maxX - 120, y: screen.minY + 120), in: nil)
+                   at: NSPoint(x: screen.midX, y: screen.midY), in: nil)
     }
 
     private func pollPress() {
