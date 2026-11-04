@@ -34,6 +34,8 @@ enum MenuDump {
         var submenu: [Item]?
         /// AppKit's hidden flag: an item the menu keeps but does not show.
         var hidden: Bool = false
+        /// Whether a hidden item keeps its key equivalent (the ⌃⌘F alternate).
+        var allowsKeyWhenHidden: Bool = false
         /// The item's help tag (a disabled New Window item's sentence, WIN-27).
         var toolTip: String?
         /// The selector the item sends, named: an item with no action cannot be
@@ -59,6 +61,7 @@ enum MenuDump {
                     targetClass: menuItem.target.map { String(describing: type(of: $0)) },
                     submenu: menuItem.submenu.map(snapshot),
                     hidden: menuItem.isHidden,
+                    allowsKeyWhenHidden: menuItem.allowsKeyEquivalentWhenHidden,
                     toolTip: menuItem.toolTip,
                     action: menuItem.action.map(NSStringFromSelector))
     }

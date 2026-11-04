@@ -3288,6 +3288,11 @@ final class ConnectionController {
             windows.resetForNextCheck(forgetPrefs: arguments == ["prefs"])
             audio.statsFile = nil
             return nil
+        case "activate":
+            // Setup for a real-key check: bring the app front without touching
+            // its windows, so a CGEvents key reaches its menu equivalents.
+            BackgroundMode.activateApp()
+            return nil
         case "open":
             guard link.isOnline else { return "not online" }
             let check = LaunchOptions.parse(["PocketDeck"] + arguments)

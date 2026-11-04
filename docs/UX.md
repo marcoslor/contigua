@@ -316,7 +316,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘[ | Back | Navigate |
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |
-| ⌃⌘F | Enter / Exit Full Screen (the system's own) | View |
+| ⌃⌘F | Enter / Exit Full Screen (one hidden View item; fn‑F is the shown system shortcut) | View |
 | ⌘N | New <App> Window: one more window of the key window's app | File |
 | ⌘` | Next Window: the next window of the key window's app, wrapping | Window |
 | ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |

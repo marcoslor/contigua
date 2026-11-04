@@ -292,6 +292,18 @@ struct AppCommands: Commands {
                 Label("Density", systemImage: "textformat.size")
             }
             .disabled(!menu.hasStream || menu.densityPackage == nil)
+            // ⌃⌘F is the system's other full-screen shortcut. AppKit's own View
+            // item shows only fn-F and does not take ⌃⌘F in this app, so the
+            // key lives on this item; MenuMarks hides it and lets it keep its
+            // key, and the person sees only macOS's item (MENU-4, MENU-8).
+            Button {
+                guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+                      FullScreenMenu.allowsFullScreen(window) else { return }
+                window.toggleFullScreen(nil)
+            } label: {
+                Label("Enter Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .keyboardShortcut("f", modifiers: [.control, .command])
         }
         // Phone ▸ the phone's own controls. The state and the actions are the
         // menu-bar panel's and the Deck popover's (PhonePanel.swift), so one

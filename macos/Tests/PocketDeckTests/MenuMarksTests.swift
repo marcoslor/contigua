@@ -154,7 +154,8 @@ final class MenuMarksTests: XCTestCase {
     func testTheSystemFullScreenItemsGetNoEdits() {
         let view = [MenuMarks.Item(title: "Find Apps"),
                     MenuMarks.Item(title: "", isSeparator: true),
-                    MenuMarks.Item(title: "Enter Full Screen")]
+                    MenuMarks.Item(title: "Enter Full Screen", keyEquivalent: "f",
+                                   modifiers: [.function])]
         XCTAssertEqual(MenuMarks.edits(menu: "View", items: view, state: state()), [])
 
         let window = [MenuMarks.Item(title: "Minimize"),
@@ -189,6 +190,15 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(edits(key), launch)
         XCTAssertEqual(Set(launch.map { String(describing: $0) }).count, launch.count,
                        "no item is written twice")
+    }
+
+    /// AppKit's View item carries only fn-F here; the app's ⌃⌘F lives on its
+    /// own View item, hidden but allowed to take the key (MENU-8).
+    func testTheFullScreenAlternateIsHiddenWithItsKey() {
+        let items = [MenuMarks.Item(title: "Enter Full Screen", keyEquivalent: "f",
+                                    modifiers: [.control, .command])]
+        XCTAssertEqual(MenuMarks.edits(menu: "View", items: items, state: state()),
+                       [.hide])
     }
 
     // MARK: Applying
@@ -227,6 +237,9 @@ final class MenuMarksTests: XCTestCase {
         let densityItem = NSMenuItem(title: "Density", action: nil, keyEquivalent: "")
         densityItem.submenu = density
         view.addItem(densityItem)
+        let alternate = NSMenuItem(title: "Enter Full Screen", action: nil, keyEquivalent: "f")
+        alternate.keyEquivalentModifierMask = [.control, .command]
+        view.addItem(alternate)
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         viewItem.submenu = view
         main.addItem(viewItem)
@@ -254,6 +267,10 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on)
         XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
         XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
+        XCTAssertTrue(alternate.isHidden)
+        XCTAssertTrue(alternate.allowsKeyEquivalentWhenHidden)
+        XCTAssertEqual(alternate.keyEquivalent, "f")
+        XCTAssertEqual(alternate.keyEquivalentModifierMask, [.control, .command])
         // The system's item keeps its own title and enablement (MENU-4).
         XCTAssertEqual(systemFullScreen.title, "Enter Full Screen")
         XCTAssertFalse(systemFullScreen.isEnabled)
