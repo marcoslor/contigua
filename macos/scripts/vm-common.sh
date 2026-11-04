@@ -149,6 +149,20 @@ rsync_from_guest() {
     rsync -a -e "$RSYNC_SSH" "$@" "$VM_USER@$VM_IP:$src" "$dst"
 }
 
+# vm_copy_shots SRC DEST — copy a run's shots and their sidecar reports out of
+# the boot's work dir, so the next boot's `rm -rf` of that dir cannot lose
+# them (round 5's dark set went that way). DEST is created and merged into,
+# never removed: one boot's copy outlives every later boot's. Prints the
+# count, so the log says whether the copy happened.
+vm_copy_shots() {
+    local src="$1" dest="$2" files
+    [ -d "$src" ] || return 0
+    mkdir -p "$dest" || { say "shot dir: cannot create $dest"; return 1; }
+    files="$(ls -1 "$src" 2>/dev/null | wc -l | tr -d ' ')"
+    cp -R "$src/." "$dest/" || { say "shot copy failed: $src -> $dest"; return 1; }
+    say "shots copied: $files files -> $dest"
+}
+
 # vm_password_ssh <command...> — first contact with the stock admin/admin
 # account (before the ssh key is installed). ssh only calls askpass when there
 # is no terminal; SSH_ASKPASS_REQUIRE=force makes it regardless.

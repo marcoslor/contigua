@@ -23,6 +23,13 @@
 # macos/build/vm-e2e/<list>/ (run.log, work/ for a single check; checks/<name>/
 # run.log + work/ for a list). Exit code is the check's, or the number of
 # failed checks for a list (0 when all passed).
+#
+# A visible run's review shots (work/shots/*.png and their .json reports) are
+# copied out to PD_VM_SHOT_DIR/<appearance>/ while the heavy lock is still
+# held, before the next boot's `rm -rf` of the output dir: a lost work dir must
+# never lose the shots again. PD_VM_SHOT_DIR defaults to
+# $ROOT/.agent/mw-mac/shots/r5b; the destination is merged into, never
+# removed, so no boot deletes an earlier boot's copy.
 set -uo pipefail
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
@@ -57,7 +64,7 @@ done
 # One appearance per boot: a mid-run appearance flip made round 3's shots come
 # out with the previous look, and a boot is the expensive part.
 case "${PD_E2E_SHOT_APPEARANCE:-dark}" in
-    dark|light) ;;
+    dark|light) SHOT_APPEARANCE="${PD_E2E_SHOT_APPEARANCE:-dark}" ;;
     *) say "PD_E2E_SHOT_APPEARANCE must be dark or light (got '${PD_E2E_SHOT_APPEARANCE:-}')"; exit 2 ;;
 esac
 
@@ -210,6 +217,22 @@ fi
 if ssh_guest "test -f $art_guest/session.log" 2>/dev/null; then
     rsync_from_guest "$art_guest/session.log" "$OUT/session.log" || say "session log copy failed"
 fi
+
+# The review shots and their sidecar reports leave the work dir here, still
+# inside the heavy lock: this is the last moment before the next boot's
+# `rm -rf "$OUT"` can lose them (round 5). One folder per appearance, and the
+# helper merges instead of replacing, so boot 9 cannot delete boot 8's set.
+shot_root="${PD_VM_SHOT_DIR:-$ROOT/.agent/mw-mac/shots/r5b}"
+shot_dest="$shot_root/$SHOT_APPEARANCE"
+shot_rc=0
+if [ "${#CHECKS[@]}" = 1 ]; then
+    vm_copy_shots "$OUT/work/shots" "$shot_dest" || shot_rc=1
+else
+    for c in "${CHECKS[@]}"; do
+        vm_copy_shots "$OUT/checks/$c/work/shots" "$shot_dest/$c" || shot_rc=1
+    done
+fi
+[ "$shot_rc" = 0 ] || { say "FAIL the review shots did not leave the work dir"; [ "$rc" = 0 ] && rc=3; }
 
 vm_stop
 say ""
