@@ -92,6 +92,10 @@ final class VirtualDisplay {
     /// window server composites; nothing in the app or the checks needs it.
     static let backingScale: UInt = 1
 
+    /// The profile whose identity a test run borrows. `pd-vdisplay.swift` has
+    /// the same literal (it cannot import this module).
+    static let testIdentityProfile = "e2e"
+
     /// A display of this size at its bottom-right corner. nil (and a log line)
     /// when this macOS refuses the API.
     @discardableResult
@@ -103,6 +107,16 @@ final class VirtualDisplay {
             hash = hash &* 0x0100_0193
         }
         return hash == 0 ? 1 : hash
+    }
+
+    /// The serial of the display a launch creates. `--background` is the e2e
+    /// quiet flag (BackgroundMode.swift, refused with the default profile): a
+    /// test run draws on the one test identity whatever its profile, so macOS
+    /// keeps one colour profile and one arrangement instead of one per worker
+    /// profile (ISS-28). Without that flag — the person's app — the display
+    /// keeps the profile's own identity.
+    static func displaySerialNumber(for options: LaunchOptions) -> UInt32 {
+        serialNumber(profile: options.background ? testIdentityProfile : options.profileName)
     }
 
     @MainActor
@@ -130,11 +144,12 @@ final class VirtualDisplay {
         descriptor.setValue(NSValue(size: NSSize(width: 340, height: 212)), forKey: "sizeInMillimeters")
         descriptor.setValue(vendorID, forKey: "vendorID")
         descriptor.setValue(productID, forKey: "productID")
-        // One stable identity per profile: macOS keeps a colour profile and an
+        // One identity for every test run: macOS keeps a colour profile and an
         // arrangement entry for every display identity it has seen, so a new
-        // serial per launch piled up hundreds of ghost displays and kept
-        // colorsync and the window server busy.
-        descriptor.setValue(serialNumber(profile: AppEnvironment.shared.options.profileName), forKey: "serialNum")
+        // serial per profile piled up hundreds of ghost displays and kept
+        // colorsync and the window server busy (ISS-28). displaySerialNumber
+        // keeps the profile's own serial outside a test run.
+        descriptor.setValue(displaySerialNumber(for: AppEnvironment.shared.options), forKey: "serialNum")
         descriptor.setValue(DispatchQueue.main, forKey: "queue")
         // The descriptor is read by init, so the display is made after it is filled in.
         guard let handle = makeDisplay(descriptor) else {

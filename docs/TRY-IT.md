@@ -125,11 +125,13 @@ window server print `SKIP … (needs real input; PD_E2E_VISIBLE=1 runs it)`.
 `PD_E2E_VISIBLE=1` runs everything visibly, as a normal foreground app with real
 pointer events (for debugging; don't type meanwhile).
 
-Each virtual display macOS sees also leaves a ColorSync display profile behind,
-one per run, and nothing removes it. `macos/scripts/clean-ghost-displays.sh`
-lists them and, with `--apply` (as an administrator: the folder is root-owned),
-deletes only files named after the rig's displays whose display is not online
-now; every other profile is left alone.
+A test display has one fixed identity whatever `PD_E2E_PROFILE` says, so a
+run adds no new display to macOS after the first one it has seen
+(`docs/design/e2e-rig.md`). `macos/scripts/clean-ghost-displays.sh` lists the
+ColorSync profiles left by older per-profile displays and, with `--apply` (as
+an administrator: the folder is root-owned), deletes only files named after the
+rig's displays whose display is not online now; every other profile is left
+alone.
 
 ## Running the suite in a VM
 
