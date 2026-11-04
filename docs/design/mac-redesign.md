@@ -294,22 +294,21 @@ toolbar item group:
 - **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
   SwiftUI rebuilding the bar — which it does on activation — cannot drop one. Nothing is inserted into a SwiftUI menu
   with AppKit: an inserted item is gone on the next rebuild, which is how v104 lost *Immersive* and v107 lost all three
-  View items. The two things the app does not draw are handled without injection: AppKit's automatic *Enter Full
-  Screen* in any menu titled View is off through the registered `NSFullScreenMenuItemEverywhere` default, set before
-  the bar is built, so Window's ⌃⌘F item is the only one; and `MenuCleanup` only *removes* what the frameworks add:
-  AppKit's own *Send … Feedback to Apple* item in Help (the design keeps Help empty), every separator in Help, and a
-  separator that directly follows another (SwiftUI emits one on each side of Window's Enter Full Screen group, which
-  sits between two of its own groups). It runs when the bar changes (debounced, so never on a menu SwiftUI is still
+  View items. The thing the app does not draw is handled without injection: AppKit's own *Enter Full Screen* is last
+  in View, after a separator, and follows the key window itself — the Phone Mirror's `.fullScreenNone` disables it —
+  just as in Apple's apps. `MenuCleanup` only *removes* what the frameworks add: AppKit's own *Send … Feedback to
+  Apple* item in Help (the design keeps Help empty), every separator in Help, and a separator that directly follows
+  another (SwiftUI emits one at a group's edge). It runs when the bar changes (debounced, so never on a menu SwiftUI is still
   building) and at once when a menu opens; it never removes a separator at a menu's edge and never adds, moves or
   retitles an item.
   *PocketDeck* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
-  *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density ›) ·
+  *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density › · ── · Enter Full Screen fn‑F) ·
   *Phone* (Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
   Ringing · ── · Install APK…) ·
   *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
-  *Window* (Minimize ⌘M · Zoom · Enter Full Screen ⌃⌘F · Bring All to Front · the window list) ·
+  *Window* (Minimize ⌘M · Zoom · the system's window group · Bring All to Front · the window list) ·
   *Help* (empty: there is no help book and no public issue tracker, so no dead item).
 - **The Phone menu is the panel's controls**: it builds from the same `PhoneControlsState` and `PhoneControlsActions`
   the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Move to Mac*,
@@ -327,14 +326,13 @@ toolbar item group:
 - **View ▸ Density** names the Settings default in its first item — *Default (100%)* — then lists only the other
   percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
-- **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the Phone Mirror, which opts out of native
-  full screen because the mirror would be letterboxed.
+- **Enter Full Screen** is the system's own item, last in View with fn‑F; its title and enablement follow the key
+  window, and the Phone Mirror's `.fullScreenNone` disables it because the mirror would be letterboxed.
 - **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
   state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
   drop one; `MenuMarks` (MenuMarks.swift) corrects the few values that follow the running window whenever a menu
   starts tracking: the Framed/Immersive mark, Hide Controls' enablement and the reveal choice inside it, Show
-  Touches, Live Text, Density's marks and the Default title, and the Window item's "Enter/Exit Full Screen" title and
-  enablement. It only writes values onto items SwiftUI already built — nothing is added, removed or replaced — and
+  Touches, Live Text, and Density's marks and the Default title. It only writes values onto items SwiftUI already built — nothing is added, removed or replaced — and
   its rules are a pure function over a menu snapshot and `StreamMenuState`, unit-tested in K2. A rebuild can reset a
   mark to its launch value at worst; the next open corrects it.
 
@@ -439,7 +437,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 
 | Where | Keys |
 |---|---|
-| Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone Mirror · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
+| Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone Mirror · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · fn‑F / ⌃⌘F full screen (the system's) |
 | Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ⌘+/⌘−/⌘0 zoom the grid (75/100/125/150 %) · ↩ open selected / first match · Esc clears search, then does nothing |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
