@@ -90,7 +90,26 @@ The person reports that a DeX session doesn't show the fade. With DeX on a cable
      - One UI may ignore this group as it ignores `OWN_DISPLAY_GROUP`;
      - a virtual device needs a companion-device association, which is a visible, lasting change on the phone and needs the person's OK;
      - a virtual device has its own policies for activities, input, clipboard and audio, which touch much of the stream path.
-   - **Next:** a spike on the emulator, then one on the real phone.
+   - **Probe on the real phone: done, 2026-11-04 (`spike/vd-probe`, `dev.pocketdeck.debug.DeviceGroupProbe`). It works.**
+     - The shell user already held `CREATE_VIRTUAL_DEVICE` by role and owned an app-streaming companion association, so the probe reused it and changed nothing on the phone. It ran as the shell user (`su 2000`), and the device was created through the raw `virtualdevice` binder.
+     - Groups, one 64×64 display per variant:
+       - a plain display with today's flags (`0x7dcb`), the control: group **0**;
+       - a device display with today's flags: group **0**;
+       - today's flags plus `DEVICE_DISPLAY_GROUP` (`0xfdcb`): still group **0**. `OWN_DISPLAY_GROUP` sends it back to the panel's group;
+       - today's flags **without** `OWN_DISPLAY_GROUP`, plus `DEVICE_DISPLAY_GROUP` (`0xf5cb`): group **5**;
+       - `OWN_CONTENT_ONLY | DEVICE_DISPLAY_GROUP` only: group **6**.
+     - The `0xf5cb` display kept every other flag PocketDeck needs (`TRUSTED`, `ALWAYS_UNLOCKED`, `TOUCH_FEEDBACK_DISABLED`, `OWN_FOCUS`; info flags `0x4e88`).
+     - **Through a lock and a wake it stayed ON.** A 60 s hold of the `0xf5cb` display, in its own group, read `state=ON` the whole time. Meanwhile the panel went off and on three times (the phone's `screen_toggled` events at 13:47:44, :49 and :55 match the probe's lines), and a real power-button sleep followed (`power_sleep_requested` at 13:48:00). A display made during that sleep came up ON at once.
+     - Cleanup: `Number of active virtual devices: 0` and no probe display left, after every run.
+   - **So option 1 can remove the fade at its root.** The window's display leaves the panel's group, the phone can really sleep, a wake press is a real wake, and the dark-panel hold (and with it ISS-24's two-press wake) isn't needed.
+   - **Open before a move:**
+     - launching apps on a device display (in October, on AOSP, `am start --display` was refused there and `IVirtualDevice.launchPendingIntent` worked);
+     - input (inject as today, or the device's own virtual touchscreen and keyboard);
+     - the device's IME, clipboard, audio and recents policies. A per-device clipboard would break paste (ISS-1);
+     - who owns the association: reuse the shell's, or create PocketDeck's own, which is a lasting change that needs the person's OK;
+     - and how this behaves on a phone where the service runs as the shell user, not with root privileges.
+
+     **Next:** a spike on the phone, one real window on a device display, before any product change.
 2. **Hide it in the stream.**
    - Hold the last good picture from the press until the app has redrawn after the hand-back.
    - The press is known 12–14 ms after it happens, and the fade's first frame comes 37–99 ms after it, so the trigger is in time.
