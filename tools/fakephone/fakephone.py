@@ -1030,6 +1030,16 @@ class EventLog(object):
             event["code"] = code
         self._emit(event)
 
+    def task_report(self, stream, task_id):
+        """`window.task` went out: the app started a task of its own (WIN-44)."""
+        self._emit({"ev": "window", "kind": "task.report", "stream": stream,
+                    "taskId": task_id, "ts": time.time()})
+
+    def adopt(self, stream, task_id):
+        """`window.adopt` was answered with `started: "moved"` (WIN-46)."""
+        self._emit({"ev": "window", "kind": "adopt", "stream": stream,
+                    "taskId": task_id, "ts": time.time()})
+
     def task_continue(self, stream, mode, started):
         self._emit({"ev": "task.continue", "stream": stream, "mode": mode,
                     "started": started, "ts": time.time()})
@@ -2197,6 +2207,9 @@ class Session(object):
         # --dnd-person-after arms once per session (see _arm_person_dnd).
         self._person_dnd_armed = False
         self.windows = {}
+        # WIN-44: the task id a `window.task` named, and the stream it came
+        # from, so an adopt can answer and a move-to-phone can close it.
+        self._report_source = None
         self._unknown_types = set()
         self.audio = AudioTone(phone)
         self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
@@ -2879,6 +2892,7 @@ class Session(object):
             "apps.list": self._on_apps_list,
             "apps.icon": self._on_apps_icon,
             "window.open": self._on_window_open,
+            "window.adopt": self._on_window_adopt,
             "link.open": self._on_link_open,
             "window.resize": self._on_window_resize,
             "window.close": self._on_window_close,
@@ -4439,6 +4453,14 @@ class Session(object):
         window = WindowStream(self.phone, stream_id, w, h, dpi, mode,
                               pkg=msg.get("pkg"), activity=msg.get("activity"))
         self.windows[stream_id] = window
+        self.phone.known_tasks.add(window.task_id)
+        if (mode == "app" and self.phone.args.report_task_after > 0
+                and not self.phone.report_task_done):
+            # One report per fake phone process, so a check can time it against
+            # the windows it opened first (WIN-44).
+            self.phone.report_task_done = True
+            threading.Thread(target=self._report_task_later, args=(window,),
+                             daemon=True).start()
         self._send({"t": "window.opened", "stream": stream_id,
                     "displayId": window.display_id, "w": window.w, "h": window.h,
                     "taskId": window.task_id})
@@ -4465,6 +4487,79 @@ class Session(object):
             threading.Thread(target=self._screen_off_later, args=(window,), daemon=True).start()
         if mode == "phone" and self.phone.args.secure_after > 0:
             threading.Thread(target=self._secure_later, args=(window,), daemon=True).start()
+
+    def _report_task_later(self, window):
+        """WIN-44: the app started a task of its own. The fake creates a fresh
+        id (not the stream's own) and reports it exactly once."""
+        time.sleep(self.phone.args.report_task_after)
+        if self.windows.get(window.stream_id) is not window:
+            return
+        task_id = self.phone.next_task_id()
+        self.phone.known_tasks.add(task_id)
+        self._report_source = (window.stream_id, window.pkg, "New tab")
+        self._send({"t": "window.task", "stream": window.stream_id,
+                    "taskId": task_id, "pkg": window.pkg, "label": "New tab"})
+        self.phone.events.task_report(window.stream_id, task_id)
+
+    def _on_window_adopt(self, msg):
+        """WIN-46: a window for a task the app started itself."""
+        stream_id = msg.get("stream")
+        task_id = msg.get("taskId")
+        pkg = msg.get("pkg")
+        if stream_id is None or task_id is None or not pkg:
+            self._send_error("cannot_adopt", "window.adopt needs stream, taskId and pkg", stream_id)
+            return
+        if stream_id in self.windows:
+            self._send_error("bad_request", "stream %r already open" % (stream_id,), stream_id)
+            return
+        if self.phone.args.refuse_adopt or not self.phone.task_exists(task_id):
+            sys.stderr.write("fakephone: window.adopt refused (cannot_adopt)\n")
+            self.phone.events.window("refused", stream_id, "cannot_adopt")
+            self._send_error("cannot_adopt", "the task could not be moved", stream_id)
+            return
+        cap = self.phone.args.max_windows
+        app_windows = [w for w in self.windows.values() if w.mode == "app"]
+        if cap is not None and len(app_windows) >= cap:
+            self.phone.events.window("refused", stream_id, "cannot_adopt")
+            self._send_error("cannot_adopt", "the phone is at its window cap", stream_id)
+            return
+        w = msg.get("w", SCREEN_W)
+        h = msg.get("h", SCREEN_H)
+        dpi = msg.get("dpi", SCREEN_DPI)
+        window = WindowStream(self.phone, stream_id, w, h, dpi, "app", pkg=pkg)
+        window.task_id = task_id
+        # The adopted task keeps the label the report named, so its
+        # window.title does not overwrite the Mac's task title with the app's.
+        if self._report_source and self._report_source[2]:
+            window.task_title = self._report_source[2]
+        self.windows[stream_id] = window
+        self._send({"t": "window.opened", "stream": stream_id,
+                    "displayId": window.display_id, "w": window.w, "h": window.h,
+                    "taskId": task_id, "started": "moved"})
+        self._send(window.title_message())
+        self.phone.events.adopt(stream_id, task_id)
+        window.start()
+        if (self.phone.args.moved_to_phone_after > 0 and self._report_source
+                and self._report_source[1] == pkg):
+            threading.Thread(target=self._move_to_phone_later,
+                             args=(self._report_source[0],),
+                             daemon=True).start()
+
+    def _move_to_phone_later(self, source_stream):
+        """WIN-49: the person opened the streamed app on the phone's screen; the
+        same task id changes display and the source stream is left empty."""
+        time.sleep(self.phone.args.moved_to_phone_after)
+        window = self.windows.pop(source_stream, None)
+        if window is None:
+            return
+        if window._resize_timer is not None:
+            window._resize_timer.cancel()
+            window._resize_timer = None
+        window.stop()
+        self.sender.forget_stream(source_stream)
+        self._send({"t": "window.closed", "stream": source_stream,
+                    "reason": "moved_to_phone"})
+        self.phone.events.window("moved_to_phone", source_stream)
 
     def _rotate_later(self, window):
         """The phone turns to landscape: the mirror turns with it (new VIDEO_CONFIG)."""
@@ -4710,6 +4805,10 @@ class FakePhone(object):
     def __init__(self, args):
         self.args = args
         self.name = args.name
+        # WIN-44/WIN-46: the synthetic tasks the fake has opened or reported,
+        # and the one-shot report scheduled by --report-task-after.
+        self.known_tasks = set()
+        self.report_task_done = False
         # The screen as it is turned now (the phone mirror follows it).
         self.screen = (SCREEN_W, SCREEN_H)
         # Display 0's power state (`state.screen`).
@@ -4798,6 +4897,9 @@ class FakePhone(object):
         with self._display_lock:
             self._task_seq += 1
             return 1000 + self._task_seq
+
+    def task_exists(self, task_id):
+        return task_id in self.known_tasks
 
     # The sizes the Mac may ask for (`apps.icon`'s optional px): the phone
     # clamps to what a launcher draws, exactly like the real one.
@@ -5470,6 +5572,16 @@ def build_parser():
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
     p.add_argument("--max-windows", type=int, default=4, metavar="N",
                    help="state.maxWindows: the most app windows at once (WIN-32)")
+    p.add_argument("--report-task-after", type=float, default=0.0, metavar="SECONDS",
+                   dest="report_task_after",
+                   help="once per process, N seconds after the first app window: report a "
+                        "fresh task of that app as window.task (WIN-44)")
+    p.add_argument("--refuse-adopt", action="store_true", dest="refuse_adopt",
+                   help="answer every window.adopt with error cannot_adopt (WIN-46)")
+    p.add_argument("--moved-to-phone-after", type=float, default=0.0, metavar="SECONDS",
+                   dest="moved_to_phone_after",
+                   help="after an adopt of the reported task, close its source stream with "
+                        "window.closed reason=moved_to_phone (WIN-49)")
     p.add_argument("--force-too-many-windows", action="store_true",
                    dest="force_too_many_windows",
                    help="answer every newInstance window.open with too_many_windows, below the cap")
