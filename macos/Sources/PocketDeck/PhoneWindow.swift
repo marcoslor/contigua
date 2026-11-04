@@ -38,6 +38,10 @@ final class PhoneWindowController: StreamWindowController {
         videoView.inputMapper?.isPhoneMode = true
         // The mirror's letterbox is the phone's fixed screen, never a crop.
         videoView.isPhoneMode = true
+        // And its box keeps the fixed 16 px / 2560 rule: the phone picks the
+        // frame from the screen's aspect inside it (MIRROR), so the app
+        // window's exact-pixel rule does not apply to the box (ISS-39).
+        videoView.encoder = nil
         // No full screen for the phone window: a phone mirror filling a whole
         // display is letterboxed or stretched, and the person's report is that
         // it looks bad. Without .fullScreenPrimary (and with .fullScreenNone)
@@ -278,6 +282,14 @@ final class PhoneWindowController: StreamWindowController {
         guard let screen = window.screen ?? NSScreen.main else { return newFrame }
         return PhoneChrome.zoomFrame(phone: phoneScreen, style: style, visible: screen.visibleFrame)
     }
+    /// The mirror's box is its own fixed rule, not the app window's
+    /// exact-pixel one: the phone fits the screen's aspect inside it.
+    override func displayPixels() -> CGSize {
+        guard let window else { return .zero }
+        return VideoSize.displayPixels(bounds: videoBounds(),
+                                       backingScale: Double(window.backingScaleFactor))
+    }
+
     /// dpi = phoneDpi × vdWidth / phoneScreenWidth, so the phone's dp width is
     /// preserved whatever the Mac window size is.
     override func dpi() -> Double {
