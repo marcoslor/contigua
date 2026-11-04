@@ -2963,7 +2963,8 @@ for title, want in WANT.items():
     if menu is None:
         problems.append("no %s menu" % title)
         continue
-    seq = ["—" if item["isSeparator"] else item["title"] for item in menu["submenu"]]
+    seq = ["—" if item["isSeparator"] else item["title"] for item in menu["submenu"]
+           if not item.get("hidden")]
     if title == "File":
         seq = ["—" if row == "—" else ("New … Window" if row.startswith("New ") and row.endswith(" Window") else row)
                for row in seq]
@@ -2972,7 +2973,8 @@ for title, want in WANT.items():
         # design's list is the app's items, and the system item is checked
         # separately as last in View (MENU-4). The separator before it shows
         # in the open menu (the prototype's sheet) but not in this dump.
-        last = menu["submenu"][-1]
+        visible = [i for i in menu["submenu"] if not i.get("hidden")]
+        last = visible[-1]
         if "function" in last["modifiers"] and "control" not in last["modifiers"]:
             seq = seq[:-2] if len(seq) >= 2 and seq[-2] == "—" else seq[:-1]
     if seq != want:
@@ -2987,14 +2989,18 @@ installed = [(i["title"], i.get("targetClass")) for i in walk(root["items"])
              if i["title"] in APP_ITEMS and i.get("targetClass") not in SYSTEM_OWNERS]
 if installed:
     problems.append("items the app installed with AppKit: %r" % (installed,))
-# Full screen is AppKit's own, last in View: the app draws no item for it
-# (MENU-4, MENU-7). AppKit appends its item to the same NSMenu, so the app's
-# old one is identified by its ⌃⌘F, not by the title.
-mine = [i["title"] for i in walk(root["items"])
+# Full screen is AppKit's own, last in View: the app shows no item for it
+# (MENU-4, MENU-7). Its one ⌃⌘F item is hidden and allowed to keep the key
+# (MENU-8); AppKit appends its own fn-F item to the same NSMenu.
+mine = [i for i in walk(root["items"])
         if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"])
         and "control" in i["modifiers"]]
-if mine:
-    problems.append("the app draws a full-screen item with ⌃⌘F: %r" % (mine,))
+shown = [i["title"] for i in mine
+         if not (i.get("hidden") and i.get("allowsKeyWhenHidden"))]
+if shown:
+    problems.append("the app shows a full-screen item with ⌃⌘F: %r" % (shown,))
+if len([i for i in mine if i.get("hidden")]) > 1:
+    problems.append("more than one hidden full-screen alternate")
 if problems:
     print("; ".join(problems)); sys.exit(1)
 PY
@@ -3017,12 +3023,17 @@ def walk(items):
         if item.get("submenu"):
             yield from walk(item["submenu"])
 app_items = list(walk(root.get("items") or []))
-# AppKit appends its own item to the app's NSMenu too; the app's old one is the
-# only one carrying ⌃⌘F (MENU-4).
-mine = [i["title"] for i in app_items
+# AppKit appends its own item to the app's NSMenu too. The app's only own item
+# carries ⌃⌘F and is hidden with its key allowed (MENU-8); anything visible is
+# a leftover (MENU-4, MENU-7).
+mine = [i for i in app_items
         if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and "control" in i["modifiers"]]
-if mine:
-    print("%s: the app draws its own full-screen item %r" % (label, mine)); sys.exit(1)
+shown = [i["title"] for i in mine
+         if not (i.get("hidden") and i.get("allowsKeyWhenHidden"))]
+if shown:
+    print("%s: the app shows its own full-screen item %r" % (label, shown)); sys.exit(1)
+if len([i for i in mine if i.get("hidden")]) > 1:
+    print("%s: more than one hidden full-screen alternate" % label); sys.exit(1)
 bar = root.get("displayed")
 if not bar:
     print("%s: no displayed menu bar" % label); sys.exit(1)
@@ -3097,11 +3108,12 @@ PY
 # menu_window_rect — the open menu's window bounds as "x,y,w,h" for
 # `screencapture -R` (a menu is its own layer-101 window).
 menu_window_rect() {
-    "$CGBIN" all 2>/dev/null | python3 - "$APP_PID" <<'PY'
+    "$CGBIN" all 2>/dev/null | python3 - <<'PY'
 import re, sys
-pid = sys.argv[1]
 for line in sys.stdin:
-    if ("pid=" + pid + " ") not in line or "layer=101" not in line:
+    # The open menu is a layer-101 window. Its owner is the app on most
+    # builds; a menu drawn in another process still has the same layer.
+    if "layer=101" not in line or "owner=Window Server" in line:
         continue
     m = re.search(r"bounds=\{\{(-?[\d.]+), (-?[\d.]+)\}, \{(-?[\d.]+), (-?[\d.]+)\}\}", line)
     if m:
@@ -3119,7 +3131,7 @@ e2e_menu_shot() {
     for attempt in 1 2; do
         control menutrack "$report" "$menu" 4 >/dev/null \
             || { bad "$menu menutrack: $CONTROL_REPLY"; return 1; }
-        sleep 1.3
+        sleep 1.6
         rect="$(menu_window_rect)"
         if [ -n "$rect" ]; then
             screencapture -x -R "$rect" "$file" \
@@ -3131,6 +3143,8 @@ e2e_menu_shot() {
         fi
         wait_until 15 [ -s "$report" ] \
             || { bad "$menu menutrack never reported and closed"; return 1; }
+        wait_until 10 eval '[ "$(popup_windows)" -eq 0 ]' \
+            || { bad "$menu menu was still open before the retry"; return 1; }
         [ "$attempt" = 1 ] && skip "$menu menu shot" "no menu on screen at the shutter; retrying"
     done
     bad "$menu menu shot: no open menu window in two attempts"
@@ -3413,6 +3427,8 @@ PY
         bad "[MENU-7] dump 1: $reason"
     fi
     if [ "$VISIBLE" = 1 ]; then
+        control activate || bad "MENUS activate for the stream shots: $CONTROL_REPLY"
+        sleep 1
         e2e_menu_shot "$WORK/shots/$appearance-view-stream.png" View
         e2e_menu_shot "$WORK/shots/$appearance-window-stream.png" Window
     else
@@ -3496,6 +3512,8 @@ PY
         bad "[MENU-7] dump 8: $reason"
     fi
     if [ "$VISIBLE" = 1 ]; then
+        control activate || bad "MENUS activate for the phone shots: $CONTROL_REPLY"
+        sleep 1
         e2e_menu_shot "$WORK/shots/$appearance-view-phone.png" View
         e2e_menu_shot "$WORK/shots/$appearance-window-phone.png" Window
     else
@@ -3537,9 +3555,10 @@ if "Window Style" in titles:
 # AppKit's own Enter Full Screen (fn-F) is the one full-screen item allowed in
 # View; an app item would carry ⌃⌘F (MENU-4, MENU-7).
 mine = [i["title"] for i in view["submenu"]
-        if "Full Screen" in i["title"] and "control" in i["modifiers"]]
+        if "Full Screen" in i["title"] and "control" in i["modifiers"]
+        and not (i.get("hidden") and i.get("allowsKeyWhenHidden"))]
 if mine:
-    print("an app full-screen item is in View:", mine); sys.exit(1)
+    print("an app full-screen item is shown in View:", mine); sys.exit(1)
 PY
 
     python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
@@ -3654,6 +3673,25 @@ PY
     else
         bad "[MENU-7] dump 1: $reason"
     fi
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-8] ⌃⌘F is a hidden View item that keeps its key; AppKit's fn-F item stays visible and untouched" \
+        || bad "[MENU-8] the ⌃⌘F alternate is missing, shown, or lost its key"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+app = [i for i in view["submenu"]
+       if i["title"] == "Enter Full Screen" and "control" in i["modifiers"]]
+if len(app) != 1:
+    print("⌃⌘F items in View:", app); sys.exit(1)
+item = app[0]
+if not item.get("hidden") or not item.get("allowsKeyWhenHidden"):
+    print("hidden/allowsKeyWhenHidden:", item.get("hidden"), item.get("allowsKeyWhenHidden")); sys.exit(1)
+if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
+    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+system = [i for i in view["submenu"]
+          if i["title"] == "Enter Full Screen" and "control" not in i["modifiers"]]
+if any(i.get("hidden") for i in system):
+    print("the system's fn-F item was hidden"); sys.exit(1)
+PY
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit
     # draws them and are not in this list).
@@ -3735,8 +3773,11 @@ PY
     if [ "$VISIBLE" = "1" ]; then
         # The pair's marks were asserted in the shared block above, which this
         # run executes too; this block adds what needs a real Space and real
-        # input. ⌃⌘F and fn-F are AppKit's shortcuts (MENU-4, MENU-8): each is
-        # pressed through cgevent with an app window key, both ways.
+        # input. The app must be front for a real key to reach its menu
+        # equivalents (setup); the keys are then pressed through cgevent with
+        # an app window key, both ways.
+        control activate || bad "MENUS activate: $CONTROL_REPLY"
+        sleep 1
         if cg_input key --keycode 3 --ctrl --cmd; then
             wait_until 20 chrome_has "fullscreen=yes" \
                 && ok "[MENU-4] ⌃⌘F entered full screen with an app window key ($(chrome_state))" \
@@ -3796,6 +3837,10 @@ PY
         else
             bad "[MENU-7] dump 12: $reason"
         fi
+        # The Deck is the window a person reads these menus over; the app must
+        # be front and the Deck visible after the last stream window closed.
+        control deckfocus grid || bad "MENUS deckfocus for the Deck shots: $CONTROL_REPLY"
+        sleep 1
         e2e_menu_shot "$WORK/shots/$appearance-view-deck.png" View
         e2e_menu_shot "$WORK/shots/$appearance-window-deck.png" Window
         # 13: a stream window open again.

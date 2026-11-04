@@ -327,7 +327,8 @@ toolbar item group:
   percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
 - **Enter Full Screen** is the system's own item, last in View with fn‑F; its title and enablement follow the key
-  window, and the Phone Mirror's `.fullScreenNone` disables it because the mirror would be letterboxed.
+  window, and the Phone Mirror's `.fullScreenNone` disables it because the mirror would be letterboxed. ⌃⌘F stays on
+  one hidden View item that keeps its key while hidden, so the person reads macOS's item alone.
 - **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
   state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
   drop one; `MenuMarks` (MenuMarks.swift) corrects the few values that follow the running window whenever a menu
