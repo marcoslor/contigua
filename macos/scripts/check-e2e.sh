@@ -154,6 +154,7 @@ finish() {
         unregister_share
         unregister_files
         remove_dock_apps
+        sweep_test_registrations
     fi
     stop_watch
     stop_load
@@ -189,6 +190,14 @@ clean() {
     rm -rf "$WORK"
     mkdir -p "$WORK" "$SHOTS"
     clear_profile_state
+}
+
+# sweep_test_registrations — remove the test copies and extensions a run (or a
+# killed run) left in LaunchServices and PlugInKit. The allow-list, the removal
+# and the one count line live in the script (docs/design/e2e-rig.md); it always
+# exits 0, so cleanup can never turn a check's result into a failure.
+sweep_test_registrations() {
+    bash "$MACOS/scripts/sweep-test-registrations.sh" || true
 }
 
 # start_fake [state-file] — same port every time, never mDNS. FAKE_ALLOW_DELAY
@@ -14864,6 +14873,9 @@ elif [ $# -gt 1 ]; then
 fi
 acquire_lock
 wait_for_other_runs
+# Before the build: a killed earlier run's app copy and Share extension leave
+# the person's menus with the first quiet run of this one (docs/design/e2e-rig.md).
+sweep_test_registrations
 pick_run
 mkdir -p "$WORK"
 # The run's screenshots: one directory for the whole run, so a check's shots

@@ -131,7 +131,9 @@ run adds no new display to macOS after the first one it has seen
 ColorSync profiles left by older per-profile displays and, with `--apply` (as
 an administrator: the folder is root-owned), deletes only files named after the
 rig's displays whose display is not online now; every other profile is left
-alone.
+alone. Each run also sweeps the test copies and extensions it registered with
+LaunchServices and PlugInKit, at its start and on its exit; the person's
+`/Applications` copy is outside that allow-list.
 
 ## Running the suite in a VM
 
