@@ -9421,10 +9421,10 @@ check_multiwin() {
     #
     # The capture happens while the menu is confirmed on screen: a hover shot
     # keeps the menu up for 10 s (MenuTrack's maximum) and the check reads the
-    # menu's own layer-101 window right before the shutter and again right after
-    # it. A capture that raced the menu's cap is not a proof, so it is retaken
-    # once, after the first menu has reported and closed. The run logs each
-    # capture's elapsed time against that cap.
+    # menu's own layer-101 window immediately before the shutter. A menu that
+    # is already gone at that point is not a proof, so the shot is retaken once,
+    # after the first menu has reported and closed. The run logs each capture's
+    # elapsed time against that cap.
     menu_shot() {
         local name="$1" menu="$2" hover="${3:-}" report="$WORK/shots/$appearance-$1.json" seconds=4
         local point="$WORK/shots/$appearance-$1.point" attempt opened_at elapsed
@@ -9464,12 +9464,13 @@ check_multiwin() {
                 # windows behind it (round 5, light 7).
                 bad "MULTIWIN shot $name: no menu on screen at +${elapsed}s of its ${seconds}s cap"
             else
+                # The menu is on screen at the shutter: that is the capture's
+                # precondition. (A probe after the shutter is not: boot 8's
+                # dark-6 and dark-7 images show the menu and the tag although
+                # the menu was gone by the time screencapture returned.)
                 shot "$name"
-                if [ "$(open_menu_windows)" -gt 0 ]; then
-                    say "MULTIWIN shot $name: captured at +${elapsed}s of the menu's ${seconds}s cap"
-                    break
-                fi
-                bad "MULTIWIN shot $name: the menu closed during the capture (+${elapsed}s of its ${seconds}s cap)"
+                say "MULTIWIN shot $name: captured at +${elapsed}s of the menu's ${seconds}s cap"
+                break
             fi
             # The retry must not open a second menu over the first: wait for
             # this menu's report (the timer that writes it also cancels
@@ -9799,12 +9800,12 @@ PY
         # 3: the shim's own menu, the New + windows list a Dock right click
         # shows (the Dock owns that click; the shim pops the same buildMenu).
         # The shim polls its debug directory every 0.2 s, so the check waits for
-        # its popup window and captures at once, while the popup is confirmed on
-        # screen on both sides of the shutter and before its 10 s cap (round 5,
-        # light 3 shot an empty screen after a popup that never appeared). The
-        # shim consumes the request file even when it cannot open the menu, so a
-        # miss is retried once with a fresh request, never stacked on a menu
-        # that is still up.
+        # its popup window and captures at once, with the popup confirmed on
+        # screen at the shutter and its 10 s cap still ahead (round 5, light 3
+        # shot an empty screen after a popup that never appeared). The shim
+        # consumes the request file even when it cannot open the menu, so a miss
+        # is retried once with a fresh request, never stacked on a menu that is
+        # still up.
         local base wrote_at elapsed attempt
         base="$(popup_windows)"
         for attempt in 1 2; do
@@ -9817,15 +9818,11 @@ PY
             elapsed=$((SECONDS - wrote_at))
             if [ "$(popup_windows)" -gt "$base" ]; then
                 shot 3-dock-shim-menu
-                if [ "$(popup_windows)" -gt "$base" ]; then
-                    ok "[WIN-26] the Dock shim's own menu opened for its shot"
-                    say "MULTIWIN shot 3-dock-shim-menu: captured at +${elapsed}s of the shim's 10s cap"
-                    break
-                fi
-                bad "MULTIWIN the shim's menu closed during the capture (+${elapsed}s of its 10s cap)"
-            else
-                bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
+                ok "[WIN-26] the Dock shim's own menu opened for its shot"
+                say "MULTIWIN shot 3-dock-shim-menu: captured at +${elapsed}s of the shim's 10s cap"
+                break
             fi
+            bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
             [ "$attempt" = 1 ] || break
             wait_until 10 eval '[ "$(popup_windows)" -le '"$base"' ]' \
                 || { bad "MULTIWIN the shim's menu was still open before the retry"; break; }
