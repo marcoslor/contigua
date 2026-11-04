@@ -7977,13 +7977,17 @@ PY
         || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch (folder $(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1))"; stop_app; stop_fakephone; return 1; }
 
     # -- The listing's weight ------------------------------------------------
+    # 120 s, not 20: the first run killed `ls` at 20 s and recorded 0 names for
+    # a listing that was still enumerating, and a client killed inside a
+    # readdir left Finder's window on that folder empty. The 5 s limit below is
+    # the assertion; this cap only stops a hung mount.
     local bulk="$root/bulk" t0 t1 names listing_ms
     t0="$(now_ms)"
-    run_limited 20 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
+    run_limited 120 ls "$bulk" > "$WORK/bulk-ls.txt" 2>/dev/null || true
     t1="$(now_ms)"
     names="$(wc -l < "$WORK/bulk-ls.txt" | tr -d ' ')"
     listing_ms=$((t1 - t0))
-    step "FILES-THUMBS-SCALE listing: names=$names ms=$listing_ms"
+    say "FILES-THUMBS-SCALE listing: names=$names ms=$listing_ms"
     if [ "${names:-0}" = "3000" ] && [ "$listing_ms" -le 5000 ]; then
         ok "FILES-THUMBS-SCALE [FILES-30] 3,000 names listed in ${listing_ms} ms"
     else
@@ -8060,7 +8064,8 @@ print(count)
 PY
     }
     wait_first_picture() { # <label> <start_ms> <limit_s> -> "ms pixels" or "-1 pixels"
-        local label="$1" start="$2" limit="$3" png="$SHOTS/first-$label.png"
+        local label="$1" start="$2" limit="$3" png
+        png="$SHOTS/first-$label.png"
         local deadline=$((SECONDS + limit)) px=0
         while [ $SECONDS -lt $deadline ]; do
             if finder_shot "$png"; then
@@ -8102,7 +8107,8 @@ PY
         fi
     }
     scroll_picture() { # <label> <events> <limit_s> -> "ms pixels"
-        local label="$1" events="$2" limit="$3" start png="$SHOTS/scroll-$label.png"
+        local label="$1" events="$2" limit="$3" start png
+        png="$SHOTS/scroll-$label.png"
         local before after
         before="$(batch_count 'thumb batch open')"
         start="$(now_ms)"
@@ -8169,7 +8175,7 @@ PY
     done
     cancels="$(batch_count 'thumb batch cancel')"; cancels="${cancels:-0}"
     sizes="$(sed -n 's/.*thumb batch open id=[0-9]* n=\([0-9]*\) .*/n=\1/p' "$WORK/scale-log.txt" | sort | uniq -c | tr '\n' ' ')"
-    step "FILES-THUMBS-SCALE batches: open=$opens cancel=$cancels done=$dones sizes=${sizes:-none}"
+    say "FILES-THUMBS-SCALE batches: open=$opens cancel=$cancels done=$dones sizes=${sizes:-none}"
     if [ "$opens" = "0" ]; then
         say "FILES-THUMBS-SCALE recorded: the build has no batch lines (before run)"
     elif [ "$dones" -ge "$opens" ]; then
