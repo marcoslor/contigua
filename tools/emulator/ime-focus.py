@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """ime-focus: the phone's own screen keeps the top focus and its keyboard.
 
-WIN-51 / ISS-35. One session, one window:
+WIN-51 / ISS-35. One session, two windows. In order:
 
 1. Settings' search field on display 0, keyboard shown (baseline).
 2. A window for the messenger opens and draws; the field is tapped again and
    the keyboard must come back within 2 s with `mTopFocusedDisplayId=0`.
-3. The created display's raw virtual-display flags carry
-   STEAL_TOP_FOCUS_DISABLED (`dumpsys display`), and `dumpsys window` says the
-   display cannot take the top focus when it prints that field.
+3. The window display's own checks: key events and TextRuns text reach an
+   EditText there, the browser's address bar and a page field take typed text,
+   a ⌘V image paste reaches the app, a drop still lands, a field tapped in the
+   window opens no soft keyboard, and the stream keeps drawing with its title.
 
 Every line says a length, an id, a count or a state. No task label, window
 title, typed text or path is printed or written. The shell side owns the boot,
@@ -373,21 +374,42 @@ def ime_log():
             if "ImeTracker" in line or "InputDispatcher" in line]
 
 
+def dispatcher_focus(lines):
+    """The display of the last window the input dispatcher had focused, or None."""
+    focused = None
+    for line in lines:
+        if "FocusedWindows:" in line:
+            focused = None
+            continue
+        m = re.search(r"displayId=(\d+), name=", line)
+        if m:
+            focused = int(m.group(1))
+    return focused
+
+
 def clear_logcat():
     adb("shell", "logcat", "-c")
 
 
 # --- the window's own input ------------------------------------------------
 def start_debug(display, field):
-    clear_logcat()
-    sh("am", "start", "-W", "--display", str(display),
-       "-n", "dev.pocketdeck/.app.PasteDebugActivity", "--es", "field", field)
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        text = sh("logcat", "-d", "-s", "PasteDebug:I")
-        if "ready field=%s" % field in text:
-            return True
-        time.sleep(0.3)
+    component = "dev.pocketdeck/.app.PasteDebugActivity"
+    for attempt in (0, 1):
+        clear_logcat()
+        # CLEAR_TOP: a previous instance of the same activity would otherwise
+        # take the intent as onNewIntent and never run onCreate with the new
+        # field.
+        sh("am", "start", "-W", "--display", str(display), "--activity-clear-top",
+           "-n", component, "--es", "field", field)
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            text = sh("logcat", "-d", "-s", "PasteDebug:I")
+            if "ready field=%s" % field in text:
+                return True
+            time.sleep(0.3)
+        # Finish whatever was there and try once more.
+        adb("shell", "input", "-d", str(display), "keyevent", "4")
+        time.sleep(1.0)
     return False
 
 
@@ -414,10 +436,10 @@ def type_keys(link, stream, text):
         time.sleep(0.04)
 
 
-def send_key(link, stream, code):
-    link.client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, code, 0))
+def send_key(link, stream, code, meta=0):
+    link.client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, code, meta))
     time.sleep(0.04)
-    link.client.send_raw(proto.pack_key(stream, proto.KEY_UP, code, 0))
+    link.client.send_raw(proto.pack_key(stream, proto.KEY_UP, code, meta))
 
 
 def tap_stream(link, stream, nx, ny):
@@ -576,11 +598,13 @@ def run(link, page_port):
         "mCanStealTopFocus=%s" % (" ".join("%d:%s" % (d, v) for d, v in sorted(can.items())) or "absent"),
     ])
     imelog = ime_log()
-    save_lines("imelog-window.txt", imelog[-20:])
+    save_lines("imelog-window.txt", imelog[-24:])
+    dispatcher = dispatcher_focus(imelog)
     detail = ("mTopFocusedDisplayId=%s mCanStealTopFocus=%s mInputShown=%s "
-              "clientDisplay=%s shown_after=%s" %
+              "clientDisplay=%s shown_after=%s dispatcherFocused=%s" %
               (top, " ".join("%d:%s" % (d, v) for d, v in sorted(can.items())) or "absent",
-               shown, client_display, "%.1fs" % shown_at if shown_at is not None else "never"))
+               shown, client_display, "%.1fs" % shown_at if shown_at is not None else "never",
+               dispatcher if dispatcher is not None else "display 0"))
     if top == 0 and shown:
         ok("display-0 keyboard shows with a window open", detail)
     else:
@@ -618,6 +642,148 @@ def run(link, page_port):
     else:
         log("NOTE: this build's `dumpsys window` has no mCanStealTopFocus; "
             "the top focus staying on display 0 is the same fact")
+
+    # 3a. an EditText on the window's display: key events and TextRuns text.
+    if ime_state()[0] is not False:
+        adb("shell", "input", "-d", "0", "keyevent", "4")
+        time.sleep(0.6)
+    if not start_debug(display1, "plain"):
+        fail("an EditText in the window takes typed keys", "PasteDebugActivity did not start")
+    else:
+        type_keys(link, 1, TEST_TEXT)
+        if wait_debug(r"plain text length=%d(?!\d)" % len(TEST_TEXT)):
+            ok("an EditText in the window takes key events",
+               "plain text length=%d" % len(TEST_TEXT))
+        else:
+            fail("an EditText in the window takes key events",
+                 "no length=%d line" % len(TEST_TEXT))
+        send_text(link, 1, TEST_NON_ASCII)
+        if wait_debug(r"plain text length=%d(?!\d)" % (len(TEST_TEXT) + 1)):
+            ok("an EditText in the window takes TextRuns text (clipboard run)",
+               "plain text length=%d" % (len(TEST_TEXT) + 1))
+        else:
+            fail("an EditText in the window takes TextRuns text (clipboard run)",
+                 "stayed at length=%d" % len(TEST_TEXT))
+
+    # 3b. the browser: address bar, then a page field, in a second window.
+    display2 = open_window(link, 2, BROWSER)
+    if not display2:
+        fail("the browser window opens", "no window.opened")
+        return FAILED
+    url = "http://10.0.2.2:%d/" % page_port
+    loaded = None
+    loaded_mark = None
+    taps = 0
+    for attempt in (0, 1):
+        candidates = [0.05, 0.09, 0.13, 0.17, 0.21] if attempt == 0 else [0.25, 0.30]
+        for ny in candidates:
+            mark = len(events_since(0))
+            tap_stream(link, 2, 0.5, ny)
+            taps += 1
+            send_text(link, 2, url)
+            send_key(link, 2, KEYCODE_ENTER)
+            loaded = wait_event(mark, lambda e: e[0] == "loaded", link, 10.0)
+            if loaded:
+                loaded_mark = mark
+                log("BROWSER address bar took the URL at y=%.2f (the page loaded)" % ny)
+                break
+        if loaded:
+            break
+    if loaded:
+        ok("the browser's address bar in the window takes typed text",
+           "the page loaded after the URL")
+    else:
+        fail("the browser's address bar in the window takes typed text",
+             "no page load after %d taps" % taps)
+
+    # The tap on a field in the window must not raise a soft keyboard anywhere.
+    shown, client_display, lines = ime_state()
+    save_lines("ime-window-tap.txt", lines)
+    if loaded and shown is False:
+        ok("a text field tapped in the window opens no soft keyboard",
+           "mInputShown=false clientDisplay=%s" % client_display)
+    else:
+        fail("a text field tapped in the window opens no soft keyboard",
+             "mInputShown=%s clientDisplay=%s focused=%s"
+             % (shown, client_display, bool(loaded)))
+
+    if loaded:
+        tap_stream(link, 2, 0.5, 0.45)   # the page's own field (fixed geometry)
+        # Empty it first: an earlier address-bar attempt may have typed there.
+        send_key(link, 2, 29, 0x1000)    # Ctrl+A
+        send_key(link, 2, 67)            # Delete
+        link.pump(0.4)
+        type_keys(link, 2, TEST_TEXT)
+        event = wait_event(loaded_mark, lambda e: e[0] == "input"
+                           and e[1] == len(TEST_TEXT) and e[2] is False, link, 8.0)
+        if event:
+            ok("the browser's page field in the window takes key events",
+               "field length=%d ascii" % event[1])
+        else:
+            fail("the browser's page field in the window takes key events",
+                 "no report of length=%d" % len(TEST_TEXT))
+        mark2 = len(events_since(0))
+        send_text(link, 2, TEST_NON_ASCII)
+        event = wait_event(mark2, lambda e: e[0] == "input"
+                           and e[1] == len(TEST_TEXT) + 1 and e[2] is True, link, 8.0)
+        if event:
+            ok("the browser's page field in the window takes TextRuns text",
+               "field length=%d non-ascii" % event[1])
+        else:
+            fail("the browser's page field in the window takes TextRuns text",
+                 "no report of length=%d with the non-ascii run" % (len(TEST_TEXT) + 1))
+
+    # 3c. ⌘V with an image into the window: the app must read the clipboard.
+    png = make_png(os.path.join(OUT, "pdime42.png"))
+    if not start_debug(display1, "rich"):
+        fail("an image pasted into the window reaches its app", "no rich field")
+    else:
+        done = clip_image(link, png, 9601)
+        if not done or done.get("ok") is not True:
+            fail("an image pasted into the window reaches its app",
+                 "clip.image.done ok=%s" % (done.get("ok") if done else "none"))
+        else:
+            send_key(link, 1, 279)
+            if wait_debug(r"rich image bytes=%d(?!\d)" % len(png)):
+                ok("an image pasted into the window reaches its app",
+                   "rich image bytes=%d" % len(png))
+            else:
+                fail("an image pasted into the window reaches its app",
+                     "clip.image.done ok=true but the field read nothing")
+
+    # 3d. a drop on the window still lands in its app.
+    result = drop_file(link, png, 9602, MESSENGER)
+    time.sleep(1.5)
+    share = sh("logcat", "-d", "-s", "PocketDeckDrop:I", "PocketDeckSvc:I")
+    share = [line for line in share.splitlines()
+             if "share offered" in line or "share: chooser" in line or "share: target" in line]
+    offered = [line for line in share if "share offered" in line]
+    if result and result.get("ok") is True and offered:
+        ok("a drop onto the window still lands",
+           "drop.result ok=true, %s" % offered[-1].strip())
+    else:
+        fail("a drop onto the window still lands",
+             "drop.result ok=%s code=%s share=%s"
+             % (result.get("ok") if result else "none",
+                result.get("code") if result else "-",
+                "yes" if offered else "none"))
+    for line in share[-2:]:
+        log("DROP %s" % line.strip())
+
+    # 3e. the windows keep drawing, and their titles come from their tasks.
+    link.pump(1.0)
+    title1 = [m for m in link.titles(1)]
+    title2 = [m for m in link.titles(2)]
+    frames1 = link.frames.get(1, 0)
+    frames2 = link.frames.get(2, 0)
+    if frames1 > 0 and frames2 > 0 and title1 and title2:
+        ok("the windows still draw and their titles come from their tasks",
+           "frames=%d,%d titles=%d,%d pkg=%s,%s"
+           % (frames1, frames2, len(title1), len(title2),
+              title1[-1].get("pkg"), title2[-1].get("pkg")))
+    else:
+        fail("the windows still draw and their titles come from their tasks",
+             "frames=%d,%d titles=%d,%d" % (frames1, frames2, len(title1), len(title2)))
 
     # The final state of the phone's keyboard, for the record.
     shown, client_display, lines = ime_state()
