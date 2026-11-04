@@ -172,6 +172,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var closingFromRemote = false
     /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
     private var dwellTimer: Timer?
+    /// Rewrites the chrome state when the picture's own size changes, so the
+    /// e2e's `video=` rect is the settled one, not the pre-answer rectangle.
+    private var videoSizeObserver: NSObjectProtocol?
 
     init(stream: UInt32, contentSize: NSSize, manager: WindowManager, styleKey: String?) {
         self.stream = stream
@@ -199,6 +202,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
         chrome = StreamChromeView(video: videoView, style: style)
         super.init(window: window)
+        // The phone's encoder limits decide how the picture is drawn and what
+        // the window asks for (ISS-39).
+        videoView.encoder = manager.phone?.encoder
+        videoSizeObserver = NotificationCenter.default.addObserver(
+            forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.writeChromeState() }
+        }
         window.delegate = self
         window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
@@ -714,10 +725,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         return style.streamSize(window: chrome.bounds.size, fullScreen: window.styleMask.contains(.fullScreen))
     }
 
-    /// Virtual-display pixels for the video area.
+    /// Virtual-display pixels for the video area: the window's exact backing
+    /// pixels inside the phone's encoder limits (ISS-39).
     func displayPixels() -> CGSize {
         guard let window else { return .zero }
-        return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor))
+        return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor),
+                                       encoder: manager.phone?.encoder)
     }
 
     func dpi() -> Double {
@@ -893,6 +906,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         resizeWork?.cancel()
         settleTimer?.invalidate()
         settleTimer = nil
+        if let videoSizeObserver { NotificationCenter.default.removeObserver(videoSizeObserver) }
+        videoSizeObserver = nil
         manager.noteKeyLost(stream)
         if !closingFromRemote { sendClose() }
         let count = stills

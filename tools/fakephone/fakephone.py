@@ -621,6 +621,76 @@ def render_text_png(text, width, height, fg, bg, scale=None):
     return _png(width, height, canvas)
 
 
+# --- the crispness pattern (ISS-39) ----------------------------------------
+# A still, deterministic picture at the stream's own pixels: 1 px black/white
+# line pairs on both axes and a block of small text at known positions. It is
+# fed to the encoder unchanged, so a lossless PNG + its region map is the
+# ground truth the Mac's drawn pixels are measured against.
+CRISP_TEXT = "PDCRISP42"
+CRISP_REGIONS = {
+    "vertical": (40, 40, 256, 64),
+    "horizontal": (40, 120, 64, 256),
+}
+
+
+def crisp_text_rect(width, height, scale=2):
+    """The text block's rect: 5x7 glyphs, six columns per character."""
+    text_w = max(0, len(CRISP_TEXT) * (GLYPH_W + 1) - 1) * scale
+    text_h = GLYPH_H * scale
+    return (max(0, (width - text_w) // 2), max(0, (height - text_h) // 2), text_w, text_h)
+
+
+def render_crisp_png(width, height):
+    """The crispness pattern and the rects the metric measures.
+
+    White ground, black 1 px line pairs (vertical then horizontal), and the
+    fixed marker text; every position is in the stream's pixels, so the same
+    size always draws the same picture.
+    """
+    white = bytes((255, 255, 255))
+    black = bytes((0, 0, 0))
+    canvas = [bytearray(white * width) for _ in range(height)]
+
+    def column(x, y0, y1):
+        for y in range(max(0, y0), min(height, y1)):
+            row = canvas[y]
+            row[x * 3:x * 3 + 3] = black
+
+    def row_line(y, x0, x1):
+        if not (0 <= y < height):
+            return
+        row = canvas[y]
+        for x in range(max(0, x0), min(width, x1)):
+            row[x * 3:x * 3 + 3] = black
+
+    vx, vy, vw, vh = CRISP_REGIONS["vertical"]
+    for x in range(vx, min(width, vx + vw)):
+        if (x - vx) % 2 == 0:
+            column(x, vy, vy + vh)
+    hx, hy, hw, hh = CRISP_REGIONS["horizontal"]
+    for y in range(hy, min(height, hy + hh)):
+        if (y - hy) % 2 == 0:
+            row_line(y, hx, hx + hw)
+
+    tx, ty, tw, th = crisp_text_rect(width, height)
+    for index, ch in enumerate(CRISP_TEXT):
+        for gy, line in enumerate(FONT.get(ch, FONT[" "])):
+            for gx in range(GLYPH_W):
+                if line[gx] != "1":
+                    continue
+                px = tx + (index * (GLYPH_W + 1) + gx) * 2
+                for dy in range(2):
+                    if ty + gy * 2 + dy >= height:
+                        break
+                    for dx in range(2):
+                        if px + dx < width:
+                            canvas[ty + gy * 2 + dy][(px + dx) * 3:(px + dx) * 3 + 3] = black
+
+    regions = dict(CRISP_REGIONS)
+    regions["text"] = (tx, ty, tw, th)
+    return _png(width, height, canvas), regions
+
+
 # Two flat-only apps (no adaptive layers) draw shaped icons, so a check can
 # tell the two ways a flat icon is drawn (docs/design/dock.md §Icons): an
 # opaque rounded square with a transparent margin, which covers its tile, and
@@ -803,6 +873,15 @@ def round16(value):
     if value < 16:
         return 16
     return value - (value % 16)
+
+
+def align_down(value, align):
+    """An app stream's size: the encoder's own alignment, never under 16 px."""
+    value = int(value)
+    align = max(1, int(align))
+    if value < 16:
+        return 16
+    return value - (value % align)
 
 
 # --- JSON Lines event log --------------------------------------------------
@@ -1848,8 +1927,12 @@ class WindowStream(object):
     def __init__(self, phone, stream_id, w, h, dpi, mode, pkg=None, activity=None):
         self.phone = phone
         self.stream_id = stream_id
-        self.w = round16(w)
-        self.h = round16(h)
+        # An app stream is snapped to the encoder's own alignment (ISS-39): the
+        # Mac asks for the window's exact pixels and the phone keeps all of
+        # them. The mirror keeps its screen-aspect rule.
+        self.align = phone.encoder_align if mode == "app" else 16
+        self.w = align_down(w, self.align)
+        self.h = align_down(h, self.align)
         self.dpi = dpi
         self.mode = mode
         self.pkg = pkg
@@ -1921,14 +2004,24 @@ class WindowStream(object):
         return "testsrc2=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
 
     def _cmd(self):
-        # -re paces the lavfi source to real time; without it ffmpeg encodes as
-        # fast as the CPU allows (thousands of fps for cheap patterns).
-        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
-               "-f", "lavfi", "-i", self._source()]
+        # -re paces the source to real time; without it ffmpeg encodes as fast
+        # as the CPU allows (thousands of fps for cheap patterns).
+        crisp = self.phone.args.crisp_pattern and self.mode == "app" and not self._black
+        if crisp:
+            # The pattern is the whole picture: no label or word may sit on top
+            # of it, or the lossless source would not be what was encoded.
+            path = self.phone.crisp_assets(self.w, self.h)
+            cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
+                   "-loop", "1", "-framerate", str(FRAME_RATE), "-i", path]
+        else:
+            cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
+                   "-f", "lavfi", "-i", self._source()]
         # Still overlays, in order: the stream id/size label and, with
         # --text-frame, a large word on a white band for Live Text's analyser.
         overlays = []
-        if self.phone.label_dir and self.h >= 48:
+        if crisp:
+            pass
+        elif self.phone.label_dir and self.h >= 48:
             text = "stream=%d %dx%d" % (self.stream_id, self.w, self.h)
             path = os.path.join(self.phone.label_dir,
                                 "stream-%d-%dx%d.png" % (self.stream_id, self.w, self.h))
@@ -1937,7 +2030,7 @@ class WindowStream(object):
                     fp.write(render_text_png(text, 8 + len(text) * 12, 18,
                                              (255, 255, 255), (16, 16, 16), scale=2))
             overlays.append((path, "8:8"))
-        word = getattr(self.phone.args, "text_frame", None)
+        word = None if crisp else getattr(self.phone.args, "text_frame", None)
         if word:
             digest = hashlib.md5(word.encode("utf-8")).hexdigest()[:8]
             path = os.path.join(self.phone.label_dir or tempfile.gettempdir(),
@@ -2835,7 +2928,7 @@ class Session(object):
                 return None
 
     def device_message(self):
-        return {
+        message = {
             "id": self.phone.store.device_id,
             "name": self.phone.name,
             "model": DEVICE_MODEL,
@@ -2843,6 +2936,18 @@ class Session(object):
             "screen": {"w": SCREEN_W, "h": SCREEN_H, "dpi": SCREEN_DPI},
             "locked": True,
         }
+        # The encoder's own limits (`welcome.device.encoder`, ISS-39): absent on
+        # a phone whose build predates the report, which keeps the Mac's 16 px
+        # rule.
+        if self.phone.args.encoder_report:
+            message["encoder"] = {
+                "widthAlign": self.phone.encoder_align,
+                "heightAlign": self.phone.encoder_align,
+                "maxWidth": self.phone.encoder_max_w,
+                "maxHeight": self.phone.encoder_max_h,
+                "maxPixels60": self.phone.encoder_pixels,
+            }
+        return message
 
     def welcome(self):
         self._welcomed = True
@@ -4746,8 +4851,8 @@ class Session(object):
             box = turn_box(msg.get("w", window.w), msg.get("h", window.h), *self.phone.screen)
             window.w, window.h = mirror_fit(*box + self.phone.screen)
         else:
-            window.w = round16(msg.get("w", window.w))
-            window.h = round16(msg.get("h", window.h))
+            window.w = align_down(msg.get("w", window.w), window.align)
+            window.h = align_down(msg.get("h", window.h), window.align)
         window.dpi = msg.get("dpi", window.dpi)
         quiet = getattr(self.phone.args, "no_resize_ack", False)
         if quiet and (window.w, window.h) == before:
@@ -4959,6 +5064,17 @@ class FakePhone(object):
         self._ctl_mtime = None
         self._ctl_thread = None
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
+        # The encoder's own limits (ISS-39): an app stream is aligned to
+        # `encoder_align` and the Mac is told so in `welcome` when
+        # `--encoder-report` is on. The defaults are the old phone's: 16 px and
+        # no report.
+        self.encoder_align = max(1, int(args.encoder_align))
+        self.encoder_max_w, self.encoder_max_h = args.encoder_max
+        self.encoder_pixels = int(args.encoder_pixels)
+        self.crisp_dir = args.crisp_pattern
+        if self.crisp_dir:
+            os.makedirs(self.crisp_dir, exist_ok=True)
+        self._crisp_cache = set()
         # Drops that finished, so bytes arriving after the result (a re-sent
         # tail) are reported like the real receiver's "more bytes than announced".
         self._finished_drops = {}
@@ -4968,6 +5084,23 @@ class FakePhone(object):
         connection, so the captured client cert only ever belongs to it)."""
         cert_path, key_path = identity_paths(self.tls_identity_dir)
         return proto.tls_server_session(cert_path, key_path, raw)
+
+    def crisp_assets(self, width, height):
+        """The pattern PNG fed to the encoder and its region map (ISS-39).
+
+        Written once per stream size; the check measures the Mac's drawn pixels
+        against the PNG, which is the encoder's exact source.
+        """
+        png = os.path.join(self.crisp_dir, "pattern-%dx%d.png" % (width, height))
+        if png not in self._crisp_cache:
+            data, regions = render_crisp_png(width, height)
+            with open(png, "wb") as fp:
+                fp.write(data)
+            with open(png[:-4] + ".json", "w") as fp:
+                json.dump({"w": width, "h": height,
+                           "regions": {name: list(rect) for name, rect in regions.items()}}, fp)
+            self._crisp_cache.add(png)
+        return png
 
     def next_display_id(self):
         with self._display_lock:
@@ -5421,6 +5554,14 @@ class FakePhone(object):
             shutil.rmtree(self.label_dir, ignore_errors=True)
 
 
+def size_arg(raw):
+    """`WxH` on the command line."""
+    parts = str(raw).lower().split("x")
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise argparse.ArgumentTypeError("want WxH, got %r" % raw)
+    return int(parts[0]), int(parts[1])
+
+
 def build_parser():
     p = argparse.ArgumentParser(description="Fake PocketDeck phone (protocol-faithful).")
     p.add_argument("--port", type=int, default=0, help="TCP port (0 = ephemeral)")
@@ -5466,6 +5607,21 @@ def build_parser():
     p.add_argument("--text-frame", metavar="WORD", default=None,
                    help="draw WORD large on a white band in every app stream "
                         "(a stable frame for the Live Text check)")
+    p.add_argument("--encoder-align", type=int, default=2, metavar="N",
+                   help="an app stream's size alignment (the encoder's own; default 2)")
+    p.add_argument("--encoder-max", type=size_arg, default=(2560, 2560), metavar="WxH",
+                   help="the encoder's maximum frame (default 2560x2560, the same cap "
+                        "the old Mac rule used)")
+    p.add_argument("--encoder-pixels", type=int, default=4_096_000, metavar="N",
+                   help="the encoder's largest pixel count at 60 fps (default 4096000)")
+    p.add_argument("--encoder-report", dest="encoder_report", action="store_true", default=True,
+                   help="report the encoder's limits in welcome.device.encoder (ISS-39); on by default")
+    p.add_argument("--no-encoder-report", dest="encoder_report", action="store_false",
+                   help="emulate a phone that predates the encoder report (the Mac's old "
+                        "16 px / 2560 px rule)")
+    p.add_argument("--crisp-pattern", metavar="DIR", default=None,
+                   help="app streams draw a still 1 px-line and small-text pattern, and DIR "
+                        "gets the lossless source PNG + region map (ISS-39's crispness metric)")
     p.add_argument("--pad", action="store_true",
                    help="the phone mirror's frames carry a black band at the right and bottom; "
                         "window.content says where the picture is (the Mac must crop it)")

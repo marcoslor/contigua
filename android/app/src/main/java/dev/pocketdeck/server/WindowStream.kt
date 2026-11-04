@@ -464,7 +464,6 @@ internal class WindowStream(
         limits = EncoderLimits(
             maxW = found.supportedWidths.upper,
             maxH = found.supportedHeights.upper,
-            align = maxOf(found.widthAlignment, found.heightAlignment),
             widthAlign = found.widthAlignment,
             heightAlign = found.heightAlignment,
         )
