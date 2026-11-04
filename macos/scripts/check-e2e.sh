@@ -2517,11 +2517,11 @@ check_chrome() {
     chrome_is "style=framed lights=shown pill=hidden" \
         && ok "[WIN-7] C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
         || bad "[WIN-7] C14 framed at rest: $(chrome_state)"
-    # Only the phone window opts out: an app window keeps the Window menu's
-    # Enter Full Screen (full screen stays available where a mirror is not the
-    # thing filling the display).
-    if chrome_has "menu_fullscreen=1"; then
-        ok "[WIN-14] C14 an app window keeps full screen (the Window menu's item is enabled)"
+    # Only the phone window opts out: an app window keeps full screen, and
+    # AppKit's own View item reads the opt-out for itself (full screen stays
+    # available where a mirror is not the thing filling the display).
+    if chrome_has "can_fullscreen=1"; then
+        ok "[WIN-14] C14 an app window may go full screen (the system's View item is enabled for it)"
     else
         bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
     fi
@@ -2925,11 +2925,11 @@ PY
 # closed the gap.
 menu_dump_ok() {
     python3 - "$1" <<'PY'
-import json, sys
+import json, re, sys
 APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
-             "Back", "Home", "Recents", "Enter Full Screen"]
+             "Back", "Home", "Recents"]
 # SwiftUI items often have no target at all (nil action target); an item the
 # app installed with AppKit carries one of the app's own classes.
 SYSTEM_OWNERS = {"MenuItemCallback", "SwiftUIMenu", "NSMenu", "NSWindow", "NSApplication",
@@ -2967,6 +2967,14 @@ for title, want in WANT.items():
     if title == "File":
         seq = ["—" if row == "—" else ("New … Window" if row.startswith("New ") and row.endswith(" Window") else row)
                for row in seq]
+    if title == "View" and seq and seq[-1] in ("Enter Full Screen", "Exit Full Screen"):
+        # AppKit appends its own item (fn-F) to the app's View NSMenu; the
+        # design's list is the app's items, and the system item is checked
+        # separately as last in View (MENU-4). The separator before it shows
+        # in the open menu (the prototype's sheet) but not in this dump.
+        last = menu["submenu"][-1]
+        if "function" in last["modifiers"] and "control" not in last["modifiers"]:
+            seq = seq[:-2] if len(seq) >= 2 and seq[-2] == "—" else seq[:-1]
     if seq != want:
         problems.append("%s: %r wanted %r" % (title, seq, want))
 view = next((i for i in root["items"] if i["title"] == "View"), None)
@@ -2979,21 +2987,175 @@ installed = [(i["title"], i.get("targetClass")) for i in walk(root["items"])
              if i["title"] in APP_ITEMS and i.get("targetClass") not in SYSTEM_OWNERS]
 if installed:
     problems.append("items the app installed with AppKit: %r" % (installed,))
+# Full screen is AppKit's own, last in View: the app draws no item for it
+# (MENU-4, MENU-7). AppKit appends its item to the same NSMenu, so the app's
+# old one is identified by its ⌃⌘F, not by the title.
+mine = [i["title"] for i in walk(root["items"])
+        if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"])
+        and "control" in i["modifiers"]]
+if mine:
+    problems.append("the app draws a full-screen item with ⌃⌘F: %r" % (mine,))
 if problems:
     print("; ".join(problems)); sys.exit(1)
 PY
 }
 
-# check_menus — the View menu has no section titles and no full-screen item;
-# Framed/Immersive are plain radio items; the Window menu owns the only full
-# screen item; every item the app draws itself has an SF Symbol. The whole bar
-# is dumped after each kind of rebuild the menu is known to lose items on, the
-# last one with no stream window open (where the person's installed app lost
-# them). The window's Enter/Exit title needs native full screen (a real Space),
-# so that step is visible-only.
+# full_screen_bar_ok PATH LABEL [REQUIRED] — the bar's full-screen structure
+# (MENU-4, MENU-7): the app draws no full-screen item of its own, AppKit's own
+# is last in View after a separator with fn-F, and Window keeps the system's
+# tiling group (Full Screen Tile, or its "Enter Full Screen" parent on some
+# builds). REQUIRED=1 fails when the system item is absent; a quiet tier may
+# not show it, and then the line says so instead of pretending.
+full_screen_bar_ok() {
+    python3 - "$1" "$2" "${3:-0}" <<'PY'
+import json, re, sys
+path, label, required = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+root = json.load(open(path))
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+app_items = list(walk(root.get("items") or []))
+# AppKit appends its own item to the app's NSMenu too; the app's old one is the
+# only one carrying ⌃⌘F (MENU-4).
+mine = [i["title"] for i in app_items
+        if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and "control" in i["modifiers"]]
+if mine:
+    print("%s: the app draws its own full-screen item %r" % (label, mine)); sys.exit(1)
+bar = root.get("displayed")
+if not bar:
+    print("%s: no displayed menu bar" % label); sys.exit(1)
+hits = [(m["title"], i) for m in bar for i in walk(m.get("submenu") or [])
+        if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and not i.get("submenu")]
+if len(hits) > 1:
+    print("%s: %d full-screen items on the bar: %r"
+          % (label, len(hits), [(m, i["title"]) for m, i in hits]))
+    sys.exit(1)
+view = next((m for m in bar if m["title"] == "View"), None)
+window = next((m for m in bar if m["title"] == "Window"), None)
+# The system's tiling group: "Move & Resize ›" always, and "Full Screen Tile"
+# (a submenu when tiling is available, a disabled heading otherwise). Some
+# macOS 26 builds titled the parent "Enter Full Screen ›".
+tiling = [(i["title"], len(i.get("submenu") or [])) for i in (window or {}).get("submenu") or []
+          if i["title"] in ("Full Screen Tile", "Enter Full Screen", "Exit Full Screen", "Move & Resize")]
+if not any(title == "Move & Resize" for title, _ in tiling) or len(tiling) < 2:
+    print("%s: Window lost the system's window group: %r" % (label, tiling)); sys.exit(1)
+groups = [t for t in tiling if t[0] != "Move & Resize"]
+if not hits:
+    if required:
+        print("%s: AppKit's View full-screen item is not on the displayed bar" % label); sys.exit(1)
+    print("%s: AppKit has not placed its View item in this tier; Window keeps %s"
+          % (label, ", ".join(t for t, _ in groups)))
+    sys.exit(0)
+menu, item = hits[0]
+if menu != "View":
+    print("%s: the full-screen item is in %s, not View" % (label, menu)); sys.exit(1)
+items = (view or {}).get("submenu") or []
+visible = [i for i in items if not i["isSeparator"]]
+if not visible or visible[-1] is not item:
+    print("%s: the full-screen item is not last in View: %r" % (label, [i["title"] for i in items]))
+    sys.exit(1)
+if item["keyEquivalent"] != "f" or "function" not in item["modifiers"]:
+    print("%s: the system item's shortcut is %r %r, wanted fn-F"
+          % (label, item["keyEquivalent"], item["modifiers"]))
+    sys.exit(1)
+print("%s: no app full-screen item; View ends with %s (fn-F, enabled=%s); Window keeps %s"
+      % (label, item["title"], item["enabled"], ", ".join(t for t, _ in groups)))
+PY
+}
+
+# full_screen_item_enabled_ok PATH enabled|disabled LABEL — AppKit reads the key
+# window: the Deck and app windows may go full screen, the Phone Mirror opts
+# out. An item AppKit has not placed yet is not a failure here (the structural
+# check above says whether it must be there).
+full_screen_item_enabled_ok() {
+    python3 - "$1" "$2" "$3" "${4:-1}" <<'PY'
+import json, re, sys
+path, want, label, strict = sys.argv[1], sys.argv[2] == "enabled", sys.argv[3], sys.argv[4] != "0"
+root = json.load(open(path))
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+item = next((i for m in root.get("displayed") or [] for i in walk(m.get("submenu") or [])
+             if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"]) and not i.get("submenu")), None)
+if item is None:
+    print("%s: the system item is not in this tier" % label); sys.exit(0)
+if item["enabled"] != want:
+    message = ("%s: %s is enabled=%s, wanted %s"
+               % (label, item["title"], item["enabled"], "enabled" if want else "disabled"))
+    if strict:
+        print(message); sys.exit(1)
+    print(message + " (quiet tier: the app is not frontmost; not asserted)")
+    sys.exit(0)
+print("%s: %s enabled=%s" % (label, item["title"], item["enabled"]))
+PY
+}
+
+# menu_window_rect — the open menu's window bounds as "x,y,w,h" for
+# `screencapture -R` (a menu is its own layer-101 window).
+menu_window_rect() {
+    "$CGBIN" all 2>/dev/null | python3 - "$APP_PID" <<'PY'
+import re, sys
+pid = sys.argv[1]
+for line in sys.stdin:
+    if ("pid=" + pid + " ") not in line or "layer=101" not in line:
+        continue
+    m = re.search(r"bounds=\{\{(-?[\d.]+), (-?[\d.]+)\}, \{(-?[\d.]+), (-?[\d.]+)\}\}", line)
+    if m:
+        print(",".join(str(int(float(v))) for v in m.groups()))
+        sys.exit(0)
+PY
+}
+
+# e2e_menu_shot FILE MENU — hold one of the app's menus open through its
+# tracking loop and capture the screen cropped to that menu, then wait for it to
+# close. A menu that is gone at the shutter is retried once (round 5's empty
+# shots).
+e2e_menu_shot() {
+    local file="$1" menu="$2" report="$1.json" attempt rect
+    for attempt in 1 2; do
+        control menutrack "$report" "$menu" 4 >/dev/null \
+            || { bad "$menu menutrack: $CONTROL_REPLY"; return 1; }
+        sleep 1.3
+        rect="$(menu_window_rect)"
+        if [ -n "$rect" ]; then
+            screencapture -x -R "$rect" "$file" \
+                && say "shot: $file (the open $menu menu, $rect)" \
+                || bad "no screenshot of the $menu menu"
+            wait_until 15 [ -s "$report" ] \
+                || { bad "$menu menutrack never reported and closed"; return 1; }
+            return 0
+        fi
+        wait_until 15 [ -s "$report" ] \
+            || { bad "$menu menutrack never reported and closed"; return 1; }
+        [ "$attempt" = 1 ] && skip "$menu menu shot" "no menu on screen at the shutter; retrying"
+    done
+    bad "$menu menu shot: no open menu window in two attempts"
+    return 1
+}
+
+# check_menus — the View menu has no section titles; the app draws no
+# full-screen item, and AppKit's own is last in View (fn-F) with the Window
+# tiling group left alone; Framed/Immersive are plain radio items; every item
+# the app draws itself has an SF Symbol. The whole bar is dumped after each kind
+# of rebuild the menu is known to lose items on, the last one with no stream
+# window open (where the person's installed app lost them). The window's
+# Enter/Exit title needs native full screen (a real Space), so that step is
+# visible-only.
 check_menus() {
     begin_shared || return 1
     rm -f "$WORK"/menus-*.json "$WORK"/menus-step-* "$WORK/menus.txt" "$WORK/menus-touch.png" "$WORK/chrome.txt"
+    # A visible run can require AppKit's View item; a quiet tier may not show
+    # it at all, and the structural check says so instead of pretending.
+    local fs_required=0
+    [ "$VISIBLE" = 1 ] && fs_required=1
+    # The review shots (visible VM only; one appearance per boot): the View and
+    # Window menus under each kind of key window.
+    local appearance="${PD_E2E_SHOT_APPEARANCE:-dark}"
+    mkdir -p "$WORK/shots"
 
     # dump_and_assert N — the dump the control route wrote, checked.
     dump_and_assert() {
@@ -3051,6 +3213,13 @@ def heading(menu, siblings, item):
     return (not item["enabled"] and not item.get("submenu") and not item["keyEquivalent"]
             and any(other is not item and other["title"] == item["title"] for other in siblings))
 
+# AppKit's window-tiling group parent repeats no app item: it is the system's,
+# and MENU-11 excepts the group headings. On some macOS 26 builds the group
+# is "Full Screen Tile ›"; on others it read "Enter Full Screen ›".
+def tiling_group(menu, item):
+    return (menu == "Window" and item.get("submenu")
+            and item["title"] in ("Full Screen Tile", "Enter Full Screen", "Exit Full Screen"))
+
 # AppKit's window list (Window ▸ after "Bring All to Front") is not the app's
 # items: two windows may carry the same title (the Deck names the phone, and so
 # does its mirror), and the window server, not this app, decides what to show.
@@ -3065,7 +3234,8 @@ def in_window_list(menu, siblings, item):
 
 counts = {}
 for menu, siblings, item in occurrences:
-    if item["isSeparator"] or heading(menu, siblings, item) or in_window_list(menu, siblings, item):
+    if (item["isSeparator"] or heading(menu, siblings, item) or tiling_group(menu, item)
+            or in_window_list(menu, siblings, item)):
         continue
     counts[item["title"]] = counts.get(item["title"], 0) + 1
 dups = sorted("%s (%d)" % (title, n) for title, n in counts.items() if n > 1)
@@ -3166,6 +3336,16 @@ EOF
     # standard way, with no empty row under "Bring All to Front".
     dump_stable 0 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-0.json" "dump 0"
+    if reason="$(full_screen_bar_ok "$WORK/menus-0.json" "dump 0" "$fs_required")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 0: $reason"
+    fi
+    if reason="$(full_screen_item_enabled_ok "$WORK/menus-0.json" enabled "dump 0 (the Deck can go full screen)" "$fs_required")"; then
+        say "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 0: $reason"
+    fi
     python3 - "$WORK/menus-0.json" <<'PY' && ok "[MENU-9] with no stream window: Framed/Immersive are disabled and neither is checked" \
         || bad "[MENU-9] the style pair still acts with no stream window"
 import json, sys
@@ -3227,6 +3407,17 @@ PY
 
     # 1: a fresh launch with one stream window open.
     dump_now 1 || { stop_app; stop_fakephone; return 1; }
+    if reason="$(full_screen_item_enabled_ok "$WORK/menus-1.json" enabled "dump 1 (an app window can go full screen)" "$fs_required")"; then
+        say "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 1: $reason"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        e2e_menu_shot "$WORK/shots/$appearance-view-stream.png" View
+        e2e_menu_shot "$WORK/shots/$appearance-window-stream.png" Window
+    else
+        skip "MENUS the View and Window shots with an app window key" "visible VM run only"
+    fi
 
     # The status item's own menu (CONV-MAC-10): the three app commands the
     # panel's footer used to carry. The dump is the builder's own item list, so
@@ -3299,9 +3490,25 @@ PY
     control open --open-phone --debug-chrome-state "$WORK/chrome.txt" \
         || bad "MENUS shared app: opening the phone window answered '$CONTROL_REPLY'"
     sleep 1.5; dump_now 8
+    if reason="$(full_screen_item_enabled_ok "$WORK/menus-8.json" disabled "dump 8 (the Phone Mirror opts out)" "$fs_required")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 8: $reason"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        e2e_menu_shot "$WORK/shots/$appearance-view-phone.png" View
+        e2e_menu_shot "$WORK/shots/$appearance-window-phone.png" Window
+    else
+        skip "MENUS the View and Window shots with the Phone Mirror key" "visible VM run only"
+    fi
     control open --close-stream 3:0 --debug-chrome-state "$WORK/chrome.txt" \
         || bad "MENUS shared app: closing the phone window answered '$CONTROL_REPLY'"
     sleep 1.5; dump_now 9
+    if reason="$(full_screen_item_enabled_ok "$WORK/menus-9.json" enabled "dump 9 (an app window is key again)" "$fs_required")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 9: $reason"
+    fi
 
     # 14 and 15: the menu-bar extra scene goes away and comes back. The app's
     # body reads that setting, so SwiftUI re-evaluates the whole scene graph —
@@ -3327,8 +3534,12 @@ if view is None:
 titles = [item["title"] for item in view["submenu"]]
 if "Window Style" in titles:
     print("the Window Style section title is still there"); sys.exit(1)
-if any("Full Screen" in title for title in titles):
-    print("a full-screen item is in View:", titles); sys.exit(1)
+# AppKit's own Enter Full Screen (fn-F) is the one full-screen item allowed in
+# View; an app item would carry ⌃⌘F (MENU-4, MENU-7).
+mine = [i["title"] for i in view["submenu"]
+        if "Full Screen" in i["title"] and "control" in i["modifiers"]]
+if mine:
+    print("an app full-screen item is in View:", mine); sys.exit(1)
 PY
 
     python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
@@ -3435,35 +3646,14 @@ if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
 PY
 
-    # The Window menu's full-screen item, on the bar a person reads: exactly one
-    # Enter/Exit Full Screen, in Window. The app's own tree also holds AppKit's
-    # Enter Full Screen with no key and no target, which the bar never shows, so
-    # the item is read from the displayed bar and its icon and shortcut from the tree.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-7] Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
-        || bad "[MENU-7] the Window menu's full-screen item is wrong"
-import json, re, sys
-def walk(items):
-    for item in items:
-        yield item
-        if item.get("submenu"):
-            yield from walk(item["submenu"])
-root = json.load(open(sys.argv[1]))
-shown = [(m["title"], i["title"]) for m in root.get("displayed") or []
-         for i in walk(m.get("submenu") or []) if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"])]
-if shown != [("Window", "Enter Full Screen")]:
-    print("full-screen items on the bar:", shown); sys.exit(1)
-window = next((i for i in root["items"] if i["title"] == "Window"), None)
-if window is None:
-    print("no Window menu"); sys.exit(1)
-item = next((i for i in window["submenu"]
-             if i["keyEquivalent"] == "f" and sorted(i["modifiers"]) == ["command", "control"]), None)
-if item is None:
-    print("no ⌃⌘F item in Window"); sys.exit(1)
-if item["title"] != "Enter Full Screen":
-    print("title:", item["title"]); sys.exit(1)
-if not item["hasImage"]:
-    print("no icon"); sys.exit(1)
-PY
+    # The bar's full-screen structure on the bar a person reads: no app item,
+    # AppKit's own last in View with fn-F, Window's tiling group untouched.
+    # A visible run requires AppKit's item; a quiet tier may not show it.
+    if reason="$(full_screen_bar_ok "$WORK/menus-1.json" "dump 1" "$fs_required")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] dump 1: $reason"
+    fi
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit
     # draws them and are not in this list).
@@ -3480,7 +3670,7 @@ items = list(walk(root["items"]))
 missing = []
 for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
               "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
-              "Recents", "Enter Full Screen"]:
+              "Recents"]:
     found = next((i for i in items if i["title"] == title), None)
     if found is None:
         missing.append(title + " (missing)")
@@ -3544,7 +3734,32 @@ PY
 
     if [ "$VISIBLE" = "1" ]; then
         # The pair's marks were asserted in the shared block above, which this
-        # run executes too; this block adds what needs a real Space.
+        # run executes too; this block adds what needs a real Space and real
+        # input. ⌃⌘F and fn-F are AppKit's shortcuts (MENU-4, MENU-8): each is
+        # pressed through cgevent with an app window key, both ways.
+        if cg_input key --keycode 3 --ctrl --cmd; then
+            wait_until 20 chrome_has "fullscreen=yes" \
+                && ok "[MENU-4] ⌃⌘F entered full screen with an app window key ($(chrome_state))" \
+                || bad "[MENU-4] ⌃⌘F did not enter full screen: $(chrome_state)"
+            cg_input key --keycode 3 --ctrl --cmd \
+                || bad "MENUS the second ⌃⌘F press did not post"
+            wait_until 20 chrome_has "fullscreen=no" \
+                && ok "[MENU-4] ⌃⌘F left full screen again" \
+                || bad "[MENU-4] ⌃⌘F did not leave full screen: $(chrome_state)"
+        else
+            bad "MENUS the ⌃⌘F press did not post"
+        fi
+        if cg_input key --keycode 3 --fn; then
+            wait_until 20 chrome_has "fullscreen=yes" \
+                && ok "[MENU-4] fn-F entered full screen with an app window key" \
+                || bad "[MENU-4] fn-F did not enter full screen: $(chrome_state)"
+            cg_input key --keycode 3 --fn || bad "MENUS the second fn-F press did not post"
+            wait_until 20 chrome_has "fullscreen=no" \
+                && ok "[MENU-4] fn-F left full screen again" \
+                || bad "[MENU-4] fn-F did not leave full screen: $(chrome_state)"
+        else
+            bad "MENUS the fn-F press did not post"
+        fi
         touch "$WORK/menus-step-full"
         sleep 7
         # The title can only follow the window if the window went to a Space.
@@ -3552,26 +3767,14 @@ PY
             && ok "[MENU-7] the shared app entered a Space (fullscreen=yes)" \
             || bad "[MENU-7] the shared app did not enter full screen: $(chrome_state)"
         dump_now 10
-        python3 - "$WORK/menus-10.json" <<'PY' && ok "[MENU-7] in full screen the Window item reads Exit Full Screen, still the only one" \
-            || bad "[MENU-7] the full-screen title did not follow the key window"
-import json, sys
-def walk(items):
-    for item in items:
-        yield item
-        if item.get("submenu"):
-            yield from walk(item["submenu"])
-root = json.load(open(sys.argv[1]))
-everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
-if len(everywhere) != 1:
-    print("full-screen items:", [i["title"] for i in everywhere]); sys.exit(1)
-item = everywhere[0]
-if item["title"] != "Exit Full Screen":
-    print("title:", item["title"]); sys.exit(1)
-if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
-    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
-if not item["hasImage"]:
-    print("no icon"); sys.exit(1)
-PY
+        if reason="$(full_screen_bar_ok "$WORK/menus-10.json" "dump 10 (in full screen)" 1)"; then
+            case "$reason" in
+                *"Exit Full Screen"*) ok "[MENU-7] $reason" ;;
+                *) bad "[MENU-7] in full screen the system item did not read Exit Full Screen: $reason" ;;
+            esac
+        else
+            bad "[MENU-7] dump 10: $reason"
+        fi
         # Leave full screen; the next checks share this app.
         touch "$WORK/menus-step-exit"
         sleep 7
@@ -3583,13 +3786,25 @@ PY
         control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
             || bad "MENUS shared app: closing the last stream window answered '$CONTROL_REPLY'"
         sleep 1.5; dump_now 12
+        if reason="$(full_screen_bar_ok "$WORK/menus-12.json" "dump 12 (the Deck is key)" 1)"; then
+            ok "[MENU-7] $reason"
+        else
+            bad "[MENU-7] dump 12: $reason"
+        fi
+        if reason="$(full_screen_item_enabled_ok "$WORK/menus-12.json" enabled "dump 12 (the Deck can go full screen)" 1)"; then
+            ok "[MENU-7] $reason"
+        else
+            bad "[MENU-7] dump 12: $reason"
+        fi
+        e2e_menu_shot "$WORK/shots/$appearance-view-deck.png" View
+        e2e_menu_shot "$WORK/shots/$appearance-window-deck.png" Window
         # 13: a stream window open again.
         control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
             || bad "MENUS shared app: reopening a stream window answered '$CONTROL_REPLY'"
         sleep 2; dump_now 13
     else
-        skip_visible "MENUS the Exit Full Screen title (native full screen needs a real Space)"
-        skip_visible "MENUS the bar with the last stream window closed (a quiet app stops answering then)"
+        skip_visible "MENUS the full-screen key presses and the Exit Full Screen title (a real Space)"
+        skip_visible "MENUS the bar and the View/Window shots with the Deck key (a quiet app stops answering then)"
     fi
 
     # A menu held open for 5 s while the state under it changes (MENU-17): the
@@ -4306,8 +4521,8 @@ check_mirror() {
     fi
     # No full screen for the phone window (the mirror in native full screen
     # looks bad): it opts out in its collection behavior, so the green button
-    # only zooms and the Window menu's Enter Full Screen is disabled for it.
-    if wait_until 3 chrome_has "menu_fullscreen=0"; then
+    # only zooms and AppKit disables the system's View item for it.
+    if wait_until 3 chrome_has "can_fullscreen=0"; then
         ok "[MIRROR-4] the phone window offers no full screen ($(chrome_state))"
     else
         bad "[MIRROR-4] the phone window still offers full screen ($(chrome_state))"
@@ -10219,6 +10434,16 @@ PY
         && ok "[WIN-28] window.title retitled both windows by their tasks" \
         || bad "[WIN-28] the windows did not take their task labels: $(window_titles "$APP_PID" | tr '\n' '|')"
 
+    # The bar keeps no app full-screen item while two app windows are open; the
+    # system's own View item follows the key window (MENU-4, MENU-7).
+    rm -f "$WORK/wm-structure.json"
+    control menudump "$WORK/wm-structure.json" || bad "MULTIWIN menudump: $CONTROL_REPLY"
+    if reason="$(full_screen_bar_ok "$WORK/wm-structure.json" "multiwin (an app window key)" "$([ "$VISIBLE" = 1 ] && echo 1 || echo 0)")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] multiwin: $reason"
+    fi
+
     if [ "$VISIBLE" = 1 ]; then
         # 1: two windows of one app, both live, named by their tasks (the bar
         # hides the title outside full screen; the Window menu and the Dock
@@ -10603,6 +10828,15 @@ check_windows() {
     titles_have "Chrome (FakePhone)" \
         && ok "[WIN-3] WINDOWS the window is titled for the app and the phone" \
         || bad "[WIN-3] WINDOWS the window title: $(window_titles "$APP_PID" | tr '\n' '|')"
+    # The bar's full-screen structure with an app window key: the app draws no
+    # item of its own, and AppKit's own is last in View (MENU-4, MENU-7).
+    rm -f "$WORK/windows-menu.json"
+    control menudump "$WORK/windows-menu.json" || bad "WINDOWS menudump: $CONTROL_REPLY"
+    if reason="$(full_screen_bar_ok "$WORK/windows-menu.json" "windows (an app window key)" "$([ "$VISIBLE" = 1 ] && echo 1 || echo 0)")"; then
+        ok "[MENU-7] $reason"
+    else
+        bad "[MENU-7] windows: $reason"
+    fi
     sleep 1
     wins_one="$(windows | wc -l | tr -d ' ')"
 
