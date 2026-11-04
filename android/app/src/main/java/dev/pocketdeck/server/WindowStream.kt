@@ -56,26 +56,13 @@ internal class WindowStream(
         /** `debug.pocketdeck.vd_panel_group=1`: the VD joins display 0's group (the One UI shape). */
         const val VD_PANEL_GROUP = "debug.pocketdeck.vd_panel_group"
 
-        // @hide DisplayManager flags, verified against AOSP. Deliberately absent
-        // from a real session: the system-decorations flag (bit 9) adds a
-        // SystemUI nav bar and poisons One UI's back gesture, and the device
-        // display-group flag (bit 15) ties the VD to the panel's power state and
-        // freezes it while the phone is locked. Bit 15 exists only behind
-        // VD_PANEL_GROUP, which reproduces that freeze on the emulator.
-        const val FLAG_SECURE = 1 shl 2
-        const val FLAG_AUTO_MIRROR = 1 shl 4
-        const val FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD = 1 shl 5
-        const val FLAG_SUPPORTS_TOUCH = 1 shl 6
-        const val FLAG_ROTATES_WITH_CONTENT = 1 shl 7
-        const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
-        const val FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 shl 9
-        const val FLAG_TRUSTED = 1 shl 10
-        const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
-        const val FLAG_ALWAYS_UNLOCKED = 1 shl 12
-        const val FLAG_TOUCH_FEEDBACK_DISABLED = 1 shl 13
-        const val FLAG_OWN_FOCUS = 1 shl 14
-        const val FLAG_DEVICE_DISPLAY_GROUP = 1 shl 15
-        const val FLAG_STEAL_TOP_FOCUS_DISABLED = 1 shl 16
+        // The flags a window asks for live in WindowDisplayFlags (pure, pinned
+        // by the JVM test). Deliberately absent from that set: the
+        // system-decorations flag (bit 9) adds a SystemUI nav bar and poisons
+        // One UI's back gesture, and the device display-group flag (bit 15) ties
+        // the VD to the panel's power state and freezes it while the phone is
+        // locked. Bit 15 exists only behind VD_PANEL_GROUP, which reproduces
+        // that freeze on the emulator.
     }
 
     @Volatile private var vd: VirtualDisplay? = null
@@ -682,50 +669,15 @@ internal class WindowStream(
     }
 
     private fun flags(): Int {
-        var f = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-            FLAG_SUPPORTS_TOUCH or
-            FLAG_ROTATES_WITH_CONTENT or
-            FLAG_DESTROY_CONTENT_ON_REMOVAL or
-            FLAG_TRUSTED or
-            FLAG_OWN_DISPLAY_GROUP or
-            FLAG_ALWAYS_UNLOCKED or
-            FLAG_TOUCH_FEEDBACK_DISABLED or
-            FLAG_OWN_FOCUS
+        // The panel-group knob is a debug build's stand-in for One UI; it swaps
+        // only the display-group bits inside the pure set.
+        val panelGroup = dev.pocketdeck.BuildConfig.DEBUG &&
+            Hidden.systemProperty(VD_PANEL_GROUP) == "1"
+        return WindowDisplayFlags.requested(panelGroup)
+    }
 
-        // The emulator's stand-in for One UI: AOSP honours OWN_DISPLAY_GROUP, so
-        // a power press there never touches our VDs and the press gap cannot be
-        // measured. With this property the VD joins display 0's group instead,
-        // which is the shape the field phone has. Debug builds only: a release
-        // APK must not take a test knob that changes its display grouping.
-        if (dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(VD_PANEL_GROUP) == "1") {
-            f = (f or FLAG_DEVICE_DISPLAY_GROUP) and FLAG_OWN_DISPLAY_GROUP.inv()
-        }
-        return f
-    }
     /** Names for the requested flags, so the server log shows what we asked for. */
-    private fun virtualFlagNames(f: Int): String {
-        val set = ArrayList<String>()
-        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC != 0) set.add("PUBLIC")
-        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION != 0) set.add("PRESENTATION")
-        if (f and FLAG_SECURE != 0) set.add("SECURE")
-        if (f and FLAG_AUTO_MIRROR != 0) set.add("AUTO_MIRROR")
-        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY != 0) set.add("OWN_CONTENT_ONLY")
-        if (f and FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD != 0) set.add("CAN_SHOW_WITH_INSECURE_KEYGUARD")
-        if (f and FLAG_SUPPORTS_TOUCH != 0) set.add("SUPPORTS_TOUCH")
-        if (f and FLAG_ROTATES_WITH_CONTENT != 0) set.add("ROTATES_WITH_CONTENT")
-        if (f and FLAG_DESTROY_CONTENT_ON_REMOVAL != 0) set.add("DESTROY_CONTENT_ON_REMOVAL")
-        if (f and FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS != 0) set.add("SHOULD_SHOW_SYSTEM_DECORATIONS")
-        if (f and FLAG_TRUSTED != 0) set.add("TRUSTED")
-        if (f and FLAG_OWN_DISPLAY_GROUP != 0) set.add("OWN_DISPLAY_GROUP")
-        if (f and FLAG_ALWAYS_UNLOCKED != 0) set.add("ALWAYS_UNLOCKED")
-        if (f and FLAG_TOUCH_FEEDBACK_DISABLED != 0) set.add("TOUCH_FEEDBACK_DISABLED")
-        if (f and FLAG_OWN_FOCUS != 0) set.add("OWN_FOCUS")
-        if (f and FLAG_DEVICE_DISPLAY_GROUP != 0) set.add("DEVICE_DISPLAY_GROUP")
-        if (f and FLAG_STEAL_TOP_FOCUS_DISABLED != 0) set.add("STEAL_TOP_FOCUS_DISABLED")
-        return set.joinToString("|")
-    }
+    private fun virtualFlagNames(f: Int): String = WindowDisplayFlags.names(f)
 
     private fun displayManager(): DisplayManager {
         val ctor = DisplayManager::class.java.getDeclaredConstructor(Context::class.java)
