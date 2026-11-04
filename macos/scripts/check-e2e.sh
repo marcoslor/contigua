@@ -9822,11 +9822,16 @@ PY
                 say "MULTIWIN shot 3-dock-shim-menu: captured at +${elapsed}s of the shim's 10s cap"
                 break
             fi
-            bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
-            [ "$attempt" = 1 ] || break
-            wait_until 10 eval '[ "$(popup_windows)" -le '"$base"' ]' \
-                || { bad "MULTIWIN the shim's menu was still open before the retry"; break; }
-            skip "MULTIWIN the shim's menu shot" "the first request produced no popup; asking again"
+            if [ "$attempt" = 1 ]; then
+                # A request the shim consumed without a popup is a rig miss, not
+                # a miss of the menu: the retry is the proof. Only the last
+                # attempt's miss counts.
+                skip "MULTIWIN the shim's menu shot" "the first request produced no popup; asking again"
+                wait_until 10 eval '[ "$(popup_windows)" -le '"$base"' ]' \
+                    || { bad "MULTIWIN the shim's menu was still open before the retry"; break; }
+            else
+                bad "MULTIWIN the shim's menu never appeared for its shot (waited ${elapsed}s of its 10s cap)"
+            fi
         done
         wait_until 12 eval '[ "$(popup_windows)" -eq 0 ]' \
             || bad "MULTIWIN the shim's menu stayed open after its cap"
@@ -9887,10 +9892,38 @@ PY
         skip "MULTIWIN the Deck cell's right click" "needs a real pointer; K2 AppWindowMenuTests covers the same rows, the VM round clicks the cell"
     fi
     # A pick raises through the shim's own menu item (its target and action).
-    printf '3' > "$ctl/dockmenu-com.android.chrome-press"
-    wait_until 15 eval '[ "$(front_title)" = "Chrome — Docs (FakePhone)" ]' \
-        && ok "[WIN-26] picking the other window's row raised that window" \
-        || bad "[WIN-26] the pick left '$(front_title)' in front"
+    # The row is read from the shim's live dump: the window that is not checked
+    # is the one the pick has to raise. A fixed index 3 named Docs only while
+    # the list kept its order; the Deck cell's right click above is a raise, and
+    # the shim re-reads the front window on a raise (df7a162e), so in round 5b's
+    # boots 8 and 9 index 3 already named the window in front and the pick
+    # looked like it did nothing.
+    local pick_index="" pick_title=""
+    if python3 - "$ctl/dockmenu-com.android.chrome.json" "$WORK/wm-pick.txt" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+for index, row in enumerate(rows):
+    if row.get("separator") or row.get("checked") or not row.get("enabled"):
+        continue
+    title = row.get("title", "")
+    if title.startswith("Chrome — ") and title.count(" — ") == 1:
+        with open(sys.argv[2], "w") as out:
+            out.write("%d\n%s\n" % (index, title))
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+        read -r pick_index < "$WORK/wm-pick.txt"
+        pick_title="$(sed -n 2p "$WORK/wm-pick.txt")"
+    fi
+    if [ -n "$pick_title" ]; then
+        printf '%s' "$pick_index" > "$ctl/dockmenu-com.android.chrome-press"
+        wait_until 15 eval '[ "$(front_title)" = "'"$pick_title"' (FakePhone)" ]' \
+            && ok "[WIN-26] picking the other window's row ($pick_title) raised that window" \
+            || bad "[WIN-26] the pick of $pick_title left '$(front_title)' in front"
+    else
+        bad "MULTIWIN no unchecked Chrome window row in the shim's menu"
+    fi
 
     # [WIN-29] one ⌘` per press, in front-to-back order, wrapping.
     local first second
