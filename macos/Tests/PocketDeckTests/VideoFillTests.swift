@@ -25,11 +25,55 @@ final class VideoFillTests: XCTestCase {
                        .fill)
     }
 
-    func testTheQuantisationIsStretchedEvenWhileResizeIsPending() {
-        // 1792x1200 in a 900x600 pt view: 4 px short each side, 0.4 % apart.
+    // MARK: One video pixel per screen pixel (ISS-39)
+
+    func testTheStreamsOwnPixelsAreDrawnOneToOne() {
+        // 1800 x 1200 px is exactly a 900 x 600 pt view at 2x.
+        XCTAssertEqual(Letterbox.placement(video: CGSize(width: 1800, height: 1200),
+                                           bounds: CGSize(width: 900, height: 600),
+                                           backingScale: 2, alignment: 2,
+                                           resizePending: false, phoneMode: false),
+                       .oneToOne)
+        let bounds = CGRect(x: 0, y: 0, width: 900, height: 600)
+        XCTAssertEqual(Letterbox.videoRect(video: CGSize(width: 1800, height: 1200), in: bounds,
+                                           placement: .oneToOne, backingScale: 2),
+                       bounds)
+    }
+
+    func testOnePixelShortIsDrawnOneToOneWithATrailingStrip() {
+        // An odd 1x window: 1203 x 857 px cannot be all shown at an even
+        // alignment. The 1202 x 856 the phone sends sits at the top left; the
+        // 1 px strip stays window background on the right and bottom.
+        XCTAssertEqual(Letterbox.placement(video: CGSize(width: 1202, height: 856),
+                                           bounds: CGSize(width: 1203, height: 857),
+                                           backingScale: 1, alignment: 2,
+                                           resizePending: false, phoneMode: false),
+                       .oneToOne)
+        let bounds = CGRect(x: 0, y: 0, width: 1203, height: 857)
+        let rect = Letterbox.videoRect(video: CGSize(width: 1202, height: 856), in: bounds,
+                                       placement: .oneToOne, backingScale: 1)
+        XCTAssertEqual(rect.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(rect.maxY, 857, accuracy: 0.001, "anchored to the top-left")
+        XCTAssertEqual(rect.width, 1202, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 856, accuracy: 0.001)
+    }
+
+    func testAnOldFrameDuringAResizeIsStillFilled() {
+        // 1792x1200 in a 900x600 pt view at 1x: far from the view, and a resize
+        // is in flight, so it keeps covering the window (WIN-42).
         XCTAssertEqual(Letterbox.placement(video: wide, bounds: CGSize(width: 900, height: 600),
                                            resizePending: true, phoneMode: false),
-                       .stretch)
+                       .fill)
+    }
+
+    func testAFrameUnderTheWindowsPixelsBecauseOfTheCapIsScaled() {
+        // The window is 3000 px wide but the encoder caps the stream at 2560:
+        // this is the one settled case that is scaled.
+        XCTAssertEqual(Letterbox.placement(video: CGSize(width: 2560, height: 853),
+                                           bounds: CGSize(width: 3000, height: 1000),
+                                           backingScale: 1, alignment: 2,
+                                           resizePending: false, phoneMode: false),
+                       .fit)
     }
 
     func testThePhoneWindowNeverFills() {
@@ -87,15 +131,20 @@ final class VideoFillTests: XCTestCase {
         XCTAssertTrue(bounds.contains(rect))
     }
 
-    func testStretchRectIsTheView() {
-        let bounds = CGRect(x: 0, y: 0, width: 900, height: 600)
-        XCTAssertEqual(Letterbox.videoRect(video: wide, in: bounds, placement: .stretch), bounds)
+    func testOneToOneRectKeepsWholeBackingPixels() {
+        let bounds = CGRect(x: 0.4, y: 0, width: 900, height: 600)
+        let rect = Letterbox.videoRect(video: CGSize(width: 1800, height: 1200), in: bounds,
+                                       placement: .oneToOne, backingScale: 2)
+        // Every edge is on a device pixel: 0.4 pt is 0.8 px and snaps.
+        XCTAssertEqual(rect.minX * 2, (rect.minX * 2).rounded(), accuracy: 0.0001)
+        XCTAssertEqual(rect.width, 900, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 600, accuracy: 0.001)
     }
 
     func testTheLayerGravityMatchesThePlacement() {
         XCTAssertEqual(VideoLayerView.gravity(for: .fit), .resizeAspect)
         XCTAssertEqual(VideoLayerView.gravity(for: .fill), .resizeAspectFill)
-        XCTAssertEqual(VideoLayerView.gravity(for: .stretch), .resize)
+        XCTAssertEqual(VideoLayerView.gravity(for: .oneToOne), .resize)
     }
 
     // MARK: The config that ends the pending state

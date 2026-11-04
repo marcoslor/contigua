@@ -183,7 +183,14 @@ display id on every injected event.
      `{"t":"error","code":"not_paired"}` at once and closes, never after its
      handshake timeout.
 4. Phone → `{"t":"welcome","session":"<32 hex>","device":{"id":..,"name":..,"model":..,"sdk":36,
-   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. `session` is this
+   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true,
+   "encoder":{"widthAlign":2,"heightAlign":2,"maxWidth":8192,"maxHeight":8192,"maxPixels60":36864000}}}`.
+   `encoder` is the H.264 encoder's own limits, probed once per session: the
+   alignment each axis takes, the maximum frame, and the largest pixel count it
+   encodes at 60 fps. The Mac asks an app window for its exact backing pixels
+   inside these limits and draws them one to one (WIN-5, WIN-52). A phone that
+   sends no `encoder` (an older build, or an encoder it cannot probe) makes the
+   Mac keep its 16 px / 2560 px rule. `session` is this
    session's id: 128 random bits as 32 lowercase hex, a new one for every new
    session, never reused and never derived from a device or peer id; a phone
    answers the id it was asked to join with. The phone allows exactly one

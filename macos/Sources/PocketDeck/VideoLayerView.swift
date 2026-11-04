@@ -44,6 +44,17 @@ final class VideoLayerView: NSView {
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
 
+    /// The encoder's own limits (ISS-39), set when the window opens. nil keeps
+    /// the old 16 px rule for a phone that reports none.
+    var encoder: EncoderSpec?
+    /// The alignment the phone actually snaps app streams to: the encoder's
+    /// own (the larger axis, so either axis' strip counts as one step), or 16
+    /// when it reports none.
+    private var alignment: Int {
+        guard let encoder else { return VideoSize.granularity }
+        return max(encoder.widthAlign, encoder.heightAlign)
+    }
+
     /// When the window last asked for a new size; until a config at that size
     /// arrives (or this passes) the last frame fills the view.
     private var resizeFillUntil: TimeInterval?
@@ -291,15 +302,19 @@ final class VideoLayerView: NSView {
 
     private func placement() -> Letterbox.Placement {
         Letterbox.placement(video: videoSize, bounds: bounds.size,
+                            backingScale: Double(window?.backingScaleFactor ?? 1),
+                            alignment: alignment,
                             resizePending: resizeIsPending, phoneMode: isPhoneMode)
     }
 
-    /// The gravity that draws `placement`.
+    /// The gravity that draws `placement`. `oneToOne` still uses `resize`: the
+    /// layer's frame is already the video's own pixel size, so no resampling
+    /// happens (a stretch would be exactly 1:1).
     static func gravity(for placement: Letterbox.Placement) -> AVLayerVideoGravity {
         switch placement {
         case .fit: return .resizeAspect
         case .fill: return .resizeAspectFill
-        case .stretch: return .resize
+        case .oneToOne: return .resize
         }
     }
 
@@ -336,21 +351,23 @@ final class VideoLayerView: NSView {
     private var resizeIsPending: Bool {
         guard let until = resizeFillUntil, ProcessInfo.processInfo.systemUptime < until else { return false }
         return Letterbox.resizeStillPending(video: videoSize, request: requestedPixels,
-                                            liveResizing: isWindowLiveResizing || window?.inLiveResize == true)
+                                            liveResizing: isWindowLiveResizing || window?.inLiveResize == true,
+                                            alignment: alignment)
     }
 
     /// What the window's own size asks the phone for (the same number
     /// `window.resize` carries).
     private var requestedPixels: CGSize {
         let scale = Double(window?.backingScaleFactor ?? 1)
-        return VideoSize.displayPixels(bounds: bounds.size, backingScale: scale)
+        return VideoSize.displayPixels(bounds: bounds.size, backingScale: scale, encoder: encoder)
     }
 
     /// Drawn rect of the current video inside the view: the same rule as the
     /// gravity, so a click lands on the pixel under the pointer, even mid-resize.
     func videoRect() -> CGRect {
         guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
-        return Letterbox.videoRect(video: videoSize, in: bounds, placement: placement())
+        return Letterbox.videoRect(video: videoSize, in: bounds, placement: placement(),
+                                   backingScale: Double(window?.backingScaleFactor ?? 1))
     }
 
     // MARK: Video
@@ -445,7 +462,8 @@ final class VideoLayerView: NSView {
                 // The phone answered at the size the window asked for: the
                 // fill (if one was up) ends now, before the timeout.
                 if self.resizeFillUntil != nil,
-                   Letterbox.answers(config: size, request: self.requestedPixels) {
+                   Letterbox.answers(config: size, request: self.requestedPixels,
+                                     alignment: self.alignment) {
                     self.resizeFillUntil = nil
                     self.resizeTimeout?.cancel()
                     self.resizeTimeout = nil
