@@ -33,3 +33,34 @@ WindowServer's 100 saved arrangements, and 121 entries in a display utility.
 `macos/scripts/clean-ghost-displays.sh` lists and (with `--apply`, as an
 administrator) deletes only the profiles named after the rig's displays whose
 display is not online now.
+
+## Sweeping test registrations
+
+A test copy registered with LaunchServices can claim `pocketdeck://`, and a
+test build's Share extension can appear in the person's Share menu. A killed
+run never reaches a clean-exit unregister, so the sweep runs at both ends:
+
+- `sweep_test_registrations` lives in
+  `macos/scripts/sweep-test-registrations.sh`. `check-e2e.sh` calls it after
+  taking the run's lock, before the build, and again from its exit path
+  (`finish`) while it still holds the lock. Any other runner calls the same
+  script at its start and in its trap; the prototype shooter
+  (`macos/scripts/proto-shoot.sh`, on the prototype branch today) does so when
+  it lands on `main`.
+- It reads `lsregister -dump` `path:` lines and `pluginkit -m -A -v` paths,
+  keeps only paths under an allow-list, and never uses a deny-list:
+  `~/dev/pd-wt/`, `~/dev/pocketdeck/`, `/private/tmp/`, `/tmp/`, `~/.t3/`, and
+  `~/Library/Application Support/PocketDeck-<profile>/` for a non-empty
+  profile suffix (the Dock shims of test profiles).
+- An app's PlugIns' appexes are removed with `pluginkit -r` first, then the
+  app with `lsregister -u`; an `.appex` found on its own is removed with
+  `pluginkit -r`. It then runs `lsregister -gc`.
+- It prints one line, `sweep: lsregister N, pluginkit M`, with counts only:
+  never a path of the person's.
+- The share check still runs `pluginkit -a`/`-e use` because that run needs the
+  extension; the exit sweep and the next run's start sweep remove it. The
+  check's own `unregister_share` stays as the fast path for a clean exit.
+
+The person's `/Applications/PocketDeck.app`, its two extensions, the default
+profile folder `~/Library/Application Support/PocketDeck/` and every display
+that is not the rig's are outside the allow-list and are never touched.
