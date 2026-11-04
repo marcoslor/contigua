@@ -57,7 +57,10 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
       - **The move works:** `startActivityFromRecents(task, launch display + fullscreen)` reparents the split child onto its own display (permission `START_TASKS_FROM_RECENTS`). The phone's split dissolves, both streams draw, and Back and close reach only that window.
       - **The signal:** a task-stack listener's `onTaskCreated` fires 66 ms after the tap. The phone's launcher never fires it.
       - **The false close** gets its own reason, `moved_to_phone` (WIN-49).
-    - **Being built:** `epic/adopt` (`.agent/adopt/`), WIN-44…49. The spec gate was passed with the reviewer's decisions in the brief. Real-phone check after the merge.
+    - **Merged 2026-11-04 (f205de9f, phone v135; Mac installed):** WIN-44…49 (`docs/specs/app-windows.md`, `docs/research/in-stream-window.md`). K1 1273/0, K2 1786/0, e2e `multiwin` 46/0, `windows` 32/0, `dock` 66/0, `files` 9/0.
+      - The branch's own emulator script never reached the trigger. Its four boots went to the rig and to setup: the Shizuku feed (now a shared cache, 8692f0f4), an argument order, Chrome's first run, and its notification promo. The spike proved the end-to-end move (boots 8–9).
+      - **On the person's phone:** the listener registers as root (`task listener: started uid=0`).
+      - **Waiting on the person:** Chrome in a Mac window, ⋮ ▸ New window should give a second Mac window.
 - **ISS-29 The Window menu reads "Enter Full Screen" twice on macOS 26.** The system's own "Enter Full Screen ›" submenu (beside Move & Resize) sits next to the app's "Enter Full Screen ⌃⌘F" (VM shot, 2026-11-04, `.agent/mw-mac/shots/r5/light-5-window-menu.png`). `MenuCleanup` removes only a key-less duplicate without children, so the system's submenu stays. On main too. MENU-7 and MENU-11.
   - **Prototype round done (2026-11-04, `proto/fsmenu` 469a4650; sheets in `.agent/proto/fsmenu/`, pick sheet `fsmenu-pick.png`):**
     - **Apple's convention:** Finder, Safari and TextEdit all put "Enter Full Screen" last in **View**, shown with **fn‑F** (Globe F), and the Window menu keeps the system's "Full Screen Tile ›" (Left of Screen, Right of Screen). In this run the submenu read "Full Screen Tile", not "Enter Full Screen" as in r5, so the doubled title may depend on state; the misplacement doesn't.
