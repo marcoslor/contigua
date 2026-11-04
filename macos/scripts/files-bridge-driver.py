@@ -359,6 +359,22 @@ def await_change(bridge, item, anchor, predicate, timeout=4.0):
         reply = change_set(bridge, item, anchor)
 
 
+def poll_change(bridge, item, anchor, predicate, timeout):
+    """A change set after [anchor] that satisfies [predicate], re-asked until it
+    does. For a client with no watch subscription (the working set never takes
+    one): there is no push to wait for, so polling is the whole wait."""
+    deadline = time.time() + timeout
+    while True:
+        reply = change_set(bridge, item, anchor)
+        items = (reply.get("items") or []) if reply.get("t") == "changes" else []
+        deleted = (reply.get("deleted") or []) if reply.get("t") == "changes" else []
+        if reply.get("t") == "changes" and predicate(items, deleted):
+            return reply
+        if time.time() >= deadline:
+            return reply
+        time.sleep(0.25)
+
+
 def wait_signal(bridge, timeout):
     """The next `changed` push, or None after [timeout] seconds."""
     deadline = time.time() + timeout
@@ -1352,17 +1368,116 @@ def phase_persist(bridge, root, work, stage):
            "PERSIST [FILES-31] the first listing after the restart is the phone's 4 "
            "in %.2f s" % elapsed)
 
+    # The ready's resync also compares P, so the parent folder's own metadata
+    # comes back as one update beside the added file. The contract is still the
+    # 2 deletions and the 1 add, so pin exactly those plus the folder itself.
     reply = await_change(bridge, WORKING_SET, saved["anchor"],
-                         lambda changed, deleted: len(deleted) == 2 and len(changed) == 1,
+                         lambda changed, deleted: len(deleted) == 2
+                         and any(entry.get("name") in added for entry in changed)
+                         and any(entry.get("id") == saved["folder"] for entry in changed),
                          timeout=5.0)
     changed = reply.get("items") or [] if reply.get("t") == "changes" else []
     deleted = reply.get("deleted") or [] if reply.get("t") == "changes" else []
     expected = {saved["ids"][name] for name in missing}
     report(reply.get("t") == "changes" and reply.get("expired") is False
-           and set(deleted) == expected and len(changed) == 1
-           and changed[0].get("name") in added,
-           "PERSIST [FILES-31] the old anchor replays the 2 deletions and 1 add "
-           "(%d deleted, %d items)" % (len(deleted), len(changed)))
+           and set(deleted) == expected and len(changed) == 2
+           and any(entry.get("name") in added for entry in changed)
+           and any(entry.get("id") == saved["folder"] for entry in changed),
+           "PERSIST [FILES-31] the old anchor replays the 2 deletions and 1 add, "
+           "plus the folder's own update (%d deleted, %d items)"
+           % (len(deleted), len(changed)))
+
+
+def phase_resync(bridge, root, work, stage):
+    """FILES-33: a reconnect resyncs a folder Finder is not showing. Before the
+    drop, list A and B and save B's ids and the working-set anchor; B is not
+    listed or touched again, so only the app's own digest check can refresh it.
+    """
+    state_path = os.path.join(work, "resync.json")
+    if stage == "before":
+        a = item_id(bridge, "A")
+        b = item_id(bridge, "B")
+        if not a or not b:
+            report(False, "RESYNC [FILES-33] the fake tree has folders A and B")
+            return
+        _, a_items = bridge.list_item_all(a)
+        names = {entry.get("name") for entry in a_items}
+        on_disk = {name for name in os.listdir(os.path.join(root, "A"))
+                   if not name.startswith(".trashed-") and not name.startswith(".pending-")}
+        report(names == on_disk and names,
+               "RESYNC [FILES-35] the listing leaves Android's transient entries out "
+               "(A has %d items, %d on disk)" % (len(names), len(os.listdir(os.path.join(root, "A")))))
+        reply, items = bridge.list_item_all(b)
+        on_disk = {name for name in os.listdir(os.path.join(root, "B"))
+                   if not name.startswith(".trashed-") and not name.startswith(".pending-")}
+        report(reply.get("t") == "items" and {entry.get("name") for entry in items} == on_disk
+               and len(items) == len(on_disk),
+               "RESYNC the first pass listed B (%d files)" % len(items))
+        anchor = sync_anchor(bridge, WORKING_SET)
+        report(anchor is not None, "RESYNC the working set has an anchor before the drop")
+        if anchor is None:
+            return
+        with open(state_path, "w") as handle:
+            json.dump({"folder": b, "anchor": anchor,
+                       "ids": {entry.get("name"): entry.get("id") for entry in items}}, handle)
+        return
+
+    # No listing is asked for here: the extension must not open B, so the ready's
+    # digest check and its own re-list are the only way B can become the phone's.
+    deadline = time.time() + 40
+    connected = False
+    while time.time() < deadline:
+        if bridge.hello().get("connected") is True:
+            connected = True
+            break
+        time.sleep(0.25)
+    report(connected, "RESYNC the app reconnected to the restarted phone")
+    if not connected:
+        return
+
+    with open(state_path) as handle:
+        saved = json.load(handle)
+    b = saved["folder"]
+    on_disk = {name for name in os.listdir(os.path.join(root, "B"))
+               if not name.startswith(".trashed-") and not name.startswith(".pending-")}
+    old = set(saved["ids"])
+    missing = old - on_disk
+    added = on_disk - old
+    report(len(missing) == 2 and len(added) == 1,
+           "RESYNC the phone lost 2 files and gained 1 in B while the session was down")
+    expected = {saved["ids"][name] for name in missing}
+
+    started = time.time()
+    reply = poll_change(bridge, WORKING_SET, saved["anchor"],
+                        lambda changed, deleted: set(deleted) == expected
+                        and any(entry.get("name") in added for entry in changed),
+                        timeout=10.0)
+    elapsed = time.time() - started
+    changed = reply.get("items") or [] if reply.get("t") == "changes" else []
+    deleted = reply.get("deleted") or [] if reply.get("t") == "changes" else []
+    report(reply.get("t") == "changes" and reply.get("expired") is False
+           and set(deleted) == expected and any(entry.get("name") in added for entry in changed),
+           "RESYNC [FILES-33] B is the phone's within %.2f s of the reconnect without the "
+           "extension asking for a listing (%d deleted, %d items)"
+           % (elapsed, len(deleted), len(changed)))
+
+    kinds = []
+    try:
+        with open(os.path.join(work, "events.jsonl"), errors="replace") as handle:
+            for raw in handle:
+                try:
+                    event = json.loads(raw)
+                except ValueError:
+                    continue
+                if event.get("ev") == "fs":
+                    kinds.append(event.get("kind"))
+    except OSError:
+        pass
+    report(kinds.count("digest") == 1,
+           "RESYNC [FILES-33] one fs.digest for the ready (%d)" % kinds.count("digest"))
+    report(kinds.count("list") == 2,
+           "RESYNC [FILES-33] only the two folders whose digest moved were listed (%d)"
+           % kinds.count("list"))
 
 
 def phase_kill(bridge, root, fake_pid):
@@ -1409,7 +1524,7 @@ def main():
     parser.add_argument("--thumb-fixture", default=None)
     parser.add_argument("--phase",
                         choices=["online", "read", "offline", "write", "kill",
-                                 "watch", "watchset", "persist", "thumb", "thumb-hold",
+                                 "watch", "watchset", "persist", "resync", "thumb", "thumb-hold",
                                  "thumb-once", "thumb-timeout", "thumb-slow",
                                  "thumb-none"],
                         required=True)
@@ -1431,6 +1546,20 @@ def main():
             phase_persist(bridge, args.root, args.work, args.stage)
         except (BridgeError, socket.timeout, OSError) as error:
             report(False, "PERSIST the bridge stopped answering (%s)" % error)
+            return 1
+        finally:
+            bridge.close()
+        return 0
+    if args.phase == "resync":
+        try:
+            bridge = Bridge(args.socket, timeout=60.0)
+        except OSError as error:
+            report(False, "RESYNC cannot connect to the bridge socket (%s)" % error)
+            return 1
+        try:
+            phase_resync(bridge, args.root, args.work, args.stage)
+        except (BridgeError, socket.timeout, OSError) as error:
+            report(False, "RESYNC the bridge stopped answering (%s)" % error)
             return 1
         finally:
             bridge.close()

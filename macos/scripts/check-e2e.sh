@@ -6358,6 +6358,9 @@ for i in range(36):
     folder = ["Documents", "DCIM/Camera", "Documents/notes", ""][i % 4]
     with open(os.path.join(root, folder, "file%02d.txt" % i), "wb") as handle:
         handle.write(("small %d\n" % i).encode() * (i + 1))
+# Android's transient entries, inside a folder: never listed, never digested.
+open(os.path.join(root, "DCIM/Camera/.trashed-abc"), "wb").write(b"trashed")
+open(os.path.join(root, "DCIM/Camera/.pending-def"), "wb").write(b"pending")
 with open(os.path.join(root, "big3.bin"), "wb") as handle:
     handle.write(os.urandom(3 * 1024 * 1024))
 with open(os.path.join(root, "big32.bin"), "wb") as handle:
@@ -6368,6 +6371,7 @@ PY
     FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 4" start_fake || return 1
     printf '%s\n' \
         "list" "listall many" "stat big3.bin" \
+        "listall DCIM/Camera" "digest DCIM/Camera" "digest big3.bin" \
         "list .." "list /sdcard" "list Android/data" \
         "read big3.bin $WORK/out3.bin" \
         "read big32.bin $WORK/out32.bin" \
@@ -6408,6 +6412,26 @@ def sha_file(path):
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+def visible(path):
+    return sorted((name for name in os.listdir(path)
+                   if not name.startswith(".trashed-")
+                   and not name.startswith(".pending-")
+                   and not (name.startswith(".pocketdeck-") and name.endswith(".part"))),
+                  key=lambda name: name.encode("utf-8"))
+
+def independent_digest(path):
+    """docs/PROTOCOL.md's digest, computed without the phone: 16 bytes of
+    SHA-256 over `name \\0 ino \\0 size \\0 mtime \\n` in name-byte order."""
+    digest = hashlib.sha256()
+    for name in visible(path):
+        info = os.lstat(os.path.join(path, name))
+        size = 0 if os.path.isdir(os.path.join(path, name)) else info.st_size
+        digest.update(name.encode("utf-8")); digest.update(b"\0")
+        digest.update(str(info.st_ino).encode("ascii")); digest.update(b"\0")
+        digest.update(str(size).encode("ascii")); digest.update(b"\0")
+        digest.update(str(info.st_mtime_ns // 1000000).encode("ascii")); digest.update(b"\n")
+    return digest.hexdigest()[:32]
 
 def listings(path):
     return [line for line in lines if line.get("op") == "list" and line.get("ok")
@@ -6473,6 +6497,21 @@ read_ok("big32.bin", 32 * 1024 * 1024)
 report(failure("big32.bin", op="read") == "fs_stale"
        and not os.path.exists(os.path.join(work, "stale.bin")),
        "[FILES-7] FILES a stale etag answers fs_stale and writes nothing")
+
+# 6b. FILES-35: the listing and the digest both leave Android's transient names
+# out, and the phone's digest is the documented hash (checked against the bytes
+# the harness computes itself).
+camera = os.path.join(root, "DCIM", "Camera")
+names = [item["n"] for page in listings("DCIM/Camera") for item in page.get("items", [])]
+want_names = {h(name) for name in visible(camera)}
+report(len(names) == len(want_names) and set(names) == want_names,
+       "[FILES-35] FILES the listing leaves the transient names out (%d items)" % len(names))
+digest_line = next((line for line in lines if line.get("op") == "digest"
+                    and line.get("ok") and line.get("p") == h("DCIM/Camera")), None)
+report(digest_line is not None and digest_line.get("digest") == independent_digest(camera),
+       "[FILES-35] FILES the phone's digest is the documented hash over the visible entries")
+report(failure("big3.bin", op="digest") == "fs_not_found",
+       "[FILES-35] FILES a file answers not_found for its digest")
 
 # 7. A cancelled read stops; the fake logged no chunk after the cancel marker.
 cancelled = any(line.get("op") == "read" and line.get("ok") is False
@@ -7380,7 +7419,13 @@ root = os.path.join(work, "fsroot")
 for folder in ("A", "B"):
     os.makedirs(os.path.join(root, folder), exist_ok=True)
 open(os.path.join(root, "A", "seed.txt"), "wb").write(b"seed\n")
-open(os.path.join(root, "B", "other.txt"), "wb").write(b"other\n")
+# Android's transient entries, at two depths: neither is a phone file.
+open(os.path.join(root, "A", ".trashed-x"), "wb").write(b"trashed\n")
+open(os.path.join(root, "A", ".pending-x"), "wb").write(b"pending\n")
+# [FILES-33] B is the folder Finder is not showing: five files the reconnect's
+# resync must compare without a listing from the extension.
+for index in range(1, 6):
+    open(os.path.join(root, "B", "b%d.txt" % index), "wb").write(b"b\n")
 # [FILES-31] the folder the record outlives the app for: five files now, two
 # gone and one added while the app is stopped.
 os.makedirs(os.path.join(root, "P"), exist_ok=True)
@@ -7494,6 +7539,26 @@ PY
     else
         bad "PERSIST [FILES-31] a file name appears in the app log"
     fi
+    # [FILES-33] The reconnect resync: B is in the record but not on screen, and
+    # its watch is allowed to lapse before the session drops, so only the ready's
+    # one fs.digest can notice the phone's two deleted and one added file.
+    files_bridge_driver resync --stage before
+    sleep 21  # the test TTL is 20 s: the watch set is empty for the reconnect
+    stop_fakephone
+    wait_until 5 no_fakephone
+    python3 - "$WORK" <<'PY'
+import os, sys
+folder = os.path.join(sys.argv[1], "fsroot", "B")
+names = sorted(name for name in os.listdir(folder)
+               if not name.startswith(".trashed-") and not name.startswith(".pending-"))
+os.unlink(os.path.join(folder, names[0]))
+os.unlink(os.path.join(folder, names[1]))
+open(os.path.join(folder, "b-new.txt"), "wb").write(b"new\n")
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || return 1
+    # The driver waits for the app's bridge to say connected, then reads the
+    # working set: it never lists the folder itself.
+    files_bridge_driver resync --stage after
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
