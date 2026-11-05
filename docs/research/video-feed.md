@@ -316,6 +316,36 @@ What the round found wrong with the measurement:
 - **A frozen phone screen is invisible to the hitch rule.** When the phone's own rendering stalls, the capture times stall too, so `late` stays near 0. Some invalid runs outside CBR look like this: no frames during swipes, then a burst. The phone awake gave 85 fps during the swipes at 11:23, dozing gave 55–60.
 - **A failed run lost the whole table.** The bench exited on the last run's missing line without writing the CSV.
 
+## Second real-phone round: the stall on demand (2026-11-05)
+
+The six stall arms × 3 interleaved runs on the person's phone (v146, phone locked and dozing, Settings), 15:51–15:59, with `stall_ms=400` every 5 s (`stream N injected stall 400`, about four per 22 s run). Numbers from each window's closing `stats total` line; `jank_ms` per run.
+
+| Arm | jank_ms per run | drop_ms | kf_req | Note |
+| --- | --- | --- | --- | --- |
+| stall (today's policy) | 1418, 613, *0* | 249, 216 | 1, 1 | run 2 got no picture for its 22 s (10 frames, `phone_frames=0`): the slow first frame of ISS-10, not the stall |
+| stall-q1 | *437, 485, 85* | 0 | 0 | **frozen**: the encoder stayed suspended (see below); 502–735 frames against about 1,250 |
+| stall-q1q2-100 | *461*, 513, *0* | 0 | 0 | runs 1 and 3 frozen (33 frames in run 3); run 2 recovered and is the only valid Q1 run |
+| stall-q2-500 | 1154, 1719, 1218 | 350, 0, 0 | 1, 0, 0 | the 500 ms queue rides out the stall without a drop in 2 of 3 runs, but every stall becomes a long hitch |
+| stall-paced | 669, 1135, 1077 | 267–607 | 1–2 | |
+| stall-ir60 | 572, 1519, 587 | 161–710 | 1–4 | |
+
+Italics: not valid (frozen or no picture). Every arm pays the injected stall itself (about 400 ms of nothing per stall that lands in motion), so the policy's own cost is the part beyond it: today's policy adds a drop and a keyframe per run, as predicted.
+
+What it shows:
+- **The stall switch works**, and today's policy does what the session log of 2026-11-04 showed: deltas dropped, a keyframe asked for, the picture held until it arrives.
+- **Q1 is broken, not ranked.** Under a stall, skip-at-source can leave the encoder suspended for the rest of the window:
+  - stream 15: the pressure transition (encoder thread) and the drain transition (writer thread) landed in the same millisecond, and the encoder's SUSPEND was applied after the resume. The machine said flowing, the encoder stayed suspended: 33 frames in 21.8 s;
+  - stream 14: suspended 10.7 s into the window and never resumed: the resume check gives up when the backlog is empty, which is the most drained state there is.
+  - Fix on `fix/q1fix` (the state applied under one lock, empty counts as drained, a 1 s suspend timeout); Q1 is re-run after it.
+- **A longer queue is not the answer.** 500 ms avoids most drops but turns every stall into a hitch of the same length, with the highest jank of the round.
+- **Paced display and intra refresh are within the noise** of today's policy under a stall.
+
+What the round found wrong with the measurement:
+- **A frozen picture scores best.** The two frozen Q1 runs had `jank_ms` 85 and 0. The hitch rule needs a frame to be late, and a frozen picture sends none; `susp_ms` counted only episodes that ended (0–19 ms for a 10 s suspend). The bench now has to mark a run `frozen` when a swipe line has almost no frames, and count an open suspend.
+- **The medians counted low-motion runs** (today's policy's median of 613 included the run with no picture).
+
+Raw data: `.agent/stats/round2/` (not in the repo).
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
