@@ -1051,7 +1051,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func beginLiveResize() {
         isLiveResizing = true
         videoView.isWindowLiveResizing = true
-        videoView.noteResizeRequested()
+        videoView.liveResizeBegan()
         liveText.exit(.resize)
     }
 
@@ -1060,6 +1060,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func endLiveResize() {
         isLiveResizing = false
         videoView.isWindowLiveResizing = false
+        videoView.liveResizeEnded()
         scheduleResize(after: 0)
         rememberFrame()
     }
@@ -1069,7 +1070,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// `setFrame` — a stream's size, the phone's turn — does not come through
     /// here and keeps its size on the e2e's virtual display.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        WindowFrameLimit.size(frameSize, for: sender)
+        let size = WindowFrameLimit.size(frameSize, for: sender)
+        // The next size's picture layers go down before the window takes it:
+        // WindowServer can composite the new frame against the previous
+        // surface, which must already cover the new size (WIN-53).
+        if isLiveResizing {
+            let fullScreen = sender.styleMask.contains(.fullScreen)
+            videoView.prepareLiveResize(to: style.streamSize(window: size, fullScreen: fullScreen))
+        }
+        return size
     }
 
     /// One step of the e2e's scripted drag: the same delegate call AppKit makes
