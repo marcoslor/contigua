@@ -156,7 +156,8 @@ final class StreamStatsTests: XCTestCase {
         for field in ["stats stream=7", "size=1232x2410", "view=2464x4820",
                       "place=oneToOne", "rx_fps=", "shown_fps=", "int_p95=",
                       "int_p99=", "freeze_n=0", "freeze_ms=0", "mac_drop=0",
-                      "phone_drop=0", "drop_ep=0", "skip=0", "kf=0", "kf_req=0",
+                      "phone_drop=0", "drop_ep=0", "skip=0", "susp_n=0",
+                      "susp_ms=0", "refine_n=0", "kf=0", "kf_req=0",
                       "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
                       "e2e_p50=-", "e2e_p95=-"] {
@@ -167,7 +168,8 @@ final class StreamStatsTests: XCTestCase {
     func testTheLinePrintsPhoneCountersAndRates() {
         var phone = PhoneStreamStats(json: ["frames": 120, "kf": 2, "kfReq": 1,
                                             "bytes": 250_000, "drop": 9, "dropEp": 2,
-                                            "skip": 3, "targetBps": 4_500_000,
+                                            "skip": 3, "susp": 4, "suspMs": 850,
+                                            "refine": 2, "targetBps": 4_500_000,
                                             "encP50": 12_000, "encP95": 18_000,
                                             "queueP50": 800, "queueP95": 1_500,
                                             "qpP50": 24, "qpP95": 31])
@@ -175,7 +177,8 @@ final class StreamStatsTests: XCTestCase {
         window.notePhoneStats(phone)
         let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
                                         place: "fit", stats: window.snapshot(now: 0))
-        for field in ["phone_drop=9", "drop_ep=2", "skip=3", "kf=2", "kf_req=1",
+        for field in ["phone_drop=9", "drop_ep=2", "skip=3", "susp_n=4",
+                      "susp_ms=850", "refine_n=2", "kf=2", "kf_req=1",
                       "kbps=1000", "target_kbps=4500", "qp_p50=24.0",
                       "qp_p95=31.0", "enc_p50=12.0", "enc_p95=18.0",
                       "queue_p95=1.5"] {

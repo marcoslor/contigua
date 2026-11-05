@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 FIELD = re.compile(r"^(stats|[a-z0-9_]+)=([^\s]+)$")
-CLOCK_FIELDS = ("freeze_n", "drop_ep", "kf")
+CLOCK_FIELDS = ("freeze_n", "drop_ep", "kf", "susp_n", "susp_ms", "refine_n")
 SUBSYSTEM = "dev.pocketdeck.mac"
 
 

@@ -94,6 +94,12 @@ class Session(
     private val pairDecisionTimeoutMs: Long = 120_000,
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
+    /**
+     * The ISS-40 switches as the live system properties read them. Read once
+     * per stream when its first delta is queued (never per frame), so a bench
+     * sets the properties and then opens a window.
+     */
+    private val strategy: () -> StreamStrategy = { StreamStrategy.read() },
     private val autoApprovePairing: Boolean = false,
     /** Process-wide quiet window after a denied/timed-out prompt (review M-1). */
     private val pairCooldown: PairCooldown = PairCooldown(),
@@ -210,7 +216,19 @@ class Session(
         var keyDownTime = 0L
     }
 
-    private val queue = SendQueue(maxDeltaBytesPerStream, nowUs = monoUs) { stream -> onDeltaDrop(stream) }
+    private val queue = SendQueue(
+        maxDeltaBytesPerStream,
+        nowUs = monoUs,
+        onDeltaDrop = { stream -> onDeltaDrop(stream) },
+        policyFor = { stream ->
+            strategy().let { QueuePolicy.of(it, maxDeltaBytesPerStream, SendQueue.DEFAULT_MAX_DELTA_DURATION_US) }
+        },
+        onOverflow = { stream -> onQueueOverflow(stream) },
+        onSuspend = { stream, suspended ->
+            if (stream > 0) runCatching { display.setEncoderSuspend(stream, suspended) }
+        },
+        log = { message -> log(message) },
+    )
     private val pairLock = Object()
 
     @Volatile private var phase = Phase.HELLO
@@ -3297,6 +3315,12 @@ class Session(
     private fun onDeltaDrop(stream: Int) {
         log("stream $stream backpressure: dropping deltas, requesting keyframe")
         runCatching { display.requestKeyframe(stream) }
+        runCatching { display.onBackpressure(stream) }
+    }
+
+    /** Q1: the suspend policy passed its budget; lower the bitrate, no keyframe. */
+    private fun onQueueOverflow(stream: Int) {
+        log("stream $stream backpressure: queue over budget, lowering bitrate")
         runCatching { display.onBackpressure(stream) }
     }
 

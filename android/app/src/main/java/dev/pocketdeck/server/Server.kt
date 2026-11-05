@@ -55,6 +55,12 @@ class Server(
     private val tlsContextBuilder: ((String, String) -> SSLContext?)? = null,
     /** R-8/D-4: the app shows the version sentence; null = the hello had no v. */
     private val onVersionRefused: (Int?) -> Unit = {},
+    /** N1: the stream switches, read per connection for the socket's traffic class. */
+    private val strategy: () -> StreamStrategy = { StreamStrategy.read() },
+    /** N1: `setTrafficClass` on the accepted socket; the test seam. */
+    private val markTraffic: (Socket, Int) -> Boolean = { socket, tos ->
+        runCatching { socket.trafficClass = tos }.isSuccess
+    },
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -197,6 +203,14 @@ class Server(
      */
     private fun serve(rawSocket: Socket) {
         try {
+            // N1: mark the traffic before any TLS byte: the DSCP is the socket's
+            // property, not the stream's, and the handshake itself should carry
+            // it too.
+            val tos = strategy().trafficClass
+            if (tos != 0) {
+                val applied = markTraffic(rawSocket, tos)
+                log("tos=0x%02x%s".format(tos, if (applied) "" else " unsupported"))
+            }
             // TLS 1.3 only (docs/design/e2ee.md §2, fixed decision): every
             // connection is wrapped before any byte of the session protocol is
             // exchanged. A failed wrap is closed, never downgraded to plaintext.

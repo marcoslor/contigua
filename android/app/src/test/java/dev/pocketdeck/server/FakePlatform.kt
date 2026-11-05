@@ -177,6 +177,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         backpressures.add(stream)
     }
 
+    /** Q1: every suspend/resume the queue asked for, in order. */
+    val suspends = java.util.concurrent.CopyOnWriteArrayList<Pair<Int, Boolean>>()
+
+    override fun setEncoderSuspend(stream: Int, suspended: Boolean) {
+        suspends.add(stream to suspended)
+    }
+
     // ---- AppCatalog ---------------------------------------------------
 
     override fun list(): List<AppEntry> = apps
