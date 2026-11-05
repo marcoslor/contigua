@@ -26,6 +26,30 @@ enum ResizeLayoutEvent: Equatable {
     case timedOut
 }
 
+extension ResizeLayoutPhase {
+    /// For the log line; a state, never a person's value.
+    var state: String {
+        switch self {
+        case .idle: return "idle"
+        case .dragging: return "dragging"
+        case .awaitingAnswer: return "awaitingAnswer"
+        case .settling: return "settling"
+        }
+    }
+}
+
+extension ResizeLayoutEvent {
+    var kind: String {
+        switch self {
+        case .dragBegan: return "dragBegan"
+        case .dragEnded: return "dragEnded"
+        case .answered: return "answered"
+        case .settleElapsed: return "settleElapsed"
+        case .timedOut: return "timedOut"
+        }
+    }
+}
+
 struct ResizeLayout {
     private(set) var phase: ResizeLayoutPhase = .idle
 

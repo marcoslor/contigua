@@ -62,7 +62,7 @@ final class VideoLayerView: NSView {
 
     /// The drag/answer/settle phases; the gravity holds fill through them.
     private var resizeLayout = ResizeLayout()
-    private var settleWork: DispatchWorkItem?
+    private var settleWork: DispatchWorkItem?  // gcd: one cancellable main-queue beat
 
     /// The window is being resized right now (a drag, or the app's own zoom
     /// animation). A stale picture cannot answer a request at this size, even
@@ -289,7 +289,7 @@ final class VideoLayerView: NSView {
         let before = resizeLayout.phase
         resizeLayout.apply(event)
         guard resizeLayout.phase != before else { return }
-        Log.video.info("resize-layout: \(String(describing: before), privacy: .public) --\(String(describing: event), privacy: .public)--> \(String(describing: self.resizeLayout.phase), privacy: .public)")
+        Log.video.info("resize-layout: \(before.state, privacy: .public) --\(event.kind, privacy: .public)--> \(self.resizeLayout.phase.state, privacy: .public)")
         updateGravity()
     }
 
@@ -575,11 +575,11 @@ final class VideoLayerView: NSView {
                     // the layer's contents re-layout is visible for ~0.2 s if
                     // it lands while the window server still shows the drag.
                     self.settleWork?.cancel()
-                    let settle = DispatchWorkItem { [weak self] in
+                    let settle = DispatchWorkItem { [weak self] in  // gcd: the resizeTimeout pattern
                         self?.applyResizeLayout(.settleElapsed)
                     }
                     self.settleWork = settle
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: settle)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: settle)  // gcd: same queue and delay as resizeTimeout
                 }
                 self.updateGravity()
                 self.needsLayout = true
