@@ -223,6 +223,127 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(window.snapshot(now: 0.2).macDrop, 1)
     }
 
+    // MARK: The phone's counters between two lines (ISS-40 item 1)
+
+    private func phoneMessage(frames: Int, bytes: Int, dropGapMs: Int? = nil,
+                              targetBps: Int = 0, qpP50: Double? = nil,
+                              qpP95: Double? = nil,
+                              windowMs: Int = 2_000) -> PhoneStreamStats {
+        var stats = PhoneStreamStats(json: ["frames": frames, "kf": 1, "kfReq": 1,
+                                           "bytes": bytes, "drop": 1, "dropEp": 1,
+                                           "skip": 1, "susp": 1, "suspMs": 10,
+                                           "refine": 1, "targetBps": targetBps,
+                                           "windowMs": windowMs,
+                                           "encP50": 1_000, "encP95": 2_000,
+                                           "queueP50": 300, "queueP95": 600])
+        stats.dropGapMs = dropGapMs
+        stats.qpP50 = qpP50
+        stats.qpP95 = qpP95
+        return stats
+    }
+
+    /// The `field=value` word for a key on a line, so a test reads what the
+    /// reviewer reads without a second accessor.
+    private func field(_ key: String, in line: String) -> String? {
+        for word in line.split(separator: " ") {
+            if word.hasPrefix(key + "=") { return String(word.dropFirst(key.count + 1)) }
+        }
+        return nil
+    }
+
+    private func line(_ stats: StreamStatsSnapshot) -> String {
+        StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                             place: "fit", stats: stats)
+    }
+
+    func testTwoPhoneMessagesSumTheirCountersAndKeepTheLatestLevels() {
+        var window = StreamStatsWindow()
+        window.notePhoneStats(phoneMessage(frames: 100, bytes: 40_000,
+                                           dropGapMs: 40, targetBps: 4_000_000,
+                                           qpP50: 10, qpP95: 20))
+        window.notePhoneStats(phoneMessage(frames: 120, bytes: 60_000,
+                                           dropGapMs: 60, targetBps: 5_000_000,
+                                           qpP50: 30, qpP95: 40))
+        let snapshot = window.snapshot(now: 5)
+        let phone = try? XCTUnwrap(snapshot.phone)
+        let text = line(snapshot)
+        XCTAssertEqual(field("phone_n", in: text), "2")
+        XCTAssertEqual(phone?.frames, 220)
+        XCTAssertEqual(phone?.keyframes, 2)
+        XCTAssertEqual(phone?.keyframesRequested, 2)
+        XCTAssertEqual(phone?.bytes, 100_000)
+        XCTAssertEqual(phone?.deltasDropped, 2)
+        XCTAssertEqual(phone?.dropEpisodes, 2)
+        XCTAssertEqual(phone?.dropGapMs, 100)
+        XCTAssertEqual(phone?.framesSkipped, 2)
+        XCTAssertEqual(phone?.suspendedEpisodes, 2)
+        XCTAssertEqual(phone?.suspendedMs, 20)
+        XCTAssertEqual(phone?.refined, 2)
+        // The levels are the latest message's, not a sum.
+        XCTAssertEqual(phone?.targetBps, 5_000_000)
+        XCTAssertEqual(phone?.qpP50, 30)
+        XCTAssertEqual(phone?.qpP95, 40)
+        XCTAssertEqual(phone?.encodeP50Us, 1_000)
+        XCTAssertEqual(field("target_kbps", in: text), "5000")
+    }
+
+    func testKbpsUsesTheSummedBytesAndTheSummedMessageIntervals() {
+        var window = StreamStatsWindow()
+        // 4,000 bytes over 2 s then 6,000 over 3 s: 10,000 bytes in 5 s.
+        window.notePhoneStats(phoneMessage(frames: 1, bytes: 4_000))
+        window.notePhoneStats(phoneMessage(frames: 1, bytes: 6_000, windowMs: 3_000))
+        let text = line(window.snapshot(now: 5))
+        XCTAssertEqual(field("kbps", in: text), "16",
+                       "10,000 bytes × 8 / 5,000 ms = 16 kbps")
+    }
+
+    func testALineWithNoPhoneMessagePrintsZeroCountersAndNoLevels() {
+        var window = StreamStatsWindow()
+        window.notePhoneStats(phoneMessage(frames: 100, bytes: 40_000,
+                                           dropGapMs: 40, targetBps: 8_000_000,
+                                           qpP50: 24, qpP95: 31))
+        _ = window.snapshot(now: 5) // the line consumes the message
+        let snapshot = window.snapshot(now: 10)
+        XCTAssertNil(snapshot.phone)
+        let text = line(snapshot)
+        for expected in ["phone_n=0", "kbps=-", "target_kbps=-", "qp_p50=-",
+                         "qp_p95=-", "enc_p50=-", "enc_p95=-", "queue_p95=-",
+                         "phone_drop=0", "drop_ep=0", "drop_ms=0", "skip=0",
+                         "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0", "kf_req=0"] {
+            XCTAssertTrue(text.contains(expected), "missing \(expected) in \(text)")
+        }
+        XCTAssertFalse(text.contains("kbps=0"))
+        XCTAssertFalse(text.contains("target_kbps=8000"),
+                       "a line with no message must not repeat the previous message")
+    }
+
+    func testAConfigBetweenTwoMessagesKeepsTheFirstCounters() {
+        var window = StreamStatsWindow()
+        window.notePhoneStats(phoneMessage(frames: 100, bytes: 40_000, targetBps: 4_000_000))
+        window.noteConfig(now: 1.0)
+        window.notePhoneStats(phoneMessage(frames: 20, bytes: 10_000, targetBps: 6_000_000))
+        let snapshot = window.snapshot(now: 2.0)
+        XCTAssertEqual(field("phone_n", in: line(snapshot)), "2")
+        XCTAssertEqual(snapshot.phone?.frames, 120,
+                       "a config resets the Mac's window, not the phone's counters")
+        XCTAssertEqual(snapshot.phone?.bytes, 50_000)
+        XCTAssertEqual(snapshot.phone?.targetBps, 6_000_000)
+        XCTAssertEqual(snapshot.receivedFrames, 0, "the config still resets the Mac's samples")
+    }
+
+    func testAPhoneWithoutDropGapStaysAbsentAcrossTwoMessages() {
+        var window = StreamStatsWindow()
+        window.notePhoneStats(phoneMessage(frames: 1, bytes: 1, dropGapMs: nil))
+        window.notePhoneStats(phoneMessage(frames: 1, bytes: 1, dropGapMs: nil))
+        let snapshot = window.snapshot(now: 1)
+        XCTAssertNil(snapshot.phone?.dropGapMs, "no measurement is absent, never zero")
+        let text = line(snapshot)
+        XCTAssertTrue(text.contains("drop_ms=-"))
+        XCTAssertEqual(field("phone_n", in: text), "2")
+        XCTAssertTrue(line(window.snapshot(now: 2)).contains("phone_n=0"),
+                      "the next line has no message")
+    }
+
     // MARK: The line (item 4)
 
     func testTheLogLineHasEveryFieldAndDashForMissingValues() {
@@ -241,9 +362,9 @@ final class StreamStatsTests: XCTestCase {
                       "place=oneToOne", "rx_fps=", "shown_fps=", "int_p95=",
                       "int_p99=", "freeze_n=0", "freeze_ms=0", "hitch_n=0",
                       "hitch_ms=0", "late_p99=-", "mac_drop=0",
-                      "phone_drop=0", "drop_ep=0", "drop_ms=-", "skip=0", "susp_n=0",
-                      "susp_ms=0", "refine_n=0", "kf=0", "kf_req=0",
-                      "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
+                      "phone_drop=0", "drop_ep=0", "drop_ms=-", "phone_n=1",
+                      "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
+                      "kf_req=0", "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
                       "e2e_p50=-", "e2e_p95=-"] {
             XCTAssertTrue(line.contains(field), "missing \(field) in \(line)")
@@ -263,7 +384,8 @@ final class StreamStatsTests: XCTestCase {
         window.notePhoneStats(phone)
         let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
                                         place: "fit", stats: window.snapshot(now: 0))
-        for field in ["phone_drop=9", "drop_ep=2", "drop_ms=250", "skip=3", "susp_n=4",
+        for field in ["phone_drop=9", "drop_ep=2", "drop_ms=250", "phone_n=1",
+                      "skip=3", "susp_n=4",
                       "susp_ms=850", "refine_n=2", "kf=2", "kf_req=1",
                       "kbps=1000", "target_kbps=4500", "qp_p50=24.0",
                       "qp_p95=31.0", "enc_p50=12.0", "enc_p95=18.0",

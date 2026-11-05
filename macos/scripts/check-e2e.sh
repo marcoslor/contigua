@@ -11848,6 +11848,9 @@ forced = [r for r in rows
           and 250 <= (number("freeze_ms", r) or 0) <= 600]
 freeze = 1 if forced else 0
 qp = [v for v in (number("qp_p95", r) for r in recent) if v is not None]
+# `phone_n` counts the phone's 2 s messages folded into each 5 s line: the
+# fake phone sends one every 2 s, so each steady line covers at least two.
+phone = [int(number("phone_n", r) or 0) for r in recent]
 # The fake phone's pts follows wall clock across its forced gap, so the gap is
 # a freeze and not a hitch. Startup can still hand over a burst late; the
 # steady lines are the ones the line-level contract is about.
@@ -11858,10 +11861,11 @@ print(len(rows),
       round(statistics.median(e2e), 1) if e2e else "-",
       drop, freeze,
       round(statistics.median(qp), 1) if qp else "-",
-      hitch)
+      hitch,
+      ",".join(str(value) for value in phone) if phone else "-")
 PY
-    local lines rx shown e2e drop freeze qp hitch
-    read -r lines rx shown e2e drop freeze qp hitch < "$WORK/stats-metrics.txt"
+    local lines rx shown e2e drop freeze qp hitch phone_n
+    read -r lines rx shown e2e drop freeze qp hitch phone_n < "$WORK/stats-metrics.txt"
     # An empty or short metrics line must fail an assertion below, not stop the
     # check with `unbound variable`.
     lines="${lines:-0}"
@@ -11872,7 +11876,13 @@ PY
     freeze="${freeze:-0}"
     qp="${qp:--}"
     hitch="${hitch:-0}"
-    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp hitch_n=$hitch"
+    phone_n="${phone_n:--}"
+    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp hitch_n=$hitch phone_n=$phone_n"
+    if [ "$phone_n" != "-" ] && ! printf '%s\n' "$phone_n" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
+        ok "STATS every steady line folded in at least two phone messages (phone_n=$phone_n)"
+    else
+        bad "STATS a steady line carried fewer than two phone messages (phone_n=$phone_n)"
+    fi
     [ "${lines:-0}" -ge 3 ] \
         && ok "STATS $lines lines in the 20 s watch" \
         || bad "STATS only ${lines:-0} lines in the 20 s watch"
