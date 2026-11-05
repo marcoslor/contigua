@@ -382,6 +382,18 @@ class TotalsTest(unittest.TestCase):
             "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
             "stats total stream=1 secs=10.0\n"))
 
+    def test_dry_run_reads_the_arms_and_touches_no_device(self):
+        import unittest.mock as mock
+        argv = ["bench.py", "--dry-run", "--profile", "bench2",
+                "--serial", "emulator-5554", "--arms-filter", "stall",
+                "--arms", os.path.join(HERE, "arms.json"), "--repeats", "1",
+                "--out", os.path.join(tempfile.gettempdir(), "bench-dry-run.csv")]
+        with mock.patch.object(self.bench, "require_device",
+                               side_effect=AssertionError("the dry run touched adb")), \
+                mock.patch("sys.argv", argv):
+            self.assertEqual(self.bench.main(), 0)
+        self.assertFalse(os.path.exists(argv[-1]))
+
 
 class ParseRowsTest(unittest.TestCase):
     def test_the_line_timestamp_is_an_absolute_instant(self):
