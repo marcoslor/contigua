@@ -296,15 +296,29 @@ final class StreamChromeView: NSView {
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
+    /// Removes every implicit animation from a layer tree: a resize step must
+    /// land in the same commit, and the extension view's private content layer
+    /// otherwise eases its own frame for ~0.25 s.
+    private func clearLayerAnimations(_ layer: CALayer?) {
+        guard let layer else { return }
+        layer.removeAllAnimations()
+        for sublayer in layer.sublayers ?? [] { clearLayerAnimations(sublayer) }
+    }
+
     func layoutChrome() {
+        // Every frame here moves in the same transaction as the window's new
+        // size. Without that, the layer-backed views animate to their new
+        // frames for ~0.25 s: during a fast drag the picture trails the edge
+        // WindowServer already shows, and the strip exposed behind it is the
+        // video view's black background (WIN-53).
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         ext.frame = bounds
         let bar = barHeight
         video.frame = NSRect(x: 0, y: 0, width: bounds.width,
                              height: max(bounds.height - streamBarHeight, 0))
         // The dots sit exactly over the stream, in its own coordinates, but on
         // this view's layer: no animation while the bar comes and goes.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         touchDots.frame = video.frame
         phoneOverlay.frame = video.frame
         // The cover is one sheet over the whole window in either style, the
@@ -315,6 +329,12 @@ final class StreamChromeView: NSView {
         stallOverlay.frame = bounds
         stallOverlay.topInset = bar
         CATransaction.commit()
+        // No implicit animation may outlive the layout pass: during a live
+        // resize the picture must take the new frame in the same commit, or
+        // the edge the window already shows stays black for ~0.25 s.
+        clearLayerAnimations(layer)
+        clearLayerAnimations(ext.layer)
+        clearLayerAnimations(video.layer)
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its
         // contentView — a stream window left immersive then showed nothing. With
