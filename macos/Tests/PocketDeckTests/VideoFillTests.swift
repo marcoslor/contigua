@@ -67,13 +67,38 @@ final class VideoFillTests: XCTestCase {
     }
 
     func testAFrameUnderTheWindowsPixelsBecauseOfTheCapIsScaled() {
-        // The window is 3000 px wide but the encoder caps the stream at 2560:
-        // this is the one settled case that is scaled.
+        // The window is 3000 px wide but the encoder caps the stream at 2560
+        // with the aspect kept: it is scaled over the whole view, no bars.
         XCTAssertEqual(Letterbox.placement(video: CGSize(width: 2560, height: 853),
                                            bounds: CGSize(width: 3000, height: 1000),
                                            backingScale: 1, alignment: 2,
                                            resizePending: false, phoneMode: false),
-                       .fit)
+                       .stretch)
+    }
+
+    /// The person's report (2026-11-04, real phone): a 1680 x 1022 pt window at
+    /// 2x asked for 3360 x 2044 px and the phone answered 3360 x 2032 (rounded
+    /// to 16). The settled frame was aspect-fitted, so black bands showed above
+    /// and below it. A frame of nearly the view's shape covers the view.
+    func testASettledFrameAFewPixelsShortCoversTheWindowWithNoBars() {
+        let video = CGSize(width: 3360, height: 2032)
+        let bounds = CGRect(x: 0, y: 0, width: 1680, height: 1022)
+        let placement = Letterbox.placement(video: video, bounds: bounds.size,
+                                            backingScale: 2, alignment: 2,
+                                            resizePending: false, phoneMode: false)
+        XCTAssertEqual(placement, .stretch)
+        XCTAssertEqual(Letterbox.videoRect(video: video, in: bounds, backingScale: 2, alignment: 2),
+                       bounds, "no band anywhere: the picture covers the whole view")
+    }
+
+    /// The 1:1 strip is at most one pixel: an encoder with a coarser step (4,
+    /// 8 or 16 px) covers the view instead of leaving a visible band.
+    func testACoarseEncoderStepCoversTheWindowRatherThanLeavingABand() {
+        XCTAssertEqual(Letterbox.placement(video: CGSize(width: 1796, height: 1196),
+                                           bounds: CGSize(width: 900, height: 600),
+                                           backingScale: 2, alignment: 4,
+                                           resizePending: false, phoneMode: false),
+                       .stretch)
     }
 
     func testThePhoneWindowNeverFills() {
@@ -145,6 +170,7 @@ final class VideoFillTests: XCTestCase {
         XCTAssertEqual(VideoLayerView.gravity(for: .fit), .resizeAspect)
         XCTAssertEqual(VideoLayerView.gravity(for: .fill), .resizeAspectFill)
         XCTAssertEqual(VideoLayerView.gravity(for: .oneToOne), .resize)
+        XCTAssertEqual(VideoLayerView.gravity(for: .stretch), .resize)
     }
 
     // MARK: The config that ends the pending state

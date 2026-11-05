@@ -36,6 +36,25 @@ internal class WindowStream(
 
         const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
 
+        /** The encoder type's capabilities, probed once per process (see [probedCapabilities]). */
+        @Volatile private var probed: MediaCodecInfo.VideoCapabilities? = null
+
+        /**
+         * The capabilities of the encoder every stream builds, from one probe
+         * encoder created and released at once. A failed probe is tried again
+         * on the next ask; the result is a plain object that outlives the codec.
+         */
+        fun probedCapabilities(): MediaCodecInfo.VideoCapabilities? {
+            probed?.let { return it }
+            val probe = runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return null
+            return try {
+                runCatching { probe.codecInfo.getCapabilitiesForType(MIME).videoCapabilities }
+                    .getOrNull()?.also { probed = it }
+            } finally {
+                runCatching { probe.release() }
+            }
+        }
+
         const val DEFAULT_DISPLAY = 0
 
         /** How often the mirror checks display 0 for a rotation or size change. */
@@ -460,6 +479,10 @@ internal class WindowStream(
 
     private fun learnLimits(codec: MediaCodec) {
         val found = runCatching { codec.codecInfo.getCapabilitiesForType(MIME).videoCapabilities }.getOrNull() ?: return
+        adoptLimits(found)
+    }
+
+    private fun adoptLimits(found: MediaCodecInfo.VideoCapabilities) {
         caps = found
         limits = EncoderLimits(
             maxW = found.supportedWidths.upper,
@@ -469,20 +492,22 @@ internal class WindowStream(
         )
     }
 
-    /** The codec's limits before any encoder is built: a mirror's frame is picked from them. */
+    /**
+     * The codec's limits before this stream's encoder is built: a mirror's
+     * frame and an app window's first size are fitted with them, so the first
+     * frame already has the codec's own alignment, not the 16 px default
+     * (ISS-39). The probe runs once per process.
+     */
     private fun ensureLimits() {
         if (caps != null) return
-        val probe = runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return
-        try {
-            learnLimits(probe)
-        } finally {
-            runCatching { probe.release() }
-        }
+        val found = probedCapabilities() ?: return
+        adoptLimits(found)
     }
 
     private fun fitToEncoder(w: Int, h: Int): IntSize {
         val screen = mirrorScreen
         if (screen != null) return mirrorFrame(IntSize(w, h), screen)
+        ensureLimits()
         val known = caps
         return EncoderSizes.fit(w, h, limits) { sw, sh -> known?.isSizeSupported(sw, sh) ?: true }
     }

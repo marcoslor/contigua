@@ -315,6 +315,7 @@ final class VideoLayerView: NSView {
         case .fit: return .resizeAspect
         case .fill: return .resizeAspectFill
         case .oneToOne: return .resize
+        case .stretch: return .resize
         }
     }
 

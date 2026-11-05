@@ -112,7 +112,7 @@ internal class ResizeLedger {
 
     /**
      * Records what an answered request means, in the terms it was asked: the box
-     * after floor16/turnBox and the effective dpi, never the size the encoder
+     * after turnBox and the effective dpi, never the size the encoder
      * fitted it to. A repeat of the same request then reads as [ResizeNeed.SAME]
      * instead of rebuilding the encoder for the fitted size.
      */
