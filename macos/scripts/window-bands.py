@@ -136,7 +136,10 @@ def main():
     seconds = max(times) - min(times) if len(times) > 1 else 0.0
     work = tempfile.mkdtemp(prefix="window-bands-")
     try:
-        worst = {edge: (0, None) for edge in ("top", "bottom", "left", "right")}
+        # A clean run has no "worst" frame (every edge 0): keep one frame from
+        # the middle of the drag so each edge still has a crop to look at.
+        sample = files[len(files) // 2]
+        worst = {edge: (0, sample) for edge in ("top", "bottom", "left", "right")}
         for path in files:
             edges = measure(path, bar, scale, work)
             for edge, count in edges.items():
@@ -144,8 +147,7 @@ def main():
                     worst[edge] = (count, path)
         bad = [edge for edge in ("top", "bottom", "left", "right") if worst[edge][0] > 2]
         for edge in ("top", "bottom", "left", "right"):
-            if worst[edge][1]:
-                crop_edge(worst[edge][1], edge, bar, scale, directory)
+            crop_edge(worst[edge][1], edge, bar, scale, directory)
         print("frames=%d seconds=%.2f fps=%.1f top=%d bottom=%d left=%d right=%d worst=%d bad=%s" % (
             len(files), seconds, len(files) / seconds if seconds > 0.05 else 0.0,
             worst["top"][0], worst["bottom"][0], worst["left"][0], worst["right"][0],
