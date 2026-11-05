@@ -817,7 +817,7 @@ final class VideoLayerView: NSView {
         if before == .idle || after == .idle {
             Log.video.info("\(line, privacy: .public)")  // log-ok: closed state tokens
         } else {
-            Log.video.debug("\(line, privacy: .public)")
+            Log.video.debug("\(line, privacy: .public)")  // log-ok: closed state tokens
         }
     }
 
