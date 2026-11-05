@@ -232,15 +232,15 @@ class RunMetricsTest(unittest.TestCase):
         rows = [
             self.row(105, rx_fps=60, shown_fps=10, late_p99=20, hitch_n=1,
                      hitch_ms=60, drop_ep=1, drop_ms=100, susp_n=0, susp_ms=0,
-                     kf=1, kbps=1000, e2e_p50=1, e2e_p95=2),
+                     kf=1, kbps=1000, phone_n=2, qp_p95=24, e2e_p50=1, e2e_p95=2),
             # A still line is in the run's counters but never its shown_fps
             # or late_p99: the picture is not moving there.
             self.row(115, rx_fps=0, shown_fps=99, late_p99=999, hitch_n=1,
                      hitch_ms=40, drop_ep=0, drop_ms="-", susp_n=1, susp_ms=10,
-                     kf=2, kbps=3000, e2e_p50=3, e2e_p95=4),
+                     kf=2, kbps=3000, phone_n=2, qp_p95=1, e2e_p50=3, e2e_p95=4),
             self.row(125, rx_fps=60, shown_fps=60, late_p99=0, hitch_n=0,
                      hitch_ms=0, drop_ep=0, drop_ms=0, susp_n=0, susp_ms=0,
-                     kf=1, kbps=2000, e2e_p50=2, e2e_p95=3),
+                     kf=1, kbps=2000, phone_n=2, qp_p95=30, e2e_p50=2, e2e_p95=3),
         ]
         values = self.bench.run_metrics(rows, self.phases)
         self.assertEqual(values["jank_n"], 4)       # 1+1 + 1+1 + 0
@@ -252,10 +252,40 @@ class RunMetricsTest(unittest.TestCase):
         self.assertEqual(values["late_p99"], 10)    # median(20, 0)
         self.assertEqual(values["shown_fps"], 35)   # median(10, 60)
         self.assertEqual(values["kbps"], 2000)      # whole-run median
+        self.assertEqual(values["qp_p95"], 27)      # median(24, 30); the still's 1 is no signal
         self.assertEqual(values["e2e_p50"], 2)
         self.assertEqual(values["e2e_p95"], 3)
         self.assertFalse(values["low_motion"])
+        self.assertFalse(values["phone_gaps"])
         self.assertTrue(values["no_drop_ms"])
+
+    def test_phone_levels_come_only_from_lines_with_a_phone_message(self):
+        rows = [
+            self.row(105, rx_fps=60, kbps=9000, phone_n=0, qp_p95=1),
+            self.row(125, rx_fps=60, kbps=1000, phone_n=2, qp_p95=20),
+            self.row(128, rx_fps=60, kbps=3000, phone_n=3, qp_p95=40),
+        ]
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertEqual(values["kbps"], 2000,
+                         "a line with no phone message contributes no kbps sample")
+        self.assertEqual(values["qp_p95"], 30,
+                         "a line with no phone message contributes no QP sample")
+
+    def test_no_phone_message_after_the_first_line_marks_phone_gaps(self):
+        rows = [self.row(105, rx_fps=60, phone_n=0),
+                self.row(115, rx_fps=60, phone_n=0),
+                self.row(125, rx_fps=60, phone_n=2)]
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertTrue(values["phone_gaps"])
+        rows[1]["phone_n"] = "2"
+        self.assertFalse(self.bench.run_metrics(rows, self.phases)["phone_gaps"])
+
+    def test_a_run_with_no_phone_message_at_all_has_no_phone_levels(self):
+        rows = [self.row(105, rx_fps=60, phone_n=0, kbps="-", qp_p95="-")]
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertIsNone(values["kbps"])
+        self.assertIsNone(values["qp_p95"])
+        self.assertFalse(values["phone_gaps"], "the first line may precede the first message")
 
     def test_no_motion_line_at_thirty_fps_marks_the_run_low_motion(self):
         rows = [self.row(105, rx_fps=20, shown_fps=5, late_p99=1),
