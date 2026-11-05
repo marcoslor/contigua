@@ -40,7 +40,7 @@ class SendQueueSuspendTest {
         assertTrue("no drop below the ceiling", dropped.isEmpty())
         assertEquals(listOf(1), overflows)
         assertEquals(listOf(1 to true), suspends)
-        assertEquals(0, q.takeDeltaStats(1).first)
+        assertEquals(0, q.takeDeltaStats(1).dropped)
         // Both frames are still there, in order.
         assertEquals(60, q.pollNow()!!.bytes.size)
         assertEquals(60, q.pollNow()!!.bytes.size)
@@ -74,7 +74,7 @@ class SendQueueSuspendTest {
         // The seventh frame would reach 420 bytes (hard ceiling 400).
         assertEquals(listOf(1), dropped)
         assertEquals(listOf(1 to true, 1 to false), suspends)
-        assertEquals(7 to 1, q.takeDeltaStats(1))
+        assertEquals(DeltaStats(7, 1), q.takeDeltaStats(1))
         assertTrue("the backlog was discarded", q.pollNow() == null)
     }
 
@@ -89,7 +89,7 @@ class SendQueueSuspendTest {
         // The backlog is gone and the stream waits for its keyframe.
         assertTrue(q.pollNow() == null)
         q.enqueueDelta(1, pts(2), bytes(10))
-        assertEquals(3 to 1, q.takeDeltaStats(1))
+        assertEquals(DeltaStats(3, 1), q.takeDeltaStats(1))
     }
 
     @Test
@@ -112,6 +112,6 @@ class SendQueueSuspendTest {
         assertTrue(dropped.isEmpty())
         q.enqueueDelta(1, pts(6), bytes(10))
         assertEquals(listOf(1), dropped)
-        assertEquals(7 to 1, q.takeDeltaStats(1))
+        assertEquals(DeltaStats(7, 1), q.takeDeltaStats(1))
     }
 }

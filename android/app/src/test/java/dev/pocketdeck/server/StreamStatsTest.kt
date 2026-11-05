@@ -78,7 +78,7 @@ class StreamStatsTest {
             framesSkipped = 4, targetBps = 6_000_000,
             encodeP50 = 8_000, encodeP95 = 12_000, qpP50 = null, qpP95 = null,
         )
-        val send = SendSnapshot(5, 3, 700, 1_100)
+        val send = SendSnapshot(5, 3, 700, 1_100, dropGapMs = 480)
         val message = StreamStatsWire.message(7, 2_000, encoder, send)
         assertEquals("stream.stats", message["t"])
         assertEquals(7, message["stream"])
@@ -89,6 +89,7 @@ class StreamStatsTest {
         assertEquals(123_456L, message["bytes"])
         assertEquals(5, message["drop"])
         assertEquals(3, message["dropEp"])
+        assertEquals(480L, message["dropGapMs"])
         assertEquals(4L, message["skip"])
         assertEquals(6_000_000, message["targetBps"])
         assertEquals(8_000L, message["encP50"])
@@ -138,12 +139,14 @@ class StreamStatsTest {
         send.onWritten(500)
         send.onWritten(1_500)
         send.onWritten(30_000_001) // a stalled clock, not a delay
-        val first = send.snapshot(deltasDropped = 7, dropEpisodes = 2)
+        val first = send.snapshot(deltasDropped = 7, dropEpisodes = 2, dropGapMs = 480)
         assertEquals(7, first.deltasDropped)
         assertEquals(2, first.dropEpisodes)
+        assertEquals(480L, first.dropGapMs)
         assertEquals(500L, first.queueP50)
         assertEquals(1_500L, first.queueP95)
         val second = send.snapshot(0, 0)
         assertNull(second.queueP50)
+        assertEquals(0L, second.dropGapMs)
     }
 }

@@ -56,6 +56,9 @@ struct PhoneStreamStats: Equatable {
     var bytes = 0
     var deltasDropped = 0
     var dropEpisodes = 0
+    /// The measured pts gap of each drop episode, in ms. Absent on an older
+    /// phone: the Mac prints `drop_ms=-`.
+    var dropGapMs: Int?
     var framesSkipped = 0
     /// Q1: suspend episodes and their total length in the window.
     var suspendedEpisodes = 0
@@ -77,6 +80,7 @@ struct PhoneStreamStats: Equatable {
         bytes = Self.int(json["bytes"])
         deltasDropped = Self.int(json["drop"])
         dropEpisodes = Self.int(json["dropEp"])
+        dropGapMs = Self.optionalInt(json["dropGapMs"])
         framesSkipped = Self.int(json["skip"])
         suspendedEpisodes = Self.int(json["susp"])
         suspendedMs = Self.int(json["suspMs"])
@@ -99,6 +103,10 @@ struct PhoneStreamStats: Equatable {
     private static func int(_ value: Any?) -> Int {
         guard let number = value as? NSNumber else { return 0 }
         return number.intValue
+    }
+
+    private static func optionalInt(_ value: Any?) -> Int? {
+        (value as? NSNumber)?.intValue
     }
 
     private static func double(_ value: Any?) -> Double? {
@@ -125,6 +133,9 @@ enum StatsDiscardReason: String, CaseIterable {
 struct StreamStatsWindow {
     static let window: TimeInterval = 2
     static let freezeThreshold: TimeInterval = 0.1
+    /// A frame handed over more than this after its capture step is a hitch:
+    /// three refreshes at 60 Hz.
+    static let hitchThreshold: TimeInterval = 0.05
 
     private struct Received {
         var at: TimeInterval
@@ -134,6 +145,9 @@ struct StreamStatsWindow {
     private struct Enqueued {
         var at: TimeInterval
         var latencyMs: Double?
+        /// shownGap − ptsGap in ms; nil when there is no earlier frame to
+        /// compare against (the first frame, a pause, a config, a pts reset).
+        var lateMs: Double?
     }
 
     private var received: [Received] = []
@@ -142,8 +156,11 @@ struct StreamStatsWindow {
     /// that happened between its 2 s sample windows; counters, not samples.
     private var freezeCount = 0
     private var freezeMs = 0.0
+    private var hitchCount = 0
+    private var hitchMs = 0.0
     private var macDropCount = 0
     private var lastEnqueue: TimeInterval?
+    private var lastEnqueuePtsUs: UInt64?
     private var firstReceived: TimeInterval?
     private var firstEnqueue: TimeInterval?
     private var paused = false
@@ -156,9 +173,12 @@ struct StreamStatsWindow {
         enqueued.removeAll()
         freezeCount = 0
         freezeMs = 0
+        hitchCount = 0
+        hitchMs = 0
         macDropCount = 0
         phone = nil
         lastEnqueue = nil
+        lastEnqueuePtsUs = nil
         firstReceived = nil
         firstEnqueue = nil
     }
@@ -166,7 +186,10 @@ struct StreamStatsWindow {
     mutating func notePaused(_ paused: Bool, now: TimeInterval) {
         self.paused = paused
         // The covered span is not a freeze; the next frame starts a fresh one.
-        if paused { lastEnqueue = nil }
+        if paused {
+            lastEnqueue = nil
+            lastEnqueuePtsUs = nil
+        }
         prune(now)
     }
 
@@ -184,11 +207,26 @@ struct StreamStatsWindow {
             freezeCount += 1
             freezeMs += (now - last) * 1000
         }
-        if !paused { lastEnqueue = now }
+        var lateMs: Double?
+        if !paused, let last = lastEnqueue, let lastPts = lastEnqueuePtsUs, ptsUs > lastPts {
+            let shownGap = now - last
+            let ptsGap = Double(ptsUs - lastPts) / 1_000_000
+            let late = shownGap - ptsGap
+            lateMs = late * 1000
+            if late > Self.hitchThreshold {
+                hitchCount += 1
+                hitchMs += late * 1000
+            }
+        }
+        if !paused {
+            lastEnqueue = now
+            lastEnqueuePtsUs = ptsUs
+        }
         if firstEnqueue == nil { firstEnqueue = now }
         enqueued.append(Enqueued(at: now,
                                  latencyMs: Self.latency(now: now, ptsUs: ptsUs,
-                                                         offsetUs: offsetUs)))
+                                                         offsetUs: offsetUs),
+                                 lateMs: lateMs))
         prune(now)
     }
 
@@ -211,9 +249,13 @@ struct StreamStatsWindow {
         let enqLat = enq.filter { $0.latencyMs != nil }
         let frzCount = freezeCount
         let frzMs = freezeMs
+        let hitches = hitchCount
+        let hitchTime = hitchMs
         let drops = macDropCount
         freezeCount = 0
         freezeMs = 0
+        hitchCount = 0
+        hitchMs = 0
         macDropCount = 0
 
         let rxFps = Self.fps(rec.map(\.at),
@@ -234,6 +276,9 @@ struct StreamStatsWindow {
             intervalP99Ms: Self.percentile(intervals, 0.99),
             freezeCount: frzCount,
             freezeMs: frzMs,
+            hitchCount: hitches,
+            hitchMs: hitchTime,
+            lateP99Ms: Self.percentile(enq.compactMap(\.lateMs), 0.99),
             macDrop: drops,
             bytesPerSecond: covered > 0 ? Double(bytes) / covered : 0,
             e2eP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
@@ -315,6 +360,9 @@ struct StreamStatsSnapshot {
     var intervalP99Ms: Double?
     var freezeCount = 0
     var freezeMs = 0.0
+    var hitchCount = 0
+    var hitchMs = 0.0
+    var lateP99Ms: Double?
     var macDrop = 0
     var bytesPerSecond = 0.0
     var e2eP50Ms: Double?
@@ -343,9 +391,13 @@ enum StreamStatsLine {
             "int_p99=\(one(stats.intervalP99Ms))",
             "freeze_n=\(stats.freezeCount)",
             "freeze_ms=\(Int(stats.freezeMs.rounded()))",
+            "hitch_n=\(stats.hitchCount)",
+            "hitch_ms=\(Int(stats.hitchMs.rounded()))",
+            "late_p99=\(one(stats.lateP99Ms))",
             "mac_drop=\(stats.macDrop)",
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",
+            "drop_ms=\(phone?.dropGapMs.map(String.init) ?? "-")",
             "skip=\(phone?.framesSkipped ?? 0)",
             "susp_n=\(phone?.suspendedEpisodes ?? 0)",
             "susp_ms=\(phone?.suspendedMs ?? 0)",

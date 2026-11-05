@@ -114,7 +114,11 @@ The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per w
 - **Smoothness:**
   - frames shown per second on the Mac;
   - frame interval p95 and p99;
-  - freezes: gaps over 100 ms, counted, and their total time.
+  - freezes: gaps over 100 ms, counted, and their total time (kept for
+    continuity; the bench table now leads with jank below);
+  - hitches: frames shown more than 50 ms after their capture step, counted and
+    summed, with late p99; the drop episodes and their pts gaps, and Q1's
+    suspends, complete the picture (see "Measuring jank").
 - **Latency:** capture-to-shown p50 and p95, from the frame's timestamp and a clock offset from `ping`/`pong`.
 - **Blockiness:** the phone's per-frame average QP p50 and p95 during motion (the encoder reports it), and kilobits per second.
 - **Recovery:** the time from the end of a scroll until the still picture's PSNR against the phone's lossless capture is within 1 dB of its final value (`crisp-metric.py`).
@@ -127,7 +131,37 @@ The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per w
 - 10 fast flings;
 - a 3 s still.
 
-It runs on a text-heavy list (Settings) and on an image-heavy one. Every arm runs 3 times, interleaved with the others, because the link's stalls come and go (the ping table above changed between consecutive 15 s runs).
+Every swipe alternates direction (up, down, up, …), so the list never rests at
+an end and the picture keeps moving in both phases. It runs on a text-heavy
+list (Settings) and on an image-heavy one. Every arm runs 3 times, interleaved
+with the others, because the link's stalls come and go (the ping table above
+changed between consecutive 15 s runs).
+
+## Measuring jank
+
+"Janky" is the picture stopping **while the phone's content moves**. Three
+causes produce that, and the bench adds them into one pair of numbers:
+
+| Cause | Where | Counter | What it measures |
+| --- | --- | --- | --- |
+| link stall | Mac | `hitch_n`, `hitch_ms` | a sample handed to the display more than 50 ms after its capture step: `late = shownGap − ptsGap`; `late_p99` covers every frame, hitches or not |
+| phone drop | phone | `drop_ep`, `drop_ms` | a send-queue drop episode and the pts span from the last frame sent before it to the frame (usually the keyframe) that ends it, minus one 60 fps interval |
+| suspend (Q1) | phone | `susp_n`, `susp_ms` | the encoder took no input while the queue drained |
+
+A still is not jank: its heartbeat frames have a pts gap that matches the shown
+gap, and a pause or config resets the Mac's reference. Per bench run:
+
+```
+jank_n  = hitch_n + drop_ep + susp_n
+jank_ms = hitch_ms + drop_ms + susp_ms
+```
+
+The counters total over every 5 s `stats` line in the run. `shown_fps` and
+`late_p99` are read only from the swipe and fling lines, because a still list
+would flatter both. A line without `drop_ms` (an older phone) counts as zero
+and marks the run `(no drop_ms)`, and a run whose swipe/fling lines never
+reached `rx_fps ≥ 30` is marked `low-motion`: the content did not move, so the
+run cannot compare strategies.
 
 ## Strategy switches
 

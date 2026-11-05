@@ -119,6 +119,78 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(snapshot.freezeMs, 0)
     }
 
+    // MARK: Hitches (ISS-40's "dropping frames")
+
+    func testAnEvenSixtyFpsArrivalGivesNoHitches() {
+        var window = StreamStatsWindow()
+        for index in 0..<60 {
+            window.noteEnqueued(now: Double(index) / 60,
+                                ptsUs: UInt64(index) * 16_667, offsetUs: nil)
+        }
+        let snapshot = window.snapshot(now: 1.05)
+        XCTAssertEqual(snapshot.hitchCount, 0)
+        XCTAssertEqual(snapshot.hitchMs, 0)
+    }
+
+    func testAStillWithHeartbeatsGivesNoHitches() {
+        var window = StreamStatsWindow()
+        for index in 0..<8 {
+            window.noteEnqueued(now: Double(index) * 0.5,
+                                ptsUs: UInt64(index) * 500_000, offsetUs: nil)
+        }
+        let snapshot = window.snapshot(now: 3.6)
+        XCTAssertEqual(snapshot.hitchCount, 0, "a heartbeat's pts moves with its shown gap")
+        XCTAssertEqual(snapshot.hitchMs, 0)
+    }
+
+    func testALinkStallGivesOneHitchOfAboutTheStallLessOneFrame() {
+        var window = StreamStatsWindow()
+        // The last frame before the stall, then the link holds everything for
+        // 300 ms: 18 frames (pts every 16.7 ms) arrive in one burst. Only the
+        // burst's first frame is late; the rest are early against their pts.
+        window.noteEnqueued(now: 0, ptsUs: 0, offsetUs: nil)
+        var now = 0.300
+        var pts: UInt64 = 16_667
+        for _ in 0..<18 {
+            window.noteEnqueued(now: now, ptsUs: pts, offsetUs: nil)
+            pts += 16_667
+            now += 0.000_001
+        }
+        let snapshot = window.snapshot(now: now)
+        XCTAssertEqual(snapshot.hitchCount, 1)
+        XCTAssertEqual(snapshot.hitchMs, 283, accuracy: 2)
+    }
+
+    func testAPauseResetsTheHitchReference() {
+        var window = StreamStatsWindow()
+        window.noteEnqueued(now: 0, ptsUs: 0, offsetUs: nil)
+        window.notePaused(true, now: 0.01)
+        window.notePaused(false, now: 2.0)
+        // Without the reset this 2 s shown gap against a 16.7 ms pts gap would
+        // be a 1983 ms hitch; covered time is not a hitch.
+        window.noteEnqueued(now: 2.0, ptsUs: 16_667, offsetUs: nil)
+        let snapshot = window.snapshot(now: 2.05)
+        XCTAssertEqual(snapshot.hitchCount, 0)
+        XCTAssertEqual(snapshot.hitchMs, 0)
+        XCTAssertNil(snapshot.lateP99Ms, "the first frame after a pause has no reference")
+    }
+
+    func testLateP99CoversEveryFrameNotOnlyHitches() {
+        var window = StreamStatsWindow()
+        // 3.3 ms late is below the 50 ms hitch bar but is still a sample.
+        window.noteEnqueued(now: 0, ptsUs: 0, offsetUs: nil)
+        window.noteEnqueued(now: 0.020, ptsUs: 16_667, offsetUs: nil)
+        XCTAssertEqual(window.snapshot(now: 0.03).lateP99Ms ?? -1, 3.333, accuracy: 0.05)
+        XCTAssertEqual(window.snapshot(now: 0.03).hitchCount, 0)
+
+        var early = StreamStatsWindow()
+        // 10 ms between arrivals for a 16.7 ms pts step: the frame is early,
+        // and that negative lateness is a sample too.
+        early.noteEnqueued(now: 0, ptsUs: 0, offsetUs: nil)
+        early.noteEnqueued(now: 0.010, ptsUs: 16_667, offsetUs: nil)
+        XCTAssertEqual(early.snapshot(now: 0.02).lateP99Ms ?? 0, -6.667, accuracy: 0.05)
+    }
+
     func testMacDropsAreCountedByReasonInTheWindow() {
         var window = StreamStatsWindow()
         window.noteDiscarded(.beforeConfig, now: 0.1)
@@ -167,8 +239,9 @@ final class StreamStatsTests: XCTestCase {
                                         stats: window.snapshot(now: 1.0))
         for field in ["stats stream=7", "size=1232x2410", "view=2464x4820",
                       "place=oneToOne", "rx_fps=", "shown_fps=", "int_p95=",
-                      "int_p99=", "freeze_n=0", "freeze_ms=0", "mac_drop=0",
-                      "phone_drop=0", "drop_ep=0", "skip=0", "susp_n=0",
+                      "int_p99=", "freeze_n=0", "freeze_ms=0", "hitch_n=0",
+                      "hitch_ms=0", "late_p99=-", "mac_drop=0",
+                      "phone_drop=0", "drop_ep=0", "drop_ms=-", "skip=0", "susp_n=0",
                       "susp_ms=0", "refine_n=0", "kf=0", "kf_req=0",
                       "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
@@ -180,6 +253,7 @@ final class StreamStatsTests: XCTestCase {
     func testTheLinePrintsPhoneCountersAndRates() {
         var phone = PhoneStreamStats(json: ["frames": 120, "kf": 2, "kfReq": 1,
                                             "bytes": 250_000, "drop": 9, "dropEp": 2,
+                                            "dropGapMs": 250,
                                             "skip": 3, "susp": 4, "suspMs": 850,
                                             "refine": 2, "targetBps": 4_500_000,
                                             "encP50": 12_000, "encP95": 18_000,
@@ -189,14 +263,14 @@ final class StreamStatsTests: XCTestCase {
         window.notePhoneStats(phone)
         let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
                                         place: "fit", stats: window.snapshot(now: 0))
-        for field in ["phone_drop=9", "drop_ep=2", "skip=3", "susp_n=4",
+        for field in ["phone_drop=9", "drop_ep=2", "drop_ms=250", "skip=3", "susp_n=4",
                       "susp_ms=850", "refine_n=2", "kf=2", "kf_req=1",
                       "kbps=1000", "target_kbps=4500", "qp_p50=24.0",
                       "qp_p95=31.0", "enc_p50=12.0", "enc_p95=18.0",
                       "queue_p95=1.5"] {
             XCTAssertTrue(line.contains(field), "missing \(field) in \(line)")
         }
-        XCTAssertFalse(line.contains("phone_drop=-"))
+        XCTAssertFalse(line.contains("drop_ms=-"))
         // A codec without encoding statistics sends no QP keys at all.
         phone = PhoneStreamStats(json: ["bytes": 0])
         XCTAssertNil(phone.qpP50)
