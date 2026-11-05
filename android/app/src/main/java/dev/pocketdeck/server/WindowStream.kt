@@ -148,6 +148,9 @@ internal class WindowStream(
     private val stats = StreamStats()
     @Volatile private var statsWanted = false
 
+    /** When this stream's encoder first existed; the closing line's `secs`. */
+    private val startedAtMs = SystemClock.elapsedRealtime()
+
     /** ISS-40's one-off QP sample after this stream's 30th output buffer. */
     private val qpSample = QpSampleProbe()
 
@@ -411,6 +414,10 @@ internal class WindowStream(
 
     /** The counters since the last call (the session resets each 2 s window). */
     fun statsSnapshot(reset: Boolean): EncoderStats = stats.snapshot(reset)
+
+    /** The stream's lifetime line, logged once by the session when it closes. */
+    fun totalsLine(): String =
+        stats.totalsLine(stream, (SystemClock.elapsedRealtime() - startedAtMs) / 1000.0)
 
     /** `setParameters(PARAMETER_KEY_REQUEST_SYNC_FRAME)` on a known encoder. */
     private fun requestSyncFrame(codec: MediaCodec) {
@@ -1197,6 +1204,8 @@ internal class AndroidDisplayLayer(
 
     override fun statsSnapshot(stream: Int, nowUs: Long, reset: Boolean): EncoderStats? =
         get(stream)?.statsSnapshot(reset)
+
+    override fun totalsLine(stream: Int): String? = get(stream)?.totalsLine()
 
     private fun take(stream: Int): WindowStream? = streams.take(stream)
 }
