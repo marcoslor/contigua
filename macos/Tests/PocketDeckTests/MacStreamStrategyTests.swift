@@ -3,6 +3,7 @@
 // today's (backing pixels, DisplayImmediately).
 
 import AVFoundation
+import Darwin
 import XCTest
 @testable import PocketDeck
 
@@ -80,6 +81,30 @@ final class MacStreamStrategyTests: XCTestCase {
         let strategy = MacStreamStrategy(present: .paced)
         XCTAssertEqual(strategy.windowLine(stream: 1),
                        "stream 1 mac strategy: present=paced pixels=backing net=default")
+    }
+
+    // MARK: N1's Mac half: the real socket (item 2)
+
+    func testVideoAsksForTheInteractiveVideoServiceTypeAndDefaultLeavesItAlone() {
+        XCTAssertEqual(MacStreamStrategy(net: .video).socketServiceType, NET_SERVICE_TYPE_VI)
+        XCTAssertNil(MacStreamStrategy(net: .default).socketServiceType,
+                     "default keeps the socket unmarked")
+    }
+
+    /// The constant and the option round-trip on a real socket: the e2e proves
+    /// the stream channel got them, this proves the value the read-back checks.
+    func testARealSocketReadsBackTheVideoServiceType() {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var value = MacStreamStrategy(net: .video).socketServiceType ?? 0
+        XCTAssertEqual(setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &value,
+                                  socklen_t(MemoryLayout<Int32>.size)), 0)
+        var readBack: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(getsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &readBack, &length), 0)
+        XCTAssertEqual(readBack, NET_SERVICE_TYPE_VI)
     }
 
     // MARK: The default path is today's

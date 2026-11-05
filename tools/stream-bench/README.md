@@ -155,9 +155,29 @@ stall                     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-�
 stall-q1 (covered)          -          -         -           -         -          -
 ```
 
+Two more columns read the connection's own counter deltas from the totals:
+`tcp_ooo_kb` (the Mac's out-of-order bytes over the run, the receiver's trace
+of a hole TCP is holding) and `ph_retrans` (the phone's system-wide
+retransmitted segments over the run).
+
+Under the table, each arm gets one **resend block**, over all its 5 s lines:
+
+```
+baseline   hitch lines with resends 7/12   clean lines with resends 2/40   no phone message: 1
+```
+
+A **hitch line** has `hitch_n ≥ 1`; a **clean line** has `hitch_n = 0` and
+moving content (`rx_fps ≥ 20`); a line is **with resends** when
+`ph_retrans ≥ 1` or `tcp_ooo_kb > 0`. That block is X0: if hitch lines carry
+resends far more often than clean motion does, TCP's head-of-line blocking is
+behind the hitches. Lines that folded in no phone message are left out of both
+counts and reported as `no phone message`; a phone that could not read its
+`/proc/net` files contributes no resend, so its clean/hitch rates read lower.
+
 The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
 `secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`, `bytes`,
-`covered_ms`, `low_motion`, `no_drop_ms` and `phone_gaps`.
+`covered_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`, `ph_rto`, `ph_lost`,
+`low_motion`, `no_drop_ms` and `phone_gaps`.
 
 ## Usage
 
