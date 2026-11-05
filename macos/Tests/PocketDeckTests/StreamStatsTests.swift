@@ -434,6 +434,22 @@ final class StreamStatsTests: XCTestCase {
     /// not a sample: counters keep their values across the 5 s snapshots and a
     /// config, the percentiles cover every shown frame, and the covered time is
     /// the pause the window spent hidden.
+    func testTheWholeLifeSamplesStayBoundedAndEven() {
+        // A window left open for hours must not keep one value per frame
+        // forever: the record thins evenly and never passes its capacity.
+        var few = ThinnedSamples(capacity: 64)
+        for value in 1...50 { few.append(Double(value)) }
+        XCTAssertEqual(few.values.count, 50, "below capacity every value is kept")
+
+        var many = ThinnedSamples(capacity: 64)
+        for value in 1...10_000 { many.append(Double(value)) }
+        XCTAssertLessThan(many.values.count, 64)
+        XCTAssertGreaterThanOrEqual(many.values.count, 32)
+        let median = StreamStatsWindow.percentile(many.values, 0.5) ?? 0
+        XCTAssertEqual(median, 5_000, accuracy: 500, "thinning stays even over the whole life")
+        XCTAssertGreaterThan(many.values.last ?? 0, 9_000, "the newest values are still sampled")
+    }
+
     func testTheTotalsLineCoversTheWholeWindowsLife() {
         var window = StreamStatsWindow(now: 0)
         for index in 0..<20 {
