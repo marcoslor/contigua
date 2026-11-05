@@ -1607,7 +1607,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// flow means no picture to describe.
     func logStats() {
         guard let window, window.isVisible, !window.isMiniaturized, !isPaused else { return }
-        let stats = stats.snapshot(now: ProcessInfo.processInfo.systemUptime)
+        let stats = stats.snapshot(now: ProcessInfo.processInfo.systemUptime,
+                                   tcpInfo: session.currentTCPInfo())
         let line = StreamStatsLine.text(stream: stream,
                                         size: videoView.framePixelSize,
                                         view: videoView.backingPixelSize,
@@ -1619,7 +1620,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The closing line: complete counters over the window's whole life, so a
     /// short run is not described by its last 2 s sample.
     private func logStatsTotal() {
-        let total = stats.total(now: ProcessInfo.processInfo.systemUptime)
+        let total = stats.total(now: ProcessInfo.processInfo.systemUptime,
+                                tcpInfo: session.currentTCPInfo())
         let line = StreamStatsLine.totalText(stream: stream, total: total)
         Log.video.notice("\(line, privacy: .public)")  // log-ok: counts and timings only; no content
     }
