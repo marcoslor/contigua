@@ -219,16 +219,18 @@ class Session(
     private val queue = SendQueue(
         maxDeltaBytesPerStream,
         nowUs = monoUs,
+        // The ticker and the suspend clock are the session's own milliseconds.
+        nowMs = { now() },
         onDeltaDrop = { stream -> onDeltaDrop(stream) },
         policyFor = { stream ->
             strategy().let { QueuePolicy.of(it, maxDeltaBytesPerStream, SendQueue.DEFAULT_MAX_DELTA_DURATION_US) }
         },
         onOverflow = { stream -> onQueueOverflow(stream) },
-        onSuspend = { stream, suspended ->
-            if (stream > 0) runCatching { display.setEncoderSuspend(stream, suspended) }
-        },
+        onSuspendChanged = { stream -> applyEncoderSuspend(stream) },
         log = { message -> log(message) },
     )
+    /** Q1: one apply lock per stream; the last apply lands the latest state. */
+    private val suspendApplies = HashMap<Int, Any>()
     private val pairLock = Object()
 
     @Volatile private var phase = Phase.HELLO
@@ -823,6 +825,7 @@ class Session(
         }
         val at = now() / 1000.0
         pathRanking.handle(PathRankingEvent.Tick(at), at)
+        queue.tick(now())
         tickStats()
     }
 
@@ -873,6 +876,10 @@ class Session(
         pathMachine.state.graceDeadline()?.let { deadline ->
             val graceAt = (deadline * 1000).toLong()
             if (graceAt in (at + 1) until next) next = graceAt
+        }
+        // Q1: a suspended encoder's timeout is a real deadline for the ticker.
+        queue.nextSuspendDeadlineMs()?.let { deadline ->
+            if (deadline < next) next = deadline
         }
         // An overdue stats deadline must still wake the ticker: a tick may
         // have been missed while the session was busy with a resize.
@@ -2022,6 +2029,7 @@ class Session(
         display.close(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
+        synchronized(suspendApplies) { suspendApplies.remove(stream) }
         val sentAtClose = synchronized(statsLock) {
             sendStats.remove(stream)
             statsSent.remove(stream)
@@ -3360,6 +3368,24 @@ class Session(
         log("stream $stream backpressure: dropping deltas, requesting keyframe")
         runCatching { display.requestKeyframe(stream) }
         runCatching { display.onBackpressure(stream) }
+    }
+
+    /**
+     * Q1: apply the queue's current state, never an edge. Callbacks arrive on
+     * the encoder, writer and session threads; the per-stream lock serialises
+     * them and the state is read under the queue lock inside it, so whichever
+     * apply runs last applies the latest state.
+     */
+    private fun applyEncoderSuspend(stream: Int) {
+        if (stream <= 0) return
+        val applyLock = synchronized(suspendApplies) { suspendApplies.getOrPut(stream) { Any() } }
+        val suspended = synchronized(applyLock) {
+            val nowSuspended = queue.isSuspended(stream)
+            runCatching { display.setEncoderSuspend(stream, nowSuspended) }
+            nowSuspended
+        }
+        // The ticker owns the timeout; an idle keepalive must not be the next wake.
+        if (suspended) wakeTicker()
     }
 
     /** Q1: the suspend policy passed its budget; lower the bitrate, no keyframe. */

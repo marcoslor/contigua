@@ -97,7 +97,7 @@ Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.str
 
 | Id | Side | Strategy | What it should change |
 | --- | --- | --- | --- |
-| Q1 | phone | Overflow skips frames at the source (`PARAMETER_KEY_SUSPEND` while the queue holds more than a frame budget), and the queue never drops encoded deltas. | no freeze-until-keyframe; lower fps for the length of a stall |
+| Q1 | phone | Overflow skips frames at the source (`PARAMETER_KEY_SUSPEND` while the queue holds more than a frame budget), and the queue never drops encoded deltas. The encoder takes the queue's latest state (not an edge), an empty backlog counts as drained, and a suspend resumes within 1 s whatever the backlog. | no freeze-until-keyframe; lower fps for the length of a stall, and never a frozen picture |
 | Q2 | phone | Queue budget 250 ms → 100 ms / 50 ms, with Q1. | lower latency; what does it cost in fps |
 | R1 | phone | CBR instead of VBR. | flatter frame sizes, fewer bursts |
 | R2 | phone | Bitrate cap 8 → 16 / 25 / 40 Mbps, plus the per-pixel target. | less blockiness in motion, if the link holds it |
@@ -224,7 +224,7 @@ causes produce that, and the bench adds them into one pair of numbers:
 | --- | --- | --- | --- |
 | link stall | Mac | `hitch_n`, `hitch_ms` | a sample handed to the display more than 50 ms after its capture step: `late = shownGap − ptsGap`; `late_p99` covers every frame, hitches or not |
 | phone drop | phone | `drop_ep`, `drop_ms` | a send-queue drop episode and the pts span from the last frame sent before it to the frame (usually the keyframe) that ends it, minus one 60 fps interval |
-| suspend (Q1) | phone | `susp_n`, `susp_ms` | the encoder took no input while the queue drained |
+| suspend (Q1) | phone | `susp_n`, `susp_ms` | the encoder took no input while the queue drained; an open episode's time so far is in every snapshot, so a suspend that never resumed still shows up |
 
 A still is not jank: its heartbeat frames have a pts gap that matches the shown
 gap, and a pause or config resets the Mac's reference. Per bench run:
@@ -241,6 +241,13 @@ zero and marks the run `(no drop_ms)`, and a run whose `rx_frames / secs` is
 under 20 is marked `low-motion`: the content did not move, so the run cannot
 compare strategies. A run with `covered_ms > 0` is `covered` and leaves the
 medians.
+
+A run is **frozen** when a 5 s line in a swipe phase (the steady swipes or the
+flings) has `rx_fps < 10`: the picture stopped while the phone's content moved.
+A frozen picture produces no late frame, so its jank score is the best of the
+round by accident; frozen runs are marked in the table and the CSV and leave
+the medians, as `low-motion`, `covered` and `failed` runs do. The table's
+`valid` column is how many runs made each arm's medians.
 
 ## Strategy switches
 

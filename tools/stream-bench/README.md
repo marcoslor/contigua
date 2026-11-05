@@ -143,16 +143,22 @@ message (`phone_n ≥ 1`); a line with no message is no sample.
 
 A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
 when `rx_frames / secs` is under 20: the content did not move, so the run cannot
-compare strategies. A run with `covered_ms > 0` is marked **`covered`** and
-left out of the arm's medians: the window spent part of the run hidden. A run
-with no closing line is **`failed`**; its cells are `-` and the table and CSV
-are still written. `phone gaps` marks a run that received no phone message at
-all (`phone_n=0`), and `no drop_ms` a phone that sends no `dropGapMs`.
+compare strategies. A run is marked **`frozen`** (in the table and as
+`frozen=1` in the CSV) when a 5 s line in a swipe phase — the steady swipes or
+the flings — has `rx_fps < 10`: the picture stopped while the content moved, so
+its low jank score is an accident, not a win. A run with `covered_ms > 0` is
+marked **`covered`**. `failed`, `covered`, `frozen` and `low-motion` runs are
+all left out of the arm's medians, and the table's `valid` column says how many
+runs made them. A run with no closing line is **`failed`**; its cells are `-`
+and the table and CSV are still written. `phone gaps` marks a run that received
+no phone message at all (`phone_n=0`), and `no drop_ms` a phone that sends no
+`dropGapMs`. The phone's own `stream N totals:` line carries `susp_ms` too, and
+counts a suspend still open at close.
 
 ```
-arm                       jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
-stall                     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
-stall-q1 (covered)          -          -         -           -         -          -
+arm                 valid   jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
+stall                  2    310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
+stall-q1 (frozen)      0      -          -         -           -         -          -
 ```
 
 Two more columns read the connection's own counter deltas from the totals:
@@ -175,9 +181,9 @@ counts and reported as `no phone message`; a phone that could not read its
 `/proc/net` files contributes no resend, so its clean/hitch rates read lower.
 
 The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
-`secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`, `bytes`,
-`covered_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`, `ph_rto`, `ph_lost`,
-`low_motion`, `no_drop_ms` and `phone_gaps`.
+`frozen`, `secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`,
+`bytes`, `covered_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`, `ph_rto`,
+`ph_lost`, `low_motion`, `no_drop_ms` and `phone_gaps`.
 
 ## Usage
 
