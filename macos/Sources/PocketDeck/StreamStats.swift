@@ -57,6 +57,11 @@ struct PhoneStreamStats: Equatable {
     var deltasDropped = 0
     var dropEpisodes = 0
     var framesSkipped = 0
+    /// Q1: suspend episodes and their total length in the window.
+    var suspendedEpisodes = 0
+    var suspendedMs = 0
+    /// T1: refined frames sent for a still period.
+    var refined = 0
     var targetBps = 0
     var encodeP50Us: Double?
     var encodeP95Us: Double?
@@ -73,6 +78,9 @@ struct PhoneStreamStats: Equatable {
         deltasDropped = Self.int(json["drop"])
         dropEpisodes = Self.int(json["dropEp"])
         framesSkipped = Self.int(json["skip"])
+        suspendedEpisodes = Self.int(json["susp"])
+        suspendedMs = Self.int(json["suspMs"])
+        refined = Self.int(json["refine"])
         targetBps = Self.int(json["targetBps"])
         encodeP50Us = Self.double(json["encP50"])
         encodeP95Us = Self.double(json["encP95"])
@@ -342,6 +350,9 @@ enum StreamStatsLine {
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",
             "skip=\(phone?.framesSkipped ?? 0)",
+            "susp_n=\(phone?.suspendedEpisodes ?? 0)",
+            "susp_ms=\(phone?.suspendedMs ?? 0)",
+            "refine_n=\(phone?.refined ?? 0)",
             "kf=\(phone?.keyframes ?? 0)",
             "kf_req=\(phone?.keyframesRequested ?? 0)",
             "kbps=\(Int(kbps.rounded()))",

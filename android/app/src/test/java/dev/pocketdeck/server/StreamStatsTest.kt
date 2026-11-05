@@ -97,6 +97,30 @@ class StreamStatsTest {
         assertEquals(1_100L, message["queueP95"])
         assertFalse(message.containsKey("qpP50"))
         assertFalse(message.containsKey("qpP95"))
+        // Q1/T1 counters ride every message, zero when nothing happened.
+        assertEquals(0L, message["susp"])
+        assertEquals(0L, message["suspMs"])
+        assertEquals(0L, message["refine"])
+    }
+
+    @Test
+    fun suspendAndRefineCountersAccumulatePerWindow() {
+        val stats = StreamStats()
+        stats.onSuspendStart(1_000)
+        stats.onSuspendStart(1_100) // the same episode's rising edge only
+        stats.onSuspendEnd(4_000)
+        stats.onRefined()
+        val first = stats.snapshot()
+        assertEquals(1L, first.suspendedEpisodes)
+        assertEquals(3_000L, first.suspendedMs)
+        assertEquals(1L, first.refined)
+
+        // An episode that ends in a later window lands there whole, once.
+        stats.onSuspendStart(5_000)
+        assertEquals(1L, stats.snapshot().suspendedEpisodes)
+        assertEquals(0L, stats.snapshot().suspendedMs)
+        stats.onSuspendEnd(6_000)
+        assertEquals(1_000L, stats.snapshot().suspendedMs)
     }
 
     @Test

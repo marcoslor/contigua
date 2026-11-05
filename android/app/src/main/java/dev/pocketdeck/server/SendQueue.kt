@@ -33,6 +33,17 @@ internal class SendQueue(
     private val maxAudioBytes: Int = DEFAULT_MAX_AUDIO_BYTES,
     private val nowUs: () -> Long = { 0L },
     private val onDeltaDrop: (stream: Int) -> Unit = {},
+    /**
+     * Q1/Q2: a stream's queue budget and overflow policy, read once when its
+     * first delta is queued. The default is today's 250 ms drop policy.
+     */
+    private val policyFor: (stream: Int) -> QueuePolicy =
+        { QueuePolicy.today(maxDeltaBytesPerStream, maxDeltaDurationUs) },
+    /** Q1: the queue overflowed under `overflow=suspend`; lower the bitrate. */
+    private val onOverflow: (stream: Int) -> Unit = {},
+    /** Q1: suspend (true) or resume (false) the encoder's input. */
+    private val onSuspend: (stream: Int, suspended: Boolean) -> Unit = { _, _ -> },
+    private val log: (String) -> Unit = {},
 ) {
     /** One queued frame: the bytes plus the stream and enqueue clock. */
     class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0)
@@ -47,6 +58,11 @@ internal class SendQueue(
     private val deltaOrder = ArrayDeque<Int>()
     private val deltaBytes = HashMap<Int, Int>()
     private val deltaFirstPtsUs = HashMap<Int, Long>()
+    private val deltaLastPtsUs = HashMap<Int, Long>()
+    private val policies = HashMap<Int, QueuePolicy>()
+    private val overflowStates = HashMap<Int, OverflowState>()
+    /** Streams whose encoder must resume; performed outside the lock. */
+    private val pendingResumes = ArrayList<Int>()
     private val dropping = HashSet<Int>()
     private val dropCounts = HashMap<Int, Int>()
     private val dropEpisodes = HashMap<Int, Int>()
@@ -79,24 +95,40 @@ internal class SendQueue(
      * stream. They also discard the stream's queued deltas: control is served
      * first, so those deltas would otherwise reach the Mac *after* the new
      * config (a resize: old-size frames against the new format description).
+     * A suspended stream resumes: its backlog is gone.
      */
-    fun enqueueControl(stream: Int, bytes: ByteArray) = synchronized(lock) {
-        if (stream != 0) {
-            dropping.remove(stream)
-            discardDeltas(stream)
+    fun enqueueControl(stream: Int, bytes: ByteArray) {
+        var resume = false
+        synchronized(lock) {
+            if (stream != 0) {
+                dropping.remove(stream)
+                discardDeltas(stream)
+                val before = overflowStates[stream]
+                if (before != null && before != OverflowState.Flowing) {
+                    val step = overflowStep(before, OverflowEvent.Control)
+                    setOverflowState(stream, step)
+                    if (step.actions.contains(OverflowAction.ResumeEncoder)) resume = true
+                }
+            }
+            control.addLast(Entry(bytes, stream))
+            lock.notifyAll()
         }
-        control.addLast(Entry(bytes, stream))
-        lock.notifyAll()
+        if (resume) onSuspend(stream, false)
     }
 
     fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
         var dropped = false
+        var overflow = false
+        var suspend: Boolean? = null
         synchronized(lock) {
             if (stream in dropping) {
                 // Still waiting for the keyframe: this delta is discarded too.
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + 1
                 return
             }
+            // Read the queue switch only when this stream's first delta is
+            // actually queued; never per frame.
+            val policy = policyOf(stream)
             val existing = deltas[stream]
             val q: ArrayDeque<Entry>
             if (existing == null) {
@@ -108,7 +140,28 @@ internal class SendQueue(
             }
             val used = deltaBytes[stream] ?: 0
             val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
-            if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
+            val overBytes = used + bytes.size > policy.maxBytes
+            val overDuration = ptsUs - firstPts > policy.maxDurationUs
+            if ((overBytes || overDuration) && policy.overflow == StreamStrategy.Overflow.Suspend) {
+                val before = overflowStates[stream] ?: OverflowState.Flowing
+                val step = overflowStep(before, OverflowEvent.Pressure(used + bytes.size > policy.hardBytes))
+                setOverflowState(stream, step)
+                for (action in step.actions) {
+                    when (action) {
+                        OverflowAction.SuspendEncoder -> suspend = true
+                        OverflowAction.ResumeEncoder -> suspend = false
+                        OverflowAction.LowerBitrate -> overflow = true
+                        OverflowAction.DropAndKeyframe -> {
+                            val discarded = discardDeltas(stream) + 1
+                            dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
+                            dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
+                            dropping.add(stream)
+                            dropped = stream != 0
+                        }
+                    }
+                }
+                if (step.state == OverflowState.FallbackDropped) return@synchronized
+            } else if (overBytes || overDuration) {
                 // Stalled consumer: drop the backlog and ask for a fresh keyframe.
                 val discarded = discardDeltas(stream) + 1
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
@@ -120,12 +173,16 @@ internal class SendQueue(
             q.addLast(Entry(bytes, stream, nowUs()))
             deltaBytes[stream] = used + bytes.size
             deltaFirstPtsUs[stream] = firstPts
+            deltaLastPtsUs[stream] = ptsUs
             lock.notifyAll()
         }
-        // The drop callback reaches the display (keyframe request, backpressure),
-        // and a display busy opening another window can take seconds. Under this
-        // lock it stopped the writer and every other stream with it; run it free.
+        // The suspend/drop callbacks reach the display (keyframe request,
+        // backpressure, codec parameters), and a display busy opening another
+        // window can take seconds. Under this lock it stopped the writer and
+        // every other stream with it; run it free.
+        suspend?.let { onSuspend(stream, it) }
         if (dropped) onDeltaDrop(stream)
+        if (overflow) onOverflow(stream)
     }
 
     /**
@@ -153,21 +210,39 @@ internal class SendQueue(
         deltaOrder.remove(stream)
         deltaBytes[stream] = 0
         deltaFirstPtsUs.remove(stream)
+        deltaLastPtsUs.remove(stream)
         return removed
     }
 
     /** Non-blocking dequeue; null when nothing is queued. */
-    fun pollNow(): Entry? = synchronized(lock) { takeLocked() }
+    fun pollNow(): Entry? {
+        val entry = synchronized(lock) { takeLocked() }
+        flushResumes()
+        return entry
+    }
 
     /** Blocks until an entry is available, or returns null once [close] was called. */
     fun poll(): Entry? {
-        synchronized(lock) {
-            while (true) {
-                takeLocked()?.let { return it }
-                if (closed) return null
-                lock.wait()
-            }
+        val entry = synchronized(lock) { awaitLocked() }
+        flushResumes()
+        return entry
+    }
+
+    private fun awaitLocked(): Entry? {
+        while (true) {
+            takeLocked()?.let { return it }
+            if (closed) return null
+            lock.wait()
         }
+    }
+
+    /** The suspended encoders a dequeue brought below half their budget. */
+    private fun flushResumes() {
+        val streams = synchronized(lock) {
+            if (pendingResumes.isEmpty()) return
+            pendingResumes.toList().also { pendingResumes.clear() }
+        }
+        for (stream in streams) onSuspend(stream, false)
     }
 
     fun close() = synchronized(lock) {
@@ -191,13 +266,16 @@ internal class SendQueue(
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
+                deltaLastPtsUs.remove(stream)
                 return@repeat
             }
             deltaBytes[stream] = (deltaBytes[stream] ?: entry.bytes.size) - entry.bytes.size
+            maybeResume(stream)
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
+                deltaLastPtsUs.remove(stream)
             } else {
                 deltaOrder.addLast(stream)
             }
@@ -207,6 +285,33 @@ internal class SendQueue(
         bulkBytes -= entry.bytes.size
         lock.notifyAll()
         return entry
+    }
+
+    /** The budget and policy for [stream], read once at its first delta. */
+    private fun policyOf(stream: Int): QueuePolicy =
+        policies.getOrPut(stream) { policyFor(stream) }
+
+    private fun setOverflowState(stream: Int, step: OverflowStep) {
+        val before = overflowStates[stream] ?: OverflowState.Flowing
+        if (step.state == OverflowState.Flowing) overflowStates.remove(stream)
+        else overflowStates[stream] = step.state
+        if (before != step.state) {
+            log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
+        }
+    }
+
+    /** Q1: a dequeue brought this stream's backlog below half its budget. */
+    private fun maybeResume(stream: Int) {
+        if (overflowStates[stream] != OverflowState.Suspended) return
+        val policy = policyOf(stream)
+        val used = deltaBytes[stream] ?: 0
+        if (used > policy.maxBytes / 2) return
+        val first = deltaFirstPtsUs[stream] ?: return
+        val last = deltaLastPtsUs[stream] ?: return
+        if (last - first > policy.maxDurationUs / 2) return
+        val step = overflowStep(OverflowState.Suspended, OverflowEvent.Drained)
+        setOverflowState(stream, step)
+        pendingResumes.add(stream)
     }
 
     companion object {

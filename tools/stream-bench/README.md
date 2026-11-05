@@ -23,7 +23,8 @@ use (`--profile e2e`, `--profile stats`).
 
 ## Requirements
 
-- Python 3.9 stdlib.
+- Python 3.9 stdlib. The arm handling has a phone-free check:
+  `python3 tools/stream-bench/test_bench.py`.
 - `adb` on `PATH` (or `--adb PATH`); `--serial` is required and has no
   default. The bench refuses a serial that is not `device`.
 - The shim at `/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp`, or
@@ -56,10 +57,17 @@ use (`--profile e2e`, `--profile stats`).
   restored (or deleted when they did not exist) after the run. The domain is
   `dev.pocketdeck.mac` for the default profile, else
   `dev.pocketdeck.mac.<profile>`.
-- This release adds no switches, so only `baseline` with empty settings ships.
-  An arm naming a property no build reads still runs: setting it is a no-op
+- Every arm restores every key it set, after each run and again on exit — an
+  interruption does not leave a strategy switched on.
+- An arm naming a property no build reads still runs: setting it is a no-op
   and the counters simply don't change.
 - Nothing else on the phone is written. The bench never runs `adb kill-server`.
+
+The shipped arms are the ISS-40 switches: `baseline` (no properties), the Q1
+and Q2 queue arms, R1's CBR, R2's two caps, R4's intra refresh, T1's refinement,
+N1's traffic class, and `combo-a` with all of them. Each switch is read by the
+phone at a stream's configure and logged as one `stream N strategy: …` line
+(logcat), so a run also proves what the phone actually applied.
 
 ## Repeats
 
@@ -81,6 +89,17 @@ baseline   59.9 (…-…)  16.9 (…)  0.0 (…)
 tools/stream-bench/bench.py --profile default --serial R58M1234 \
     --repeats 3 --out .agent/stats/bench.csv
 ```
+
+`arms.json` ships every strategy arm. To compare them all, run three repeats
+(interleaved) so the link's minute-to-minute changes average out:
+
+```sh
+tools/stream-bench/bench.py --profile stats --serial R58M1234 \
+    --repeats 3 --out .agent/strat/bench.csv
+```
+
+The table prints one row per arm. With `--repeats 1` it is a smoke test that
+every switch applies, not a comparison.
 
 ## Host proof without a phone
 

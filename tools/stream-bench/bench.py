@@ -42,9 +42,9 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 
 # One row per arm; each cell is median (min–max) across the arm's runs.
 ARM_FIELDS = ("shown_fps", "int_p99", "freeze_n", "freeze_ms", "drop_ep",
-              "qp_p95", "kbps", "e2e_p95")
+              "susp_n", "susp_ms", "refine_n", "qp_p95", "kbps", "e2e_p95")
 # A run's value: counters total across its lines, everything else the median.
-RUN_SUM = {"freeze_n", "freeze_ms", "drop_ep"}
+RUN_SUM = {"freeze_n", "freeze_ms", "drop_ep", "susp_n", "susp_ms", "refine_n"}
 
 PHASES = ("opening", "warming", "swipes", "still", "flings", "settle", "closing")
 
@@ -98,7 +98,15 @@ def read_arms(path):
 
 
 def set_phone_property(adb_path, serial, key, value):
-    adb(adb_path, serial, "shell", "setprop", STATS_PREFIX + key, str(value))
+    name = STATS_PREFIX + key
+    text = str(value)
+    if text == "":
+        # adb drops an empty argument before the device shell parses it, so
+        # `setprop name` alone is a usage error. The clearing form goes as one
+        # quoted remote command: the device shell then passes the empty value.
+        adb(adb_path, serial, "shell", 'setprop %s ""' % name)
+    else:
+        adb(adb_path, serial, "shell", "setprop", name, text)
 
 
 def get_phone_property(adb_path, serial, key):
