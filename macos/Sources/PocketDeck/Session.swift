@@ -1608,6 +1608,10 @@ final class Session {
             let isReconnect = everReady
             everReady = true
             transition(.ready, nil)
+            // A window may open at once, and the phone may have slept since the
+            // last session: one pong now gives the new offset without the 15 s
+            // timer's wait (WIN-53).
+            sendPing()
             emit(.ready(info, isReconnect: isReconnect, address: dialedAddress))
         case "apps":
             let apps = (message.array("apps") ?? []).compactMap { AppInfo(json: $0) }
@@ -1975,12 +1979,16 @@ final class Session {
         let sentUs = pingSentUs.removeValue(forKey: ts)
         if let sentUs {
             let had = clockEstimator.offsetUs != nil
-            let offset = clockEstimator.note(sentUs: sentUs, receivedUs: receivedUs,
-                                             phoneNowUs: Double(phoneNow),
-                                             at: ProcessInfo.processInfo.systemUptime)
+            let note = clockEstimator.note(sentUs: sentUs, receivedUs: receivedUs,
+                                           phoneNowUs: Double(phoneNow),
+                                           at: ProcessInfo.processInfo.systemUptime)
             let rtt = (receivedUs - sentUs) / 1000
             clockLock.unlock()
-            if !had, let offset {
+            if let jump = note.jumpMs {
+                // A slept phone's CLOCK_MONOTONIC stopped and restarted: the
+                // estimate restarts from this sample (numbers only).
+                Log.session.notice("clock offset: jump \(Int(jump.rounded()), privacy: .public)ms")  // log-ok: a duration in ms, no content
+            } else if !had, let offset = note.offsetUs {
                 Log.session.notice("clock offset: rtt=\(String(format: "%.1f", rtt), privacy: .public)ms offset=\(Int(offset / 1000), privacy: .public)ms")  // log-ok: numbers only (rtt and offset), no content
             }
             return
@@ -2114,6 +2122,7 @@ final class Session {
     }
     func openApp(stream: UInt32, pkg: String, activity: String?, width: Int, height: Int, dpi: Double,
                  newInstance: Bool = false) {
+        sendPing()
         var message: [String: Any] = ["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "pkg": pkg]
         if let activity { message["activity"] = activity }
         // WIN-25: another task of the app on this display, never a reuse of
@@ -2123,16 +2132,20 @@ final class Session {
     }
     /// WIN-46: one more window for a task the app started itself.
     func adoptTask(stream: UInt32, taskId: Int, pkg: String, width: Int, height: Int, dpi: Double) {
+        sendPing()
         sendJSON(["t": "window.adopt", "stream": Int(stream), "taskId": taskId, "pkg": pkg,
                   "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
     func openLink(stream: UInt32, url: String, width: Int, height: Int, dpi: Double) {
+        sendPing()
         sendJSON(["t": "link.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "url": url])
     }
     func openPhone(stream: UInt32, width: Int, height: Int, dpi: Double) {
+        sendPing()
         sendJSON(["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "mode": "phone"])
     }
     func continueTask(stream: UInt32, width: Int, height: Int, dpi: Double) {
+        sendPing()
         sendJSON(["t": "task.continue", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {
