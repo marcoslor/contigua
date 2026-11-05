@@ -945,21 +945,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidMove(_ notification: Notification) { rememberFrame() }
 
-    /// The window moved to another display: its panel and backing sizes can be
-    /// different, so the cap and the size request are re-read.
-    func windowDidChangeScreen(_ notification: Notification) {
-        panelCache = nil
-        refreshStreamStrategy()
-        scheduleResize(after: 0)
-    }
-
-    /// A display mode change (scaling, resolution) moves the backing size under
-    /// the window: re-read the cap and ask again at the new dpi.
-    func windowDidChangeBackingProperties(_ notification: Notification) {
-        panelCache = nil
-        scheduleResize(after: 0)
-    }
-
     private func rememberFrame() {
         // Never the screen-sized frame full screen moves the window to: the
         // next open would come back too big. A resize in progress (a drag's
