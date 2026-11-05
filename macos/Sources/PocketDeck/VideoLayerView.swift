@@ -34,9 +34,15 @@ final class VideoLayerView: NSView {
     private struct PacedSample {
         var sample: CMSampleBuffer
         var ptsUs: UInt64
+        var keyframe: Bool
     }
     private var presenter = PacedPresenter<PacedSample>()
     private var pacedLink: CADisplayLink?
+    /// When the last paced drop asked for a keyframe: a dropped H.264 frame
+    /// breaks the reference chain, so the picture needs one to recover.
+    private var lastPacedKeyframeRequest: TimeInterval = 0
+    /// One keyframe request per break of the chain, not one per dropped frame.
+    private static let pacedKeyframeCooldown: TimeInterval = 1.5
 
     /// Size (px) of the picture the window shows: the frame's picture rect of the last
     /// VIDEO_CONFIG. Drives aspect-fit letterboxing, the window's aspect and the input map.
@@ -645,11 +651,15 @@ final class VideoLayerView: NSView {
                 self.onFrameDiscarded?(.beforeConfig)
                 return
             }
-            let avcc = AnnexB.avcc(fromAnnexB: frame.annexB)
+            let units = AnnexB.units(frame.annexB)
+            let avcc = AnnexB.avcc(from: units)
             guard !avcc.isEmpty else {
                 self.onFrameDiscarded?(.beforeConfig)
                 return
             }
+            // The presenter must not drop a keyframe while a delta can go:
+            // without one the decoder cannot restart (M1's queue cap).
+            let keyframe = units.contains { AnnexB.nalType($0) == H264NalType.sliceIdr.rawValue }
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
@@ -659,13 +669,13 @@ final class VideoLayerView: NSView {
             // display layer from here is undefined and leaves it accepting
             // buffers it never composites (the window stays black until a resize
             // dirties the layer). Hand the finished buffer over and enqueue there.
-            self.handOff(.sample(sample, ptsUs: pts))
+            self.handOff(.sample(sample, ptsUs: pts, keyframe: keyframe))
         }
     }
 
     private enum PendingVideo {
         case flush
-        case sample(CMSampleBuffer, ptsUs: UInt64)
+        case sample(CMSampleBuffer, ptsUs: UInt64, keyframe: Bool)
     }
 
     /// Filled on `videoQueue`, drained on main; guarded by `pendingLock`.
@@ -705,10 +715,10 @@ final class VideoLayerView: NSView {
                 samplesSinceFlush = 0
                 runPresenter(.flush)
                 renderer.flush()
-            case .sample(let sample, let ptsUs):
-                let paced = PacedSample(sample: sample, ptsUs: ptsUs)
+            case .sample(let sample, let ptsUs, let keyframe):
+                let paced = PacedSample(sample: sample, ptsUs: ptsUs, keyframe: keyframe)
                 if strategy.present == .paced, !isPaused {
-                    runPresenter(.arrive(paced))
+                    runPresenter(.arrive(paced, isKeyframe: keyframe))
                 } else {
                     handToLayer(paced, renderer: renderer)
                 }
@@ -755,6 +765,14 @@ final class VideoLayerView: NSView {
                 stopPacedLink()
             case .dropOldest:
                 onFrameDiscarded?(.paced)
+                // A dropped encoded frame breaks the reference chain until a
+                // keyframe. One request per episode (the 1.5 s cooldown): a
+                // burst's backlog is one break, not one per frame.
+                let now = ProcessInfo.processInfo.systemUptime
+                if !presenter.hasKeyframeWaiting, now - lastPacedKeyframeRequest > Self.pacedKeyframeCooldown {
+                    lastPacedKeyframeRequest = now
+                    onRequestKeyframe?()
+                }
             case .show(let item):
                 handToLayer(item, renderer: displayLayer().sampleBufferRenderer)
             }

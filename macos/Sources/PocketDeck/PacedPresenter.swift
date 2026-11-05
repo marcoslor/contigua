@@ -22,7 +22,7 @@ struct PacedPresenter<Sample> {
     }
 
     enum Event {
-        case arrive(Sample)
+        case arrive(Sample, isKeyframe: Bool)
         case tick
         case flush
         case pause
@@ -54,15 +54,24 @@ struct PacedPresenter<Sample> {
     /// the oldest goes.
     static var maxWaiting: Int { 2 }
 
+    private struct Waiting {
+        var sample: Sample
+        var isKeyframe: Bool
+    }
+
     private(set) var phase: Phase = .idle
-    private(set) var waiting: [Sample] = []
+    private var waiting: [Waiting] = []
 
     var hasWaiting: Bool { !waiting.isEmpty }
+    var waitingSamples: [Sample] { waiting.map(\.sample) }
+    /// A keyframe already waits: no need to ask the phone for another one when
+    /// a delta falls out of the queue.
+    var hasKeyframeWaiting: Bool { waiting.contains(where: \.isKeyframe) }
 
     mutating func handle(_ event: Event) -> [Action] {
         switch event {
-        case .arrive(let sample):
-            return arrive(sample)
+        case .arrive(let sample, let isKeyframe):
+            return arrive(sample, isKeyframe: isKeyframe)
         case .tick:
             return tick()
         case .flush:
@@ -78,12 +87,15 @@ struct PacedPresenter<Sample> {
         }
     }
 
-    private mutating func arrive(_ sample: Sample) -> [Action] {
+    private mutating func arrive(_ sample: Sample, isKeyframe: Bool) -> [Action] {
         var actions: [Action] = []
         let wasIdle = phase == .idle
-        waiting.append(sample)
+        waiting.append(Waiting(sample: sample, isKeyframe: isKeyframe))
         if waiting.count > Self.maxWaiting {
-            waiting.removeFirst()
+            // Never drop a keyframe while a delta can go: without it the
+            // decoder cannot restart until the phone sends another.
+            let index = waiting.firstIndex { !$0.isKeyframe } ?? 0
+            waiting.remove(at: index)
             actions.append(.dropOldest)
         }
         // A new sample always waits for the next refresh, even when the last
@@ -98,7 +110,7 @@ struct PacedPresenter<Sample> {
             phase = .idle
             return []
         }
-        let sample = waiting.removeFirst()
+        let sample = waiting.removeFirst().sample
         phase = waiting.isEmpty ? .idle : .presenting
         return [.show(sample)]
     }
