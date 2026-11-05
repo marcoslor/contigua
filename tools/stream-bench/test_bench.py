@@ -369,6 +369,22 @@ class TotalsTest(unittest.TestCase):
         self.assertEqual(self.bench.profile_app_pid(ps_text, "bench2"), 202)
         self.assertIsNone(self.bench.profile_app_pid(ps_text, "bench3"))
 
+    def test_the_default_profile_is_the_app_launched_without_a_flag(self):
+        # The person's installed app is opened from Finder or `open -a`: its
+        # command line carries no --profile at all, and that is the default.
+        ps_text = (
+            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck\n"
+            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench2\n"
+        )
+        self.assertEqual(self.bench.profile_app_pid(ps_text, "default"), 101)
+        self.assertEqual(self.bench.profile_app_pid(
+            "  105 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck --profile default\n",
+            "default"), 105)
+        self.assertIsNone(self.bench.profile_app_pid(ps_text, "bench3"))
+        # A flagless app is never another profile's.
+        self.assertIsNone(self.bench.profile_app_pid(
+            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck\n", "bench2"))
+
     def test_the_log_predicate_names_the_pid(self):
         self.assertIn("processID == 202", self.bench.log_predicate(202))
         self.assertIn('subsystem == "dev.pocketdeck.mac"',
