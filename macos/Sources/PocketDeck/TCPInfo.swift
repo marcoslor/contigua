@@ -28,30 +28,31 @@ struct TCPConnectionInfo: Equatable, Sendable {
     }
 }
 
-/// One session path's reader. It samples every 2 s from its own queue: a failed
-/// read (a closed socket, a refused option) is no measurement, never a crash
-/// and never a log line per failure.
+/// One session path's reader. It samples every 2 s in a task: a failed read
+/// (a closed socket, a refused option) is no measurement, never a crash and
+/// never a log line per failure.
 final class TCPInfoReader: @unchecked Sendable {
-    private static let interval: DispatchTimeInterval = .seconds(2)
+    private static let interval: Duration = .seconds(2)
 
     private let channel: Channel
     private let lock = NSLock()
     private var latest: TCPConnectionInfo?
-    private var timer: DispatchSourceTimer?
+    private var sampler: Task<Void, Never>?
 
     init(channel: Channel) {
         self.channel = channel
-        sample()
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "dev.pocketdeck.tcp-info"))
-        timer.schedule(deadline: .now() + Self.interval, repeating: Self.interval,
-                       leeway: .milliseconds(200))
-        timer.setEventHandler { [weak self] in self?.sample() }
-        timer.resume()
-        self.timer = timer
+        Task { [weak self] in await self?.sample() }
+        sampler = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.interval)
+                guard let self else { return }
+                await self.sample()
+            }
+        }
     }
 
     deinit {
-        timer?.cancel()
+        sampler?.cancel()
     }
 
     /// The latest reading, nil until one succeeded.
@@ -62,16 +63,16 @@ final class TCPInfoReader: @unchecked Sendable {
     }
 
     func stop() {
-        timer?.cancel()
-        timer = nil
+        sampler?.cancel()
+        sampler = nil
     }
 
-    private func sample() {
+    private func sample() async {
         guard let provider = channel as? SocketOptionProvider else { return }
         do {
-            let raw: tcp_connection_info = try provider
+            let raw: tcp_connection_info = try await provider
                 .unsafeGetSocketOption(level: IPPROTO_TCP, name: TCP_CONNECTION_INFO)
-                .wait()
+                .get()
             let info = TCPConnectionInfo(raw: raw)
             lock.lock()
             latest = info
