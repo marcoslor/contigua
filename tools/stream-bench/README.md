@@ -3,8 +3,9 @@
 `bench.py` drives a **running** PocketDeck Mac app through its automation socket
 with the same stdio shim `macos/scripts/mcp-driver.py` uses. It opens one app
 window, runs the fixed script below, closes the window, and summarises that
-run's `stats stream=…` lines with `macos/scripts/stats-summary.py`. One table
-compares the arms; `--out` keeps every run as CSV.
+run's `stats stream=…` lines itself. One table compares the arms; `--out` keeps
+every run as CSV. `macos/scripts/stats-summary.py` still summarises saved lines
+for a person reading a log; the bench no longer needs it.
 
 It never launches, quits or reconfigures the Mac app. Start the app (and turn
 on Settings › Automation) first.
@@ -38,9 +39,11 @@ use (`--profile e2e`, `--profile stats`).
    window is visible).
 2. The fixed script, through the app's own `swipe` MCP tool: 10 swipes at a
    steady pace (400 ms each), a 3 s still, 10 fast flings (150 ms each), a 3 s
-   still.
+   still. **Every swipe alternates direction** (up, down, up, …) in both the
+   steady and the fling phase, so the list never rests at an end and the
+   picture keeps moving.
 3. `close_window`.
-4. Read that run's `stats` lines with `stats-summary.py`.
+4. Read that run's `stats` lines and score them (see Repeats).
 
 ## Arms
 
@@ -58,9 +61,10 @@ use (`--profile e2e`, `--profile stats`).
   `dev.pocketdeck.mac` for the default profile, else
   `dev.pocketdeck.mac.<profile>`.
 - An arm with `"restart": true` needs a fresh session for a key the app reads
-  when it dials (N1's Mac side, `stream.net`). The bench never quits, relaunches
-  or reconnects the app, so these arms are left out of the default run; pass
-  `--include-restart-arms` when you will restart the app between runs.
+  when it dials (N1's Mac side, `stream.net`) or the phone applies when it
+  accepts the session's socket (N1's phone side, `tos`). The bench never quits,
+  relaunches or reconnects the app, so these arms are left out of the default
+  run; pass `--include-restart-arms` when you will restart the app between runs.
 - Every arm restores every key it set, after each run and again on exit — an
   interruption does not leave a strategy switched on.
 - An arm naming a property no build reads still runs: setting it is a no-op
@@ -71,31 +75,60 @@ The shipped arms are the ISS-40 switches: `baseline` (no properties), the Q1
 and Q2 queue arms, R1's CBR, R2's two caps, R4's intra refresh, T1's refinement,
 N1's traffic class (`n1-af41` on the phone, `n1-mac-video` on the Mac and
 `n1-both` for both), the Mac's presentation and pixel switches (`m1-paced`,
-`m2-panel`), and `combo-a` with all the phone ones. Each phone switch is read at
-a stream's configure and logged as one `stream N strategy: …` line (logcat);
-each Mac switch is read when a window opens (or resizes) and logged as one
-`stream N mac strategy: …` line, so a run also proves what the app applied.
+`m2-panel`), and `combo-a` with the phone ones except `tos`. Each phone switch
+is read at a stream's configure and logged as one `stream N strategy: …` line
+(logcat); each Mac switch is read when a window opens (or resizes) and logged
+as one `stream N mac strategy: …` line, so a run also proves what the app
+applied.
 
-`n1-mac-video` and `n1-both` set `stream.net`, which the Mac reads once when a
-session dials. Opening a new window does not dial, and there is no debug control
-that reconnects a running app, so an interleaved run cannot apply it: restart
-the app between those arms and pass `--include-restart-arms`. The phone side of
-N1 (`tos`) has the same session-lifetime limit, since the phone applies it when
-it accepts the session's socket.
+`n1-mac-video`, `n1-both` and `n1-af41` set `stream.net`/`tos`, which the app
+and the phone read once when the session starts (dial and socket accept).
+Opening a new window does not reconnect, and there is no debug control that
+reconnects a running app, so an interleaved run cannot apply them: restart the
+app between those arms and pass `--include-restart-arms`.
 
-## Repeats
+## Repeats and the table
 
 `--repeats N` (default 3) runs the arms **interleaved** — A B C A B C — because
 the link changes minute to minute; a whole arm at a time would compare two
-different networks. A single run's value is the median of its `stats` lines,
-except `freeze_n`, `freeze_ms` and `drop_ep`, which are summed over the lines
-(a freeze is one event, not a per-line level). The table reports, per arm,
-the median of its runs and their min–max.
+different networks. The table reports, per arm, the median of its runs and their
+min–max.
+
+What makes a run feel janky is the picture stopping **while the phone's content
+moves**. Three causes are counted and added into one pair of numbers:
+
+- `hitch_n` / `hitch_ms` (Mac): a frame handed to the display layer more than
+  50 ms after its capture step (`late = shown gap − pts gap`), and how late.
+  A still is no hitch: the heartbeat's pts gap matches its shown gap.
+- `drop_ep` / `drop_ms` (phone): a send-queue drop episode, and the pts span
+  from the last frame before it to the keyframe that ends it, less one frame.
+  An older phone prints `drop_ms=-`; the bench counts it as 0 and marks the run
+  `(no drop_ms)`.
+- `susp_n` / `susp_ms` (phone): Q1's encoder-suspend episodes and their time.
+
+Per run:
 
 ```
-arm        shown_fps   int_p99   freeze_n  ...
-baseline   59.9 (…-…)  16.9 (…)  0.0 (…)
+jank_n = hitch_n + drop_ep + susp_n
+jank_ms = hitch_ms + drop_ms + susp_ms
 ```
+
+Both total over every `stats` line in the run. `shown_fps` and `late_p99` are
+**only** the lines during the swipe and fling phases (`still` frames of a list
+that stopped moving would flatter both). `kbps` and the e2e levels stay
+whole-run medians. `kf` totals keyframes over the run.
+
+A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
+when no swipe/fling line had `rx_fps ≥ 30`: the content did not move, so the
+run cannot compare strategies. The bench also logs each line's phase.
+
+```
+arm          jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
+baseline     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
+```
+
+The CSV (`--out`) has every run with the same fields plus `low_motion` and
+`no_drop_ms`.
 
 ## Usage
 
@@ -136,8 +169,9 @@ tools/stream-bench/bench.py --profile stats --serial fake-phone \
     --shim macos/build/e2e/PocketDeck.app/Contents/Helpers/pocketdeck-mcp
 ```
 
-The fake phone's `swipe` moves nothing, but its encoder keeps producing frames,
-so the table fills with real `shown_fps`, intervals and `int_p99`. Start it with
-`--no-backlog-restart`: otherwise every cleared sender backlog rebuilds its
-encoder, and each rebuild resets the Mac's 2 s stats window around a new
-config, so the table reads zero frames.
+The fake phone's `swipe` moves nothing, but its encoder keeps producing frames
+at 60 fps, so the swipe/fling lines still see `rx_fps ≥ 30` and none of those
+runs is marked `low-motion`; the table fills with real `shown_fps`, `late_p99`
+and the jank counters. Start it with `--no-backlog-restart`: otherwise every
+cleared sender backlog rebuilds its encoder, and each rebuild resets the Mac's
+2 s stats window around a new config, so the table reads zero frames.
