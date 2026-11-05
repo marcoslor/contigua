@@ -303,15 +303,18 @@ internal class SendQueue(
                 return@repeat
             }
             deltaBytes[stream] = (deltaBytes[stream] ?: entry.bytes.size) - entry.bytes.size
-            maybeResume(stream)
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
                 deltaLastPtsUs.remove(stream)
             } else {
+                // The oldest queued frame is now this one: the duration rule
+                // must not keep measuring from a frame that already left.
+                deltaFirstPtsUs[stream] = q.first().ptsUs
                 deltaOrder.addLast(stream)
             }
+            maybeResume(stream)
             return entry
         }
         val entry = bulk.removeFirstOrNull() ?: return null
@@ -360,15 +363,25 @@ internal class SendQueue(
     /** Q1: a dequeue brought this stream's backlog below half its budget. */
     private fun maybeResume(stream: Int) {
         if (overflowStates[stream] != OverflowState.Suspended) return
-        val policy = policyOf(stream)
-        val used = deltaBytes[stream] ?: 0
-        if (used > policy.maxBytes / 2) return
-        val first = deltaFirstPtsUs[stream] ?: return
-        val last = deltaLastPtsUs[stream] ?: return
-        if (last - first > policy.maxDurationUs / 2) return
+        if (!backlogUnderHalf(stream)) return
         val step = overflowStep(OverflowState.Suspended, OverflowEvent.Drained)
-        setOverflowState(stream, step)
-        pendingResumes.add(stream)
+        if (setOverflowState(stream, step)) pendingResumes.add(stream)
+    }
+
+    /**
+     * Q1's drained rule. An absent or empty backlog is zero bytes and zero
+     * span: after the last delta left, there is nothing left to wait for (the
+     * per-stream maps are gone by then, and the old early return stranded the
+     * encoder).
+     */
+    private fun backlogUnderHalf(stream: Int): Boolean {
+        val policy = policyOf(stream)
+        val queued = deltas[stream]
+        val empty = queued == null || queued.isEmpty()
+        val used = if (empty) 0 else deltaBytes[stream] ?: 0
+        val first = if (empty) 0L else deltaFirstPtsUs[stream] ?: 0L
+        val last = if (empty) 0L else deltaLastPtsUs[stream] ?: 0L
+        return used <= policy.maxBytes / 2 && last - first <= policy.maxDurationUs / 2
     }
 
     companion object {
