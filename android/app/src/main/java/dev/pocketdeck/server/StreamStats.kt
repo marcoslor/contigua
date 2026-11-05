@@ -192,6 +192,47 @@ internal object StreamStatsWire {
     }
 }
 
+/**
+ * ISS-40's QP sample: one line per stream after its 30th output buffer, with
+ * the last ten raw `KEY_VIDEO_QP_AVERAGE` values and the output format's own
+ * key names containing "qp" (names only). The reviewer reads it on the real
+ * phone; the stats counters said a QP of 1-2 while scrolling, which the
+ * sample can confirm or deny. Pure Kotlin, so K1 pins the text.
+ */
+internal class QpSampleProbe {
+    private companion object {
+        const val BUFFERS = 30
+        const val VALUES = 10
+    }
+
+    private val values = ArrayDeque<Int>()
+    private var seen = 0
+
+    /** True while this stream has not logged its sample. */
+    var collecting = true
+        private set
+
+    /** One output buffer; true on the buffer that completes the sample. */
+    fun note(qp: Int?): Boolean {
+        if (!collecting) return false
+        seen++
+        if (qp != null) {
+            values.addLast(qp)
+            if (values.size > VALUES) values.removeFirst()
+        }
+        if (seen < BUFFERS) return false
+        collecting = false
+        return true
+    }
+
+    fun line(stream: Int, formatKeys: Set<String>): String {
+        val keys = formatKeys.filter { it.contains("qp", ignoreCase = true) }.sorted()
+        val shown = if (values.isEmpty()) "-" else values.joinToString(",")
+        val names = if (keys.isEmpty()) "-" else keys.joinToString(",")
+        return "stream $stream qp sample: key=video-qp-average values=$shown qp_keys=$names"
+    }
+}
+
 /** Fixed-capacity ring of longs; overwrites the oldest. */
 internal class LongRing(private val capacity: Int) {
     private val values = LongArray(capacity)
