@@ -148,6 +148,13 @@ internal class WindowStream(
     /** Live bitrate policy: computed target or `window.quality`, drops and recovery. */
     private val quality = QualityAdaptation()
 
+    /** `stream.stats` counters (ISS-40); rings fill only while the Mac asked. */
+    private val stats = StreamStats()
+    @Volatile private var statsWanted = false
+
+    /** The codec supports per-output-buffer statistics (KEY_VIDEO_QP_AVERAGE). */
+    private var encodingStatistics = false
+
     /** Explicit `window.quality` bitrate; null means "computed from the pixels". */
     @Volatile private var requestedBitrate: Int? = null
 
@@ -347,9 +354,18 @@ internal class WindowStream(
     }
 
     fun requestKeyframe() {
+        stats.onKeyframeRequested()
         val codec = encoder ?: return
         requestSyncFrame(codec)
     }
+
+    /** `stream.stats` on/off: only the ring buffers change, never the stream. */
+    fun setStatsWanted(on: Boolean) {
+        statsWanted = on
+    }
+
+    /** The counters since the last call (the session resets each 2 s window). */
+    fun statsSnapshot(reset: Boolean): EncoderStats = stats.snapshot(reset)
 
     /** `setParameters(PARAMETER_KEY_REQUEST_SYNC_FRAME)` on a known encoder. */
     private fun requestSyncFrame(codec: MediaCodec) {
@@ -675,6 +691,21 @@ internal class WindowStream(
         // Where the encoder supports the key it caps the frame rate itself;
         // where it does not, the drain loop drops frames above the cap.
         maxFps?.let { runCatching { format.setInteger(KEY_MAX_FPS, it) } }
+        // Per-frame average QP rides each output buffer's format, but only
+        // when the codec declares the feature; asking elsewhere fails configure.
+        encodingStatistics = runCatching {
+            codec.codecInfo.getCapabilitiesForType(MIME)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_EncodingStatistics)
+        }.getOrDefault(false)
+        if (encodingStatistics) {
+            runCatching {
+                format.setInteger(
+                    MediaFormat.KEY_VIDEO_ENCODING_STATISTICS_LEVEL,
+                    MediaFormat.VIDEO_ENCODING_STATISTICS_LEVEL_1,
+                )
+            }
+        }
+        stats.setTarget(quality.bitrate)
         appliedBitrate = quality.bitrate
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -837,15 +868,24 @@ internal class WindowStream(
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                     val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    // The encoder path's clock: Surface input pts are
+                    // CLOCK_MONOTONIC microseconds, as System.nanoTime is.
+                    val encodeUs = if (statsWanted) {
+                        (System.nanoTime() / 1_000 - info.presentationTimeUs)
+                            .takeIf { it in 0..10_000_000L }
+                    } else null
+                    val qp = if (statsWanted && encodingStatistics) readQp(codec, idx) else null
                     if (encoder !== codec) {
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
+                        stats.onFrame(key, 0, encodeUs, qp)
                     } else {
                         heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
-                        if (dropForFps(info.presentationTimeUs)) {
-                            // Above the fps cap: never queued, so the socket sees less.
-                        } else {
+                        val skipped = dropForFps(info.presentationTimeUs)
+                        if (skipped) stats.onSkipped()
+                        stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, qp)
+                        if (!skipped) {
                             buf.position(info.offset)
                             buf.limit(info.offset + info.size)
                             val data = ByteArray(info.size)
@@ -880,6 +920,7 @@ internal class WindowStream(
     /** Applies the current bitrate through `setParameters`; logs each change once. */
     private fun applyBitrate() {
         val bps = quality.bitrate
+        stats.setTarget(bps)
         if (bps == appliedBitrate) return
         val codec = encoder
         val ok = codec != null && runCatching {
@@ -893,6 +934,16 @@ internal class WindowStream(
     }
 
     private fun mbps(bps: Int): String = "%.1f Mbps".format(bps / 1_000_000.0)
+
+    /** `KEY_VIDEO_QP_AVERAGE` from this output buffer's format, if present. */
+    private fun readQp(codec: MediaCodec, index: Int): Int? = runCatching {
+        val format = codec.getOutputFormat(index)
+        if (format.containsKey(MediaFormat.KEY_VIDEO_QP_AVERAGE)) {
+            format.getInteger(MediaFormat.KEY_VIDEO_QP_AVERAGE)
+        } else {
+            null
+        }
+    }.getOrNull()
 
     private fun readCsd(format: MediaFormat): ByteArray? {
         val csd0 = runCatching { format.getByteBuffer("csd-0") }.getOrNull() ?: return null
@@ -926,6 +977,9 @@ internal class StreamTable<V> {
 
     /** Removes the stream; the caller owns (and closes) what comes back. */
     fun take(stream: Int): V? = synchronized(map) { map.remove(stream) }
+
+    /** A snapshot of the values, for a session-wide setting (stats on/off). */
+    fun values(): List<V> = synchronized(map) { map.values.toList() }
 }
 
 /**
@@ -943,10 +997,11 @@ internal class AndroidDisplayLayer(
 ) : DisplayLayer {
 
     private val streams = StreamTable<WindowStream>()
+    @Volatile private var statsOn = false
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
         take(stream)?.close()
-        val ws = WindowStream(ctx, stream, sink, log)
+        val ws = WindowStream(ctx, stream, sink, log).also { it.setStatsWanted(statsOn) }
         // start() can throw after it created the persistent surface and an
         // encoder; close what it built before the session sees the failure.
         val id = try {
@@ -964,7 +1019,7 @@ internal class AndroidDisplayLayer(
 
     override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize {
         take(stream)?.close()
-        val ws = WindowStream(ctx, stream, sink, log)
+        val ws = WindowStream(ctx, stream, sink, log).also { it.setStatsWanted(statsOn) }
         val size = try {
             ws.startMirror(w, h)
         } catch (e: Throwable) {
@@ -1012,5 +1067,13 @@ internal class AndroidDisplayLayer(
     }
 
     /** Removes the stream from the map; the caller closes it outside the lock. */
+    override fun setStatsEnabled(on: Boolean) {
+        statsOn = on
+        for (stream in streams.values()) stream.setStatsWanted(on)
+    }
+
+    override fun statsSnapshot(stream: Int, nowUs: Long, reset: Boolean): EncoderStats? =
+        get(stream)?.statsSnapshot(reset)
+
     private fun take(stream: Int): WindowStream? = streams.take(stream)
 }
