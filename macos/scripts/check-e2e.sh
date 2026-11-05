@@ -11816,8 +11816,7 @@ check_stats() {
     # 5 s warm-up lines, then judge the steady ones.
     sleep 20
     stats_lines_file >/dev/null
-    local metrics
-    metrics="$(python3 - "$WORK/stats.txt" <<'PY'
+    python3 - "$WORK/stats.txt" > "$WORK/stats-metrics.txt" <<'PY'
 import statistics, sys
 rows = []
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
@@ -11849,17 +11848,31 @@ forced = [r for r in rows
           and 250 <= (number("freeze_ms", r) or 0) <= 600]
 freeze = 1 if forced else 0
 qp = [v for v in (number("qp_p95", r) for r in recent) if v is not None]
+# The fake phone's pts follows wall clock across its forced gap, so the gap is
+# a freeze and not a hitch. Startup can still hand over a burst late; the
+# steady lines are the ones the line-level contract is about.
+hitch = max([int(number("hitch_n", r) or 0) for r in recent] + [0])
 print(len(rows),
       round(statistics.median(rx), 1) if rx else "-",
       round(statistics.median(shown), 1) if shown else "-",
       round(statistics.median(e2e), 1) if e2e else "-",
       drop, freeze,
-      round(statistics.median(qp), 1) if qp else "-")
+      round(statistics.median(qp), 1) if qp else "-",
+      hitch)
 PY
-)"
-    local lines rx shown e2e drop freeze qp
-    read -r lines rx shown e2e drop freeze qp <<< "$metrics"
-    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp"
+    local lines rx shown e2e drop freeze qp hitch
+    read -r lines rx shown e2e drop freeze qp hitch < "$WORK/stats-metrics.txt"
+    # An empty or short metrics line must fail an assertion below, not stop the
+    # check with `unbound variable`.
+    lines="${lines:-0}"
+    rx="${rx:--}"
+    shown="${shown:--}"
+    e2e="${e2e:--}"
+    drop="${drop:-0}"
+    freeze="${freeze:-0}"
+    qp="${qp:--}"
+    hitch="${hitch:-0}"
+    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp hitch_n=$hitch"
     [ "${lines:-0}" -ge 3 ] \
         && ok "STATS $lines lines in the 20 s watch" \
         || bad "STATS only ${lines:-0} lines in the 20 s watch"
@@ -11884,6 +11897,9 @@ PY
     [ "$qp" = "24.0" ] \
         && ok "STATS the fake codec's QP 24 reaches qp_p95" \
         || bad "STATS qp_p95=$qp, expected 24.0"
+    [ "$hitch" = "0" ] \
+        && ok "STATS hitch_n=0 on the fake phone's steady encoder (its forced gap is a freeze, not a hitch)" \
+        || bad "STATS hitch_n=$hitch, expected 0 (the fake phone's pts follows wall clock)"
 
     # The summary script must read the same saved lines (the reviewer uses it
     # on the real phone).
@@ -11925,7 +11941,8 @@ PY
     line="$(tail -1 "$WORK/stats.txt")"
     case "$line" in *"stats stream="*) ;; *) missing=" stats" ;; esac
     for field in stream size view place rx_fps shown_fps int_p95 int_p99 \
-                 freeze_n freeze_ms mac_drop phone_drop drop_ep skip kf kf_req \
+                 freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop phone_drop \
+                 drop_ep drop_ms skip kf kf_req \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
                  e2e_p50 e2e_p95; do
         case "$line" in
