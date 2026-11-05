@@ -137,7 +137,8 @@ The order after round 2:
 
 ## How each run is measured
 
-The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per window every 5 s:
+The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per
+window every 5 s, and **one complete line when the window closes**:
 
 - **Smoothness:**
   - frames shown per second on the Mac;
@@ -151,6 +152,34 @@ The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per w
 - **Blockiness:** the phone's per-frame average QP p50 and p95 during motion (the encoder reports it), and kilobits per second.
 - **Recovery:** the time from the end of a scroll until the still picture's PSNR against the phone's lossless capture is within 1 dB of its final value (`crisp-metric.py`).
 - **Pressure:** queue drops, skipped frames, keyframes, the target bitrate.
+
+The 5 s lines sample the last 2 s, so their frame rate and phase labels shift
+against the script. The closing line (`stats total stream=N secs=… rx_frames=…
+shown_frames=… hitch_n=… hitch_ms=… late_p99=… phone_n=… phone_frames=… kf=…
+kf_req=… drop_ep=… drop_ms=… susp_n=… susp_ms=… bytes=… e2e_p50=…
+e2e_p95=… covered_ms=…`) is complete over the window's whole life: counters
+survive the 5 s samples and a config, `late_p99` and the e2e levels cover every
+shown frame, and `covered_ms` is the time the window spent paused (occluded or
+minimised). **The bench reads the totals line for every number in its table.**
+The totals have no phases, so `shown_fps` and `late_p99` are whole-run values;
+`kbps` is `bytes × 8 / secs` and the QP p95 is still the median of the 5 s
+lines that carried a phone message (the totals line has no QP).
+
+A run is **low-motion** when `rx_frames / secs` is under 20: the content did
+not move, so the run cannot compare strategies. A run with `covered_ms > 0` is
+marked **covered** and left out of the arm's medians. A run that produces no
+closing line (a timeout) is marked **failed**; the bench writes the table and
+the CSV anyway. Only the profile app's own PID supplies lines, and a run is
+refused with `another window is open` when the same app logged a `stats
+stream=` line in the last 10 s.
+
+The clock offset survives a phone that sleeps: its `CLOCK_MONOTONIC` stops, so
+the offset jumps between windows. A pong further from the estimate than
+`(its RTT + the estimate's RTT) / 2 + 5 ms` restarts the estimate from that
+sample (`clock offset: jump <ms>`), and the Mac pings at once when a window
+opens and when the session is welcomed, besides the 15 s timer. Without that,
+delays from 400 to 2500 ms in the first real-phone round were clock jumps, not
+delay.
 
 **The bench** opens a window through the Mac app's MCP tools (`open_app`, `swipe`, `close_window`) and runs a fixed script:
 
@@ -184,12 +213,13 @@ jank_n  = hitch_n + drop_ep + susp_n
 jank_ms = hitch_ms + drop_ms + susp_ms
 ```
 
-The counters total over every 5 s `stats` line in the run. `shown_fps` and
-`late_p99` are read only from the swipe and fling lines, because a still list
-would flatter both. A line without `drop_ms` (an older phone) counts as zero
-and marks the run `(no drop_ms)`, and a run whose swipe/fling lines never
-reached `rx_fps ≥ 30` is marked `low-motion`: the content did not move, so the
-run cannot compare strategies.
+The counters come from the closing totals line, so they cover the window's
+whole life; `shown_fps` and `late_p99` are whole-run values too (the totals
+have no phases). A totals line without `drop_ms` (an older phone) counts as
+zero and marks the run `(no drop_ms)`, and a run whose `rx_frames / secs` is
+under 20 is marked `low-motion`: the content did not move, so the run cannot
+compare strategies. A run with `covered_ms > 0` is `covered` and leaves the
+medians.
 
 ## Strategy switches
 
@@ -197,7 +227,7 @@ The candidate fixes are phone properties read once at a stream's configure
 (open, resize, encoder rebuild); with none set the stream is today's, byte for
 byte. The queue's two keys are read when a stream's first frame is queued.
 The phone logs one line per stream per configure, e.g.
-`stream 3 strategy: rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88`,
+`stream 3 strategy: rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88 stall=400/5000`,
 or `stream 3 strategy: default`. A switch the codec refuses stays at today's
 behaviour and the line says so in a closed token (`rc=cbr unsupported`,
 `ir=60 unsupported`).
@@ -212,6 +242,14 @@ behaviour and the line says so in a closed token (`rc=cbr unsupported`,
 | `ir` | 0, or 10–600 frames | 0 | intra refresh instead of the 10 s keyframe: `KEY_INTRA_REFRESH_PERIOD` N and a 3600 s keyframe interval; keyframes still come on request | codec without `FEATURE_IntraRefresh` keeps the 10 s interval and logs `ir=60 unsupported` | `r4-ir60`, `combo-a` |
 | `refine` | `off` / `on` | `off` | after 300 ms without a *new* encoded picture, one frame at 3× the current target (up to the cap) with a sync request; motion before it lands cancels and restores at once; one per still period | codec refusing the sync simply ends it at the 1 s timeout | `t1-refine`, `combo-a` |
 | `tos` | 0–255 | 0 (unset) | `setTrafficClass(N)` on the accepted socket before the TLS handshake (AF41 is 136, `0x88`) | the OS refusing it logs `tos=0x88 unsupported` and the stream is unchanged | `n1-af41`, `combo-a` |
+| `stall_ms`, `stall_every_ms` | 0 (off) or 50–2000 / 1000–30000 (default 5000) | 0 / 5000 | a stall on demand: while that stream has frames queued, the session's writer writes nothing to the socket for `stall_ms` every `stall_every_ms`, so the queue fills exactly as it does when the link stalls; other streams' frames wait too (it is the link) | 0 and junk are off; out of range clamps | `stall`, `stall-q1`, `stall-q1q2-100`, `stall-q2-500`, `stall-paced`, `stall-ir60` |
+
+`stall_ms`/`stall_every_ms` are the round-2 fix for what round 1 could not
+exercise: one drop episode in 32 runs and no suspend. Each injected stall logs
+`stream N injected stall <ms>` (one line per pause), and the strategy line
+names the switch (`stall=400/5000`). It is never on by default and no product
+path sets it. `--arms-filter stall` runs the six stall arms alone, so a
+reviewer does not need the whole list.
 
 `refine`'s still signal is the encoded frame's size: a repeat of an unchanged
 picture has the previous frame's size, which is the only input-silence signal

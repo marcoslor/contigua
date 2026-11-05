@@ -24,6 +24,13 @@ internal class StreamStats {
     private var suspendedMs = 0L
     private var refined = 0L
 
+    // The stream's whole life for the one line at close (ISS-40 round 2). A
+    // 2 s snapshot never consumes these.
+    private var totalOut = 0L
+    private var totalSent = 0L
+    private var totalSkipped = 0L
+    private var totalBytes = 0L
+
     /** Q1: when the current suspend episode began, or null while flowing. */
     private var suspendStartMs: Long? = null
 
@@ -33,6 +40,10 @@ internal class StreamStats {
     fun onFrame(key: Boolean, bytes: Int, encodeUs: Long?, qpValue: Int?) {
         framesOut++
         bytesOut += bytes
+        totalOut++
+        totalBytes += bytes
+        // A forwarded buffer has bytes; a paused or skipped one is handed zero.
+        if (bytes > 0) totalSent++
         if (key) keyframesOut++
         encodeUs?.let { if (it in 0..MAX_ENCODE_US) encode.add(it) }
         qpValue?.let { qp.add(it) }
@@ -44,6 +55,7 @@ internal class StreamStats {
 
     fun onSkipped() {
         framesSkipped++
+        totalSkipped++
     }
 
     /** Q1: the encoder's input is suspended; one episode per rising edge. */
@@ -101,6 +113,16 @@ internal class StreamStats {
         }
         return out
     }
+
+    /**
+     * The one closed-token line at stream close: encoder output buffers, the
+     * frames actually sent, the max-fps drops and the bytes sent, over the
+     * stream's whole life. It is how a CBR freeze is told apart from a stalled
+     * encoder: `out` stays high while `sent` does not follow.
+     */
+    fun totalsLine(stream: Int, secs: Double): String =
+        "stream $stream totals: out=$totalOut sent=$totalSent skipped=$totalSkipped " +
+            "bytes=$totalBytes secs=" + String.format(java.util.Locale.US, "%.1f", secs)
 }
 
 /** One encoder's window counters, before the session adds its queue counters. */

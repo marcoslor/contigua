@@ -3,9 +3,10 @@
 `bench.py` drives a **running** PocketDeck Mac app through its automation socket
 with the same stdio shim `macos/scripts/mcp-driver.py` uses. It opens one app
 window, runs the fixed script below, closes the window, and summarises that
-run's `stats stream=…` lines itself. One table compares the arms; `--out` keeps
-every run as CSV. `macos/scripts/stats-summary.py` still summarises saved lines
-for a person reading a log; the bench no longer needs it.
+run's **closing `stats total stream=…` line** itself. One table compares the
+arms; `--out` keeps every run as CSV. `macos/scripts/stats-summary.py` still
+summarises saved 5 s lines for a person reading a log; the bench no longer
+needs it.
 
 It never launches, quits or reconfigures the Mac app. Start the app (and turn
 on Settings › Automation) first.
@@ -34,6 +35,13 @@ use (`--profile e2e`, `--profile stats`).
 
 ## One run
 
+Before the first run the bench reads the app's PID from `ps` (the process whose
+command starts with `Contents/MacOS/PocketDeck --profile <profile>`) and names
+it in the `log show` predicate, so another PocketDeck process's lines never
+mix in. It also refuses to start with `another window is open` when that app
+logged a `stats stream=` line in the last 10 s: the person's own visible
+window muddies every run.
+
 1. `open_app` for `--package` (default `com.android.settings`), and wait for
    the first `stats` line for that window (the Mac logs one every 5 s while the
    window is visible).
@@ -43,7 +51,9 @@ use (`--profile e2e`, `--profile stats`).
    steady and the fling phase, so the list never rests at an end and the
    picture keeps moving.
 3. `close_window`.
-4. Read that run's `stats` lines and score them (see Repeats).
+4. Wait for that run's closing `stats total stream=N …` line and score it (see
+   Repeats). A run with no line in the timeout is marked **failed**; the bench
+   goes on and still writes the table and the CSV.
 
 ## Arms
 
@@ -75,11 +85,18 @@ The shipped arms are the ISS-40 switches: `baseline` (no properties), the Q1
 and Q2 queue arms, R1's CBR, R2's two caps, R4's intra refresh, T1's refinement,
 N1's traffic class (`n1-af41` on the phone, `n1-mac-video` on the Mac and
 `n1-both` for both), the Mac's presentation and pixel switches (`m1-paced`,
-`m2-panel`), and `combo-a` with the phone ones except `tos`. Each phone switch
-is read at a stream's configure and logged as one `stream N strategy: …` line
-(logcat); each Mac switch is read when a window opens (or resizes) and logged
-as one `stream N mac strategy: …` line, so a run also proves what the app
-applied.
+`m2-panel`), `combo-a` with the phone ones except `tos`, and the round-2 stall
+arms. Each phone switch is read at a stream's configure and logged as one
+`stream N strategy: …` line (logcat); each Mac switch is read when a window
+opens (or resizes) and logged as one `stream N mac strategy: …` line, so a run
+also proves what the app applied.
+
+The stall arms make the link stall on demand: `stall` (400 ms every 5 s),
+`stall-q1` (plus `overflow=suspend`), `stall-q1q2-100` (plus a 100 ms queue),
+`stall-q2-500` (a 500 ms queue), `stall-paced` (plus the Mac's paced
+presentation) and `stall-ir60` (plus intra refresh). The phone logs one
+`stream N injected stall 400` line per pause. `--arms-filter stall` runs these
+six alone; `--arms-filter stall-q` runs the three queue variants.
 
 `n1-mac-video`, `n1-both` and `n1-af41` set `stream.net`/`tos`, which the app
 and the phone read once when the session starts (dial and socket accept).
@@ -113,34 +130,34 @@ jank_n = hitch_n + drop_ep + susp_n
 jank_ms = hitch_ms + drop_ms + susp_ms
 ```
 
-Both total over every `stats` line in the run. `shown_fps` and `late_p99` are
-**only** the lines during the swipe and fling phases (`still` frames of a list
-that stopped moving would flatter both). `kbps` and the e2e levels stay
-whole-run medians. `kf` totals keyframes over the run.
+Both come from the closing totals line and cover the window's whole life:
+5 s samples and a config never reset them. `shown_fps` is `shown_frames` over
+the run's active time (`secs` minus `covered_ms`), `late_p99` is every shown
+frame, `kbps` is `bytes × 8 / secs`, and `kf` totals keyframes. **The totals
+have no phases**, so there is no swipe/fling filter any more; a run that moved
+too little shows up as low-motion below instead.
 
-The Mac's line folds in every 2 s `stream.stats` message since the previous
-line and prints how many as `phone_n`. `kbps` and the other phone levels
-(`qp_p50`, `qp_p95`, `enc_*`, `queue_p95`, `target_kbps`) are samples only on a
-line with `phone_n ≥ 1`: a line with no message prints `-`, and counting that
-`-` as a level would pretend the phone said nothing happened. **`qp_p95`** is
-the phone's own QP over the swipe and fling lines only: a still screen encodes
-at QP ~1, which is no quality signal. The e2e levels stay Mac-side and come
-from every line.
+**`qp_p95` is the one sampled number**: a level, not a counter, and the totals
+line has none. It is the median over the 5 s lines that folded in a phone
+message (`phone_n ≥ 1`); a line with no message is no sample.
 
 A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
-when no swipe/fling line had `rx_fps ≥ 30`: the content did not move, so the
-run cannot compare strategies. A run whose second or later line had
-`phone_n=0` is marked **`phone gaps`** (CSV `phone_gaps=1`): the phone did not
-report for a whole 5 s line, so its counters undercount that span. The bench
-also logs each line's phase.
+when `rx_frames / secs` is under 20: the content did not move, so the run cannot
+compare strategies. A run with `covered_ms > 0` is marked **`covered`** and
+left out of the arm's medians: the window spent part of the run hidden. A run
+with no closing line is **`failed`**; its cells are `-` and the table and CSV
+are still written. `phone gaps` marks a run that received no phone message at
+all (`phone_n=0`), and `no drop_ms` a phone that sends no `dropGapMs`.
 
 ```
-arm          jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
-baseline     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
+arm                       jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
+stall                     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
+stall-q1 (covered)          -          -         -           -         -          -
 ```
 
-The CSV (`--out`) has every run with the same fields plus `low_motion`,
-`no_drop_ms` and `phone_gaps`.
+The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
+`secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`, `bytes`,
+`covered_ms`, `low_motion`, `no_drop_ms` and `phone_gaps`.
 
 ## Usage
 
@@ -159,6 +176,16 @@ tools/stream-bench/bench.py --profile stats --serial R58M1234 \
 
 The table prints one row per arm. With `--repeats 1` it is a smoke test that
 every switch applies, not a comparison.
+
+To run only the stall arms (the reviewer's round-2 list):
+
+```sh
+tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
+    --arms-filter stall --repeats 1 --out .agent/stats/stall.csv
+```
+
+`--arms-filter <prefix>` keeps the arms whose name starts with the prefix,
+before the restart-arm filter.
 
 ## Host proof without a phone
 

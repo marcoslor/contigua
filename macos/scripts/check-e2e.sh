@@ -11965,6 +11965,56 @@ PY
     [ -z "$missing" ] \
         && ok "STATS the line carries every documented field" \
         || bad "STATS the line is missing:$missing"
+
+    # The closing totals line (WIN-55/56): complete over the window's whole
+    # life, including the minimize stop above (covered_ms). The bench reads
+    # these, so the check proves every field and a lifetime counter.
+    stats_total_log() {
+        /usr/bin/log show --last 5m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -F " stats total stream=1 "
+    }
+    stats_total_ready() { [ -n "$(stats_total_log)" ]; }
+    control open --close-stream 1:0 || bad "STATS the window did not close: $CONTROL_REPLY"
+    if wait_until 5 stats_total_ready; then
+        ok "STATS the closing totals line appeared"
+    else
+        bad "STATS no stats total line after the window closed"
+    fi
+    local total_line total_missing=""
+    total_line="$(stats_total_log | tail -1)"
+    for field in secs rx_frames shown_frames hitch_n hitch_ms late_p99 \
+                 phone_n phone_frames kf kf_req drop_ep drop_ms susp_n susp_ms \
+                 bytes e2e_p50 e2e_p95 covered_ms; do
+        case "$total_line" in
+            *"$field="*) ;;
+            *) total_missing="$total_missing $field" ;;
+        esac
+    done
+    [ -z "$total_missing" ] \
+        && ok "STATS the totals line carries every documented field" \
+        || bad "STATS the totals line is missing:$total_missing"
+    total_field() {
+        printf '%s\n' "$total_line" | tr ' ' '\n' | grep -F "$1=" | head -1 | cut -d= -f2
+    }
+    local total_drop_ep total_covered total_secs total_rx
+    total_drop_ep="$(total_field drop_ep)"
+    total_covered="$(total_field covered_ms)"
+    total_secs="$(total_field secs)"
+    total_rx="$(total_field rx_frames)"
+    [ "$total_drop_ep" = "3" ] \
+        && ok "STATS totals drop_ep=3 folds the whole life's three episodes into one line" \
+        || bad "STATS totals drop_ep=$total_drop_ep, expected 3"
+    if [ -n "$total_covered" ] && awk -v v="$total_covered" 'BEGIN { exit !(v > 0) }'; then
+        ok "STATS totals covered_ms=$total_covered counts the minimized pause"
+    else
+        bad "STATS totals covered_ms=${total_covered:-missing} does not count the minimized pause"
+    fi
+    if awk -v s="$total_secs" -v r="$total_rx" 'BEGIN { exit !(s > 0 && r > 0) }'; then
+        ok "STATS totals secs=$total_secs rx_frames=$total_rx cover a live window"
+    else
+        bad "STATS totals secs=${total_secs:-missing} rx_frames=${total_rx:-missing} are not positive"
+    fi
     stop_app
     stop_fakephone
 }

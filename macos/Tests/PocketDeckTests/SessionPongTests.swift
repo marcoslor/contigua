@@ -61,6 +61,31 @@ final class SessionPongTests: XCTestCase {
 }
 
 extension SessionPongTests {
+    /// WIN-53: a fresh estimate right after a sleep needs a pong now, not up to
+    /// 15 s later, so the Mac pings at once when the session is welcomed and
+    /// when a window opens (on top of the 15 s timer).
+    func testTheSessionPingsOnWelcomeAndWhenAWindowOpens() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity,
+                                trustingClientPem: macIdentity.identity.certPem)
+        let brain = FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "phone-1")
+        brain.autoAllow = true
+        server.brain = brain
+        let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: server.port),
+                              knownDeviceId: nil, clientId: "test-client",
+                              identity: macIdentity.identity,
+                              connectTimeout: 2, pairingTimeout: 30)
+        session.pairingPolicy = .allowed
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        XCTAssertFalse(session.sent("ping").isEmpty, "the welcome sent no ping")
+        session.clearSent()
+        session.openApp(stream: 1, pkg: "com.android.settings", activity: nil,
+                        width: 900, height: 600, dpi: 160)
+        XCTAssertTrue(waitFor { !session.sent("ping").isEmpty },
+                      "opening a window sent no ping")
+        session.closeAndWait()
+    }
+
     private static func welcomeJSON(session: String) -> [String: Any] {
         ["t": "welcome", "session": session,
          "device": ["id": "phone-1", "name": "Pixel", "model": "Pixel", "sdk": 36,

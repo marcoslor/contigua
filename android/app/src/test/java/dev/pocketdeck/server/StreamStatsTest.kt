@@ -50,6 +50,27 @@ class StreamStatsTest {
     }
 
     @Test
+    fun theTotalsLineCoversTheStreamsWholeLife() {
+        val stats = StreamStats()
+        stats.onFrame(key = true, bytes = 1_000, encodeUs = 5_000, qpValue = 20)
+        stats.onFrame(key = false, bytes = 500, encodeUs = 9_000, qpValue = 30)
+        stats.onSkipped()
+        stats.onSkipped()
+        // The 2 s windows reset; the closing totals do not.
+        stats.snapshot(reset = true)
+        stats.onFrame(key = false, bytes = 250, encodeUs = 2_000, qpValue = null)
+        assertEquals(
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 secs=4.2",
+            stats.totalsLine(stream = 7, secs = 4.2),
+        )
+        assertEquals(
+            "reading the line does not consume the lifetime counters",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 secs=4.2",
+            stats.totalsLine(stream = 7, secs = 4.2),
+        )
+    }
+
+    @Test
     fun percentilesUseNearestRank() {
         val ring = LongRing(100)
         for (value in 1..100) ring.add(value.toLong())
