@@ -4951,6 +4951,13 @@ class Session(object):
             if qp is not None:
                 message["qpP50"] = qp
                 message["qpP95"] = qp
+            resends = self.phone.args.stats_retrans
+            if resends > 0:
+                # X0: a system-wide counter delta per message, as a phone that
+                # can read /proc/net/snmp reports it.
+                message["retrans"] = resends
+                message["rto"] = 1
+                message["lost_retrans"] = 0
             self.phone.events.tx(message)
             self._send(message)
             self._stats_sent += 1
@@ -5715,6 +5722,9 @@ def build_parser():
                    help="report N deltas dropped in the first stream.stats message (an old queue)")
     p.add_argument("--stats-qp", type=int, default=None, metavar="QP",
                    help="report this average QP in every stream.stats (a codec with encoding statistics)")
+    p.add_argument("--stats-retrans", type=int, default=0, metavar="N",
+                   help="report N TCP resends per stream.stats window (plus one timeout), "
+                        "as the phone's system-wide counters would")
     p.add_argument("--no-backlog-restart", action="store_true",
                    help="do not restart a stream's encoder when the sender's backlog clears "
                         "(a steady stream for the stats check)")
