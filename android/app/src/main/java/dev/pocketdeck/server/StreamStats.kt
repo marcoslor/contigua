@@ -135,9 +135,11 @@ internal class SendStats {
     }
 
     /** The window's queue percentiles plus the queue's drop counts; resets. */
-    fun snapshot(deltasDropped: Int, dropEpisodes: Int): SendSnapshot = synchronized(lock) {
+    fun snapshot(deltasDropped: Int, dropEpisodes: Int,
+                 dropGapMs: Long = 0): SendSnapshot = synchronized(lock) {
         val out = SendSnapshot(deltasDropped, dropEpisodes,
-                               queue.percentile(0.50), queue.percentile(0.95))
+                               queue.percentile(0.50), queue.percentile(0.95),
+                               dropGapMs)
         queue.clear()
         out
     }
@@ -153,6 +155,7 @@ internal data class SendSnapshot(
     val dropEpisodes: Int,
     val queueP50: Long?,
     val queueP95: Long?,
+    val dropGapMs: Long = 0,
 )
 
 /**
@@ -172,6 +175,7 @@ internal object StreamStatsWire {
             "bytes" to encoder.bytes,
             "drop" to send.deltasDropped,
             "dropEp" to send.dropEpisodes,
+            "dropGapMs" to send.dropGapMs,
             "skip" to encoder.framesSkipped,
             "susp" to encoder.suspendedEpisodes,
             "suspMs" to encoder.suspendedMs,
@@ -185,6 +189,47 @@ internal object StreamStatsWire {
         encoder.qpP50?.let { out["qpP50"] = it }
         encoder.qpP95?.let { out["qpP95"] = it }
         return out
+    }
+}
+
+/**
+ * ISS-40's QP sample: one line per stream after its 30th output buffer, with
+ * the last ten raw `KEY_VIDEO_QP_AVERAGE` values and the output format's own
+ * key names containing "qp" (names only). The reviewer reads it on the real
+ * phone; the stats counters said a QP of 1-2 while scrolling, which the
+ * sample can confirm or deny. Pure Kotlin, so K1 pins the text.
+ */
+internal class QpSampleProbe {
+    private companion object {
+        const val BUFFERS = 30
+        const val VALUES = 10
+    }
+
+    private val values = ArrayDeque<Int>()
+    private var seen = 0
+
+    /** True while this stream has not logged its sample. */
+    var collecting = true
+        private set
+
+    /** One output buffer; true on the buffer that completes the sample. */
+    fun note(qp: Int?): Boolean {
+        if (!collecting) return false
+        seen++
+        if (qp != null) {
+            values.addLast(qp)
+            if (values.size > VALUES) values.removeFirst()
+        }
+        if (seen < BUFFERS) return false
+        collecting = false
+        return true
+    }
+
+    fun line(stream: Int, formatKeys: Set<String>): String {
+        val keys = formatKeys.filter { it.contains("qp", ignoreCase = true) }.sorted()
+        val shown = if (values.isEmpty()) "-" else values.joinToString(",")
+        val names = if (keys.isEmpty()) "-" else keys.joinToString(",")
+        return "stream $stream qp sample: key=video-qp-average values=$shown qp_keys=$names"
     }
 }
 

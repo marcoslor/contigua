@@ -247,6 +247,7 @@ class Session(
     private val gate = OpenGate(
         sendJson = { stream, json -> queue.enqueueControl(stream, Frames.encodeJson(stream, json)) },
         sendControl = { stream, bytes -> queue.enqueueControl(stream, bytes) },
+        sendKeyframe = { stream, ptsUs, bytes -> queue.enqueueControl(stream, bytes, ptsUs) },
         sendDelta = { stream, ptsUs, bytes -> queue.enqueueDelta(stream, ptsUs, bytes) },
     )
     private val clipSync = ClipSync()
@@ -1985,6 +1986,7 @@ class Session(
         }
         display.close(stream)
         queue.takeDeltaStats(stream)
+        queue.forget(stream)
         synchronized(statsLock) { sendStats.remove(stream) }
         gate.forget(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
@@ -3353,9 +3355,10 @@ class Session(
             // A paused window sends nothing (the Mac has no picture to count).
             if (state.paused) continue
             val encoder = display.statsSnapshot(state.stream, monoUs(), reset = true) ?: continue
-            val (drops, episodes) = queue.takeDeltaStats(state.stream)
+            val deltas = queue.takeDeltaStats(state.stream)
             val send = synchronized(statsLock) {
-                sendStats.getOrPut(state.stream) { SendStats() }.snapshot(drops, episodes)
+                sendStats.getOrPut(state.stream) { SendStats() }
+                    .snapshot(deltas.dropped, deltas.episodes, deltas.gapMs)
             }
             val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send)
             sendJson(message, state.stream)

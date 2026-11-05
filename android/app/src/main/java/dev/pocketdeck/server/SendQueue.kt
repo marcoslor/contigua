@@ -26,6 +26,9 @@ package dev.pocketdeck.server
  * a queue that is dropping still counts every discarded delta, and the session
  * reads them when it builds `stream.stats`.
  */
+/** A stream's delta counters since the previous snapshot, plus its drop-gap sum. */
+internal data class DeltaStats(val dropped: Int, val episodes: Int, val gapMs: Long = 0)
+
 internal class SendQueue(
     private val maxDeltaBytesPerStream: Int = DEFAULT_MAX_DELTA_BYTES,
     private val maxDeltaDurationUs: Long = DEFAULT_MAX_DELTA_DURATION_US,
@@ -45,8 +48,9 @@ internal class SendQueue(
     private val onSuspend: (stream: Int, suspended: Boolean) -> Unit = { _, _ -> },
     private val log: (String) -> Unit = {},
 ) {
-    /** One queued frame: the bytes plus the stream and enqueue clock. */
-    class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0)
+    /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
+    class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0,
+                val ptsUs: Long = -1)
 
     private val lock = Object()
 
@@ -66,6 +70,12 @@ internal class SendQueue(
     private val dropping = HashSet<Int>()
     private val dropCounts = HashMap<Int, Int>()
     private val dropEpisodes = HashMap<Int, Int>()
+    /** The pts of the last frame the writer sent, per stream. */
+    private val lastSentPtsUs = HashMap<Int, Long>()
+    /** The last sent pts before the open drop episode's first discarded delta. */
+    private val dropStartPtsUs = HashMap<Int, Long>()
+    /** A drop episode's pts span in ms, measured when flow resumes. */
+    private val dropGapMs = HashMap<Int, Long>()
     private val bulk = ArrayDeque<Entry>()
     private var bulkBytes = 0
     private var closed = false
@@ -96,8 +106,12 @@ internal class SendQueue(
      * first, so those deltas would otherwise reach the Mac *after* the new
      * config (a resize: old-size frames against the new format description).
      * A suspended stream resumes: its backlog is gone.
+     *
+     * [ptsUs] is the keyframe's capture time, or -1 for a config or JSON. The
+     * first frame sent after a drop episode is usually this keyframe, so its
+     * pts closes the episode's gap.
      */
-    fun enqueueControl(stream: Int, bytes: ByteArray) {
+    fun enqueueControl(stream: Int, bytes: ByteArray, ptsUs: Long = -1) {
         var resume = false
         synchronized(lock) {
             if (stream != 0) {
@@ -110,7 +124,7 @@ internal class SendQueue(
                     if (step.actions.contains(OverflowAction.ResumeEncoder)) resume = true
                 }
             }
-            control.addLast(Entry(bytes, stream))
+            control.addLast(Entry(bytes, stream, ptsUs = ptsUs))
             lock.notifyAll()
         }
         if (resume) onSuspend(stream, false)
@@ -152,6 +166,7 @@ internal class SendQueue(
                         OverflowAction.ResumeEncoder -> suspend = false
                         OverflowAction.LowerBitrate -> overflow = true
                         OverflowAction.DropAndKeyframe -> {
+                            noteDropStarted(stream)
                             val discarded = discardDeltas(stream) + 1
                             dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
                             dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
@@ -163,6 +178,7 @@ internal class SendQueue(
                 if (step.state == OverflowState.FallbackDropped) return@synchronized
             } else if (overBytes || overDuration) {
                 // Stalled consumer: drop the backlog and ask for a fresh keyframe.
+                noteDropStarted(stream)
                 val discarded = discardDeltas(stream) + 1
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
                 dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
@@ -170,7 +186,7 @@ internal class SendQueue(
                 dropped = stream != 0
                 return@synchronized
             }
-            q.addLast(Entry(bytes, stream, nowUs()))
+            q.addLast(Entry(bytes, stream, nowUs(), ptsUs))
             deltaBytes[stream] = used + bytes.size
             deltaFirstPtsUs[stream] = firstPts
             deltaLastPtsUs[stream] = ptsUs
@@ -198,11 +214,19 @@ internal class SendQueue(
         true
     }
 
-    /** The deltas discarded and the drop episodes for [stream]; resets them. */
-    fun takeDeltaStats(stream: Int): Pair<Int, Int> = synchronized(lock) {
+    /** The deltas discarded, the drop episodes and their pts-gap sum; resets them. */
+    fun takeDeltaStats(stream: Int): DeltaStats = synchronized(lock) {
         val dropped = dropCounts.remove(stream) ?: 0
         val episodes = dropEpisodes.remove(stream) ?: 0
-        dropped to episodes
+        val gap = dropGapMs.remove(stream) ?: 0
+        DeltaStats(dropped, episodes, gap)
+    }
+
+    /** The stream is gone: no pending episode may pair with a reused id. */
+    fun forget(stream: Int) = synchronized(lock) {
+        lastSentPtsUs.remove(stream)
+        dropStartPtsUs.remove(stream)
+        dropGapMs.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -251,6 +275,12 @@ internal class SendQueue(
     }
 
     private fun takeLocked(): Entry? {
+        val entry = takeLockedEntry() ?: return null
+        noteSent(entry)
+        return entry
+    }
+
+    private fun takeLockedEntry(): Entry? {
         json.removeFirstOrNull()?.let { return it }
         control.removeFirstOrNull()?.let { return it }
         audio.removeFirstOrNull()?.let {
@@ -287,6 +317,24 @@ internal class SendQueue(
         return entry
     }
 
+    /** A frame is about to leave for the socket; the drop gap is measured here. */
+    private fun noteSent(entry: Entry) {
+        if (entry.ptsUs < 0) return
+        val stream = entry.stream
+        val start = dropStartPtsUs.remove(stream)
+        if (start != null) {
+            val gapUs = (entry.ptsUs - start - FRAME_INTERVAL_US).coerceAtLeast(0)
+            dropGapMs[stream] = (dropGapMs[stream] ?: 0) + (gapUs + 500) / 1000
+        }
+        lastSentPtsUs[stream] = entry.ptsUs
+    }
+
+    /** The first delta a drop discards starts the episode's gap at the last sent frame. */
+    private fun noteDropStarted(stream: Int) {
+        if (stream == 0 || dropStartPtsUs.containsKey(stream)) return
+        lastSentPtsUs[stream]?.let { dropStartPtsUs[stream] = it }
+    }
+
     /** The budget and policy for [stream], read once at its first delta. */
     private fun policyOf(stream: Int): QueuePolicy =
         policies.getOrPut(stream) { policyFor(stream) }
@@ -319,6 +367,9 @@ internal class SendQueue(
 
         /** The protocol's ~250 ms of queued video, independent of the bitrate. */
         const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L
+
+        /** One frame at 60 fps: the drop gap is a span of missing frames, not of time. */
+        const val FRAME_INTERVAL_US = 16_667L
 
         const val DEFAULT_MAX_BULK_BYTES = 1024 * 1024
 

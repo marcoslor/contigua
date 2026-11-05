@@ -3,8 +3,9 @@
 
 Reads `/usr/bin/log show` output for a time range, or a saved file, and prints
 one block per stream: the median and maximum of every numeric field, and the
-sum for the counters that accumulate across lines (`freeze_n`, `drop_ep`, `kf`).
-`--json` is the machine form the stream bench reads.
+sum for the counters that accumulate across lines (`freeze_n`, `hitch_n`,
+`hitch_ms`, `drop_ep`, `drop_ms`, `kf`). `--json` is the machine form the stream
+bench reads.
 
     macos/scripts/stats-summary.py --last 10m
     macos/scripts/stats-summary.py --start "2026-11-05 10:00:00" \
@@ -22,7 +23,8 @@ import subprocess
 import sys
 
 FIELD = re.compile(r"^(stats|[a-z0-9_]+)=([^\s]+)$")
-CLOCK_FIELDS = ("freeze_n", "drop_ep", "kf", "susp_n", "susp_ms", "refine_n")
+CLOCK_FIELDS = ("freeze_n", "hitch_n", "hitch_ms", "drop_ep", "drop_ms",
+                "kf", "susp_n", "susp_ms", "refine_n")
 SUBSYSTEM = "dev.pocketdeck.mac"
 
 
