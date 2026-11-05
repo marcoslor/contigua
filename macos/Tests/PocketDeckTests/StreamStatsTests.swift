@@ -526,6 +526,88 @@ final class StreamStatsTests: XCTestCase {
         }
     }
 
+    // MARK: The socket's TCP state (X0, item 1)
+
+    /// The receiver's own trace of a hole: `tcpi_rxoutoforderbytes` is
+    /// cumulative, so each 5 s line reports the delta and the totals the whole
+    /// life. The first line has no previous reading and prints `-`.
+    func testTCPInfoGivesTheDeltaSinceThePreviousLine() {
+        let provider = FakeTCPInfoProvider([
+            tcp(srtt: 12, rttvar: 3, ooo: 4_096),
+            tcp(srtt: 15, rttvar: 4, ooo: 6_144),
+        ])
+        var window = StreamStatsWindow(now: 0)
+        let first = line(window.snapshot(now: 1, tcpInfo: provider.read()))
+        XCTAssertEqual(field("tcp_srtt", in: first), "12")
+        XCTAssertEqual(field("tcp_rttvar", in: first), "3")
+        XCTAssertEqual(field("tcp_ooo_kb", in: first), "-",
+                       "the first line has no earlier reading to subtract")
+        let second = line(window.snapshot(now: 6, tcpInfo: provider.read()))
+        XCTAssertEqual(field("tcp_srtt", in: second), "15")
+        XCTAssertEqual(field("tcp_rttvar", in: second), "4")
+        XCTAssertEqual(field("tcp_ooo_kb", in: second), "2.0")
+    }
+
+    /// A refused getsockopt is no measurement: all three read `-`, the last
+    /// good reading stays the baseline, and the next good one spans both lines.
+    func testAFailedTCPInfoReadPrintsDashAndKeepsTheBaseline() {
+        let provider = FakeTCPInfoProvider([
+            tcp(srtt: 10, rttvar: 1, ooo: 1_024),
+            nil,
+            tcp(srtt: 20, rttvar: 2, ooo: 3_072),
+        ])
+        var window = StreamStatsWindow(now: 0)
+        _ = window.snapshot(now: 1, tcpInfo: provider.read())
+        let failed = line(window.snapshot(now: 6, tcpInfo: provider.read()))
+        for key in ["tcp_srtt", "tcp_rttvar", "tcp_ooo_kb"] {
+            XCTAssertEqual(field(key, in: failed), "-", "missing \(key) in \(failed)")
+        }
+        let next = line(window.snapshot(now: 11, tcpInfo: provider.read()))
+        XCTAssertEqual(field("tcp_ooo_kb", in: next), "2.0",
+                       "2,048 bytes since the last good reading, not since the failed line")
+    }
+
+    /// WIN-55/56: a config and a pause reset the frame samples, never the
+    /// socket's lifetime counters or its worst round trip.
+    func testTheTotalsCarryTCPOutOfOrderAndWorstSRTTAcrossAConfigAndPause() {
+        let provider = FakeTCPInfoProvider([
+            tcp(srtt: 10, rttvar: 1, ooo: 1_024),
+            tcp(srtt: 25, rttvar: 5, ooo: 5_120),
+        ])
+        var window = StreamStatsWindow(now: 0)
+        _ = window.snapshot(now: 1, tcpInfo: provider.read())
+        window.noteConfig(now: 2)
+        window.notePaused(true, now: 3)
+        window.notePaused(false, now: 4)
+        _ = window.snapshot(now: 9, tcpInfo: provider.read())
+        let total = window.total(now: 10)
+        XCTAssertEqual(total.tcpOutOfOrderKB ?? -1, 4.0, accuracy: 0.01)
+        XCTAssertEqual(total.tcpSrttMaxMs, 25)
+        let text = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(text.contains("tcp_ooo_kb=4.0"), "missing tcp_ooo_kb in \(text)")
+        XCTAssertTrue(text.contains("tcp_srtt_max=25"), "missing tcp_srtt_max in \(text)")
+    }
+
+    func testATotalsLineWithNoTCPReadingPrintsDash() {
+        var window = StreamStatsWindow(now: 0)
+        let text = StreamStatsLine.totalText(stream: 1, total: window.total(now: 4))
+        XCTAssertTrue(text.contains("tcp_ooo_kb=-"), "missing tcp_ooo_kb in \(text)")
+        XCTAssertTrue(text.contains("tcp_srtt_max=-"), "missing tcp_srtt_max in \(text)")
+    }
+
+    private func tcp(srtt: Int, rttvar: Int, ooo: UInt64) -> TCPConnectionInfo {
+        TCPConnectionInfo(srttMs: srtt, rttvar: rttvar, rxOutOfOrderBytes: ooo)
+    }
+
+    /// Stands in for the session's socket reader; nil is a failed read.
+    private final class FakeTCPInfoProvider {
+        private var readings: [TCPConnectionInfo?]
+        init(_ readings: [TCPConnectionInfo?]) { self.readings = readings }
+        func read() -> TCPConnectionInfo? {
+            readings.isEmpty ? nil : readings.removeFirst()
+        }
+    }
+
     // MARK: The stats subscription machine
 
     func testStatsTurnOnWithTheFirstWindowAndOffWithTheLast() {

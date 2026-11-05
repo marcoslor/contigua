@@ -405,6 +405,10 @@ final class Session {
     /// one cross-thread view of [pathSessionId]; there is no second flag
     /// (RR-14).
     private let pathSessionId = SessionLockedBox<String?>(value: nil)
+    /// X0: one `TCP_CONNECTION_INFO` reader per attached path. The stats lines
+    /// read the current path's (the video is one connection); a closed path's
+    /// reader is stopped so no timer outlives it.
+    private let tcpInfoReaders = SessionLockedBox<[String: TCPInfoReader]>(value: [:])
     private var lastFramePath: String?
     private var pathMachine = PathSessionMachine()
     private var pathRanking = PathRanking()
@@ -928,6 +932,9 @@ final class Session {
         pathLayer.detach(id)
         pathProvider.removeValue(forKey: id)
         attempts.removeValue(forKey: id)
+        var readers = tcpInfoReaders.get()
+        readers.removeValue(forKey: id)?.stop()
+        tcpInfoReaders.set(readers)
     }
 
     /// Adds a welcome'd path to the layer; the first one founds the session.
@@ -942,6 +949,10 @@ final class Session {
                                   close: { channel.close() },
                                   isWritable: attempt.isWritable ?? { true },
                                   setReading: attempt.setReading ?? { _ in })
+        var readers = tcpInfoReaders.get()
+        readers[id]?.stop()
+        readers[id] = TCPInfoReader(channel: channel)
+        tcpInfoReaders.set(readers)
         pathProvider[id] = attempt.providerIndex
         // E-5: the attempt is the path now. Counting a welcomed attempt as
         // well made `pathCount + attempts.count` count every attached path
@@ -1211,6 +1222,9 @@ final class Session {
         preWelcomeSender.set(nil)
         pathSessionId.set(nil)
         pathProvider.removeAll()
+        let readers = tcpInfoReaders.get()
+        for reader in readers.values { reader.stop() }
+        tcpInfoReaders.set([:])
         pathRejoin = PathRejoinMachine()
         pathProbe = PathProbeMachine()
         probeAttemptId = nil
@@ -1360,6 +1374,14 @@ final class Session {
         case .hostPort(let host, let port): return "\(host):\(port)"
         case .service(let service, _): return String(describing: service)
         }
+    }
+
+    /// X0: the current path's socket readings, shared by every window's stats
+    /// line (the video is one connection). Nil before a path is live.
+    func currentTCPInfo() -> TCPConnectionInfo? {
+        guard let id = pathLayer.currentPath,
+              let reader = tcpInfoReaders.get()[id] else { return nil }
+        return reader.current()
     }
 
     // MARK: Receive dispatch
