@@ -7,7 +7,10 @@ package dev.pocketdeck.server
  * Mac asked for stats and a message is due. Pure Kotlin (no Android types), so
  * the JVM tests pin the counters and percentiles.
  */
-internal class StreamStats {
+internal class StreamStats(
+    /** The monotonic milliseconds `onSuspendStart`/`onSuspendEnd` use. */
+    private val clockMs: () -> Long = { 0L },
+) {
     private companion object {
         const val RING = 512
         /** A dequeue more than this after the capture pts is a clock change, not a delay. */
@@ -22,6 +25,8 @@ internal class StreamStats {
     private var targetBps = 0
     private var suspendedEpisodes = 0L
     private var suspendedMs = 0L
+    /** Every closed episode's whole time, never reset by a snapshot. */
+    private var totalSuspendedMs = 0L
     private var refined = 0L
 
     // The stream's whole life for the one line at close (ISS-40 round 2). A
@@ -33,6 +38,8 @@ internal class StreamStats {
 
     /** Q1: when the current suspend episode began, or null while flowing. */
     private var suspendStartMs: Long? = null
+    /** How much of the open episode earlier snapshots already reported. */
+    private var suspendCountedMs = 0L
 
     private val encode = LongRing(RING)
     private val qp = IntRing(RING)
@@ -66,11 +73,14 @@ internal class StreamStats {
         }
     }
 
-    /** Q1: the episode's duration lands in the window that saw it end. */
+    /** Q1: what is left of the episode lands in the window that saw it end. */
     fun onSuspendEnd(nowMs: Long) {
         val start = suspendStartMs ?: return
-        suspendedMs += (nowMs - start).coerceAtLeast(0)
+        val elapsed = (nowMs - start).coerceAtLeast(0)
+        suspendedMs += (elapsed - suspendCountedMs).coerceAtLeast(0)
+        totalSuspendedMs += elapsed
         suspendStartMs = null
+        suspendCountedMs = 0
     }
 
     /** T1: one refined frame was sent for a still period. */
@@ -83,7 +93,10 @@ internal class StreamStats {
     }
 
     /** The window's numbers; `reset` starts the next window at zero. */
-    fun snapshot(reset: Boolean = true): EncoderStats {
+    fun snapshot(reset: Boolean = true, nowMs: Long = clockMs()): EncoderStats {
+        // An episode still open counts what it has run so far; the next
+        // snapshot starts from this point, so no span is counted twice.
+        val openMs = openSuspendMs(nowMs)
         val out = EncoderStats(
             frames = framesOut,
             keyframes = keyframesOut,
@@ -96,7 +109,7 @@ internal class StreamStats {
             qpP50 = qp.percentile(0.50),
             qpP95 = qp.percentile(0.95),
             suspendedEpisodes = suspendedEpisodes,
-            suspendedMs = suspendedMs,
+            suspendedMs = suspendedMs + openMs,
             refined = refined,
         )
         if (reset) {
@@ -107,6 +120,7 @@ internal class StreamStats {
             framesSkipped = 0
             suspendedEpisodes = 0
             suspendedMs = 0
+            if (suspendStartMs != null) suspendCountedMs += openMs
             refined = 0
             encode.clear()
             qp.clear()
@@ -120,9 +134,23 @@ internal class StreamStats {
      * stream's whole life. It is how a CBR freeze is told apart from a stalled
      * encoder: `out` stays high while `sent` does not follow.
      */
-    fun totalsLine(stream: Int, secs: Double): String =
+    fun totalsLine(stream: Int, secs: Double, nowMs: Long = clockMs()): String =
         "stream $stream totals: out=$totalOut sent=$totalSent skipped=$totalSkipped " +
-            "bytes=$totalBytes secs=" + String.format(java.util.Locale.US, "%.1f", secs)
+            "bytes=$totalBytes susp_ms=" + totalsSuspendedMs(nowMs) +
+            " secs=" + String.format(java.util.Locale.US, "%.1f", secs)
+
+    /** The lifetime suspension time, with an episode still open counted so far. */
+    private fun totalsSuspendedMs(nowMs: Long): Long {
+        val start = suspendStartMs ?: return totalSuspendedMs
+        return totalSuspendedMs + (nowMs - start).coerceAtLeast(0)
+    }
+
+    /** The open episode's unreported time: the whole episode is in the totals. */
+    private fun openSuspendMs(nowMs: Long): Long {
+        val start = suspendStartMs ?: return 0
+        val elapsed = (nowMs - start).coerceAtLeast(0)
+        return (elapsed - suspendCountedMs).coerceAtLeast(0)
+    }
 }
 
 /** One encoder's window counters, before the session adds its queue counters. */
