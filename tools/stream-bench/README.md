@@ -137,4 +137,7 @@ tools/stream-bench/bench.py --profile stats --serial fake-phone \
 ```
 
 The fake phone's `swipe` moves nothing, but its encoder keeps producing frames,
-so the table fills with real `shown_fps`, intervals and `int_p99`.
+so the table fills with real `shown_fps`, intervals and `int_p99`. Start it with
+`--no-backlog-restart`: otherwise every cleared sender backlog rebuilds its
+encoder, and each rebuild resets the Mac's 2 s stats window around a new
+config, so the table reads zero frames.
