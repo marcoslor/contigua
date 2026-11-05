@@ -84,7 +84,10 @@ Game streaming (Moonlight/Sunshine, Parsec, Steam Remote Play, GeForce NOW) and 
 - `intra-refresh`;
 - `encoding-statistics`: per-frame average QP in each output buffer's format (`KEY_VIDEO_QP_AVERAGE`), a direct number for "how blocky was this frame";
 - `video-minimum-quality`: a VBR quality floor;
-- sizes up to 8192×8192, bitrate up to 220 Mbps (AVC) and 160 Mbps (HEVC).
+- sizes up to 8192×8192, bitrate up to 220 Mbps (AVC) and 160 Mbps (HEVC);
+- `region-of-interest` (checked 2026-11-05): per-rectangle QP offsets through `MediaCodec.PARAMETER_KEY_QP_OFFSET_RECTS` (Android 15).
+
+There is no AV1 encoder, so AV1's screen-content tools are out of reach. Both encoders are 4:2:0 only.
 
 `MediaCodec.PARAMETER_KEY_SUSPEND` drops Surface input at the encoder's input without breaking the reference chain. It can skip frames at the source while the queue is full.
 
@@ -106,6 +109,31 @@ Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.str
 | M1 | Mac | Paced display: a one-frame buffer shown on the display's refresh instead of `DisplayImmediately`. | even frame spacing after a burst, at about +1 frame of latency |
 | M2 | Mac | Ask for at most the panel's pixels on a scaled display (the window's pixels × panel width / backing width). | 2.45× fewer pixels on the person's main display for the same bits |
 | W1 | phone | Probe, no product change: Wi-Fi power save and `cmd wifi force-low-latency-mode` measured with the stream's own traffic. | is the phone's 50 ms tail real under load |
+
+### What the leading products do that the list above doesn't (2026-11-05)
+
+The list above is the shared core of game and desktop streaming. Four more ideas from the same products were missing. The person left the order to the reviewer.
+
+| Id | Side | Strategy | What it should change |
+| --- | --- | --- | --- |
+| X0 | both | Probe, no product change: the connection's resent and out-of-order packets in each 5 s line (the Mac's `TCP_CONNECTION_INFO` on the stream socket; the phone's `/proc/net/snmp` `RetransSegs`), lined up with the hitches. | tells whether TCP's head-of-line blocking is behind the 50–200 ms hitches |
+| X1 | both | Video over UDP with forward error correction and a resend of only what still matters; control stays on TLS over TCP. WebRTC's RTP is the candidate, since ISS-41's web client needs it anyway. | one lost packet costs a repair, not a stall of every frame behind it; the video backlog no longer delays input and clipboard messages |
+| X2 | phone | Recovery by reference: after a loss, the encoder predicts from an older frame the Mac has confirmed (reference-frame invalidation, long-term references), not from a keyframe. | no keyframe after a loss; matters only with X1, because TCP loses nothing once Q1 stops the drops |
+| T2 | phone | Region-of-interest QP offsets: a lower QP where the picture changed or holds text, a higher one on flat areas. | sharper text in motion for the same bits |
+| T3 | Mac | Low-latency super-resolution (`VTLowLatencySuperResolutionScaler`, VideoToolbox, macOS 26): ask the phone for fewer pixels and upscale on the Mac. | fewer bits per frame; it must neither smear nor invent text, which the arm checks first |
+| T4 | phone | Full chroma (4:4:4) carried in two 4:2:0 streams, luma and chroma, as RDP's AVC444 mode does. | clean coloured text edges, at about twice the encode cost; later |
+| M3 | Mac | An adaptive jitter buffer: the display delay follows the measured arrival jitter, as WebRTC's does, instead of M1's fixed one frame (16 ms, against hitches of 50–200 ms). | hides the hitches at a measured latency cost; a natural preset knob |
+
+Left out on purpose:
+- **L4S:** it needs a router that marks ECN, which most home routers don't.
+- **AWDL off:** it is an admin setting that breaks AirDrop and Universal Control. The 0.3–0.7 s stalls it causes are the person's choice to remove, not the app's.
+
+The order after round 2:
+1. X0 rides along in round 2.
+2. If the resends line up with the hitches, X1 comes before R3. Over UDP, R3's delay-based control comes with the transport's own estimator.
+3. C1, then T2 and T3, as arms.
+4. M3 replaces M1.
+5. T4 last.
 
 ## How each run is measured
 
@@ -274,3 +302,9 @@ The default for app windows is likely quality, since they are mostly text. A gam
 - [L4S congestion control for cloud real-time streaming](https://ieeexplore.ieee.org/document/10539241/)
 - [L4S-enabled adaptive WebRTC video (MMSys '26 demo)](https://dl.acm.org/doi/10.1145/3793853.3798195)
 - [Adaptive bitrate in cloud gaming (GamingAnywhere, WPI)](https://digital.wpi.edu/downloads/pc289k608?locale=en)
+- [Android: `PARAMETER_KEY_QP_OFFSET_RECTS` (region of interest)](https://learn.microsoft.com/en-us/dotnet/api/android.media.mediacodec.parameterkeyqpoffsetrects?view=net-android-37.0)
+- [AOSP: OEM guidance for region-of-interest encoding](https://source.android.com/docs/core/media/roi)
+- [Apple: `VTLowLatencySuperResolutionScalerConfiguration`](https://developer.apple.com/documentation/videotoolbox/vtlowlatencysuperresolutionscalerconfiguration)
+- [MS-RDPEGFX: YUV420p stream combination for YUV444 mode (AVC444)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8131c1bc-1af8-4907-a05a-f72f4581160f)
+- [Sunshine: FEC protecting video frames against packet loss (pull request)](https://github.com/LizardByte/Sunshine/pull/4926)
+- [Moonlight Android: reference frame invalidation after packet loss (pull request)](https://github.com/moonlight-stream/moonlight-android/pull/1565)
