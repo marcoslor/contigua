@@ -72,6 +72,9 @@ struct PhoneStreamStats: Equatable {
     var queueP95Us: Double?
     var qpP50: Double?
     var qpP95: Double?
+    /// The phone's own measuring window; summed when two messages fold into
+    /// one line, so `kbps` divides by the time they cover together.
+    var windowMs = 2_000
 
     init(json: [String: Any]) {
         frames = Self.int(json["frames"])
@@ -92,6 +95,34 @@ struct PhoneStreamStats: Equatable {
         queueP95Us = Self.double(json["queueP95"])
         qpP50 = Self.double(json["qpP50"])
         qpP95 = Self.double(json["qpP95"])
+        windowMs = Self.optionalInt(json["windowMs"]).flatMap { $0 > 0 ? $0 : nil } ?? 2_000
+    }
+
+    /// One line covers every message since the previous one: the counters add
+    /// up, the levels stay the latest message's.
+    mutating func addCounters(_ other: PhoneStreamStats) {
+        frames += other.frames
+        keyframes += other.keyframes
+        keyframesRequested += other.keyframesRequested
+        bytes += other.bytes
+        deltasDropped += other.deltasDropped
+        dropEpisodes += other.dropEpisodes
+        if let gap = other.dropGapMs { dropGapMs = (dropGapMs ?? 0) + gap }
+        framesSkipped += other.framesSkipped
+        suspendedEpisodes += other.suspendedEpisodes
+        suspendedMs += other.suspendedMs
+        refined += other.refined
+        windowMs += other.windowMs
+    }
+
+    mutating func takeLevels(from other: PhoneStreamStats) {
+        targetBps = other.targetBps
+        encodeP50Us = other.encodeP50Us
+        encodeP95Us = other.encodeP95Us
+        queueP50Us = other.queueP50Us
+        queueP95Us = other.queueP95Us
+        qpP50 = other.qpP50
+        qpP95 = other.qpP95
     }
 
     /// The phone's counters are per send window; this rate is the window's.
@@ -164,10 +195,15 @@ struct StreamStatsWindow {
     private var firstReceived: TimeInterval?
     private var firstEnqueue: TimeInterval?
     private var paused = false
+    /// The phone's counters since the previous line, summed across messages;
+    /// the levels are the latest message's. `phoneMessages` counts how many
+    /// arrived, so a line with none is visible (`phone_n=0`).
     private(set) var phone: PhoneStreamStats?
+    private(set) var phoneMessages = 0
 
     /// A new VIDEO_CONFIG: the old format's samples no longer describe this
-    /// stream, so the whole window restarts.
+    /// stream, so the Mac's window restarts. The phone's counters already
+    /// received cover time this line still owns; they stay.
     mutating func noteConfig(now: TimeInterval) {
         received.removeAll()
         enqueued.removeAll()
@@ -176,7 +212,6 @@ struct StreamStatsWindow {
         hitchCount = 0
         hitchMs = 0
         macDropCount = 0
-        phone = nil
         lastEnqueue = nil
         lastEnqueuePtsUs = nil
         firstReceived = nil
@@ -236,12 +271,19 @@ struct StreamStatsWindow {
     }
 
     mutating func notePhoneStats(_ stats: PhoneStreamStats) {
-        phone = stats
+        phoneMessages += 1
+        if var accumulated = phone {
+            accumulated.addCounters(stats)
+            accumulated.takeLevels(from: stats)
+            phone = accumulated
+        } else {
+            phone = stats
+        }
     }
 
     /// The numbers for one log line. Frames, intervals and delays cover the
-    /// sliding window ending at `now`; the phone's counters are its own latest
-    /// 2 s report.
+    /// sliding window ending at `now`; the phone's counters cover every
+    /// message since the previous line (the line consumes them).
     mutating func snapshot(now: TimeInterval) -> StreamStatsSnapshot {
         let start = now - Self.window
         let rec = received.filter { $0.at > start }
@@ -252,11 +294,15 @@ struct StreamStatsWindow {
         let hitches = hitchCount
         let hitchTime = hitchMs
         let drops = macDropCount
+        let phoneStats = phone
+        let phoneCount = phoneMessages
         freezeCount = 0
         freezeMs = 0
         hitchCount = 0
         hitchMs = 0
         macDropCount = 0
+        phone = nil
+        phoneMessages = 0
 
         let rxFps = Self.fps(rec.map(\.at),
                              covered: Self.covered(since: firstReceived, now: now))
@@ -285,7 +331,8 @@ struct StreamStatsWindow {
             e2eP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             enqueueP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
             enqueueP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
-            phone: phone
+            phone: phoneStats,
+            phoneMessages: phoneCount
         )
     }
 
@@ -370,6 +417,8 @@ struct StreamStatsSnapshot {
     var enqueueP50Ms: Double?
     var enqueueP95Ms: Double?
     var phone: PhoneStreamStats?
+    /// How many phone messages this line folded in (0 when none arrived).
+    var phoneMessages = 0
 }
 
 /// The one `notice` line per visible window every 5 s. Numbers only: no
@@ -378,7 +427,7 @@ enum StreamStatsLine {
     static func text(stream: UInt32, size: CGSize, view: CGSize, place: String,
                      stats: StreamStatsSnapshot) -> String {
         let phone = stats.phone
-        let kbps = phone.map { $0.kbps(windowMs: 2000) } ?? 0
+        let kbps = phone.map { $0.kbps(windowMs: $0.windowMs) }
         let qp = phone.map { $0.qpP50 != nil || $0.qpP95 != nil } ?? false
         return [
             "stats stream=\(stream)",
@@ -397,15 +446,16 @@ enum StreamStatsLine {
             "mac_drop=\(stats.macDrop)",
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",
-            "drop_ms=\(phone?.dropGapMs.map(String.init) ?? "-")",
+            "drop_ms=\(phone.map { $0.dropGapMs.map(String.init) ?? "-" } ?? "0")",
+            "phone_n=\(stats.phoneMessages)",
             "skip=\(phone?.framesSkipped ?? 0)",
             "susp_n=\(phone?.suspendedEpisodes ?? 0)",
             "susp_ms=\(phone?.suspendedMs ?? 0)",
             "refine_n=\(phone?.refined ?? 0)",
             "kf=\(phone?.keyframes ?? 0)",
             "kf_req=\(phone?.keyframesRequested ?? 0)",
-            "kbps=\(Int(kbps.rounded()))",
-            "target_kbps=\(phone.map { Int((Double($0.targetBps) / 1000).rounded()) } ?? 0)",
+            "kbps=\(kbps.map { String(Int($0.rounded())) } ?? "-")",
+            "target_kbps=\(phone.map { String(Int((Double($0.targetBps) / 1000).rounded())) } ?? "-")",
             "qp_p50=\(qp ? one(phone?.qpP50) : "-")",
             "qp_p95=\(qp ? one(phone?.qpP95) : "-")",
             "enc_p50=\(ms(phone?.encodeP50Us))",
@@ -449,6 +499,13 @@ struct StatsSubscription {
         case (.on, true), (.off, false):
             return nil
         }
+    }
+
+    /// The ask never reached the phone (the link was not ready, so the send was
+    /// refused): put the machine back where the phone still is, so the next
+    /// window-set event — or the ready session's sync — asks again.
+    mutating func deliveryFailed(_ wanted: Bool) {
+        state = wanted ? .off : .on
     }
 
     /// A session ended: the next one starts off. Nothing goes on the wire (the

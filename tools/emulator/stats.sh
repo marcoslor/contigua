@@ -10,12 +10,14 @@
 # What it does on the one boot:
 #   * boots the rig (tools/emulator/start.sh --no-build);
 #   * pairs the deckctl client, opens a Settings window, turns `stream.stats`
-#     on and reads 3 real messages, plus 2 `pong`s whose `now` must advance
-#     with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
+#     on, reads 12 real messages from a ~30 s window and matches them against
+#     the phone's own `stream N stats sent=<n>` lines, plus `pong`s whose `now`
+#     must advance with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
 #   * pairs the e2e Mac app and runs the stream bench once (baseline and
-#     q1q2-100, one repeat, Settings) through the app's own MCP tools;
-#   * prints the 3 messages, the pong lines, the bench table and the phone's
-#     `stream N qp sample:` line;
+#     q1q2-100, one repeat, Settings) through the app's own MCP tools, and
+#     requires every 5 s line's `phone_n` to be at least 2;
+#   * prints the messages, the send counts, the pong lines, the per-line
+#     `phone_n`, the bench table and the phone's `stream N qp sample:` line;
 #   * kills the emulator with `adb -s emulator-5554 emu kill` in cleanup.
 #
 # QP may read `-`: the emulator's encoder need not report encoding statistics.
@@ -298,7 +300,7 @@ STATS_OK=0
 for attempt in 1 2 3; do
     if "$PYTHON" "$CLIENT" --host 127.0.0.1 --port "$PORT" --state "$STATE" \
             --wait-for-free 20 stats --pkg com.android.settings --w 900 --h 600 \
-            --dpi 160 --messages 3 --seconds 30 > "$WORK/deckctl-stats.log" 2>&1; then
+            --dpi 160 --messages 12 --seconds 30 > "$WORK/deckctl-stats.log" 2>&1; then
         STATS_OK=1
         break
     fi
@@ -308,10 +310,18 @@ done
 cat "$WORK/deckctl-stats.log"
 messages="$(grep -c '^stream.stats ' "$WORK/deckctl-stats.log" || true)"
 pongs="$(grep -c '^pong ' "$WORK/deckctl-stats.log" || true)"
+# The live capture is a pipe; read the device's ring buffer so the lines the
+# phone wrote during this phase are surely in (a live `logcat` can lag).
+emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-deckctl.txt" 2>&1 || true
+SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat-deckctl.txt" 2>/dev/null || true)"
+[ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
 [ "$STATS_OK" = 1 ] && ok "deckctl stats completed" || bad "deckctl stats did not complete"
-[ "${messages:-0}" -ge 3 ] \
-    && ok "read $messages real stream.stats messages" \
-    || bad "only ${messages:-0} stream.stats messages"
+[ "${messages:-0}" -ge 12 ] \
+    && ok "read $messages real stream.stats messages (a 30 s window)" \
+    || bad "only ${messages:-0} stream.stats messages, expected 12"
+printf '%s\n' "$SENT_LINES" | grep -q 'stats sent=10' \
+    && ok "the phone logged its tenth message (stream N stats sent=10)" \
+    || bad "no 'stream N stats sent=10' line on the phone"
 [ "${pongs:-0}" -ge 2 ] \
     && ok "read $pongs pongs, each with a positive now" \
     || bad "only ${pongs:-0} pongs"
@@ -364,6 +374,17 @@ emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
 [ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
+PHONE_N="$(grep -o 'phone_n=[0-9]*' "$WORK/bench.log" 2>/dev/null | cut -d= -f2 | tr '\n' ',' | sed 's/,$//')"
+SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat.txt" 2>/dev/null || true)"
+[ -n "$PHONE_N" ] && say "Mac per-line phone_n: $PHONE_N"
+[ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
+if [ -z "$PHONE_N" ]; then
+    bad "no phone_n on the bench's lines"
+elif printf '%s\n' "$PHONE_N" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
+    ok "every bench line folded in at least two phone messages (phone_n=$PHONE_N)"
+else
+    bad "a bench line carried fewer than two phone messages (phone_n=$PHONE_N)"
+fi
 rows="$(($(wc -l < "$OUT/bench-emulator.csv" 2>/dev/null || echo 1) - 1))"
 [ "$rows" -eq 2 ] && ok "the bench CSV has one run per arm (2)" \
     || bad "the bench CSV has $rows runs, expected 2"
