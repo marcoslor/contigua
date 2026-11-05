@@ -1633,8 +1633,8 @@ class Session(
             sendError("cannot_adopt", "window.adopt needs pkg", stream)
             return
         }
-        val w = floor16(Json.int(obj["w"]) ?: 0)
-        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val w = Json.int(obj["w"]) ?: 0
+        val h = Json.int(obj["h"]) ?: 0
         val dpi = Json.int(obj["dpi"]) ?: 160
         if (taskId <= 0 || w <= 0 || h <= 0) {
             sendError("cannot_adopt", "window.adopt needs taskId and w,h", stream)
@@ -1716,8 +1716,8 @@ class Session(
             sendError("nothing_to_continue", "the phone's screen has nothing to continue", stream)
             return
         }
-        val w = floor16(Json.int(obj["w"]) ?: 0)
-        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val w = Json.int(obj["w"]) ?: 0
+        val h = Json.int(obj["h"]) ?: 0
         val dpi = Json.int(obj["dpi"]) ?: 160
         if (w <= 0 || h <= 0) {
             sendError("bad_size", "task.continue needs w,h", stream)
@@ -1768,8 +1768,8 @@ class Session(
 
     /** Creates the display for a `window.open` / `link.open` and starts its content. */
     private fun openStream(obj: Map<String, Any?>, stream: Int, content: WindowContent, newInstance: Boolean) {
-        val w = floor16(Json.int(obj["w"]) ?: 0)
-        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val w = Json.int(obj["w"]) ?: 0
+        val h = Json.int(obj["h"]) ?: 0
         val dpi = Json.int(obj["dpi"]) ?: 160
         if (w <= 0 || h <= 0) {
             sendError("bad_size", "${obj["t"]} needs w,h", stream)
@@ -1888,16 +1888,19 @@ class Session(
             sendResizeAck(stream, askedW, askedH, dpi, ResizeOutcome.REFUSED)
             return
         }
-        val w = floor16(askedW)
-        val h = floor16(askedH)
+        // The Mac's exact size: the stream fits it to the codec's own alignment
+        // (ISS-39). A 16 px floor here left the frame up to 15 px short of the
+        // window, which the Mac then letterboxed.
+        val w = askedW
+        val h = askedH
         if (w <= 0 || h <= 0) {
             sendResizeAck(stream, askedW, askedH, dpi, ResizeOutcome.REFUSED)
             return
         }
         state.size = IntSize(w, h)
         val outcome = display.resize(stream, w, h, dpi)
-        // The echo is the request as the Mac sent it, not the display's floored
-        // size: the Mac matches it against the resize it has in flight.
+        // The echo is the request as the Mac sent it, not the size the encoder
+        // fitted it to: the Mac matches it against the resize it has in flight.
         sendResizeAck(stream, askedW, askedH, dpi, outcome)
         // The new size means a redraw: make sure the group is awake for it.
         updatePower()
@@ -3718,7 +3721,6 @@ class Session(
         const val PAIR_POLL_MS = 250
 
         /** Virtual displays and encoders need dimensions that are multiples of 16. */
-        fun floor16(v: Int): Int = if (v <= 0) 0 else (v / 16) * 16
 
         /**
          * One daemon for every session's TLS close: the platform close waits for

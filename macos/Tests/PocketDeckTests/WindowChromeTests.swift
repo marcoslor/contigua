@@ -8,16 +8,14 @@ import XCTest
 @testable import PocketDeck
 
 final class LetterboxTests: XCTestCase {
-    func testTheQuantisationStripIsLeftInsteadOfStretched() {
+    func testAnOlderPhonesSixteenPixelStepCoversTheWindowWithNoBand() {
         let bounds = CGRect(x: 0, y: 0, width: 900, height: 600)
         // 900 x 600 pt at 2x is 1800 x 1200 px; an older phone answers
-        // 1792 x 1200 (16 px aligned). The picture is drawn 1:1 at its top
-        // left and the 4 pt strip stays background rather than every pixel
-        // being resampled.
+        // 1792 x 1200 (16 px aligned). A 4 pt band beside the picture is what
+        // the person reported as a black bar: the frame covers the view.
         let rect = Letterbox.videoRect(video: CGSize(width: 1792, height: 1200), in: bounds,
                                        backingScale: 2, alignment: 16)
-        XCTAssertEqual(rect.width, 896, accuracy: 0.001)
-        XCTAssertEqual(rect.maxY, bounds.maxY, accuracy: 0.001)
+        XCTAssertEqual(rect, bounds)
         // A frame of a different shape (mid-resize) is still fitted, not stretched.
         let tall = Letterbox.videoRect(video: CGSize(width: 1080, height: 2400), in: bounds)
         XCTAssertEqual(tall.height, 600)

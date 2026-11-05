@@ -105,11 +105,13 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   standard toolbar window, so the traffic lights sit where Finder's do (centre 26 pt from the left and the top). New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
   restore their saved frame per app.
 - **Frameless at rest.** The window is only the stream: the system's rounded corners and window shadow, no title bar, no title text, no band above the video. The content view
-  (`StreamContainerView`, plain AppKit) holds the video view, which fills it, so the window's frame is the video. The virtual display is that area × backing scale (multiple of 16,
-  clamped to 320–2560, aspect kept). Because of the 16 px floor the video can be up to 15 px narrower or shorter than the view; when the aspect ratios differ by ≤ 2 % the layer
-  stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch is cropped:
+  (`StreamContainerView`, plain AppKit) holds the video view, which fills it, so the window's frame is the video. The virtual display is that area × backing scale, exactly:
+  rounded down to the phone's encoder alignment (2 px on the person's phone) inside its reported limits, and the phone fits nothing coarser (ISS-39; a phone that sends no
+  `device.encoder` keeps the old multiple of 16 clamped to 320–2560). Such a frame is the view's own pixels and is drawn 1:1 (`Letterbox` `.oneToOne`). A settled frame more than
+  1 px off but within 2 % of the view's shape (a coarser encoder step, an older phone, the cap) stretches over the view (`.stretch`, `videoGravity = .resize`) instead of showing
+  thin black bars, and input is mapped against the same rectangle. A real mismatch is cropped:
   while the window has asked for a new size and no frame at that size has arrived, the last frame fills the view (`videoGravity = .resizeAspectFill`, a centred crop) so a live drag
-  shows no black bars; a config within one 16 px step ends it, and 2 s after the last ask with no answer it falls back to aspect-fit. Input is mapped against the same rectangle
+  shows no black bars; a config within one alignment step ends it, and 2 s after the last ask with no answer it falls back to aspect-fit. Input is mapped against the same rectangle
   (`Letterbox.placement` and `videoRect`), so a click lands on the pixel under the pointer even mid-resize. The Phone Mirror is the exception: it mirrors the phone's fixed screen,
   so its letterbox is never cropped.
 - **Window chrome by style** (`StreamChrome.swift` + `WindowStyle.swift`; View ▸ Window Style, ⌥⌘F toggles). The window is the stream plus a 28 pt bar above it in

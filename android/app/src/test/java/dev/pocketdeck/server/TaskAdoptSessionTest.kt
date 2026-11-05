@@ -21,9 +21,22 @@ class TaskAdoptSessionTest : SessionFixture() {
         return platform.opens.single().displayId
     }
 
-    private fun adopt(stream: Int = 2, taskId: Int = 42) {
+    private fun adopt(stream: Int = 2, taskId: Int = 42, w: Int = 640, h: Int = 480) {
         send(mapOf("t" to "window.adopt", "stream" to stream, "taskId" to taskId,
-                   "pkg" to chrome, "w" to 640, "h" to 480, "dpi" to 160))
+                   "pkg" to chrome, "w" to w, "h" to h, "dpi" to 160))
+    }
+
+    /** ISS-39: the adopted window's display is the Mac's exact size, not floored to 16. */
+    @Test
+    fun anAdoptedWindowOpensAtTheMacsExactSize() {
+        val mover = FakeTaskMove()
+        openFirst(mover)
+        adopt(w = 646, h = 486)
+        val opened = readUntil("window.opened")
+        assertEquals(646, opened.intValue("w"))
+        assertEquals(486, opened.intValue("h"))
+        assertEquals(646, platform.opens.last().w)
+        assertEquals(486, platform.opens.last().h)
     }
 
     @Test

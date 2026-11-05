@@ -98,33 +98,46 @@ enum VideoSize {
 }
 
 enum Letterbox {
-    /// Aspect ratios closer than this are the same picture when deciding
-    /// whether a config answers a request (resizeStillPending). It no longer
-    /// decides how the frame is drawn: a difference that is not the window's
-    /// own pixels is never stretched (ISS-39).
+    /// Aspect ratios closer than this are the same picture: a config of that
+    /// shape answers a request (resizeStillPending), and a settled frame of
+    /// that shape that is not the window's own pixels covers the view
+    /// (`stretch`) rather than leaving bars.
     static let fillTolerance = 0.02
+
+    /// True when the two shapes are the same picture within `fillTolerance`.
+    static func sameShape(video: CGSize, bounds: CGSize) -> Bool {
+        guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return false }
+        let ratio = (video.width / video.height) / (bounds.width / bounds.height)
+        return abs(ratio - 1) <= fillTolerance
+    }
 
     /// How the last frame sits in the view. `fit` and `fill` keep the picture's
     /// aspect; `oneToOne` draws it at exactly one video pixel per screen pixel,
-    /// anchored to the view's top-left. A frame one alignment step short leaves
-    /// the strip on the right and bottom edges, in the window's background.
+    /// anchored to the view's top-left; a frame 1 px short (an odd 1x size)
+    /// leaves that pixel on the right and bottom edges. `stretch` covers the
+    /// view with a settled frame of nearly its shape.
     enum Placement: Equatable {
         case fit
         case fill
         case oneToOne
+        /// The whole frame over the whole view: a settled frame of nearly the
+        /// view's shape that is not its own pixels (a phone that rounds to a
+        /// coarser step, or the cap). No bars, every pixel kept.
+        case stretch
     }
 
     /// The rule: (video, view, resize pending, phone mode) → how the frame is
     /// drawn.
     ///
-    /// - The window's own pixels (within one encoder alignment step) are drawn
-    ///   1:1: no resampling, and a short frame leaves a strip rather than
-    ///   stretching every pixel.
+    /// - The window's own pixels (at most 1 px short) are drawn 1:1: no
+    ///   resampling.
     /// - While a resize is pending the app window crops the last frame to fill
     ///   it, so the drag shows no black bars until the phone answers with a
-    ///   frame of the new shape. A settled frame that is far from the view is
-    ///   fitted, and so is the over-the-cap case, which is the only time a
-    ///   settled picture is scaled.
+    ///   frame of the new shape.
+    /// - A settled frame of nearly the view's shape that is not its own pixels
+    ///   (a coarser encoder step, an older phone's 16 px floor, the cap) is
+    ///   stretched over the view: no bars, under 2 % off in shape. Only a
+    ///   settled frame of a clearly different shape is fitted.
     /// - The phone window mirrors a fixed screen: its letterbox is never
     ///   cropped, pending or not.
     static func placement(video: CGSize, bounds: CGSize, backingScale: Double = 1,
@@ -134,12 +147,19 @@ enum Letterbox {
         if phoneMode { return .fit }
         let backingWidth = bounds.width * CGFloat(max(backingScale, 1))
         let backingHeight = bounds.height * CGFloat(max(backingScale, 1))
-        let step = CGFloat(max(1, alignment))
+        // The strip a 1:1 frame may leave is under one alignment step and
+        // never more than 1 px (an odd 1x size at an even alignment): anything
+        // wider shows as a black bar, which the person reported.
+        let slack = CGFloat(min(max(1, alignment), 2))
         if video.width <= backingWidth, video.height <= backingHeight,
-           backingWidth - video.width < step, backingHeight - video.height < step {
+           backingWidth - video.width < slack, backingHeight - video.height < slack {
             return .oneToOne
         }
         if resizePending { return .fill }
+        // Settled, nearly the view's shape, but not its own pixels: a phone
+        // that rounds to a coarser step, or the encoder's cap. The frame covers
+        // the view (no bars, every pixel kept, < 2 % off in shape).
+        if sameShape(video: video, bounds: bounds) { return .stretch }
         return .fit
     }
 
@@ -153,6 +173,8 @@ enum Letterbox {
                           backingScale: Double = 1) -> CGRect {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
         switch placement {
+        case .stretch:
+            return bounds
         case .oneToOne:
             let scale = CGFloat(max(backingScale, 1))
             func snapped(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }

@@ -725,6 +725,14 @@ class SessionTest {
     }
 
     @Test
+    fun aLinkWindowOpensAtTheMacsExactSize() {
+        addAndAuthenticate()
+        send(mapOf("t" to "link.open", "stream" to 9, "w" to 646, "h" to 486, "dpi" to 160, "url" to "https://example.com/a"))
+        readUntil("window.opened")
+        assertEquals(FakePlatform.OpenCall(9, 646, 486, 160, platform.opens.last().displayId), platform.opens.last())
+    }
+
+    @Test
     fun aResizeWithNoSizeIsRefusedButStillAnswered() {
         addAndAuthenticate()
         send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700, "dpi" to 160, "pkg" to "com.android.settings"))
@@ -752,22 +760,26 @@ class SessionTest {
     }
 
     @Test
-    fun windowLifecycleUsesFlooredSizes() {
+    fun windowLifecycleUsesTheMacsExactSizes() {
+        // ISS-39: the Mac asks for the window's exact pixels at the encoder's
+        // own alignment; the stream fits them to the codec. A 16 px floor here
+        // made the phone's frame up to 15 px short of the window, which the
+        // Mac then had to letterbox.
         addAndAuthenticate()
-        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700, "dpi" to 160, "pkg" to "com.android.settings"))
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1006, "h" to 698, "dpi" to 160, "pkg" to "com.android.settings"))
         val opened = readUntil("window.opened")
-        assertEquals(992L, opened["w"])
-        assertEquals(688L, opened["h"])
+        assertEquals(1006L, opened["w"])
+        assertEquals(698L, opened["h"])
         assertEquals(7L, opened["stream"])
         val open = platform.opens.first()
         assertEquals(7, open.stream)
-        assertEquals(992, open.w)
-        assertEquals(688, open.h)
+        assertEquals(1006, open.w)
+        assertEquals(698, open.h)
         assertEquals(160, open.dpi)
         assertTrue(platform.launches.any { it.displayId == open.displayId && it.pkg == "com.android.settings" })
 
-        send(mapOf("t" to "window.resize", "stream" to 7, "w" to 641, "h" to 479, "dpi" to 200))
-        await { platform.resizes.any { it == FakePlatform.ResizeCall(7, 640, 464, 200) } }
+        send(mapOf("t" to "window.resize", "stream" to 7, "w" to 3360, "h" to 2044, "dpi" to 200))
+        await { platform.resizes.any { it == FakePlatform.ResizeCall(7, 3360, 2044, 200) } }
 
         send(mapOf("t" to "window.pause", "stream" to 7))
         await { platform.pauses.contains(7) }
@@ -1369,8 +1381,11 @@ class SessionTest {
             ),
         )
         reconnectWith(mover)
-        send(mapOf("t" to "task.continue", "stream" to 4, "w" to 900, "h" to 600, "dpi" to 160))
+        send(mapOf("t" to "task.continue", "stream" to 4, "w" to 906, "h" to 606, "dpi" to 160))
         val opened = readUntil("window.opened")
+        // The handoff's display is the Mac's exact size (ISS-39), not floored to 16.
+        assertEquals(906, platform.opens.first().w)
+        assertEquals(606, platform.opens.first().h)
         assertEquals("moved", opened["started"])
         await { mover.moves.isNotEmpty() }
         assertEquals(listOf(30 to platform.opens.first().displayId), mover.moves)
