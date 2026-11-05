@@ -1,6 +1,7 @@
 package dev.pocketdeck.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -146,6 +147,17 @@ class DeckStartupTest {
         assertEquals("Waiting(update, 4999ms)", m.state.describe())
         assertEquals("finish", m.transition(StartupEvent.Waited(DeckStartup.BOUND_MS)).sig())
         assertEquals("OutOfTime(update)", m.state.describe())
+    }
+
+    @Test
+    fun `a ready shell service starts the deck only when nobody serves and keep running is on`() {
+        // ISS-42's second half: the notification listener alone can start the
+        // app process and bind the shell service. Ready with no foreground
+        // service would otherwise hold no pairings and refuse every Mac.
+        assertTrue(startsDeckWhenReady(keepRunning = true, deckRunning = false))
+        assertFalse(startsDeckWhenReady(keepRunning = true, deckRunning = true))
+        assertFalse(startsDeckWhenReady(keepRunning = false, deckRunning = false))
+        assertFalse(startsDeckWhenReady(keepRunning = false, deckRunning = true))
     }
 
     @Test

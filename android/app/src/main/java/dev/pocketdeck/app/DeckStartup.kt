@@ -87,6 +87,16 @@ sealed interface StartupAction {
 }
 
 /**
+ * ISS-42's second path: the notification listener alone can start the app
+ * process, and [ShizukuClient] binds the shell service from it. With the deck
+ * service absent the shell holds no pairings and refuses every Mac, so the
+ * deck starts here when the person asked it to keep running. Off means the
+ * process must not serve.
+ */
+internal fun startsDeckWhenReady(keepRunning: Boolean, deckRunning: Boolean): Boolean =
+    keepRunning && !deckRunning
+
+/**
  * One transition function, exhaustive over every (state, event) pair. No
  * timeout restarts the wait and no event starts the deck twice.
  */
