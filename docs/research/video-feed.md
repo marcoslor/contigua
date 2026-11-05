@@ -1,0 +1,155 @@
+# Video feed: why scrolling stutters and gets blocky, and what to try (ISS-40, ISS-42)
+
+Status, 2026-11-05: **research and a test plan; nothing changed yet.** The person, 2026-11-04, after app windows went 1:1 (ISS-39): scrolling feels smoother, but "the video sometimes drops frames, feeling janky", and while the content moves the picture is visibly more pixelated. They asked for the strategies other streaming products use to be logged and tested, with a performance/quality preset in mind, though not exposed in the app yet.
+
+Measured on the person's phone (SM-S936B, `c2.qti.avc.encoder`, v140) and Mac (Wi-Fi 6, 5 GHz), 2026-11-04 and 11-05.
+
+## What today's pipeline does
+
+- **Phone:**
+  - H.264, VBR, 60 fps, no B-frames, `KEY_PRIORITY` 0 (realtime), `KEY_LATENCY` 1, a keyframe every 10 s, `KEY_REPEAT_PREVIOUS_FRAME_AFTER` 500 ms.
+  - Bitrate is about 0.12 bit per pixel per second at 60 fps, capped at **8 Mbps** (`WindowStream.bitrateFor`).
+  - At that cap, a 1232×2410 window would want about 21 Mbps.
+- **Transport:** one TLS-over-TCP connection. Frames go through a send queue (`SendQueue`), allowing about 250 ms of queued video per stream, counted both by bytes and by time.
+- **Overflow:** the queue drops every queued delta, drops more until the next keyframe, and asks the encoder for one (`onDeltaDrop`). The bitrate falls 25 % (`onBackpressure`). It recovers 10 % every 5 s without a drop.
+- **Mac:** `AVSampleBufferDisplayLayer`, each sample marked `DisplayImmediately`. A frame shows as soon as it's decoded, with no pacing and no buffer.
+
+## What the person's session shows
+
+An image-heavy shopping app in an app window, 23:55:04–23:56:23 (78 s), with resizes and a density change:
+
+- 5 overflow episodes. Two of them came in pairs 110 ms and 290 ms apart: the keyframe asked for after the first drop overflowed the queue again.
+- Each one stops the picture until the keyframe arrives. That is the "dropped frames" feel.
+- The bitrate went 8 → 6 → 4.5 Mbps and needed about 15 s to climb back to 6. That is the extra blockiness after a stutter.
+- Every resize builds a new encoder at the full target, so the cycle starts over.
+
+So both complaints come from one loop:
+
+1. the link stalls;
+2. the queue passes 250 ms;
+3. all deltas are dropped and a large keyframe is asked for;
+4. the bitrate is cut and stays low.
+
+## The link stalls, and the radio is not the cause
+
+Phone Wi-Fi: 11ax, 5 GHz, −25 dBm, 2161 Mbps link rate. Mac Wi-Fi: 11ax on the same channel, 80 MHz, with AWDL (`awdl0`, used by AirDrop, Universal Control and Continuity) active.
+
+Pings from the Mac every 50 ms, 3 × 15 s per arm, to the router and to the phone at the same time (a stall seen on both at once is the Mac's side; one only on the phone is the phone's side):
+
+| Arm | Target | p50 | p95 | p99 | max | > 50 ms | > 100 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| normal | phone | 6.9 | 54.8 | 63.4 | 100 | 7.0 % | 0.0 % |
+| normal | router | 4.1 | 5.6 | 9.7 | 94 | 0.4 % | 0.0 % |
+| phone `cmd wifi force-low-latency-mode enabled` | phone | 6.7 | 112 | 512 | 708 | 7.1 % | 5.1 % |
+| same | router | 4.2 | 76 | 551 | 662 | 5.6 % | 3.9 % |
+
+- **The phone's side:** about 7 % of round trips take 50–100 ms whatever the mode. Android's forced low-latency Wi-Fi mode doesn't change this. This is at idle; the stream's own traffic may keep the radio awake, so the stream's numbers decide.
+- **The Mac's side:** now and then the Mac's radio goes quiet for 0.3–0.7 s; the router sees the same stall. AWDL's off-channel time is the usual cause on Macs. Game-streaming guides for macOS name it as the cause of periodic stutter.
+- **Single sample:** one 20 ms ping train showed a 240 ms stall released as a staircase (235, 205, 175 … 8 ms). Our 250 ms queue limit is about the length of one such stall.
+
+The 0.3–0.7 s stalls can't be fixed in the app; they can only be survived without a keyframe storm. That is what the strategies below are for.
+
+## What game and desktop streaming do
+
+Game streaming (Moonlight/Sunshine, Parsec, Steam Remote Play, GeForce NOW) and remote desktops (Chrome Remote Desktop, RDP, RustDesk) settle on the same few ideas:
+
+1. **Never throw away frames that later frames depend on.**
+   - *What they do:* they lower the bitrate or skip a frame at the source. Moonlight and NVIDIA recover from a lost frame by invalidating a reference frame, or by an intra refresh band that sweeps down the picture over a few frames, never by a full keyframe.
+   - *Why:* a keyframe on a congested link is the most expensive thing you can send.
+2. **Keep the send queue tiny and adapt the encoder to the link** (GCC in WebRTC, SCReAM, L4S-style schemes; see the sources).
+   - *What they do:* estimate the available rate from delivery timing (queueing delay growth), not from a queue overflowing, and run the encoder somewhat below the estimate.
+   - *Why:* when the queue grows, the bitrate drops within a frame or two.
+3. **Constant bitrate with a one-frame VBV buffer for low latency** (NVENC "ultra-low-latency" with CBR, as in Sunshine's defaults).
+   - *Why:* every frame's size stays near the average, so a scroll doesn't produce a burst that sits in the queue.
+   - *What they do with spare budget:* the VBV can be raised a little so a low-motion frame can be better.
+4. **A preset that picks what to give up.** WebRTC names this `degradationPreference`:
+   - **maintain-resolution** (Chrome's default for screen sharing, because scaling makes text unreadable): under pressure, frame rate goes down and pixels stay sharp. This is the "quality" preset.
+   - **maintain-framerate:** resolution or quality goes down and 60 fps stays. This is the "performance" preset; game streaming defaults to it.
+   - Moonlight's client has the same split for display: "prefer lowest latency" (show on arrival) versus "prefer smoothest video" (a frame of buffer, shown on the display's refresh).
+5. **Refine still frames.** When motion stops, send a high-quality refresh of the same picture: Chrome Remote Desktop's "top-off", RemoteFX's progressive passes, RustDesk's re-encode of static frames.
+   - The refresh must yield to new motion (RustDesk's PR notes that a refinement frame can delay the next real frame).
+   - Today we do the opposite: `KEY_REPEAT_PREVIOUS_FRAME_AFTER` repeats the blocky last motion frame. This is ISS-40 (d).
+6. **More bits on a LAN.** Defaults are far above 8 Mbps:
+   - Moonlight's client defaults are about 20 Mbps at 1080p60, and it recommends 40–80 Mbps for 1440p/4K;
+   - scrcpy's default is 8 Mbps, but over USB.
+   - HEVC gives the same quality for about 30–50 % fewer bits, and the Mac decodes it in hardware (ISS-40 c).
+7. **Mark the traffic as video on the air.** WebRTC sets DSCP AF41 on video packets. Wi-Fi maps it to the WMM video access category, which wins contention against best-effort traffic. On macOS, a socket's service type does the same.
+8. **Don't send pixels the screen can't show.** On a scaled display ("looks like 3008×1692" on a 3840×2160 panel), a window's backing store is 6016/3840 = 1.57× the panel on each axis. That is 2.45× the panel's pixels. Asking the phone for backing pixels spends 2.45× the bits for detail the panel throws away.
+
+## What the person's encoder can do
+
+`/vendor/etc/media_codecs*.xml` on the phone. `c2.qti.avc.encoder` and `c2.qti.hevc.encoder` both have:
+
+- bitrate modes VBR and CBR;
+- `intra-refresh`;
+- `encoding-statistics`: per-frame average QP in each output buffer's format (`KEY_VIDEO_QP_AVERAGE`), a direct number for "how blocky was this frame";
+- `video-minimum-quality`: a VBR quality floor;
+- sizes up to 8192×8192, bitrate up to 220 Mbps (AVC) and 160 Mbps (HEVC).
+
+`MediaCodec.PARAMETER_KEY_SUSPEND` drops Surface input at the encoder's input without breaking the reference chain. It can skip frames at the source while the queue is full.
+
+## The strategies to test
+
+Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.stream.*` property on the phone, a `defaults` key on the Mac.
+
+| Id | Side | Strategy | What it should change |
+| --- | --- | --- | --- |
+| Q1 | phone | Overflow skips frames at the source (`PARAMETER_KEY_SUSPEND` while the queue holds more than a frame budget), and the queue never drops encoded deltas. | no freeze-until-keyframe; lower fps for the length of a stall |
+| Q2 | phone | Queue budget 250 ms → 100 ms / 50 ms, with Q1. | lower latency; what does it cost in fps |
+| R1 | phone | CBR instead of VBR. | flatter frame sizes, fewer bursts |
+| R2 | phone | Bitrate cap 8 → 16 / 25 / 40 Mbps, plus the per-pixel target. | less blockiness in motion, if the link holds it |
+| R3 | phone | Delay-based rate control: the bitrate follows the measured delivery rate and queue delay instead of −25 % on an overflow. | adapts before a stall, recovers in seconds, not 15 s |
+| R4 | phone | Intra refresh instead of the 10 s keyframe (`KEY_INTRA_REFRESH_PERIOD`). | no periodic keyframe spike |
+| C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). | the same quality at fewer bits |
+| T1 | phone | Still refinement: about 300 ms after motion stops, one high-quality frame (a sync frame at a raised bitrate or a lower QP cap), dropped if motion resumes. | still text is sharp again within a second |
+| N1 | both | Traffic marked as video (`IP_TOS` AF41 on the phone's socket; `NET_SERVICE_TYPE_VI` on the Mac's). | fewer air stalls on a busy network |
+| M1 | Mac | Paced display: a one-frame buffer shown on the display's refresh instead of `DisplayImmediately`. | even frame spacing after a burst, at about +1 frame of latency |
+| M2 | Mac | Ask for at most the panel's pixels on a scaled display (the window's pixels × panel width / backing width). | 2.45× fewer pixels on the person's main display for the same bits |
+| W1 | phone | Probe, no product change: Wi-Fi power save and `cmd wifi force-low-latency-mode` measured with the stream's own traffic. | is the phone's 50 ms tail real under load |
+
+## How each run is measured
+
+The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per window every 5 s:
+
+- **Smoothness:**
+  - frames shown per second on the Mac;
+  - frame interval p95 and p99;
+  - freezes: gaps over 100 ms, counted, and their total time.
+- **Latency:** capture-to-shown p50 and p95, from the frame's timestamp and a clock offset from `ping`/`pong`.
+- **Blockiness:** the phone's per-frame average QP p50 and p95 during motion (the encoder reports it), and kilobits per second.
+- **Recovery:** the time from the end of a scroll until the still picture's PSNR against the phone's lossless capture is within 1 dB of its final value (`crisp-metric.py`).
+- **Pressure:** queue drops, skipped frames, keyframes, the target bitrate.
+
+**The bench** opens a window through the Mac app's MCP tools (`open_app`, `swipe`, `close_window`) and runs a fixed script:
+
+- 10 swipes at a fixed pace;
+- a 3 s still;
+- 10 fast flings;
+- a 3 s still.
+
+It runs on a text-heavy list (Settings) and on an image-heavy one. Every arm runs 3 times, interleaved with the others, because the link's stalls come and go (the ping table above changed between consecutive 15 s runs).
+
+## Presets, later
+
+Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
+
+- **Quality:** maintain resolution, T1 on, M1 on. Under pressure, fps drops and text stays sharp.
+- **Performance:** maintain frame rate, Q2 at 50 ms, M1 off. Under pressure, QP rises and 60 fps stays.
+
+The default for app windows is likely quality, since they are mostly text. A game or video app could switch to performance on its own later.
+
+## Sources
+
+- [Sunshine: NVENC options (VBV/HRD single-frame buffer)](https://docs.lizardbyte.dev/projects/sunshine/master/nvenc__config_8h_source.html)
+- [A Sunshine fork's release notes: capture on present, latency log](https://github.com/MoreOrLessSoftware/Sunshine/releases/tag/mlsoft-r6)
+- [A Moonlight Android client: "Prefer lowest latency" vs "Prefer smoothest video"](https://github.com/derflacco/moonlight-android/discussions/20)
+- [W3C WebRTC: Chrome's default degradation preference for screen sharing](https://lists.w3.org/Archives/Public/public-webrtc-logs/2024Nov/0035.html)
+- [Chrome: "maintain-framerate-and-resolution" intent to ship](https://groups.google.com/a/chromium.org/g/blink-dev/c/FUlvv_Lmk-s)
+- [RustDesk: re-encoding static frames after scrolling](https://github.com/rustdesk/rustdesk/pull/16128)
+- [IronRDP: progressive refinement and a lossless text codec (proposal)](https://github.com/Devolutions/IronRDP/issues/1158)
+- [Android: low-latency media](https://source.android.com/devices/media/low-latency-media)
+- [Android: MediaFormat keys](https://developer.android.com/reference/android/media/MediaFormat)
+- [scrcpy manual: bitrate, max fps, render only the latest frame](https://manpages.ubuntu.com/manpages/focal/man1/scrcpy.1.html)
+- [L4S congestion control for cloud real-time streaming](https://ieeexplore.ieee.org/document/10539241/)
+- [L4S-enabled adaptive WebRTC video (MMSys '26 demo)](https://dl.acm.org/doi/10.1145/3793853.3798195)
+- [Adaptive bitrate in cloud gaming (GamingAnywhere, WPI)](https://digital.wpi.edu/downloads/pc289k608?locale=en)
