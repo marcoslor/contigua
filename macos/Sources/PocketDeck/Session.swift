@@ -2155,8 +2155,10 @@ final class Session {
 
     /// Session-wide `stream.stats` switch (docs/PROTOCOL.md "Stream stats"):
     /// while on, the phone reports each streaming window every 2 s. The Mac
-    /// turns it on with the first window and off with the last.
-    func setStreamStats(_ on: Bool) {
+    /// turns it on with the first window and off with the last. False when the
+    /// session is not ready: the caller asks again rather than losing the ask.
+    @discardableResult
+    func setStreamStats(_ on: Bool) -> Bool {
         sendJSON(["t": "stream.stats", "on": on])
     }
     func launch(stream: UInt32, pkg: String, activity: String?) {

@@ -501,6 +501,13 @@ struct StatsSubscription {
         }
     }
 
+    /// The ask never reached the phone (the link was not ready, so the send was
+    /// refused): put the machine back where the phone still is, so the next
+    /// window-set event — or the ready session's sync — asks again.
+    mutating func deliveryFailed(_ wanted: Bool) {
+        state = wanted ? .off : .on
+    }
+
     /// A session ended: the next one starts off. Nothing goes on the wire (the
     /// phone is gone).
     mutating func sessionEnded() {

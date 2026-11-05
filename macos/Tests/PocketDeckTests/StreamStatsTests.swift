@@ -417,4 +417,19 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(subscription.state, .off)
         XCTAssertEqual(subscription.windowsChanged(open: 1), true)
     }
+
+    /// A window opened while the link is down asks for stats, but the write is
+    /// refused; the windows re-open with the session and the ask must go again.
+    @MainActor
+    func testAStatsAskRefusedBeforeTheLinkWasReadyIsAskedAgainWhenItIs() {
+        let fixture = MultiWindowFixture()
+        fixture.open()
+        let first = fixture.session.sent("stream.stats")
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first.first?["on"] as? Bool, true)
+        fixture.manager.handle(.ready(fixture.manager.phone!, isReconnect: true, address: nil))
+        XCTAssertEqual(fixture.session.sent("stream.stats").count, 2,
+                       "the refused ask is sent again on the ready session")
+        fixture.closeAll()
+    }
 }

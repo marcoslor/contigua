@@ -980,10 +980,14 @@ final class WindowManager {
     }
 
     /// Asks for or stops the phone's `stream.stats` at the one moment the
-    /// window set crosses empty↔non-empty (StatsSubscription).
+    /// window set crosses empty↔non-empty (StatsSubscription). A send the
+    /// session refuses (opened before the link was ready) is not lost: the
+    /// machine is put back and the ready session's sync asks again.
     private func syncStatsSubscription() {
         guard let on = statsSubscription.windowsChanged(open: openStreams.count) else { return }
-        session.setStreamStats(on)
+        if !session.setStreamStats(on) {
+            statsSubscription.deliveryFailed(on)
+        }
     }
 
     private func allControllers() -> [StreamWindowController] {
