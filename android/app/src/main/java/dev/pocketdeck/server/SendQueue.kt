@@ -44,8 +44,12 @@ internal class SendQueue(
         { QueuePolicy.today(maxDeltaBytesPerStream, maxDeltaDurationUs) },
     /** Q1: the queue overflowed under `overflow=suspend`; lower the bitrate. */
     private val onOverflow: (stream: Int) -> Unit = {},
-    /** Q1: suspend (true) or resume (false) the encoder's input. */
-    private val onSuspend: (stream: Int, suspended: Boolean) -> Unit = { _, _ -> },
+    /**
+     * Q1: this stream's suspend state may have changed. The session reads
+     * [isSuspended] and applies it, so an apply that ran late still applies the
+     * latest state rather than a stale edge.
+     */
+    private val onSuspendChanged: (stream: Int) -> Unit = { _ -> },
     private val log: (String) -> Unit = {},
 ) {
     /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
@@ -112,28 +116,27 @@ internal class SendQueue(
      * pts closes the episode's gap.
      */
     fun enqueueControl(stream: Int, bytes: ByteArray, ptsUs: Long = -1) {
-        var resume = false
+        var changed = false
         synchronized(lock) {
             if (stream != 0) {
                 dropping.remove(stream)
                 discardDeltas(stream)
                 val before = overflowStates[stream]
                 if (before != null && before != OverflowState.Flowing) {
-                    val step = overflowStep(before, OverflowEvent.Control)
-                    setOverflowState(stream, step)
-                    if (step.actions.contains(OverflowAction.ResumeEncoder)) resume = true
+                    changed = setOverflowState(
+                        stream, overflowStep(before, OverflowEvent.Control))
                 }
             }
             control.addLast(Entry(bytes, stream, ptsUs = ptsUs))
             lock.notifyAll()
         }
-        if (resume) onSuspend(stream, false)
+        if (changed) onSuspendChanged(stream)
     }
 
     fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
         var dropped = false
         var overflow = false
-        var suspend: Boolean? = null
+        var suspendChanged = false
         synchronized(lock) {
             if (stream in dropping) {
                 // Still waiting for the keyframe: this delta is discarded too.
@@ -159,11 +162,10 @@ internal class SendQueue(
             if ((overBytes || overDuration) && policy.overflow == StreamStrategy.Overflow.Suspend) {
                 val before = overflowStates[stream] ?: OverflowState.Flowing
                 val step = overflowStep(before, OverflowEvent.Pressure(used + bytes.size > policy.hardBytes))
-                setOverflowState(stream, step)
+                suspendChanged = setOverflowState(stream, step)
                 for (action in step.actions) {
                     when (action) {
-                        OverflowAction.SuspendEncoder -> suspend = true
-                        OverflowAction.ResumeEncoder -> suspend = false
+                        OverflowAction.SuspendEncoder, OverflowAction.ResumeEncoder -> Unit
                         OverflowAction.LowerBitrate -> overflow = true
                         OverflowAction.DropAndKeyframe -> {
                             noteDropStarted(stream)
@@ -192,11 +194,11 @@ internal class SendQueue(
             deltaLastPtsUs[stream] = ptsUs
             lock.notifyAll()
         }
-        // The suspend/drop callbacks reach the display (keyframe request,
-        // backpressure, codec parameters), and a display busy opening another
-        // window can take seconds. Under this lock it stopped the writer and
-        // every other stream with it; run it free.
-        suspend?.let { onSuspend(stream, it) }
+        // The callbacks reach the display (keyframe request, backpressure,
+        // codec parameters), and a display busy opening another window can
+        // take seconds. Under this lock it stopped the writer and every other
+        // stream with it; run it free.
+        if (suspendChanged) onSuspendChanged(stream)
         if (dropped) onDeltaDrop(stream)
         if (overflow) onOverflow(stream)
     }
@@ -227,6 +229,7 @@ internal class SendQueue(
         lastSentPtsUs.remove(stream)
         dropStartPtsUs.remove(stream)
         dropGapMs.remove(stream)
+        overflowStates.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -266,7 +269,7 @@ internal class SendQueue(
             if (pendingResumes.isEmpty()) return
             pendingResumes.toList().also { pendingResumes.clear() }
         }
-        for (stream in streams) onSuspend(stream, false)
+        for (stream in streams) onSuspendChanged(stream)
     }
 
     fun close() = synchronized(lock) {
@@ -339,13 +342,19 @@ internal class SendQueue(
     private fun policyOf(stream: Int): QueuePolicy =
         policies.getOrPut(stream) { policyFor(stream) }
 
-    private fun setOverflowState(stream: Int, step: OverflowStep) {
+    /** Applies [step]; true when the state, not just the event, changed. */
+    private fun setOverflowState(stream: Int, step: OverflowStep): Boolean {
         val before = overflowStates[stream] ?: OverflowState.Flowing
         if (step.state == OverflowState.Flowing) overflowStates.remove(stream)
         else overflowStates[stream] = step.state
-        if (before != step.state) {
-            log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
-        }
+        if (before == step.state) return false
+        log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
+        return true
+    }
+
+    /** Q1: the machine's current state, read under the queue lock. */
+    fun isSuspended(stream: Int): Boolean = synchronized(lock) {
+        overflowStates[stream] == OverflowState.Suspended
     }
 
     /** Q1: a dequeue brought this stream's backlog below half its budget. */
