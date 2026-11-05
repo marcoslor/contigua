@@ -24,7 +24,7 @@ import sys
 
 FIELD = re.compile(r"^(stats|[a-z0-9_]+)=([^\s]+)$")
 CLOCK_FIELDS = ("freeze_n", "hitch_n", "hitch_ms", "drop_ep", "drop_ms",
-                "kf", "susp_n", "susp_ms", "refine_n")
+                "phone_n", "kf", "susp_n", "susp_ms", "refine_n")
 SUBSYSTEM = "dev.pocketdeck.mac"
 
 
