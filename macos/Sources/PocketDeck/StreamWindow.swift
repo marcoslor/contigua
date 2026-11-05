@@ -31,6 +31,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// This window's chrome style: read from the profile's per-package key on
     /// open (WindowStyleStore); a window with nothing remembered opens framed.
     private(set) var style: WindowStyle
+    /// This window's stream strategy (ISS-40), read when it opens and again
+    /// when it resizes. Every key defaults to today's behaviour.
+    private(set) var strategy = MacStreamStrategy()
     /// The immersive dwell pill: pure state until its pill view exists (this
     /// file feeds it; the scripted driver's hover reaches the same path).
     private(set) var dwell = DwellPill()
@@ -210,6 +213,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // The phone's encoder limits decide how the picture is drawn and what
         // the window asks for (ISS-39).
         videoView.encoder = manager.phone?.encoder
+        // The Mac strategy switches (ISS-40): read once when the window opens,
+        // and again when it resizes. No key set is today's path.
+        let openedWith = manager.streamStrategy
+        strategy = openedWith
+        videoView.strategy = openedWith
+        Log.video.notice("\(openedWith.windowLine(stream: stream), privacy: .public)")  // log-ok: closed strategy tokens and a stream id
         videoSizeObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
@@ -794,7 +803,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // hops): the window's view state is main-thread state.
         dispatchPrecondition(condition: .onQueue(.main))
         #endif
+        // A resize is the other moment the switches are read (ISS-40).
+        refreshStreamStrategy()
         send(resizes.apply(.request(resizeRequest())))
+    }
+
+    /// Reads the profile's strategy keys again and hands them to the view: the
+    /// presenter (M1) and the pixel cap (M2) apply from the next request. No key
+    /// set is today's path.
+    private func refreshStreamStrategy() {
+        strategy = manager.streamStrategy
+        videoView.strategy = strategy
     }
 
     /// The phone answered a resize: its `window.resize.ack`, or the

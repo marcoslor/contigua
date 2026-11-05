@@ -50,19 +50,28 @@ enum VideoSize {
     /// maximum or its 60 fps pixel count, the aspect kept when it has to scale.
     /// Without one, the old rule: floored to 16 and capped at 2560 px on the
     /// long side.
+    ///
+    /// `panelFactor` is M2's cap (panel width ÷ display backing width): it
+    /// multiplies the backing pixels before the encoder's clamps, so a scaled
+    /// display asks for no more than it can show. 1 is today's request.
     static func displayPixels(bounds: CGSize, backingScale: Double,
-                              encoder: EncoderSpec? = nil) -> CGSize {
+                              encoder: EncoderSpec? = nil,
+                              panelFactor: Double = 1) -> CGSize {
         guard bounds.width > 0, bounds.height > 0 else {
             return CGSize(width: minDimension, height: minDimension)
         }
-        if let encoder { return reportedPixels(bounds: bounds, backingScale: backingScale, encoder: encoder) }
-        var width = bounds.width * backingScale
-        var height = bounds.height * backingScale
+        let factor = panelFactor > 0 ? panelFactor : 1
+        if let encoder {
+            return reportedPixels(bounds: bounds, backingScale: backingScale * factor,
+                                  encoder: encoder)
+        }
+        var width = bounds.width * backingScale * factor
+        var height = bounds.height * backingScale * factor
         let longest = max(width, height)
         if longest > Double(maxDimension) {
-            let factor = Double(maxDimension) / longest
-            width *= factor
-            height *= factor
+            let scale = Double(maxDimension) / longest
+            width *= scale
+            height *= scale
         }
         return CGSize(width: quantize(width), height: quantize(height))
     }
