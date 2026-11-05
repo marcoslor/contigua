@@ -261,6 +261,94 @@ class RunMetricsTest(unittest.TestCase):
         self.assertIn("covered", self.bench.table_line("stall", [clean, covered]))
 
 
+class FrozenTest(unittest.TestCase):
+    """Round 2: a frozen picture is not the best run, and neither a frozen nor
+    a low-motion run may make an arm's median."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def total(self, **fields):
+        parts = ["2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]:",
+                 "stats", "total", "stream=14"]
+        for key, value in fields.items():
+            parts.append("%s=%s" % (key, value))
+        return self.bench.parse_totals(" ".join(parts) + "\n", 14)
+
+    def metrics(self, jank_ms, **marks):
+        values = {"failed": 0, "covered": 0, "frozen": 0, "low_motion": 0,
+                  "jank_ms": jank_ms}
+        values.update(marks)
+        return values
+
+    def test_stream_14_shaped_lines_are_frozen(self):
+        # Round 2's stream 14: about 50 fps for 10.7 s, then a still picture
+        # for the rest of the window, and no late frame to count as a hitch.
+        text = (
+            "2026-11-05 15:57:30.000000-0300 mac PocketDeck[7]: "
+            "stats stream=14 rx_fps=60 shown_fps=60 phone_n=2\n"
+            "2026-11-05 15:57:35.000000-0300 mac PocketDeck[7]: "
+            "stats stream=14 rx_fps=0 shown_fps=0 phone_n=0\n"
+            "2026-11-05 15:57:40.000000-0300 mac PocketDeck[7]: "
+            "stats stream=14 rx_fps=0 shown_fps=0 phone_n=0\n"
+            "2026-11-05 15:57:50.000000-0300 mac PocketDeck[7]: "
+            "stats total stream=14 secs=21.6 rx_frames=540 shown_frames=540 "
+            "hitch_n=0 hitch_ms=0 drop_ep=0 drop_ms=0 susp_n=0 susp_ms=0 "
+            "phone_n=10 phone_frames=540\n"
+        )
+        sampled = self.bench.parse_rows(text, 14)
+        total = self.bench.parse_totals(text, 14)
+        values = self.bench.run_metrics(total, sampled)
+        self.assertTrue(values["frozen"])
+        self.assertTrue(self.bench.is_frozen(sampled))
+        self.assertFalse(values["low_motion"])
+
+    def test_stream_15_shaped_lines_are_frozen_and_low_motion(self):
+        # Stream 15: the encoder stayed suspended after the queue drained, so
+        # the run produced 33 frames in 21.8 s and scored the best jank of
+        # the round.
+        total = self.total(secs=21.8, rx_frames=33, shown_frames=33,
+                           hitch_n=0, hitch_ms=0, drop_ep=0, drop_ms=0,
+                           susp_n=1, susp_ms=19, phone_n=10, phone_frames=33)
+        sampled = [{"at": 0, "rx_fps": "60"},
+                   {"at": 5, "rx_fps": "0"},
+                   {"at": 10, "rx_fps": "0"}]
+        values = self.bench.run_metrics(total, sampled)
+        self.assertTrue(values["frozen"])
+        self.assertTrue(values["low_motion"])
+
+    def test_a_slow_still_phase_does_not_freeze_a_run(self):
+        # The 3 s stills send heartbeat frames only; a 5 s line there is no
+        # frozen picture while the content moves.
+        phases = [("swipes", 1_000.0), ("still", 1_020.0),
+                  ("flings", 1_030.0), ("settle", 1_040.0)]
+        sampled = [{"at": 1_025.0, "rx_fps": "1"},
+                   {"at": 1_035.0, "rx_fps": "60"}]
+        self.assertFalse(self.bench.is_frozen(sampled, phases))
+
+    def test_frozen_and_low_motion_runs_leave_the_medians(self):
+        clean = self.metrics(100)
+        frozen = self.metrics(0, frozen=1)
+        quiet = self.metrics(0, low_motion=1)
+        cells = self.bench.summarise([clean, frozen, quiet])
+        self.assertEqual(cells["jank_ms"], (100, 100, 100))
+        self.assertEqual(self.bench.valid_runs([clean, frozen, quiet]), 1)
+
+    def test_the_table_marks_them_and_counts_the_valid_runs(self):
+        clean = self.metrics(100)
+        frozen = self.metrics(0, frozen=1)
+        quiet = self.metrics(0, low_motion=1)
+        line = self.bench.table_line("stall-q1", [clean, frozen, quiet], width=8)
+        label = line.split("  ")[0]
+        self.assertIn("frozen", label)
+        self.assertIn("low-motion", label)
+        cells = line.split("  ", 1)[1].split()
+        self.assertEqual(cells[0], "1")  # one valid run made the median
+        header = self.bench.table_header(8)
+        self.assertIn("valid", header)
+        self.assertIn("jank_ms", header)
+
+
 class TotalsTest(unittest.TestCase):
     """Round 2: every table number comes from the closing totals line."""
 
