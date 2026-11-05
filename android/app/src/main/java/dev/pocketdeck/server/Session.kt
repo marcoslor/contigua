@@ -362,6 +362,8 @@ class Session(
     @Volatile private var statsNextAtMs = 0L
     private val statsLock = Any()
     private val sendStats = HashMap<Int, SendStats>()
+    /** X0: the system-wide TCP counters, deltas between stats ticks. */
+    private val tcpCounters = TCPCounterDeltas()
     /** `stream.stats` messages sent per stream this session, for the field log. */
     private val statsSent = HashMap<Int, Int>()
     private val tickSignal = Object()
@@ -3397,16 +3399,24 @@ class Session(
         if (at < statsNextAtMs) return
         statsNextAtMs = at + STATS_INTERVAL_MS
         val states = synchronized(streams) { streams.values.toList() }
+        var tcp: TCPCounterSample? = null
+        var tcpRead = false
         for (state in states) {
             // A paused window sends nothing (the Mac has no picture to count).
             if (state.paused) continue
+            // One system-wide reading per tick; several streams of one session
+            // share it (the counters are not per socket).
+            if (!tcpRead) {
+                tcp = tcpCounters.note(ProcNetCounters.sample())
+                tcpRead = true
+            }
             val encoder = display.statsSnapshot(state.stream, monoUs(), reset = true) ?: continue
             val deltas = queue.takeDeltaStats(state.stream)
             val send = synchronized(statsLock) {
                 sendStats.getOrPut(state.stream) { SendStats() }
                     .snapshot(deltas.dropped, deltas.episodes, deltas.gapMs)
             }
-            val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send)
+            val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send, tcp)
             sendJson(message, state.stream)
             // One closed-token line per tenth message (and the final count at
             // off or close): the field log that says how many the phone sent.
