@@ -98,7 +98,15 @@ def read_arms(path):
 
 
 def set_phone_property(adb_path, serial, key, value):
-    adb(adb_path, serial, "shell", "setprop", STATS_PREFIX + key, str(value))
+    name = STATS_PREFIX + key
+    text = str(value)
+    if text == "":
+        # adb drops an empty argument before the device shell parses it, so
+        # `setprop name` alone is a usage error. The clearing form goes as one
+        # quoted remote command: the device shell then passes the empty value.
+        adb(adb_path, serial, "shell", 'setprop %s ""' % name)
+    else:
+        adb(adb_path, serial, "shell", "setprop", name, text)
 
 
 def get_phone_property(adb_path, serial, key):
