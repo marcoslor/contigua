@@ -1,4 +1,4 @@
-// The live-resize layout phases (WIN-53): a drag, the wait for the phone's
+// The live-resize layout phases (WIN-58): a drag, the wait for the phone's
 // answer, and one display refresh's worth of settle after it. The picture's
 // gravity and the fill's margin follow the phase, so the layer never re-lays
 // its contents while the window server is still showing the new size.

@@ -162,6 +162,9 @@ enum SessionEvent {
     /// `window.still`: the stream is live but its encoder produced no output
     /// (PHONE-21). A picture heartbeat, never a first frame.
     case windowStill(stream: UInt32)
+    /// One `stream.stats` message: the phone's counters for that stream's last
+    /// window (nil fields when the phone or its codec has none).
+    case phoneStats(stream: UInt32, stats: PhoneStreamStats)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
                     volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
@@ -310,6 +313,11 @@ final class Session {
     private var macFingerprintHex: String
 
     private var pingTimer: Timer?
+    /// The pings whose pong has not arrived, by `ts`, with the Mac monotonic µs
+    /// when each went out (for the clock-offset estimate).
+    private var pingSentUs: [Int: Double] = [:]
+    private let clockLock = NSLock()
+    private var clockEstimator = ClockOffsetEstimator()
     private var pathTimer: Timer?
     private var connectWatchdog: DispatchWorkItem?
     private var pairingDeadline: DispatchWorkItem?
@@ -1637,6 +1645,12 @@ final class Session {
                               title: message.string("title")))
         case "window.still":
             emit(.windowStill(stream: UInt32(message.int("stream") ?? 0)))
+        case "stream.stats":
+            // The phone's 2 s counters for one streaming window; only sent
+            // while this session asked for them with `stream.stats {on:true}`.
+            guard let raw = message.int("stream"), raw > 0 else { return }
+            emit(.phoneStats(stream: UInt32(raw),
+                             stats: PhoneStreamStats(json: message.raw)))
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
             if let cap = message.int("maxWindows") {
@@ -1660,7 +1674,7 @@ final class Session {
             emit(.audioState(on: message.bool("on") ?? false,
                              codec: UInt8(message.int("codec") ?? 0)))
         case "pong":
-            break
+            notePong(message)
         case "clip.set":
             if let text = message.string("text") { emit(.clipboard(text)) }
         case "apk.progress":
@@ -1917,10 +1931,59 @@ final class Session {
     private func startPing() {
         pingTimer?.invalidate()
         let timer = Timer(timeInterval: Self.pingInterval, repeats: true) { [weak self] _ in
-            self?.sendJSON(["t": "ping", "ts": Int(Date().timeIntervalSince1970 * 1000)])
+            self?.sendPing()
         }
         RunLoop.main.add(timer, forMode: .common)
         pingTimer = timer
+    }
+
+    /// One ping. `ts` stays the wall-clock millisecond every peer echoes;
+    /// `monoUs` is this Mac's CLOCK_MONOTONIC in µs, the base the pong's `now`
+    /// can be compared on. An older phone ignores the extra field.
+    private func sendPing() {
+        let ts = Int(Date().timeIntervalSince1970 * 1000)
+        let sentUs = Self.monotonicUs()
+        clockLock.lock()
+        if pingSentUs.count >= 16 { pingSentUs.removeAll() }
+        pingSentUs[ts] = sentUs
+        clockLock.unlock()
+        sendJSON(["t": "ping", "ts": ts, "monoUs": Int(sentUs)])
+    }
+
+    /// A pong carrying `now` (the phone's CLOCK_MONOTONIC µs, the clock
+    /// VIDEO_FRAME's ptsUs uses) feeds the offset estimate. The first estimate
+    /// of a session is logged once, numbers only: the field log then shows the
+    /// two clocks were compared.
+    private func notePong(_ message: JSONMessage) {
+        guard let ts = message.int("ts"), let phoneNow = message.int("now"),
+              phoneNow > 0 else { return }
+        let receivedUs = Self.monotonicUs()
+        clockLock.lock()
+        let sentUs = pingSentUs.removeValue(forKey: ts)
+        if let sentUs {
+            let had = clockEstimator.offsetUs != nil
+            let offset = clockEstimator.note(sentUs: sentUs, receivedUs: receivedUs,
+                                             phoneNowUs: Double(phoneNow),
+                                             at: ProcessInfo.processInfo.systemUptime)
+            let rtt = (receivedUs - sentUs) / 1000
+            clockLock.unlock()
+            if !had, let offset {
+                Log.session.notice("clock offset: rtt=\(String(format: "%.1f", rtt), privacy: .public)ms offset=\(Int(offset / 1000), privacy: .public)ms")  // log-ok: numbers only (rtt and offset), no content
+            }
+            return
+        }
+        clockLock.unlock()
+    }
+
+    /// The current phone→Mac clock offset in µs, nil until a pong with `now`.
+    var phoneClockOffsetUs: Double? {
+        clockLock.lock()
+        defer { clockLock.unlock() }
+        return clockEstimator.offsetUs
+    }
+
+    private static func monotonicUs() -> Double {
+        ProcessInfo.processInfo.systemUptime * 1_000_000
     }
 
     // MARK: Pairing API
@@ -2076,6 +2139,13 @@ final class Session {
         closedStreamsLock.unlock()
     }
     func requestKeyframe(stream: UInt32) { sendJSON(["t": "window.keyframe", "stream": Int(stream)]) }
+
+    /// Session-wide `stream.stats` switch (docs/PROTOCOL.md "Stream stats"):
+    /// while on, the phone reports each streaming window every 2 s. The Mac
+    /// turns it on with the first window and off with the last.
+    func setStreamStats(_ on: Bool) {
+        sendJSON(["t": "stream.stats", "on": on])
+    }
     func launch(stream: UInt32, pkg: String, activity: String?) {
         var message: [String: Any] = ["t": "window.launch", "stream": Int(stream), "pkg": pkg]
         if let activity { message["activity"] = activity }

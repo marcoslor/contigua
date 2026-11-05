@@ -310,7 +310,7 @@ final class StreamChromeView: NSView {
         // size. Without that, the layer-backed views animate to their new
         // frames for ~0.25 s: during a fast drag the picture trails the edge
         // WindowServer already shows, and the strip exposed behind it is the
-        // video view's black background (WIN-53).
+        // video view's black background (WIN-58).
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         ext.frame = bounds
