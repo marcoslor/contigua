@@ -23,7 +23,8 @@ use (`--profile e2e`, `--profile stats`).
 
 ## Requirements
 
-- Python 3.9 stdlib.
+- Python 3.9 stdlib. The arm handling has a phone-free check:
+  `python3 tools/stream-bench/test_bench.py`.
 - `adb` on `PATH` (or `--adb PATH`); `--serial` is required and has no
   default. The bench refuses a serial that is not `device`.
 - The shim at `/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp`, or

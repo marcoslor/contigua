@@ -80,6 +80,8 @@ if [ "$MODE" = check ]; then
     bash "$HERE/preflight.sh" || CHECK_FAIL=1
     bash -n "$0" || cfail "bash -n $0"
     "$PYTHON" -m py_compile "$BENCH" || cfail "py_compile bench"
+    "$PYTHON" "$ROOT/tools/stream-bench/test_bench.py" >/dev/null 2>&1 ||
+        cfail "bench arm handling test"
     "$PYTHON" "$POC" --help >/dev/null 2>&1 || cfail "poc.py --help"
     [ -x "$APP" ] || cfail "no e2e Mac app at $APP"
     [ -x "$SHIM" ] || cfail "no MCP shim at $SHIM"
@@ -290,6 +292,8 @@ fi
 
 # --- bench, with the phone's own strategy lines -----------------------------
 section bench
+# Only the bench's own configure lines: the pair phase above opened a mirror.
+emu logcat -c >/dev/null 2>&1 || true
 emu logcat -v brief -s PocketDeckSvc:I > "$WORK/logcat.txt" 2>&1 &
 CAT_PID=$!
 
@@ -297,11 +301,17 @@ CAT_PID=$!
     --repeats 1 --out "$OUT/bench-emulator.csv" --shim "$SHIM" \
     --package com.android.settings > "$WORK/bench.log" 2>&1
 BENCH_RC=$?
-sleep 1
+sleep 2
+# The live capture can lose its last buffer block when killed; the device's
+# ring buffer is the authority for the strategy lines.
+emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
+cp "$WORK/logcat.txt" "$WORK/logcat-live.txt" 2>/dev/null || true
+[ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
 
-rows="$(($(wc -l < "$OUT/bench-emulator.csv" 2>/dev/null || echo 1) - 1))"
+rows=0
+[ -f "$OUT/bench-emulator.csv" ] && rows="$(($(wc -l < "$OUT/bench-emulator.csv") - 1))"
 [ "$rows" -eq 10 ] && ok "the bench CSV has one run per arm (10)" \
     || bad "the bench CSV has $rows runs, expected 10"
 for arm in baseline q1-suspend q1q2-100 r1-cbr r2-16 r2-25 r4-ir60 t1-refine n1-af41 combo-a; do
