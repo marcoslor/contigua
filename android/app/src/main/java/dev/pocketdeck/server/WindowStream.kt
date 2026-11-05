@@ -148,6 +148,9 @@ internal class WindowStream(
     private val stats = StreamStats()
     @Volatile private var statsWanted = false
 
+    /** ISS-40's one-off QP sample after this stream's 30th output buffer. */
+    private val qpSample = QpSampleProbe()
+
     /** The codec supports per-output-buffer statistics (KEY_VIDEO_QP_AVERAGE). */
     private var encodingStatistics = false
 
@@ -977,18 +980,30 @@ internal class WindowStream(
                         (System.nanoTime() / 1_000 - info.presentationTimeUs)
                             .takeIf { it in 0..10_000_000L }
                     } else null
-                    val qp = if (statsWanted && encodingStatistics) readQp(codec, idx) else null
+                    val qp = if ((statsWanted || qpSample.collecting) && encodingStatistics) {
+                        readQp(codec, idx)
+                    } else {
+                        null
+                    }
+                    if (qpSample.collecting && qpSample.note(qp)) {
+                        // The format's own names, never its values: the reviewer
+                        // needs to know whether a QP key exists on this codec.
+                        val keys = runCatching { codec.getOutputFormat(idx).keys }
+                            .getOrDefault(emptySet())
+                        log(qpSample.line(stream, keys))
+                    }
+                    val statsQp = if (statsWanted) qp else null
                     if (encoder !== codec) {
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
-                        stats.onFrame(key, 0, encodeUs, qp)
+                        stats.onFrame(key, 0, encodeUs, statsQp)
                     } else {
                         heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
                         noteRefineFrame(now, key, info.size)
                         val skipped = dropForFps(info.presentationTimeUs)
                         if (skipped) stats.onSkipped()
-                        stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, qp)
+                        stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, statsQp)
                         if (!skipped) {
                             buf.position(info.offset)
                             buf.limit(info.offset + info.size)
