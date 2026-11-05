@@ -376,7 +376,14 @@ emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
 [ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
-PHONE_N="$(grep -o 'phone_n=[0-9]*' "$WORK/bench.log" 2>/dev/null | cut -d= -f2 | tr '\n' ',' | sed 's/,$//')"
+# The 5 s lines are the source for phone_n now: the bench's own log line
+# carries only its table fields.
+bench_stats_lines() {
+    /usr/bin/log show --last 20m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -E " stats stream="
+}
+PHONE_N="$(bench_stats_lines | grep -o 'phone_n=[0-9]*' | cut -d= -f2 | tr '\n' ',' | sed 's/,$//')"
 SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat.txt" 2>/dev/null || true)"
 [ -n "$PHONE_N" ] && say "Mac per-line phone_n: $PHONE_N"
 [ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
