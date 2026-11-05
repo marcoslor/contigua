@@ -1,0 +1,225 @@
+package dev.pocketdeck.server
+
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * ISS-40's switch set: every key parses into one value with today's defaults,
+ * clamps out-of-range numbers and sends junk back to the default; the default
+ * encoder format is byte-for-byte the one the stream had before the switches.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class StreamStrategyTest {
+
+    private fun parse(vararg values: Pair<String, String?>): StreamStrategy {
+        val properties = values.toMap()
+        return StreamStrategy.parse { key -> properties[key] }
+    }
+
+    @Test
+    fun `no properties give exactly today's values`() {
+        val strategy = StreamStrategy.parse { null }
+        assertEquals(StreamStrategy.DEFAULT, strategy)
+        assertEquals(StreamStrategy.Overflow.Drop, strategy.overflow)
+        assertEquals(250, strategy.queueMs)
+        assertEquals(StreamStrategy.RateControl.Vbr, strategy.rateControl)
+        assertEquals(8000, strategy.capKbps)
+        assertEquals(120, strategy.bppMilli)
+        assertEquals(0, strategy.intraRefreshFrames)
+        assertFalse(strategy.refine)
+        assertEquals(0, strategy.trafficClass)
+        assertTrue(strategy.isDefault)
+    }
+
+    @Test
+    fun `each key parses its non-default value`() {
+        val strategy = parse(
+            "overflow" to "suspend",
+            "queue_ms" to "100",
+            "rc" to "cbr",
+            "cap_kbps" to "16000",
+            "bpp_milli" to "180",
+            "ir" to "60",
+            "refine" to "on",
+            "tos" to "136",
+        )
+        assertEquals(StreamStrategy.Overflow.Suspend, strategy.overflow)
+        assertEquals(100, strategy.queueMs)
+        assertEquals(StreamStrategy.RateControl.Cbr, strategy.rateControl)
+        assertEquals(16000, strategy.capKbps)
+        assertEquals(180, strategy.bppMilli)
+        assertEquals(60, strategy.intraRefreshFrames)
+        assertTrue(strategy.refine)
+        assertEquals(136, strategy.trafficClass)
+        assertFalse(strategy.isDefault)
+    }
+
+    @Test
+    fun `numbers clamp to their documented range`() {
+        assertEquals(30, parse("queue_ms" to "1").queueMs)
+        assertEquals(1000, parse("queue_ms" to "5000").queueMs)
+        assertEquals(1000, parse("cap_kbps" to "1").capKbps)
+        assertEquals(100_000, parse("cap_kbps" to "999999").capKbps)
+        assertEquals(50, parse("bpp_milli" to "0").bppMilli)
+        assertEquals(500, parse("bpp_milli" to "900").bppMilli)
+        assertEquals(10, parse("ir" to "1").intraRefreshFrames)
+        assertEquals(600, parse("ir" to "9000").intraRefreshFrames)
+        assertEquals(0, parse("ir" to "0").intraRefreshFrames)
+        assertEquals(0, parse("tos" to "-1").trafficClass)
+        assertEquals(255, parse("tos" to "999").trafficClass)
+    }
+
+    @Test
+    fun `junk and unknown tokens fall back to today's value`() {
+        val junk = parse(
+            "overflow" to "sometimes",
+            "queue_ms" to "soon",
+            "rc" to "auto",
+            "cap_kbps" to "lots",
+            "bpp_milli" to "sharp",
+            "ir" to "bands",
+            "refine" to "maybe",
+            "tos" to "fast",
+        )
+        assertEquals(StreamStrategy.DEFAULT, junk)
+        assertEquals(0, parse("ir" to "-5").intraRefreshFrames)
+    }
+
+    @Test
+    fun `the line says default with nothing set`() {
+        assertEquals("default", StreamStrategy.DEFAULT.describe())
+    }
+
+    @Test
+    fun `the line lists the active switches in a fixed order`() {
+        val strategy = parse(
+            "overflow" to "suspend",
+            "queue_ms" to "100",
+            "rc" to "cbr",
+            "cap_kbps" to "16000",
+            "bpp_milli" to "120",
+            "ir" to "60",
+            "refine" to "on",
+            "tos" to "136",
+        )
+        assertEquals(
+            "rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88",
+            strategy.describe(
+                StreamStrategy.Applied(
+                    rateControl = StreamStrategy.RateControl.Cbr,
+                    intraRefreshFrames = 60,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `a switch the codec refuses names its fallback`() {
+        val strategy = parse("rc" to "cbr", "ir" to "60")
+        assertEquals(
+            "rc=cbr unsupported ir=60 unsupported",
+            strategy.describe(StreamStrategy.Applied()),
+        )
+        assertEquals(
+            "rc=cbr ir=60",
+            strategy.describe(
+                StreamStrategy.Applied(
+                    rateControl = StreamStrategy.RateControl.Cbr,
+                    intraRefreshFrames = 60,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `the default format is exactly the pre-switch format`() {
+        val plan = build(format = StreamStrategy.DEFAULT, cbrSupported = true, intraRefreshSupported = true)
+        val format = plan.format
+        assertEquals(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                     format.getInteger(MediaFormat.KEY_COLOR_FORMAT))
+        assertEquals(8_000_000, format.getInteger(MediaFormat.KEY_BIT_RATE))
+        assertEquals(60, format.getInteger(MediaFormat.KEY_FRAME_RATE))
+        assertEquals(10, format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL))
+        assertEquals(500_000L, format.getLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER))
+        assertEquals(0, format.getInteger(MediaFormat.KEY_PRIORITY))
+        assertEquals(0, format.getInteger(MediaFormat.KEY_MAX_B_FRAMES))
+        assertEquals(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
+                     format.getInteger(MediaFormat.KEY_BITRATE_MODE))
+        assertEquals(1, format.getInteger(MediaFormat.KEY_LATENCY))
+        // No switch may add a key the pre-switch format did not have.
+        assertFalse(format.containsKey(MediaFormat.KEY_INTRA_REFRESH_PERIOD))
+        assertFalse(format.containsKey(StreamFormat.KEY_MAX_FPS))
+        assertFalse(format.containsKey(MediaFormat.KEY_VIDEO_ENCODING_STATISTICS_LEVEL))
+        assertEquals(StreamStrategy.Applied(), plan.applied)
+    }
+
+    @Test
+    fun `cbr and intra refresh reach the format when the codec supports them`() {
+        val strategy = parse("rc" to "cbr", "ir" to "60")
+        val plan = build(strategy, cbrSupported = true, intraRefreshSupported = true)
+        assertEquals(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
+                     plan.format.getInteger(MediaFormat.KEY_BITRATE_MODE))
+        assertEquals(60, plan.format.getInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD))
+        assertEquals(3600, plan.format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL))
+        assertEquals(StreamStrategy.RateControl.Cbr, plan.applied.rateControl)
+        assertEquals(60, plan.applied.intraRefreshFrames)
+    }
+
+    @Test
+    fun `an unhonoured cbr or ir keeps today's format`() {
+        val strategy = parse("rc" to "cbr", "ir" to "60")
+        val plan = build(strategy, cbrSupported = false, intraRefreshSupported = false)
+        assertEquals(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
+                     plan.format.getInteger(MediaFormat.KEY_BITRATE_MODE))
+        assertEquals(10, plan.format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL))
+        assertFalse(plan.format.containsKey(MediaFormat.KEY_INTRA_REFRESH_PERIOD))
+        assertEquals(StreamStrategy.Applied(), plan.applied)
+    }
+
+    @Test
+    fun `the default bitrate is today's formula for every size`() {
+        val strategy = StreamStrategy.DEFAULT
+        assertEquals(500_000, strategy.bitrateFor(160, 120))         // under the floor
+        assertEquals(2_764_800, strategy.bitrateFor(800, 480))        // 800·480·7.2
+        assertEquals(8_000_000, strategy.bitrateFor(1232, 2410))      // over the cap
+    }
+
+    @Test
+    fun `the bitrate follows bpp and the cap`() {
+        assertEquals(4_147_200, parse("bpp_milli" to "180").bitrateFor(800, 480))
+        assertEquals(16_000_000, parse("cap_kbps" to "16000").bitrateFor(1232, 2410))
+        assertEquals(25_000_000, parse("cap_kbps" to "25000", "bpp_milli" to "300").bitrateFor(1232, 2410))
+    }
+
+    @Test
+    fun `the queue budget scales with queue_ms`() {
+        assertEquals(256 * 1024, StreamStrategy.DEFAULT.queueBytes())
+        assertEquals(256 * 1024 * 100 / 250, parse("queue_ms" to "100").queueBytes())
+        assertEquals(250_000L, StreamStrategy.DEFAULT.queueDurationUs())
+        assertEquals(100_000L, parse("queue_ms" to "100").queueDurationUs())
+    }
+
+    private fun build(
+        format: StreamStrategy,
+        cbrSupported: Boolean,
+        intraRefreshSupported: Boolean,
+    ): StreamFormat.Plan = StreamFormat.build(
+        w = 1232,
+        h = 2410,
+        bitrateBps = format.bitrateFor(1232, 2410),
+        strategy = format,
+        cbrSupported = cbrSupported,
+        intraRefreshSupported = intraRefreshSupported,
+        repeatPreviousFrame = true,
+        maxFps = null,
+        encodingStatistics = false,
+    )
+}

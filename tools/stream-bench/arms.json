@@ -4,6 +4,76 @@
       "name": "baseline",
       "phone": {},
       "mac": {}
+    },
+    {
+      "name": "q1-suspend",
+      "phone": {
+        "overflow": "suspend"
+      },
+      "mac": {}
+    },
+    {
+      "name": "q1q2-100",
+      "phone": {
+        "overflow": "suspend",
+        "queue_ms": "100"
+      },
+      "mac": {}
+    },
+    {
+      "name": "r1-cbr",
+      "phone": {
+        "rc": "cbr"
+      },
+      "mac": {}
+    },
+    {
+      "name": "r2-16",
+      "phone": {
+        "cap_kbps": "16000"
+      },
+      "mac": {}
+    },
+    {
+      "name": "r2-25",
+      "phone": {
+        "cap_kbps": "25000"
+      },
+      "mac": {}
+    },
+    {
+      "name": "r4-ir60",
+      "phone": {
+        "ir": "60"
+      },
+      "mac": {}
+    },
+    {
+      "name": "t1-refine",
+      "phone": {
+        "refine": "on"
+      },
+      "mac": {}
+    },
+    {
+      "name": "n1-af41",
+      "phone": {
+        "tos": "136"
+      },
+      "mac": {}
+    },
+    {
+      "name": "combo-a",
+      "phone": {
+        "overflow": "suspend",
+        "queue_ms": "100",
+        "rc": "cbr",
+        "cap_kbps": "16000",
+        "ir": "60",
+        "refine": "on",
+        "tos": "136"
+      },
+      "mac": {}
     }
   ]
 }
