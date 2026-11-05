@@ -151,7 +151,10 @@ discarded delta to the first frame sent after it (the keyframe), minus one
 60 fps interval, at least zero, summed in milliseconds; an episode still open
 at a snapshot lands, whole and once, in the window that sees it resume.
 `susp`/`suspMs` are Q1's encoder-suspend episodes and the milliseconds they
-covered, and `refine` is T1's refined still frames sent.
+covered: an episode still open at a snapshot counts its time so far, and the
+next snapshot carries on from there, so the sum over snapshots is the
+episode's whole time, counted once. `refine` is T1's refined still frames
+sent.
 `retrans`, `rto` and `lost_retrans` are the phone's **system-wide** Linux TCP
 counter deltas since its previous message: retransmitted segments
 (`/proc/net/snmp` `Tcp: RetransSegs`), retransmission timeouts and lost

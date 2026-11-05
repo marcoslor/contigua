@@ -60,12 +60,12 @@ class StreamStatsTest {
         stats.snapshot(reset = true)
         stats.onFrame(key = false, bytes = 250, encodeUs = 2_000, qpValue = null)
         assertEquals(
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 secs=4.2",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
         assertEquals(
             "reading the line does not consume the lifetime counters",
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 secs=4.2",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
     }
@@ -127,22 +127,51 @@ class StreamStatsTest {
 
     @Test
     fun suspendAndRefineCountersAccumulatePerWindow() {
-        val stats = StreamStats()
-        stats.onSuspendStart(1_000)
-        stats.onSuspendStart(1_100) // the same episode's rising edge only
-        stats.onSuspendEnd(4_000)
+        var now = 1_000L
+        val stats = StreamStats { now }
+        stats.onSuspendStart(now)
+        stats.onSuspendStart(now + 100) // the same episode's rising edge only
+        now = 4_000
+        stats.onSuspendEnd(now)
         stats.onRefined()
         val first = stats.snapshot()
         assertEquals(1L, first.suspendedEpisodes)
         assertEquals(3_000L, first.suspendedMs)
         assertEquals(1L, first.refined)
 
-        // An episode that ends in a later window lands there whole, once.
+        // An open episode counts what it has run, and the next window carries
+        // on from there: no span is reported twice.
         stats.onSuspendStart(5_000)
-        assertEquals(1L, stats.snapshot().suspendedEpisodes)
-        assertEquals(0L, stats.snapshot().suspendedMs)
-        stats.onSuspendEnd(6_000)
-        assertEquals(1_000L, stats.snapshot().suspendedMs)
+        now = 5_500
+        val open = stats.snapshot()
+        assertEquals(1L, open.suspendedEpisodes)
+        assertEquals(500L, open.suspendedMs)
+        now = 6_000
+        stats.onSuspendEnd(now)
+        assertEquals(500L, stats.snapshot().suspendedMs)
+    }
+
+    @Test
+    fun anOpenSuspendEpisodeIsCountedInEverySnapshotWithoutDoubleCounting() {
+        val stats = StreamStats()
+        stats.onSuspendStart(1_000)
+        assertEquals(1_500L, stats.snapshot(nowMs = 2_500).suspendedMs)
+        assertEquals(500L, stats.snapshot(nowMs = 3_000).suspendedMs)
+        stats.onSuspendEnd(4_000)
+        assertEquals(1_000L, stats.snapshot(nowMs = 9_000).suspendedMs)
+    }
+
+    @Test
+    fun theTotalsLineCarriesAnOpenSuspendEpisode() {
+        val stats = StreamStats()
+        stats.onSuspendStart(1_000)
+        // A snapshot reported the first 1500 ms; the closing line still
+        // carries the episode whole, from its own start.
+        assertEquals(1_500L, stats.snapshot(nowMs = 2_500).suspendedMs)
+        assertEquals(
+            "stream 7 totals: out=0 sent=0 skipped=0 bytes=0 susp_ms=2000 secs=3.0",
+            stats.totalsLine(stream = 7, secs = 3.0, nowMs = 3_000),
+        )
     }
 
     @Test

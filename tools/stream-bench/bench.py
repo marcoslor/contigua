@@ -52,7 +52,7 @@ CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
                "failed", "covered", "secs", "rx_frames", "shown_frames",
                "phone_frames", "kf_req", "bytes", "covered_ms",
                "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"]
-              + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms", "phone_gaps"])
+              + list(TABLE_FIELDS) + ["frozen", "low_motion", "no_drop_ms", "phone_gaps"])
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
 
 
@@ -316,13 +316,62 @@ def median(values):
     return statistics.median(values) if values else None
 
 
-def run_metrics(total, sampled=()):
+SWIPE_PHASES = ("swipes", "flings")
+
+
+def swipe_windows(phases):
+    """[(start, end)] of the script's two swipe phases; [] when unknown."""
+    if not phases:
+        return []
+    windows = []
+    for index, (name, start) in enumerate(phases):
+        if name not in SWIPE_PHASES:
+            continue
+        end = phases[index + 1][1] if index + 1 < len(phases) else float("inf")
+        windows.append((start, end))
+    return windows
+
+
+def is_frozen(sampled, phases=None):
+    """True when a 5 s line in a swipe phase shows under 10 fps.
+
+    A frozen picture produces no late frame, so the hitch rule cannot see it;
+    the still phases carry heartbeat frames only and never count. Without
+    phases (a fixture) every sampled line is a swipe line.
+    """
+    windows = swipe_windows(phases)
+    for row in sampled:
+        fps = number(row, "rx_fps")
+        if fps is None or fps >= 10:
+            continue
+        at = row.get("at")
+        if windows and at is not None:
+            if not any(start <= at <= end for start, end in windows):
+                continue
+        return True
+    return False
+
+
+def counted(run):
+    """The runs that make an arm's medians: not failed, covered, frozen or
+    low-motion."""
+    return not (run.get("failed") or run.get("covered") or run.get("frozen")
+                or run.get("low_motion"))
+
+
+def valid_runs(runs):
+    return sum(1 for run in runs if counted(run))
+
+
+def run_metrics(total, sampled=(), phases=None):
     """A run's table values plus its marks, all from the closing totals line.
 
     The totals carry no phases: `shown_fps`, `late_p99` and both e2e levels are
     over the run's whole life. `kbps` is the phone's bytes over `secs`; a run
     whose `rx_frames / secs` is under 20 moved too little to compare strategies.
     A run with `covered_ms > 0` spent time hidden and is left out of the medians.
+    A run whose 5 s line in a swipe phase is under 10 fps is `frozen`: the
+    picture stopped while the content moved.
     `qp_p95` is a level, not a counter, and the totals line has none: it is the
     median over the 5 s lines that folded in a phone message.
     """
@@ -355,6 +404,7 @@ def run_metrics(total, sampled=()):
         "qp_p95": median(qp),
         "e2e_p50": number(total, "e2e_p50"),
         "e2e_p95": number(total, "e2e_p95"),
+        "frozen": is_frozen(sampled, phases),
         "low_motion": (rx / secs) < 20 if secs > 0 else True,
         "no_drop_ms": total.get("drop_ms") in (None, "-"),
         "phone_gaps": phone_n <= 0,
@@ -378,7 +428,7 @@ def run_metrics(total, sampled=()):
 def empty_metrics():
     """A failed run's cells: every number absent, its marks set."""
     values = {field: None for field in TABLE_FIELDS}
-    values.update({"low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
+    values.update({"frozen": 0, "low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
                    "covered": 0, "failed": 1, "secs": None, "rx_frames": None,
                    "shown_frames": None, "phone_frames": None, "kf_req": None,
                    "bytes": None, "covered_ms": None})
@@ -387,9 +437,9 @@ def empty_metrics():
 
 def summarise(runs):
     """One cell per table field: the median and min–max of the runs that count.
-    Failed and covered runs are excluded; no valid run leaves the cell `-`."""
-    valid = [run for run in runs
-             if not run.get("failed") and not run.get("covered")]
+    Failed, covered, frozen and low-motion runs are excluded; no valid run
+    leaves the cell `-`."""
+    valid = [run for run in runs if counted(run)]
     cells = {}
     for field in TABLE_FIELDS:
         values = [run[field] for run in valid if run.get(field) is not None]
@@ -404,6 +454,8 @@ def table_line(name, runs, width=3):
         marks.append("failed")
     if any(run.get("covered") for run in runs):
         marks.append("covered")
+    if any(run.get("frozen") for run in runs):
+        marks.append("frozen")
     if any(run.get("low_motion") for run in runs):
         marks.append("low-motion")
     if any(run.get("no_drop_ms") for run in runs):
@@ -420,7 +472,13 @@ def table_line(name, runs, width=3):
         else:
             middle, low, high = cell
             rendered.append(("%.1f (%.1f-%.1f)" % (middle, low, high)).rjust(10))
-    return "%-*s  %s" % (width, label, "  ".join(rendered))
+    return "%-*s  %5d  %s" % (width, label, valid_runs(runs), "  ".join(rendered))
+
+
+def table_header(width=3):
+    """The table's one header row, with the valid count before the medians."""
+    return "%-*s  %5s  %s" % (width, "arm", "valid",
+                              "  ".join(field.rjust(10) for field in TABLE_FIELDS))
 
 
 def resend_counts(rows):
@@ -562,7 +620,8 @@ def main():
                     if not wait_for_first_line(stream, began, predicate,
                                                args.first_line_timeout):
                         raise BenchFailure("no stats line for stream %d" % stream)
-                    drive(client, stream, [])
+                    phases = []
+                    drive(client, stream, phases)
                     client.text("close_window", {"window": stream})
                     client.close()
                     client = None
@@ -574,7 +633,7 @@ def main():
                     sampled = parse_rows(stats_lines(began, predicate), stream)
                     run["lines"] = len(sampled)
                     run["sampled"] = sampled
-                    run.update(run_metrics(total, sampled))
+                    run.update(run_metrics(total, sampled, phases))
                 except Exception as error:  # one failed run never stops the table
                     log("run failed: %s" % error)
                     run.update(empty_metrics())
@@ -582,7 +641,7 @@ def main():
                     if client is not None:
                         client.close()
                     settings.restore()
-                for key in ("low_motion", "no_drop_ms", "phone_gaps",
+                for key in ("frozen", "low_motion", "no_drop_ms", "phone_gaps",
                             "covered", "failed"):
                     run[key] = 1 if run.get(key) else 0
                 rows.append(run)
@@ -602,7 +661,7 @@ def main():
     text_rows = [table_line(arm["name"], summary_rows[arm["name"]]) for arm in run_arms]
     width = max([len(row.split("  ", 1)[0]) for row in text_rows] + [3])
     print()
-    print("%-*s  %s" % (width, "arm", "  ".join(field.rjust(10) for field in TABLE_FIELDS)))
+    print(table_header(width))
     for arm, row in zip(run_arms, text_rows):
         label, cells = row.split("  ", 1)
         print("%-*s  %s" % (width, label.strip(), cells))

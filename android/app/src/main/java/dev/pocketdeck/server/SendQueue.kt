@@ -35,6 +35,8 @@ internal class SendQueue(
     private val maxBulkBytes: Int = DEFAULT_MAX_BULK_BYTES,
     private val maxAudioBytes: Int = DEFAULT_MAX_AUDIO_BYTES,
     private val nowUs: () -> Long = { 0L },
+    /** Q1's suspend clock, the same monotonic milliseconds as the session tick. */
+    private val nowMs: () -> Long = { nowUs() / 1000 },
     private val onDeltaDrop: (stream: Int) -> Unit = {},
     /**
      * Q1/Q2: a stream's queue budget and overflow policy, read once when its
@@ -44,8 +46,12 @@ internal class SendQueue(
         { QueuePolicy.today(maxDeltaBytesPerStream, maxDeltaDurationUs) },
     /** Q1: the queue overflowed under `overflow=suspend`; lower the bitrate. */
     private val onOverflow: (stream: Int) -> Unit = {},
-    /** Q1: suspend (true) or resume (false) the encoder's input. */
-    private val onSuspend: (stream: Int, suspended: Boolean) -> Unit = { _, _ -> },
+    /**
+     * Q1: this stream's suspend state may have changed. The session reads
+     * [isSuspended] and applies it, so an apply that ran late still applies the
+     * latest state rather than a stale edge.
+     */
+    private val onSuspendChanged: (stream: Int) -> Unit = { _ -> },
     private val log: (String) -> Unit = {},
 ) {
     /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
@@ -65,6 +71,8 @@ internal class SendQueue(
     private val deltaLastPtsUs = HashMap<Int, Long>()
     private val policies = HashMap<Int, QueuePolicy>()
     private val overflowStates = HashMap<Int, OverflowState>()
+    /** When each suspended stream's episode began; Q1's tick deadline. */
+    private val suspendSinceMs = HashMap<Int, Long>()
     /** Streams whose encoder must resume; performed outside the lock. */
     private val pendingResumes = ArrayList<Int>()
     private val dropping = HashSet<Int>()
@@ -112,28 +120,27 @@ internal class SendQueue(
      * pts closes the episode's gap.
      */
     fun enqueueControl(stream: Int, bytes: ByteArray, ptsUs: Long = -1) {
-        var resume = false
+        var changed = false
         synchronized(lock) {
             if (stream != 0) {
                 dropping.remove(stream)
                 discardDeltas(stream)
                 val before = overflowStates[stream]
                 if (before != null && before != OverflowState.Flowing) {
-                    val step = overflowStep(before, OverflowEvent.Control)
-                    setOverflowState(stream, step)
-                    if (step.actions.contains(OverflowAction.ResumeEncoder)) resume = true
+                    changed = setOverflowState(
+                        stream, overflowStep(before, OverflowEvent.Control))
                 }
             }
             control.addLast(Entry(bytes, stream, ptsUs = ptsUs))
             lock.notifyAll()
         }
-        if (resume) onSuspend(stream, false)
+        if (changed) onSuspendChanged(stream)
     }
 
     fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
         var dropped = false
         var overflow = false
-        var suspend: Boolean? = null
+        var suspendChanged = false
         synchronized(lock) {
             if (stream in dropping) {
                 // Still waiting for the keyframe: this delta is discarded too.
@@ -159,11 +166,10 @@ internal class SendQueue(
             if ((overBytes || overDuration) && policy.overflow == StreamStrategy.Overflow.Suspend) {
                 val before = overflowStates[stream] ?: OverflowState.Flowing
                 val step = overflowStep(before, OverflowEvent.Pressure(used + bytes.size > policy.hardBytes))
-                setOverflowState(stream, step)
+                suspendChanged = setOverflowState(stream, step)
                 for (action in step.actions) {
                     when (action) {
-                        OverflowAction.SuspendEncoder -> suspend = true
-                        OverflowAction.ResumeEncoder -> suspend = false
+                        OverflowAction.SuspendEncoder, OverflowAction.ResumeEncoder -> Unit
                         OverflowAction.LowerBitrate -> overflow = true
                         OverflowAction.DropAndKeyframe -> {
                             noteDropStarted(stream)
@@ -192,11 +198,11 @@ internal class SendQueue(
             deltaLastPtsUs[stream] = ptsUs
             lock.notifyAll()
         }
-        // The suspend/drop callbacks reach the display (keyframe request,
-        // backpressure, codec parameters), and a display busy opening another
-        // window can take seconds. Under this lock it stopped the writer and
-        // every other stream with it; run it free.
-        suspend?.let { onSuspend(stream, it) }
+        // The callbacks reach the display (keyframe request, backpressure,
+        // codec parameters), and a display busy opening another window can
+        // take seconds. Under this lock it stopped the writer and every other
+        // stream with it; run it free.
+        if (suspendChanged) onSuspendChanged(stream)
         if (dropped) onDeltaDrop(stream)
         if (overflow) onOverflow(stream)
     }
@@ -227,6 +233,8 @@ internal class SendQueue(
         lastSentPtsUs.remove(stream)
         dropStartPtsUs.remove(stream)
         dropGapMs.remove(stream)
+        overflowStates.remove(stream)
+        suspendSinceMs.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -266,7 +274,7 @@ internal class SendQueue(
             if (pendingResumes.isEmpty()) return
             pendingResumes.toList().also { pendingResumes.clear() }
         }
-        for (stream in streams) onSuspend(stream, false)
+        for (stream in streams) onSuspendChanged(stream)
     }
 
     fun close() = synchronized(lock) {
@@ -300,15 +308,18 @@ internal class SendQueue(
                 return@repeat
             }
             deltaBytes[stream] = (deltaBytes[stream] ?: entry.bytes.size) - entry.bytes.size
-            maybeResume(stream)
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
                 deltaLastPtsUs.remove(stream)
             } else {
+                // The oldest queued frame is now this one: the duration rule
+                // must not keep measuring from a frame that already left.
+                deltaFirstPtsUs[stream] = q.first().ptsUs
                 deltaOrder.addLast(stream)
             }
+            maybeResume(stream)
             return entry
         }
         val entry = bulk.removeFirstOrNull() ?: return null
@@ -339,27 +350,82 @@ internal class SendQueue(
     private fun policyOf(stream: Int): QueuePolicy =
         policies.getOrPut(stream) { policyFor(stream) }
 
-    private fun setOverflowState(stream: Int, step: OverflowStep) {
+    /** Applies [step]; true when the state, not just the event, changed. */
+    private fun setOverflowState(stream: Int, step: OverflowStep): Boolean {
         val before = overflowStates[stream] ?: OverflowState.Flowing
         if (step.state == OverflowState.Flowing) overflowStates.remove(stream)
         else overflowStates[stream] = step.state
-        if (before != step.state) {
-            log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
+        if (step.state == OverflowState.Suspended) {
+            if (before != OverflowState.Suspended) suspendSinceMs[stream] = nowMs()
+        } else {
+            suspendSinceMs.remove(stream)
         }
+        if (before == step.state) return false
+        log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
+        return true
+    }
+
+    /** Q1: the machine's current state, read under the queue lock. */
+    fun isSuspended(stream: Int): Boolean = synchronized(lock) {
+        overflowStates[stream] == OverflowState.Suspended
+    }
+
+    /**
+     * Q1's safety net, fed by the session's existing ticker (no new timer): a
+     * suspended stream resumes when its backlog is under half, and one second
+     * after the suspend began it resumes whatever the backlog says. The state
+     * is applied afterwards, outside the lock.
+     */
+    fun tick(nowMs: Long) {
+        val resumed = ArrayList<Int>()
+        val timeouts = ArrayList<Int>()
+        synchronized(lock) {
+            for (stream in overflowStates.keys.toList()) {
+                if (overflowStates[stream] != OverflowState.Suspended) continue
+                val since = suspendSinceMs[stream] ?: nowMs
+                val step = overflowStep(
+                    OverflowState.Suspended,
+                    OverflowEvent.Tick(nowMs, since, backlogUnderHalf(stream)),
+                )
+                if (!setOverflowState(stream, step)) continue
+                resumed.add(stream)
+                if (step.event == "timeout") timeouts.add(stream)
+            }
+        }
+        for (stream in resumed) onSuspendChanged(stream)
+        for (stream in timeouts) log("stream $stream overflow: suspend timeout")
+    }
+
+    /** Q1: when the next suspended stream's timeout falls due, or null. */
+    fun nextSuspendDeadlineMs(): Long? = synchronized(lock) {
+        overflowStates.keys.mapNotNull { stream ->
+            if (overflowStates[stream] != OverflowState.Suspended) return@mapNotNull null
+            suspendSinceMs[stream]?.plus(SUSPEND_TIMEOUT_MS)
+        }.minOrNull()
     }
 
     /** Q1: a dequeue brought this stream's backlog below half its budget. */
     private fun maybeResume(stream: Int) {
         if (overflowStates[stream] != OverflowState.Suspended) return
-        val policy = policyOf(stream)
-        val used = deltaBytes[stream] ?: 0
-        if (used > policy.maxBytes / 2) return
-        val first = deltaFirstPtsUs[stream] ?: return
-        val last = deltaLastPtsUs[stream] ?: return
-        if (last - first > policy.maxDurationUs / 2) return
+        if (!backlogUnderHalf(stream)) return
         val step = overflowStep(OverflowState.Suspended, OverflowEvent.Drained)
-        setOverflowState(stream, step)
-        pendingResumes.add(stream)
+        if (setOverflowState(stream, step)) pendingResumes.add(stream)
+    }
+
+    /**
+     * Q1's drained rule. An absent or empty backlog is zero bytes and zero
+     * span: after the last delta left, there is nothing left to wait for (the
+     * per-stream maps are gone by then, and the old early return stranded the
+     * encoder).
+     */
+    private fun backlogUnderHalf(stream: Int): Boolean {
+        val policy = policyOf(stream)
+        val queued = deltas[stream]
+        val empty = queued == null || queued.isEmpty()
+        val used = if (empty) 0 else deltaBytes[stream] ?: 0
+        val first = if (empty) 0L else deltaFirstPtsUs[stream] ?: 0L
+        val last = if (empty) 0L else deltaLastPtsUs[stream] ?: 0L
+        return used <= policy.maxBytes / 2 && last - first <= policy.maxDurationUs / 2
     }
 
     companion object {

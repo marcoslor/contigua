@@ -64,7 +64,8 @@ class StallGateTest {
     fun `the same stall suspends the encoder under overflow=suspend`() {
         val dropped = CopyOnWriteArrayList<Int>()
         val suspends = CopyOnWriteArrayList<Pair<Int, Boolean>>()
-        val queue = SendQueue(
+        lateinit var queue: SendQueue
+        queue = SendQueue(
             onDeltaDrop = { dropped.add(it) },
             policyFor = {
                 QueuePolicy(
@@ -73,7 +74,7 @@ class StallGateTest {
                     SendQueue.DEFAULT_MAX_DELTA_DURATION_US,
                 )
             },
-            onSuspend = { stream, suspended -> suspends.add(stream to suspended) },
+            onSuspendChanged = { stream -> suspends.add(stream to queue.isSuspended(stream)) },
         )
         val gate = StallGate(stream = 1, stallMs = 400, everyMs = 5_000, startMs = 0)
         gate.beforeWrite(5_000)

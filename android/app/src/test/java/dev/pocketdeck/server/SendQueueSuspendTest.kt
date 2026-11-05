@@ -15,6 +15,7 @@ class SendQueueSuspendTest {
     private val dropped = CopyOnWriteArrayList<Int>()
     private val overflows = CopyOnWriteArrayList<Int>()
     private val suspends = CopyOnWriteArrayList<Pair<Int, Boolean>>()
+    private lateinit var built: SendQueue
 
     private fun queue(
         maxBytes: Int,
@@ -25,8 +26,8 @@ class SendQueueSuspendTest {
         onDeltaDrop = { dropped.add(it) },
         policyFor = { QueuePolicy(overflow, maxBytes, maxDurationUs) },
         onOverflow = { overflows.add(it) },
-        onSuspend = { stream, on -> suspends.add(stream to on) },
-    )
+        onSuspendChanged = { stream -> suspends.add(stream to built.isSuspended(stream)) },
+    ).also { built = it }
 
     private fun bytes(size: Int): ByteArray = ByteArray(size) { it.toByte() }
 
