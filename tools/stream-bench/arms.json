@@ -56,6 +56,55 @@
       "mac": {}
     },
     {
+      "name": "stall",
+      "phone": {
+        "stall_ms": "400"
+      },
+      "mac": {}
+    },
+    {
+      "name": "stall-q1",
+      "phone": {
+        "stall_ms": "400",
+        "overflow": "suspend"
+      },
+      "mac": {}
+    },
+    {
+      "name": "stall-q1q2-100",
+      "phone": {
+        "stall_ms": "400",
+        "overflow": "suspend",
+        "queue_ms": "100"
+      },
+      "mac": {}
+    },
+    {
+      "name": "stall-q2-500",
+      "phone": {
+        "stall_ms": "400",
+        "queue_ms": "500"
+      },
+      "mac": {}
+    },
+    {
+      "name": "stall-paced",
+      "phone": {
+        "stall_ms": "400"
+      },
+      "mac": {
+        "stream.present": "paced"
+      }
+    },
+    {
+      "name": "stall-ir60",
+      "phone": {
+        "stall_ms": "400",
+        "ir": "60"
+      },
+      "mac": {}
+    },
+    {
       "name": "n1-af41",
       "phone": {
         "tos": "136"
