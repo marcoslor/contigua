@@ -42,9 +42,9 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 
 # One row per arm; each cell is median (min–max) across the arm's runs.
 ARM_FIELDS = ("shown_fps", "int_p99", "freeze_n", "freeze_ms", "drop_ep",
-              "qp_p95", "kbps", "e2e_p95")
+              "susp_n", "susp_ms", "refine_n", "qp_p95", "kbps", "e2e_p95")
 # A run's value: counters total across its lines, everything else the median.
-RUN_SUM = {"freeze_n", "freeze_ms", "drop_ep"}
+RUN_SUM = {"freeze_n", "freeze_ms", "drop_ep", "susp_n", "susp_ms", "refine_n"}
 
 PHASES = ("opening", "warming", "swipes", "still", "flings", "settle", "closing")
 
