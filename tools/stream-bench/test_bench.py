@@ -219,92 +219,168 @@ class DriveTest(unittest.TestCase):
 class RunMetricsTest(unittest.TestCase):
     def setUp(self):
         self.bench = load_bench()
-        self.phases = [("opening", 0), ("warming", 50), ("swipes", 100),
-                       ("still", 110), ("flings", 120), ("settle", 130),
-                       ("closing", 140)]
 
-    def row(self, at, **fields):
-        row = {"at": at}
-        row.update({key: str(value) for key, value in fields.items()})
+    def total(self, **fields):
+        row = self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            + " ".join("%s=%s" % item for item in fields.items()) + "\n", 1)
         return row
 
-    def test_counters_sum_over_the_whole_run_and_levels_come_from_motion(self):
-        rows = [
-            self.row(105, rx_fps=60, shown_fps=10, late_p99=20, hitch_n=1,
-                     hitch_ms=60, drop_ep=1, drop_ms=100, susp_n=0, susp_ms=0,
-                     kf=1, kbps=1000, phone_n=2, qp_p95=24, e2e_p50=1, e2e_p95=2),
-            # A still line is in the run's counters but never its shown_fps
-            # or late_p99: the picture is not moving there.
-            self.row(115, rx_fps=0, shown_fps=99, late_p99=999, hitch_n=1,
-                     hitch_ms=40, drop_ep=0, drop_ms="-", susp_n=1, susp_ms=10,
-                     kf=2, kbps=3000, phone_n=2, qp_p95=1, e2e_p50=3, e2e_p95=4),
-            self.row(125, rx_fps=60, shown_fps=60, late_p99=0, hitch_n=0,
-                     hitch_ms=0, drop_ep=0, drop_ms=0, susp_n=0, susp_ms=0,
-                     kf=1, kbps=2000, phone_n=2, qp_p95=30, e2e_p50=2, e2e_p95=3),
-        ]
-        values = self.bench.run_metrics(rows, self.phases)
-        self.assertEqual(values["jank_n"], 4)       # 1+1 + 1+1 + 0
-        self.assertEqual(values["jank_ms"], 210)    # 160 + 50 + 0
-        self.assertEqual(values["hitch_ms"], 100)
-        self.assertEqual(values["drop_ms"], 100)
-        self.assertEqual(values["susp_ms"], 10)
-        self.assertEqual(values["kf"], 4)
-        self.assertEqual(values["late_p99"], 10)    # median(20, 0)
-        self.assertEqual(values["shown_fps"], 35)   # median(10, 60)
-        self.assertEqual(values["kbps"], 2000)      # whole-run median
-        self.assertEqual(values["qp_p95"], 27)      # median(24, 30); the still's 1 is no signal
-        self.assertEqual(values["e2e_p50"], 2)
-        self.assertEqual(values["e2e_p95"], 3)
-        self.assertFalse(values["low_motion"])
-        self.assertFalse(values["phone_gaps"])
-        self.assertTrue(values["no_drop_ms"])
-
-    def test_phone_levels_come_only_from_lines_with_a_phone_message(self):
-        rows = [
-            self.row(105, rx_fps=60, kbps=9000, phone_n=0, qp_p95=1),
-            self.row(125, rx_fps=60, kbps=1000, phone_n=2, qp_p95=20),
-            self.row(128, rx_fps=60, kbps=3000, phone_n=3, qp_p95=40),
-        ]
-        values = self.bench.run_metrics(rows, self.phases)
-        self.assertEqual(values["kbps"], 2000,
-                         "a line with no phone message contributes no kbps sample")
-        self.assertEqual(values["qp_p95"], 30,
-                         "a line with no phone message contributes no QP sample")
-
-    def test_no_phone_message_after_the_first_line_marks_phone_gaps(self):
-        rows = [self.row(105, rx_fps=60, phone_n=0),
-                self.row(115, rx_fps=60, phone_n=0),
-                self.row(125, rx_fps=60, phone_n=2)]
-        values = self.bench.run_metrics(rows, self.phases)
-        self.assertTrue(values["phone_gaps"])
-        rows[1]["phone_n"] = "2"
-        self.assertFalse(self.bench.run_metrics(rows, self.phases)["phone_gaps"])
-
-    def test_a_run_with_no_phone_message_at_all_has_no_phone_levels(self):
-        rows = [self.row(105, rx_fps=60, phone_n=0, kbps="-", qp_p95="-")]
-        values = self.bench.run_metrics(rows, self.phases)
-        self.assertIsNone(values["kbps"])
-        self.assertIsNone(values["qp_p95"])
-        self.assertFalse(values["phone_gaps"], "the first line may precede the first message")
-
-    def test_no_motion_line_at_thirty_fps_marks_the_run_low_motion(self):
-        rows = [self.row(105, rx_fps=20, shown_fps=5, late_p99=1),
-                self.row(125, rx_fps=29.9, shown_fps=5, late_p99=1)]
-        self.assertTrue(self.bench.run_metrics(rows, self.phases)["low_motion"])
-        rows[0]["rx_fps"] = "30"
-        self.assertFalse(self.bench.run_metrics(rows, self.phases)["low_motion"])
-
     def test_a_missing_drop_ms_is_zero_for_jank_and_marks_the_run(self):
-        rows = [self.row(105, rx_fps=60, drop_ep=2, drop_ms="-", hitch_n=0,
-                         hitch_ms=0, susp_n=0, susp_ms=0)]
-        values = self.bench.run_metrics(rows, self.phases)
+        total = self.total(secs=10.0, rx_frames=600, drop_ep=2, drop_ms="-",
+                           hitch_n=0, hitch_ms=0, susp_n=0, susp_ms=0)
+        values = self.bench.run_metrics(total)
         self.assertEqual(values["jank_ms"], 0)
         self.assertEqual(values["jank_n"], 2)
         self.assertTrue(values["no_drop_ms"])
-        rows[0]["drop_ms"] = "250"
-        values = self.bench.run_metrics(rows, self.phases)
+        total["drop_ms"] = "250"
+        values = self.bench.run_metrics(total)
         self.assertEqual(values["jank_ms"], 250)
         self.assertFalse(values["no_drop_ms"])
+
+    def test_phone_gaps_means_the_run_had_no_phone_message(self):
+        total = self.total(secs=10.0, rx_frames=600, phone_n=0)
+        self.assertTrue(self.bench.run_metrics(total)["phone_gaps"])
+        total["phone_n"] = "2"
+        self.assertFalse(self.bench.run_metrics(total)["phone_gaps"])
+
+    def test_qp_comes_only_from_lines_with_a_phone_message(self):
+        total = self.total(secs=10.0, rx_frames=600, phone_n=4)
+        sampled = [{"at": 0, "phone_n": "0", "qp_p95": "1"},
+                   {"at": 0, "phone_n": "2", "qp_p95": "20"},
+                   {"at": 0, "phone_n": "2", "qp_p95": "40"}]
+        self.assertEqual(self.bench.run_metrics(total, sampled)["qp_p95"], 30)
+
+    def test_covered_runs_are_left_out_of_the_medians(self):
+        clean = {"failed": 0, "covered": 0, "jank_ms": 10}
+        covered = {"failed": 0, "covered": 1, "jank_ms": 999}
+        for run in (clean, covered):
+            run.update({"low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0})
+        cells = self.bench.summarise([clean, covered])
+        self.assertEqual(cells["jank_ms"], (10, 10, 10))
+        self.assertIn("covered", self.bench.table_line("stall", [clean, covered]))
+
+
+class TotalsTest(unittest.TestCase):
+    """Round 2: every table number comes from the closing totals line."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def totals_line(self, stream=1, **fields):
+        parts = ["2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]:",
+                 "stats", "total", "stream=%d" % stream]
+        for key, value in fields.items():
+            parts.append("%s=%s" % (key, value))
+        return " ".join(parts) + "\n"
+
+    def test_the_new_stall_arms_add_only_their_switches(self):
+        arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
+        by_name = {arm["name"]: arm for arm in arms}
+        self.assertEqual(by_name["stall"]["phone"], {"stall_ms": "400"})
+        self.assertEqual(by_name["stall-q1"]["phone"],
+                         {"stall_ms": "400", "overflow": "suspend"})
+        self.assertEqual(by_name["stall-q1q2-100"]["phone"],
+                         {"stall_ms": "400", "overflow": "suspend", "queue_ms": "100"})
+        self.assertEqual(by_name["stall-q2-500"]["phone"],
+                         {"stall_ms": "400", "queue_ms": "500"})
+        self.assertEqual(by_name["stall-paced"]["phone"], {"stall_ms": "400"})
+        self.assertEqual(by_name["stall-paced"]["mac"], {"stream.present": "paced"})
+        self.assertEqual(by_name["stall-ir60"]["phone"],
+                         {"stall_ms": "400", "ir": "60"})
+        for name in ("stall", "stall-q1", "stall-q1q2-100", "stall-q2-500",
+                     "stall-paced", "stall-ir60"):
+            self.assertFalse(by_name[name].get("restart", False),
+                             "%s must run interleaved" % name)
+
+    def test_arms_filter_runs_only_matching_prefixes(self):
+        arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
+        names = [arm["name"] for arm in self.bench.selected_arms(arms, prefix="stall")]
+        self.assertEqual(names, ["stall", "stall-q1", "stall-q1q2-100",
+                                 "stall-q2-500", "stall-paced", "stall-ir60"])
+        names = [arm["name"] for arm in self.bench.selected_arms(arms, prefix="stall-q")]
+        self.assertEqual(names, ["stall-q1", "stall-q1q2-100", "stall-q2-500"])
+        self.assertEqual(self.bench.selected_arms(arms, prefix="nope"), [])
+
+    def test_the_totals_line_is_parsed_and_other_streams_are_ignored(self):
+        text = (
+            "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+            "stats stream=1 rx_fps=60 shown_fps=60 phone_n=2\n"
+            + self.totals_line(secs=10.0, rx_frames=300, shown_frames=290,
+                               hitch_n=2, hitch_ms=80, late_p99=20.5,
+                               phone_n=15, phone_frames=300, kf=2, kf_req=1,
+                               drop_ep=1, drop_ms=120, susp_n=0, susp_ms=0,
+                               bytes=1000000, e2e_p50=12.0, e2e_p95=30.0,
+                               covered_ms=0)
+            + self.totals_line(stream=2, secs=1.0, rx_frames=1)
+        )
+        row = self.bench.parse_totals(text, 1)
+        self.assertIsNotNone(row)
+        self.assertEqual(self.bench.number(row, "rx_frames"), 300)
+        self.assertEqual(self.bench.number(row, "covered_ms"), 0)
+        self.assertIsNone(self.bench.parse_totals(text, 9))
+
+    def test_every_table_number_comes_from_the_totals(self):
+        total = self.bench.parse_totals(self.totals_line(
+            secs=10.0, rx_frames=300, shown_frames=290, hitch_n=2,
+            hitch_ms=80, late_p99=20.5, phone_n=15, phone_frames=300,
+            kf=2, kf_req=1, drop_ep=1, drop_ms=120, susp_n=1, susp_ms=40,
+            bytes=1_000_000, e2e_p50=12.0, e2e_p95=30.0, covered_ms=2_000), 1)
+        sampled = [{"at": 0, "phone_n": "2", "qp_p95": "24"},
+                   {"at": 0, "phone_n": "2", "qp_p95": "30"},
+                   {"at": 0, "phone_n": "0", "qp_p95": "1"}]
+        run = self.bench.run_metrics(total, sampled)
+        self.assertEqual(run["jank_n"], 4)       # 2 hitches + 1 drop ep + 1 susp
+        self.assertEqual(run["jank_ms"], 240)    # 80 + 120 + 40
+        self.assertEqual(run["kbps"], 800)       # 1,000,000 bytes × 8 / 10 s
+        self.assertEqual(run["shown_fps"], 36.25)  # 290 / (10 - 2 covered)
+        self.assertAlmostEqual(run["late_p99"], 20.5)
+        self.assertEqual(run["qp_p95"], 27)      # a phone_n=0 line is no sample
+        self.assertTrue(run["covered"])
+        self.assertFalse(run["low_motion"])
+        self.assertFalse(run["no_drop_ms"])
+
+    def test_low_motion_comes_from_the_totals_rate(self):
+        quiet = self.bench.parse_totals(self.totals_line(
+            secs=10.0, rx_frames=199), 1)
+        self.assertTrue(self.bench.run_metrics(quiet)["low_motion"])
+        moving = self.bench.parse_totals(self.totals_line(
+            secs=10.0, rx_frames=200), 1)
+        self.assertFalse(self.bench.run_metrics(moving)["low_motion"])
+
+    def test_a_failed_run_is_marked_and_the_table_and_csv_survive(self):
+        good = self.bench.parse_totals(self.totals_line(
+            secs=10.0, rx_frames=300, shown_frames=300, jank_n=0), 1)
+        good_run = {"arm": "baseline", "repeat": 1, "failed": 0, "covered": 0}
+        good_run.update(self.bench.run_metrics(good))
+        failed = {"arm": "baseline", "repeat": 2, "failed": 1, "covered": 0}
+        failed.update(self.bench.empty_metrics())
+        text = self.bench.table_line("baseline", [good_run, failed])
+        self.assertIn("failed", text.split("  ")[0])
+        self.assertIn("30.0 (30.0-30.0)", text)
+
+    def test_the_pid_is_found_from_the_profiles_app_only(self):
+        ps_text = (
+            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck --profile default\n"
+            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench2\n"
+            "  303 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench20\n"
+            "  404 /Users/x/PocketDeckShim.app/Contents/MacOS/PocketDeckShim --profile bench2\n"
+        )
+        self.assertEqual(self.bench.profile_app_pid(ps_text, "bench2"), 202)
+        self.assertIsNone(self.bench.profile_app_pid(ps_text, "bench3"))
+
+    def test_the_log_predicate_names_the_pid(self):
+        self.assertIn("processID == 202", self.bench.log_predicate(202))
+        self.assertIn('subsystem == "dev.pocketdeck.mac"',
+                      self.bench.log_predicate(202))
+
+    def test_another_windows_stats_line_refuses_the_run(self):
+        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+                "stats stream=1 rx_fps=60 phone_n=2\n")
+        self.assertTrue(self.bench.has_open_window(text))
+        self.assertFalse(self.bench.has_open_window(
+            "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+            "stats total stream=1 secs=10.0\n"))
 
 
 class ParseRowsTest(unittest.TestCase):
