@@ -5,7 +5,7 @@
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
-            deck deckrail windows multiwin zoom render resize dragbar crisp stats input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
+            deck deckrail windows multiwin zoom render resize dragbar crisp stats netvideo input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
             pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
             dnd-edge panel-edge
             files-domain files-thumbs files-thumbs-scale nfr menubar-shots cover-bar-dark cover-bar-light)

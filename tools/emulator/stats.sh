@@ -18,6 +18,8 @@
 #     requires every 5 s line's `phone_n` to be at least 2;
 #   * prints the messages, the send counts, the pong lines, the per-line
 #     `phone_n`, the bench table and the phone's `stream N qp sample:` line;
+#   * prints one 5 s line and the closing totals line with tcp_srtt/tcp_ooo_kb
+#     and ph_retrans/ph_rto/ph_lost, and says when /proc/net was unreadable;
 #   * kills the emulator with `adb -s emulator-5554 emu kill` in cleanup.
 #
 # QP may read `-`: the emulator's encoder need not report encoding statistics.
@@ -393,6 +395,41 @@ for arm in baseline q1q2-100; do
         && ok "the bench table has its $arm row" \
         || bad "no $arm row in the bench table"
 done
+
+# X0: one steady 5 s line and the closing totals line, both with the new
+# fields. A phone whose shell cannot read /proc/net reports '-' for its three
+# counters; K1's fixture holds the parser's proof.
+section tcp
+/usr/bin/log show --last 20m --info --style syslog \
+    --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+    | grep -E " stats (total )?stream=" > "$WORK/stats-lines.txt" || true
+TCP_LINE="$(grep -E ' stats stream=' "$WORK/stats-lines.txt" | grep -E 'tcp_srtt=[0-9]' | tail -1)"
+TCP_TOTAL="$(grep -E ' stats total stream=' "$WORK/stats-lines.txt" | tail -1)"
+if [ -n "$TCP_LINE" ]; then
+    say "5 s line: $(printf '%s\n' "$TCP_LINE" | sed 's/^.*stats stream=/stats stream=/')"
+    case "$TCP_LINE" in
+        *tcp_srtt=*tcp_rttvar=*tcp_ooo_kb=*ph_retrans=*ph_rto=*ph_lost=*)
+            ok "the 5 s line carries the socket's TCP state and the phone's resend counters" ;;
+        *) bad "the 5 s line is missing one of the new TCP fields" ;;
+    esac
+    case "$TCP_LINE" in
+        *ph_retrans=-*)
+            say "the phone's /proc/net files were unreadable to the shell; K1's fixtures carry the parser" ;;
+        *) ok "the phone reported its /proc/net TCP counters" ;;
+    esac
+else
+    bad "no steady 5 s line with a numeric tcp_srtt"
+fi
+if [ -n "$TCP_TOTAL" ]; then
+    say "totals: $(printf '%s\n' "$TCP_TOTAL" | sed 's/^.*stats total/stats total/')"
+    case "$TCP_TOTAL" in
+        *tcp_ooo_kb=*tcp_srtt_max=*ph_retrans=*ph_rto=*ph_lost=*)
+            ok "the totals line carries the new TCP fields" ;;
+        *) bad "the totals line is missing one of the new TCP fields" ;;
+    esac
+else
+    bad "no closing totals line with the new TCP fields"
+fi
 
 # ISS-40's QP sample: one line per stream after its 30th output buffer. The
 # emulator's encoder may report no QP; the line's presence is the proof, and
