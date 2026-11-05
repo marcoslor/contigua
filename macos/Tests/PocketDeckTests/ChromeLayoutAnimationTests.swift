@@ -37,6 +37,12 @@ final class ChromeLayoutAnimationTests: XCTestCase {
         let grow = CABasicAnimation(keyPath: "bounds")
         grow.duration = 5
         probe.add(grow, forKey: "bounds")
+        let scale = CABasicAnimation(keyPath: "sublayerTransform")
+        scale.duration = 5
+        probe.add(scale, forKey: "sublayerTransform")
+        let sweep = CABasicAnimation(keyPath: "locations")
+        sweep.duration = 5
+        probe.add(sweep, forKey: "sweep")
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.duration = 5
         probe.add(fade, forKey: "fadeOut")
@@ -50,7 +56,10 @@ final class ChromeLayoutAnimationTests: XCTestCase {
         let left = Set(probe.animationKeys() ?? [])
         XCTAssertFalse(left.contains("position"), "a frame animation would trail the dragged edge")
         XCTAssertFalse(left.contains("bounds"), "a frame animation would trail the dragged edge")
+        XCTAssertFalse(left.contains("sublayerTransform"),
+                       "the video container's scale would trail the dragged edge")
         XCTAssertTrue(left.contains("fadeOut"), "a fade in flight is deliberate: \(left)")
+        XCTAssertTrue(left.contains("sweep"), "the cover's sweep is deliberate: \(left)")
         XCTAssertTrue(left.contains("edgeSwipeHint"), "the edge hint's group is deliberate: \(left)")
     }
 }
