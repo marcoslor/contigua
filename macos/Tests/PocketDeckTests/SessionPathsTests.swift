@@ -152,7 +152,9 @@ final class SessionPathsTests: XCTestCase {
         let all = seqs
         let keys = keySeqs
         lock.unlock()
-        XCTAssertEqual([1], keys, "the key after the welcome is the first seq (all seqs \(all))")
+        XCTAssertEqual([2], keys,
+                       "the welcome ping is seq 1; the key after it is the next seq (all seqs \(all))")
+        XCTAssertEqual(1, all.first, "the first seq on the wire is 1 (the welcome ping)")
         XCTAssertEqual(all.count, Int(all.last ?? 0), "the seqs on the wire start at 1 with no hole")
         session.close()
     }
