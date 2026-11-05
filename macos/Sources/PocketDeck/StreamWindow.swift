@@ -31,6 +31,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// This window's chrome style: read from the profile's per-package key on
     /// open (WindowStyleStore); a window with nothing remembered opens framed.
     private(set) var style: WindowStyle
+    /// This window's stream strategy (ISS-40), read when it opens and again
+    /// when it resizes. Every key defaults to today's behaviour.
+    private(set) var strategy = MacStreamStrategy()
     /// The immersive dwell pill: pure state until its pill view exists (this
     /// file feeds it; the scripted driver's hover reaches the same path).
     private(set) var dwell = DwellPill()
@@ -210,6 +213,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // The phone's encoder limits decide how the picture is drawn and what
         // the window asks for (ISS-39).
         videoView.encoder = manager.phone?.encoder
+        // The Mac strategy switches (ISS-40): read once when the window opens,
+        // and again when it resizes. No key set is today's path.
+        let openedWith = manager.streamStrategy
+        strategy = openedWith
+        videoView.strategy = openedWith
+        Log.video.notice("\(openedWith.windowLine(stream: stream), privacy: .public)")  // log-ok: closed strategy tokens and a stream id
+        // The view's pending-fill rule must compare the phone's answer with the
+        // same request `window.resize` carries, panel cap included (M2).
+        videoView.requestedPixelsOverride = { [weak self] in self?.displayPixels() ?? .zero }
         videoSizeObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
@@ -745,11 +757,28 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Virtual-display pixels for the video area: the window's exact backing
-    /// pixels inside the phone's encoder limits (ISS-39).
+    /// pixels inside the phone's encoder limits (ISS-39), or at most the panel's
+    /// pixels on a scaled display when `stream.pixels=panel` (M2).
     func displayPixels() -> CGSize {
         guard let window else { return .zero }
+        let cap = strategy.pixels == .panel ? panelFactor(for: window.screen) : 1
         return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor),
-                                       encoder: manager.phone?.encoder)
+                                       encoder: manager.phone?.encoder, panelFactor: cap)
+    }
+
+    /// The display's cap, cached per display and backing size: `requestedPixels`
+    /// asks during a live resize, and the mode list must not be rebuilt then.
+    private var panelCache: (displayID: CGDirectDisplayID, backingWidth: Int, factor: Double)?
+
+    private func panelFactor(for screen: NSScreen?) -> Double {
+        guard let values = PanelCap.values(for: screen) else { return 1 }
+        if let panelCache, panelCache.displayID == values.displayID,
+           panelCache.backingWidth == values.backingWidth {
+            return panelCache.factor
+        }
+        let factor = PanelCap.factor(panelWidth: values.panelWidth, backingWidth: values.backingWidth)
+        panelCache = (values.displayID, values.backingWidth, factor)
+        return factor
     }
 
     func dpi() -> Double {
@@ -794,7 +823,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // hops): the window's view state is main-thread state.
         dispatchPrecondition(condition: .onQueue(.main))
         #endif
+        // A resize is the other moment the switches are read (ISS-40).
+        refreshStreamStrategy()
         send(resizes.apply(.request(resizeRequest())))
+    }
+
+    /// Reads the profile's strategy keys again and hands them to the view: the
+    /// presenter (M1) and the pixel cap (M2) apply from the next request. No key
+    /// set is today's path.
+    private func refreshStreamStrategy() {
+        strategy = manager.streamStrategy
+        videoView.strategy = strategy
     }
 
     /// The phone answered a resize: its `window.resize.ack`, or the
@@ -883,6 +922,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(videoView)
         BackgroundMode.activateApp()
         configureDwell()
+        // M2 with the switch on: what the display reports and what the cap did,
+        // once per window. Numbers only (R-PRIV-1).
+        if strategy.pixels == .panel, let screen = window?.screen,
+           let values = PanelCap.values(for: screen) {
+            let cap = panelFactor(for: screen)
+            Log.video.info("stream \(self.stream, privacy: .public) mac pixels: panel=\(values.panelWidth, privacy: .public) backing=\(values.backingWidth, privacy: .public) cap=\(String(format: "%.3f", cap), privacy: .public)")  // log-ok: sizes and a ratio
+        }
     }
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
@@ -1225,6 +1271,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard !manager.shuttingDown, !closingFromRemote else { return }
         guard changed else { return }
         self.isPaused = paused
+        // Paced presentation's display link follows the picture's liveness:
+        // a hidden or covered window stops it with the phone.
+        videoView.isPaused = paused
         stats.notePaused(paused, now: ProcessInfo.processInfo.systemUptime)
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
     }

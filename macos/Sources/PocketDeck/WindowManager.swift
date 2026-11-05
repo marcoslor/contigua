@@ -336,6 +336,10 @@ final class WindowManager {
     /// from the profile's defaults.
     var revealDelay: RevealDelay { RevealDelay.stored(in: frames) }
 
+    /// The Mac's stream strategies (ISS-40) for windows opened now, read from
+    /// this profile's defaults (`dev.pocketdeck.mac` for the person's app).
+    var streamStrategy: MacStreamStrategy { MacStreamStrategy.read(from: frames) }
+
     /// Settings ▸ Input "Hover over Android apps": the Mac pointer over a
     /// stream window is a mouse over Android. On unless turned off; every
     /// mapper reads it live, so a change applies to open windows at once.
@@ -1016,8 +1020,7 @@ final class WindowManager {
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.stats.noteReceived(now: ProcessInfo.processInfo.systemUptime,
-                                           bytes: frame.annexB.count, ptsUs: frame.ptsUs,
-                                           offsetUs: clockOffsetUs)
+                                           bytes: frame.annexB.count)
             controller?.videoView.enqueue(frame)
             controller?.frameClock.note()
             // The opening cover ends at the stream's first frame; the note is

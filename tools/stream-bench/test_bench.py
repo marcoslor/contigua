@@ -80,5 +80,106 @@ class ArmSettingsTest(unittest.TestCase):
         self.assertNotIn("-s emulator-5554 shell setprop debug.pocketdeck.stream.overflow", commands)
 
 
+class MacArmTest(unittest.TestCase):
+    """The Mac keys go to the profile's own suite and come back after a run."""
+
+    def setUp(self):
+        self.bench = load_bench()
+        self.directory = tempfile.TemporaryDirectory()
+        self.state = os.path.join(self.directory.name, "state")
+        self.bindir = os.path.join(self.directory.name, "bin")
+        os.makedirs(self.state)
+        os.makedirs(self.bindir)
+        self.log = os.path.join(self.directory.name, "defaults.log")
+        self.defaults = os.path.join(self.bindir, "defaults")
+        script = """#!/bin/sh
+printf '%s\\n' "$*" >> LOG
+case "$1" in
+  read)
+    file="STATE/$2.$3"
+    if [ -f "$file" ]; then cat "$file"; else exit 1; fi ;;
+  write)
+    file="STATE/$2.$3"
+    shift 4
+    printf '%s' "$*" > "$file" ;;
+  delete)
+    rm -f "STATE/$2.$3" ;;
+esac
+"""
+        with open(self.defaults, "w", encoding="utf-8") as handle:
+            handle.write(script.replace("LOG", self.log).replace("STATE", self.state))
+        os.chmod(self.defaults, 0o755)
+        self.old_path = os.environ["PATH"]
+        os.environ["PATH"] = self.bindir + ":" + self.old_path
+
+    def tearDown(self):
+        os.environ["PATH"] = self.old_path
+        self.directory.cleanup()
+
+    def commands(self):
+        with open(self.log, "r", encoding="utf-8") as handle:
+            return [line.split() for line in handle.read().splitlines() if line.strip()]
+
+    def read_state(self, domain, key):
+        path = os.path.join(self.state, "%s.%s" % (domain, key))
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_mac_keys_write_to_the_profile_domain_and_restore(self):
+        domain = "dev.pocketdeck.mac.e2e"
+        settings = self.bench.ArmSettings(None, "fake-phone", domain)
+        settings.apply({"phone": {}, "mac": {"stream.present": "paced",
+                                             "stream.pixels": "panel"}})
+        self.assertEqual(self.read_state(domain, "stream.present"), "paced")
+        self.assertEqual(self.read_state(domain, "stream.pixels"), "panel")
+        settings.restore()
+        self.assertIsNone(self.read_state(domain, "stream.present"))
+        self.assertIsNone(self.read_state(domain, "stream.pixels"))
+        # Every read/write/delete names this profile's suite, never the
+        # person's own `dev.pocketdeck.mac`.
+        domains = [command[1] for command in self.commands()
+                   if len(command) > 2 and command[0] in ("read", "write", "delete")]
+        self.assertTrue(domains)
+        self.assertEqual(set(domains), {domain})
+
+    def test_an_existing_value_comes_back_after_the_arm(self):
+        domain = "dev.pocketdeck.mac.e2e"
+        path = os.path.join(self.state, "%s.stream.pixels" % domain)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("backing")
+        settings = self.bench.ArmSettings(None, "fake-phone", domain)
+        settings.apply({"phone": {}, "mac": {"stream.pixels": "panel"}})
+        self.assertEqual(self.read_state(domain, "stream.pixels"), "panel")
+        settings.restore()
+        self.assertEqual(self.read_state(domain, "stream.pixels"), "backing")
+
+    def test_the_profile_selects_the_persons_domain_or_its_suite(self):
+        self.assertEqual(self.bench.profile_domain("default"), "dev.pocketdeck.mac")
+        self.assertEqual(self.bench.profile_domain("e2e"), "dev.pocketdeck.mac.e2e")
+        self.assertEqual(self.bench.profile_domain("stratmac"),
+                         "dev.pocketdeck.mac.stratmac")
+
+    def test_the_mac_arms_exist_and_n1_needs_a_fresh_session(self):
+        arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
+        by_name = {arm["name"]: arm for arm in arms}
+        self.assertEqual(by_name["m1-paced"]["mac"], {"stream.present": "paced"})
+        self.assertEqual(by_name["m2-panel"]["mac"], {"stream.pixels": "panel"})
+        self.assertEqual(by_name["n1-mac-video"]["mac"], {"stream.net": "video"})
+        self.assertEqual(by_name["n1-both"]["mac"], {"stream.net": "video"})
+        self.assertEqual(by_name["n1-both"]["phone"], {"tos": "136"})
+        # N1's key is read at dial time: the default list leaves those arms out
+        # (the README says the app must be restarted between them).
+        default = [arm["name"] for arm in self.bench.selected_arms(arms)]
+        self.assertIn("m1-paced", default)
+        self.assertIn("m2-panel", default)
+        self.assertNotIn("n1-mac-video", default)
+        self.assertNotIn("n1-both", default)
+        restarted = [arm["name"] for arm in self.bench.selected_arms(arms, include_restart=True)]
+        self.assertIn("n1-mac-video", restarted)
+        self.assertIn("n1-both", restarted)
+
+
 if __name__ == "__main__":
     unittest.main()

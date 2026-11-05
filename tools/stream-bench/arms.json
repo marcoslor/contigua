@@ -63,6 +63,38 @@
       "mac": {}
     },
     {
+      "name": "m1-paced",
+      "phone": {},
+      "mac": {
+        "stream.present": "paced"
+      }
+    },
+    {
+      "name": "m2-panel",
+      "phone": {},
+      "mac": {
+        "stream.pixels": "panel"
+      }
+    },
+    {
+      "name": "n1-mac-video",
+      "phone": {},
+      "mac": {
+        "stream.net": "video"
+      },
+      "restart": true
+    },
+    {
+      "name": "n1-both",
+      "phone": {
+        "tos": "136"
+      },
+      "mac": {
+        "stream.net": "video"
+      },
+      "restart": true
+    },
+    {
       "name": "combo-a",
       "phone": {
         "overflow": "suspend",
