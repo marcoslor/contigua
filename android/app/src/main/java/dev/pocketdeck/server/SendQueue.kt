@@ -35,6 +35,8 @@ internal class SendQueue(
     private val maxBulkBytes: Int = DEFAULT_MAX_BULK_BYTES,
     private val maxAudioBytes: Int = DEFAULT_MAX_AUDIO_BYTES,
     private val nowUs: () -> Long = { 0L },
+    /** Q1's suspend clock, the same monotonic milliseconds as the session tick. */
+    private val nowMs: () -> Long = { nowUs() / 1000 },
     private val onDeltaDrop: (stream: Int) -> Unit = {},
     /**
      * Q1/Q2: a stream's queue budget and overflow policy, read once when its
@@ -69,6 +71,8 @@ internal class SendQueue(
     private val deltaLastPtsUs = HashMap<Int, Long>()
     private val policies = HashMap<Int, QueuePolicy>()
     private val overflowStates = HashMap<Int, OverflowState>()
+    /** When each suspended stream's episode began; Q1's tick deadline. */
+    private val suspendSinceMs = HashMap<Int, Long>()
     /** Streams whose encoder must resume; performed outside the lock. */
     private val pendingResumes = ArrayList<Int>()
     private val dropping = HashSet<Int>()
@@ -230,6 +234,7 @@ internal class SendQueue(
         dropStartPtsUs.remove(stream)
         dropGapMs.remove(stream)
         overflowStates.remove(stream)
+        suspendSinceMs.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -350,6 +355,11 @@ internal class SendQueue(
         val before = overflowStates[stream] ?: OverflowState.Flowing
         if (step.state == OverflowState.Flowing) overflowStates.remove(stream)
         else overflowStates[stream] = step.state
+        if (step.state == OverflowState.Suspended) {
+            if (before != OverflowState.Suspended) suspendSinceMs[stream] = nowMs()
+        } else {
+            suspendSinceMs.remove(stream)
+        }
         if (before == step.state) return false
         log("stream $stream overflow: ${before.wire} --${step.event}--> ${step.state.wire}")
         return true
@@ -358,6 +368,40 @@ internal class SendQueue(
     /** Q1: the machine's current state, read under the queue lock. */
     fun isSuspended(stream: Int): Boolean = synchronized(lock) {
         overflowStates[stream] == OverflowState.Suspended
+    }
+
+    /**
+     * Q1's safety net, fed by the session's existing ticker (no new timer): a
+     * suspended stream resumes when its backlog is under half, and one second
+     * after the suspend began it resumes whatever the backlog says. The state
+     * is applied afterwards, outside the lock.
+     */
+    fun tick(nowMs: Long) {
+        val resumed = ArrayList<Int>()
+        val timeouts = ArrayList<Int>()
+        synchronized(lock) {
+            for (stream in overflowStates.keys.toList()) {
+                if (overflowStates[stream] != OverflowState.Suspended) continue
+                val since = suspendSinceMs[stream] ?: nowMs
+                val step = overflowStep(
+                    OverflowState.Suspended,
+                    OverflowEvent.Tick(nowMs, since, backlogUnderHalf(stream)),
+                )
+                if (!setOverflowState(stream, step)) continue
+                resumed.add(stream)
+                if (step.event == "timeout") timeouts.add(stream)
+            }
+        }
+        for (stream in resumed) onSuspendChanged(stream)
+        for (stream in timeouts) log("stream $stream overflow: suspend timeout")
+    }
+
+    /** Q1: when the next suspended stream's timeout falls due, or null. */
+    fun nextSuspendDeadlineMs(): Long? = synchronized(lock) {
+        overflowStates.keys.mapNotNull { stream ->
+            if (overflowStates[stream] != OverflowState.Suspended) return@mapNotNull null
+            suspendSinceMs[stream]?.plus(SUSPEND_TIMEOUT_MS)
+        }.minOrNull()
     }
 
     /** Q1: a dequeue brought this stream's backlog below half its budget. */
