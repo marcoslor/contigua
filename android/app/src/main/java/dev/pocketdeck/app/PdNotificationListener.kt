@@ -484,8 +484,6 @@ class PdNotificationListener : NotificationListenerService() {
             ?: textExtra(extras, Notification.EXTRA_TITLE_BIG)
         val plainText = textExtra(extras, Notification.EXTRA_TEXT)
             ?: textExtra(extras, Notification.EXTRA_BIG_TEXT)
-            ?: textExtra(extras, Notification.EXTRA_SUB_TEXT)
-            ?: textExtra(extras, Notification.EXTRA_SUMMARY_TEXT)
         // Row 14: a MessagingStyle conversation keeps its messages in
         // EXTRA_MESSAGES and its name in EXTRA_CONVERSATION_TITLE, so a post
         // without the plain fields is not contentless.
