@@ -1,0 +1,210 @@
+package dev.pocketdeck.server
+
+/**
+ * One stream's counters for `stream.stats` (ISS-40): plain increments on paths
+ * that already run, plus fixed-size rings for the encode-delay and QP
+ * percentiles. The rings never allocate; a snapshot sorts a copy only when the
+ * Mac asked for stats and a message is due. Pure Kotlin (no Android types), so
+ * the JVM tests pin the counters and percentiles.
+ */
+internal class StreamStats {
+    private companion object {
+        const val RING = 512
+        /** A dequeue more than this after the capture pts is a clock change, not a delay. */
+        const val MAX_ENCODE_US = 10_000_000L
+    }
+
+    private var framesOut = 0L
+    private var keyframesOut = 0L
+    private var keyframesRequested = 0L
+    private var bytesOut = 0L
+    private var framesSkipped = 0L
+    private var targetBps = 0
+
+    private val encode = LongRing(RING)
+    private val qp = IntRing(RING)
+
+    fun onFrame(key: Boolean, bytes: Int, encodeUs: Long?, qpValue: Int?) {
+        framesOut++
+        bytesOut += bytes
+        if (key) keyframesOut++
+        encodeUs?.let { if (it in 0..MAX_ENCODE_US) encode.add(it) }
+        qpValue?.let { qp.add(it) }
+    }
+
+    fun onKeyframeRequested() {
+        keyframesRequested++
+    }
+
+    fun onSkipped() {
+        framesSkipped++
+    }
+
+    fun setTarget(bps: Int) {
+        targetBps = bps
+    }
+
+    /** The window's numbers; `reset` starts the next window at zero. */
+    fun snapshot(reset: Boolean = true): EncoderStats {
+        val out = EncoderStats(
+            frames = framesOut,
+            keyframes = keyframesOut,
+            keyframesRequested = keyframesRequested,
+            bytes = bytesOut,
+            framesSkipped = framesSkipped,
+            targetBps = targetBps,
+            encodeP50 = encode.percentile(0.50),
+            encodeP95 = encode.percentile(0.95),
+            qpP50 = qp.percentile(0.50),
+            qpP95 = qp.percentile(0.95),
+        )
+        if (reset) {
+            framesOut = 0
+            keyframesOut = 0
+            keyframesRequested = 0
+            bytesOut = 0
+            framesSkipped = 0
+            encode.clear()
+            qp.clear()
+        }
+        return out
+    }
+}
+
+/** One encoder's window counters, before the session adds its queue counters. */
+data class EncoderStats(
+    val frames: Long,
+    val keyframes: Long,
+    val keyframesRequested: Long,
+    val bytes: Long,
+    val framesSkipped: Long,
+    val targetBps: Int,
+    val encodeP50: Long?,
+    val encodeP95: Long?,
+    val qpP50: Int?,
+    val qpP95: Int?,
+)
+
+/**
+ * The session side of one stream's stats: deltas the send queue discarded and
+ * the queue delay of the frames that did reach the socket. Locked because the
+ * writer thread reports a written frame and the session thread builds the
+ * message.
+ */
+internal class SendStats {
+    private val lock = Any()
+    private val queue = LongRing(1024)
+
+    fun onWritten(us: Long) = synchronized(lock) {
+        if (us in 0..MAX_QUEUE_US) queue.add(us)
+    }
+
+    /** The window's queue percentiles plus the queue's drop counts; resets. */
+    fun snapshot(deltasDropped: Int, dropEpisodes: Int): SendSnapshot = synchronized(lock) {
+        val out = SendSnapshot(deltasDropped, dropEpisodes,
+                               queue.percentile(0.50), queue.percentile(0.95))
+        queue.clear()
+        out
+    }
+
+    private companion object {
+        /** A queue delay over this is a stalled clock or a stalled link, skip it. */
+        const val MAX_QUEUE_US = 30_000_000L
+    }
+}
+
+internal data class SendSnapshot(
+    val deltasDropped: Int,
+    val dropEpisodes: Int,
+    val queueP50: Long?,
+    val queueP95: Long?,
+)
+
+/**
+ * The `stream.stats` message body. Keys are documented in PROTOCOL.md; a
+ * value with no measurement is omitted (`-` on the Mac's log line).
+ */
+internal object StreamStatsWire {
+    fun message(stream: Int, windowMs: Long, encoder: EncoderStats,
+                send: SendSnapshot): Map<String, Any?> {
+        val out = linkedMapOf<String, Any?>(
+            "t" to "stream.stats",
+            "stream" to stream,
+            "windowMs" to windowMs,
+            "frames" to encoder.frames,
+            "kf" to encoder.keyframes,
+            "kfReq" to encoder.keyframesRequested,
+            "bytes" to encoder.bytes,
+            "drop" to send.deltasDropped,
+            "dropEp" to send.dropEpisodes,
+            "skip" to encoder.framesSkipped,
+            "targetBps" to encoder.targetBps,
+        )
+        encoder.encodeP50?.let { out["encP50"] = it }
+        encoder.encodeP95?.let { out["encP95"] = it }
+        send.queueP50?.let { out["queueP50"] = it }
+        send.queueP95?.let { out["queueP95"] = it }
+        encoder.qpP50?.let { out["qpP50"] = it }
+        encoder.qpP95?.let { out["qpP95"] = it }
+        return out
+    }
+}
+
+/** Fixed-capacity ring of longs; overwrites the oldest. */
+internal class LongRing(private val capacity: Int) {
+    private val values = LongArray(capacity)
+    private var head = 0
+    private var size = 0
+
+    fun add(value: Long) {
+        values[head] = value
+        head = (head + 1) % capacity
+        if (size < capacity) size++
+    }
+
+    fun clear() {
+        head = 0
+        size = 0
+    }
+
+    /** Nearest-rank p50/p95; nil when empty. Sorts a copy, never the ring. */
+    fun percentile(fraction: Double): Long? {
+        if (size == 0) return null
+        val copy = LongArray(size)
+        for (index in 0 until size) {
+            copy[index] = values[(head - size + index + capacity) % capacity]
+        }
+        copy.sort()
+        val rank = maxOf(0, minOf(size - 1, Math.ceil(fraction * size).toInt() - 1))
+        return copy[rank]
+    }
+}
+
+/** Fixed-capacity ring of ints, for QP. */
+internal class IntRing(private val capacity: Int) {
+    private val values = IntArray(capacity)
+    private var head = 0
+    private var size = 0
+
+    fun add(value: Int) {
+        values[head] = value
+        head = (head + 1) % capacity
+        if (size < capacity) size++
+    }
+
+    fun clear() {
+        head = 0
+        size = 0
+    }
+
+    fun percentile(fraction: Double): Int? {
+        if (size == 0) return null
+        val copy = IntArray(size)
+        for (index in 0 until size) {
+            copy[index] = values[(head - size + index + capacity) % capacity]
+        }
+        copy.sort()
+        val rank = maxOf(0, minOf(size - 1, Math.ceil(fraction * size).toInt() - 1))
+        return copy[rank]
+    }
+}

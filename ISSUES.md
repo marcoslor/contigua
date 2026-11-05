@@ -42,7 +42,13 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
     - the queue passes 250 ms, every delta is dropped and a keyframe asked for (it overflowed again twice);
     - the bitrate falls 8 → 4.5 Mbps and takes about 15 s to return.
   - 12 strategies, each a switch defaulting to today's behaviour (skip at the source instead of dropping deltas, CBR, higher caps, delay-based rate, intra refresh, HEVC, still refinement, video traffic class, paced display, panel-pixel cap), measured by a scripted bench through the MCP tools on the real phone. The person's encoder reports per-frame QP, so blockiness is a number.
-  - Step 1, the measurement: `.agent/stats/brief.md`.
+  - **Step 1, the measurement, on main (2026-11-05, merge of `feat/stats`):**
+    - `pong` carries the phone's clock (`now`), so the Mac can estimate the clock offset.
+    - The phone sends `stream.stats` every 2 s per streaming window while the Mac has windows open: frames, keyframes, drops and drop episodes, skips, target bitrate, encode and queue delay p50/p95, per-frame QP p50/p95.
+    - The Mac logs one numbers-only `stats stream=…` line per visible window every 5 s (shown fps, interval p95/p99, freezes, e2e delay); `macos/scripts/stats-summary.py` summarises a time range.
+    - `tools/stream-bench/bench.py` runs arms (phone `debug.pocketdeck.stream.*` properties, Mac defaults) interleaved, through the app's MCP tools, into one table and a CSV.
+    - K1 1310/0, K2 1860/0; e2e `stats` 12/0, `resize` 18/0, `chrome` 36/0, `crisp` 4/0; zoom frame p95 20 ms before and after.
+    - Next: the strategy switches, then the bench on the real phone.
 - **ISS-43 A notification whose text is styled arrives without its text.** `PdNotificationListener` reads `EXTRA_TITLE`/`EXTRA_TEXT`/`EXTRA_BIG_TEXT` with `Bundle.getString`. When an app posts a `SpannableString` (bold, links, colours), Android logs `Key android.text expected String but value was a android.text.SpannableString. The default value <null> was returned` (seen on the person's phone 2026-11-04 23:52:42). The banner then has no body, or falls back to a MessagingStyle line. Fix: `getCharSequence(…)?.toString()` for every text extra, test first with a spanned fixture.
   - **On main (2026-11-05, merge of `fix/updrace`):** every text extra and MessagingStyle field is read with `getCharSequence`; the body is still `EXTRA_TEXT`, then `EXTRA_BIG_TEXT` (sub text and summary text stay header lines: review fix 429913a0). K1 `NotifyStyledTextTest` 5 failed → pass. Close when a styled notification is seen arriving with its text on the person's phone (no more `expected String but value was a android.text.SpannableString` from `PdNotificationListener`).
 - **ISS-3 An app window fades to black when the phone wakes.** Root-caused on the real phone (2026-11-03): [docs/research/lock-fade.md](docs/research/lock-fade.md).
