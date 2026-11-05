@@ -135,9 +135,11 @@ internal class SendStats {
     }
 
     /** The window's queue percentiles plus the queue's drop counts; resets. */
-    fun snapshot(deltasDropped: Int, dropEpisodes: Int): SendSnapshot = synchronized(lock) {
+    fun snapshot(deltasDropped: Int, dropEpisodes: Int,
+                 dropGapMs: Long = 0): SendSnapshot = synchronized(lock) {
         val out = SendSnapshot(deltasDropped, dropEpisodes,
-                               queue.percentile(0.50), queue.percentile(0.95))
+                               queue.percentile(0.50), queue.percentile(0.95),
+                               dropGapMs)
         queue.clear()
         out
     }
@@ -153,6 +155,7 @@ internal data class SendSnapshot(
     val dropEpisodes: Int,
     val queueP50: Long?,
     val queueP95: Long?,
+    val dropGapMs: Long = 0,
 )
 
 /**
@@ -172,6 +175,7 @@ internal object StreamStatsWire {
             "bytes" to encoder.bytes,
             "drop" to send.deltasDropped,
             "dropEp" to send.dropEpisodes,
+            "dropGapMs" to send.dropGapMs,
             "skip" to encoder.framesSkipped,
             "susp" to encoder.suspendedEpisodes,
             "suspMs" to encoder.suspendedMs,

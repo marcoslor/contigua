@@ -86,10 +86,62 @@ class SendQueueTest {
         val q = SendQueue(maxDeltaBytesPerStream = 10)
         q.enqueueDelta(1, pts(0), ByteArray(6))
         q.enqueueDelta(1, pts(1), ByteArray(6)) // backlog (1) + this one = 2 drops, 1 episode
-        assertEquals(2 to 1, q.takeDeltaStats(1))
+        assertEquals(DeltaStats(2, 1, 0), q.takeDeltaStats(1))
         q.enqueueDelta(1, pts(2), ByteArray(6)) // still dropping: counted, no new episode
-        assertEquals(1 to 0, q.takeDeltaStats(1))
-        assertEquals(0 to 0, q.takeDeltaStats(1))
+        assertEquals(DeltaStats(1, 0, 0), q.takeDeltaStats(1))
+        assertEquals(DeltaStats(0, 0, 0), q.takeDeltaStats(1))
+    }
+
+    /**
+     * ISS-40's drop gap: the pts span from the last frame sent before the first
+     * discarded delta to the first frame sent after the episode (the keyframe),
+     * less one 60 fps interval. It is read from the writer's send order, so a
+     * keyframe that is queued but not yet written does not count yet.
+     */
+    @Test
+    fun oneDropEpisodeMeasuresThePtsGapToTheFirstFrameSentAfterIt() {
+        val q = SendQueue(maxDeltaBytesPerStream = 10)
+        q.enqueueDelta(1, 0L, ByteArray(6))
+        assertEquals(6, q.pollNow()!!.bytes.size) // sent at pts 0
+        q.enqueueDelta(1, 16_667L, ByteArray(6)) // queued
+        q.enqueueDelta(1, 33_334L, ByteArray(6)) // over the byte cap: the episode starts
+        q.enqueueControl(1, bytes(0xC1), 500_000L) // the keyframe that ends it
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        // 500_000 - 0 - 16_667 µs = 483 ms; the queued frame and the trigger were discarded.
+        assertEquals(DeltaStats(2, 1, 483), q.takeDeltaStats(1))
+    }
+
+    @Test
+    fun twoDropEpisodesAddTheirGaps() {
+        val q = SendQueue(maxDeltaBytesPerStream = 10)
+        q.enqueueDelta(1, 0L, ByteArray(6))
+        q.pollNow()
+        q.enqueueDelta(1, 16_667L, ByteArray(6))
+        q.enqueueDelta(1, 33_334L, ByteArray(6)) // episode 1
+        q.enqueueControl(1, bytes(0xC1), 500_000L)
+        q.pollNow() // 483 ms
+        q.enqueueDelta(1, 520_000L, ByteArray(6))
+        q.pollNow()
+        q.enqueueDelta(1, 536_667L, ByteArray(6))
+        q.enqueueDelta(1, 553_334L, ByteArray(6)) // episode 2
+        q.enqueueControl(1, bytes(0xC2), 1_000_000L)
+        q.pollNow() // 1_000_000 - 520_000 - 16_667 = 463 ms
+        assertEquals(DeltaStats(4, 2, 946), q.takeDeltaStats(1))
+    }
+
+    @Test
+    fun anEpisodeStillOpenAtASnapshotIsCountedOnceWhenItCloses() {
+        val q = SendQueue(maxDeltaBytesPerStream = 10)
+        q.enqueueDelta(1, 0L, ByteArray(6))
+        q.pollNow()
+        q.enqueueDelta(1, 16_667L, ByteArray(6))
+        q.enqueueDelta(1, 33_334L, ByteArray(6)) // the episode is open
+        assertEquals(DeltaStats(2, 1, 0), q.takeDeltaStats(1))
+        // It closes later: the gap lands in the next snapshot, exactly once.
+        q.enqueueControl(1, bytes(0xC1), 500_000L)
+        q.pollNow()
+        assertEquals(DeltaStats(0, 0, 483), q.takeDeltaStats(1))
+        assertEquals(DeltaStats(0, 0, 0), q.takeDeltaStats(1))
     }
 
     @Test
