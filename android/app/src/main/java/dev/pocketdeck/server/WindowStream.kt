@@ -145,7 +145,7 @@ internal class WindowStream(
     private val quality = QualityAdaptation()
 
     /** `stream.stats` counters (ISS-40); rings fill only while the Mac asked. */
-    private val stats = StreamStats()
+    private val stats = StreamStats { SystemClock.elapsedRealtime() }
     @Volatile private var statsWanted = false
 
     /** When this stream's encoder first existed; the closing line's `secs`. */
