@@ -1244,6 +1244,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard !manager.shuttingDown, !closingFromRemote else { return }
         guard changed else { return }
         self.isPaused = paused
+        // Paced presentation's display link follows the picture's liveness:
+        // a hidden or covered window stops it with the phone.
+        videoView.isPaused = paused
         stats.notePaused(paused, now: ProcessInfo.processInfo.systemUptime)
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
     }
