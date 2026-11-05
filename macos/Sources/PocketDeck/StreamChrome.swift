@@ -299,10 +299,13 @@ final class StreamChromeView: NSView {
     /// The geometry an implicit frame change animates. Only these go: a
     /// resize step must land in the same commit, and the extension view's
     /// private content layer otherwise eases its own frame for ~0.25 s.
-    /// Opacity fades (the dwell controls, the touch dots, the cover) and the
-    /// edge hint's group are deliberate and stay.
+    /// Opacity fades (the dwell controls, the touch dots, the cover), the
+    /// cover's gradient sweep and the edge hint's group are deliberate and stay.
     static let resizeAnimationKeys: Set<String> = [
         "position", "bounds", "bounds.size", "bounds.origin", "frame", "frameSize", "frameOrigin",
+        // AVSampleBufferDisplayLayer's private video container scales the
+        // picture into new bounds with this one (measured on a drag, 11-05).
+        "sublayerTransform",
     ]
 
     /// Removes the frame animations (`resizeAnimationKeys`) from a layer tree.
