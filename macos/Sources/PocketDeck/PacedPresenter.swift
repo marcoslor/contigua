@@ -46,12 +46,15 @@ struct PacedPresenter<Sample> {
         case stopLink
         /// Hand this sample to the display layer.
         case show(Sample)
-        /// Count one Mac drop (`mac_drop`, reason paced).
-        case dropOldest
+        /// A backlog was handed over at once: `skipped` frames reached the
+        /// layer without their own refresh (counted as `mac_drop`, reason
+        /// paced). Every frame is still decoded, so no keyframe is needed.
+        case caughtUp(skipped: Int)
     }
 
     /// More than this waiting is a backlog the refresh cannot clear in time:
-    /// the oldest goes.
+    /// everything waiting is handed over at once (never dropped: the samples
+    /// are encoded frames, and a gap would break the chain until a keyframe).
     static var maxWaiting: Int { 2 }
 
     private struct Waiting {
@@ -92,11 +95,14 @@ struct PacedPresenter<Sample> {
         let wasIdle = phase == .idle
         waiting.append(Waiting(sample: sample, isKeyframe: isKeyframe))
         if waiting.count > Self.maxWaiting {
-            // Never drop a keyframe while a delta can go: without it the
-            // decoder cannot restart until the phone sends another.
-            let index = waiting.firstIndex { !$0.isKeyframe } ?? 0
-            waiting.remove(at: index)
-            actions.append(.dropOldest)
+            // Catch up: hand every waiting frame to the layer now, in order.
+            // The layer decodes them all and the next refresh shows the newest.
+            if wasIdle { actions.append(.startLink) }
+            actions.append(contentsOf: waiting.map { .show($0.sample) })
+            actions.append(.caughtUp(skipped: waiting.count - 1))
+            waiting.removeAll()
+            phase = .idle
+            return actions
         }
         // A new sample always waits for the next refresh, even when the last
         // one was just shown (`presenting`).
@@ -119,8 +125,10 @@ struct PacedPresenter<Sample> {
 extension PacedPresenter.Action: Equatable where Sample: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
-        case (.startLink, .startLink), (.stopLink, .stopLink), (.dropOldest, .dropOldest):
+        case (.startLink, .startLink), (.stopLink, .stopLink):
             return true
+        case (.caughtUp(let left), .caughtUp(let right)):
+            return left == right
         case (.show(let left), .show(let right)):
             return left == right
         default:

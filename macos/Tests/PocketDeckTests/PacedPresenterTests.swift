@@ -14,8 +14,13 @@ final class PacedPresenterTests: XCTestCase {
         }
     }
 
-    private func drops(_ actions: [Action]) -> Int {
-        actions.filter { $0 == .dropOldest }.count
+    /// Frames handed over without their own refresh (a catch-up). Never a
+    /// decode drop: every encoded frame reaches the layer, so the chain holds.
+    private func caughtUp(_ actions: [Action]) -> Int {
+        actions.reduce(0) { total, action in
+            if case .caughtUp(let skipped) = action { return total + skipped }
+            return total
+        }
     }
 
     private func startsLink(_ actions: [Action]) -> Bool {
@@ -42,41 +47,39 @@ final class PacedPresenterTests: XCTestCase {
         XCTAssertTrue(machine.waitingSamples.isEmpty)
     }
 
-    func testABurstOfThreeSpreadsOverThreeTicksWithOneDropAtMost() {
+    /// The samples are encoded frames: dropping one would break the reference
+    /// chain until a keyframe (a request, a big frame, more pressure). A backlog
+    /// the refresh can't clear is handed over at once, in order; the layer
+    /// decodes them all and the newest is what the next refresh shows.
+    func testABacklogIsHandedOverAtOnceInOrderAndNothingIsDropped() {
         var machine = Machine()
         let first = machine.handle(.arrive(1, isKeyframe: false))
-        _ = machine.handle(.arrive(2, isKeyframe: false))
+        let second = machine.handle(.arrive(2, isKeyframe: false))
+        XCTAssertTrue(shown(first + second).isEmpty, "two may wait for their refresh")
         let third = machine.handle(.arrive(3, isKeyframe: false))
-        XCTAssertEqual(drops(first) + drops(third), 1, "the oldest waiting sample is the one drop")
-        XCTAssertEqual(machine.phase, .waiting)
-        XCTAssertEqual(machine.waitingSamples, [2, 3], "at most two wait")
-
-        XCTAssertEqual(shown(machine.handle(.tick)), [2])
-        XCTAssertEqual(shown(machine.handle(.tick)), [3])
-        XCTAssertTrue(shown(machine.handle(.tick)).isEmpty, "the burst is spent")
+        XCTAssertEqual(shown(third), [1, 2, 3], "every frame reaches the layer, in order")
+        XCTAssertEqual(caughtUp(third), 2, "two were shown without their own refresh")
+        XCTAssertTrue(machine.waitingSamples.isEmpty)
         XCTAssertEqual(machine.phase, .idle)
-        XCTAssertEqual(machine.waitingSamples.count, 0)
+        XCTAssertTrue(shown(machine.handle(.tick)).isEmpty, "the backlog is spent")
     }
 
-    func testAKeyframeIsKeptWhenTheQueueOverflows() {
+    func testAKeyframeAndItsDeltasAllReachTheLayerOnABacklog() {
         var machine = Machine()
         _ = machine.handle(.arrive(1, isKeyframe: true))
         _ = machine.handle(.arrive(2, isKeyframe: false))
         let third = machine.handle(.arrive(3, isKeyframe: false))
-        XCTAssertEqual(drops(third), 1, "a delta goes, not the keyframe")
-        XCTAssertEqual(machine.waitingSamples, [1, 3])
-        XCTAssertTrue(machine.hasKeyframeWaiting)
-        XCTAssertEqual(shown(machine.handle(.tick)), [1], "the decoder can restart here")
+        XCTAssertEqual(shown(third), [1, 2, 3], "no delta after the keyframe is lost")
     }
 
-    func testALateKeyframeIsKeptOverAnOlderDelta() {
+    func testAnEvenStreamNeverCatchesUp() {
         var machine = Machine()
-        _ = machine.handle(.arrive(1, isKeyframe: false))
-        _ = machine.handle(.arrive(2, isKeyframe: false))
-        let third = machine.handle(.arrive(3, isKeyframe: true))
-        XCTAssertEqual(drops(third), 1)
-        XCTAssertEqual(machine.waitingSamples, [2, 3])
-        XCTAssertTrue(machine.hasKeyframeWaiting)
+        var total = 0
+        for sample in 1...120 {
+            total += caughtUp(machine.handle(.arrive(sample, isKeyframe: sample == 1)))
+            XCTAssertEqual(shown(machine.handle(.tick)), [sample])
+        }
+        XCTAssertEqual(total, 0, "one arrival per refresh is shown one refresh later, every time")
     }
 
     func testAGapShowsNothingAndDoesNoWork() {

@@ -38,11 +38,6 @@ final class VideoLayerView: NSView {
     }
     private var presenter = PacedPresenter<PacedSample>()
     private var pacedLink: CADisplayLink?
-    /// When the last paced drop asked for a keyframe: a dropped H.264 frame
-    /// breaks the reference chain, so the picture needs one to recover.
-    private var lastPacedKeyframeRequest: TimeInterval = 0
-    /// One keyframe request per break of the chain, not one per dropped frame.
-    private static let pacedKeyframeCooldown: TimeInterval = 1.5
 
     /// Size (px) of the picture the window shows: the frame's picture rect of the last
     /// VIDEO_CONFIG. Drives aspect-fit letterboxing, the window's aspect and the input map.
@@ -763,16 +758,10 @@ final class VideoLayerView: NSView {
                 linkFailed = !startPacedLink()
             case .stopLink:
                 stopPacedLink()
-            case .dropOldest:
-                onFrameDiscarded?(.paced)
-                // A dropped encoded frame breaks the reference chain until a
-                // keyframe. One request per episode (the 1.5 s cooldown): a
-                // burst's backlog is one break, not one per frame.
-                let now = ProcessInfo.processInfo.systemUptime
-                if !presenter.hasKeyframeWaiting, now - lastPacedKeyframeRequest > Self.pacedKeyframeCooldown {
-                    lastPacedKeyframeRequest = now
-                    onRequestKeyframe?()
-                }
+            case .caughtUp(let skipped):
+                // Shown without their own refresh, but decoded: the chain
+                // holds and no keyframe is asked for.
+                for _ in 0..<skipped { onFrameDiscarded?(.paced) }
             case .show(let item):
                 handToLayer(item, renderer: displayLayer().sampleBufferRenderer)
             }
