@@ -28,11 +28,7 @@ internal class WindowStream(
 ) {
 
     private companion object {
-        const val MIME = "video/avc"
-        const val FPS = 60
-        const val I_FRAME_INTERVAL_S = 10
-        const val MAX_BITRATE = 8_000_000
-        const val MIN_BITRATE = 500_000
+        const val MIME = StreamFormat.MIME
 
         const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
 
@@ -66,8 +62,8 @@ internal class WindowStream(
         /** How often the drain's freeze hook reads its debug property. */
         const val FREEZE_CHECK_MS = 500L
 
-        /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
-        const val KEY_MAX_FPS = "max-fps-to-encoder"
+        /** T1: no new encoded picture for this long is a still stream. */
+        const val REFINE_STILL_MS = 300L
 
         /** `debug.pocketdeck.swap_surfaces=1`: the old surface swaps, for A/B on a device. */
         const val SWAP_SURFACES = "debug.pocketdeck.swap_surfaces"
@@ -154,6 +150,18 @@ internal class WindowStream(
 
     /** The codec supports per-output-buffer statistics (KEY_VIDEO_QP_AVERAGE). */
     private var encodingStatistics = false
+
+    /** The switches this encoder was configured with (read once per configure). */
+    @Volatile private var strategy = StreamStrategy.DEFAULT
+
+    /** Q1: the queue stopped encoder input; a rebuilt encoder is suspended again. */
+    @Volatile private var encoderSuspended = false
+
+    /** T1: still refinement's machine, and the last time a *new* picture was encoded. */
+    private val refineLock = Any()
+    @Volatile private var refineModel = RefineModel()
+    @Volatile private var lastDistinctMs = 0L
+    private var lastOutputSize = -1
 
     /** Explicit `window.quality` bitrate; null means "computed from the pixels". */
     @Volatile private var requestedBitrate: Int? = null
@@ -339,6 +347,7 @@ internal class WindowStream(
     fun resume() {
         if (!paused || released) return
         paused = false
+        lastDistinctMs = SystemClock.elapsedRealtime()
         heartbeat(IdleFrameWatchdogEvent.Resume(SystemClock.elapsedRealtime()))
         if (persistent != null && encoder != null) {
             lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture) }
@@ -358,6 +367,39 @@ internal class WindowStream(
         val codec = encoder ?: return
         requestSyncFrame(codec)
     }
+
+    /**
+     * Q1: the send queue passed its budget, so stop taking input at the
+     * encoder's surface. The encoder keeps running and the reference chain
+     * stays intact; the display keeps composing and the next frame after a
+     * resume is a tiny delta, not a keyframe.
+     */
+    fun setEncoderSuspend(suspended: Boolean) {
+        if (encoderSuspended == suspended) return
+        val codec = encoder ?: return
+        if (!applySuspend(codec, suspended)) {
+            log("stream $stream overflow: suspend ${if (suspended) "on" else "off"} refused by the encoder")
+            return
+        }
+        encoderSuspended = suspended
+        val now = SystemClock.elapsedRealtime()
+        if (suspended) {
+            stats.onSuspendStart(now)
+            refine(RefineEvent.Suspend, now)
+        } else {
+            stats.onSuspendEnd(now)
+            lastDistinctMs = now
+        }
+        log("stream $stream overflow: ${if (suspended) "suspended" else "resumed"}")
+    }
+
+    /** `PARAMETER_KEY_SUSPEND` 1/0; false when the codec has no such control. */
+    private fun applySuspend(codec: MediaCodec, suspended: Boolean): Boolean = runCatching {
+        val params = Bundle()
+        params.putInt(MediaCodec.PARAMETER_KEY_SUSPEND, if (suspended) 1 else 0)
+        codec.setParameters(params)
+        true
+    }.getOrDefault(false)
 
     /** `stream.stats` on/off: only the ring buffers change, never the stream. */
     fun setStatsWanted(on: Boolean) {
@@ -439,6 +481,7 @@ internal class WindowStream(
     fun close() {
         released = true
         heartbeat(IdleFrameWatchdogEvent.Close)
+        refine(RefineEvent.Close, SystemClock.elapsedRealtime())
         logStillCount()
         rotationThread?.interrupt()
         rotationThread = null
@@ -665,62 +708,50 @@ internal class WindowStream(
     }
 
     private fun configure(codec: MediaCodec, w: Int, h: Int) {
+        // The switches are read once per configure (open, resize, encoder
+        // rebuild): a bench sets the properties and then opens a window. Never
+        // per frame.
+        val strategy = StreamStrategy.read()
+        this.strategy = strategy
         // The bitrate target: an explicit window.quality request wins, otherwise
-        // it is computed from the pixels (~0.12 bpp·fps).
-        quality.setTarget(requestedBitrate ?: bitrateFor(w, h))
-        val format = MediaFormat.createVideoFormat(MIME, w, h)
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, quality.bitrate)
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_S)
-        // The Mac's picture watchdog needs a heartbeat: a static screen makes
-        // SurfaceFlinger compose nothing, so without this a live-but-idle
-        // stream is indistinguishable from a hung encoder. Repeating the last
-        // frame twice a second costs almost nothing (identical P-frames) and
-        // lets the Mac call "Not responding" after 1.5 s of silence. The rig's
-        // property leaves it off to reproduce a vendor encoder that drops it.
+        // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).
+        quality.setTarget(requestedBitrate ?: strategy.bitrateFor(w, h))
         if (StreamDebug.ignoreRepeatFrame()) {
             log("stream $stream: ${StreamDebug.IGNORE_REPEAT}=1, no repeat-previous-frame heartbeat")
-        } else {
-            runCatching { format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 500_000L) }
         }
-        format.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
-        format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-        format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
-        runCatching { format.setInteger(MediaFormat.KEY_LATENCY, 1) }
-        // Where the encoder supports the key it caps the frame rate itself;
-        // where it does not, the drain loop drops frames above the cap.
-        maxFps?.let { runCatching { format.setInteger(KEY_MAX_FPS, it) } }
+        val caps = runCatching { codec.codecInfo.getCapabilitiesForType(MIME) }.getOrNull()
+        val cbrSupported = caps?.encoderCapabilities
+            ?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true
+        val intraRefreshSupported = caps
+            ?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_IntraRefresh) == true
         // Per-frame average QP rides each output buffer's format, but only
         // when the codec declares the feature; asking elsewhere fails configure.
-        encodingStatistics = runCatching {
-            codec.codecInfo.getCapabilitiesForType(MIME)
-                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_EncodingStatistics)
-        }.getOrDefault(false)
-        if (encodingStatistics) {
-            runCatching {
-                format.setInteger(
-                    MediaFormat.KEY_VIDEO_ENCODING_STATISTICS_LEVEL,
-                    MediaFormat.VIDEO_ENCODING_STATISTICS_LEVEL_1,
-                )
-            }
-        }
+        encodingStatistics = caps
+            ?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_EncodingStatistics) == true
+        val plan = StreamFormat.build(
+            w = w,
+            h = h,
+            bitrateBps = quality.bitrate,
+            strategy = strategy,
+            cbrSupported = cbrSupported,
+            intraRefreshSupported = intraRefreshSupported,
+            repeatPreviousFrame = !StreamDebug.ignoreRepeatFrame(),
+            maxFps = maxFps,
+            encodingStatistics = encodingStatistics,
+        )
+        val format = plan.format
         stats.setTarget(quality.bitrate)
         appliedBitrate = quality.bitrate
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         } catch (e: Throwable) {
-            if (!format.containsKey(KEY_MAX_FPS)) throw e
-            log("stream $stream: encoder refused $KEY_MAX_FPS=$maxFps; dropping frames instead")
-            format.removeKey(KEY_MAX_FPS)
+            if (!format.containsKey(StreamFormat.KEY_MAX_FPS)) throw e
+            log("stream $stream: encoder refused ${StreamFormat.KEY_MAX_FPS}=$maxFps; dropping frames instead")
+            format.removeKey(StreamFormat.KEY_MAX_FPS)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
-    }
-
-    private fun bitrateFor(w: Int, h: Int): Int {
-        // ~0.12 bpp·fps, capped at 8 Mbps.
-        val bits = w.toLong() * h.toLong() * FPS * 120 / 1000
-        return bits.coerceIn(MIN_BITRATE.toLong(), MAX_BITRATE.toLong()).toInt()
+        synchronized(refineLock) { refineModel = RefineModel() }
+        log("stream $stream strategy: ${strategy.describe(plan.applied)}")
     }
 
     private fun flags(): Int {
@@ -817,7 +848,78 @@ internal class WindowStream(
 
     private fun startDrain(codec: MediaCodec) {
         heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
+        // A rebuild while the queue was suspended must not restart a flowing
+        // encoder: re-apply the input stop to the new codec.
+        if (encoderSuspended && !applySuspend(codec, true)) {
+            encoderSuspended = false
+            stats.onSuspendEnd(SystemClock.elapsedRealtime())
+        }
+        lastOutputSize = -1
+        lastDistinctMs = SystemClock.elapsedRealtime()
         drainThread = Thread({ drain(codec) }, "pocketdeck-drain-$stream").also { it.start() }
+    }
+
+    /**
+     * T1: feed the refinement machine. The still signal is "no encoded frame
+     * with a new size for 300 ms": repeats of an unchanged picture keep the
+     * same size, which is the only input-silence signal an encoder exposes
+     * (its Surface input is not readable). An encoder that sends nothing at all
+     * is covered by the same rule after the heartbeat's first second.
+     */
+    private fun maybeRefine(now: Long) {
+        if (!strategy.refine || encoderSuspended || paused) return
+        if (now - lastDistinctMs >= REFINE_STILL_MS) refine(RefineEvent.Still, now)
+        if (refineModel.state == RefineState.Refining) refine(RefineEvent.Tick(now), now)
+    }
+
+    /** One encoded frame for the refinement machine, and its size as the proof. */
+    private fun noteRefineFrame(now: Long, key: Boolean, size: Int) {
+        if (!strategy.refine) return
+        val previous = lastOutputSize
+        val changed = key || size != previous
+        lastOutputSize = size
+        if (changed) lastDistinctMs = now
+        if (key && refineModel.state == RefineState.Refining) {
+            log("stream $stream refine: frame $size bytes (previous $previous)")
+        }
+        refine(RefineEvent.Frame(key, changed), now)
+    }
+
+    private fun refine(event: RefineEvent, now: Long) {
+        val actions: List<RefineAction>
+        synchronized(refineLock) {
+            val before = refineModel
+            val step = refineStep(before, event, now)
+            refineModel = step.model
+            if (step.model.state != before.state) {
+                log("stream $stream refine: ${before.state.wire} --${step.event}--> ${step.model.state.wire}")
+            }
+            actions = step.actions
+        }
+        for (action in actions) {
+            when (action) {
+                RefineAction.RaiseBitrate -> {
+                    val target = quality.bitrate
+                    val raised = minOf(target.toLong() * 3, strategy.capBps.toLong()).toInt()
+                    stats.onRefined()
+                    setLiveBitrate(raised, "refine")
+                }
+                RefineAction.RequestSync -> encoder?.let { requestSyncFrame(it) }
+                RefineAction.RestoreBitrate -> setLiveBitrate(quality.bitrate, "refine done")
+            }
+        }
+    }
+
+    /** A bitrate for the refined frame only; the adaptation's target is untouched. */
+    private fun setLiveBitrate(bps: Int, reason: String) {
+        val codec = encoder ?: return
+        val ok = runCatching {
+            val params = Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps)
+            codec.setParameters(params)
+            true
+        }.getOrDefault(false)
+        log("stream $stream bitrate ${mbps(bps)} ($reason${if (ok) "" else ", encoder not running"})")
     }
 
     private fun drain(codec: MediaCodec) {
@@ -849,6 +951,7 @@ internal class WindowStream(
             // Poll only when no picture buffer was ready: the machine is about
             // encoder output, not the loop's cadence.
             if (idx < 0 && encoder === codec) heartbeat(IdleFrameWatchdogEvent.Tick(now))
+            maybeRefine(now)
             guard.poll(now)?.let { nudgeRedraw(codec, it) }
             // Bitrate recovery rides on the drain loop: no extra timer, and it
             // only grows the bitrate when the stream is alive anyway.
@@ -882,6 +985,7 @@ internal class WindowStream(
                         stats.onFrame(key, 0, encodeUs, qp)
                     } else {
                         heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
+                        noteRefineFrame(now, key, info.size)
                         val skipped = dropForFps(info.presentationTimeUs)
                         if (skipped) stats.onSkipped()
                         stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, qp)
@@ -1053,6 +1157,10 @@ internal class AndroidDisplayLayer(
 
     override fun onBackpressure(stream: Int) {
         get(stream)?.onBackpressure()
+    }
+
+    override fun setEncoderSuspend(stream: Int, suspended: Boolean) {
+        get(stream)?.setEncoderSuspend(suspended)
     }
 
     override fun close(stream: Int) {

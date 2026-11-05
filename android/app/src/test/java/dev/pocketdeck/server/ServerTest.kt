@@ -673,6 +673,78 @@ class ServerTest {
         dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
     )
 
+    /**
+     * N1: `tos=136` marks the accepted socket before the TLS handshake, and
+     * with no switch the socket is left as it was.
+     */
+    @Test
+    fun theTrafficClassIsAppliedBeforeTheTlsHandshake() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (tos test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (tos test)")
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = Server(
+            { socket, plain, hello ->
+                order.add("session")
+                sessionFor(platform, socket, plain, hello)
+            },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+            strategy = {
+                StreamStrategy.parse { key -> if (key == "tos") "136" else null }
+            },
+            markTraffic = { _, tos ->
+                order.add("tos=$tos")
+                true
+            },
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                val reader = FrameReader(first.getInputStream())
+                val out = first.getOutputStream()
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
+                out.flush()
+                assertEquals("welcome", readJson(reader)["t"])
+            }
+            assertEquals(listOf("tos=136", "session"), order.toList())
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun noTrafficClassSwitchLeavesTheSocketAlone() {
+        val platform = FakePlatform()
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (tos off test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (tos off test)")
+        var marked = false
+        val server = Server(
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello) },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+            strategy = { StreamStrategy.DEFAULT },
+            markTraffic = { _, _ ->
+                marked = true
+                true
+            },
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                (first as javax.net.ssl.SSLSocket).startHandshake()
+            }
+            assertEquals(false, marked)
+        } finally {
+            server.stop()
+        }
+    }
+
     private fun sessionFor(
         platform: FakePlatform,
         socket: Socket,
