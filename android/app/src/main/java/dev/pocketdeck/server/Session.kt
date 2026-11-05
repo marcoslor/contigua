@@ -362,6 +362,8 @@ class Session(
     @Volatile private var statsNextAtMs = 0L
     private val statsLock = Any()
     private val sendStats = HashMap<Int, SendStats>()
+    /** `stream.stats` messages sent per stream this session, for the field log. */
+    private val statsSent = HashMap<Int, Int>()
     private val tickSignal = Object()
     // Joined from the server thread and read from the session thread.
     private val pathReaders = CopyOnWriteArrayList<Thread>()
@@ -1987,7 +1989,13 @@ class Session(
         display.close(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
-        synchronized(statsLock) { sendStats.remove(stream) }
+        val sentAtClose = synchronized(statsLock) {
+            sendStats.remove(stream)
+            statsSent.remove(stream)
+        }
+        if (sentAtClose != null && sentAtClose % STATS_SENT_LOG_EVERY != 0) {
+            log("stream $stream stats sent=$sentAtClose")
+        }
         gate.forget(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         // The panel follows the session's windows, so it is settled before the
@@ -3339,7 +3347,13 @@ class Session(
             statsNextAtMs = now()
             wakeTicker()
         } else {
-            synchronized(statsLock) { sendStats.clear() }
+            val finals = synchronized(statsLock) {
+                val out = statsSent.filterValues { it % STATS_SENT_LOG_EVERY != 0 }
+                sendStats.clear()
+                statsSent.clear()
+                out
+            }
+            for ((stream, sent) in finals) log("stream $stream stats sent=$sent")
         }
         log("stream stats ${if (on) "on" else "off"}")
     }
@@ -3362,6 +3376,14 @@ class Session(
             }
             val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send)
             sendJson(message, state.stream)
+            // One closed-token line per tenth message (and the final count at
+            // off or close): the field log that says how many the phone sent.
+            val sent = synchronized(statsLock) {
+                val n = (statsSent[state.stream] ?: 0) + 1
+                statsSent[state.stream] = n
+                n
+            }
+            if (sent % STATS_SENT_LOG_EVERY == 0) log("stream ${state.stream} stats sent=$sent")
         }
     }
 
@@ -3816,6 +3838,8 @@ class Session(
 
         /** `stream.stats` cadence per streaming window (docs/PROTOCOL.md). */
         const val STATS_INTERVAL_MS = 2_000L
+        /** Log the running send count every this many `stream.stats` messages. */
+        const val STATS_SENT_LOG_EVERY = 10
 
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64

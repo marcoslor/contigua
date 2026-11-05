@@ -276,9 +276,10 @@ def run_metrics(rows, phases):
     for index, row in enumerate(rows):
         phase = phase_at(row["at"], phases)
         row["phase"] = phase
-        log("line %s phase=%s rx_fps=%s shown_fps=%s" %
+        log("line %s phase=%s rx_fps=%s shown_fps=%s phone_n=%d" %
             (time.strftime("%H:%M:%S", time.localtime(row["at"])), phase,
-             row.get("rx_fps", "-"), row.get("shown_fps", "-")))
+             row.get("rx_fps", "-"), row.get("shown_fps", "-"),
+             number(row, "phone_n") or 0))
         phone_n = number(row, "phone_n") or 0
         if index > 0 and phone_n <= 0:
             phone_gaps = True
