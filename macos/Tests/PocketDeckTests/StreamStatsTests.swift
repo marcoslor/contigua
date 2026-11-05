@@ -608,6 +608,49 @@ final class StreamStatsTests: XCTestCase {
         }
     }
 
+    // MARK: The phone's TCP resend counters (X0, item 4)
+
+    /// The phone's system-wide counters arrive as deltas; a line sums every
+    /// message it folded in, and a missing measurement is `-`, not zero.
+    func testThePhoneResendCountersSumAcrossMessagesAndPrintOnTheLine() {
+        var window = StreamStatsWindow()
+        window.notePhoneStats(PhoneStreamStats(json: [
+            "frames": 60, "retrans": 3, "rto": 1, "lost_retrans": 2,
+        ]))
+        window.notePhoneStats(PhoneStreamStats(json: [
+            "frames": 60, "retrans": 4, "rto": 0, "lost_retrans": 1,
+        ]))
+        let text = line(window.snapshot(now: 5))
+        XCTAssertEqual(field("ph_retrans", in: text), "7")
+        XCTAssertEqual(field("ph_rto", in: text), "1")
+        XCTAssertEqual(field("ph_lost", in: text), "3")
+        let total = window.total(now: 5)
+        XCTAssertEqual(total.phoneRetransmissions, 7)
+        XCTAssertEqual(total.phoneRTOs, 1)
+        XCTAssertEqual(total.phoneLostRetransmits, 3)
+        let totals = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totals.contains("ph_retrans=7"), "missing ph_retrans in \(totals)")
+        XCTAssertTrue(totals.contains("ph_rto=1"), "missing ph_rto in \(totals)")
+        XCTAssertTrue(totals.contains("ph_lost=3"), "missing ph_lost in \(totals)")
+    }
+
+    func testAPhoneWithoutTheResendCountersPrintsDash() {
+        var window = StreamStatsWindow()
+        let empty = line(window.snapshot(now: 1))
+        for key in ["ph_retrans", "ph_rto", "ph_lost"] {
+            XCTAssertEqual(field(key, in: empty), "-", "missing \(key) in \(empty)")
+        }
+        window.notePhoneStats(PhoneStreamStats(json: ["frames": 10]))
+        let unmeasured = line(window.snapshot(now: 5))
+        for key in ["ph_retrans", "ph_rto", "ph_lost"] {
+            XCTAssertEqual(field(key, in: unmeasured), "-", "missing \(key) in \(unmeasured)")
+        }
+        let total = StreamStatsLine.totalText(stream: 1, total: window.total(now: 5))
+        XCTAssertTrue(total.contains("ph_retrans=-"), "missing ph_retrans in \(total)")
+        XCTAssertTrue(total.contains("ph_rto=-"), "missing ph_rto in \(total)")
+        XCTAssertTrue(total.contains("ph_lost=-"), "missing ph_lost in \(total)")
+    }
+
     // MARK: The stats subscription machine
 
     func testStatsTurnOnWithTheFirstWindowAndOffWithTheLast() {

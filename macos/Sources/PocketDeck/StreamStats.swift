@@ -97,6 +97,11 @@ struct PhoneStreamStats: Equatable {
     var queueP95Us: Double?
     var qpP50: Double?
     var qpP95: Double?
+    /// X0: the phone's system-wide TCP deltas for the message's window.
+    /// Absent when the phone could not read `/proc/net` (or is older).
+    var retransmissions: Int?
+    var rtoTimeouts: Int?
+    var lostRetransmits: Int?
     /// The phone's own measuring window; summed when two messages fold into
     /// one line, so `kbps` divides by the time they cover together.
     var windowMs = 2_000
@@ -120,6 +125,9 @@ struct PhoneStreamStats: Equatable {
         queueP95Us = Self.double(json["queueP95"])
         qpP50 = Self.double(json["qpP50"])
         qpP95 = Self.double(json["qpP95"])
+        retransmissions = Self.optionalInt(json["retrans"])
+        rtoTimeouts = Self.optionalInt(json["rto"])
+        lostRetransmits = Self.optionalInt(json["lost_retrans"])
         windowMs = Self.optionalInt(json["windowMs"]).flatMap { $0 > 0 ? $0 : nil } ?? 2_000
     }
 
@@ -137,6 +145,15 @@ struct PhoneStreamStats: Equatable {
         suspendedEpisodes += other.suspendedEpisodes
         suspendedMs += other.suspendedMs
         refined += other.refined
+        if let retrans = other.retransmissions {
+            retransmissions = (retransmissions ?? 0) + retrans
+        }
+        if let timeouts = other.rtoTimeouts {
+            rtoTimeouts = (rtoTimeouts ?? 0) + timeouts
+        }
+        if let lost = other.lostRetransmits {
+            lostRetransmits = (lostRetransmits ?? 0) + lost
+        }
         windowMs += other.windowMs
     }
 
@@ -255,6 +272,9 @@ struct StreamStatsWindow {
     private var totalSuspendedEpisodes = 0
     private var totalSuspendedMs = 0
     private var totalPhoneBytes = 0
+    private var totalPhoneRetransmissions: Int?
+    private var totalPhoneRTOs: Int?
+    private var totalPhoneLostRetransmits: Int?
 
     init(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         startedAt = now
@@ -360,6 +380,15 @@ struct StreamStatsWindow {
         totalSuspendedEpisodes += stats.suspendedEpisodes
         totalSuspendedMs += stats.suspendedMs
         totalPhoneBytes += stats.bytes
+        if let retrans = stats.retransmissions {
+            totalPhoneRetransmissions = (totalPhoneRetransmissions ?? 0) + retrans
+        }
+        if let timeouts = stats.rtoTimeouts {
+            totalPhoneRTOs = (totalPhoneRTOs ?? 0) + timeouts
+        }
+        if let lost = stats.lostRetransmits {
+            totalPhoneLostRetransmits = (totalPhoneLostRetransmits ?? 0) + lost
+        }
     }
 
     /// The window's whole life, for the line at close. Percentiles cover every
@@ -387,7 +416,10 @@ struct StreamStatsWindow {
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
             coveredMs: covered,
             tcpOutOfOrderKB: Self.deltaKB(latest: latestTCP, first: firstTCP),
-            tcpSrttMaxMs: tcpSrttMaxMs
+            tcpSrttMaxMs: tcpSrttMaxMs,
+            phoneRetransmissions: totalPhoneRetransmissions,
+            phoneRTOs: totalPhoneRTOs,
+            phoneLostRetransmits: totalPhoneLostRetransmits
         )
     }
 
@@ -620,6 +652,10 @@ struct StreamStatsTotal {
     /// X0: out-of-order bytes over the window's life (KB) and its worst SRTT.
     var tcpOutOfOrderKB: Double?
     var tcpSrttMaxMs: Int?
+    /// X0: the phone's system-wide TCP deltas over the window's life.
+    var phoneRetransmissions: Int?
+    var phoneRTOs: Int?
+    var phoneLostRetransmits: Int?
 }
 
 /// The one `notice` line per visible window every 5 s. Numbers only: no
@@ -667,6 +703,9 @@ enum StreamStatsLine {
             "tcp_srtt=\(stats.tcpSrttMs.map(String.init) ?? "-")",
             "tcp_rttvar=\(stats.tcpRttvar.map(String.init) ?? "-")",
             "tcp_ooo_kb=\(stats.tcpOutOfOrderKB.map { one($0) } ?? "-")",
+            "ph_retrans=\(phone.map { $0.retransmissions.map(String.init) ?? "-" } ?? "-")",
+            "ph_rto=\(phone.map { $0.rtoTimeouts.map(String.init) ?? "-" } ?? "-")",
+            "ph_lost=\(phone.map { $0.lostRetransmits.map(String.init) ?? "-" } ?? "-")",
         ].joined(separator: " ")
     }
 
@@ -705,6 +744,9 @@ enum StreamStatsLine {
             "covered_ms=\(Int(total.coveredMs.rounded()))",
             "tcp_ooo_kb=\(total.tcpOutOfOrderKB.map { one($0) } ?? "-")",
             "tcp_srtt_max=\(total.tcpSrttMaxMs.map(String.init) ?? "-")",
+            "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
+            "ph_rto=\(total.phoneRTOs.map(String.init) ?? "-")",
+            "ph_lost=\(total.phoneLostRetransmits.map(String.init) ?? "-")",
         ].joined(separator: " ")
     }
 }
