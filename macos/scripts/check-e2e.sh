@@ -219,10 +219,22 @@ start_fake() {
     say "fakephone did not start:"; cat "$WORK/fake.log" "$WORK/fake.err"; return 1
 }
 
+# apply_mac_defaults — experiment keys for the run's profile (`stream.present=
+# paced stream.pixels=panel`). check-e2e clears the suite at every check's
+# start, so an outside `defaults write` would not survive; this is the hook the
+# strategy bench uses to run the same checks with a Mac switch on.
+apply_mac_defaults() {
+    local pair
+    for pair in ${PD_E2E_MAC_DEFAULTS:-}; do
+        defaults write "$DEFAULTS_SUITE" "${pair%%=*}" -string "${pair#*=}"
+    done
+}
+
 # launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
 # add --background: no activation, no Dock icon, windows on a virtual display.
 launch() {
     local quiet=() arg previous=""
+    apply_mac_defaults
     [ "$VISIBLE" = "1" ] || quiet=(--background)
     # A relaunch must never be read through the last launch's chrome state (it
     # may already say loading=0): the file starts empty with every launch.
