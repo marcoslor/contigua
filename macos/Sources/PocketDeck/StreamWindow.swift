@@ -1088,6 +1088,49 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
     }
 
+    /// The e2e's scripted drag (`--debug-control resize-drag`). A quiet run
+    /// cannot post real mouse events without moving the person's pointer, so
+    /// the frame view's own live-resize sequence runs here instead: the same
+    /// beginLiveResize, one windowWillResize/setFrame a display refresh, then
+    /// endLiveResize. `edge` is the edge the person grabs; `amount` is how far
+    /// it moves.
+    func debugResizeDrag(edge: String, amount: CGFloat, steps: Int, stepMs: Int) -> String? {
+        guard let window else { return "no window" }
+        guard steps > 0, stepMs > 0, amount != 0, ["right", "bottom", "top"].contains(edge) else {
+            return "resize-drag needs right|bottom|top AMOUNT STEPS STEP_MS"
+        }
+        let start = window.frame
+        beginLiveResize()
+        var step = 0
+        let timer = Timer(timeInterval: Double(stepMs) / 1000, repeats: true) {
+            [weak self] timer in
+            guard let self, let window = self.window else { timer.invalidate(); return }
+            step += 1
+            let fraction = CGFloat(step) / CGFloat(steps)
+            var frame = start
+            switch edge {
+            case "right":
+                frame.size.width = start.width + amount * fraction
+            case "bottom":
+                // The bottom edge moves down: the top edge stays where it is.
+                frame.origin.y = start.origin.y - amount * fraction
+                frame.size.height = start.height + amount * fraction
+            default:
+                // The top edge moves up: AppKit's origin is the bottom-left,
+                // so the origin stays and the height grows.
+                frame.size.height = start.height + amount * fraction
+            }
+            let size = self.windowWillResize(window, to: frame.size)
+            window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+            if step >= steps {
+                timer.invalidate()
+                self.endLiveResize()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return nil
+    }
+
     func windowDidResize(_ notification: Notification) {
         // A stream window changing shape cannot keep a frozen frame: the new
         // picture would be a different size under the same overlay.
