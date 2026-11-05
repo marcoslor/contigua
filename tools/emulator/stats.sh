@@ -10,12 +10,14 @@
 # What it does on the one boot:
 #   * boots the rig (tools/emulator/start.sh --no-build);
 #   * pairs the deckctl client, opens a Settings window, turns `stream.stats`
-#     on and reads 3 real messages, plus 2 `pong`s whose `now` must advance
-#     with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
+#     on, reads 12 real messages from a ~30 s window and matches them against
+#     the phone's own `stream N stats sent=<n>` lines, plus `pong`s whose `now`
+#     must advance with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
 #   * pairs the e2e Mac app and runs the stream bench once (baseline and
-#     q1q2-100, one repeat, Settings) through the app's own MCP tools;
-#   * prints the 3 messages, the pong lines, the bench table and the phone's
-#     `stream N qp sample:` line;
+#     q1q2-100, one repeat, Settings) through the app's own MCP tools, and
+#     requires every 5 s line's `phone_n` to be at least 2;
+#   * prints the messages, the send counts, the pong lines, the per-line
+#     `phone_n`, the bench table and the phone's `stream N qp sample:` line;
 #   * kills the emulator with `adb -s emulator-5554 emu kill` in cleanup.
 #
 # QP may read `-`: the emulator's encoder need not report encoding statistics.
@@ -308,7 +310,10 @@ done
 cat "$WORK/deckctl-stats.log"
 messages="$(grep -c '^stream.stats ' "$WORK/deckctl-stats.log" || true)"
 pongs="$(grep -c '^pong ' "$WORK/deckctl-stats.log" || true)"
-SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat.txt" 2>/dev/null || true)"
+# The live capture is a pipe; read the device's ring buffer so the lines the
+# phone wrote during this phase are surely in (a live `logcat` can lag).
+emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-deckctl.txt" 2>&1 || true
+SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat-deckctl.txt" 2>/dev/null || true)"
 [ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
 [ "$STATS_OK" = 1 ] && ok "deckctl stats completed" || bad "deckctl stats did not complete"
 [ "${messages:-0}" -ge 12 ] \
