@@ -28,6 +28,17 @@ final class VideoLayerView: NSView {
     private var formatDescription: CMVideoFormatDescription?
     private var lastPtsUs: UInt64 = 0
 
+    /// M1's waiting room (ISS-40), main-thread only: decoded samples wait for
+    /// this window's display link when `present` is paced. With the default
+    /// (immediate) the presenter is never fed.
+    private struct PacedSample {
+        var sample: CMSampleBuffer
+        var ptsUs: UInt64
+        var keyframe: Bool
+    }
+    private var presenter = PacedPresenter<PacedSample>()
+    private var pacedLink: CADisplayLink?
+
     /// Size (px) of the picture the window shows: the frame's picture rect of the last
     /// VIDEO_CONFIG. Drives aspect-fit letterboxing, the window's aspect and the input map.
     private(set) var videoSize: CGSize = .zero
@@ -43,6 +54,20 @@ final class VideoLayerView: NSView {
     /// The phone window mirrors a fixed screen: its letterbox is never filled
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
+
+    /// The window's strategy (ISS-40), read when the window opens or resizes.
+    /// The presenter (M1) reads `present`; the pixel cap (M2) is applied where
+    /// the window asks for its size.
+    var strategy = MacStreamStrategy() {
+        didSet {
+            guard strategy.present != oldValue.present else { return }
+            // Back to immediate: show what the paced queue holds, in order.
+            if strategy.present == .immediate {
+                stopPacedLink()
+                drainPresenterNow()
+            }
+        }
+    }
 
     /// The encoder's own limits (ISS-39), set when the window opens. nil keeps
     /// the old 16 px rule for a phone that reports none.
@@ -134,7 +159,14 @@ final class VideoLayerView: NSView {
     /// the phone, away from the bar (MIRROR-13).
     var onPointerDown: (() -> Void)?
 
-    var isPaused = false
+    /// The window is paused (hidden, minimized or covered): the phone is told to
+    /// stop, and paced presentation stops its display link with it.
+    var isPaused = false {
+        didSet {
+            guard isPaused != oldValue else { return }
+            if isPaused { runPresenter(.pause) }
+        }
+    }
 
     /// Live Text mode (LiveTextView.swift): the frozen frame and the VisionKit
     /// overlay over this view. Created here so input, layout and the frame
@@ -172,6 +204,7 @@ final class VideoLayerView: NSView {
     /// `NSApp.windows`, so the layer tree and the decoded frame are dropped
     /// here rather than when the window object finally goes (WIN-33).
     func releasePicture() {
+        runPresenter(.close)
         display?.flushAndRemoveImage()
         display?.removeFromSuperlayer()
         display = nil
@@ -221,6 +254,14 @@ final class VideoLayerView: NSView {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil { inputMapper?.hoverExit() }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    /// No window means no display link: a paced queue must not hold frames no
+    /// refresh will release.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window == nil else { return }
+        runPresenter(.close)
     }
 
     // MARK: File drops (docs/design/dragdrop.md)
@@ -444,11 +485,17 @@ final class VideoLayerView: NSView {
     }
 
     /// What the window's own size asks the phone for (the same number
-    /// `window.resize` carries).
+    /// `window.resize` carries). The window supplies the full rule (its stream
+    /// area, encoder limits, panel cap) when it has one.
     private var requestedPixels: CGSize {
+        if let requestedPixelsOverride { return requestedPixelsOverride() }
         let scale = Double(window?.backingScaleFactor ?? 1)
         return VideoSize.displayPixels(bounds: bounds.size, backingScale: scale, encoder: encoder)
     }
+
+    /// The window's request rule, set when the view joins the window; nil keeps
+    /// the view-only rule (tests and previews).
+    var requestedPixelsOverride: (() -> CGSize)?
 
     /// Drawn rect of the current video inside the view: the same rule as the
     /// gravity, so a click lands on the pixel under the pointer, even mid-resize.
@@ -599,11 +646,15 @@ final class VideoLayerView: NSView {
                 self.onFrameDiscarded?(.beforeConfig)
                 return
             }
-            let avcc = AnnexB.avcc(fromAnnexB: frame.annexB)
+            let units = AnnexB.units(frame.annexB)
+            let avcc = AnnexB.avcc(from: units)
             guard !avcc.isEmpty else {
                 self.onFrameDiscarded?(.beforeConfig)
                 return
             }
+            // The presenter must not drop a keyframe while a delta can go:
+            // without one the decoder cannot restart (M1's queue cap).
+            let keyframe = units.contains { AnnexB.nalType($0) == H264NalType.sliceIdr.rawValue }
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
@@ -613,13 +664,13 @@ final class VideoLayerView: NSView {
             // display layer from here is undefined and leaves it accepting
             // buffers it never composites (the window stays black until a resize
             // dirties the layer). Hand the finished buffer over and enqueue there.
-            self.handOff(.sample(sample, ptsUs: pts))
+            self.handOff(.sample(sample, ptsUs: pts, keyframe: keyframe))
         }
     }
 
     private enum PendingVideo {
         case flush
-        case sample(CMSampleBuffer, ptsUs: UInt64)
+        case sample(CMSampleBuffer, ptsUs: UInt64, keyframe: Bool)
     }
 
     /// Filled on `videoQueue`, drained on main; guarded by `pendingLock`.
@@ -653,27 +704,112 @@ final class VideoLayerView: NSView {
             switch item {
             case .flush:
                 // The layer's own queue goes with the flush; a count, not the
-                // frame sizes, is what the stats line needs.
-                if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
+                // frame sizes, is what the stats line needs. Paced waiters are
+                // old-format samples and go with it.
+                if samplesSinceFlush > 0 || presenter.hasWaiting { onFrameDiscarded?(.flush) }
                 samplesSinceFlush = 0
+                runPresenter(.flush)
                 renderer.flush()
-            case .sample(let sample, let ptsUs):
-                if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
-                    if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
-                    samplesSinceFlush = 0
-                    renderer.flush()
-                }
-                if !renderer.isReadyForMoreMediaData { onFrameDiscarded?(.notReady) }
-                renderer.enqueue(sample)
-                samplesSinceFlush += 1
-                framesDrained += 1
-                onFrameEnqueued?(ptsUs)
-                if renderer.status == .failed {
-                    Log.video.error("display layer failed; flush + keyframe")
-                    renderer.flush()
-                    onRequestKeyframe?()
+            case .sample(let sample, let ptsUs, let keyframe):
+                let paced = PacedSample(sample: sample, ptsUs: ptsUs, keyframe: keyframe)
+                if strategy.present == .paced, !isPaused {
+                    runPresenter(.arrive(paced, isKeyframe: keyframe))
+                } else {
+                    handToLayer(paced, renderer: renderer)
                 }
             }
+        }
+    }
+
+    /// The one place a frame reaches the display layer, in both modes. The
+    /// stats hand-off is here, so paced presentation shows its added delay.
+    private func handToLayer(_ item: PacedSample, renderer: AVSampleBufferVideoRenderer) {
+        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+            if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
+            samplesSinceFlush = 0
+            renderer.flush()
+        }
+        if !renderer.isReadyForMoreMediaData { onFrameDiscarded?(.notReady) }
+        renderer.enqueue(item.sample)
+        samplesSinceFlush += 1
+        framesDrained += 1
+        onFrameEnqueued?(item.ptsUs)
+        if renderer.status == .failed {
+            Log.video.error("display layer failed; flush + keyframe")
+            renderer.flush()
+            onRequestKeyframe?()
+        }
+    }
+
+    // MARK: Paced presentation (M1)
+
+    /// Feeds the presenter and performs its actions. The transition log is
+    /// info at the queue's start and end, debug inside it: a tick's show would
+    /// otherwise write 60 lines a second.
+    private func runPresenter(_ event: PacedPresenter<PacedSample>.Event) {
+        let before = presenter.phase
+        let actions = presenter.handle(event)
+        let after = presenter.phase
+        logPresenter(before, event, after)
+        var linkFailed = false
+        for action in actions {
+            switch action {
+            case .startLink:
+                linkFailed = !startPacedLink()
+            case .stopLink:
+                stopPacedLink()
+            case .caughtUp(let skipped):
+                // Shown without their own refresh, but decoded: the chain
+                // holds and no keyframe is asked for.
+                for _ in 0..<skipped { onFrameDiscarded?(.paced) }
+            case .show(let item):
+                handToLayer(item, renderer: displayLayer().sampleBufferRenderer)
+            }
+        }
+        // A view not in a window yet has no display link: show what waits now
+        // rather than hold frames no refresh will ever release.
+        if linkFailed { drainPresenterNow() }
+    }
+
+    /// Shows everything waiting, in order: the immediate path when a paced
+    /// queue is switched off, and the fallback when no display link exists.
+    private func drainPresenterNow() {
+        while presenter.hasWaiting {
+            runPresenter(.tick)
+        }
+    }
+
+    @discardableResult
+    private func startPacedLink() -> Bool {
+        if pacedLink != nil { return true }
+        guard window != nil else { return false }
+        let link = displayLink(target: self, selector: #selector(pacedTick(_:)))
+        link.add(to: .main, forMode: .common)
+        pacedLink = link
+        return true
+    }
+
+    private func stopPacedLink() {
+        pacedLink?.invalidate()
+        pacedLink = nil
+    }
+
+    @objc private func pacedTick(_ link: CADisplayLink) {
+        // Nothing waiting: no queue work at all this refresh (the link stays up
+        // until the window pauses or closes, as the strategy says).
+        guard presenter.hasWaiting || presenter.phase != .idle else { return }
+        runPresenter(.tick)
+    }
+
+    private func logPresenter(_ before: PacedPresenter<PacedSample>.Phase,
+                              _ event: PacedPresenter<PacedSample>.Event,
+                              _ after: PacedPresenter<PacedSample>.Phase) {
+        guard before != after else { return }
+        let line = "paced: \(before.token) --\(event.token)--> \(after.token)"
+        if before == .idle || after == .idle {
+            Log.video.info("\(line, privacy: .public)")  // log-ok: closed state tokens
+        } else {
+            Log.video.debug("\(line, privacy: .public)")  // log-ok: closed state tokens
         }
     }
 
@@ -698,8 +834,8 @@ final class VideoLayerView: NSView {
         return status == noErr ? format : nil
     }
 
-    private static func makeSampleBuffer(avcc: [UInt8], format: CMVideoFormatDescription,
-                                         ptsUs: UInt64) -> CMSampleBuffer? {
+    static func makeSampleBuffer(avcc: [UInt8], format: CMVideoFormatDescription,
+                                 ptsUs: UInt64) -> CMSampleBuffer? {
         let count = avcc.count
         var blockBuffer: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
@@ -743,6 +879,19 @@ final class VideoLayerView: NSView {
                                  Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }
         return sample
+    }
+
+    /// The sample's own DisplayImmediately attachment, for K2: both paths
+    /// (arrival and paced) hand the layer samples built here.
+    static func carriesDisplayImmediately(_ sample: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false),
+              CFArrayGetCount(attachments) > 0 else { return false }
+        let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFDictionary.self)
+        guard let value = CFDictionaryGetValue(
+            dictionary,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque())
+        else { return false }
+        return CFBooleanGetValue(unsafeBitCast(value, to: CFBoolean.self))
     }
 
     // MARK: Events

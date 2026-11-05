@@ -115,6 +115,8 @@ enum StatsDiscardReason: String, CaseIterable {
     case notReady = "not_ready"
     /// The frame arrived before its VIDEO_CONFIG.
     case beforeConfig = "before_config"
+    /// M1's paced presenter held two already and dropped the oldest.
+    case paced
 }
 
 /// One visible window's sliding 2 s window. Pure: every method takes the clock
@@ -136,7 +138,6 @@ struct StreamStatsWindow {
 
     private var received: [Received] = []
     private var enqueued: [Enqueued] = []
-    private var receivedLatency: [Enqueued] = []
     /// Events since the last snapshot. A 5 s log line must report a freeze
     /// that happened between its 2 s sample windows; counters, not samples.
     private var freezeCount = 0
@@ -153,7 +154,6 @@ struct StreamStatsWindow {
     mutating func noteConfig(now: TimeInterval) {
         received.removeAll()
         enqueued.removeAll()
-        receivedLatency.removeAll()
         freezeCount = 0
         freezeMs = 0
         macDropCount = 0
@@ -170,16 +170,15 @@ struct StreamStatsWindow {
         prune(now)
     }
 
-    mutating func noteReceived(now: TimeInterval, bytes: Int, ptsUs: UInt64,
-                               offsetUs: Double?) {
+    mutating func noteReceived(now: TimeInterval, bytes: Int) {
         if firstReceived == nil { firstReceived = now }
         received.append(Received(at: now, bytes: bytes))
-        if let latency = Self.latency(now: now, ptsUs: ptsUs, offsetUs: offsetUs) {
-            receivedLatency.append(Enqueued(at: now, latencyMs: latency))
-        }
         prune(now)
     }
 
+    /// A sample reached the display layer. This is the moment `shown_fps`, the
+    /// intervals and the e2e delay are measured at, so paced presentation shows
+    /// its real added latency.
     mutating func noteEnqueued(now: TimeInterval, ptsUs: UInt64, offsetUs: Double?) {
         if !paused, let last = lastEnqueue, now - last > Self.freezeThreshold {
             freezeCount += 1
@@ -209,7 +208,6 @@ struct StreamStatsWindow {
         let start = now - Self.window
         let rec = received.filter { $0.at > start }
         let enq = enqueued.filter { $0.at > start }
-        let recLat = receivedLatency.filter { $0.at > start && $0.latencyMs != nil }
         let enqLat = enq.filter { $0.latencyMs != nil }
         let frzCount = freezeCount
         let frzMs = freezeMs
@@ -238,8 +236,8 @@ struct StreamStatsWindow {
             freezeMs: frzMs,
             macDrop: drops,
             bytesPerSecond: covered > 0 ? Double(bytes) / covered : 0,
-            e2eP50Ms: Self.percentile(recLat.compactMap(\.latencyMs), 0.50),
-            e2eP95Ms: Self.percentile(recLat.compactMap(\.latencyMs), 0.95),
+            e2eP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
+            e2eP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             enqueueP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
             enqueueP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             phone: phone
@@ -304,7 +302,6 @@ struct StreamStatsWindow {
         let start = now - Self.window
         received.removeAll { $0.at <= start }
         enqueued.removeAll { $0.at <= start }
-        receivedLatency.removeAll { $0.at <= start }
     }
 }
 
@@ -425,8 +422,8 @@ final class StreamStatsRecorder {
         lock.lock(); model.notePaused(paused, now: now); lock.unlock()
     }
 
-    func noteReceived(now: TimeInterval, bytes: Int, ptsUs: UInt64, offsetUs: Double?) {
-        lock.lock(); model.noteReceived(now: now, bytes: bytes, ptsUs: ptsUs, offsetUs: offsetUs); lock.unlock()
+    func noteReceived(now: TimeInterval, bytes: Int) {
+        lock.lock(); model.noteReceived(now: now, bytes: bytes); lock.unlock()
     }
 
     func noteEnqueued(now: TimeInterval, ptsUs: UInt64, offsetUs: Double?) {

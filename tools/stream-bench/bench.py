@@ -12,8 +12,9 @@ changes the Mac app.
 
 Arms are named in arms.json: phone properties (`debug.pocketdeck.stream.*` via
 `adb -s <serial> shell setprop`) and Mac defaults (`defaults write <domain>`)
-are set before a run and restored after it. This release ships only the empty
-`baseline` arm; an arm with a property no build reads is still a valid no-op.
+are set before a run and restored after it. An arm with `"restart": true` is
+left out of the default run: its key is read when the app dials, and the bench
+never relaunches or reconnects the app (`--include-restart-arms` overrides).
 
 The phone is addressed only through the given serial; the script refuses an
 unreachable one and never runs `adb kill-server`. Nothing is changed on the
@@ -39,6 +40,21 @@ SUMMARY = os.path.join(MACOS, "scripts", "stats-summary.py")
 DEFAULT_SHIM = "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"
 PROFILE_DOMAIN = "dev.pocketdeck.mac"
 STATS_PREFIX = "debug.pocketdeck.stream."
+
+
+def profile_domain(profile):
+    """The defaults suite a run's Mac keys go to: the person's own domain for
+    the default profile, else that profile's suffixed suite."""
+    return PROFILE_DOMAIN if profile == "default" else "%s.%s" % (PROFILE_DOMAIN, profile)
+
+
+def selected_arms(arms, include_restart=False):
+    """The arms a run executes. An arm marked `restart` needs a fresh session
+    for a key that is read at dial time (N1's Mac side); the default list leaves
+    it out because the bench never quits or reconnects the app."""
+    if include_restart:
+        return list(arms)
+    return [arm for arm in arms if not arm.get("restart", False)]
 
 # One row per arm; each cell is median (min–max) across the arm's runs.
 ARM_FIELDS = ("shown_fps", "int_p99", "freeze_n", "freeze_ms", "drop_ep",
@@ -253,6 +269,9 @@ def main():
     parser.add_argument("--shim", default=DEFAULT_SHIM,
                         help="pocketdeck-mcp stdio shim (default: the installed app's)")
     parser.add_argument("--adb", default="adb", help="adb binary (default: adb)")
+    parser.add_argument("--include-restart-arms", action="store_true",
+                        help="also run arms marked restart (they need the app restarted "
+                             "between runs; N1's Mac side is read at dial time)")
     parser.add_argument("--first-line-timeout", type=float, default=30.0)
     args = parser.parse_args()
     if args.repeats < 1:
@@ -260,18 +279,25 @@ def main():
 
     require_device(args.adb, args.serial)
     arms = read_arms(args.arms)
+    run_arms = selected_arms(arms, args.include_restart_arms)
+    if not run_arms:
+        fail("%s lists no arms for this run" % args.arms)
+    skipped = [arm["name"] for arm in arms if arm not in run_arms]
+    if skipped:
+        log("skipping restart arms (restart the app between them; "
+            "--include-restart-arms runs them anyway): " + ", ".join(skipped))
     if not os.path.exists(args.shim):
         fail("no shim at %s" % args.shim)
-    domain = PROFILE_DOMAIN if args.profile == "default" else "%s.%s" % (PROFILE_DOMAIN, args.profile)
+    domain = profile_domain(args.profile)
     predicate = 'subsystem == "%s"' % PROFILE_DOMAIN
     MCP = load_mcp()
     settings = ArmSettings(args.adb, args.serial, domain)
 
     rows = []
-    summary_rows = {arm["name"]: [] for arm in arms}
+    summary_rows = {arm["name"]: [] for arm in run_arms}
     try:
         for repeat in range(args.repeats):
-            for arm in arms:
+            for arm in run_arms:
                 name = arm["name"]
                 log("run %d/%d arm=%s" % (repeat + 1, args.repeats, name))
                 settings.apply(arm)
@@ -309,10 +335,10 @@ def main():
         writer.writerows(rows)
 
     # One row per arm: median of the runs and their min–max.
-    width = max([len(arm["name"]) for arm in arms] + [3])
+    width = max([len(arm["name"]) for arm in run_arms] + [3])
     print()
     print("%-*s  %s" % (width, "arm", "  ".join(field.rjust(10) for field in ARM_FIELDS)))
-    for arm in arms:
+    for arm in run_arms:
         cells = []
         runs = summary_rows[arm["name"]]
         for field in ARM_FIELDS:

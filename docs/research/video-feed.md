@@ -162,6 +162,30 @@ The arms live in `tools/stream-bench/arms.json`; `combo-a` runs all of them
 except `bpp_milli`. The bench's per-arm strategy line and its `susp_n`,
 `susp_ms` and `refine_n` columns show which switches the phone applied.
 
+### The Mac's switches
+
+The Mac's three knobs follow the same rule: a `defaults` key in the app
+profile's suite (`dev.pocketdeck.mac` for the person's app,
+`dev.pocketdeck.mac.<profile>` for the e2e), read when a window opens or
+resizes, never per frame. `stream.net` is read once when a session dials, so
+its arms need the app restarted between runs (`n1-mac-video`, `n1-both` in
+`arms.json`, skipped by the bench's default list). With no key set the picture
+path and the size request are exactly today's; a window logs one line,
+`stream 3 mac strategy: present=paced pixels=panel net=video`, or
+`stream 3 mac strategy: default`.
+
+| Key | Values | Today | What it does | Arm |
+| --- | --- | --- | --- | --- |
+| `stream.present` | `immediate` / `paced` | `immediate` | `paced` holds decoded samples (at most two) and hands the oldest to the layer on each display refresh. A third arrival drops the oldest and counts `mac_drop`; a keyframe waiting is kept, and a drop asks the phone for one keyframe per 1.5 s so the decoder restarts. Adds about one frame of latency. | `m1-paced` |
+| `stream.pixels` | `backing` / `panel` | `backing` | On a scaled display the request becomes backing pixels × panel width ÷ display backing width, still encoder-aligned. The panel width is the mode Core Graphics flags native, else the largest point-size mode's pixel size. The settled capped picture stretches over the window; an unscaled display is unchanged. | `m2-panel` |
+| `stream.net` | `default` / `video` | `default` | `interactiveVideo` service class on the session's `NWParameters` (N1's Mac half). Read at dial. | `n1-mac-video`, `n1-both` |
+
+On the e2e's own virtual display (1280×800 at 1x, or 2560×1600 backing at 2x)
+the reported panel width is already the display's backing width, so
+`stream.pixels=panel` is a no-op there; the K2 factor tests are its proof. The
+factor on the person's main display (3840×2160 panel, 6016×3840 backing) is
+0.638.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
