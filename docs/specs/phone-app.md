@@ -22,7 +22,7 @@ The Android app as a person sees it on the phone: one home screen that says whet
 
 | Setting | Scope | Store | Default | What it does | Where |
 |---|---|---|---|---|---|
-| Keep running in the background | per install | SharedPreferences `pocketdeck` `enabled` | **off** | On: the service survives the app's task being swiped away and starts at boot (with Shizuku running), and the row asks for the battery exemption while it is missing. Off: it lives only while the task lives. | Home switch; the same action in onboarding, with the same words |
+| Keep running in the background | per install | SharedPreferences `pocketdeck` `enabled` | **off** | On: the service survives the app's task being swiped away, starts after a reboot or an app update (waiting up to 5 s for Shizuku's binder), and the row asks for the battery exemption while it is missing. Off: it lives only while the task lives, and no reboot or update starts it. | Home switch; the same action in onboarding, with the same words |
 | Allow connections | per install | `allow_connections` | **on** | Off refuses every Mac (paired or not), drops a live session, stops advertising and shows "Connections are off"; unreadable values fail closed | Home switch |
 | Allow new pairings | per install | `allow_pairings` | **on** | Off refuses an unpaired Mac before any code; paired Macs still connect. Disabled with "Turn on Allow connections first." while the master switch is off | Home switch |
 | Onboarding done | per install | `onboarding_done` | false | Home after the first run, the pager before it | Internal |
@@ -44,8 +44,8 @@ The Android app as a person sees it on the phone: one home screen that says whet
 | PHONE-3 | WHEN the card's action is used THE phone SHALL run exactly that fix: Turn on sets Allow connections; Open Shizuku opens Shizuku (or says it is not installed); Allow asks for Shizuku; the notification-access action opens the system's notification-listener screen; the pairing-prompt notification item asks for the notification permission; Retry starts the service again; a card with no action SHALL do nothing. | K1 `StatusActionTest.turn on fixes only allow connections`, `UiStateTest` (the kind → action table); review of `DeckViewModel.runStatusAction` |
 | PHONE-4 | WHEN the Mac asks for notification sharing THE app SHALL pass the phone's listener grant into the status card and, IF it is missing, the card SHALL show "Notification access is off" with Allow. | K1 `DeckViewModelTest` `a missing listener grant while the Mac asked reaches the card` (the service's flag reaches `mapStatus`), `UiStateTest` `a missing notification grant while the Mac asked needs attention`, `HomeScreenTest` `a missing listener grant while the Mac asked shows the attention item`, Compose screenshots `home_notify_access_*` |
 | PHONE-5 | THE home SHALL offer exactly three switches — Keep running in the background (default off), Allow connections (default on) and Allow new pairings (default on, disabled with "Turn on Allow connections first." while the master is off) — and SHALL NOT offer a notification-sharing switch; toggling a gate SHALL push it to the shell service at once and fix the advertisement (off stops advertising; on advertises when listening), and toggling the background switch SHALL NOT stop the running service (off lets it stop with the task; on starts it). | K1 `StatusActionTest.turning the background switch off keeps the service running`, `turning the background switch on starts the service`, `ConnectionGateTest` (the server gates, fail closed); K1 `HomeScreenTest` `the phone's home has no notification sharing switch`, `BackgroundSwitchNameTest` (onboarding and the home render one name); review of `Prefs` defaults and `DeckForegroundService.gatesChanged` |
-| PHONE-6 | WHILE the app runs THE phone SHALL run one foreground service of type connectedDevice with an ongoing notification on the "Connection status" channel (low importance) whose text is "Starting…" before the port exists, "Ready for your Mac" while listening and "Connected to <Mac name> · 1 window" or "· <n> windows" while serving; tapping it SHALL open the app, it SHALL carry no port number, and it SHALL update on every session or window change. | K1 `DeckForegroundServiceTest` (`the service stops when the task is removed and the switch is off`, `the service survives task removal when the switch is on`, `boot starts the deck only with the switch on and Shizuku running`); review of `DeckForegroundService.updateOngoing` and `strings.xml`; preview of the phone's own notification is **untested** (the e2e has no phone UI) |
-| PHONE-7 | WHEN the app's task is swiped away WHILE the background switch is off THE service SHALL stop serving — close the listening socket, stop advertising and stop itself — and WHILE the switch is on it SHALL keep serving; after a reboot or an app update it SHALL start only when the switch is on and Shizuku is running. | K1 `DeckForegroundServiceTest` (the three cases), `BootReceiver`'s `startsAtBoot` (the same test); review of `onTaskRemoved` and `stopServing` |
+| PHONE-6 | WHILE the app runs THE phone SHALL run one foreground service of type connectedDevice with an ongoing notification on the "Connection status" channel (low importance) whose text is "Starting…" before the port exists, "Ready for your Mac" while listening and "Connected to <Mac name> · 1 window" or "· <n> windows" while serving; tapping it SHALL open the app, it SHALL carry no port number, and it SHALL update on every session or window change. | K1 `DeckForegroundServiceTest` (`the service stops when the task is removed and the switch is off`, `the service survives task removal when the switch is on`); review of `DeckForegroundService.updateOngoing` and `strings.xml`; preview of the phone's own notification is **untested** (the e2e has no phone UI) |
+| PHONE-7 | WHEN the app's task is swiped away WHILE the background switch is off THE service SHALL stop serving — close the listening socket, stop advertising and stop itself — and WHILE the switch is on it SHALL keep serving; after a reboot or an app update THE app SHALL start the deck only when the switch is on, waiting up to 5 s for Shizuku's binder through one `goAsync` result and the sticky listener, SHALL start it exactly once when a binder that arrives later reaches the process, and SHALL NOT start it when the switch is off; WHEN the shell binding reaches Ready while no deck service runs and the switch is on THE app SHALL start the deck so the pairings and gates are pushed; with no tap and no launch the shell service SHALL be linked (`app link: … --> linked`) and listening within 15 s of the binder. | K1 `DeckStartupTest` (every state/event pair, the 5 s bound, the late binder, keep-running off, the ready guard), `DeckForegroundServiceTest` (the two task cases); emulator `update-race` (3 rounds: the APK installed over itself with the binder 1 s late, linked and listening within 15 s, the update's own pid, no tap or launch), `shizuku-restart` (3 rounds, PHONE-20); review of `BootReceiver`/`StartupRun` |
 | PHONE-8 | WHEN a Mac asks to pair THE phone SHALL show, as a high-importance notification on the "Pairing requests" channel, "Pair with <Mac name>?" with "Code 123 456" and Allow/Deny, only alert once, time out and cancel after 120 s, and tap through to the app; WHILE PocketDeck is in the foreground it SHALL also show the floating card — 16 dp side margins, 16 dp above the navigation bar, all corners rounded, the code in large monospaced digits, the line "Check it matches your Mac." and Deny/Allow — and the card SHALL NOT be dismissed by Back or a tap outside; both SHALL disappear when the Mac cancels or the request expires, and only one request SHALL be pending at a time. | K1 `PairingDialogTest` `the card floats 16dp above the navigation bar inset`, `PairCooldownTest` (the 30 s window), `SessionTest` (pairing.md PAIR-6); e2e `pair` `[PAIR-4]` (the same code on both screens); screenshots `pairing_dialog_light`/`_dark` |
 | PHONE-9 | THE home's "Paired Macs" list SHALL show one row per paired Mac with its name and "Connected now" or "Last connected <relative time>", the live Mac first and then the most recently connected, "No Macs paired yet." when empty, and the relative times SHALL refresh on the next whole minute without polling; "Pair new Mac" (QR) SHALL be offered only while Allow connections and Allow new pairings are on. | K1 `DeckPairedRowsTest.the live Mac is the first paired row`, `never connected Macs come last, newest connection first`, `UiStateTest` `the relative-time ticker wakes on the next whole minute`; screenshots `home_ready_*`, `home_connected_*`; review of `HomeScreen` (the FAB's condition and `rememberMinuteTick`) |
 | PHONE-10 | WHEN the person forgets a Mac by swiping its row or its overflow menu THE row SHALL disappear and a snackbar SHALL say "Forgot <Mac>." with Undo for four seconds; Undo SHALL keep the pairing; letting it expire SHALL remove the pin and tell the shell service; the overflow button SHALL read "More options for <Mac>". | K1 `HomeScreenTest.the paired row overflow is named for its Mac`; review of `DeckViewModel.forget`/`undoForget` and `HomeScreen`'s snackbar; the four-second undo is **untested** end to end |
@@ -76,7 +76,7 @@ The home is one status machine (`mapStatus`, `android/app/src/main/java/dev/pock
 | Needs attention (Shizuku permission) | Allow granted | the service starts; Ready |
 | Needs attention (notification access) | a later grant | the item goes away; forwarding starts without another Mac toggle (NOTIFY-2) |
 | Ready (background off) | the task is swiped away | the service stops; the card is not visible |
-| Ready (background on) | reboot with Shizuku running | the service starts; Ready |
+| Ready (background on) | reboot or app update with Shizuku late | the deck waits up to 5 s for the binder, starts, pushes the pairings and serves; Ready |
 | any | no port while enabled and healthy | Couldn't start, Retry |
 | Needs attention (any) | Retry | the service starts again; the card follows the new state |
 
@@ -105,6 +105,33 @@ starts a new round.
 | Failed (bind_timeout) | Retry | Binding (1) |
 
 Ignored events, stated so nobody builds them: a second Retry while the service is starting, a listener grant while the Mac's sharing switch is off, a pairing answer with no pending prompt, and a notification-access item while the master switch is off (Connections are off wins).
+
+### The boot/update start decision (PHONE-7)
+
+`android/app/src/main/java/dev/pocketdeck/app/DeckStartup.kt` is the one state
+machine for the receiver's decision; `BootReceiver`'s `StartupRun` performs its
+actions and keeps no flags of its own. The wait is 5 s: the person's binder was
+0.4 s late, and a `goAsync` result has about 10 s, so the start keeps the other
+half. A binder that arrives after the bound still starts the deck once while the
+process lives (the sticky listener stays registered until it starts).
+
+| State | Event | Result |
+|---|---|---|
+| Idle | boot/update received, switch on, binder here | Starting: start the deck, finish the broadcast |
+| Idle | boot/update received, switch on, no binder | Waiting (0 s): register the sticky listener, arm the 5 s timeout |
+| Idle | boot/update received, switch off | Off: nothing, whatever the binder does |
+| Waiting | the binder arrives | Starting: finish the broadcast, start the deck |
+| Waiting | the timeout before 5 s | Waiting: the new elapsed time |
+| Waiting | the timeout at 5 s | OutOfTime: finish the broadcast; the listener stays |
+| Waiting | a second broadcast | Waiting: one broadcast decides, no second start |
+| Starting | any event | Starting: the deck starts exactly once |
+| OutOfTime | the binder arrives | Starting: the deck starts once, now without the broadcast |
+| OutOfTime / Off | any other event | no change |
+
+The second path: when the shell binding reaches Ready while no deck service runs
+and the switch is on (`startsDeckWhenReady`), the app starts the deck, so the
+pairings and gates are pushed. The deck service's own listener remains the one
+caller of `onServiceReady`.
 
 ### The stream heartbeat (PHONE-21)
 

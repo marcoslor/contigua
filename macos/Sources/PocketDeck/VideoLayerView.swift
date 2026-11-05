@@ -78,6 +78,33 @@ final class VideoLayerView: NSView {
     /// The decoder needs an IDR (window.keyframe) when the layer fails.
     var onRequestKeyframe: (() -> Void)?
 
+    /// A frame reached the display layer, on the main queue: the stats
+    /// window's "enqueued" side (the frame path itself is unchanged).
+    var onFrameEnqueued: ((UInt64) -> Void)?
+    /// A frame did not reach the layer, and why. `beforeConfig` also covers a
+    /// payload with no access unit; the line only carries the count.
+    var onFrameDiscarded: ((StatsDiscardReason) -> Void)?
+
+    /// How the picture is placed in the view, by the name the stats line uses.
+    var placementName: String {
+        switch placement() {
+        case .fit: return "fit"
+        case .fill: return "fill"
+        case .oneToOne: return "oneToOne"
+        case .stretch: return "stretch"
+        }
+    }
+
+    /// The view in backing pixels: what the window really draws on.
+    var backingPixelSize: CGSize {
+        let scale = Double(window?.backingScaleFactor ?? 1)
+        return CGSize(width: (bounds.width * scale).rounded(),
+                      height: (bounds.height * scale).rounded())
+    }
+
+    /// The frame's own pixel size from the last VIDEO_CONFIG (the stream's size).
+    var framePixelSize: CGSize { frameSize }
+
     /// All AppKit events are handed to this mapper.
     var inputMapper: InputMapper?
 
@@ -277,7 +304,7 @@ final class VideoLayerView: NSView {
     /// Sets both picture layers for a size, in one committed transaction. A
     /// live resize calls it for the *coming* size before the window frame
     /// changes: WindowServer can show the new window against the last
-    /// committed surface, so that surface must already cover it (WIN-53).
+    /// committed surface, so that surface must already cover it (WIN-58).
     private func placeDisplayLayer(in size: CGSize) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -347,7 +374,7 @@ final class VideoLayerView: NSView {
     /// The placement the layer actually draws. Holding fill through the answer
     /// keeps the layer from re-laying its contents mid-drag; the input map and
     /// the crop must follow the same rule or a click would miss the picture
-    /// during the settle (WIN-53).
+    /// during the settle (WIN-58).
     static func drawnPlacement(_ placement: Letterbox.Placement, holdsFill: Bool) -> Letterbox.Placement {
         guard holdsFill else { return placement }
         switch placement {
@@ -403,6 +430,9 @@ final class VideoLayerView: NSView {
     /// liveness across a window animation (an animation that holds the main
     /// run loop stops these).
     private(set) var framesDrained = 0
+    /// Samples handed over since the last flush, so a flush that discards some
+    /// is counted once (not once per frame).
+    private var samplesSinceFlush = 0
 
     /// A resize is pending while the window has asked and the last frame is not
     /// the size it asked for.
@@ -565,9 +595,15 @@ final class VideoLayerView: NSView {
             guard let self else { return }
             // Every stream sends VIDEO_CONFIG before its frames; without one
             // there is nothing to decode.
-            guard let format = self.formatDescription else { return }
+            guard let format = self.formatDescription else {
+                self.onFrameDiscarded?(.beforeConfig)
+                return
+            }
             let avcc = AnnexB.avcc(fromAnnexB: frame.annexB)
-            guard !avcc.isEmpty else { return }
+            guard !avcc.isEmpty else {
+                self.onFrameDiscarded?(.beforeConfig)
+                return
+            }
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
@@ -577,13 +613,13 @@ final class VideoLayerView: NSView {
             // display layer from here is undefined and leaves it accepting
             // buffers it never composites (the window stays black until a resize
             // dirties the layer). Hand the finished buffer over and enqueue there.
-            self.handOff(.sample(sample))
+            self.handOff(.sample(sample, ptsUs: pts))
         }
     }
 
     private enum PendingVideo {
         case flush
-        case sample(CMSampleBuffer)
+        case sample(CMSampleBuffer, ptsUs: UInt64)
     }
 
     /// Filled on `videoQueue`, drained on main; guarded by `pendingLock`.
@@ -616,13 +652,22 @@ final class VideoLayerView: NSView {
         for item in items {
             switch item {
             case .flush:
+                // The layer's own queue goes with the flush; a count, not the
+                // frame sizes, is what the stats line needs.
+                if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
+                samplesSinceFlush = 0
                 renderer.flush()
-            case .sample(let sample):
+            case .sample(let sample, let ptsUs):
                 if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+                    if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
+                    samplesSinceFlush = 0
                     renderer.flush()
                 }
+                if !renderer.isReadyForMoreMediaData { onFrameDiscarded?(.notReady) }
                 renderer.enqueue(sample)
+                samplesSinceFlush += 1
                 framesDrained += 1
+                onFrameEnqueued?(ptsUs)
                 if renderer.status == .failed {
                     Log.video.error("display layer failed; flush + keyframe")
                     renderer.flush()

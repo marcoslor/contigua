@@ -125,8 +125,8 @@ class PathHubWriteTest {
         val sent = java.util.concurrent.atomic.AtomicInteger()
         val writer = Thread {
             while (true) {
-                val bytes = queue.poll() ?: break
-                hub.send(bytes)
+                val entry = queue.poll() ?: break
+                hub.send(entry.bytes)
                 sent.incrementAndGet()
             }
         }.apply { isDaemon = true }

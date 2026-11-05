@@ -128,6 +128,35 @@ display id on every injected event.
   The Mac does not send `window.quality` yet (the fakephone selfcheck does; a
   WAN quality cap will).
 
+### Stream stats
+
+`stream.stats` is measurement only: it changes no encoder, queue, size or frame
+rate. The Mac turns it on with `{"t":"stream.stats","on":true}` (session-wide,
+after `welcome`) and off with `on:false` when its last stream window closes.
+While on, the phone sends one message per streaming window every **2 s**; a
+paused window sends none, and off (or no Mac) sends none. A phone with no Mac
+connected runs nothing new. Numbers only, never titles, package names or pixels:
+the stream id, counts, sizes, rates and timings are all that may appear.
+
+The phone's message covers the window since its previous one (or since stats
+turned on): `frames` out of the encoder, `kf` keyframes produced, `kfReq`
+keyframes requested, `bytes` queued, `drop` deltas the send queue discarded,
+`dropEp` drop episodes (a discard run until the next keyframe), `skip` frames
+dropped by the max-fps fallback and `targetBps` the current target bitrate.
+`encP50`/`encP95` are the capture (`ptsUs`, CLOCK_MONOTONIC µs) to output-buffer
+dequeue delays; `queueP50`/`queueP95` are the delta's `SendQueue` enqueue to its
+socket write finishing. `qpP50`/`qpP95` are the per-frame average QP from
+`KEY_VIDEO_QP_AVERAGE`; they are absent unless the codec reports
+`FEATURE_EncodingStatistics` (the phone then sets
+`KEY_VIDEO_ENCODING_STATISTICS_LEVEL` to level 1). An absent optional field
+means "no measurement", never zero.
+
+The Mac's clock handshake: `ping.monoUs` is the Mac's CLOCK_MONOTONIC µs when
+the ping went out, `pong.now` the phone's at the answer. The Mac keeps the
+lowest-RTT sample of the last 30 s as the offset
+(`offset = now − (monoUs + rtt/2)`) and maps `ptsUs` through it; with no sample
+there is no estimate and capture→receive/capture→enqueue are `-`.
+
 ### Audio rules
 
 - Device-wide, session-level (`stream` 0): one mixer tap, not per window.
@@ -411,7 +440,8 @@ Mac → phone (after `welcome`):
 
 | t | fields | meaning |
 |---|---|---|
-| `ping` | `ts` | phone replies `pong` with same `ts` |
+| `ping` | `ts`, `monoUs`? | phone replies `pong` with same `ts` and its own `now`; `monoUs` is the Mac's CLOCK_MONOTONIC µs for this ping, the base the pong's `now` is compared on (optional, an older phone ignores it) |
+| `stream.stats` | `on`: bool | session-wide switch: while on, every unpaused streaming window sends `stream.stats` every 2 s; off sends none; see "Stream stats" |
 | `path.ping` | `path`, `ts` | a path's own liveness probe, sent bare on that path every 2 s; see "Paths" |
 | `path.pong` | `path`, `ts` | the answer, on the same path; either side sends it |
 | `path.switch` | `path`, `seq` | "my next reliable frame is `seq` and it goes on `path`"; see "Paths" |
@@ -460,7 +490,7 @@ Phone → Mac:
 
 | t | fields |
 |---|---|
-| `pong` | `ts` |
+| `pong` | `ts`, `now` | `ts` echoes the ping; `now` is the phone's CLOCK_MONOTONIC µs, the same clock and unit as VIDEO_FRAME's `ptsUs` (absent on an older phone, then the Mac has no clock estimate) |
 | `path.ping` | `path`, `ts` | the same probe from the phone's side |
 | `path.pong` | `path`, `ts` | its answer |
 | `path.switch` | `path`, `seq` | the phone's own marker when the Mac switches the session ("Paths") |
@@ -473,6 +503,7 @@ Phone → Mac:
 | `window.task` | `stream`, `taskId`, `pkg`, `label` — the app started a task of its own while one of its apps was streamed (WIN-44): the new task's id, its package and its own label. Sent once per task, at most once a second per package, only for a fresh `onTaskCreated` that the phone itself did not launch or move; the only other stream message is `window.title`'s app/pkgs (WIN-48). `label` is phone content: never logged, never used as a file name. The Mac decides with the New-item rule and answers with `window.adopt` (WIN-45) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`moved_to_phone`/`error`) — `moved_to_phone` is the person opening the streamed app on the phone's own screen: the display's task (same id) changed display and left the streamed display empty (WIN-49); `app_exited` stays for `onTaskRemoved` or a real exit |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
+| `stream.stats` | `stream`, `windowMs`, `frames`, `kf`, `kfReq`, `bytes`, `drop`, `dropEp`, `skip`, `targetBps`, optional `encP50`/`encP95`/`queueP50`/`queueP95` (µs) and `qpP50`/`qpP95` (average QP) — the stream's counters over the last `windowMs` (2 s since the previous message); optional fields are absent when there is no measurement; see "Stream stats" |
 | `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's task and its app: `pkg` is the task's own app (the root's package from `baseActivity`, then `baseIntent.component`), and only a task that reports no root falls back to its top activity, then `topActivityInfo`; another package's activity on top of the task never becomes the app (WIN-28). Every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |

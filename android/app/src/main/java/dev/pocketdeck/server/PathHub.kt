@@ -12,6 +12,7 @@ import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.net.Socket
 import java.util.ArrayDeque
+import java.util.IdentityHashMap
 
 /**
  * The phone's path layer (docs/design/paths.md §3): one TLS socket per path,
@@ -62,6 +63,8 @@ class PathHub(
         private val writeLock = Object()
         private val priority = ArrayDeque<ByteArray>()
         private val normal = ArrayDeque<ByteArray>()
+        /** Stats-only: run after this entry's socket write finished. */
+        private val writtenCallbacks = IdentityHashMap<ByteArray, () -> Unit>()
         private var priorityBytes = 0
         private var normalBytes = 0
         private var writingBytes = 0
@@ -77,7 +80,8 @@ class PathHub(
          * waits in [PathHub.send] before it gets here (E-1), where a switch can
          * release it; the writer's own queue never waits on the caller.
          */
-        fun send(bytes: ByteArray, priorityLane: Boolean = false) {
+        fun send(bytes: ByteArray, priorityLane: Boolean = false,
+                 onWritten: (() -> Unit)? = null) {
             synchronized(writeLock) {
                 if (closed) return
                 if (priorityLane) {
@@ -87,6 +91,7 @@ class PathHub(
                     normal.addLast(bytes)
                     normalBytes += bytes.size
                 }
+                if (onWritten != null) writtenCallbacks[bytes] = onWritten
                 writeLock.notifyAll()
                 if (writer == null) {
                     writer = Thread({ writerLoop() }, "pocketdeck-path-writer-$id").apply {
@@ -115,6 +120,9 @@ class PathHub(
                 try {
                     out.write(bytes)
                     out.flush()
+                    // After the flush, so the queue delay ends at the socket.
+                    val written = synchronized(writeLock) { writtenCallbacks.remove(bytes) }
+                    written?.invoke()
                 } catch (e: Throwable) {
                     synchronized(writeLock) {
                         writing = false
@@ -153,6 +161,7 @@ class PathHub(
                 closed = true
                 priority.clear()
                 normal.clear()
+                writtenCallbacks.clear()
                 writeLock.notifyAll()
             }
             runCatching { plain.shutdownInput() }
@@ -303,11 +312,15 @@ class PathHub(
         for (t in all) runCatching { t.close(drainUntil) }
     }
 
-    /** Sends a reliable frame wrapped, or a lossy one bare (PATH-4/5). */
-    fun send(bytes: ByteArray) {
+    /**
+     * Sends a reliable frame wrapped, or a lossy one bare (PATH-4/5).
+     * [onWritten] runs once the current path's socket flush for this frame
+     * finished; it is for the lossy video path's queue-delay stat only.
+     */
+    fun send(bytes: ByteArray, onWritten: (() -> Unit)? = null) {
         val type = bytes[4].toInt() and 0xFF
         if (!PathCodec.isReliable(type)) {
-            sendLossy(bytes)
+            sendLossy(bytes, onWritten)
             return
         }
         val bulk = PathCodec.isBulk(type)
@@ -357,7 +370,7 @@ class PathHub(
      * 40 s give-up. A lossy frame may be dropped; the next one goes where the
      * session moved.
      */
-    private fun sendLossy(bytes: ByteArray) {
+    private fun sendLossy(bytes: ByteArray, onWritten: (() -> Unit)? = null) {
         synchronized(lock) {
             val waited = current?.let { paths[it] } ?: return
             while (!closed) {
@@ -367,7 +380,7 @@ class PathHub(
                 // One frame larger than the cap is admitted when the path is
                 // empty: waiting could never make room for it.
                 if (queued == 0 || queued + bytes.size <= LOSSY_QUEUE_CAP_BYTES) {
-                    t.send(bytes)
+                    t.send(bytes, onWritten = onWritten)
                     return
                 }
                 lock.wait(100)

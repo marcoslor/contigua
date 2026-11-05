@@ -1956,6 +1956,13 @@ class WindowStream(object):
         # Cumulative across encoder restarts (pause/resume, keyframes), so the
         # e2e can tell that frames flowed again after a resume.
         self._frames_sent = 0
+        # `stream.stats` window counters (reset on each 2 s send).
+        self._stats_frames = 0
+        self._stats_bytes = 0
+        self._stats_kf = 0
+        self._stats_kf_req = 0
+        self._first_frame_at = None
+        self._gap_done = False
         # --first-frame-delay holds the first start; a wake or resize that
         # arrives before the timer must not send the frame early.
         self._start_held = False
@@ -2210,10 +2217,24 @@ class WindowStream(object):
                 self._stall_timer.daemon = True
                 self._stall_timer.start()
         flags = proto.FRAME_FLAG_KEY if proto.is_idr(nals) else 0
-        pts = self._au_index * (1000000 // FRAME_RATE)
+        # --frame-gap-after/--frame-gap-ms: one forced gap in delivered frames,
+        # the freeze the stats e2e counts (no encoder restart, no new config).
+        if self._first_frame_at is None:
+            self._first_frame_at = time.monotonic()
+        if (not self._gap_done and self.phone.args.frame_gap_after > 0
+                and time.monotonic() - self._first_frame_at >= self.phone.args.frame_gap_after):
+            self._gap_done = True
+            time.sleep(max(0, self.phone.args.frame_gap_ms) / 1000.0)
+        # The same monotonic microsecond clock pong.now uses: the Mac's
+        # capture->receive estimate is meaningful for this fake too.
+        pts = self.phone.clock_us()
         self._au_index += 1
         self.phone.sender.send_frame(self.stream_id, pts, flags, access_unit)
         self._frames_sent += 1
+        self._stats_frames += 1
+        self._stats_bytes += len(access_unit)
+        if flags & proto.FRAME_FLAG_KEY:
+            self._stats_kf += 1
         if self.phone.args.frame_events and self._frames_sent % FRAME_RATE == 0:
             self.phone.events.frames(self.stream_id, self._frames_sent)
 
@@ -2356,6 +2377,11 @@ class Session(object):
         # one worker is enforced by _thumb_lock, which the check reads back
         # through the events' `active` field.
         self._fs_thumbs = {}            # id -> {"cancel": Event, "held": bool, "thread": Thread}
+        # `stream.stats`: session-wide switch and the next 2 s deadline.
+        self.stats_on = False
+        self._stats_next = 0.0
+        self._stats_drop_sent = False
+        self._stats_sent = 0
         self._thumb_lock = threading.Lock()
         self._thumb_held_once = False
         # The folders the Mac has open (docs/PROTOCOL.md "Watching"); nothing
@@ -2601,6 +2627,7 @@ class Session(object):
     def _tick_paths(self):
         if self.hub is None or self._ending:
             return
+        self._tick_stats()
         self.hub.ping_all(active=self.phone.screen_state == "on")
         for lost in self.hub.pong_timeouts():
             self.phone.events.path("pong_lost", lost, current=self.hub.current_path)
@@ -3048,6 +3075,7 @@ class Session(object):
             "window.pause": self._on_window_pause,
             "window.resume": self._on_window_resume,
             "window.keyframe": self._on_window_keyframe,
+            "stream.stats": self._on_stream_stats,
             "window.quality": self._on_window_quality,
             "window.launch": self._on_window_launch,
             "task.continue": self._on_task_continue,
@@ -3121,7 +3149,7 @@ class Session(object):
         handler(msg)
 
     def _on_ping(self, msg):
-        self._send({"t": "pong", "ts": msg.get("ts")})
+        self._send({"t": "pong", "ts": msg.get("ts"), "now": self.phone.clock_us()})
 
     # -- fake-only path conformance hooks (deckctl) --
     def _on_debug_paths(self, _msg):
@@ -4889,6 +4917,48 @@ class Session(object):
         if window is not None:
             window.pause()
 
+    def _on_stream_stats(self, msg):
+        self.stats_on = bool(msg.get("on"))
+        self._stats_next = time.monotonic()
+
+    def _tick_stats(self):
+        """`stream.stats`: one message per unpaused streaming window every 2 s."""
+        if not self.stats_on or self.sender is None:
+            return
+        now = time.monotonic()
+        if now < self._stats_next:
+            return
+        self._stats_next = now + 2.0
+        for window in list(self.windows.values()):
+            if window._paused:
+                continue
+            drop = 0
+            episodes = 0
+            if self.phone.args.stats_drop > 0 and self._stats_sent < 3:
+                # The e2e's made-to-drop deltas: the first three windows carry
+                # them, so a 5 s log line outside the warm-up surely sees one.
+                drop = self.phone.args.stats_drop
+                episodes = 1
+            message = {"t": "stream.stats", "stream": window.stream_id,
+                       "windowMs": 2000,
+                       "frames": window._stats_frames, "kf": window._stats_kf,
+                       "kfReq": window._stats_kf_req, "bytes": window._stats_bytes,
+                       "drop": drop, "dropEp": episodes, "skip": 0,
+                       "targetBps": 8_000_000,
+                       "encP50": 8_000, "encP95": 12_000,
+                       "queueP50": 400, "queueP95": 900}
+            qp = self.phone.args.stats_qp
+            if qp is not None:
+                message["qpP50"] = qp
+                message["qpP95"] = qp
+            self.phone.events.tx(message)
+            self._send(message)
+            self._stats_sent += 1
+            window._stats_frames = 0
+            window._stats_bytes = 0
+            window._stats_kf = 0
+            window._stats_kf_req = 0
+
     def _on_window_resume(self, msg):
         window = self._stream_or_error(msg)
         if window is not None:
@@ -4897,6 +4967,7 @@ class Session(object):
     def _on_window_keyframe(self, msg):
         window = self._stream_or_error(msg)
         if window is not None:
+            window._stats_kf_req += 1
             window.start()
 
     def _on_window_quality(self, msg):
@@ -4990,6 +5061,11 @@ class MDNS(object):
 
 # --- the phone -------------------------------------------------------------
 class FakePhone(object):
+    def clock_us(self):
+        """The phone's one monotonic clock, in microseconds: VIDEO_FRAME pts and
+        pong.now are on it (the real phone uses CLOCK_MONOTONIC)."""
+        return int(time.monotonic() * 1_000_000)
+
     def __init__(self, args):
         self.args = args
         self.name = args.name
@@ -5191,6 +5267,10 @@ class FakePhone(object):
 
     # called from the sender thread when a stalled stream caught up
     def on_backlog_cleared(self, stream_id):
+        # --no-backlog-restart: the stats rig needs a steady encoder; a real
+        # phone never rebuilds its encoder for a cleared socket queue.
+        if self.args.no_backlog_restart:
+            return
         session = self._session
         if session is None:
             return
@@ -5627,6 +5707,17 @@ def build_parser():
                         "window.content says where the picture is (the Mac must crop it)")
     p.add_argument("--frame-events", action="store_true",
                    help="log each stream's cumulative frame count once a second")
+    p.add_argument("--frame-gap-after", type=float, default=0.0, metavar="SECONDS",
+                   help="hold delivered frames once, this long after a stream's first frame")
+    p.add_argument("--frame-gap-ms", type=int, default=0, metavar="MS",
+                   help="with --frame-gap-after, the held gap in milliseconds")
+    p.add_argument("--stats-drop", type=int, default=0, metavar="N",
+                   help="report N deltas dropped in the first stream.stats message (an old queue)")
+    p.add_argument("--stats-qp", type=int, default=None, metavar="QP",
+                   help="report this average QP in every stream.stats (a codec with encoding statistics)")
+    p.add_argument("--no-backlog-restart", action="store_true",
+                   help="do not restart a stream's encoder when the sender's backlog clears "
+                        "(a steady stream for the stats check)")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--apps-revise", action="store_true",

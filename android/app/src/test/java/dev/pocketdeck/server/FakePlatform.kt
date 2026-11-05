@@ -78,6 +78,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val inputs = CopyOnWriteArrayList<Int>()
     val qualities = CopyOnWriteArrayList<QualityCall>()
     val backpressures = CopyOnWriteArrayList<Int>()
+    /** ISS-40: what each `stream.stats {on}` asked for, and the next snapshot. */
+    val statsSettings = CopyOnWriteArrayList<Boolean>()
+    var encoderStats: EncoderStats? = EncoderStats(
+        frames = 120, keyframes = 2, keyframesRequested = 1, bytes = 250_000,
+        framesSkipped = 0, targetBps = 8_000_000,
+        encodeP50 = 12_000, encodeP95 = 18_000, qpP50 = null, qpP95 = null,
+    )
 
     val clients = CopyOnWriteArrayList<PairedClient>()
     val pairRequests = CopyOnWriteArrayList<PairingReq>()
@@ -149,6 +156,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         keyframeRequests.add(stream)
         onKeyframeRequest?.invoke(stream)
     }
+
+    override fun setStatsEnabled(on: Boolean) {
+        statsSettings.add(on)
+    }
+
+    override fun statsSnapshot(stream: Int, nowUs: Long, reset: Boolean): EncoderStats? =
+        encoderStats
 
     override fun close(stream: Int) {
         closes.add(stream)
