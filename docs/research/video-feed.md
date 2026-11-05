@@ -220,6 +220,36 @@ the reported panel width is already the display's backing width, so
 factor on the person's main display (3840×2160 panel, 6016×3840 backing) is
 0.638.
 
+## First real-phone round (2026-11-05)
+
+All 11 default arms × 3 interleaved runs on the person's phone (v145, phone locked and dozing, Settings), 12:47–13:02. The table is per arm: `jank_ms` for each valid run, and the run's bitrate. A run is invalid when the swipe line saw no frames (the picture did not move).
+
+| Arm | jank_ms per valid run | Invalid runs | kbps | Note |
+| --- | --- | --- | --- | --- |
+| baseline | 162, 0, 217 | – | ~6100 | |
+| q1-suspend | 61, 262 | 1 | ~6700 | never suspended (`susp_ms=0` in every run) |
+| q1q2-100 | 896, 161 | 1 | ~5800 | never suspended |
+| r1-cbr | – | 3 | ~4500 | **the picture freezes**: 0–4 fps during the swipes in all 3 runs, though the phone sent ~4.5 Mbps |
+| r2-16 | 987, 163, 1070 | – | ~5900 | the most hitches |
+| r2-25 | 166, 282, 610 | – | ~6300 | the only drop episode of the round (166 ms) |
+| r4-ir60 | 108, 309 | 1 | ~6200 | 1 keyframe per run instead of 2 |
+| t1-refine | 0, 0 | 1 | ~6300 | 9–10 keyframes per run (one per still) |
+| m1-paced | 50, 203 | 1 | ~6200 | |
+| m2-panel | 1198, 777, 471 | – | ~4600 | fewer bits, more hitches; the window resizes once after it opens |
+| combo-a | 0, 0 | 1 + 1 failed | – | contains `rc=cbr`, so not valid; run 3's window was covered by another window and paused |
+
+What it shows:
+- **The link was clean.** One drop episode in 32 runs, no suspend. Every jank in this round is a hitch: a frame shown 50–200 ms later than the phone made it, from link jitter. The queue arms (Q1, Q2) were never exercised, so this round cannot rank them. The stalls that cause the person's drop-and-keyframe loop need a link that stalls on demand (next round).
+- **R1 (CBR) is broken on this encoder** for surface input. It must not ship until the freeze is understood.
+- **More bits mean more hitches** (R2-16). Raising the cap is not the fix for jank.
+- **The rest is within the noise.** Baseline alone spans 0–217 ms over three runs.
+
+What the round found wrong with the measurement:
+- **The capture→display delay is unreliable across windows.** The phone's CLOCK_MONOTONIC stops while it sleeps between windows, and the Mac's offset estimate keeps the lowest-RTT sample of 30 s, pinging every 15 s. In one window the delay read a constant 2.36 s while the encoder (14 ms) and the queue (0.6 ms) were fast and frames flowed. Delays from 400 to 2500 ms in this round are clock jumps, not delay.
+- **Frame rates are sampled.** Each 5 s line measures fps over its last 2 s only, and the phase labels shift against the script. Counters (hitches, drops, suspends, keyframes) are complete.
+- **A frozen phone screen is invisible to the hitch rule.** When the phone's own rendering stalls, the capture times stall too, so `late` stays near 0. Some invalid runs outside CBR look like this: no frames during swipes, then a burst. The phone awake gave 85 fps during the swipes at 11:23, dozing gave 55–60.
+- **A failed run lost the whole table.** The bench exited on the last run's missing line without writing the CSV.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
