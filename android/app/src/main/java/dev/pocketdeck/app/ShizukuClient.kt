@@ -228,6 +228,22 @@ object ShizukuClient {
         for (callback in pending.toList()) callback(bound)
         pending.clear()
         for (listener in listeners.toList()) listener(bound)
+        startDeckIfNobodyServes()
+    }
+
+    /**
+     * ISS-42: a process can bind the shell service with no foreground service
+     * in it (the notification listener's bind is enough). Ready then has no
+     * listener to push the pairings, and every Mac is refused until the app is
+     * tapped. This starts the deck; the deck's own attach is still the only
+     * path that calls [DeckForegroundService.onServiceReady].
+     */
+    private fun startDeckIfNobodyServes() {
+        val ctx = context ?: return
+        if (!startsDeckWhenReady(Prefs.isEnabled(ctx), DeckState.serviceRunning)) return
+        Log.i(TAG, "deck start: Ready --start-deck--> Starting") // log-ok: closed tokens
+        runCatching { DeckForegroundService.start(ctx) }
+            .onFailure { Log.i(TAG, "deck start: start refused ${it.javaClass.simpleName}") } // log-ok: class only
     }
 
     /** The binding is gone: answer the waiting callers and the UI. */
