@@ -11684,6 +11684,166 @@ check_zoom() {
     stop_fakephone
 }
 
+# check_stats — the per-window stats line and the phone's counters (ISS-40).
+# The fake phone reports 60 fps, 7 dropped deltas, a QP of 24 and one forced
+# 300 ms gap; the Mac's 5 s line must show them. A covered window is paused and
+# must log nothing until it is visible again.
+check_stats() {
+    clean
+    FAKE_ARGS="--stats-drop 7 --stats-qp 24 --frame-gap-after 8 --frame-gap-ms 300 --no-backlog-restart" start_fake || return 1
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-control "$WORK-control" --quit-after 150
+    if ! wait_until 25 window_rx window.open "com.android.settings"; then
+        bad "STATS the app window never opened"
+        stop_app; stop_fakephone
+        return 1
+    fi
+    stats_log() {
+        /usr/bin/log show --last 5m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -F " stats stream="
+    }
+    stats_lines_file() {
+        stats_log > "$WORK/stats.txt"
+        grep -c . "$WORK/stats.txt" 2>/dev/null || true
+    }
+    stats_ready() { [ "$(stats_lines_file)" -ge 1 ]; }
+    if ! wait_until 20 stats_ready; then
+        bad "STATS no stats line within 20 s"
+        stop_app; stop_fakephone
+        return 1
+    fi
+    ok "STATS the first stats line appeared"
+    # The fake encoder and the first frames take a few seconds: wait past the
+    # 5 s warm-up lines, then judge the steady ones.
+    sleep 20
+    stats_lines_file >/dev/null
+    local metrics
+    metrics="$(python3 - "$WORK/stats.txt" <<'PY'
+import statistics, sys
+rows = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    if " stats stream=" not in line:
+        continue
+    fields = {}
+    for word in line.split():
+        if "=" in word:
+            key, value = word.split("=", 1)
+            fields[key] = value
+    if fields.get("stream") == "1":
+        rows.append(fields)
+def number(key, row):
+    try:
+        return float(row[key])
+    except (KeyError, ValueError):
+        return None
+steady = [r for r in rows if (number("rx_fps", r) or 0) > 0]
+recent = steady[-3:] if steady else rows
+rx = [v for v in (number("rx_fps", r) for r in recent) if v is not None]
+shown = [v for v in (number("shown_fps", r) for r in recent) if v is not None]
+e2e = [v for v in (number("e2e_p50", r) for r in recent) if v is not None]
+drop = max([int(number("phone_drop", r) or 0) for r in rows] + [0])
+# The forced 300 ms gap is one freeze between 250 and 600 ms on some line.
+# Startup can add its own, longer gaps on the first lines: judge every line
+# on its own instead of summing them.
+forced = [r for r in rows
+          if int(number("freeze_n", r) or 0) == 1
+          and 250 <= (number("freeze_ms", r) or 0) <= 600]
+freeze = 1 if forced else 0
+qp = [v for v in (number("qp_p95", r) for r in recent) if v is not None]
+print(len(rows),
+      round(statistics.median(rx), 1) if rx else "-",
+      round(statistics.median(shown), 1) if shown else "-",
+      round(statistics.median(e2e), 1) if e2e else "-",
+      drop, freeze,
+      round(statistics.median(qp), 1) if qp else "-")
+PY
+)"
+    local lines rx shown e2e drop freeze qp
+    read -r lines rx shown e2e drop freeze qp <<< "$metrics"
+    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp"
+    [ "${lines:-0}" -ge 3 ] \
+        && ok "STATS $lines lines in the 20 s watch" \
+        || bad "STATS only ${lines:-0} lines in the 20 s watch"
+    # The fake phone's encoder is 60 fps; +-25% is 45..75, wide enough for a
+    # quiet run's scheduling and narrow enough to catch a stalled picture.
+    if [ "$rx" != "-" ] && awk -v v="$rx" 'BEGIN { exit !(v >= 45 && v <= 75) }'; then
+        ok "STATS rx_fps=$rx is within +-25% of the fake phone's 60 fps (45..75)"
+    else
+        bad "STATS rx_fps=$rx is outside 45..75"
+    fi
+    if [ "$e2e" != "-" ] && awk -v v="$e2e" 'BEGIN { exit !(v >= 0 && v <= 250) }'; then
+        ok "STATS e2e_p50=${e2e} ms is plausible for the fake phone's own pts clock"
+    else
+        bad "STATS e2e_p50=$e2e ms is missing or implausible"
+    fi
+    [ "$drop" = "7" ] \
+        && ok "STATS phone_drop reports the 7 deltas the fake phone was made to drop" \
+        || bad "STATS phone_drop=$drop, expected 7"
+    [ "$freeze" = "1" ] \
+        && ok "STATS one line counts the forced 300 ms gap as a single 250..600 ms freeze" \
+        || bad "STATS no line reported freeze_n=1 with 250..600 ms (startup gaps excluded)"
+    [ "$qp" = "24.0" ] \
+        && ok "STATS the fake codec's QP 24 reaches qp_p95" \
+        || bad "STATS qp_p95=$qp, expected 24.0"
+
+    # The summary script must read the same saved lines (the reviewer uses it
+    # on the real phone).
+    if python3 "$MACOS/scripts/stats-summary.py" --file "$WORK/stats.txt" > "$WORK/stats-summary.txt" \
+            && grep -q "stream 1:" "$WORK/stats-summary.txt" \
+            && grep -q "rx_fps" "$WORK/stats-summary.txt"; then
+        ok "STATS stats-summary.py reads the lines"
+    else
+        bad "STATS stats-summary.py did not summarise the lines"
+    fi
+
+    # A covered window is paused: no line while covered, lines again after.
+    local before after resumed
+    stats_lines_file >/dev/null
+    before="$(grep -c . "$WORK/stats.txt" 2>/dev/null || true)"
+    # The app's own minimize path (windowDidMiniaturize -> setPaused), the
+    # same one a person's click takes; occlude only changes the watchdog's
+    # window state and does not pause the stream.
+    control open --minimize-stream 1:3 --deminimize-stream 1:13 \
+        || bad "STATS control open (minimize): $CONTROL_REPLY"
+    sleep 2
+    stats_lines_file >/dev/null
+    before="$(grep -c . "$WORK/stats.txt" 2>/dev/null || true)"
+    sleep 6
+    stats_lines_file >/dev/null
+    after="$(grep -c . "$WORK/stats.txt" 2>/dev/null || true)"
+    [ "$after" = "$before" ] \
+        && ok "STATS a minimized window logs nothing ($before lines before and after 6 s)" \
+        || bad "STATS a minimized window logged $((after - before)) more lines"
+    sleep 8
+    stats_lines_file >/dev/null
+    resumed="$(grep -c . "$WORK/stats.txt" 2>/dev/null || true)"
+    [ "$resumed" -gt "$after" ] \
+        && ok "STATS lines resume after the window is visible again" \
+        || bad "STATS no line after the window was shown again"
+
+    # Every field of the documented line is present.
+    local line field missing=""
+    line="$(tail -1 "$WORK/stats.txt")"
+    case "$line" in *"stats stream="*) ;; *) missing=" stats" ;; esac
+    for field in stream size view place rx_fps shown_fps int_p95 int_p99 \
+                 freeze_n freeze_ms mac_drop phone_drop drop_ep skip kf kf_req \
+                 kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
+                 e2e_p50 e2e_p95; do
+        case "$line" in
+            *"$field="*) ;;
+            *) missing="$missing $field" ;;
+        esac
+    done
+    [ -z "$missing" ] \
+        && ok "STATS the line carries every documented field" \
+        || bad "STATS the line is missing:$missing"
+    stop_app
+    stop_fakephone
+}
+
 # --- Phone nickname (docs/ROADMAP.md #1, #2) --------------------------------
 
 # check_nickname — a nickname names the phone everywhere. It is set the way
