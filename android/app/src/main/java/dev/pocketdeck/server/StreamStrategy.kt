@@ -18,7 +18,11 @@ data class StreamStrategy(
     val intraRefreshFrames: Int = 0,
     val refine: Boolean = false,
     val trafficClass: Int = 0,
+    /** The on-demand link stall: 0 is off, otherwise the pause length in ms. */
+    val stallMs: Int = 0,
+    val stallEveryMs: Int = DEFAULT_STALL_EVERY_MS,
 ) {
+
     enum class Overflow { Drop, Suspend }
 
     enum class RateControl { Vbr, Cbr }
@@ -68,8 +72,16 @@ data class StreamStrategy(
         if (overflow == Overflow.Suspend) parts += "overflow=suspend"
         if (refine) parts += "refine=on"
         if (trafficClass != 0) parts += "tos=0x%02x".format(trafficClass)
+        if (stallMs > 0) parts += "stall=$stallMs/$stallEveryMs"
         return if (parts.isEmpty()) "default" else parts.joinToString(" ")
     }
+
+    /**
+     * The writer's gate for this stream, or null when the stall is off. Only a
+     * debug property reaches this; no product path sets a stall.
+     */
+    internal fun stallGate(stream: Int, startMs: Long, log: (String) -> Unit = {}): StallGate? =
+        if (stallMs > 0) StallGate(stream, stallMs, stallEveryMs, startMs, log) else null
 
     /** What the codec accepted at configure; the requested values live above. */
     data class Applied(
@@ -85,6 +97,7 @@ data class StreamStrategy(
         const val DEFAULT_QUEUE_BYTES = 256 * 1024
         const val DEFAULT_QUEUE_DURATION_US = 250_000L
         const val MIN_BITRATE = 500_000
+        const val DEFAULT_STALL_EVERY_MS = 5_000
 
         val DEFAULT = StreamStrategy()
 
@@ -106,6 +119,9 @@ data class StreamStrategy(
                 intraRefreshFrames = raw("ir").parseIntraRefresh(),
                 refine = raw("refine") == "on",
                 trafficClass = raw("tos").parseInt(0, 0..255),
+                stallMs = raw("stall_ms").parseStallMs(),
+                stallEveryMs = raw("stall_every_ms")
+                    .parseInt(DEFAULT_STALL_EVERY_MS, 1_000..30_000),
             )
         }
 
@@ -124,4 +140,11 @@ private fun String?.parseIntraRefresh(): Int {
     val value = this?.toIntOrNull() ?: return 0
     if (value <= 0) return 0
     return value.coerceIn(10, 600)
+}
+
+/** `stall_ms`: 0 (and junk) is off; any other value clamps to 50–2000. */
+private fun String?.parseStallMs(): Int {
+    val value = this?.toIntOrNull() ?: return 0
+    if (value <= 0) return 0
+    return value.coerceIn(50, 2_000)
 }

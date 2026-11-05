@@ -342,6 +342,12 @@ interface DisplayLayer {
      * Used only while stats are on; `reset` starts the next 2 s window.
      */
     fun statsSnapshot(stream: Int, nowUs: Long, reset: Boolean = true): EncoderStats? = null
+
+    /**
+     * One closed-token lifetime line (`stream N totals: …`) for a stream that is
+     * about to close, or null when the platform keeps no such counters.
+     */
+    fun totalsLine(stream: Int): String? = null
 }
 
 interface AppCatalog {

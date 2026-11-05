@@ -50,6 +50,8 @@ class StreamStrategyTest {
             "ir" to "60",
             "refine" to "on",
             "tos" to "136",
+            "stall_ms" to "400",
+            "stall_every_ms" to "3000",
         )
         assertEquals(StreamStrategy.Overflow.Suspend, strategy.overflow)
         assertEquals(100, strategy.queueMs)
@@ -59,7 +61,22 @@ class StreamStrategyTest {
         assertEquals(60, strategy.intraRefreshFrames)
         assertTrue(strategy.refine)
         assertEquals(136, strategy.trafficClass)
+        assertEquals(400, strategy.stallMs)
+        assertEquals(3000, strategy.stallEveryMs)
         assertFalse(strategy.isDefault)
+    }
+
+    @Test
+    fun `the stall is off by default and clamps to its documented ranges`() {
+        assertEquals(0, StreamStrategy.DEFAULT.stallMs)
+        assertEquals(5000, StreamStrategy.DEFAULT.stallEveryMs)
+        assertEquals(50, parse("stall_ms" to "1").stallMs)
+        assertEquals(2000, parse("stall_ms" to "9999").stallMs)
+        assertEquals("0 is off, never clamped to 50", 0, parse("stall_ms" to "0").stallMs)
+        assertEquals(1000, parse("stall_every_ms" to "1").stallEveryMs)
+        assertEquals(30000, parse("stall_every_ms" to "99999").stallEveryMs)
+        assertEquals(0, parse("stall_ms" to "soon").stallMs)
+        assertEquals(5000, parse("stall_every_ms" to "soon").stallEveryMs)
     }
 
     @Test
@@ -109,9 +126,11 @@ class StreamStrategyTest {
             "ir" to "60",
             "refine" to "on",
             "tos" to "136",
+            "stall_ms" to "400",
+            "stall_every_ms" to "5000",
         )
         assertEquals(
-            "rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88",
+            "rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88 stall=400/5000",
             strategy.describe(
                 StreamStrategy.Applied(
                     rateControl = StreamStrategy.RateControl.Cbr,
