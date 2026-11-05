@@ -1072,7 +1072,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func beginLiveResize() {
         isLiveResizing = true
         videoView.isWindowLiveResizing = true
-        videoView.noteResizeRequested()
+        videoView.liveResizeBegan()
         liveText.exit(.resize)
     }
 
@@ -1081,6 +1081,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func endLiveResize() {
         isLiveResizing = false
         videoView.isWindowLiveResizing = false
+        videoView.liveResizeEnded()
         scheduleResize(after: 0)
         rememberFrame()
     }
@@ -1090,7 +1091,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// `setFrame` — a stream's size, the phone's turn — does not come through
     /// here and keeps its size on the e2e's virtual display.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        WindowFrameLimit.size(frameSize, for: sender)
+        let size = WindowFrameLimit.size(frameSize, for: sender)
+        // The next size's picture layers go down before the window takes it:
+        // WindowServer can composite the new frame against the previous
+        // surface, which must already cover the new size (WIN-58).
+        if isLiveResizing {
+            let fullScreen = sender.styleMask.contains(.fullScreen)
+            videoView.prepareLiveResize(to: style.streamSize(window: size, fullScreen: fullScreen))
+        }
+        return size
     }
 
     /// One step of the e2e's scripted drag: the same delegate call AppKit makes
@@ -1107,6 +1116,49 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let size = windowWillResize(window, to: frame.size)
         window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+    }
+
+    /// The e2e's scripted drag (`--debug-control resize-drag`). A quiet run
+    /// cannot post real mouse events without moving the person's pointer, so
+    /// the frame view's own live-resize sequence runs here instead: the same
+    /// beginLiveResize, one windowWillResize/setFrame a display refresh, then
+    /// endLiveResize. `edge` is the edge the person grabs; `amount` is how far
+    /// it moves.
+    func debugResizeDrag(edge: String, amount: CGFloat, steps: Int, stepMs: Int) -> String? {
+        guard let window else { return "no window" }
+        guard steps > 0, stepMs > 0, amount != 0, ["right", "bottom", "top"].contains(edge) else {
+            return "resize-drag needs right|bottom|top AMOUNT STEPS STEP_MS"
+        }
+        let start = window.frame
+        beginLiveResize()
+        var step = 0
+        let timer = Timer(timeInterval: Double(stepMs) / 1000, repeats: true) {
+            [weak self] timer in
+            guard let self, let window = self.window else { timer.invalidate(); return }
+            step += 1
+            let fraction = CGFloat(step) / CGFloat(steps)
+            var frame = start
+            switch edge {
+            case "right":
+                frame.size.width = start.width + amount * fraction
+            case "bottom":
+                // The bottom edge moves down: the top edge stays where it is.
+                frame.origin.y = start.origin.y - amount * fraction
+                frame.size.height = start.height + amount * fraction
+            default:
+                // The top edge moves up: AppKit's origin is the bottom-left,
+                // so the origin stays and the height grows.
+                frame.size.height = start.height + amount * fraction
+            }
+            let size = self.windowWillResize(window, to: frame.size)
+            window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+            if step >= steps {
+                timer.invalidate()
+                self.endLiveResize()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return nil
     }
 
     func windowDidResize(_ notification: Notification) {

@@ -3353,6 +3353,17 @@ final class ConnectionController {
             guard let window = windows.controller(for: 1) else { return "no first window" }
             window.liveResizeStep(to: NSSize(width: w, height: h))
             return nil
+        case "resize-drag":
+            // A whole drag on the first window's own live-resize path, one
+            // step a display refresh: a quiet run cannot post real mouse
+            // events (the person's pointer must not move).
+            guard arguments.count >= 4, let amount = Double(arguments[1]),
+                  let steps = Int(arguments[2]), let stepMs = Int(arguments[3]) else {
+                return "resize-drag needs right|bottom|top AMOUNT STEPS STEP_MS"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            return window.debugResizeDrag(edge: arguments[0], amount: CGFloat(amount),
+                                          steps: steps, stepMs: stepMs)
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).

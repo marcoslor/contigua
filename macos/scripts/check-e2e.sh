@@ -727,6 +727,8 @@ build_cgevent() {
     fi
 }
 
+
+
 # build_menubar_item — the status item's own frame and its real clicks (a left
 # click toggles the panel, a right click opens its menu), found by process id.
 build_menubar_item() {
@@ -1688,6 +1690,88 @@ check_resize() {
     # The delayed phone must not serve the next check in a shared run.
     end_shared
     check_mirror_band
+}
+
+# --- C6a: dragbar (WIN-58) -------------------------------------------------
+
+check_dragbar() {
+    clean
+    # The phone answers a resize the way the real one did while the person
+    # dragged: 30-55 ms to encode its first frame at the new size, plus the
+    # link. 150 ms keeps the last frame filling the window long enough to see
+    # what the screen shows while it catches up.
+    FAKE_ARGS="--resize-delay-ms 150" start_fake || return 1
+    FAKE_ARGS=""
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --debug-control "$WORK-control" --quit-after 180
+    local tries=60
+    while ! control open --open com.android.settings --float-windows \
+        --resize-stream "1:480x400-pt@0.2" --debug-chrome-state "$WORK/chrome.txt"; do
+        tries=$((tries - 1))
+        if [ "$CONTROL_REPLY" != "not online" ] || [ "$tries" -le 0 ]; then
+            bad "DRAGBAR open: $CONTROL_REPLY"
+            stop_app; stop_fakephone; return 1
+        fi
+        sleep 0.5
+    done
+    if ! wait_until 30 events_have '"ev":"video","stream":1,"config":true'; then
+        bad "DRAGBAR no first video config"
+        stop_app; stop_fakephone; return 1
+    fi
+    local bar=28
+    local id
+    id="$(await_window '$4 == 480 && $5 == 428')" \
+        || { bad "DRAGBAR no 480x428 pt window (480x400 stream + 28 pt bar)"; stop_app; stop_fakephone; return 1; }
+    wait_until 10 chrome_has "loading=0" \
+        || bad "DRAGBAR the first frame never filled the window (state: $(chrome_state))"
+    sleep 1
+
+    local spec name amount steps out cap before after before_config summary
+    # 25 pt per data step: about 1500 pt/s at a 60 Hz cadence. The window
+    # starts at 480x428; right +300 and bottom +200 fit the 1280x800 run
+    # display, and top +100 (growing upward) still fits.
+    for spec in "right:300:12" "bottom:200:8" "top:100:4"; do
+        IFS=: read -r name amount steps <<<"$spec"
+        out="$WORK/dragbar-$name"
+        rm -rf "$out"; mkdir -p "$out"
+        before="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+' | tail -1)"
+        before_config="$(last_config_size)"
+        # `screencapture -l` reads the window's own pixels with no shadow, as
+        # the chrome check does; a process per shot reaches about 7 frames a
+        # second, which the report states.
+        ( n=0; end=$(( $(now_ms) + 900 ))
+          while [ "$(now_ms)" -lt "$end" ]; do
+              n=$((n + 1))
+              screencapture -x -o -l"$id" "$out/f-$n.png" 2>/dev/null || break
+          done ) &
+        cap=$!
+        # The window's own live-resize path, one step every 16 ms. A quiet
+        # host run may not post real mouse events (the pointer must stay on
+        # the person's screen); `--post-to-pid` events do not start AppKit's
+        # frame drag, and a visible run is not allowed for this check.
+        control resize-drag "$name" "$amount" "$steps" 16 \
+            || bad "DRAGBAR $name: resize-drag: $CONTROL_REPLY"
+        wait "$cap"
+        after="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+' | tail -1)"
+        if [ "$after" = "$before" ]; then
+            bad "DRAGBAR $name: the drag did not resize the window ($before)"
+        else
+            say "DRAGBAR $name: window $before -> $after"
+        fi
+        wait_until 10 config_changed_from "$before_config" \
+            || bad "DRAGBAR $name: the phone did not answer the drag's resize (last $(last_config_size))"
+        summary="$(python3 "$MACOS/scripts/window-bands.py" --dir "$out" --bar "$bar" --scale "${RUN_SCALE:-1}")"
+        case "$summary" in
+            *"bad=none"*)
+                ok "[WIN-58] DRAGBAR $name edge: no black strip wider than 2 px on any frame ($summary)" ;;
+            *)
+                bad "[WIN-58] DRAGBAR $name edge: a black strip on the screen ($summary)" ;;
+        esac
+        [ -f "$out/worst-$name.png" ] && say "crop: $out/worst-$name.png"
+        sleep 0.4
+    done
+    stop_app
+    stop_fakephone
 }
 
 # --- C6b: crispness (ISS-39) ---------------------------------------------

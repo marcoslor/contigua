@@ -40,6 +40,10 @@
 //   resize-step W H  one step of a scripted drag on the first window: the same
 //                    windowWillResize call AppKit makes for a mouse move, then
 //                    the frame it returns (the chrome state's `frame=` records it)
+//   resize-drag EDGE AMOUNT STEPS STEP_MS
+//                    a whole drag on the first window's own live-resize path,
+//                    one step a display refresh (a quiet run cannot move the
+//                    person's pointer); EDGE is right, bottom or top
 //   settings-dump PATH [LAST ROW]  the Settings window's real geometry: its
 //                    frame against the screen, the tab's scroll view, and
 //                    whether the last row shows once scrolled to the end
