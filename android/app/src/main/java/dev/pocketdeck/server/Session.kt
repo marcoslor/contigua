@@ -3378,6 +3378,8 @@ class Session(
         statsOn = on
         display.setStatsEnabled(on)
         if (on) {
+            // X0: the resend deltas start from this window, not the last one.
+            tcpCounters.restart()
             statsNextAtMs = now()
             wakeTicker()
         } else {

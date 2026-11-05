@@ -88,6 +88,19 @@ class TCPCountersTest {
     }
 
     @Test
+    fun statsTurningOnAgainStartsANewBaseline() {
+        // Stats go off when the last window closes. The next window's first
+        // message must not count every resend since the previous window.
+        val deltas = TCPCounterDeltas()
+        deltas.note(TCPCounterSample(10, 2, 1))
+        assertEquals(4L, deltas.note(TCPCounterSample(14, 2, 1))?.retransSegs)
+        deltas.restart()
+        assertNull("the first message after a restart is a baseline",
+                   deltas.note(TCPCounterSample(500, 90, 7)))
+        assertEquals(3L, deltas.note(TCPCounterSample(503, 90, 7))?.retransSegs)
+    }
+
+    @Test
     fun aCounterThatWentBackwardsHasNoDeltaNeverNegative() {
         val deltas = TCPCounterDeltas()
         deltas.note(TCPCounterSample(10, 2, 1))
