@@ -219,6 +219,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         strategy = openedWith
         videoView.strategy = openedWith
         Log.video.notice("\(openedWith.windowLine(stream: stream), privacy: .public)")  // log-ok: closed strategy tokens and a stream id
+        // The view's pending-fill rule must compare the phone's answer with the
+        // same request `window.resize` carries, panel cap included (M2).
+        videoView.requestedPixelsOverride = { [weak self] in self?.displayPixels() ?? .zero }
         videoSizeObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
@@ -754,11 +757,28 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Virtual-display pixels for the video area: the window's exact backing
-    /// pixels inside the phone's encoder limits (ISS-39).
+    /// pixels inside the phone's encoder limits (ISS-39), or at most the panel's
+    /// pixels on a scaled display when `stream.pixels=panel` (M2).
     func displayPixels() -> CGSize {
         guard let window else { return .zero }
+        let cap = strategy.pixels == .panel ? panelFactor(for: window.screen) : 1
         return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor),
-                                       encoder: manager.phone?.encoder)
+                                       encoder: manager.phone?.encoder, panelFactor: cap)
+    }
+
+    /// The display's cap, cached per display and backing size: `requestedPixels`
+    /// asks during a live resize, and the mode list must not be rebuilt then.
+    private var panelCache: (displayID: CGDirectDisplayID, backingWidth: Int, factor: Double)?
+
+    private func panelFactor(for screen: NSScreen?) -> Double {
+        guard let values = PanelCap.values(for: screen) else { return 1 }
+        if let panelCache, panelCache.displayID == values.displayID,
+           panelCache.backingWidth == values.backingWidth {
+            return panelCache.factor
+        }
+        let factor = PanelCap.factor(panelWidth: values.panelWidth, backingWidth: values.backingWidth)
+        panelCache = (values.displayID, values.backingWidth, factor)
+        return factor
     }
 
     func dpi() -> Double {
@@ -902,6 +922,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(videoView)
         BackgroundMode.activateApp()
         configureDwell()
+        // M2 with the switch on: what the display reports and what the cap did,
+        // once per window. Numbers only (R-PRIV-1).
+        if strategy.pixels == .panel, let screen = window?.screen,
+           let values = PanelCap.values(for: screen) {
+            let cap = panelFactor(for: screen)
+            Log.video.info("stream \(self.stream, privacy: .public) mac pixels: panel=\(values.panelWidth, privacy: .public) backing=\(values.backingWidth, privacy: .public) cap=\(String(format: "%.3f", cap), privacy: .public)")  // log-ok: sizes and a ratio
+        }
     }
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
@@ -917,6 +944,21 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var placementOverride: NSRect? { nil }
 
     func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    /// The window moved to another display: its panel and backing sizes can be
+    /// different, so the cap and the size request are re-read.
+    func windowDidChangeScreen(_ notification: Notification) {
+        panelCache = nil
+        refreshStreamStrategy()
+        scheduleResize(after: 0)
+    }
+
+    /// A display mode change (scaling, resolution) moves the backing size under
+    /// the window: re-read the cap and ask again at the new dpi.
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        panelCache = nil
+        scheduleResize(after: 0)
+    }
 
     private func rememberFrame() {
         // Never the screen-sized frame full screen moves the window to: the

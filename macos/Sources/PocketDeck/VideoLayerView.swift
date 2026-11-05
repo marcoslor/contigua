@@ -484,11 +484,17 @@ final class VideoLayerView: NSView {
     }
 
     /// What the window's own size asks the phone for (the same number
-    /// `window.resize` carries).
+    /// `window.resize` carries). The window supplies the full rule (its stream
+    /// area, encoder limits, panel cap) when it has one.
     private var requestedPixels: CGSize {
+        if let requestedPixelsOverride { return requestedPixelsOverride() }
         let scale = Double(window?.backingScaleFactor ?? 1)
         return VideoSize.displayPixels(bounds: bounds.size, backingScale: scale, encoder: encoder)
     }
+
+    /// The window's request rule, set when the view joins the window; nil keeps
+    /// the view-only rule (tests and previews).
+    var requestedPixelsOverride: (() -> CGSize)?
 
     /// Drawn rect of the current video inside the view: the same rule as the
     /// gravity, so a click lands on the pixel under the pointer, even mid-resize.
