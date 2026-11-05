@@ -219,6 +219,8 @@ class Session(
     private val queue = SendQueue(
         maxDeltaBytesPerStream,
         nowUs = monoUs,
+        // The ticker and the suspend clock are the session's own milliseconds.
+        nowMs = { now() },
         onDeltaDrop = { stream -> onDeltaDrop(stream) },
         policyFor = { stream ->
             strategy().let { QueuePolicy.of(it, maxDeltaBytesPerStream, SendQueue.DEFAULT_MAX_DELTA_DURATION_US) }
