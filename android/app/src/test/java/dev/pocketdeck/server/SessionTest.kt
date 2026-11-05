@@ -11,6 +11,7 @@ import dev.pocketdeck.proto.TouchPayload
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -228,6 +229,24 @@ class SessionTest {
             if (m["t"] == t) return m
         }
         error("never received '$t'")
+    }
+
+    /**
+     * Stats messages queued before the next pong. A ping goes out after the
+     * caller's wait, so the phone's queue order says whether a tick sent one;
+     * no socket timeout is involved (a timeout can cut a frame in half).
+     */
+    private fun statsBeforePong(): Int {
+        send(mapOf("t" to "ping", "ts" to System.nanoTime()))
+        var count = 0
+        repeat(64) {
+            val message = readJson()
+            when (message["t"]) {
+                "stream.stats" -> count++
+                "pong" -> return count
+            }
+        }
+        error("never received the pong")
     }
 
     /**
@@ -656,6 +675,59 @@ class SessionTest {
         send(mapOf("t" to "ping", "ts" to 5))
         val pong = readUntil("pong")
         assertEquals(5L, pong["ts"])
+        // ISS-40: `now` is the phone's CLOCK_MONOTONIC µs, VIDEO_FRAME's clock.
+        val now = (pong["now"] as Number).toLong()
+        assertTrue("pong has no positive now: $now", now > 0)
+    }
+
+    @Test
+    fun streamStatsAreOffUntilAskedAndCarryTheCounters() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700,
+                   "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        Thread.sleep(300) // real-time: prove no tick sent stats in the first interval
+        assertEquals("a default session sent stats", 0, statsBeforePong())
+
+        send(mapOf("t" to "stream.stats", "on" to true))
+        await { platform.statsSettings.lastOrNull() == true }
+        val stats = readUntil("stream.stats")
+        assertEquals(7L, stats["stream"])
+        assertEquals(2_000L, stats["windowMs"])
+        assertEquals(120L, stats["frames"])
+        assertEquals(2L, stats["kf"])
+        assertEquals(1L, stats["kfReq"])
+        assertEquals(250_000L, stats["bytes"])
+        assertEquals(8_000_000L, stats["targetBps"])
+        assertEquals(12_000L, stats["encP50"])
+        // The fake encoder has no encoding statistics: no QP keys at all.
+        assertFalse(stats.containsKey("qpP50"))
+        assertFalse(stats.containsKey("qpP95"))
+
+        send(mapOf("t" to "stream.stats", "on" to false))
+        await { platform.statsSettings.lastOrNull() == false }
+        Thread.sleep(2_300) // real-time: span one 2 s stats interval
+        assertEquals("stats still arrived after off", 0, statsBeforePong())
+    }
+
+    @Test
+    fun aPausedWindowSendsNoStats() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700,
+                   "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        send(mapOf("t" to "stream.stats", "on" to true))
+        readUntil("stream.stats")
+
+        send(mapOf("t" to "window.pause", "stream" to 7))
+        await { platform.pauses.contains(7) }
+        Thread.sleep(2_300) // real-time: span one 2 s stats interval while paused
+        assertEquals("a paused window sent stats", 0, statsBeforePong())
+
+        send(mapOf("t" to "window.resume", "stream" to 7))
+        await { platform.resumes.contains(7) }
+        Thread.sleep(2_300) // real-time: span one 2 s stats interval after resume
+        assertTrue("stats did not return after resume", statsBeforePong() >= 1)
     }
 
     @Test
@@ -1676,7 +1748,7 @@ class SessionTest {
     /** Every frame type the session puts out within [ms]; stops at the timeout. */
     private fun framesFor(ms: Int): List<Int> {
         val types = mutableListOf<Int>()
-        client.soTimeout = ms
+        client.soTimeout = ms.toInt()
         try {
             while (true) {
                 val frame = reader.readFrame() ?: break

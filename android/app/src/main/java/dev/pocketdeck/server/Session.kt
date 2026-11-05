@@ -86,6 +86,8 @@ class Session(
     /** The app-owned clipboard write (Mac -> phone); null answers ok=false. */
     private val clipImageHost: ClipImageHost? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** The stream clock: CLOCK_MONOTONIC microseconds, as VIDEO_FRAME's ptsUs. */
+    private val monoUs: () -> Long = { System.nanoTime() / 1_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
     /** How long a person has to tap Allow or Deny before the request expires. */
@@ -208,7 +210,7 @@ class Session(
         var keyDownTime = 0L
     }
 
-    private val queue = SendQueue(maxDeltaBytesPerStream) { stream -> onDeltaDrop(stream) }
+    private val queue = SendQueue(maxDeltaBytesPerStream, nowUs = monoUs) { stream -> onDeltaDrop(stream) }
     private val pairLock = Object()
 
     @Volatile private var phase = Phase.HELLO
@@ -332,6 +334,15 @@ class Session(
 
     private val inbound = InboundQueue(INBOX_MAX_BYTES)
     private var pathTicker: Thread? = null
+
+    /** A wake landed before the ticker entered `wait`: it must not be lost. */
+    @Volatile private var tickWoken = false
+
+    /** `stream.stats` is on for this session, and the next message's deadline. */
+    @Volatile private var statsOn = false
+    @Volatile private var statsNextAtMs = 0L
+    private val statsLock = Any()
+    private val sendStats = HashMap<Int, SendStats>()
     private val tickSignal = Object()
     // Joined from the server thread and read from the session thread.
     private val pathReaders = CopyOnWriteArrayList<Thread>()
@@ -784,28 +795,34 @@ class Session(
         }
         val at = now() / 1000.0
         pathRanking.handle(PathRankingEvent.Tick(at), at)
+        tickStats()
     }
 
     private fun startPathTicker() {
         if (pathTicker != null) return
         pathTicker = Thread({
             while (teardown.get() == SessionTeardown.State.LIVE) {
+                var interrupted = false
+                var woken = false
                 val at = now()
                 val wait = nextTickDelay(at)
-                if (wait > 0) {
-                    var interrupted = false
-                    synchronized(tickSignal) {
+                synchronized(tickSignal) {
+                    if (tickWoken) {
+                        // A wake arrived before the wait: handle it as a wake.
+                        tickWoken = false
+                        woken = true
+                    } else if (wait > 0) {
                         try {
                             tickSignal.wait(wait)
                         } catch (e: InterruptedException) {
                             interrupted = true
                         }
                     }
-                    if (interrupted) break
-                    // Woken for a new (earlier) deadline: recompute instead of
-                    // ticking early.
-                    if (now() < at + wait) continue
                 }
+                if (interrupted) break
+                // Woken for a new (earlier) deadline: recompute instead of
+                // ticking early. A flag-only wake is consumed here.
+                if (!woken && now() < at + wait) continue
                 if (teardown.get() != SessionTeardown.State.LIVE) break
                 inbound.put(Inbound.Tick)
             }
@@ -814,6 +831,7 @@ class Session(
 
     /** R-15/D-1: a new deadline (an ACK timer, a join, a state change). */
     private fun wakeTicker() {
+        tickWoken = true
         synchronized(tickSignal) { tickSignal.notifyAll() }
     }
 
@@ -827,6 +845,12 @@ class Session(
         pathMachine.state.graceDeadline()?.let { deadline ->
             val graceAt = (deadline * 1000).toLong()
             if (graceAt in (at + 1) until next) next = graceAt
+        }
+        // An overdue stats deadline must still wake the ticker: a tick may
+        // have been missed while the session was busy with a resize.
+        if (statsOn) {
+            val statsAt = statsNextAtMs.coerceAtLeast(at + 1)
+            if (statsAt < next) next = statsAt
         }
         if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
         return (next - at).coerceIn(TICK_MIN_MS, TICK_KEEPALIVE_MS)
@@ -1026,10 +1050,23 @@ class Session(
     private fun writerLoop() {
         try {
             while (true) {
-                val bytes = queue.poll() ?: break
+                val entry = queue.poll() ?: break
+                // A frame's queue delay ends when its socket write finished
+                // (ISS-40), so the callback rides the path's writer. Only while
+                // the Mac asked: no timer runs otherwise.
+                val written = if (statsOn && entry.stream != 0 && entry.enqueuedUs > 0) {
+                    val enqueued = entry.enqueuedUs
+                    val stream = entry.stream
+                    {
+                        val delay = monoUs() - enqueued
+                        synchronized(statsLock) {
+                            sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
+                        }
+                    }
+                } else null
                 // Reliable frames are wrapped and kept for a switch; lossy ones
                 // go bare on the current path (docs/design/paths.md §5.5).
-                hub.send(bytes)
+                hub.send(entry.bytes, written)
             }
             // Drained after a stop (e.g. pair_denied): the reader is still in a
             // blocking read, and closing the transport is what wakes it. The
@@ -1498,7 +1535,17 @@ class Session(
     private fun dispatch(obj: Map<String, Any?>, frame: Frame, t: String) {
         try {
             when (t) {
-                "ping" -> sendJson(mapOf("t" to "pong", "ts" to obj["ts"]))
+                "ping" -> sendJson(
+                    mapOf(
+                        "t" to "pong",
+                        "ts" to obj["ts"],
+                        // The stream's clock: MediaCodec surface input carries
+                        // CLOCK_MONOTONIC timestamps (System.nanoTime), the same
+                        // unit and base VIDEO_FRAME's ptsUs uses.
+                        "now" to monoUs(),
+                    ),
+                )
+                "stream.stats" -> onStreamStats(obj)
                 "apps.list" -> onAppsList()
                 "apps.icon" -> onAppsIcon(obj)
                 "window.open" -> onWindowOpen(obj, frame)
@@ -1919,6 +1966,8 @@ class Session(
             return
         }
         display.close(stream)
+        queue.takeDeltaStats(stream)
+        synchronized(statsLock) { sendStats.remove(stream) }
         gate.forget(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         // The panel follows the session's windows, so it is settled before the
@@ -1989,6 +2038,10 @@ class Session(
         if (state.paused) {
             state.paused = false
             display.resume(state.stream)
+            if (statsOn) {
+                statsNextAtMs = now()
+                wakeTicker()
+            }
             updatePower()
         }
     }
@@ -3247,11 +3300,49 @@ class Session(
         runCatching { display.onBackpressure(stream) }
     }
 
+    /**
+     * `stream.stats {on}` (session-wide): while on, each unpaused streaming
+     * window sends one message every 2 s. Off (or a new session) sends none.
+     */
+    private fun onStreamStats(obj: Map<String, Any?>) {
+        val on = Json.bool(obj["on"]) ?: return
+        if (on == statsOn) return
+        statsOn = on
+        display.setStatsEnabled(on)
+        if (on) {
+            statsNextAtMs = now()
+            wakeTicker()
+        } else {
+            synchronized(statsLock) { sendStats.clear() }
+        }
+        log("stream stats ${if (on) "on" else "off"}")
+    }
+
+    /** The 2 s tick behind `stream.stats`; the path ticker carries the deadline. */
+    private fun tickStats() {
+        if (!statsOn) return
+        val at = now()
+        if (at < statsNextAtMs) return
+        statsNextAtMs = at + STATS_INTERVAL_MS
+        val states = synchronized(streams) { streams.values.toList() }
+        for (state in states) {
+            // A paused window sends nothing (the Mac has no picture to count).
+            if (state.paused) continue
+            val encoder = display.statsSnapshot(state.stream, monoUs(), reset = true) ?: continue
+            val (drops, episodes) = queue.takeDeltaStats(state.stream)
+            val send = synchronized(statsLock) {
+                sendStats.getOrPut(state.stream) { SendStats() }.snapshot(drops, episodes)
+            }
+            val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send)
+            sendJson(message, state.stream)
+        }
+    }
+
     // ------------------------------------------------------------------
     // outbound helpers
     // ------------------------------------------------------------------
 
-    private fun sendJson(obj: Map<String, Any?>) {
+    private fun sendJson(obj: Map<String, Any?>, stream: Int = 0) {
         // One choke point: before `welcome` a session may say only what the
         // handshake and pairing machine own. Post-welcome state (a notify
         // toggle, the panel, the device state) reached a half-open session and
@@ -3259,7 +3350,7 @@ class Session(
         // that has not authenticated must see nothing else. The type only in
         // the log, never a payload.
         val t = obj["t"] as? String ?: ""
-        val bytes = Frames.encodeJson(0, Json.encode(obj))
+        val bytes = Frames.encodeJson(stream, Json.encode(obj))
         if (phase != Phase.READY) {
             if (t !in PRE_READY_TYPES) {
                 logOnce("dropped before ready: $t")
@@ -3695,6 +3786,9 @@ class Session(
         /** D-1: the ticker's floor and its idle keepalive wake. */
         const val TICK_MIN_MS = 5L
         const val TICK_KEEPALIVE_MS = 60_000L
+
+        /** `stream.stats` cadence per streaming window (docs/PROTOCOL.md). */
+        const val STATS_INTERVAL_MS = 2_000L
 
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64

@@ -22,7 +22,7 @@ class SendQueueTest {
         q.enqueueDelta(1, pts(0), bytes(0xD1, 1))
         q.enqueueDelta(1, pts(1), bytes(0xD2, 2))
         q.enqueueJson(bytes(0x30, 3))
-        assertEquals(0x30, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0x30, q.pollNow()!!.bytes[0].toInt() and 0xFF)
     }
 
     @Test
@@ -31,7 +31,7 @@ class SendQueueTest {
         q.enqueueDelta(1, pts(0), bytes(0xD1))
         q.enqueueControl(1, bytes(0xC1))
         q.enqueueDelta(1, pts(1), bytes(0xD2))
-        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
     }
 
     @Test
@@ -41,8 +41,8 @@ class SendQueueTest {
         q.enqueueDelta(1, pts(1), bytes(0xD2))
         q.enqueueControl(1, bytes(0xC1)) // new size: the old-size deltas are stale
         q.enqueueDelta(1, pts(2), bytes(0xD3))
-        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
-        assertEquals(0xD3, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        assertEquals(0xD3, q.pollNow()!!.bytes[0].toInt() and 0xFF)
         assertNull(q.pollNow())
     }
 
@@ -52,8 +52,8 @@ class SendQueueTest {
         q.enqueueDelta(2, pts(0), bytes(0xE1))
         q.enqueueDelta(1, pts(0), bytes(0xD1))
         q.enqueueControl(1, bytes(0xC1))
-        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
-        assertEquals(0xE1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        assertEquals(0xE1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
         assertNull(q.pollNow())
     }
 
@@ -62,7 +62,7 @@ class SendQueueTest {
         val q = SendQueue()
         q.enqueueControl(1, bytes(0xC1))
         q.enqueueJson(bytes(0x30))
-        assertEquals(0x30, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0x30, q.pollNow()!!.bytes[0].toInt() and 0xFF)
     }
 
     @Test
@@ -76,9 +76,29 @@ class SendQueueTest {
         q.enqueueDelta(1, pts(2), ByteArray(10)) // still dropping -> discarded
         assertNull(q.pollNow())
         q.enqueueControl(1, bytes(0xC1)) // keyframe/config clears the drop state
-        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
         q.enqueueDelta(1, pts(3), ByteArray(10))
-        assertEquals(10, q.pollNow()!!.size)
+        assertEquals(10, q.pollNow()!!.bytes.size)
+    }
+
+    @Test
+    fun deltaDropsAndEpisodesAreCountedAcrossTheWholeDrop() {
+        val q = SendQueue(maxDeltaBytesPerStream = 10)
+        q.enqueueDelta(1, pts(0), ByteArray(6))
+        q.enqueueDelta(1, pts(1), ByteArray(6)) // backlog (1) + this one = 2 drops, 1 episode
+        assertEquals(2 to 1, q.takeDeltaStats(1))
+        q.enqueueDelta(1, pts(2), ByteArray(6)) // still dropping: counted, no new episode
+        assertEquals(1 to 0, q.takeDeltaStats(1))
+        assertEquals(0 to 0, q.takeDeltaStats(1))
+    }
+
+    @Test
+    fun deltasCarryTheirEnqueueClockAndStream() {
+        val q = SendQueue(nowUs = { 1_234_567L })
+        q.enqueueDelta(7, pts(0), ByteArray(4))
+        val entry = q.pollNow()!!
+        assertEquals(7, entry.stream)
+        assertEquals(1_234_567L, entry.enqueuedUs)
     }
 
     @Test
@@ -100,7 +120,7 @@ class SendQueueTest {
         q.pollNow()
         // The old frame is gone: a late frame must not inherit its pts.
         q.enqueueDelta(1, 10_000_000L, ByteArray(10))
-        assertEquals(10, q.pollNow()!!.size)
+        assertEquals(10, q.pollNow()!!.bytes.size)
     }
 
     @Test
@@ -109,9 +129,9 @@ class SendQueueTest {
         q.enqueueDelta(1, pts(0), bytes(0xA1))
         q.enqueueDelta(2, pts(0), bytes(0xB1))
         q.enqueueDelta(1, pts(1), bytes(0xA2))
-        assertArrayEquals(bytes(0xA1), q.pollNow())
-        assertArrayEquals(bytes(0xB1), q.pollNow())
-        assertArrayEquals(bytes(0xA2), q.pollNow())
+        assertArrayEquals(bytes(0xA1), q.pollNow()!!.bytes)
+        assertArrayEquals(bytes(0xB1), q.pollNow()!!.bytes)
+        assertArrayEquals(bytes(0xA2), q.pollNow()!!.bytes)
         assertNull(q.pollNow())
     }
 
@@ -129,10 +149,10 @@ class SendQueueTest {
         q.enqueueAudio(bytes(0xA1))
         q.enqueueControl(1, bytes(0xC1))
         q.enqueueAudio(bytes(0xA2))
-        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
-        assertEquals(0xA1, q.pollNow()!![0].toInt() and 0xFF)
-        assertEquals(0xA2, q.pollNow()!![0].toInt() and 0xFF)
-        assertEquals(0xD1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        assertEquals(0xA1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        assertEquals(0xA2, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        assertEquals(0xD1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
     }
 
     @Test
@@ -141,7 +161,7 @@ class SendQueueTest {
         q.enqueueAudio(bytes(1, 2, 3, 4, 5, 6))
         q.enqueueAudio(bytes(7, 8, 9, 10, 11, 12))
         // Oldest dropped first; newest survives.
-        assertEquals(6, q.pollNow()!!.size)
+        assertEquals(6, q.pollNow()!!.bytes.size)
         assertNull(q.pollNow())
     }
 
@@ -177,6 +197,6 @@ class SendQueueTest {
         runCatching { json.join(2_000) }
         assertTrue("enqueueJson waited for the drop callback: the queue lock was held",
                    freeWhileDropping)
-        assertEquals(0x30, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0x30, q.pollNow()!!.bytes[0].toInt() and 0xFF)
     }
 }
