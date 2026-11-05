@@ -70,18 +70,17 @@ final class StreamStatsTests: XCTestCase {
     func testTheTwoSecondWindowDropsOldSamples() {
         var window = StreamStatsWindow()
         for index in 0..<10 {
-            window.noteReceived(now: Double(index) * 0.1, bytes: 100,
-                                ptsUs: 0, offsetUs: nil)
+            window.noteReceived(now: Double(index) * 0.1, bytes: 100)
         }
-        window.noteReceived(now: 3.0, bytes: 100, ptsUs: 0, offsetUs: nil)
+        window.noteReceived(now: 3.0, bytes: 100)
         let snapshot = window.snapshot(now: 3.0)
         XCTAssertEqual(snapshot.receivedFrames, 1, "only the 3.0 s frame is in the window")
     }
 
     func testAConfigChangeResetsTheWindow() {
         var window = StreamStatsWindow()
-        window.noteReceived(now: 0.1, bytes: 100, ptsUs: 0, offsetUs: nil)
-        window.noteReceived(now: 0.2, bytes: 100, ptsUs: 0, offsetUs: nil)
+        window.noteReceived(now: 0.1, bytes: 100)
+        window.noteReceived(now: 0.2, bytes: 100)
         window.noteConfig(now: 0.3)
         let snapshot = window.snapshot(now: 1.0)
         XCTAssertEqual(snapshot.receivedFrames, 0)
@@ -131,19 +130,32 @@ final class StreamStatsTests: XCTestCase {
 
     func testCaptureDelayNeedsAnOffset() {
         var window = StreamStatsWindow()
-        window.noteReceived(now: 1.0, bytes: 10, ptsUs: 500_000, offsetUs: nil)
+        window.noteEnqueued(now: 1.0, ptsUs: 500_000, offsetUs: nil)
         XCTAssertNil(window.snapshot(now: 1.0).e2eP50Ms)
-        window.noteConfig(now: 1.0)
-        window.noteReceived(now: 1.0, bytes: 10, ptsUs: 500_000, offsetUs: 400_000)
-        // pts 0.5 s minus 0.4 s offset = 0.1 s Mac time; 1.0 s now = 900 ms.
-        XCTAssertEqual(window.snapshot(now: 1.0).e2eP50Ms ?? -1, 900, accuracy: 0.5)
+    }
+
+    func testTheEndToEndDelayIsMeasuredWhenTheSampleIsHandedOver() {
+        var window = StreamStatsWindow()
+        // The frame arrives at 1.0 s but paced presentation hands it to the
+        // layer at 1.016 s: the line's e2e is the hand-off, so the pacing shows.
+        window.noteReceived(now: 1.0, bytes: 10)
+        window.noteEnqueued(now: 1.016, ptsUs: 500_000, offsetUs: 400_000)
+        // pts 0.5 s minus 0.4 s offset = 0.1 s Mac time; 1.016 s now = 916 ms.
+        XCTAssertEqual(window.snapshot(now: 1.016).e2eP50Ms ?? -1, 916, accuracy: 0.5)
+        XCTAssertEqual(window.snapshot(now: 1.016).e2eP95Ms ?? -1, 916, accuracy: 0.5)
+    }
+
+    func testPacedDropsAreMacDrops() {
+        var window = StreamStatsWindow()
+        window.noteDiscarded(.paced, now: 0.1)
+        XCTAssertEqual(window.snapshot(now: 0.2).macDrop, 1)
     }
 
     // MARK: The line (item 4)
 
     func testTheLogLineHasEveryFieldAndDashForMissingValues() {
         var window = StreamStatsWindow()
-        window.noteReceived(now: 1.0, bytes: 1000, ptsUs: 0, offsetUs: nil)
+        window.noteReceived(now: 1.0, bytes: 1000)
         window.noteEnqueued(now: 1.0, ptsUs: 0, offsetUs: nil)
         var phone = PhoneStreamStats(json: [:])
         phone.targetBps = 8_000_000

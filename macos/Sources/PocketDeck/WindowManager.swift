@@ -1020,8 +1020,7 @@ final class WindowManager {
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.stats.noteReceived(now: ProcessInfo.processInfo.systemUptime,
-                                           bytes: frame.annexB.count, ptsUs: frame.ptsUs,
-                                           offsetUs: clockOffsetUs)
+                                           bytes: frame.annexB.count)
             controller?.videoView.enqueue(frame)
             controller?.frameClock.note()
             // The opening cover ends at the stream's first frame; the note is
