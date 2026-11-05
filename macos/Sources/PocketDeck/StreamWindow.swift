@@ -110,6 +110,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// queue, the decision on the main thread. `window.still` messages are a
     /// second heartbeat for encoders that drop the repeat on a still screen.
     @ObservationIgnored let frameClock = FrameClock()
+    /// This window's stats window (ISS-40): frames in, frames shown, freezes,
+    /// delays and the phone's latest counters. Fed from the video and main
+    /// queues; the 5 s line reads it.
+    let stats = StreamStatsRecorder()
+    private var statsTimer: Timer?
     private var watchdog = FrameWatchdog()
     /// `window.still` messages seen for this stream: a count, never content.
     private(set) var stills = 0
@@ -334,6 +339,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.manager.session.requestKeyframe(stream: self.stream)
         }
+        videoView.onFrameEnqueued = { [weak self] ptsUs in
+            guard let self else { return }
+            self.stats.noteEnqueued(now: ProcessInfo.processInfo.systemUptime,
+                                    ptsUs: ptsUs, offsetUs: self.manager.clockOffsetUs)
+        }
+        videoView.onFrameDiscarded = { [weak self] reason in
+            self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
+        }
+        // One notice line per visible window every 5 s (ISS-40). Numbers only.
+        let statsTimer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logStats() }
+        }
+        RunLoop.main.add(statsTimer, forMode: .common)
+        self.statsTimer = statsTimer
         videoView.liveText.onStateChange = { [weak self] state, reason in
             self?.liveTextChanged(state, reason)
         }
@@ -901,6 +920,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         stopZoomAnimation()
         openingTimer?.invalidate()
         openingTimer = nil
+        statsTimer?.invalidate()
+        statsTimer = nil
         dwellTimer?.invalidate()
         stopDwellFeed()
         resizeWork?.cancel()
@@ -1152,6 +1173,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard !manager.shuttingDown, !closingFromRemote else { return }
         guard changed else { return }
         self.isPaused = paused
+        stats.notePaused(paused, now: ProcessInfo.processInfo.systemUptime)
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
     }
 
@@ -1474,6 +1496,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         stills += 1
         if watchdog.still(at: now) { setStalled(false) }
         writeChromeState()
+    }
+
+    /// ISS-40: one numbers-only `notice` line per visible window every 5 s.
+    /// A paused (hidden, minimized or covered) window logs nothing: no frame
+    /// flow means no picture to describe.
+    func logStats() {
+        guard let window, window.isVisible, !window.isMiniaturized, !isPaused else { return }
+        let stats = stats.snapshot(now: ProcessInfo.processInfo.systemUptime)
+        let line = StreamStatsLine.text(stream: stream,
+                                        size: videoView.framePixelSize,
+                                        view: videoView.backingPixelSize,
+                                        place: videoView.placementName,
+                                        stats: stats)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: counts, sizes, rates and timings only; no content
     }
 
     /// The tick with the clock passed in, so a test can drive the window's
