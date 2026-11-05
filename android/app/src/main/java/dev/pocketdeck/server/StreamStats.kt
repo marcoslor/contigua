@@ -186,7 +186,7 @@ internal data class SendSnapshot(
  */
 internal object StreamStatsWire {
     fun message(stream: Int, windowMs: Long, encoder: EncoderStats,
-                send: SendSnapshot): Map<String, Any?> {
+                send: SendSnapshot, tcp: TCPCounterSample? = null): Map<String, Any?> {
         val out = linkedMapOf<String, Any?>(
             "t" to "stream.stats",
             "stream" to stream,
@@ -210,6 +210,9 @@ internal object StreamStatsWire {
         send.queueP95?.let { out["queueP95"] = it }
         encoder.qpP50?.let { out["qpP50"] = it }
         encoder.qpP95?.let { out["qpP95"] = it }
+        tcp?.retransSegs?.let { out["retrans"] = it }
+        tcp?.timeouts?.let { out["rto"] = it }
+        tcp?.lostRetransmit?.let { out["lost_retrans"] = it }
         return out
     }
 }
