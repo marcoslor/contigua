@@ -12,9 +12,10 @@
 #   * pairs the deckctl client, opens a Settings window, turns `stream.stats`
 #     on and reads 3 real messages, plus 2 `pong`s whose `now` must advance
 #     with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
-#   * pairs the e2e Mac app and runs the stream bench once (baseline arm,
-#     one repeat, Settings) through the app's own MCP tools;
-#   * prints the 3 messages, the pong lines and the bench table;
+#   * pairs the e2e Mac app and runs the stream bench once (baseline and
+#     q1q2-100, one repeat, Settings) through the app's own MCP tools;
+#   * prints the 3 messages, the pong lines, the bench table and the phone's
+#     `stream N qp sample:` line;
 #   * kills the emulator with `adb -s emulator-5554 emu kill` in cleanup.
 #
 # QP may read `-`: the emulator's encoder need not report encoding statistics.
@@ -40,6 +41,7 @@ APP="$BUNDLE/Contents/MacOS/PocketDeck"
 SHIM="$BUNDLE/Contents/Helpers/pocketdeck-mcp"
 CLIENT="$ROOT/tools/fakephone/deckctl.py"
 BENCH="$ROOT/tools/stream-bench/bench.py"
+ARMS="$ROOT/tools/stream-bench/arms.json"
 POC="$ROOT/tools/emulator/poc.py"
 STATE="$CACHE_DIR/deckctl-state-stats-$$.json"
 PROFILE="statsemu$$"
@@ -49,6 +51,7 @@ HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 APP_PID=""
 TAP_PID=""
+CAT_PID=""
 FAIL=0
 PHASE=""
 
@@ -78,6 +81,16 @@ if [ "$MODE" = check ]; then
     bash "$HERE/preflight.sh" || CHECK_FAIL=1
     bash -n "$0" || cfail "bash -n $0"
     "$PYTHON" -m py_compile "$CLIENT" "$BENCH" || cfail "py_compile deckctl/bench"
+    "$PYTHON" "$ROOT/tools/stream-bench/test_bench.py" >/dev/null 2>&1 ||
+        cfail "stream-bench test_bench"
+    "$PYTHON" - "$ARMS" <<'PY' || cfail "arms.json lacks baseline/q1q2-100 or has the old combo-a"
+import json, sys
+data = json.load(open(sys.argv[1]))
+arms = {arm["name"]: arm for arm in data["arms"]}
+assert {"baseline", "q1q2-100"} <= set(arms), sorted(arms)
+assert "tos" not in arms["combo-a"]["phone"], arms["combo-a"]["phone"]
+assert arms["n1-af41"].get("restart") is True, arms["n1-af41"]
+PY
     "$PYTHON" - "$CLIENT" <<'PY' || cfail "deckctl has no stats command"
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("deckctl", sys.argv[1])
@@ -153,6 +166,7 @@ cleanup() {
     local trap_rc=$?
     stop_app
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
+    [ -n "$CAT_PID" ] && kill "$CAT_PID" 2>/dev/null || true
     if [ "$DOCK_DEFAULT_SET" = "1" ]; then
         defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     fi
@@ -241,6 +255,19 @@ DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 emu logcat -c >/dev/null 2>&1 || true
+# The phone's own lines for the whole run: the QP sample is a logcat line the
+# reviewer reads on the real phone.
+emu logcat -v brief -s PocketDeckSvc:I > "$WORK/logcat.txt" 2>&1 &
+CAT_PID=$!
+
+python3 - "$ARMS" "$WORK/arms.json" <<'PY' || { bad "could not build the two-arm list"; exit 1; }
+import json, sys
+data = json.load(open(sys.argv[1]))
+want = {"baseline", "q1q2-100"}
+arms = [arm for arm in data["arms"] if arm["name"] in want]
+assert {arm["name"] for arm in arms} == want
+json.dump({"arms": arms}, open(sys.argv[2], "w"))
+PY
 
 bash "$HERE/unlock.sh" >/dev/null 2>&1 || true
 acquire_e2e_lock || bad "no e2e lock: the Mac window is exposed to another agent's input"
@@ -327,15 +354,35 @@ fi
 
 "$PYTHON" "$BENCH" --profile "$PROFILE" --serial "$SERIAL" --adb "$ADB" \
     --repeats 1 --out "$OUT/bench-emulator.csv" --shim "$SHIM" \
+    --arms "$WORK/arms.json" \
     --package com.android.settings > "$WORK/bench.log" 2>&1
 BENCH_RC=$?
+sleep 2
+# The live capture can lose its last buffer block when killed; the device's
+# ring buffer is the authority for the phone's own lines.
+emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
+[ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
 rows="$(($(wc -l < "$OUT/bench-emulator.csv" 2>/dev/null || echo 1) - 1))"
-[ "$rows" -ge 1 ] && ok "the bench CSV has $rows run" || bad "the bench CSV has no runs"
-grep -Eq '^baseline ' "$WORK/bench.log" \
-    && ok "the bench table has its baseline row" \
-    || bad "no baseline row in the bench table"
+[ "$rows" -eq 2 ] && ok "the bench CSV has one run per arm (2)" \
+    || bad "the bench CSV has $rows runs, expected 2"
+for arm in baseline q1q2-100; do
+    grep -Eq "^$arm( |\(|$)" "$WORK/bench.log" \
+        && ok "the bench table has its $arm row" \
+        || bad "no $arm row in the bench table"
+done
+
+# ISS-40's QP sample: one line per stream after its 30th output buffer. The
+# emulator's encoder may report no QP; the line's presence is the proof, and
+# `values=-` says the codec gave none.
+QP_LINES="$(grep -o 'stream [0-9]* qp sample: .*' "$WORK/logcat.txt" 2>/dev/null || true)"
+if [ -n "$QP_LINES" ]; then
+    ok "the phone logged the QP sample"
+    printf '%s\n' "$QP_LINES" | sort -u | head -5
+else
+    bad "no 'stream N qp sample:' line in logcat"
+fi
 
 stop_app
 say "artifacts: $WORK, $OUT/bench-emulator.csv"
