@@ -17,41 +17,54 @@ package dev.pocketdeck.server
  * Delta frames rotate between streams so a busy stream cannot starve a quiet
  * one. Bulk data (shared files) comes last, and its producer blocks while
  * [maxBulkBytes] are queued, so a large file is never held in memory and never
- * delays replies or video. Entries are pre-framed byte arrays ready for the socket.
+ * delays replies or video. Entries are pre-framed byte arrays ready for the
+ * socket.
+ *
+ * Each entry also carries the monotonic µs it was enqueued at (delta frames
+ * only; ISS-40's queue-delay metric) and its stream, so the writer can report
+ * a frame's delivery without a lookup. The delta drop counters live here too:
+ * a queue that is dropping still counts every discarded delta, and the session
+ * reads them when it builds `stream.stats`.
  */
 internal class SendQueue(
     private val maxDeltaBytesPerStream: Int = DEFAULT_MAX_DELTA_BYTES,
     private val maxDeltaDurationUs: Long = DEFAULT_MAX_DELTA_DURATION_US,
     private val maxBulkBytes: Int = DEFAULT_MAX_BULK_BYTES,
     private val maxAudioBytes: Int = DEFAULT_MAX_AUDIO_BYTES,
+    private val nowUs: () -> Long = { 0L },
     private val onDeltaDrop: (stream: Int) -> Unit = {},
 ) {
+    /** One queued frame: the bytes plus the stream and enqueue clock. */
+    class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0)
+
     private val lock = Object()
 
-    private val json = ArrayDeque<ByteArray>()
-    private val control = ArrayDeque<ByteArray>()
-    private val audio = ArrayDeque<ByteArray>()
+    private val json = ArrayDeque<Entry>()
+    private val control = ArrayDeque<Entry>()
+    private val audio = ArrayDeque<Entry>()
     private var audioBytes = 0
-    private val deltas = HashMap<Int, ArrayDeque<ByteArray>>()
+    private val deltas = HashMap<Int, ArrayDeque<Entry>>()
     private val deltaOrder = ArrayDeque<Int>()
     private val deltaBytes = HashMap<Int, Int>()
     private val deltaFirstPtsUs = HashMap<Int, Long>()
     private val dropping = HashSet<Int>()
-    private val bulk = ArrayDeque<ByteArray>()
+    private val dropCounts = HashMap<Int, Int>()
+    private val dropEpisodes = HashMap<Int, Int>()
+    private val bulk = ArrayDeque<Entry>()
     private var bulkBytes = 0
     private var closed = false
 
     fun enqueueJson(bytes: ByteArray) = synchronized(lock) {
-        json.addLast(bytes)
+        json.addLast(Entry(bytes))
         lock.notifyAll()
     }
 
     /** Device-wide audio (Opus/AAC packets): after control, before video deltas. */
     fun enqueueAudio(bytes: ByteArray) = synchronized(lock) {
-        audio.addLast(bytes)
+        audio.addLast(Entry(bytes))
         audioBytes += bytes.size
         while (audioBytes > maxAudioBytes && audio.isNotEmpty()) {
-            audioBytes -= audio.removeFirst().size
+            audioBytes -= audio.removeFirst().bytes.size
         }
         lock.notifyAll()
     }
@@ -72,16 +85,20 @@ internal class SendQueue(
             dropping.remove(stream)
             discardDeltas(stream)
         }
-        control.addLast(bytes)
+        control.addLast(Entry(bytes, stream))
         lock.notifyAll()
     }
 
     fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
         var dropped = false
         synchronized(lock) {
-            if (stream in dropping) return
+            if (stream in dropping) {
+                // Still waiting for the keyframe: this delta is discarded too.
+                dropCounts[stream] = (dropCounts[stream] ?: 0) + 1
+                return
+            }
             val existing = deltas[stream]
-            val q: ArrayDeque<ByteArray>
+            val q: ArrayDeque<Entry>
             if (existing == null) {
                 q = ArrayDeque()
                 deltas[stream] = q
@@ -93,12 +110,14 @@ internal class SendQueue(
             val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
             if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
                 // Stalled consumer: drop the backlog and ask for a fresh keyframe.
-                discardDeltas(stream)
+                val discarded = discardDeltas(stream) + 1
+                dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
+                dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
                 dropping.add(stream)
                 dropped = stream != 0
                 return@synchronized
             }
-            q.addLast(bytes)
+            q.addLast(Entry(bytes, stream, nowUs()))
             deltaBytes[stream] = used + bytes.size
             deltaFirstPtsUs[stream] = firstPts
             lock.notifyAll()
@@ -116,24 +135,32 @@ internal class SendQueue(
     fun enqueueBulk(bytes: ByteArray): Boolean = synchronized(lock) {
         while (!closed && bulkBytes > 0 && bulkBytes + bytes.size > maxBulkBytes) lock.wait()
         if (closed) return false
-        bulk.addLast(bytes)
+        bulk.addLast(Entry(bytes))
         bulkBytes += bytes.size
         lock.notifyAll()
         true
     }
 
-    private fun discardDeltas(stream: Int) {
-        deltas.remove(stream)?.clear()
+    /** The deltas discarded and the drop episodes for [stream]; resets them. */
+    fun takeDeltaStats(stream: Int): Pair<Int, Int> = synchronized(lock) {
+        val dropped = dropCounts.remove(stream) ?: 0
+        val episodes = dropEpisodes.remove(stream) ?: 0
+        dropped to episodes
+    }
+
+    private fun discardDeltas(stream: Int): Int {
+        val removed = deltas.remove(stream)?.size ?: 0
         deltaOrder.remove(stream)
         deltaBytes[stream] = 0
         deltaFirstPtsUs.remove(stream)
+        return removed
     }
 
     /** Non-blocking dequeue; null when nothing is queued. */
-    fun pollNow(): ByteArray? = synchronized(lock) { takeLocked() }
+    fun pollNow(): Entry? = synchronized(lock) { takeLocked() }
 
     /** Blocks until an entry is available, or returns null once [close] was called. */
-    fun poll(): ByteArray? {
+    fun poll(): Entry? {
         synchronized(lock) {
             while (true) {
                 takeLocked()?.let { return it }
@@ -148,25 +175,25 @@ internal class SendQueue(
         lock.notifyAll()
     }
 
-    private fun takeLocked(): ByteArray? {
+    private fun takeLocked(): Entry? {
         json.removeFirstOrNull()?.let { return it }
         control.removeFirstOrNull()?.let { return it }
         audio.removeFirstOrNull()?.let {
-            audioBytes -= it.size
+            audioBytes -= it.bytes.size
             return it
         }
         val n = deltaOrder.size
         repeat(n) {
             val stream = deltaOrder.removeFirst()
             val q = deltas[stream] ?: return@repeat
-            val bytes = q.removeFirstOrNull()
-            if (bytes == null) {
+            val entry = q.removeFirstOrNull()
+            if (entry == null) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
                 return@repeat
             }
-            deltaBytes[stream] = (deltaBytes[stream] ?: bytes.size) - bytes.size
+            deltaBytes[stream] = (deltaBytes[stream] ?: entry.bytes.size) - entry.bytes.size
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
@@ -174,12 +201,12 @@ internal class SendQueue(
             } else {
                 deltaOrder.addLast(stream)
             }
-            return bytes
+            return entry
         }
-        val bytes = bulk.removeFirstOrNull() ?: return null
-        bulkBytes -= bytes.size
+        val entry = bulk.removeFirstOrNull() ?: return null
+        bulkBytes -= entry.bytes.size
         lock.notifyAll()
-        return bytes
+        return entry
     }
 
     companion object {

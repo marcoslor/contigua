@@ -323,6 +323,19 @@ interface DisplayLayer {
      * exceeded the protocol's budget; the encoder should lower its bitrate.
      */
     fun onBackpressure(stream: Int) {}
+
+    /**
+     * `stream.stats {on}`: while on, the encoders keep the per-frame delay and
+     * QP rings the phone reports every 2 s. Counters themselves are always
+     * plain increments; this only turns on the expensive per-frame reads.
+     */
+    fun setStatsEnabled(on: Boolean) {}
+
+    /**
+     * One stream's counters since the last call, or null for an unknown stream.
+     * Used only while stats are on; `reset` starts the next 2 s window.
+     */
+    fun statsSnapshot(stream: Int, nowUs: Long, reset: Boolean = true): EncoderStats? = null
 }
 
 interface AppCatalog {

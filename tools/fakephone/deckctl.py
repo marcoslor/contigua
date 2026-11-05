@@ -1035,6 +1035,89 @@ def cmd_open(client, args):
     return 0
 
 
+STATS_REQUIRED = ("windowMs", "frames", "kf", "kfReq", "bytes", "drop",
+                   "dropEp", "skip", "targetBps")
+
+
+def cmd_stats(client, args):
+    """ISS-40 on the real server: open a window, ask for `stream.stats`, read
+    the messages, and prove `pong.now` is a live monotonic-microsecond clock."""
+    stream = 1
+    client.send_json({"t": "window.open", "stream": stream,
+                      "w": args.w, "h": args.h, "dpi": args.dpi,
+                      "pkg": args.pkg})
+    client.send_json({"t": "stream.stats", "on": True})
+    deadline = time.time() + args.seconds
+    next_ping = time.time()
+    opened = False
+    messages = []
+    pongs = []      # (sent ts, now, receive monotonic)
+    try:
+        while time.time() < deadline and (len(messages) < args.messages or len(pongs) < 2):
+            now = time.time()
+            if now >= next_ping:
+                sent_ts = int(now * 1000)
+                client.send_json({"t": "ping", "ts": sent_ts,
+                                  "monoUs": time.monotonic_ns() // 1000})
+                next_ping = now + 0.5
+            frame = client.recv(min(0.25, max(0.02, deadline - time.time())))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed before the stats arrived")
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            kind = msg.get("t")
+            if kind == "error":
+                raise DeckError("phone error %s: %s"
+                                % (msg.get("code"), msg.get("message", "")))
+            if kind == "window.opened" and msg.get("stream") == stream:
+                opened = True
+            elif kind == "pong":
+                value = msg.get("now")
+                if not isinstance(value, int) or value <= 0:
+                    raise DeckError("pong has no positive now: %r" % (value,))
+                if msg.get("ts") != sent_ts and msg.get("ts") is not None:
+                    # An older phone may echo a ping from before this request;
+                    # only a pong for our own ts counts.
+                    continue
+                pongs.append((sent_ts, value, time.monotonic()))
+                print("pong ts=%s now=%d" % (msg.get("ts"), value), flush=True)
+            elif kind == "stream.stats" and msg.get("stream") == stream:
+                missing = [key for key in STATS_REQUIRED if key not in msg]
+                if missing:
+                    raise DeckError("stream.stats lacks %s" % ", ".join(missing))
+                if msg.get("windowMs") != 2000:
+                    raise DeckError("stream.stats windowMs is %r, expected 2000"
+                                    % (msg.get("windowMs"),))
+                messages.append(msg)
+                print("stream.stats " + json.dumps(msg, sort_keys=True), flush=True)
+    finally:
+        client.send_json({"t": "stream.stats", "on": False})
+        client.send_json({"t": "window.close", "stream": stream})
+    if not opened:
+        raise DeckError("no window.opened")
+    if len(messages) < args.messages:
+        raise DeckError("only %d stream.stats messages, expected %d"
+                        % (len(messages), args.messages))
+    if len(pongs) < 2:
+        raise DeckError("only %d pongs, expected 2" % len(pongs))
+    # A monotonic clock measured 1+ s apart: now's own delta matches the
+    # receive-side elapsed time (a random or wall-clock value would not).
+    (_, first, first_at), (_, last, last_at) = pongs[0], pongs[-1]
+    clock_delta = (last - first) / 1_000_000.0
+    elapsed = last_at - first_at
+    if elapsed < 0.9:
+        raise DeckError("the two pongs are only %.1f s apart" % elapsed)
+    if abs(clock_delta - elapsed) > 0.5:
+        raise DeckError("pong.now advanced %.2f s over %.2f s of elapsed time"
+                        % (clock_delta, elapsed))
+    print("STATS OK messages=%d pongs=%d clock_delta=%.2fs elapsed=%.2fs"
+          % (len(messages), len(pongs), clock_delta, elapsed), flush=True)
+    return 0
+
+
 def cmd_resize_test(client, args):
     stream = 1
     client.send_json({"t": "window.open", "stream": stream,
@@ -2947,6 +3030,15 @@ def build_parser():
     sp.add_argument("--serial", default="emulator-5554")
     sp.add_argument("--skip-launcher", action="store_true", dest="skip_launcher")
 
+    sp = sub.add_parser("stats",
+                        help="open a window, read stream.stats and prove pong.now", **spp)
+    sp.add_argument("--pkg", default="com.android.settings")
+    sp.add_argument("--w", type=int, default=900)
+    sp.add_argument("--h", type=int, default=600)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--messages", type=int, default=3)
+    sp.add_argument("--seconds", type=float, default=20.0)
+
     sp = sub.add_parser("resize-test", help="open, resize, check new CONFIG + keyframe", **spp)
     sp.add_argument("--w", type=int, default=1080)
     sp.add_argument("--h", type=int, default=2340)
@@ -3589,6 +3681,7 @@ COMMANDS = {
     "pong-mode": cmd_pong_mode,
     "icon": cmd_icon,
     "open": cmd_open,
+    "stats": cmd_stats,
     "resize-test": cmd_resize_test,
     "input-test": cmd_input_test,
     "pause-test": cmd_pause_test,
