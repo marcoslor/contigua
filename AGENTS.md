@@ -107,15 +107,12 @@ Exit when all checks pass (then do one cleanup pass: remove leftovers, re-run al
 
 ### Ask the architect (direct line)
 
-When you are blocked, don't loop and don't guess. Write the question to
-`.agent/<task-id>/ask.md` (what you tried, the evidence, 2–3 options and the one you
-recommend), then wait for the answer with a single blocking command:
-
-```sh
-until [ -f .agent/<task-id>/answer.md ]; do sleep 5; done; cat .agent/<task-id>/answer.md
-```
-
-Re-run that command if it times out. When the answer arrives, delete both files and continue.
+When you are blocked, don't loop and don't guess. Ask with your harness's question
+tool (`question`, `AskUserQuestion` or `request_user_input`): what you tried, the evidence,
+2–3 options and the one you recommend. Under a parent agent the question reaches the
+reviewer, the call blocks until the answer comes back, and you continue in the same turn.
+Don't end your turn to ask, and don't poll files for an answer. Only if your harness has no
+question tool, put the question in your final reply and end your turn.
 Ask when any of these happens:
 - A check fails **twice** for the same reason.
 - An external dependency (device offline, network, another dev's broken build) blocks a check.
