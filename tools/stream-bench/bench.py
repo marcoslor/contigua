@@ -203,6 +203,7 @@ def profile_app_pid(ps_text, profile):
     bundle's `Contents/MacOS/PocketDeck` and carries `--profile <profile>`.
     A Dock shim or another profile's app never matches."""
     marker = re.compile(r"--profile\s+%s(?:\s|$)" % re.escape(profile))
+    any_profile = re.compile(r"--profile(?:\s|=|$)")
     for line in ps_text.splitlines():
         parts = line.strip().split(None, 1)
         if len(parts) != 2 or not parts[0].isdigit():
@@ -214,6 +215,10 @@ def profile_app_pid(ps_text, profile):
         if not executable.endswith("/Contents/MacOS/PocketDeck"):
             continue
         if marker.search(command):
+            return int(parts[0])
+        # The person's installed app, opened from Finder or `open -a`, carries
+        # no flag at all: that process is the default profile.
+        if profile == "default" and not any_profile.search(command):
             return int(parts[0])
     return None
 
