@@ -55,6 +55,14 @@ final class WindowManager {
     /// with the path it arrived on.
     var frameLog: DebugFrameLog?
 
+    /// The phone's clock offset, for the windows' capture→local delays. nil
+    /// until a pong carried `now` (an older phone sends none).
+    var clockOffsetUs: Double? { session.phoneClockOffsetUs }
+
+    /// The session-wide `stream.stats` switch: on with the first window, off
+    /// with the last (StatsSubscription).
+    private var statsSubscription = StatsSubscription()
+
     /// Files a Finder drag dropped on a stream window (docs/design/dragdrop.md).
     /// The second argument is the app window's package (SHARE-17); the Deck, a
     /// phone-mode window and a link window pass nil. The owner
@@ -74,6 +82,7 @@ final class WindowManager {
     /// talk to whichever is current.
     func attach(_ session: Session) {
         lock.lock(); self.session = session; lock.unlock()
+        statsSubscription.sessionEnded()
     }
 
     /// True while the link is down: stream windows show a "Reconnecting…" pill
@@ -415,6 +424,7 @@ final class WindowManager {
         controller.sendOpen()
         noteFront(stream)
         refreshTitles()
+        syncStatsSubscription()
         onChange?()
         return controller
     }
@@ -845,6 +855,7 @@ final class WindowManager {
         frontOrder.removeAll { $0 == stream }
         lock.unlock()
         if removed { onStreamClosed?(stream) }
+        if removed { syncStatsSubscription() }
         refreshTitles()
         // A closed key window hands the keyboard to another window. AppKit
         // does this itself; a quiet run's emulated key window would otherwise
@@ -964,6 +975,13 @@ final class WindowManager {
         lock.lock(); streams[stream] = controller; lock.unlock()
     }
 
+    /// Asks for or stops the phone's `stream.stats` at the one moment the
+    /// window set crosses empty↔non-empty (StatsSubscription).
+    private func syncStatsSubscription() {
+        guard let on = statsSubscription.windowsChanged(open: openStreams.count) else { return }
+        session.setStreamStats(on)
+    }
+
     private func allControllers() -> [StreamWindowController] {
         lock.lock(); defer { lock.unlock() }
         return Array(streams.values)
@@ -984,6 +1002,7 @@ final class WindowManager {
         switch event {
         case .config(let stream, let config, let picture):
             videoDump?.write(config: config, stream: stream)
+            controller(for: stream)?.stats.noteConfig(now: ProcessInfo.processInfo.systemUptime)
             // A new CONFIG is the phone's answer to a resize too: the value
             // that waited behind it may go out now. This runs on the session's
             // video queue, and the coalescer is the window's (main-thread)
@@ -996,6 +1015,9 @@ final class WindowManager {
             frameLog?.note(stream: stream, path: path)
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
+            controller?.stats.noteReceived(now: ProcessInfo.processInfo.systemUptime,
+                                           bytes: frame.annexB.count, ptsUs: frame.ptsUs,
+                                           offsetUs: clockOffsetUs)
             controller?.videoView.enqueue(frame)
             controller?.frameClock.note()
             // The opening cover ends at the stream's first frame; the note is
@@ -1076,6 +1098,8 @@ final class WindowManager {
             // A heartbeat for that stream's picture rule only: another stream's
             // still says nothing about this window.
             controller(for: stream)?.noteStill()
+        case .phoneStats(let stream, let stats):
+            controller(for: stream)?.stats.notePhoneStats(stats)
         case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private))")
             controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
@@ -1125,6 +1149,7 @@ final class WindowManager {
             }
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
+            syncStatsSubscription()
         default:
             break
         }
