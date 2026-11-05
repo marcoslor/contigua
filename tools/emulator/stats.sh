@@ -298,7 +298,7 @@ STATS_OK=0
 for attempt in 1 2 3; do
     if "$PYTHON" "$CLIENT" --host 127.0.0.1 --port "$PORT" --state "$STATE" \
             --wait-for-free 20 stats --pkg com.android.settings --w 900 --h 600 \
-            --dpi 160 --messages 3 --seconds 30 > "$WORK/deckctl-stats.log" 2>&1; then
+            --dpi 160 --messages 12 --seconds 30 > "$WORK/deckctl-stats.log" 2>&1; then
         STATS_OK=1
         break
     fi
@@ -308,10 +308,15 @@ done
 cat "$WORK/deckctl-stats.log"
 messages="$(grep -c '^stream.stats ' "$WORK/deckctl-stats.log" || true)"
 pongs="$(grep -c '^pong ' "$WORK/deckctl-stats.log" || true)"
+SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat.txt" 2>/dev/null || true)"
+[ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
 [ "$STATS_OK" = 1 ] && ok "deckctl stats completed" || bad "deckctl stats did not complete"
-[ "${messages:-0}" -ge 3 ] \
-    && ok "read $messages real stream.stats messages" \
-    || bad "only ${messages:-0} stream.stats messages"
+[ "${messages:-0}" -ge 12 ] \
+    && ok "read $messages real stream.stats messages (a 30 s window)" \
+    || bad "only ${messages:-0} stream.stats messages, expected 12"
+printf '%s\n' "$SENT_LINES" | grep -q 'stats sent=10' \
+    && ok "the phone logged its tenth message (stream N stats sent=10)" \
+    || bad "no 'stream N stats sent=10' line on the phone"
 [ "${pongs:-0}" -ge 2 ] \
     && ok "read $pongs pongs, each with a positive now" \
     || bad "only ${pongs:-0} pongs"
@@ -364,6 +369,17 @@ emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
 [ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
+PHONE_N="$(grep -o 'phone_n=[0-9]*' "$WORK/bench.log" 2>/dev/null | cut -d= -f2 | tr '\n' ',' | sed 's/,$//')"
+SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat.txt" 2>/dev/null || true)"
+[ -n "$PHONE_N" ] && say "Mac per-line phone_n: $PHONE_N"
+[ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
+if [ -z "$PHONE_N" ]; then
+    bad "no phone_n on the bench's lines"
+elif printf '%s\n' "$PHONE_N" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
+    ok "every bench line folded in at least two phone messages (phone_n=$PHONE_N)"
+else
+    bad "a bench line carried fewer than two phone messages (phone_n=$PHONE_N)"
+fi
 rows="$(($(wc -l < "$OUT/bench-emulator.csv" 2>/dev/null || echo 1) - 1))"
 [ "$rows" -eq 2 ] && ok "the bench CSV has one run per arm (2)" \
     || bad "the bench CSV has $rows runs, expected 2"
