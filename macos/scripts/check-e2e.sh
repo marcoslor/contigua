@@ -11786,7 +11786,7 @@ check_zoom() {
 # must log nothing until it is visible again.
 check_stats() {
     clean
-    FAKE_ARGS="--stats-drop 7 --stats-qp 24 --frame-gap-after 8 --frame-gap-ms 300 --no-backlog-restart" start_fake || return 1
+    FAKE_ARGS="--stats-drop 7 --stats-qp 24 --stats-retrans 2 --frame-gap-after 8 --frame-gap-ms 300 --no-backlog-restart" start_fake || return 1
     rm -rf "$WORK-control"
     mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
@@ -11856,6 +11856,18 @@ phone = [int(number("phone_n", r) or 0) for r in recent]
 # a freeze and not a hitch. Startup can still hand over a burst late; the
 # steady lines are the ones the line-level contract is about.
 hitch = max([int(number("hitch_n", r) or 0) for r in recent] + [0])
+# X0: the socket's own reading is a number on every steady line (the first
+# line of a window has no earlier reading for the out-of-order delta).
+tcp_ok = 1 if recent and all(
+    number(key, r) is not None
+    for r in recent for key in ("tcp_srtt", "tcp_rttvar", "tcp_ooo_kb")) else 0
+# The fake phone sends two resends and one timeout per 2 s message, so a 5 s
+# line sums exactly 2× and 1× its phone_n.
+resend_ok = 1 if recent and all(
+    number("ph_retrans", r) == 2 * (number("phone_n", r) or 0)
+    and number("ph_rto", r) == (number("phone_n", r) or 0)
+    and number("ph_lost", r) == 0
+    for r in recent) else 0
 print(len(rows),
       round(statistics.median(rx), 1) if rx else "-",
       round(statistics.median(shown), 1) if shown else "-",
@@ -11863,10 +11875,11 @@ print(len(rows),
       drop, episodes, freeze,
       round(statistics.median(qp), 1) if qp else "-",
       hitch,
-      ",".join(str(value) for value in phone) if phone else "-")
+      ",".join(str(value) for value in phone) if phone else "-",
+      tcp_ok, resend_ok)
 PY
-    local lines rx shown e2e drop episodes freeze qp hitch phone_n
-    read -r lines rx shown e2e drop episodes freeze qp hitch phone_n < "$WORK/stats-metrics.txt"
+    local lines rx shown e2e drop episodes freeze qp hitch phone_n tcp_ok resend_ok
+    read -r lines rx shown e2e drop episodes freeze qp hitch phone_n tcp_ok resend_ok < "$WORK/stats-metrics.txt"
     # An empty or short metrics line must fail an assertion below, not stop the
     # check with `unbound variable`.
     lines="${lines:-0}"
@@ -11879,7 +11892,9 @@ PY
     qp="${qp:--}"
     hitch="${hitch:-0}"
     phone_n="${phone_n:--}"
-    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop drop_ep=$episodes freeze_n=$freeze qp_p95=$qp hitch_n=$hitch phone_n=$phone_n"
+    tcp_ok="${tcp_ok:-0}"
+    resend_ok="${resend_ok:-0}"
+    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop drop_ep=$episodes freeze_n=$freeze qp_p95=$qp hitch_n=$hitch phone_n=$phone_n tcp_ok=$tcp_ok resend_ok=$resend_ok"
     if [ "$phone_n" != "-" ] && printf '%s\n' "$phone_n" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
         ok "STATS every steady line folded in at least two phone messages (phone_n=$phone_n)"
     else
@@ -11912,6 +11927,12 @@ PY
     [ "$hitch" = "0" ] \
         && ok "STATS hitch_n=0 on the fake phone's steady encoder (its forced gap is a freeze, not a hitch)" \
         || bad "STATS hitch_n=$hitch, expected 0 (the fake phone's pts follows wall clock)"
+    [ "$tcp_ok" = "1" ] \
+        && ok "STATS every steady line carries the socket's tcp_srtt, tcp_rttvar and tcp_ooo_kb" \
+        || bad "STATS a steady line is missing a numeric tcp_srtt/tcp_rttvar/tcp_ooo_kb"
+    [ "$resend_ok" = "1" ] \
+        && ok "STATS ph_retrans and ph_rto sum the fake phone's per-message resends (2 and 1) and ph_lost stays 0" \
+        || bad "STATS ph_retrans/ph_rto/ph_lost do not sum the phone's messages"
 
     # The summary script must read the same saved lines (the reviewer uses it
     # on the real phone).
@@ -11956,7 +11977,8 @@ PY
                  freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop phone_drop \
                  drop_ep drop_ms skip kf kf_req \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
-                 e2e_p50 e2e_p95; do
+                 e2e_p50 e2e_p95 tcp_srtt tcp_rttvar tcp_ooo_kb \
+                 ph_retrans ph_rto ph_lost; do
         case "$line" in
             *"$field="*) ;;
             *) missing="$missing $field" ;;
@@ -11985,7 +12007,8 @@ PY
     total_line="$(stats_total_log | tail -1)"
     for field in secs rx_frames shown_frames hitch_n hitch_ms late_p99 \
                  phone_n phone_frames kf kf_req drop_ep drop_ms susp_n susp_ms \
-                 bytes e2e_p50 e2e_p95 covered_ms; do
+                 bytes e2e_p50 e2e_p95 covered_ms tcp_ooo_kb tcp_srtt_max \
+                 ph_retrans ph_rto ph_lost; do
         case "$total_line" in
             *"$field="*) ;;
             *) total_missing="$total_missing $field" ;;
@@ -12027,6 +12050,31 @@ PY
 # same method the Rename dialog's button does). Assertions: the app window's
 # title is "Settings (Nicky)" (the Dock/⌘-Tab identity), the Dock shim is
 # "WhatsApp (Nicky).app", the phone window is titled with the nickname, and a
+# check_netvideo — stream.net=video marks the dialled stream socket (N1). The
+# session's strategy line carries the value getsockopt reads back, so the run
+# proves the option landed instead of trusting the write.
+check_netvideo() {
+    clean
+    defaults write "$DEFAULTS_SUITE" stream.net -string video
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    net_strategy() {
+        /usr/bin/log show --last 2m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -F "session mac strategy:"
+    }
+    video_line() { net_strategy | grep -F "net=video net_svc=3"; }
+    if wait_until 20 video_line; then
+        ok "N1 stream.net=video marks the stream socket (the read-back is 3)"
+    else
+        bad "N1 no 'session mac strategy: net=video net_svc=3' line; saw: $(net_strategy | tail -1)"
+    fi
+    stop_app
+    stop_fakephone
+    defaults delete "$DEFAULTS_SUITE" stream.net >/dev/null 2>&1
+}
+
+
 # rename retitles the window and rebuilds the shim.
 check_nickname() {
     clean

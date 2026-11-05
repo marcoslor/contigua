@@ -44,8 +44,15 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 # jank_* lead: what a person feels while the phone's content moves is a hitch
 # on the Mac, a drop gap on the phone, or a suspend (Q1).
 TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
-                "late_p99", "shown_fps", "kf", "kbps", "qp_p95", "e2e_p50",
-                "e2e_p95")
+                "late_p99", "shown_fps", "kf", "kbps", "tcp_ooo_kb",
+                "ph_retrans", "qp_p95", "e2e_p50", "e2e_p95")
+# One CSV row per run: the table fields plus the totals that are not table
+# cells and the marks a reader needs to exclude a run.
+CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
+               "failed", "covered", "secs", "rx_frames", "shown_frames",
+               "phone_frames", "kf_req", "bytes", "covered_ms",
+               "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"]
+              + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms", "phone_gaps"])
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
 
 
@@ -360,6 +367,11 @@ def run_metrics(total, sampled=()):
         "kf_req": number(total, "kf_req"),
         "bytes": phone_bytes,
         "covered_ms": covered_ms,
+        "tcp_ooo_kb": number(total, "tcp_ooo_kb"),
+        "tcp_srtt_max": number(total, "tcp_srtt_max"),
+        "ph_retrans": number(total, "ph_retrans"),
+        "ph_rto": number(total, "ph_rto"),
+        "ph_lost": number(total, "ph_lost"),
     }
 
 
@@ -409,6 +421,39 @@ def table_line(name, runs, width=3):
             middle, low, high = cell
             rendered.append(("%.1f (%.1f-%.1f)" % (middle, low, high)).rjust(10))
     return "%-*s  %s" % (width, label, "  ".join(rendered))
+
+
+def resend_counts(rows):
+    """X0's answer, over an arm's 5 s lines: (hitch with resends, hitch lines,
+    clean with resends, clean lines, no phone message). A hitch line has
+    `hitch_n >= 1`; a clean line has `hitch_n = 0` and moving content
+    (`rx_fps >= 20`). A line "with resends" has `ph_retrans >= 1` or
+    `tcp_ooo_kb > 0`. A line that folded in no phone message is left out of
+    both and counted instead."""
+    hitch_with = hitch_total = clean_with = clean_total = no_phone = 0
+    for row in rows:
+        if int(number(row, "phone_n") or 0) < 1:
+            no_phone += 1
+            continue
+        resends = (number(row, "ph_retrans") or 0) >= 1 or (number(row, "tcp_ooo_kb") or 0) > 0
+        if (number(row, "hitch_n") or 0) >= 1:
+            hitch_total += 1
+            if resends:
+                hitch_with += 1
+        elif (number(row, "rx_fps") or 0) >= 20:
+            clean_total += 1
+            if resends:
+                clean_with += 1
+    return hitch_with, hitch_total, clean_with, clean_total, no_phone
+
+
+def resend_line(name, rows, width=3):
+    """One arm's X0 block: the two rates side by side decide whether TCP is in
+    the hitches."""
+    hitch_with, hitch_total, clean_with, clean_total, no_phone = resend_counts(rows)
+    return ("%-*s  hitch lines with resends %d/%d  clean lines with resends %d/%d"
+            "  no phone message: %d"
+            % (width, name, hitch_with, hitch_total, clean_with, clean_total, no_phone))
 
 
 SWIPE_UP = {"x1": 0.5, "y1": 0.78, "x2": 0.5, "y2": 0.22}
@@ -506,7 +551,7 @@ def main():
                 log("run %d/%d arm=%s" % (repeat + 1, args.repeats, name))
                 began = time.strftime("%Y-%m-%d %H:%M:%S")
                 run = {"repeat": repeat + 1, "arm": name, "stream": 0,
-                       "start": began, "end": "", "lines": 0}
+                       "start": began, "end": "", "lines": 0, "sampled": []}
                 client = None
                 try:
                     settings.apply(arm)
@@ -528,6 +573,7 @@ def main():
                         raise BenchFailure("no totals line for stream %d" % stream)
                     sampled = parse_rows(stats_lines(began, predicate), stream)
                     run["lines"] = len(sampled)
+                    run["sampled"] = sampled
                     run.update(run_metrics(total, sampled))
                 except Exception as error:  # one failed run never stops the table
                     log("run failed: %s" % error)
@@ -546,10 +592,7 @@ def main():
     finally:
         settings.restore()
 
-    fieldnames = (["repeat", "arm", "stream", "start", "end", "lines",
-                   "failed", "covered", "secs", "rx_frames", "shown_frames",
-                   "phone_frames", "kf_req", "bytes", "covered_ms"]
-                  + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms", "phone_gaps"])
+    fieldnames = CSV_FIELDS
     with open(args.out, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -563,6 +606,12 @@ def main():
     for arm, row in zip(run_arms, text_rows):
         label, cells = row.split("  ", 1)
         print("%-*s  %s" % (width, label.strip(), cells))
+    print()
+    print("resends (X0): does a resend line up with a hitch?")
+    for arm in run_arms:
+        rows = [row for run in summary_rows[arm["name"]]
+                for row in run.get("sampled", [])]
+        print(resend_line(arm["name"], rows, width))
     print()
     print("CSV: %s" % args.out)
     return 0

@@ -97,6 +97,11 @@ struct PhoneStreamStats: Equatable {
     var queueP95Us: Double?
     var qpP50: Double?
     var qpP95: Double?
+    /// X0: the phone's system-wide TCP deltas for the message's window.
+    /// Absent when the phone could not read `/proc/net` (or is older).
+    var retransmissions: Int?
+    var rtoTimeouts: Int?
+    var lostRetransmits: Int?
     /// The phone's own measuring window; summed when two messages fold into
     /// one line, so `kbps` divides by the time they cover together.
     var windowMs = 2_000
@@ -120,6 +125,9 @@ struct PhoneStreamStats: Equatable {
         queueP95Us = Self.double(json["queueP95"])
         qpP50 = Self.double(json["qpP50"])
         qpP95 = Self.double(json["qpP95"])
+        retransmissions = Self.optionalInt(json["retrans"])
+        rtoTimeouts = Self.optionalInt(json["rto"])
+        lostRetransmits = Self.optionalInt(json["lost_retrans"])
         windowMs = Self.optionalInt(json["windowMs"]).flatMap { $0 > 0 ? $0 : nil } ?? 2_000
     }
 
@@ -137,6 +145,15 @@ struct PhoneStreamStats: Equatable {
         suspendedEpisodes += other.suspendedEpisodes
         suspendedMs += other.suspendedMs
         refined += other.refined
+        if let retrans = other.retransmissions {
+            retransmissions = (retransmissions ?? 0) + retrans
+        }
+        if let timeouts = other.rtoTimeouts {
+            rtoTimeouts = (rtoTimeouts ?? 0) + timeouts
+        }
+        if let lost = other.lostRetransmits {
+            lostRetransmits = (lostRetransmits ?? 0) + lost
+        }
         windowMs += other.windowMs
     }
 
@@ -228,6 +245,14 @@ struct StreamStatsWindow {
     private(set) var phone: PhoneStreamStats?
     private(set) var phoneMessages = 0
 
+    // X0: the stream socket's own readings. The cumulative out-of-order byte
+    // count gives each line its delta and the totals the whole life; a config
+    // or a pause resets neither.
+    private var firstTCP: TCPConnectionInfo?
+    private var latestTCP: TCPConnectionInfo?
+    private var lastLineTCP: TCPConnectionInfo?
+    private var tcpSrttMaxMs: Int?
+
     // The window's whole life, for the one line at close. None of this is
     // consumed by the 5 s lines or reset by a config.
     private let startedAt: TimeInterval
@@ -247,6 +272,9 @@ struct StreamStatsWindow {
     private var totalSuspendedEpisodes = 0
     private var totalSuspendedMs = 0
     private var totalPhoneBytes = 0
+    private var totalPhoneRetransmissions: Int?
+    private var totalPhoneRTOs: Int?
+    private var totalPhoneLostRetransmits: Int?
 
     init(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         startedAt = now
@@ -352,12 +380,22 @@ struct StreamStatsWindow {
         totalSuspendedEpisodes += stats.suspendedEpisodes
         totalSuspendedMs += stats.suspendedMs
         totalPhoneBytes += stats.bytes
+        if let retrans = stats.retransmissions {
+            totalPhoneRetransmissions = (totalPhoneRetransmissions ?? 0) + retrans
+        }
+        if let timeouts = stats.rtoTimeouts {
+            totalPhoneRTOs = (totalPhoneRTOs ?? 0) + timeouts
+        }
+        if let lost = stats.lostRetransmits {
+            totalPhoneLostRetransmits = (totalPhoneLostRetransmits ?? 0) + lost
+        }
     }
 
     /// The window's whole life, for the line at close. Percentiles cover every
     /// shown frame, not the last 2 s; `coveredMs` counts the pause so far.
-    mutating func total(now: TimeInterval) -> StreamStatsTotal {
+    mutating func total(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsTotal {
         let covered = totalCoveredMs + (pausedAt.map { max(0, now - $0) * 1000 } ?? 0)
+        noteTCPLifetime(tcpInfo)
         return StreamStatsTotal(
             seconds: max(0, now - startedAt),
             receivedFrames: totalReceived,
@@ -376,14 +414,21 @@ struct StreamStatsWindow {
             phoneBytes: totalPhoneBytes,
             e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
-            coveredMs: covered
+            coveredMs: covered,
+            tcpOutOfOrderKB: Self.deltaKB(latest: latestTCP, first: firstTCP),
+            tcpSrttMaxMs: tcpSrttMaxMs,
+            phoneRetransmissions: totalPhoneRetransmissions,
+            phoneRTOs: totalPhoneRTOs,
+            phoneLostRetransmits: totalPhoneLostRetransmits
         )
     }
 
     /// The numbers for one log line. Frames, intervals and delays cover the
     /// sliding window ending at `now`; the phone's counters cover every
     /// message since the previous line (the line consumes them).
-    mutating func snapshot(now: TimeInterval) -> StreamStatsSnapshot {
+    mutating func snapshot(now: TimeInterval,
+                           tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsSnapshot {
+        let link = noteTCPLine(tcpInfo)
         let start = now - Self.window
         let rec = received.filter { $0.at > start }
         let enq = enqueued.filter { $0.at > start }
@@ -431,8 +476,40 @@ struct StreamStatsWindow {
             enqueueP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
             enqueueP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             phone: phoneStats,
-            phoneMessages: phoneCount
+            phoneMessages: phoneCount,
+            tcpSrttMs: link.srttMs,
+            tcpRttvar: link.rttvar,
+            tcpOutOfOrderKB: link.outOfOrderKB
         )
+    }
+
+    /// One line's socket numbers. `srtt`/`rttvar` are levels (the latest
+    /// reading); `outOfOrderKB` subtracts the previous good reading, nil on
+    /// the first line. A failed read leaves the baseline alone so the next
+    /// good reading covers both lines.
+    private mutating func noteTCPLine(_ info: TCPConnectionInfo?)
+        -> (srttMs: Int?, rttvar: Int?, outOfOrderKB: Double?) {
+        guard let info else { return (nil, nil, nil) }
+        noteTCPLifetime(info)
+        let delta = Self.deltaKB(latest: info, first: lastLineTCP)
+        lastLineTCP = info
+        return (info.srttMs, info.rttvar, delta)
+    }
+
+    /// The window's whole life: first reading, latest reading, worst SRTT.
+    private mutating func noteTCPLifetime(_ info: TCPConnectionInfo?) {
+        guard let info else { return }
+        if firstTCP == nil { firstTCP = info }
+        latestTCP = info
+        tcpSrttMaxMs = max(tcpSrttMaxMs ?? info.srttMs, info.srttMs)
+    }
+
+    /// Cumulative counter to a KB delta; a counter that went backwards is no
+    /// measurement rather than a negative reading.
+    static func deltaKB(latest: TCPConnectionInfo?, first: TCPConnectionInfo?) -> Double? {
+        guard let latest, let first,
+              latest.rxOutOfOrderBytes >= first.rxOutOfOrderBytes else { return nil }
+        return Double(latest.rxOutOfOrderBytes - first.rxOutOfOrderBytes) / 1024
     }
 
     // MARK: Pure helpers (the K2 checks drive these directly)
@@ -518,6 +595,11 @@ struct StreamStatsSnapshot {
     var phone: PhoneStreamStats?
     /// How many phone messages this line folded in (0 when none arrived).
     var phoneMessages = 0
+    /// X0: the socket's smoothed RTT and variance (ms), and the bytes that
+    /// arrived out of order since the previous line (KB). Nil is `-`.
+    var tcpSrttMs: Int?
+    var tcpRttvar: Int?
+    var tcpOutOfOrderKB: Double?
 }
 
 /// One value per shown frame over a window's whole life, for the closing
@@ -567,6 +649,13 @@ struct StreamStatsTotal {
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
     var coveredMs: Double
+    /// X0: out-of-order bytes over the window's life (KB) and its worst SRTT.
+    var tcpOutOfOrderKB: Double?
+    var tcpSrttMaxMs: Int?
+    /// X0: the phone's system-wide TCP deltas over the window's life.
+    var phoneRetransmissions: Int?
+    var phoneRTOs: Int?
+    var phoneLostRetransmits: Int?
 }
 
 /// The one `notice` line per visible window every 5 s. Numbers only: no
@@ -611,6 +700,12 @@ enum StreamStatsLine {
             "queue_p95=\(ms(phone?.queueP95Us))",
             "e2e_p50=\(one(stats.e2eP50Ms))",
             "e2e_p95=\(one(stats.e2eP95Ms))",
+            "tcp_srtt=\(stats.tcpSrttMs.map(String.init) ?? "-")",
+            "tcp_rttvar=\(stats.tcpRttvar.map(String.init) ?? "-")",
+            "tcp_ooo_kb=\(stats.tcpOutOfOrderKB.map { one($0) } ?? "-")",
+            "ph_retrans=\(phone.map { $0.retransmissions.map(String.init) ?? "-" } ?? "-")",
+            "ph_rto=\(phone.map { $0.rtoTimeouts.map(String.init) ?? "-" } ?? "-")",
+            "ph_lost=\(phone.map { $0.lostRetransmits.map(String.init) ?? "-" } ?? "-")",
         ].joined(separator: " ")
     }
 
@@ -647,6 +742,11 @@ enum StreamStatsLine {
             "e2e_p50=\(one(total.e2eP50Ms))",
             "e2e_p95=\(one(total.e2eP95Ms))",
             "covered_ms=\(Int(total.coveredMs.rounded()))",
+            "tcp_ooo_kb=\(total.tcpOutOfOrderKB.map { one($0) } ?? "-")",
+            "tcp_srtt_max=\(total.tcpSrttMaxMs.map(String.init) ?? "-")",
+            "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
+            "ph_rto=\(total.phoneRTOs.map(String.init) ?? "-")",
+            "ph_lost=\(total.phoneLostRetransmits.map(String.init) ?? "-")",
         ].joined(separator: " ")
     }
 }
@@ -721,13 +821,13 @@ final class StreamStatsRecorder {
         lock.lock(); model.notePhoneStats(stats); lock.unlock()
     }
 
-    func snapshot(now: TimeInterval) -> StreamStatsSnapshot {
+    func snapshot(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsSnapshot {
         lock.lock(); defer { lock.unlock() }
-        return model.snapshot(now: now)
+        return model.snapshot(now: now, tcpInfo: tcpInfo)
     }
 
-    func total(now: TimeInterval) -> StreamStatsTotal {
+    func total(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsTotal {
         lock.lock(); defer { lock.unlock() }
-        return model.total(now: now)
+        return model.total(now: now, tcpInfo: tcpInfo)
     }
 }

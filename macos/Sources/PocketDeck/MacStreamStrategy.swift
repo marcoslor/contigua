@@ -3,6 +3,7 @@
 // window opens or resizes (and when a session dials for `net`), never per
 // frame. Every key defaults to today's behaviour.
 
+import Darwin
 import Foundation
 
 struct MacStreamStrategy: Equatable {
@@ -35,6 +36,12 @@ struct MacStreamStrategy: Equatable {
 
     var isDefault: Bool {
         present == .immediate && pixels == .backing && net == .default
+    }
+
+    /// N1's Mac half: the `SO_NET_SERVICE_TYPE` value the dial sets before
+    /// connect, nil when the socket stays at the system default (unmarked).
+    var socketServiceType: Int32? {
+        net == .video ? NET_SERVICE_TYPE_VI : nil
     }
 
     /// The one line's value: `default`, or every key's closed token. A single

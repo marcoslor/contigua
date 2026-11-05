@@ -267,6 +267,9 @@ final class Session {
     private let endpoint: Endpoint
     /// N1's Mac side (ISS-40): read when this session dials, not per window.
     private var netStrategy: MacStreamStrategy.Net = .default
+    /// One `session mac strategy:` line per session, written on the first
+    /// installed channel (only there is the socket's read-back known).
+    private var loggedSessionStrategy = false
     /// Every provider's dial target, in planner order (PATH-20). The public
     /// build has one (the LAN); a test may start a second LAN provider.
     private let providers: [PathProvider]
@@ -405,6 +408,10 @@ final class Session {
     /// one cross-thread view of [pathSessionId]; there is no second flag
     /// (RR-14).
     private let pathSessionId = SessionLockedBox<String?>(value: nil)
+    /// X0: one `TCP_CONNECTION_INFO` reader per attached path. The stats lines
+    /// read the current path's (the video is one connection); a closed path's
+    /// reader is stopped so no timer outlives it.
+    private let tcpInfoReaders = SessionLockedBox<[String: TCPInfoReader]>(value: [:])
     private var lastFramePath: String?
     private var pathMachine = PathSessionMachine()
     private var pathRanking = PathRanking()
@@ -505,9 +512,9 @@ final class Session {
         intentionalClose = false
         failedOnce = false
         // The session's own strategy key, read here rather than at a window's
-        // open: the dial needs it (N1). One line per session.
+        // open: the dial needs it (N1). One line per session, once the
+        // socket exists, so `net_svc` can be read back.
         netStrategy = MacStreamStrategy.read(from: Profile.active.defaults).net
-        Log.session.notice("session mac strategy: net=\(self.netStrategy.rawValue, privacy: .public)")  // log-ok: a closed token
         transition(.connecting, nil)
         queue.async { [weak self] in self?.doConnect() }
     }
@@ -615,6 +622,7 @@ final class Session {
         let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: group)
         do {
             let result = try connector.connect(host: target.host, port: target.port,
+                net: netStrategy,
                 onFrame: { [weak self] frame in
                     guard let self else { return }
                     self.queue.async { self.handlePathFrame(id, frame) }
@@ -650,12 +658,18 @@ final class Session {
     /// A provider's TLS handshake completed. Runs on the session queue.
     private func install(_ id: String,
                          result: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void,
-                                  isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void),
+                                  isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void,
+                                  serviceType: Int32?),
                          target: (host: String, port: Int)) {
         guard !intentionalClose, var attempt = attempts[id],
               attempt.machine.phase == .dialing else {
             result.channel.close()
             return
+        }
+        if !loggedSessionStrategy {
+            loggedSessionStrategy = true
+            let service = result.serviceType.map(String.init) ?? "-"
+            Log.session.notice("session mac strategy: net=\(self.netStrategy.rawValue, privacy: .public) net_svc=\(service, privacy: .public)")  // log-ok: a closed token and the socket's own reading
         }
         attempt.channel = result.channel
         attempt.exporter = result.exporter
@@ -928,6 +942,9 @@ final class Session {
         pathLayer.detach(id)
         pathProvider.removeValue(forKey: id)
         attempts.removeValue(forKey: id)
+        var readers = tcpInfoReaders.get()
+        readers.removeValue(forKey: id)?.stop()
+        tcpInfoReaders.set(readers)
     }
 
     /// Adds a welcome'd path to the layer; the first one founds the session.
@@ -942,6 +959,10 @@ final class Session {
                                   close: { channel.close() },
                                   isWritable: attempt.isWritable ?? { true },
                                   setReading: attempt.setReading ?? { _ in })
+        var readers = tcpInfoReaders.get()
+        readers[id]?.stop()
+        readers[id] = TCPInfoReader(channel: channel)
+        tcpInfoReaders.set(readers)
         pathProvider[id] = attempt.providerIndex
         // E-5: the attempt is the path now. Counting a welcomed attempt as
         // well made `pathCount + attempts.count` count every attached path
@@ -1211,6 +1232,9 @@ final class Session {
         preWelcomeSender.set(nil)
         pathSessionId.set(nil)
         pathProvider.removeAll()
+        let readers = tcpInfoReaders.get()
+        for reader in readers.values { reader.stop() }
+        tcpInfoReaders.set([:])
         pathRejoin = PathRejoinMachine()
         pathProbe = PathProbeMachine()
         probeAttemptId = nil
@@ -1360,6 +1384,14 @@ final class Session {
         case .hostPort(let host, let port): return "\(host):\(port)"
         case .service(let service, _): return String(describing: service)
         }
+    }
+
+    /// X0: the current path's socket readings, shared by every window's stats
+    /// line (the video is one connection). Nil before a path is live.
+    func currentTCPInfo() -> TCPConnectionInfo? {
+        guard let id = pathLayer.currentPath,
+              let reader = tcpInfoReaders.get()[id] else { return nil }
+        return reader.current()
     }
 
     // MARK: Receive dispatch

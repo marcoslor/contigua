@@ -496,12 +496,13 @@ final class TlsConnectorV2: @unchecked Sendable {
     /// machine), enforced mode has already verified it at the TLS layer and
     /// the event is informational.
     func connect(host: String, port: Int,
+                 net: MacStreamStrategy.Net = .default,
                  onFrame: @escaping @Sendable (Frame) -> Void,
                  onError: @escaping @Sendable (String) -> Void,
                  onPeerPin: (@Sendable (String) -> Void)? = nil,
                  onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil,
                  onWritableChange: (@Sendable (Bool) -> Void)? = nil,
-                 handshakeTimeout: TimeAmount = .seconds(6)) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void, isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void) {
+                 handshakeTimeout: TimeAmount = .seconds(6)) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void, isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void, serviceType: Int32?) {
         // Throws TlsV2Error.noPin / .pinMismatch / .incompleteIdentity BEFORE
         // any dial when the pin rules cannot be met (§8 step 3 gate).
         let tlsConfig = try configuration()
@@ -527,9 +528,18 @@ final class TlsConnectorV2: @unchecked Sendable {
             handshake.fail(TlsV2Error.handshakeTimeout)
         }
         do {
-            let channel = try ClientBootstrap(group: group)
+            var bootstrap = ClientBootstrap(group: group)
                 .channelOption(ChannelOptions.writeBufferWaterMark,
                                value: WriteBufferWaterMark(low: 256 << 10, high: 1 << 20))
+            // N1: the stream socket asks for the interactive-video service
+            // class before connect; the default socket stays unmarked.
+            if let serviceType = MacStreamStrategy(net: net).socketServiceType {
+                bootstrap = bootstrap.channelOption(
+                    ChannelOptions.socketOption(
+                        NIOBSDSocket.Option(rawValue: CInt(SO_NET_SERVICE_TYPE))),
+                    value: serviceType)
+            }
+            let channel = try bootstrap
                 .connect(to: try SocketAddress(ipAddress: host, port: port))
                 .flatMap { ch -> EventLoopFuture<Channel> in
                     // Both handlers enter the pipeline in one event-loop turn,
@@ -567,12 +577,20 @@ final class TlsConnectorV2: @unchecked Sendable {
                 _ = channel.writeAndFlush(buffer)
             }, { channel.isWritable }, { reading in
                 _ = channel.setOption(ChannelOptions.autoRead, value: reading)
-            })
+            }, Self.serviceType(of: channel))
         } catch {
             handshakeDeadline.cancel()
             let message = String(describing: error)
             throw TlsV2Error.dialFailed(String(message.prefix(180)))
         }
+    }
+
+    /// N1: what the socket actually reports for `SO_NET_SERVICE_TYPE`, so the
+    /// run proves the option landed instead of trusting the write.
+    static func serviceType(of channel: Channel) -> Int32? {
+        let option = ChannelOptions.socketOption(
+            NIOBSDSocket.Option(rawValue: CInt(SO_NET_SERVICE_TYPE)))
+        return try? channel.getOption(option).wait()
     }
 }
 
