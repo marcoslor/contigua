@@ -60,6 +60,10 @@ final class VideoLayerView: NSView {
     private var resizeFillUntil: TimeInterval?
     private var resizeTimeout: DispatchWorkItem?
 
+    /// The drag/answer/settle phases; the gravity holds fill through them.
+    private var resizeLayout = ResizeLayout()
+    private var settleWork: DispatchWorkItem?  // gcd: one cancellable main-queue beat
+
     /// The window is being resized right now (a drag, or the app's own zoom
     /// animation). A stale picture cannot answer a request at this size, even
     /// when the two aspects are close enough for the settled rule.
@@ -265,7 +269,28 @@ final class VideoLayerView: NSView {
     /// is up from the start of a live resize, not from the first did-resize.
     override func viewWillStartLiveResize() {
         super.viewWillStartLiveResize()
+        liveResizeBegan()
+    }
+
+    /// The first drag event and the app's own zoom both begin here; a second
+    /// begin is the same phase.
+    func liveResizeBegan() {
+        applyResizeLayout(.dragBegan)
         noteResizeRequested()
+    }
+
+    /// The shape change is over; the phone is asked once and its answer will
+    /// settle the picture.
+    func liveResizeEnded() {
+        applyResizeLayout(.dragEnded)
+    }
+
+    private func applyResizeLayout(_ event: ResizeLayoutEvent) {
+        let before = resizeLayout.phase
+        resizeLayout.apply(event)
+        guard resizeLayout.phase != before else { return }
+        Log.video.info("resize-layout: \(before.state, privacy: .public) --\(event.kind, privacy: .public)--> \(self.resizeLayout.phase.state, privacy: .public)")
+        updateGravity()
     }
 
     /// The display layer follows the view exactly. A plain `frame = bounds` in
@@ -273,13 +298,31 @@ final class VideoLayerView: NSView {
     /// is nil), so the picture trails the window edge on a fast drag and the
     /// new area shows the layer's black background: the reported black bands.
     private func placeDisplayLayer() {
+        placeDisplayLayer(in: bounds.size)
+    }
+
+    /// Sets both picture layers for a size, in one committed transaction. A
+    /// live resize calls it for the *coming* size before the window frame
+    /// changes: WindowServer can show the new window against the last
+    /// committed surface, so that surface must already cover it (WIN-58).
+    private func placeDisplayLayer(in size: CGSize) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        pictureClip.frame = videoRect()
+        let rect = videoRect(in: size)
+        pictureClip.frame = rect
         display?.frame = frameSize.width > 0
-            ? PictureCrop.layerFrame(frame: frameSize, content: picture, picture: pictureClip.bounds.size)
-            : pictureClip.bounds
+            ? PictureCrop.layerFrame(frame: frameSize, content: picture, picture: rect.size)
+            : rect
         CATransaction.commit()
+    }
+
+    /// A live-resize step's target stream size, before the window takes it.
+    func prepareLiveResize(to size: CGSize) {
+        placeDisplayLayer(in: size)
+        // The frame change reaches WindowServer from the same runloop turn;
+        // the layer transaction must be there first, not at the next flush.
+        CATransaction.flush()
+        updateGravity()
     }
 
     /// The display layer, for the resize tests: after a size change it must
@@ -322,9 +365,22 @@ final class VideoLayerView: NSView {
     /// Stretches over the 16 px quantisation instead of showing thin black bars;
     /// `videoRect()` follows the same rule, so input maps to what is drawn.
     private func updateGravity() {
-        let gravity = Self.gravity(for: placement())
+        let placement = Self.drawnPlacement(placement(), holdsFill: resizeLayout.holdsFillGravity)
+        let gravity = Self.gravity(for: placement)
         let layer = displayLayer()
         if layer.videoGravity != gravity { layer.videoGravity = gravity }
+    }
+
+    /// The placement the layer actually draws. Holding fill through the answer
+    /// keeps the layer from re-laying its contents mid-drag; the input map and
+    /// the crop must follow the same rule or a click would miss the picture
+    /// during the settle (WIN-58).
+    static func drawnPlacement(_ placement: Letterbox.Placement, holdsFill: Bool) -> Letterbox.Placement {
+        guard holdsFill else { return placement }
+        switch placement {
+        case .oneToOne, .stretch: return .fill
+        case .fit, .fill: return placement
+        }
     }
 
     private func placement() -> Letterbox.Placement {
@@ -357,6 +413,7 @@ final class VideoLayerView: NSView {
             guard let self else { return }
             self.resizeFillUntil = nil
             self.resizeTimeout = nil
+            self.applyResizeLayout(.timedOut)
             self.updateGravity()
         }
         resizeTimeout = work
@@ -396,9 +453,24 @@ final class VideoLayerView: NSView {
     /// Drawn rect of the current video inside the view: the same rule as the
     /// gravity, so a click lands on the pixel under the pointer, even mid-resize.
     func videoRect() -> CGRect {
-        guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
-        return Letterbox.videoRect(video: videoSize, in: bounds, placement: placement(),
-                                   backingScale: Double(window?.backingScaleFactor ?? 1))
+        videoRect(in: bounds.size)
+    }
+
+    /// The drawn rect for a view of `size`, for a live resize that wants the
+    /// layers placed before the view takes its new size.
+    private func videoRect(in size: CGSize) -> CGRect {
+        guard videoSize.width > 0, videoSize.height > 0, size.width > 0, size.height > 0 else {
+            return CGRect(origin: .zero, size: size)
+        }
+        let backingScale = Double(window?.backingScaleFactor ?? 1)
+        let placement = Self.drawnPlacement(Letterbox.placement(video: videoSize, bounds: size,
+                                                                backingScale: backingScale,
+                                                                alignment: alignment,
+                                                                resizePending: resizeIsPending,
+                                                                phoneMode: isPhoneMode),
+                                            holdsFill: resizeLayout.holdsFillGravity)
+        return Letterbox.videoRect(video: videoSize, in: CGRect(origin: .zero, size: size),
+                                   placement: placement, backingScale: backingScale)
     }
 
     // MARK: Video
@@ -498,6 +570,16 @@ final class VideoLayerView: NSView {
                     self.resizeFillUntil = nil
                     self.resizeTimeout?.cancel()
                     self.resizeTimeout = nil
+                    self.applyResizeLayout(.answered)
+                    // One beat after the answer before the settled gravity:
+                    // the layer's contents re-layout is visible for ~0.2 s if
+                    // it lands while the window server still shows the drag.
+                    self.settleWork?.cancel()
+                    let settle = DispatchWorkItem { [weak self] in  // gcd: the resizeTimeout pattern
+                        self?.applyResizeLayout(.settleElapsed)
+                    }
+                    self.settleWork = settle
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: settle)  // gcd: same queue and delay as resizeTimeout
                 }
                 self.updateGravity()
                 self.needsLayout = true

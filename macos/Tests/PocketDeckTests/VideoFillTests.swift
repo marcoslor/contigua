@@ -173,6 +173,43 @@ final class VideoFillTests: XCTestCase {
         XCTAssertEqual(VideoLayerView.gravity(for: .stretch), .resize)
     }
 
+    // MARK: The live-resize hold (WIN-6)
+
+    func testTheFillGravityHoldsOverAnExactlySizedPicture() {
+        // The drag and the phone's answer are both done; if the settled
+        // one-to-one gravity took over now, the layer would re-lay its
+        // contents while WindowServer still shows the last drag frame.
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.oneToOne, holdsFill: true), .fill)
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.stretch, holdsFill: true), .fill)
+        // A letterbox is never turned into a crop by the hold.
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.fit, holdsFill: true), .fit)
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.fill, holdsFill: true), .fill)
+        // The hold ends: the settled picture is the one the rules define.
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.oneToOne, holdsFill: false), .oneToOne)
+        XCTAssertEqual(VideoLayerView.drawnPlacement(.stretch, holdsFill: false), .stretch)
+    }
+
+    func testAClickDuringTheSettleFollowsTheHeldFill() {
+        // A settled stretch frame one encoder step short of the view: the hold
+        // crops its sides. The drawn rect must be that crop, so a click 1 pt in
+        // from the window edge is not the video's left edge.
+        let video = CGSize(width: 3360, height: 2032)
+        let bounds = CGRect(x: 0, y: 0, width: 1680, height: 1022)
+        let held = VideoLayerView.drawnPlacement(.stretch, holdsFill: true)
+        XCTAssertEqual(held, .fill)
+        let rect = Letterbox.videoRect(video: video, in: bounds, placement: held,
+                                       backingScale: 2)
+        XCTAssertEqual(rect.height, bounds.height, accuracy: 0.001)
+        XCTAssertLessThan(rect.minX, bounds.minX, "the hold crops the sides")
+        XCTAssertGreaterThan(rect.maxX, bounds.maxX)
+        let mapper = InputMapper(stream: 1)
+        mapper.videoRectProvider = { rect }
+        let (nx, _) = mapper.normalized(CGPoint(x: bounds.minX + 1, y: bounds.midY))
+        let expectedX = Float((1 - rect.minX) / rect.width)
+        XCTAssertEqual(nx, expectedX, accuracy: 0.0005)
+        XCTAssertGreaterThan(nx, 0.001, "1 pt is inside the cropped picture, not its edge")
+    }
+
     // MARK: The config that ends the pending state
 
     func testAConfigAtTheRequestedSizeAnswersIt() {
