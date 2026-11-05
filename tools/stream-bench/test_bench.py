@@ -216,6 +216,71 @@ class DriveTest(unittest.TestCase):
                          ["swipes", "still", "flings", "settle"])
 
 
+class ResendSummaryTest(unittest.TestCase):
+    """X0's block: do resends line up with the hitches?"""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def line(self, **fields):
+        row = {"at": 0}
+        row.update({key: str(value) for key, value in fields.items()})
+        return row
+
+    def test_the_table_gains_the_two_resend_columns_and_the_csv_the_totals(self):
+        self.assertIn("tcp_ooo_kb", self.bench.TABLE_FIELDS)
+        self.assertIn("ph_retrans", self.bench.TABLE_FIELDS)
+        for field in ("tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"):
+            self.assertIn(field, self.bench.CSV_FIELDS)
+
+    def test_the_totals_carry_the_new_fields_into_the_run(self):
+        total = self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "secs=10.0 rx_frames=600 tcp_ooo_kb=3.5 tcp_srtt_max=42 "
+            "ph_retrans=9 ph_rto=2 ph_lost=1\n", 1)
+        run = self.bench.run_metrics(total)
+        self.assertEqual(run["tcp_ooo_kb"], 3.5)
+        self.assertEqual(run["tcp_srtt_max"], 42)
+        self.assertEqual(run["ph_retrans"], 9)
+        self.assertEqual(run["ph_rto"], 2)
+        self.assertEqual(run["ph_lost"], 1)
+
+    def test_hitch_and_clean_lines_are_counted_by_resends(self):
+        rows = [
+            # A hitch with a phone resend: the X0 correlation.
+            self.line(phone_n=2, hitch_n=1, rx_fps=60, ph_retrans=3, tcp_ooo_kb="0.0"),
+            # A hitch with only receiver out-of-order bytes.
+            self.line(phone_n=2, hitch_n=2, rx_fps=60, ph_retrans=0, tcp_ooo_kb="0.4"),
+            # A hitch with neither.
+            self.line(phone_n=2, hitch_n=1, rx_fps=60, ph_retrans=0, tcp_ooo_kb="0.0"),
+            # A clean moving line with a resend.
+            self.line(phone_n=2, hitch_n=0, rx_fps=58, ph_retrans=1, tcp_ooo_kb="0.0"),
+            # A clean moving line, no resend.
+            self.line(phone_n=2, hitch_n=0, rx_fps=59, ph_retrans=0, tcp_ooo_kb="0.0"),
+        ]
+        counts = self.bench.resend_counts(rows)
+        self.assertEqual(counts, (2, 3, 1, 2, 0))
+
+    def test_a_still_line_is_neither_hitch_nor_clean_and_no_message_is_counted(self):
+        rows = [
+            # A still line (hitch_n=0, rx_fps < 20) is not a moving clean line.
+            self.line(phone_n=2, hitch_n=0, rx_fps=4, ph_retrans=5, tcp_ooo_kb="0.0"),
+            # No phone message: left out of both and counted.
+            self.line(phone_n=0, hitch_n=1, rx_fps=60, ph_retrans="-", tcp_ooo_kb="0.0"),
+        ]
+        self.assertEqual(self.bench.resend_counts(rows), (0, 0, 0, 0, 1))
+
+    def test_the_summary_line_names_both_counts_and_the_missing_messages(self):
+        rows = [
+            self.line(phone_n=2, hitch_n=1, rx_fps=60, ph_retrans=2, tcp_ooo_kb="0.0"),
+            self.line(phone_n=0, hitch_n=0, rx_fps=0, ph_retrans="-", tcp_ooo_kb="-"),
+        ]
+        text = self.bench.resend_line("baseline", rows)
+        self.assertIn("hitch lines with resends 1/1", text)
+        self.assertIn("clean lines with resends 0/0", text)
+        self.assertIn("no phone message: 1", text)
+
+
 class RunMetricsTest(unittest.TestCase):
     def setUp(self):
         self.bench = load_bench()
