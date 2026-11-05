@@ -1,6 +1,6 @@
 # Video feed: why scrolling stutters and gets blocky, and what to try (ISS-40, ISS-42)
 
-Status, 2026-11-05: **research and a test plan; nothing changed yet.** The person, 2026-11-04, after app windows went 1:1 (ISS-39): scrolling feels smoother, but "the video sometimes drops frames, feeling janky", and while the content moves the picture is visibly more pixelated. They asked for the strategies other streaming products use to be logged and tested, with a performance/quality preset in mind, though not exposed in the app yet.
+Status, 2026-11-05: **research, plus the strategy switches as bench-only experiment knobs (see "Strategy switches").** The person, 2026-11-04, after app windows went 1:1 (ISS-39): scrolling feels smoother, but "the video sometimes drops frames, feeling janky", and while the content moves the picture is visibly more pixelated. They asked for the strategies other streaming products use to be logged and tested, with a performance/quality preset in mind, though not exposed in the app yet.
 
 Measured on the person's phone (SM-S936B, `c2.qti.avc.encoder`, v140) and Mac (Wi-Fi 6, 5 GHz), 2026-11-04 and 11-05.
 
@@ -128,6 +128,39 @@ The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per w
 - a 3 s still.
 
 It runs on a text-heavy list (Settings) and on an image-heavy one. Every arm runs 3 times, interleaved with the others, because the link's stalls come and go (the ping table above changed between consecutive 15 s runs).
+
+## Strategy switches
+
+The candidate fixes are phone properties read once at a stream's configure
+(open, resize, encoder rebuild); with none set the stream is today's, byte for
+byte. The queue's two keys are read when a stream's first frame is queued.
+The phone logs one line per stream per configure, e.g.
+`stream 3 strategy: rc=cbr cap_kbps=16000 ir=60 queue_ms=100 overflow=suspend refine=on tos=0x88`,
+or `stream 3 strategy: default`. A switch the codec refuses stays at today's
+behaviour and the line says so in a closed token (`rc=cbr unsupported`,
+`ir=60 unsupported`).
+
+| Key | Values | Today | What it does | Fallback | Arm |
+| --- | --- | --- | --- | --- | --- |
+| `overflow` | `drop` / `suspend` | `drop` | `suspend` keeps queued deltas, stops encoder input (`PARAMETER_KEY_SUSPEND` 1) while the queue is over budget and resumes below half of it; no keyframe request, the −25 % bitrate reaction stays | past 4× the byte budget it drops and requests a keyframe as today, counted as a drop episode | `q1-suspend`, `q1q2-100`, `combo-a` |
+| `queue_ms` | 30–1000 | 250 | the queue's video budget; the byte budget scales by `queue_ms / 250` | out of range clamps; junk is 250 | `q1q2-100`, `combo-a` |
+| `rc` | `vbr` / `cbr` | `vbr` | CBR flattens frame sizes | codec without CBR keeps VBR and logs `rc=cbr unsupported` | `r1-cbr`, `combo-a` |
+| `cap_kbps` | 1000–100000 | 8000 | the bitrate ceiling the per-pixel target is clamped to | out of range clamps; junk is 8000 | `r2-16`, `r2-25`, `combo-a` |
+| `bpp_milli` | 50–500 | 120 | bits per pixel per frame × 1000 at 60 fps, before the cap | out of range clamps; junk is 120 | (no arm of its own) |
+| `ir` | 0, or 10–600 frames | 0 | intra refresh instead of the 10 s keyframe: `KEY_INTRA_REFRESH_PERIOD` N and a 3600 s keyframe interval; keyframes still come on request | codec without `FEATURE_IntraRefresh` keeps the 10 s interval and logs `ir=60 unsupported` | `r4-ir60`, `combo-a` |
+| `refine` | `off` / `on` | `off` | after 300 ms without a *new* encoded picture, one frame at 3× the current target (up to the cap) with a sync request; motion before it lands cancels and restores at once; one per still period | codec refusing the sync simply ends it at the 1 s timeout | `t1-refine`, `combo-a` |
+| `tos` | 0–255 | 0 (unset) | `setTrafficClass(N)` on the accepted socket before the TLS handshake (AF41 is 136, `0x88`) | the OS refusing it logs `tos=0x88 unsupported` and the stream is unchanged | `n1-af41`, `combo-a` |
+
+`refine`'s still signal is the encoded frame's size: a repeat of an unchanged
+picture has the previous frame's size, which is the only input-silence signal
+an encoder exposes (its Surface input is not readable). New size, or a
+keyframe, means motion.
+
+These are experiment switches for the bench, not product behaviour: they have
+no spec rows, no on-screen setting, and every one defaults to today's stream.
+The arms live in `tools/stream-bench/arms.json`; `combo-a` runs all of them
+except `bpp_milli`. The bench's per-arm strategy line and its `susp_n`,
+`susp_ms` and `refine_n` columns show which switches the phone applied.
 
 ## Presets, later
 
