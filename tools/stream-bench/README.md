@@ -118,17 +118,29 @@ Both total over every `stats` line in the run. `shown_fps` and `late_p99` are
 that stopped moving would flatter both). `kbps` and the e2e levels stay
 whole-run medians. `kf` totals keyframes over the run.
 
+The Mac's line folds in every 2 s `stream.stats` message since the previous
+line and prints how many as `phone_n`. `kbps` and the other phone levels
+(`qp_p50`, `qp_p95`, `enc_*`, `queue_p95`, `target_kbps`) are samples only on a
+line with `phone_n ≥ 1`: a line with no message prints `-`, and counting that
+`-` as a level would pretend the phone said nothing happened. **`qp_p95`** is
+the phone's own QP over the swipe and fling lines only: a still screen encodes
+at QP ~1, which is no quality signal. The e2e levels stay Mac-side and come
+from every line.
+
 A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
 when no swipe/fling line had `rx_fps ≥ 30`: the content did not move, so the
-run cannot compare strategies. The bench also logs each line's phase.
+run cannot compare strategies. A run whose second or later line had
+`phone_n=0` is marked **`phone gaps`** (CSV `phone_gaps=1`): the phone did not
+report for a whole 5 s line, so its counters undercount that span. The bench
+also logs each line's phase.
 
 ```
 arm          jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
 baseline     310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
 ```
 
-The CSV (`--out`) has every run with the same fields plus `low_motion` and
-`no_drop_ms`.
+The CSV (`--out`) has every run with the same fields plus `low_motion`,
+`no_drop_ms` and `phone_gaps`.
 
 ## Usage
 

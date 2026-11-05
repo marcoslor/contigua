@@ -44,7 +44,8 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 # jank_* lead: what a person feels while the phone's content moves is a hitch
 # on the Mac, a drop gap on the phone, or a suspend (Q1).
 TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
-                "late_p99", "shown_fps", "kf", "kbps", "e2e_p50", "e2e_p95")
+                "late_p99", "shown_fps", "kf", "kbps", "qp_p95", "e2e_p50",
+                "e2e_p95")
 # A run's value: these counters total across its lines.
 RUN_SUM = {"jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms", "kf"}
 # These levels are read only while the script's swipes or flings move the list.
@@ -255,24 +256,32 @@ def median(values):
 
 
 def run_metrics(rows, phases):
-    """One run's table values plus its low-motion and no-drop_ms marks.
+    """One run's table values plus its low-motion, no-drop_ms and phone-gap marks.
 
     `jank_*` and the other counters total the whole run; shown_fps and
     late_p99 are levels of the lines while the script's swipes/flings move the
     list. A run where no motion line saw 30 fps moved nothing and cannot
-    compare strategies.
+    compare strategies. `kbps` and `qp_p95` are the phone's numbers, so only a
+    line that folded in a `stream.stats` message carries them; a line after the
+    first with `phone_n=0` marks the run `(phone gaps)`.
     """
     totals = {key: 0.0 for key in RUN_SUM}
     motion = {"shown_fps": [], "late_p99": []}
-    levels = {"kbps": [], "e2e_p50": [], "e2e_p95": []}
+    mac_levels = {"e2e_p50": [], "e2e_p95": []}
+    phone_kbps = []
+    motion_qp = []
     no_drop_ms = False
     low_motion = True
-    for row in rows:
+    phone_gaps = False
+    for index, row in enumerate(rows):
         phase = phase_at(row["at"], phases)
         row["phase"] = phase
         log("line %s phase=%s rx_fps=%s shown_fps=%s" %
             (time.strftime("%H:%M:%S", time.localtime(row["at"])), phase,
              row.get("rx_fps", "-"), row.get("shown_fps", "-")))
+        phone_n = number(row, "phone_n") or 0
+        if index > 0 and phone_n <= 0:
+            phone_gaps = True
         hitch_n = number(row, "hitch_n") or 0
         hitch_ms = number(row, "hitch_ms") or 0
         drop_ep = number(row, "drop_ep") or 0
@@ -295,16 +304,28 @@ def run_metrics(rows, phases):
                 value = number(row, key)
                 if value is not None:
                     motion[key].append(value)
-        for key in levels:
+            # A still screen encodes at QP ~1, which is no quality signal.
+            if phone_n >= 1:
+                value = number(row, "qp_p95")
+                if value is not None:
+                    motion_qp.append(value)
+        if phone_n >= 1:
+            value = number(row, "kbps")
+            if value is not None:
+                phone_kbps.append(value)
+        for key in mac_levels:
             value = number(row, key)
             if value is not None:
-                levels[key].append(value)
+                mac_levels[key].append(value)
     values = dict(totals)
     for key, samples in motion.items():
         values[key] = median(samples)
-    for key, samples in levels.items():
+    for key, samples in mac_levels.items():
         values[key] = median(samples)
+    values["kbps"] = median(phone_kbps)
+    values["qp_p95"] = median(motion_qp)
     values["low_motion"] = low_motion
+    values["phone_gaps"] = phone_gaps
     values["no_drop_ms"] = no_drop_ms
     return values
 
@@ -406,6 +427,7 @@ def main():
                 run.update(run_metrics(run_rows, phases))
                 run["low_motion"] = 1 if run["low_motion"] else 0
                 run["no_drop_ms"] = 1 if run["no_drop_ms"] else 0
+                run["phone_gaps"] = 1 if run["phone_gaps"] else 0
                 rows.append(run)
                 summary_rows[name].append(run)
                 settings.restore()
@@ -415,7 +437,7 @@ def main():
         settings.restore()
 
     fieldnames = (["repeat", "arm", "stream", "start", "end", "lines"]
-                  + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms"])
+                  + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms", "phone_gaps"])
     with open(args.out, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -430,6 +452,8 @@ def main():
             marks.append("low-motion")
         if any(run["no_drop_ms"] for run in summary_rows[name]):
             marks.append("no drop_ms")
+        if any(run["phone_gaps"] for run in summary_rows[name]):
+            marks.append("phone gaps")
         labels[name] = name + (" (%s)" % ", ".join(marks) if marks else "")
     width = max([len(label) for label in labels.values()] + [3])
     print()
