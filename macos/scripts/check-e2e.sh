@@ -11839,7 +11839,8 @@ recent = steady[-3:] if steady else rows
 rx = [v for v in (number("rx_fps", r) for r in recent) if v is not None]
 shown = [v for v in (number("shown_fps", r) for r in recent) if v is not None]
 e2e = [v for v in (number("e2e_p50", r) for r in recent) if v is not None]
-drop = max([int(number("phone_drop", r) or 0) for r in rows] + [0])
+drop = sum([int(number("phone_drop", r) or 0) for r in rows] + [0])
+episodes = sum([int(number("drop_ep", r) or 0) for r in rows] + [0])
 # The forced 300 ms gap is one freeze between 250 and 600 ms on some line.
 # Startup can add its own, longer gaps on the first lines: judge every line
 # on its own instead of summing them.
@@ -11859,13 +11860,13 @@ print(len(rows),
       round(statistics.median(rx), 1) if rx else "-",
       round(statistics.median(shown), 1) if shown else "-",
       round(statistics.median(e2e), 1) if e2e else "-",
-      drop, freeze,
+      drop, episodes, freeze,
       round(statistics.median(qp), 1) if qp else "-",
       hitch,
       ",".join(str(value) for value in phone) if phone else "-")
 PY
-    local lines rx shown e2e drop freeze qp hitch phone_n
-    read -r lines rx shown e2e drop freeze qp hitch phone_n < "$WORK/stats-metrics.txt"
+    local lines rx shown e2e drop episodes freeze qp hitch phone_n
+    read -r lines rx shown e2e drop episodes freeze qp hitch phone_n < "$WORK/stats-metrics.txt"
     # An empty or short metrics line must fail an assertion below, not stop the
     # check with `unbound variable`.
     lines="${lines:-0}"
@@ -11873,12 +11874,13 @@ PY
     shown="${shown:--}"
     e2e="${e2e:--}"
     drop="${drop:-0}"
+    episodes="${episodes:-0}"
     freeze="${freeze:-0}"
     qp="${qp:--}"
     hitch="${hitch:-0}"
     phone_n="${phone_n:--}"
-    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop freeze_n=$freeze qp_p95=$qp hitch_n=$hitch phone_n=$phone_n"
-    if [ "$phone_n" != "-" ] && ! printf '%s\n' "$phone_n" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
+    say "STATS lines=$lines rx_fps=$rx shown_fps=$shown e2e_p50=$e2e phone_drop=$drop drop_ep=$episodes freeze_n=$freeze qp_p95=$qp hitch_n=$hitch phone_n=$phone_n"
+    if [ "$phone_n" != "-" ] && printf '%s\n' "$phone_n" | tr ',' '\n' | awk '$1 < 2 { exit 1 }'; then
         ok "STATS every steady line folded in at least two phone messages (phone_n=$phone_n)"
     else
         bad "STATS a steady line carried fewer than two phone messages (phone_n=$phone_n)"
@@ -11898,9 +11900,9 @@ PY
     else
         bad "STATS e2e_p50=$e2e ms is missing or implausible"
     fi
-    [ "$drop" = "7" ] \
-        && ok "STATS phone_drop reports the 7 deltas the fake phone was made to drop" \
-        || bad "STATS phone_drop=$drop, expected 7"
+    [ "$drop" = "21" ] && [ "$episodes" = "3" ] \
+        && ok "STATS phone_drop sums the 7 deltas in each of the fake phone's three messages (21) and drop_ep their three episodes" \
+        || bad "STATS phone_drop=$drop drop_ep=$episodes, expected 21 and 3"
     [ "$freeze" = "1" ] \
         && ok "STATS one line counts the forced 300 ms gap as a single 250..600 ms freeze" \
         || bad "STATS no line reported freeze_n=1 with 250..600 ms (startup gaps excluded)"
