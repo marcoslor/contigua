@@ -44,6 +44,11 @@ final class VideoLayerView: NSView {
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
 
+    /// The window's strategy (ISS-40), read when the window opens or resizes.
+    /// The presenter (M1) reads `present`; the pixel cap (M2) is applied where
+    /// the window asks for its size.
+    var strategy = MacStreamStrategy()
+
     /// The encoder's own limits (ISS-39), set when the window opens. nil keeps
     /// the old 16 px rule for a phone that reports none.
     var encoder: EncoderSpec?
@@ -698,8 +703,8 @@ final class VideoLayerView: NSView {
         return status == noErr ? format : nil
     }
 
-    private static func makeSampleBuffer(avcc: [UInt8], format: CMVideoFormatDescription,
-                                         ptsUs: UInt64) -> CMSampleBuffer? {
+    static func makeSampleBuffer(avcc: [UInt8], format: CMVideoFormatDescription,
+                                 ptsUs: UInt64) -> CMSampleBuffer? {
         let count = avcc.count
         var blockBuffer: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
@@ -743,6 +748,19 @@ final class VideoLayerView: NSView {
                                  Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }
         return sample
+    }
+
+    /// The sample's own DisplayImmediately attachment, for K2: both paths
+    /// (arrival and paced) hand the layer samples built here.
+    static func carriesDisplayImmediately(_ sample: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false),
+              CFArrayGetCount(attachments) > 0 else { return false }
+        let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFDictionary.self)
+        guard let value = CFDictionaryGetValue(
+            dictionary,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque())
+        else { return false }
+        return CFBooleanGetValue(unsafeBitCast(value, to: CFBoolean.self))
     }
 
     // MARK: Events
