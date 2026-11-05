@@ -821,6 +821,7 @@ class Session(
         }
         val at = now() / 1000.0
         pathRanking.handle(PathRankingEvent.Tick(at), at)
+        queue.tick(now())
         tickStats()
     }
 
@@ -871,6 +872,10 @@ class Session(
         pathMachine.state.graceDeadline()?.let { deadline ->
             val graceAt = (deadline * 1000).toLong()
             if (graceAt in (at + 1) until next) next = graceAt
+        }
+        // Q1: a suspended encoder's timeout is a real deadline for the ticker.
+        queue.nextSuspendDeadlineMs()?.let { deadline ->
+            if (deadline < next) next = deadline
         }
         // An overdue stats deadline must still wake the ticker: a tick may
         // have been missed while the session was busy with a resize.
@@ -3370,10 +3375,13 @@ class Session(
     private fun applyEncoderSuspend(stream: Int) {
         if (stream <= 0) return
         val applyLock = synchronized(suspendApplies) { suspendApplies.getOrPut(stream) { Any() } }
-        synchronized(applyLock) {
-            val suspended = queue.isSuspended(stream)
-            runCatching { display.setEncoderSuspend(stream, suspended) }
+        val suspended = synchronized(applyLock) {
+            val nowSuspended = queue.isSuspended(stream)
+            runCatching { display.setEncoderSuspend(stream, nowSuspended) }
+            nowSuspended
         }
+        // The ticker owns the timeout; an idle keepalive must not be the next wake.
+        if (suspended) wakeTicker()
     }
 
     /** Q1: the suspend policy passed its budget; lower the bitrate, no keyframe. */

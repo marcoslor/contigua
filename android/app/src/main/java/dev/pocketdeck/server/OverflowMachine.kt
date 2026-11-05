@@ -28,7 +28,20 @@ internal sealed interface OverflowEvent {
 
     /** A config or keyframe was queued: the backlog is about to be discarded. */
     data object Control : OverflowEvent
+
+    /**
+     * The session's ticker. [suspendedSinceMs] is when this stream's suspend
+     * began; [backlogUnderHalf] is the drained condition at this tick.
+     */
+    data class Tick(
+        val nowMs: Long,
+        val suspendedSinceMs: Long,
+        val backlogUnderHalf: Boolean,
+    ) : OverflowEvent
 }
+
+/** Q1: a suspend never outlives its cause by more than this, whatever the backlog. */
+internal const val SUSPEND_TIMEOUT_MS = 1_000L
 
 internal sealed interface OverflowAction {
     /** `PARAMETER_KEY_SUSPEND` 1: stop taking input, keep the encoder running. */
@@ -68,6 +81,7 @@ internal fun overflowStep(state: OverflowState, event: OverflowEvent): OverflowS
                 }
             OverflowEvent.Drained -> stay(token = "drained")
             OverflowEvent.Control -> stay(token = "control")
+            is OverflowEvent.Tick -> stay(token = "tick")
         }
 
         OverflowState.Suspended -> when (event) {
@@ -83,12 +97,23 @@ internal fun overflowStep(state: OverflowState, event: OverflowEvent): OverflowS
                 OverflowStep(OverflowState.Flowing, listOf(OverflowAction.ResumeEncoder), "drained")
             OverflowEvent.Control ->
                 OverflowStep(OverflowState.Flowing, listOf(OverflowAction.ResumeEncoder), "control")
+            is OverflowEvent.Tick ->
+                when {
+                    event.backlogUnderHalf ->
+                        OverflowStep(OverflowState.Flowing,
+                                     listOf(OverflowAction.ResumeEncoder), "tick")
+                    event.nowMs - event.suspendedSinceMs > SUSPEND_TIMEOUT_MS ->
+                        OverflowStep(OverflowState.Flowing,
+                                     listOf(OverflowAction.ResumeEncoder), "timeout")
+                    else -> stay(token = "tick")
+                }
         }
 
         OverflowState.FallbackDropped -> when (event) {
             OverflowEvent.Control -> OverflowStep(OverflowState.Flowing, emptyList(), "control")
             is OverflowEvent.Pressure -> stay(token = "pressure")
             OverflowEvent.Drained -> stay(token = "drained")
+            is OverflowEvent.Tick -> stay(token = "tick")
         }
     }
 }
