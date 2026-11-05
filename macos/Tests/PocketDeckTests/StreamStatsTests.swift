@@ -48,6 +48,36 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(estimator.offsetUs ?? -1, 5_000_000, accuracy: 1)
     }
 
+    /// WIN-53: the phone's CLOCK_MONOTONIC stops while it sleeps, so the offset
+    /// jumps between windows. A pong outside the RTT-derived bound is a new
+    /// clock, not a slow one: the estimate restarts from that sample at once,
+    /// even while a stale low-RTT sample is still inside the 30 s horizon.
+    func testAClockJumpRestartsTheEstimateFromTheJumpingSample() {
+        var estimator = ClockOffsetEstimator()
+        estimator.note(sentUs: 1_000_000, receivedUs: 1_020_000,
+                       phoneNowUs: 6_010_000, at: 0) // 20 ms rtt, 5 s offset
+        let jumped = estimator.note(sentUs: 3_000_000, receivedUs: 3_020_000,
+                                    phoneNowUs: 10_010_000, at: 1) // +2 s
+        XCTAssertEqual(jumped.jumpMs ?? 0, 2_000, accuracy: 0.01)
+        XCTAssertEqual(estimator.samples.count, 1, "the old samples no longer describe this clock")
+        XCTAssertEqual(estimator.offsetUs ?? -1, 7_000_000, accuracy: 1)
+    }
+
+    /// Inside (rtt + estimate rtt) / 2 + 5 ms the difference is jitter, not a
+    /// jump: the sample joins the window and the lowest-RTT estimate stays.
+    func testASampleInsideTheBoundNeverRestartsTheEstimate() {
+        var estimator = ClockOffsetEstimator()
+        estimator.note(sentUs: 1_000_000, receivedUs: 1_020_000,
+                       phoneNowUs: 6_010_000, at: 0) // 20 ms rtt
+        // 10 ms away with a 30 ms rtt: the bound is (30 + 20) / 2 + 5 = 30 ms.
+        let sample = estimator.note(sentUs: 3_000_000, receivedUs: 3_030_000,
+                                    phoneNowUs: 8_025_000, at: 1)
+        XCTAssertNil(sample.jumpMs)
+        XCTAssertEqual(estimator.samples.count, 2)
+        XCTAssertEqual(estimator.offsetUs ?? -1, 5_000_000, accuracy: 1,
+                       "the 20 ms sample is still the estimate")
+    }
+
     // MARK: Sliding window (item 3)
 
     func testFPSComesFromTheTimestamps() {
@@ -396,6 +426,104 @@ final class StreamStatsTests: XCTestCase {
         // A codec without encoding statistics sends no QP keys at all.
         phone = PhoneStreamStats(json: ["bytes": 0])
         XCTAssertNil(phone.qpP50)
+    }
+
+    // MARK: The window's totals (item 4)
+
+    /// WIN-55/56: the closing line is complete over the window's whole life,
+    /// not a sample: counters keep their values across the 5 s snapshots and a
+    /// config, the percentiles cover every shown frame, and the covered time is
+    /// the pause the window spent hidden.
+    func testTheWholeLifeSamplesStayBoundedAndEven() {
+        // A window left open for hours must not keep one value per frame
+        // forever: the record thins evenly and never passes its capacity.
+        var few = ThinnedSamples(capacity: 64)
+        for value in 1...50 { few.append(Double(value)) }
+        XCTAssertEqual(few.values.count, 50, "below capacity every value is kept")
+
+        var many = ThinnedSamples(capacity: 64)
+        for value in 1...10_000 { many.append(Double(value)) }
+        XCTAssertLessThan(many.values.count, 64)
+        XCTAssertGreaterThanOrEqual(many.values.count, 32)
+        let median = StreamStatsWindow.percentile(many.values, 0.5) ?? 0
+        XCTAssertEqual(median, 5_000, accuracy: 500, "thinning stays even over the whole life")
+        XCTAssertGreaterThan(many.values.last ?? 0, 9_000, "the newest values are still sampled")
+    }
+
+    func testTheTotalsLineCoversTheWholeWindowsLife() {
+        var window = StreamStatsWindow(now: 0)
+        for index in 0..<20 {
+            window.noteReceived(now: Double(index) * 0.1, bytes: 100)
+        }
+        // One frame 183 ms late (a hitch), then a steady 10 fps picture: every
+        // shown gap equals its pts gap, so only the second is a hitch.
+        window.noteEnqueued(now: 0, ptsUs: 0, offsetUs: 0)
+        window.noteEnqueued(now: 0.2, ptsUs: 16_667, offsetUs: 0)
+        for index in 2..<20 {
+            window.noteEnqueued(now: 0.3 + Double(index - 2) * 0.1,
+                                ptsUs: 116_667 + UInt64(index - 2) * 100_000,
+                                offsetUs: 0)
+        }
+        window.notePhoneStats(phoneMessage(frames: 60, bytes: 1_000, dropGapMs: 40))
+        window.notePhoneStats(phoneMessage(frames: 40, bytes: 1_000, dropGapMs: 60))
+        _ = window.snapshot(now: 2.05) // the 5 s line consumes the messages
+        window.noteConfig(now: 2.1)    // a resize: the samples reset, the totals do not
+        for index in 0..<10 {
+            window.noteReceived(now: 2.2 + Double(index) * 0.1, bytes: 100)
+        }
+        window.notePaused(true, now: 5.0)
+        window.notePaused(false, now: 7.0)
+        window.notePhoneStats(phoneMessage(frames: 10, bytes: 500, dropGapMs: 10))
+
+        let total = window.total(now: 10)
+        XCTAssertEqual(total.seconds, 10, accuracy: 0.001)
+        XCTAssertEqual(total.receivedFrames, 30)
+        XCTAssertEqual(total.enqueuedFrames, 20)
+        XCTAssertEqual(total.hitchCount, 1)
+        XCTAssertEqual(total.hitchMs, 183.3, accuracy: 0.2)
+        XCTAssertEqual(total.lateP99Ms ?? -1, 183.3, accuracy: 0.2)
+        XCTAssertEqual(total.phoneMessages, 3)
+        XCTAssertEqual(total.phoneFrames, 110)
+        XCTAssertEqual(total.phoneKeyframes, 3)
+        XCTAssertEqual(total.phoneKeyframesRequested, 3)
+        XCTAssertEqual(total.dropEpisodes, 3)
+        XCTAssertEqual(total.dropGapMs, 110)
+        XCTAssertEqual(total.suspendedEpisodes, 3)
+        XCTAssertEqual(total.suspendedMs, 30)
+        XCTAssertEqual(total.phoneBytes, 2_500)
+        XCTAssertEqual(total.e2eP50Ms ?? -1, 183.3, accuracy: 0.2)
+        XCTAssertEqual(total.e2eP95Ms ?? -1, 183.3, accuracy: 0.2)
+        XCTAssertEqual(total.coveredMs, 2_000, accuracy: 1)
+
+        let text = StreamStatsLine.totalText(stream: 7, total: total)
+        for field in ["stats total stream=7", "secs=10.0", "rx_frames=30",
+                      "shown_frames=20", "hitch_n=1", "hitch_ms=183",
+                      "late_p99=183.3", "phone_n=3", "phone_frames=110",
+                      "kf=3", "kf_req=3", "drop_ep=3", "drop_ms=110",
+                      "susp_n=3", "susp_ms=30", "bytes=2500",
+                      "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000"] {
+            XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
+        }
+    }
+
+    func testACloseWhilePausedCountsTheCoveredTimeSoFar() {
+        var window = StreamStatsWindow(now: 0)
+        window.notePaused(true, now: 2.0)
+        let total = window.total(now: 5.0)
+        XCTAssertEqual(total.coveredMs, 3_000, accuracy: 1)
+        XCTAssertEqual(window.snapshot(now: 5.0).receivedFrames, 0)
+    }
+
+    func testATotalsLineWithNoPhoneMessagePrintsZeroCountersAndNoLevels() {
+        var window = StreamStatsWindow(now: 0)
+        let text = StreamStatsLine.totalText(stream: 1, total: window.total(now: 4.0))
+        for field in ["secs=4.0", "rx_frames=0", "shown_frames=0", "hitch_n=0",
+                      "hitch_ms=0", "late_p99=-", "phone_n=0", "phone_frames=0",
+                      "kf=0", "kf_req=0", "drop_ep=0", "drop_ms=-",
+                      "susp_n=0", "susp_ms=0", "bytes=0", "e2e_p50=-",
+                      "e2e_p95=-", "covered_ms=0"] {
+            XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
+        }
     }
 
     // MARK: The stats subscription machine

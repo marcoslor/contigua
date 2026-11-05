@@ -12,6 +12,11 @@ import Foundation
 /// the phone's µs at the pong. The estimate is the lowest-RTT sample of the
 /// last 30 s: RTT jitter only ever makes a sample later, never earlier, so the
 /// fastest round trip is the least polluted one.
+///
+/// The phone's CLOCK_MONOTONIC stops while it sleeps, so the offset jumps
+/// between windows. A pong further from the estimate than the two RTTs can
+/// explain — (its RTT + the estimate's RTT) / 2 + 5 ms — is a new clock, not a
+/// slow one: the window restarts from that sample at once.
 struct ClockOffsetEstimator {
     struct Sample: Equatable {
         /// When the pong arrived, Mac monotonic seconds (the 30 s horizon).
@@ -20,25 +25,45 @@ struct ClockOffsetEstimator {
         var offsetUs: Double
     }
 
+    /// One pong's effect on the estimate.
+    struct Note: Equatable {
+        /// The estimate after the sample, nil before the first one.
+        var offsetUs: Double?
+        /// The restart's jump in ms when this sample was a clock jump.
+        var jumpMs: Double?
+    }
+
     static let horizon: TimeInterval = 30
+    /// Slack over the two half-RTTs: a LAN sample's jitter, never a clock step.
+    static let jumpSlackUs: Double = 5_000
 
     private(set) var samples: [Sample] = []
 
-    /// Adds one pong and returns the current estimate (`nil` with no sample).
+    /// Adds one pong and returns the estimate and whether it restarted.
     @discardableResult
     mutating func note(sentUs: Double, receivedUs: Double, phoneNowUs: Double,
-                       at now: TimeInterval) -> Double? {
-        let rtt = max(0, receivedUs - sentUs)
-        samples.append(Sample(at: now, rttUs: rtt,
-                              offsetUs: phoneNowUs - (sentUs + rtt / 2)))
+                       at now: TimeInterval) -> Note {
         prune(at: now)
-        return offsetUs
+        let rtt = max(0, receivedUs - sentUs)
+        let offset = phoneNowUs - (sentUs + rtt / 2)
+        if let current = estimateSample {
+            let boundUs = (rtt + current.rttUs) / 2 + Self.jumpSlackUs
+            if abs(offset - current.offsetUs) > boundUs {
+                samples = [Sample(at: now, rttUs: rtt, offsetUs: offset)]
+                return Note(offsetUs: offset,
+                            jumpMs: (offset - current.offsetUs) / 1000)
+            }
+        }
+        samples.append(Sample(at: now, rttUs: rtt, offsetUs: offset))
+        return Note(offsetUs: offsetUs, jumpMs: nil)
     }
 
     /// The lowest-RTT sample inside the horizon, nil when there is none.
-    var offsetUs: Double? {
-        samples.min { $0.rttUs < $1.rttUs }?.offsetUs
+    private var estimateSample: Sample? {
+        samples.min { $0.rttUs < $1.rttUs }
     }
+
+    var offsetUs: Double? { estimateSample?.offsetUs }
 
     private mutating func prune(at now: TimeInterval) {
         samples.removeAll { now - $0.at > Self.horizon }
@@ -195,11 +220,37 @@ struct StreamStatsWindow {
     private var firstReceived: TimeInterval?
     private var firstEnqueue: TimeInterval?
     private var paused = false
+    /// When the current covered span began; the totals line charges it.
+    private var pausedAt: TimeInterval?
     /// The phone's counters since the previous line, summed across messages;
     /// the levels are the latest message's. `phoneMessages` counts how many
     /// arrived, so a line with none is visible (`phone_n=0`).
     private(set) var phone: PhoneStreamStats?
     private(set) var phoneMessages = 0
+
+    // The window's whole life, for the one line at close. None of this is
+    // consumed by the 5 s lines or reset by a config.
+    private let startedAt: TimeInterval
+    private var totalReceived = 0
+    private var totalEnqueued = 0
+    private var totalHitchCount = 0
+    private var totalHitchMs = 0.0
+    private var totalLateMs = ThinnedSamples()
+    private var totalLatencyMs = ThinnedSamples()
+    private var totalCoveredMs = 0.0
+    private var totalPhoneMessages = 0
+    private var totalPhoneFrames = 0
+    private var totalPhoneKeyframes = 0
+    private var totalPhoneKeyframesRequested = 0
+    private var totalDropEpisodes = 0
+    private var totalDropGapMs: Int?
+    private var totalSuspendedEpisodes = 0
+    private var totalSuspendedMs = 0
+    private var totalPhoneBytes = 0
+
+    init(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        startedAt = now
+    }
 
     /// A new VIDEO_CONFIG: the old format's samples no longer describe this
     /// stream, so the Mac's window restarts. The phone's counters already
@@ -219,7 +270,14 @@ struct StreamStatsWindow {
     }
 
     mutating func notePaused(_ paused: Bool, now: TimeInterval) {
+        let was = self.paused
         self.paused = paused
+        if paused && !was {
+            pausedAt = now
+        } else if !paused, let began = pausedAt {
+            totalCoveredMs += max(0, now - began) * 1000
+            pausedAt = nil
+        }
         // The covered span is not a freeze; the next frame starts a fresh one.
         if paused {
             lastEnqueue = nil
@@ -231,6 +289,7 @@ struct StreamStatsWindow {
     mutating func noteReceived(now: TimeInterval, bytes: Int) {
         if firstReceived == nil { firstReceived = now }
         received.append(Received(at: now, bytes: bytes))
+        totalReceived += 1
         prune(now)
     }
 
@@ -251,16 +310,21 @@ struct StreamStatsWindow {
             if late > Self.hitchThreshold {
                 hitchCount += 1
                 hitchMs += late * 1000
+                totalHitchCount += 1
+                totalHitchMs += late * 1000
             }
         }
+        if let lateMs { totalLateMs.append(lateMs) }
+        let latencyMs = Self.latency(now: now, ptsUs: ptsUs, offsetUs: offsetUs)
+        if let latencyMs { totalLatencyMs.append(latencyMs) }
+        totalEnqueued += 1
         if !paused {
             lastEnqueue = now
             lastEnqueuePtsUs = ptsUs
         }
         if firstEnqueue == nil { firstEnqueue = now }
         enqueued.append(Enqueued(at: now,
-                                 latencyMs: Self.latency(now: now, ptsUs: ptsUs,
-                                                         offsetUs: offsetUs),
+                                 latencyMs: latencyMs,
                                  lateMs: lateMs))
         prune(now)
     }
@@ -279,6 +343,41 @@ struct StreamStatsWindow {
         } else {
             phone = stats
         }
+        totalPhoneMessages += 1
+        totalPhoneFrames += stats.frames
+        totalPhoneKeyframes += stats.keyframes
+        totalPhoneKeyframesRequested += stats.keyframesRequested
+        totalDropEpisodes += stats.dropEpisodes
+        if let gap = stats.dropGapMs { totalDropGapMs = (totalDropGapMs ?? 0) + gap }
+        totalSuspendedEpisodes += stats.suspendedEpisodes
+        totalSuspendedMs += stats.suspendedMs
+        totalPhoneBytes += stats.bytes
+    }
+
+    /// The window's whole life, for the line at close. Percentiles cover every
+    /// shown frame, not the last 2 s; `coveredMs` counts the pause so far.
+    mutating func total(now: TimeInterval) -> StreamStatsTotal {
+        let covered = totalCoveredMs + (pausedAt.map { max(0, now - $0) * 1000 } ?? 0)
+        return StreamStatsTotal(
+            seconds: max(0, now - startedAt),
+            receivedFrames: totalReceived,
+            enqueuedFrames: totalEnqueued,
+            hitchCount: totalHitchCount,
+            hitchMs: totalHitchMs,
+            lateP99Ms: Self.percentile(totalLateMs.values, 0.99),
+            phoneMessages: totalPhoneMessages,
+            phoneFrames: totalPhoneFrames,
+            phoneKeyframes: totalPhoneKeyframes,
+            phoneKeyframesRequested: totalPhoneKeyframesRequested,
+            dropEpisodes: totalDropEpisodes,
+            dropGapMs: totalDropGapMs,
+            suspendedEpisodes: totalSuspendedEpisodes,
+            suspendedMs: totalSuspendedMs,
+            phoneBytes: totalPhoneBytes,
+            e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
+            e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
+            coveredMs: covered
+        )
     }
 
     /// The numbers for one log line. Frames, intervals and delays cover the
@@ -421,6 +520,55 @@ struct StreamStatsSnapshot {
     var phoneMessages = 0
 }
 
+/// One value per shown frame over a window's whole life, for the closing
+/// percentiles, in bounded memory. Below `capacity` it keeps every value. At
+/// capacity it drops every other one and from then on keeps one value in two
+/// (then four, …), so the record stays even over the window's life: a window
+/// left open for hours holds at most `capacity` values, not one per frame.
+struct ThinnedSamples {
+    private(set) var values: [Double] = []
+    private let capacity: Int
+    private var keepEvery = 1
+    private var sinceKept = 0
+
+    init(capacity: Int = 16_384) {
+        self.capacity = max(2, capacity)
+    }
+
+    mutating func append(_ value: Double) {
+        sinceKept += 1
+        guard sinceKept >= keepEvery else { return }
+        sinceKept = 0
+        values.append(value)
+        if values.count >= capacity {
+            values = Swift.stride(from: 0, to: values.count, by: 2).map { values[$0] }
+            keepEvery *= 2
+        }
+    }
+}
+
+/// One window's counters over its whole life, read once when it closes.
+struct StreamStatsTotal {
+    var seconds: Double
+    var receivedFrames: Int
+    var enqueuedFrames: Int
+    var hitchCount: Int
+    var hitchMs: Double
+    var lateP99Ms: Double?
+    var phoneMessages: Int
+    var phoneFrames: Int
+    var phoneKeyframes: Int
+    var phoneKeyframesRequested: Int
+    var dropEpisodes: Int
+    var dropGapMs: Int?
+    var suspendedEpisodes: Int
+    var suspendedMs: Int
+    var phoneBytes: Int
+    var e2eP50Ms: Double?
+    var e2eP95Ms: Double?
+    var coveredMs: Double
+}
+
 /// The one `notice` line per visible window every 5 s. Numbers only: no
 /// titles, package names, URLs or pixels (R-PRIV-1). A missing value is `-`.
 enum StreamStatsLine {
@@ -474,6 +622,32 @@ enum StreamStatsLine {
     static func ms(_ us: Double?) -> String {
         guard let us, us.isFinite else { return "-" }
         return String(format: "%.1f", us / 1000)
+    }
+
+    /// The one line a window writes as it closes (WIN-55/56): every counter
+    /// over its whole life, `covered_ms` the pause it spent hidden.
+    static func totalText(stream: UInt32, total: StreamStatsTotal) -> String {
+        [
+            "stats total stream=\(stream)",
+            "secs=\(String(format: "%.1f", total.seconds))",
+            "rx_frames=\(total.receivedFrames)",
+            "shown_frames=\(total.enqueuedFrames)",
+            "hitch_n=\(total.hitchCount)",
+            "hitch_ms=\(Int(total.hitchMs.rounded()))",
+            "late_p99=\(one(total.lateP99Ms))",
+            "phone_n=\(total.phoneMessages)",
+            "phone_frames=\(total.phoneFrames)",
+            "kf=\(total.phoneKeyframes)",
+            "kf_req=\(total.phoneKeyframesRequested)",
+            "drop_ep=\(total.dropEpisodes)",
+            "drop_ms=\(total.dropGapMs.map(String.init) ?? "-")",
+            "susp_n=\(total.suspendedEpisodes)",
+            "susp_ms=\(total.suspendedMs)",
+            "bytes=\(total.phoneBytes)",
+            "e2e_p50=\(one(total.e2eP50Ms))",
+            "e2e_p95=\(one(total.e2eP95Ms))",
+            "covered_ms=\(Int(total.coveredMs.rounded()))",
+        ].joined(separator: " ")
     }
 }
 
@@ -550,5 +724,10 @@ final class StreamStatsRecorder {
     func snapshot(now: TimeInterval) -> StreamStatsSnapshot {
         lock.lock(); defer { lock.unlock() }
         return model.snapshot(now: now)
+    }
+
+    func total(now: TimeInterval) -> StreamStatsTotal {
+        lock.lock(); defer { lock.unlock() }
+        return model.total(now: now)
     }
 }

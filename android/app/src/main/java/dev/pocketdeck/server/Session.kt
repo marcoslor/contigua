@@ -442,6 +442,11 @@ class Session(
     /** `state.panel` is the phone's hold (PanelHold.kt), never a local guess. */
 
     private var writerThread: Thread? = null
+    /**
+     * The on-demand link stall (ISS-40 round 2), created only from the debug
+     * properties at a stream's configure. Null is today's writer.
+     */
+    @Volatile private var stall: StallGate? = null
     private var stateHandle: AutoCloseable? = null
     private var dndHandle: AutoCloseable? = null
     private var ringerHandle: AutoCloseable? = null
@@ -1072,6 +1077,16 @@ class Session(
         try {
             while (true) {
                 val entry = queue.poll() ?: break
+                stall?.takeIf { it.stream == entry.stream }?.let { gate ->
+                    val step = gate.beforeWrite(monoUs() / 1000)
+                    for (action in step.actions) {
+                        when (action) {
+                            is StallAction.LogInjected ->
+                                log("stream ${action.stream} injected stall ${action.ms}")
+                            is StallAction.Wait -> Thread.sleep(action.ms.toLong())
+                        }
+                    }
+                }
                 // A frame's queue delay ends when its socket write finished
                 // (ISS-40), so the callback rides the path's writer. Only while
                 // the Mac asked: no timer runs otherwise.
@@ -1750,6 +1765,7 @@ class Session(
         startStreamWatch()
         notifyAudioWindowsChanged()
         log("adopt: stream=$stream task=$taskId display=$displayId")
+        refreshStall(stream)
     }
 
     private fun onLinkOpen(obj: Map<String, Any?>, frame: Frame) {
@@ -1902,9 +1918,19 @@ class Session(
         // An app or link stream already told the power policy before its
         // launch; only the mirror decides after its reply (it never wakes).
         if (content == WindowContent.Phone) updatePower()
+        refreshStall(stream)
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
+    }
+
+    /**
+     * The debug stall is read at the stream's configure, like the other
+     * switches; it is off unless the property is set. The session's writer
+     * serves one link, so the last configured gate is the one it follows.
+     */
+    private fun refreshStall(stream: Int) {
+        stall = StreamStrategy.read().stallGate(stream, monoUs() / 1000) { line -> log(line) }
     }
 
     private fun openedFields(stream: Int, displayId: Int, w: Int, h: Int, taskId: Int): LinkedHashMap<String, Any?> =
@@ -1967,6 +1993,8 @@ class Session(
         }
         state.size = IntSize(w, h)
         val outcome = display.resize(stream, w, h, dpi)
+        // A resize rebuilds the encoder and re-reads its switches, the stall included.
+        refreshStall(stream)
         // The echo is the request as the Mac sent it, not the size the encoder
         // fitted it to: the Mac matches it against the resize it has in flight.
         sendResizeAck(stream, askedW, askedH, dpi, outcome)
@@ -1986,6 +2014,9 @@ class Session(
             sendError("no_stream", "unknown stream $stream", stream)
             return
         }
+        // ISS-40 round 2: one final line for the stream's whole life, before the
+        // display forgets its counters (the CBR freeze is diagnosed from it).
+        display.totalsLine(stream)?.let { log(it) }
         display.close(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
@@ -1997,6 +2028,7 @@ class Session(
             log("stream $stream stats sent=$sentAtClose")
         }
         gate.forget(stream)
+        if (windowCount() == 0) stall = null
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         // The panel follows the session's windows, so it is settled before the
         // reply: a closed window never leaves the Mac on a held panel.
