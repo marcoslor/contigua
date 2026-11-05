@@ -63,6 +63,16 @@ internal object ProcNetCounters {
 internal class TCPCounterDeltas {
     private var previous: TCPCounterSample? = null
 
+    /**
+     * Stats turned on again: the next sample is a new baseline, so the first
+     * message never counts the resends of the time stats were off.
+     */
+    @Synchronized
+    fun restart() {
+        previous = null
+    }
+
+    @Synchronized
     fun note(sample: TCPCounterSample?): TCPCounterSample? {
         if (sample == null) return null
         val last = previous
