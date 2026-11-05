@@ -154,16 +154,16 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
   - **UI toolkit:** open again, since GPUI's web build needs WebGPU (or WebGL2) and cross-origin isolation, which our own origin can serve. It's still experimental (one canvas per page, no menus, canvas text and IME). A DOM app is the safer default. Decide by one prototype round: the Deck and one stream window in each. Nothing needs to move off SwiftUI on the Mac. What's shared regardless is the protocol, the fake-phone conformance checks and the visual language.
   - **First step, a spike:** a Windows or Linux browser opens the site with nothing installed and pairs by QR. It plays one stream both ways (RTP track and data channel with WebCodecs), with keyboard and pointer input, on the LAN and through a TURN relay. It measures latency, CPU and the phone's added size and memory against the Mac app.
 
-- **ISS-45 A third window style, "Stock" (or "Default"), mirroring macOS Quick Look's preview window 1:1, plus the traffic lights (the person, 2026-11-05).** It joins today's two styles, Framed (which the person calls "compact") and Immersive (WIN-7); the name and whether it becomes the default are the person's call.
-  - **The reference:** Finder's Quick Look preview of a landscape picture (the person's screenshot, not kept in the repo: it shows a personal photo).
-    - A dark, translucent panel surrounds the content on all four sides: a title bar of about 44 pt on top, and a thin margin of about 8–10 pt on the left, right and bottom.
-    - The content sits inset with its own rounded corners (about 12 pt), inside a window with larger corners (about 20 pt).
-    - Title bar, left: two grey circular buttons (Close ⊗ and Full Screen ⤢, Quick Look's own, not the traffic lights), then the title in bold white.
-    - Title bar, right: borderless icon buttons (Markup, Rotate, Share) and one capsule button with a label ("Open with Preview").
-  - **"Plus traffic lights":** the real close, minimise and zoom lights where Quick Look puts its two circles, or beside them. The prototypes show both readings.
-  - **For PocketDeck:** the title is the window's name ("<App> — <task label>", WIN-25). The right-hand icons are the window's existing actions (today's action pill), and the capsule is the one main action (for example "Open on Phone"). The mapping is decided in the prototype round.
-  - **Geometry:** unlike Framed (WIN-4: a 28 pt bar and nothing on the other three sides), the picture is inset on all four sides. The window size, the input mapping (`videoRect()`), resize (WIN-6, WIN-58), the panel cap and the 1:1 pixel rule (WIN-52) must all account for the margins and the rounded content corners.
-  - **Requirements gate:** surface spec rows next to WIN-4, WIN-7 and WIN-8; then a prototype round of 2–4 real renders side by side (light and dark), reviewed by the reviewer first, then picked by the person; then the build.
+- **ISS-45 A third window style, "Stock" (or "Default"), whose frame mirrors macOS Quick Look's preview window 1:1 (the person, 2026-11-05).** It joins today's two styles, Framed (which the person calls "compact") and Immersive (WIN-7); the name and whether it becomes the default are the person's call.
+  - **Scope (the person):** mirror the frame exactly, meaning its borders, paddings, corners and material. Everything inside the bar is PocketDeck's own UI: the traffic lights, the title and our controls. Nothing of Quick Look's own buttons carries over.
+  - **The reference:** Finder's Quick Look preview of a landscape picture, dark appearance, measured from the person's 2× screenshot (not kept in the repo: it shows a personal photo).
+    - **Border:** a 0.5 pt black outer hairline, and inside it a 1 pt lighter rim (about #46–#73).
+    - **Paddings:** the content starts about 38.5 pt below the window's outer edge (the bar), and about 5.5–6 pt from the left, right and bottom outer edges.
+    - **Corners:** the window's outer corner radius is about 22 pt. The content has its own corners of about 11–12 pt, which are not concentric with the window's.
+    - **Material:** dark and translucent. It takes on the colour of what is behind the window: #2c3137 over a cool background, #32302f over a warm one. The bar has a top highlight that fades into the material over about 10 pt.
+    - **To confirm in the prototype round:** the light-appearance values, and the bar height for a portrait picture, from a live Quick Look window on a fixture image (the reviewer opens it, not a worker).
+  - **Geometry:** unlike Framed (WIN-4: a 28 pt bar and nothing on the other three sides), the picture is inset on all four sides, with rounded corners. The window size, the input mapping (`videoRect()`), resize (WIN-6, WIN-58), the panel cap and the 1:1 pixel rule (WIN-52) must all account for the margins. A tap must never land in a rounded-off corner.
+  - **Requirements gate:** surface spec rows next to WIN-4, WIN-7 and WIN-8; then a prototype round of 2–4 real renders side by side (light and dark), with the frame fixed to these numbers and our UI in the bar varying, reviewed by the reviewer first, then picked by the person; then the build.
 
 ## 6. On their own branches
 
