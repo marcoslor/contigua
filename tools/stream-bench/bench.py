@@ -459,15 +459,23 @@ def main():
                         help="also run arms marked restart (they need the app restarted "
                              "between runs; N1's Mac side is read at dial time)")
     parser.add_argument("--first-line-timeout", type=float, default=30.0)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="read and filter the arms, print the plan and exit; "
+                             "no adb, no Mac app, no log")
     args = parser.parse_args()
     if args.repeats < 1:
         fail("--repeats must be at least 1")
 
-    require_device(args.adb, args.serial)
     arms = read_arms(args.arms)
     run_arms = selected_arms(arms, args.include_restart_arms, args.arms_filter)
     if not run_arms:
         fail("%s lists no arms for this run" % args.arms)
+    if args.dry_run:
+        print("dry-run: %d arm(s) x %d repeat(s): %s"
+              % (len(run_arms), args.repeats, ", ".join(arm["name"] for arm in run_arms)))
+        return 0
+
+    require_device(args.adb, args.serial)
     skipped = [arm["name"] for arm in arms if arm not in run_arms]
     if skipped:
         log("skipping arms (restart arms need the app restarted; "
