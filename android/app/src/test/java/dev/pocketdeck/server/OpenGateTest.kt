@@ -17,6 +17,7 @@ class OpenGateTest : SessionFixture() {
     private val gate = OpenGate(
         sendJson = { stream, json -> log.add("json:$stream:$json") },
         sendControl = { stream, bytes -> log.add("control:$stream:${bytes[0]}") },
+        sendKeyframe = { stream, pts, bytes -> log.add("key:$stream:$pts:${bytes[0]}") },
         sendDelta = { stream, pts, bytes -> log.add("delta:$stream:${bytes[0]}") },
     )
 
@@ -31,7 +32,7 @@ class OpenGateTest : SessionFixture() {
         assertTrue("nothing goes out before window.opened", log.isEmpty())
 
         gate.announce(1) { log.add("opened") }
-        assertEquals(listOf("opened", "json:1:content", "control:1:2", "control:1:10"), log)
+        assertEquals(listOf("opened", "json:1:content", "control:1:2", "key:1:400:10"), log)
     }
 
     @Test
@@ -41,7 +42,7 @@ class OpenGateTest : SessionFixture() {
         gate.config(1, "content", byteArrayOf(2))
         gate.frame(1, 100, key = true, bytes = byteArrayOf(8))
         gate.frame(1, 200, key = false, bytes = byteArrayOf(9))
-        assertEquals(listOf("opened", "json:1:content", "control:1:2", "control:1:8", "delta:1:9"), log)
+        assertEquals(listOf("opened", "json:1:content", "control:1:2", "key:1:100:8", "delta:1:9"), log)
     }
 
     @Test

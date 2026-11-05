@@ -14,13 +14,14 @@ package dev.pocketdeck.server
 internal class OpenGate(
     private val sendJson: (stream: Int, json: String) -> Unit,
     private val sendControl: (stream: Int, bytes: ByteArray) -> Unit,
+    private val sendKeyframe: (stream: Int, ptsUs: Long, bytes: ByteArray) -> Unit,
     private val sendDelta: (stream: Int, ptsUs: Long, bytes: ByteArray) -> Unit,
 ) {
 
     private enum class State { HELD, OPEN }
 
     private class Stream(var state: State, var content: String? = null, var config: ByteArray? = null,
-                         var keyframe: ByteArray? = null)
+                         var keyframe: ByteArray? = null, var keyframePtsUs: Long = -1)
 
     private val streams = HashMap<Int, Stream>()
 
@@ -57,7 +58,10 @@ internal class OpenGate(
             null -> emit(stream, ptsUs, key, bytes)
             else -> when (s.state) {
                 State.OPEN -> emit(stream, ptsUs, key, bytes)
-                State.HELD -> if (key) s.keyframe = bytes
+                State.HELD -> if (key) {
+                    s.keyframe = bytes
+                    s.keyframePtsUs = ptsUs
+                }
             }
         }
     }
@@ -76,10 +80,11 @@ internal class OpenGate(
         s.state = State.OPEN
         s.content?.let { sendJson(stream, it) }
         s.config?.let { sendControl(stream, it) }
-        s.keyframe?.let { sendControl(stream, it) }
+        s.keyframe?.let { sendKeyframe(stream, s.keyframePtsUs, it) }
         s.content = null
         s.config = null
         s.keyframe = null
+        s.keyframePtsUs = -1
     }
 
     /** The stream closed: nothing held for it may go out (a later stream reuses the id). */
@@ -89,6 +94,6 @@ internal class OpenGate(
     }
 
     private fun emit(stream: Int, ptsUs: Long, key: Boolean, bytes: ByteArray) {
-        if (key) sendControl(stream, bytes) else sendDelta(stream, ptsUs, bytes)
+        if (key) sendKeyframe(stream, ptsUs, bytes) else sendDelta(stream, ptsUs, bytes)
     }
 }
