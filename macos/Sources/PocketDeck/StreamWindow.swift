@@ -966,6 +966,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         stopZoomAnimation()
         openingTimer?.invalidate()
         openingTimer = nil
+        // One complete line for the window's whole life, whatever its state:
+        // the bench reads these, not the 5 s samples (WIN-55/56).
+        logStatsTotal()
         statsTimer?.invalidate()
         statsTimer = nil
         dwellTimer?.invalidate()
@@ -1611,6 +1614,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                                         place: videoView.placementName,
                                         stats: stats)
         Log.video.notice("\(line, privacy: .public)")  // log-ok: counts, sizes, rates and timings only; no content
+    }
+
+    /// The closing line: complete counters over the window's whole life, so a
+    /// short run is not described by its last 2 s sample.
+    private func logStatsTotal() {
+        let total = stats.total(now: ProcessInfo.processInfo.systemUptime)
+        let line = StreamStatsLine.totalText(stream: stream, total: total)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: counts and timings only; no content
     }
 
     /// The tick with the clock passed in, so a test can drive the window's
