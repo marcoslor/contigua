@@ -339,10 +339,12 @@ What it shows:
   - Fix on `fix/q1fix` (the state applied under one lock, empty counts as drained, a 1 s suspend timeout); Q1 is re-run after it.
 - **A longer queue is not the answer.** 500 ms avoids most drops but turns every stall into a hitch of the same length, with the highest jank of the round.
 - **Paced display and intra refresh are within the noise** of today's policy under a stall.
+- **Intra refresh corrupts the picture after a drop.** The person watched the last run (`stall-ir60`, stream 18) and saw broken blocks and doubled text in the lower half at 15:59:21 (screenshot, not kept: it shows personal details). The phone had dropped deltas and asked for a keyframe at 15:59:14.8 (`drop_ep=1 drop_ms=161 kf_req=1`); it encoded 1,378 frames and the Mac received 1,269, more than the episode's gap accounts for. Likely cause: with `KEY_INTRA_REFRESH_PERIOD` set, the key-flagged frame the queue resumes on is not a full IDR, so the decoder keeps predicting from deltas it never got, and scrolling copies the damage around instead of letting the refresh band heal it. R4 must not ship, and its numbers here don't count, until the frame a drop resumes on is proven to be an IDR (NAL type 5) in that mode. No metric saw it: jank, QP and the counters can't tell a corrupted picture from a clean one.
 
 What the round found wrong with the measurement:
 - **A frozen picture scores best.** The two frozen Q1 runs had `jank_ms` 85 and 0. The hitch rule needs a frame to be late, and a frozen picture sends none; `susp_ms` counted only episodes that ended (0–19 ms for a 10 s suspend). The bench now has to mark a run `frozen` when a swipe line has almost no frames, and count an open suspend.
 - **The medians counted low-motion runs** (today's policy's median of 613 included the run with no picture).
+- **Corruption is invisible to the numbers.** A run needs a check that the frame a drop resumes on is an IDR (the Mac can read the NAL type of every key-flagged frame it decodes), and the bench should keep one screenshot per swipe phase through the automation tool, for the reviewer to look at.
 
 Raw data: `.agent/stats/round2/` (not in the repo).
 
