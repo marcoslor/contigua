@@ -60,7 +60,8 @@
       "phone": {
         "tos": "136"
       },
-      "mac": {}
+      "mac": {},
+      "restart": true
     },
     {
       "name": "m1-paced",
@@ -102,8 +103,7 @@
         "rc": "cbr",
         "cap_kbps": "16000",
         "ir": "60",
-        "refine": "on",
-        "tos": "136"
+        "refine": "on"
       },
       "mac": {}
     }

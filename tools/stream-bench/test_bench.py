@@ -8,6 +8,7 @@ back to `getprop`'s empty value after the run, and `adb shell setprop name ""`
 is not enough (adb drops the empty argument before the device shell sees it).
 """
 
+import datetime
 import importlib.util
 import os
 import tempfile
@@ -169,16 +170,124 @@ esac
         self.assertEqual(by_name["n1-mac-video"]["mac"], {"stream.net": "video"})
         self.assertEqual(by_name["n1-both"]["mac"], {"stream.net": "video"})
         self.assertEqual(by_name["n1-both"]["phone"], {"tos": "136"})
-        # N1's key is read at dial time: the default list leaves those arms out
-        # (the README says the app must be restarted between them).
+        # N1's key is read at dial time on both sides: the default list leaves
+        # those arms out (the README says the app must be restarted between them).
         default = [arm["name"] for arm in self.bench.selected_arms(arms)]
         self.assertIn("m1-paced", default)
         self.assertIn("m2-panel", default)
         self.assertNotIn("n1-mac-video", default)
         self.assertNotIn("n1-both", default)
+        self.assertNotIn("n1-af41", default)
         restarted = [arm["name"] for arm in self.bench.selected_arms(arms, include_restart=True)]
         self.assertIn("n1-mac-video", restarted)
         self.assertIn("n1-both", restarted)
+        self.assertIn("n1-af41", restarted)
+
+    def test_combo_a_names_only_the_switches_an_interleaved_run_can_apply(self):
+        arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
+        combo = {arm["name"]: arm for arm in arms}["combo-a"]
+        self.assertEqual(combo["phone"], {"overflow": "suspend", "queue_ms": "100",
+                                          "rc": "cbr", "cap_kbps": "16000",
+                                          "ir": "60", "refine": "on"})
+        self.assertEqual(combo.get("restart", False), False)
+
+
+class DriveTest(unittest.TestCase):
+    """The script must never let the list rest at an end."""
+
+    def test_every_swipe_alternates_direction_in_both_phases(self):
+        bench = load_bench()
+        calls = []
+
+        class FakeMCP:
+            def text(self, name, arguments):
+                calls.append(arguments)
+
+        phases = []
+        bench.drive(FakeMCP(), 1, phases, sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 20)
+        self.assertEqual(sum(1 for call in calls if call["y1"] == 0.78), 10)
+        self.assertEqual(sum(1 for call in calls if call["y1"] == 0.22), 10)
+        # up, down, up, ... within the steady phase, then again in the flings.
+        for index, call in enumerate(calls):
+            expected = 0.78 if index % 2 == 0 else 0.22
+            self.assertEqual(call["y1"], expected, "swipe %d" % index)
+        self.assertEqual([name for name, _ in phases],
+                         ["swipes", "still", "flings", "settle"])
+
+
+class RunMetricsTest(unittest.TestCase):
+    def setUp(self):
+        self.bench = load_bench()
+        self.phases = [("opening", 0), ("warming", 50), ("swipes", 100),
+                       ("still", 110), ("flings", 120), ("settle", 130),
+                       ("closing", 140)]
+
+    def row(self, at, **fields):
+        row = {"at": at}
+        row.update({key: str(value) for key, value in fields.items()})
+        return row
+
+    def test_counters_sum_over_the_whole_run_and_levels_come_from_motion(self):
+        rows = [
+            self.row(105, rx_fps=60, shown_fps=10, late_p99=20, hitch_n=1,
+                     hitch_ms=60, drop_ep=1, drop_ms=100, susp_n=0, susp_ms=0,
+                     kf=1, kbps=1000, e2e_p50=1, e2e_p95=2),
+            # A still line is in the run's counters but never its shown_fps
+            # or late_p99: the picture is not moving there.
+            self.row(115, rx_fps=0, shown_fps=99, late_p99=999, hitch_n=1,
+                     hitch_ms=40, drop_ep=0, drop_ms="-", susp_n=1, susp_ms=10,
+                     kf=2, kbps=3000, e2e_p50=3, e2e_p95=4),
+            self.row(125, rx_fps=60, shown_fps=60, late_p99=0, hitch_n=0,
+                     hitch_ms=0, drop_ep=0, drop_ms=0, susp_n=0, susp_ms=0,
+                     kf=1, kbps=2000, e2e_p50=2, e2e_p95=3),
+        ]
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertEqual(values["jank_n"], 4)       # 1+1 + 1+1 + 0
+        self.assertEqual(values["jank_ms"], 210)    # 160 + 50 + 0
+        self.assertEqual(values["hitch_ms"], 100)
+        self.assertEqual(values["drop_ms"], 100)
+        self.assertEqual(values["susp_ms"], 10)
+        self.assertEqual(values["kf"], 4)
+        self.assertEqual(values["late_p99"], 10)    # median(20, 0)
+        self.assertEqual(values["shown_fps"], 35)   # median(10, 60)
+        self.assertEqual(values["kbps"], 2000)      # whole-run median
+        self.assertEqual(values["e2e_p50"], 2)
+        self.assertEqual(values["e2e_p95"], 3)
+        self.assertFalse(values["low_motion"])
+        self.assertTrue(values["no_drop_ms"])
+
+    def test_no_motion_line_at_thirty_fps_marks_the_run_low_motion(self):
+        rows = [self.row(105, rx_fps=20, shown_fps=5, late_p99=1),
+                self.row(125, rx_fps=29.9, shown_fps=5, late_p99=1)]
+        self.assertTrue(self.bench.run_metrics(rows, self.phases)["low_motion"])
+        rows[0]["rx_fps"] = "30"
+        self.assertFalse(self.bench.run_metrics(rows, self.phases)["low_motion"])
+
+    def test_a_missing_drop_ms_is_zero_for_jank_and_marks_the_run(self):
+        rows = [self.row(105, rx_fps=60, drop_ep=2, drop_ms="-", hitch_n=0,
+                         hitch_ms=0, susp_n=0, susp_ms=0)]
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertEqual(values["jank_ms"], 0)
+        self.assertEqual(values["jank_n"], 2)
+        self.assertTrue(values["no_drop_ms"])
+        rows[0]["drop_ms"] = "250"
+        values = self.bench.run_metrics(rows, self.phases)
+        self.assertEqual(values["jank_ms"], 250)
+        self.assertFalse(values["no_drop_ms"])
+
+
+class ParseRowsTest(unittest.TestCase):
+    def test_the_line_timestamp_is_an_absolute_instant(self):
+        bench = load_bench()
+        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[1]: "
+                "stats stream=1 rx_fps=60 drop_ms=- drop_ep=0\n")
+        row = bench.parse_rows(text, 1)[0]
+        moment = datetime.datetime.fromtimestamp(row["at"], datetime.timezone.utc)
+        self.assertEqual(moment, datetime.datetime(2026, 11, 5, 13, 0, 5,
+                                                   tzinfo=datetime.timezone.utc))
+        self.assertIsNone(bench.number(row, "drop_ms"))
+        self.assertEqual(bench.number(row, "rx_fps"), 60)
 
 
 if __name__ == "__main__":

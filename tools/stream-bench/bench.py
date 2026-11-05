@@ -24,6 +24,7 @@ put back the way they were.
 
 import argparse
 import csv
+import datetime
 import importlib.util
 import json
 import os
@@ -31,15 +32,26 @@ import re
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MACOS = os.path.join(ROOT, "macos")
-SUMMARY = os.path.join(MACOS, "scripts", "stats-summary.py")
 DEFAULT_SHIM = "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"
 PROFILE_DOMAIN = "dev.pocketdeck.mac"
 STATS_PREFIX = "debug.pocketdeck.stream."
+
+# One row per arm; each cell is median (min–max) across the arm's runs.
+# jank_* lead: what a person feels while the phone's content moves is a hitch
+# on the Mac, a drop gap on the phone, or a suspend (Q1).
+TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
+                "late_p99", "shown_fps", "kf", "kbps", "e2e_p50", "e2e_p95")
+# A run's value: these counters total across its lines.
+RUN_SUM = {"jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms", "kf"}
+# These levels are read only while the script's swipes or flings move the list.
+MOTION_PHASES = ("swipes", "flings")
+
+PHASES = ("opening", "warming", "swipes", "still", "flings", "settle", "closing")
+STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
 
 
 def profile_domain(profile):
@@ -55,14 +67,6 @@ def selected_arms(arms, include_restart=False):
     if include_restart:
         return list(arms)
     return [arm for arm in arms if not arm.get("restart", False)]
-
-# One row per arm; each cell is median (min–max) across the arm's runs.
-ARM_FIELDS = ("shown_fps", "int_p99", "freeze_n", "freeze_ms", "drop_ep",
-              "susp_n", "susp_ms", "refine_n", "qp_p95", "kbps", "e2e_p95")
-# A run's value: counters total across its lines, everything else the median.
-RUN_SUM = {"freeze_n", "freeze_ms", "drop_ep", "susp_n", "susp_ms", "refine_n"}
-
-PHASES = ("opening", "warming", "swipes", "still", "flings", "settle", "closing")
 
 
 def log(message):
@@ -181,78 +185,156 @@ def stats_lines(start, predicate):
     return result.stdout or ""
 
 
-def parse_stats(text, stream):
-    """The summary dict for one stream's lines, or None."""
+def parse_rows(text, stream):
+    """One dict per `stats stream=<stream>` line, with its wall-clock time."""
     marker = " stats stream=%s " % stream
-    rows = [line for line in text.splitlines() if marker in line + " "]
-    if not rows:
-        return None
-    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False,
-                                     encoding="utf-8") as handle:
-        handle.write("\n".join(rows) + "\n")
-        path = handle.name
-    try:
-        result = run_command([sys.executable, SUMMARY, "--file", path, "--json"])
-        data = json.loads(result.stdout)
-        return data["streams"].get(str(stream))
-    finally:
+    rows = []
+    for line in text.splitlines():
+        if marker not in line + " ":
+            continue
+        match = STAMP.match(line.strip())
+        if not match:
+            continue
         try:
-            os.unlink(path)
-        except OSError:
-            pass
+            at = datetime.datetime.strptime(
+                match.group(1) + match.group(2),
+                "%Y-%m-%d %H:%M:%S.%f%z").timestamp()
+        except ValueError:
+            continue
+        fields = {"at": at}
+        for word in line.split():
+            if "=" not in word:
+                continue
+            key, value = word.split("=", 1)
+            fields[key] = value
+        rows.append(fields)
+    return rows
 
 
-def wait_for_first_line(stream, began, predicate, seconds):
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        summary = parse_stats(stats_lines(began, predicate), stream)
-        if summary and summary["lines"] >= 1:
-            return True
-        time.sleep(0.5)
-    return False
+def number(row, key):
+    raw = row.get(key)
+    if raw in (None, "-"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 
-def read_run(stream, began, ended, predicate):
-    """Wait for the log to settle, then summarise the run's own lines."""
+def phase_at(at, phases):
+    """The last phase whose start is at or before `at`."""
+    current = phases[0][0] if phases else PHASES[0]
+    for name, start in phases:
+        if at >= start:
+            current = name
+        else:
+            break
+    return current
+
+
+def read_run(stream, began, predicate):
+    """Wait for the log to settle, then return the run's own lines."""
     deadline = time.time() + 20
     last = 0
     stable_since = None
-    summary = None
+    rows = []
     while time.time() < deadline:
-        summary = parse_stats(stats_lines(began, predicate), stream)
-        count = summary["lines"] if summary else 0
+        rows = parse_rows(stats_lines(began, predicate), stream)
+        count = len(rows)
         if count != last:
             last = count
             stable_since = time.time()
         elif count > 0 and stable_since and time.time() - stable_since >= 2:
             break
         time.sleep(1)
-    if not summary or summary["lines"] == 0:
-        return None
-    return summary
+    return rows
 
 
-def run_value(summary, field):
-    values = summary["fields"].get(field)
-    if not values or values["samples"] == 0:
-        return None
-    return values["sum"] if field in RUN_SUM else values["median"]
+def median(values):
+    return statistics.median(values) if values else None
 
 
-def drive(mcp, window):
-    """The swipe script, through the app's own MCP `swipe` tool."""
+def run_metrics(rows, phases):
+    """One run's table values plus its low-motion and no-drop_ms marks.
+
+    `jank_*` and the other counters total the whole run; shown_fps and
+    late_p99 are levels of the lines while the script's swipes/flings move the
+    list. A run where no motion line saw 30 fps moved nothing and cannot
+    compare strategies.
+    """
+    totals = {key: 0.0 for key in RUN_SUM}
+    motion = {"shown_fps": [], "late_p99": []}
+    levels = {"kbps": [], "e2e_p50": [], "e2e_p95": []}
+    no_drop_ms = False
+    low_motion = True
+    for row in rows:
+        phase = phase_at(row["at"], phases)
+        row["phase"] = phase
+        log("line %s phase=%s rx_fps=%s shown_fps=%s" %
+            (time.strftime("%H:%M:%S", time.localtime(row["at"])), phase,
+             row.get("rx_fps", "-"), row.get("shown_fps", "-")))
+        hitch_n = number(row, "hitch_n") or 0
+        hitch_ms = number(row, "hitch_ms") or 0
+        drop_ep = number(row, "drop_ep") or 0
+        drop_ms = number(row, "drop_ms")
+        if drop_ms is None:
+            no_drop_ms = True
+            drop_ms = 0
+        susp_n = number(row, "susp_n") or 0
+        susp_ms = number(row, "susp_ms") or 0
+        totals["hitch_ms"] += hitch_ms
+        totals["drop_ms"] += drop_ms
+        totals["susp_ms"] += susp_ms
+        totals["jank_ms"] += hitch_ms + drop_ms + susp_ms
+        totals["jank_n"] += hitch_n + drop_ep + susp_n
+        totals["kf"] += number(row, "kf") or 0
+        if phase in MOTION_PHASES:
+            if (number(row, "rx_fps") or 0) >= 30:
+                low_motion = False
+            for key in motion:
+                value = number(row, key)
+                if value is not None:
+                    motion[key].append(value)
+        for key in levels:
+            value = number(row, key)
+            if value is not None:
+                levels[key].append(value)
+    values = dict(totals)
+    for key, samples in motion.items():
+        values[key] = median(samples)
+    for key, samples in levels.items():
+        values[key] = median(samples)
+    values["low_motion"] = low_motion
+    values["no_drop_ms"] = no_drop_ms
+    return values
+
+
+SWIPE_UP = {"x1": 0.5, "y1": 0.78, "x2": 0.5, "y2": 0.22}
+SWIPE_DOWN = {"x1": 0.5, "y1": 0.22, "x2": 0.5, "y2": 0.78}
+
+
+def drive(mcp, window, phases, sleep=time.sleep):
+    """The swipe script, through the app's own MCP `swipe` tool.
+
+    Every swipe alternates direction in both the steady and the fling phase,
+    so the list cannot park at one end and become a still picture.
+    """
+    phases.append(("swipes", time.time()))
     for index in range(10):
-        mcp.text("swipe", {"window": window, "x1": 0.5, "y1": 0.78,
-                           "x2": 0.5, "y2": 0.22, "ms": 400})
-        time.sleep(0.25)
+        swipe = SWIPE_UP if index % 2 == 0 else SWIPE_DOWN
+        mcp.text("swipe", {"window": window, "ms": 400, **swipe})
+        sleep(0.25)
+    phases.append(("still", time.time()))
     log("still 3 s")
-    time.sleep(3)
+    sleep(3)
+    phases.append(("flings", time.time()))
     for index in range(10):
-        mcp.text("swipe", {"window": window, "x1": 0.5, "y1": 0.78,
-                           "x2": 0.5, "y2": 0.22, "ms": 150})
-        time.sleep(0.15)
+        swipe = SWIPE_UP if index % 2 == 0 else SWIPE_DOWN
+        mcp.text("swipe", {"window": window, "ms": 150, **swipe})
+        sleep(0.15)
+    phases.append(("settle", time.time()))
     log("still 3 s")
-    time.sleep(3)
+    sleep(3)
 
 
 def main():
@@ -302,57 +384,80 @@ def main():
                 log("run %d/%d arm=%s" % (repeat + 1, args.repeats, name))
                 settings.apply(arm)
                 began = time.strftime("%Y-%m-%d %H:%M:%S")
+                phases = [("opening", time.time())]
                 mcp = MCP(args.shim, args.profile)
                 try:
                     opened = mcp.text("open_app", {"app": args.package})
                     stream = int(opened["window"])
                     if not wait_for_first_line(stream, began, predicate, args.first_line_timeout):
                         fail("arm %s: no stats line for stream %d" % (name, stream))
-                    drive(mcp, stream)
+                    phases.append(("warming", time.time()))
+                    drive(mcp, stream, phases)
                     mcp.text("close_window", {"window": stream})
+                    phases.append(("closing", time.time()))
                 finally:
                     mcp.close()
                 ended = time.strftime("%Y-%m-%d %H:%M:%S")
-                summary = read_run(stream, began, ended, predicate)
-                if summary is None:
+                run_rows = read_run(stream, began, predicate)
+                if not run_rows:
                     fail("arm %s: no stats lines after the run" % name)
                 run = {"repeat": repeat + 1, "arm": name, "stream": stream,
-                       "start": began, "end": ended, "lines": summary["lines"]}
-                for field in ARM_FIELDS:
-                    run[field] = run_value(summary, field)
+                       "start": began, "end": ended, "lines": len(run_rows)}
+                run.update(run_metrics(run_rows, phases))
+                run["low_motion"] = 1 if run["low_motion"] else 0
+                run["no_drop_ms"] = 1 if run["no_drop_ms"] else 0
                 rows.append(run)
                 summary_rows[name].append(run)
                 settings.restore()
                 log("run done: " + " ".join("%s=%s" % (field, run[field])
-                                            for field in ARM_FIELDS))
+                                            for field in TABLE_FIELDS))
     finally:
         settings.restore()
 
+    fieldnames = (["repeat", "arm", "stream", "start", "end", "lines"]
+                  + list(TABLE_FIELDS) + ["low_motion", "no_drop_ms"])
     with open(args.out, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["repeat", "arm", "stream", "start",
-                                                    "end", "lines"] + list(ARM_FIELDS))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
     # One row per arm: median of the runs and their min–max.
-    width = max([len(arm["name"]) for arm in run_arms] + [3])
+    labels = {}
+    for arm in run_arms:
+        name = arm["name"]
+        marks = []
+        if any(run["low_motion"] for run in summary_rows[name]):
+            marks.append("low-motion")
+        if any(run["no_drop_ms"] for run in summary_rows[name]):
+            marks.append("no drop_ms")
+        labels[name] = name + (" (%s)" % ", ".join(marks) if marks else "")
+    width = max([len(label) for label in labels.values()] + [3])
     print()
-    print("%-*s  %s" % (width, "arm", "  ".join(field.rjust(10) for field in ARM_FIELDS)))
+    print("%-*s  %s" % (width, "arm", "  ".join(field.rjust(10) for field in TABLE_FIELDS)))
     for arm in run_arms:
         cells = []
         runs = summary_rows[arm["name"]]
-        for field in ARM_FIELDS:
+        for field in TABLE_FIELDS:
             values = [run[field] for run in runs if run[field] is not None]
             if not values:
                 cells.append("-".rjust(10))
                 continue
-            median = statistics.median(values)
+            middle = statistics.median(values)
             low, high = min(values), max(values)
-            cells.append(("%.1f (%.1f-%.1f)" % (median, low, high)).rjust(10))
-        print("%-*s  %s" % (width, arm["name"], "  ".join(cells)))
+            cells.append(("%.1f (%.1f-%.1f)" % (middle, low, high)).rjust(10))
+        print("%-*s  %s" % (width, labels[arm["name"]], "  ".join(cells)))
     print()
     print("CSV: %s" % args.out)
     return 0
+
+
+def wait_for_first_line(stream, began, predicate, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if parse_rows(stats_lines(began, predicate), stream):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 if __name__ == "__main__":
