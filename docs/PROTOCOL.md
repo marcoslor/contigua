@@ -132,11 +132,13 @@ display id on every injected event.
 
 `stream.stats` is measurement only: it changes no encoder, queue, size or frame
 rate. The Mac turns it on with `{"t":"stream.stats","on":true}` (session-wide,
-after `welcome`) and off with `on:false` when its last stream window closes.
-While on, the phone sends one message per streaming window every **2 s**; a
-paused window sends none, and off (or no Mac) sends none. A phone with no Mac
-connected runs nothing new. Numbers only, never titles, package names or pixels:
-the stream id, counts, sizes, rates and timings are all that may appear.
+after `welcome`) and off with `on:false` when its last stream window closes; an
+ask the session refuses before the link is ready is sent again when the session
+becomes ready with windows open. While on, the phone sends one message per
+streaming window every **2 s**; a paused window sends none, and off (or no Mac)
+sends none. A phone with no Mac connected runs nothing new. Numbers only, never
+titles, package names or pixels: the stream id, counts, sizes, rates and timings
+are all that may appear.
 
 The phone's message covers the window since its previous one (or since stats
 turned on): `frames` out of the encoder, `kf` keyframes produced, `kfReq`
