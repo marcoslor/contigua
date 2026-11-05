@@ -235,8 +235,8 @@ struct StreamStatsWindow {
     private var totalEnqueued = 0
     private var totalHitchCount = 0
     private var totalHitchMs = 0.0
-    private var totalLateMs: [Double] = []
-    private var totalLatencyMs: [Double] = []
+    private var totalLateMs = ThinnedSamples()
+    private var totalLatencyMs = ThinnedSamples()
     private var totalCoveredMs = 0.0
     private var totalPhoneMessages = 0
     private var totalPhoneFrames = 0
@@ -364,7 +364,7 @@ struct StreamStatsWindow {
             enqueuedFrames: totalEnqueued,
             hitchCount: totalHitchCount,
             hitchMs: totalHitchMs,
-            lateP99Ms: Self.percentile(totalLateMs, 0.99),
+            lateP99Ms: Self.percentile(totalLateMs.values, 0.99),
             phoneMessages: totalPhoneMessages,
             phoneFrames: totalPhoneFrames,
             phoneKeyframes: totalPhoneKeyframes,
@@ -374,8 +374,8 @@ struct StreamStatsWindow {
             suspendedEpisodes: totalSuspendedEpisodes,
             suspendedMs: totalSuspendedMs,
             phoneBytes: totalPhoneBytes,
-            e2eP50Ms: Self.percentile(totalLatencyMs, 0.50),
-            e2eP95Ms: Self.percentile(totalLatencyMs, 0.95),
+            e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
+            e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
             coveredMs: covered
         )
     }
@@ -518,6 +518,33 @@ struct StreamStatsSnapshot {
     var phone: PhoneStreamStats?
     /// How many phone messages this line folded in (0 when none arrived).
     var phoneMessages = 0
+}
+
+/// One value per shown frame over a window's whole life, for the closing
+/// percentiles, in bounded memory. Below `capacity` it keeps every value. At
+/// capacity it drops every other one and from then on keeps one value in two
+/// (then four, …), so the record stays even over the window's life: a window
+/// left open for hours holds at most `capacity` values, not one per frame.
+struct ThinnedSamples {
+    private(set) var values: [Double] = []
+    private let capacity: Int
+    private var keepEvery = 1
+    private var sinceKept = 0
+
+    init(capacity: Int = 16_384) {
+        self.capacity = max(2, capacity)
+    }
+
+    mutating func append(_ value: Double) {
+        sinceKept += 1
+        guard sinceKept >= keepEvery else { return }
+        sinceKept = 0
+        values.append(value)
+        if values.count >= capacity {
+            values = Swift.stride(from: 0, to: values.count, by: 2).map { values[$0] }
+            keepEvery *= 2
+        }
+    }
 }
 
 /// One window's counters over its whole life, read once when it closes.
