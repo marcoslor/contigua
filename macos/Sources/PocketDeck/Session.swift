@@ -265,6 +265,8 @@ final class Session {
     }
 
     private let endpoint: Endpoint
+    /// N1's Mac side (ISS-40): read when this session dials, not per window.
+    private var netStrategy: MacStreamStrategy.Net = .default
     /// Every provider's dial target, in planner order (PATH-20). The public
     /// build has one (the LAN); a test may start a second LAN provider.
     private let providers: [PathProvider]
@@ -502,6 +504,10 @@ final class Session {
     func start() {
         intentionalClose = false
         failedOnce = false
+        // The session's own strategy key, read here rather than at a window's
+        // open: the dial needs it (N1). One line per session.
+        netStrategy = MacStreamStrategy.read(from: Profile.active.defaults).net
+        Log.session.notice("session mac strategy: net=\(self.netStrategy.rawValue, privacy: .public)")  // log-ok: a closed token
         transition(.connecting, nil)
         queue.async { [weak self] in self?.doConnect() }
     }
@@ -1222,7 +1228,7 @@ final class Session {
         case .hostPort(let host, let port):
             return (host, Int(port))
         case .service(let service, _):
-            let conn = NWConnection(to: service, using: Self.tcpParameters(for: endpoint))
+            let conn = NWConnection(to: service, using: Self.tcpParameters(for: endpoint, net: netStrategy))
             let resolveQueue = DispatchQueue(label: "dev.pocketdeck.session.resolve")
             let sem = DispatchSemaphore(value: 0)
             var resolved: NWEndpoint?
@@ -1328,8 +1334,15 @@ final class Session {
         text.count == 32 && text.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
-    static func tcpParameters(for endpoint: Endpoint) -> NWParameters {
+    /// The session's TCP parameters. `net=video` asks the system for the
+    /// interactive-video service class (N1's Mac side); the default leaves the
+    /// parameters exactly as today.
+    static func tcpParameters(for endpoint: Endpoint,
+                              net: MacStreamStrategy.Net = .default) -> NWParameters {
         let parameters = NWParameters.tcp
+        if net == .video {
+            parameters.serviceClass = .interactiveVideo
+        }
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcp.noDelay = true
             tcp.connectionTimeout = 10
