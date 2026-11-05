@@ -296,12 +296,24 @@ final class StreamChromeView: NSView {
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
-    /// Removes every implicit animation from a layer tree: a resize step must
-    /// land in the same commit, and the extension view's private content layer
-    /// otherwise eases its own frame for ~0.25 s.
+    /// The geometry an implicit frame change animates. Only these go: a
+    /// resize step must land in the same commit, and the extension view's
+    /// private content layer otherwise eases its own frame for ~0.25 s.
+    /// Opacity fades (the dwell controls, the touch dots, the cover) and the
+    /// edge hint's group are deliberate and stay.
+    static let resizeAnimationKeys: Set<String> = [
+        "position", "bounds", "bounds.size", "bounds.origin", "frame", "frameSize", "frameOrigin",
+    ]
+
+    /// Removes the frame animations (`resizeAnimationKeys`) from a layer tree.
     private func clearLayerAnimations(_ layer: CALayer?) {
         guard let layer else { return }
-        layer.removeAllAnimations()
+        for key in layer.animationKeys() ?? [] {
+            let path = (layer.animation(forKey: key) as? CAPropertyAnimation)?.keyPath ?? key
+            if Self.resizeAnimationKeys.contains(path) || Self.resizeAnimationKeys.contains(key) {
+                layer.removeAnimation(forKey: key)
+            }
+        }
         for sublayer in layer.sublayers ?? [] { clearLayerAnimations(sublayer) }
     }
 
@@ -329,9 +341,9 @@ final class StreamChromeView: NSView {
         stallOverlay.frame = bounds
         stallOverlay.topInset = bar
         CATransaction.commit()
-        // No implicit animation may outlive the layout pass: during a live
-        // resize the picture must take the new frame in the same commit, or
-        // the edge the window already shows stays black for ~0.25 s.
+        // No implicit frame animation may outlive the layout pass: during a
+        // live resize the picture must take the new frame in the same commit,
+        // or the edge the window already shows stays black for ~0.25 s.
         clearLayerAnimations(layer)
         clearLayerAnimations(ext.layer)
         clearLayerAnimations(video.layer)
