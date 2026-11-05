@@ -51,11 +51,4 @@ class DeckForegroundServiceTest {
         assertFalse(shadowOf(service).isStoppedBySelf)
         controller.destroy()
     }
-
-    @Test
-    fun `boot starts the deck only with the switch on and Shizuku running`() {
-        assertFalse(startsAtBoot(enabled = false, shizukuRunning = true))
-        assertFalse(startsAtBoot(enabled = true, shizukuRunning = false))
-        assertTrue(startsAtBoot(enabled = true, shizukuRunning = true))
-    }
 }

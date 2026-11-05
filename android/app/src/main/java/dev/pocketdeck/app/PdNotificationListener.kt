@@ -477,18 +477,21 @@ class PdNotificationListener : NotificationListenerService() {
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
         val live = liveFor(sbn, notification, promoted, debugPoster)
-        val plainTitle = extras.getString(Notification.EXTRA_TITLE)
-            ?: extras.getString(Notification.EXTRA_TITLE_BIG)
-        val plainText = extras.getString(Notification.EXTRA_TEXT)
-            ?: extras.getString(Notification.EXTRA_BIG_TEXT)
+        // ISS-43: a text extra may be a SpannableString (bold, a link, a
+        // colour). getString returns null for those, so every one is read as
+        // a CharSequence and flattened to plain text.
+        val plainTitle = textExtra(extras, Notification.EXTRA_TITLE)
+            ?: textExtra(extras, Notification.EXTRA_TITLE_BIG)
+        val plainText = textExtra(extras, Notification.EXTRA_TEXT)
+            ?: textExtra(extras, Notification.EXTRA_BIG_TEXT)
         // Row 14: a MessagingStyle conversation keeps its messages in
         // EXTRA_MESSAGES and its name in EXTRA_CONVERSATION_TITLE, so a post
         // without the plain fields is not contentless.
         val message = if (plainText.isNullOrEmpty()) lastMessage(extras) else null
-        val title = plainTitle?.takeIf { it.isNotEmpty() }
-            ?: extras.getString(Notification.EXTRA_CONVERSATION_TITLE)?.takeIf { it.isNotEmpty() }
+        val title = plainTitle
+            ?: textExtra(extras, Notification.EXTRA_CONVERSATION_TITLE)
             ?: message?.second?.takeIf { it.isNotEmpty() }
-        val text = plainText?.takeIf { it.isNotEmpty() } ?: message?.first
+        val text = plainText ?: message?.first
         // NOTIFY-19: the same decision Android makes. The comparison is over
         // content hashes kept in memory; the text never leaves this block.
         val contentHash = NotifyEvents.contentHash(title, text)
@@ -605,6 +608,15 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     /**
+     * One notification text extra as plain text. The value may be a String or
+     * a Spanned (bold, links); `Bundle.getString` returns null for the latter
+     * and logs a type warning (ISS-43). Empty values fall through to the next
+     * extra, the same as an absent one.
+     */
+    private fun textExtra(extras: Bundle, key: String): String? =
+        extras.getCharSequence(key)?.toString()?.takeIf { it.isNotEmpty() }
+
+    /**
      * A MessagingStyle post's last message with text (row 14): its text and its
      * sender, from `EXTRA_MESSAGES`. Null when there is none. The text is only
      * ever handed to the event builder, never logged.
@@ -615,8 +627,8 @@ class PdNotificationListener : NotificationListenerService() {
         val messages = extras.get(Notification.EXTRA_MESSAGES) as? Array<*> ?: return null
         for (index in messages.indices.reversed()) {
             val message = messages[index] as? Bundle ?: continue
-            val text = message.getCharSequence("text")?.toString()?.takeIf { it.isNotEmpty() } ?: continue
-            val sender = message.getCharSequence("sender")?.toString()?.takeIf { it.isNotEmpty() }
+            val text = textExtra(message, "text") ?: continue
+            val sender = textExtra(message, "sender")
             return text to sender
         }
         return null
