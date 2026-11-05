@@ -57,6 +57,10 @@ use (`--profile e2e`, `--profile stats`).
   restored (or deleted when they did not exist) after the run. The domain is
   `dev.pocketdeck.mac` for the default profile, else
   `dev.pocketdeck.mac.<profile>`.
+- An arm with `"restart": true` needs a fresh session for a key the app reads
+  when it dials (N1's Mac side, `stream.net`). The bench never quits, relaunches
+  or reconnects the app, so these arms are left out of the default run; pass
+  `--include-restart-arms` when you will restart the app between runs.
 - Every arm restores every key it set, after each run and again on exit — an
   interruption does not leave a strategy switched on.
 - An arm naming a property no build reads still runs: setting it is a no-op
@@ -65,9 +69,19 @@ use (`--profile e2e`, `--profile stats`).
 
 The shipped arms are the ISS-40 switches: `baseline` (no properties), the Q1
 and Q2 queue arms, R1's CBR, R2's two caps, R4's intra refresh, T1's refinement,
-N1's traffic class, and `combo-a` with all of them. Each switch is read by the
-phone at a stream's configure and logged as one `stream N strategy: …` line
-(logcat), so a run also proves what the phone actually applied.
+N1's traffic class (`n1-af41` on the phone, `n1-mac-video` on the Mac and
+`n1-both` for both), the Mac's presentation and pixel switches (`m1-paced`,
+`m2-panel`), and `combo-a` with all the phone ones. Each phone switch is read at
+a stream's configure and logged as one `stream N strategy: …` line (logcat);
+each Mac switch is read when a window opens (or resizes) and logged as one
+`stream N mac strategy: …` line, so a run also proves what the app applied.
+
+`n1-mac-video` and `n1-both` set `stream.net`, which the Mac reads once when a
+session dials. Opening a new window does not dial, and there is no debug control
+that reconnects a running app, so an interleaved run cannot apply it: restart
+the app between those arms and pass `--include-restart-arms`. The phone side of
+N1 (`tos`) has the same session-lifetime limit, since the phone applies it when
+it accepts the session's socket.
 
 ## Repeats
 
