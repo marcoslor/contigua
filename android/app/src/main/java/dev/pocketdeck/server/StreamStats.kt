@@ -20,6 +20,12 @@ internal class StreamStats {
     private var bytesOut = 0L
     private var framesSkipped = 0L
     private var targetBps = 0
+    private var suspendedEpisodes = 0L
+    private var suspendedMs = 0L
+    private var refined = 0L
+
+    /** Q1: when the current suspend episode began, or null while flowing. */
+    private var suspendStartMs: Long? = null
 
     private val encode = LongRing(RING)
     private val qp = IntRing(RING)
@@ -40,6 +46,26 @@ internal class StreamStats {
         framesSkipped++
     }
 
+    /** Q1: the encoder's input is suspended; one episode per rising edge. */
+    fun onSuspendStart(nowMs: Long) {
+        if (suspendStartMs == null) {
+            suspendStartMs = nowMs
+            suspendedEpisodes++
+        }
+    }
+
+    /** Q1: the episode's duration lands in the window that saw it end. */
+    fun onSuspendEnd(nowMs: Long) {
+        val start = suspendStartMs ?: return
+        suspendedMs += (nowMs - start).coerceAtLeast(0)
+        suspendStartMs = null
+    }
+
+    /** T1: one refined frame was sent for a still period. */
+    fun onRefined() {
+        refined++
+    }
+
     fun setTarget(bps: Int) {
         targetBps = bps
     }
@@ -57,6 +83,9 @@ internal class StreamStats {
             encodeP95 = encode.percentile(0.95),
             qpP50 = qp.percentile(0.50),
             qpP95 = qp.percentile(0.95),
+            suspendedEpisodes = suspendedEpisodes,
+            suspendedMs = suspendedMs,
+            refined = refined,
         )
         if (reset) {
             framesOut = 0
@@ -64,6 +93,9 @@ internal class StreamStats {
             keyframesRequested = 0
             bytesOut = 0
             framesSkipped = 0
+            suspendedEpisodes = 0
+            suspendedMs = 0
+            refined = 0
             encode.clear()
             qp.clear()
         }
@@ -83,6 +115,9 @@ data class EncoderStats(
     val encodeP95: Long?,
     val qpP50: Int?,
     val qpP95: Int?,
+    val suspendedEpisodes: Long = 0,
+    val suspendedMs: Long = 0,
+    val refined: Long = 0,
 )
 
 /**
@@ -138,6 +173,9 @@ internal object StreamStatsWire {
             "drop" to send.deltasDropped,
             "dropEp" to send.dropEpisodes,
             "skip" to encoder.framesSkipped,
+            "susp" to encoder.suspendedEpisodes,
+            "suspMs" to encoder.suspendedMs,
+            "refine" to encoder.refined,
             "targetBps" to encoder.targetBps,
         )
         encoder.encodeP50?.let { out["encP50"] = it }

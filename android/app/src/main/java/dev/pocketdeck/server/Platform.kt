@@ -325,6 +325,12 @@ interface DisplayLayer {
     fun onBackpressure(stream: Int) {}
 
     /**
+     * Q1 (`overflow=suspend`): stop (true) or resume (false) taking frames at
+     * the encoder's input, so the source skips frames instead of the queue.
+     */
+    fun setEncoderSuspend(stream: Int, suspended: Boolean) {}
+
+    /**
      * `stream.stats {on}`: while on, the encoders keep the per-frame delay and
      * QP rings the phone reports every 2 s. Counters themselves are always
      * plain increments; this only turns on the expensive per-frame reads.
