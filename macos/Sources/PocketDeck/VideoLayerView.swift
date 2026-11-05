@@ -806,6 +806,9 @@ final class VideoLayerView: NSView {
     }
 
     @objc private func pacedTick(_ link: CADisplayLink) {
+        // Nothing waiting: no queue work at all this refresh (the link stays up
+        // until the window pauses or closes, as the strategy says).
+        guard presenter.hasWaiting || presenter.phase != .idle else { return }
         runPresenter(.tick)
     }
 
