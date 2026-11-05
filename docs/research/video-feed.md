@@ -116,7 +116,7 @@ The list above is the shared core of game and desktop streaming. Four more ideas
 
 | Id | Side | Strategy | What it should change |
 | --- | --- | --- | --- |
-| X0 | both | Probe, no product change: the connection's resent and out-of-order packets in each 5 s line (the Mac's `TCP_CONNECTION_INFO` on the stream socket; the phone's `/proc/net/snmp` `RetransSegs`), lined up with the hitches. | tells whether TCP's head-of-line blocking is behind the 50–200 ms hitches |
+| X0 | both | Probe, no product change: the connection's resent and out-of-order packets in each 5 s line — the Mac's `TCP_CONNECTION_INFO` on the stream socket (`tcp_srtt`, `tcp_rttvar`, and `tcp_ooo_kb`, the bytes that arrived after a hole) and the phone's system-wide `/proc/net/snmp` `RetransSegs` plus `/proc/net/netstat` `TCPTimeouts` and `TCPLostRetransmit` (`ph_retrans`, `ph_rto`, `ph_lost`) — lined up with the hitches by the bench's per-arm block. | tells whether TCP's head-of-line blocking is behind the 50–200 ms hitches |
 | X1 | both | Video over UDP with forward error correction and a resend of only what still matters; control stays on TLS over TCP. WebRTC's RTP is the candidate, since ISS-41's web client needs it anyway. | one lost packet costs a repair, not a stall of every frame behind it; the video backlog no longer delays input and clipboard messages |
 | X2 | phone | Recovery by reference: after a loss, the encoder predicts from an older frame the Mac has confirmed (reference-frame invalidation, long-term references), not from a keyframe. | no keyframe after a loss; matters only with X1, because TCP loses nothing once Q1 stops the drops |
 | T2 | phone | Region-of-interest QP offsets: a lower QP where the picture changed or holds text, a higher one on flat areas. | sharper text in motion for the same bits |
@@ -152,15 +152,29 @@ window every 5 s, and **one complete line when the window closes**:
 - **Blockiness:** the phone's per-frame average QP p50 and p95 during motion (the encoder reports it), and kilobits per second.
 - **Recovery:** the time from the end of a scroll until the still picture's PSNR against the phone's lossless capture is within 1 dB of its final value (`crisp-metric.py`).
 - **Pressure:** queue drops, skipped frames, keyframes, the target bitrate.
+- **Resends (X0):** on the Mac's side of the one TLS-over-TCP connection,
+  `tcp_srtt` and `tcp_rttvar` (the socket's smoothed round trip and its
+  variance, ms) and `tcp_ooo_kb`: the `tcpi_rxoutoforderbytes` delta since the
+  previous line, in KB. Out-of-order bytes are data that arrived after a
+  missing segment; TCP holds it until the resend fills the hole, so it is the
+  receiver's trace of head-of-line blocking. The totals line has the same
+  over the window's life (`tcp_ooo_kb`) and its worst round trip
+  (`tcp_srtt_max`). On the phone's side, `ph_retrans` (retransmitted segments),
+  `ph_rto` (retransmission timeouts) and `ph_lost` (a lost retransmit) are
+  deltas of Linux's **system-wide** `Tcp:`/`TcpExt:` counters, read from
+  `/proc/net/snmp` and `/proc/net/netstat`; while a window streams the stream
+  is nearly all of the phone's TCP traffic, but other traffic on the phone is
+  included, and an unreadable file leaves its field `-`.
 
 The 5 s lines sample the last 2 s, so their frame rate and phase labels shift
 against the script. The closing line (`stats total stream=N secs=… rx_frames=…
 shown_frames=… hitch_n=… hitch_ms=… late_p99=… phone_n=… phone_frames=… kf=…
 kf_req=… drop_ep=… drop_ms=… susp_n=… susp_ms=… bytes=… e2e_p50=…
-e2e_p95=… covered_ms=…`) is complete over the window's whole life: counters
-survive the 5 s samples and a config, `late_p99` and the e2e levels cover every
-shown frame, and `covered_ms` is the time the window spent paused (occluded or
-minimised). **The bench reads the totals line for every number in its table.**
+e2e_p95=… covered_ms=… tcp_ooo_kb=… tcp_srtt_max=… ph_retrans=… ph_rto=…
+ph_lost=…`) is complete over the window's whole life: counters survive the 5 s
+samples and a config, `late_p99` and the e2e levels cover every shown frame,
+and `covered_ms` is the time the window spent paused (occluded or minimised).
+**The bench reads the totals line for every number in its table.**
 The totals have no phases, so `shown_fps` and `late_p99` are whole-run values;
 `kbps` is `bytes × 8 / secs` and the QP p95 is still the median of the 5 s
 lines that carried a phone message (the totals line has no QP).
@@ -193,6 +207,13 @@ an end and the picture keeps moving in both phases. It runs on a text-heavy
 list (Settings) and on an image-heavy one. Every arm runs 3 times, interleaved
 with the others, because the link's stalls come and go (the ping table above
 changed between consecutive 15 s runs).
+
+Under the table the bench prints one **resend block** per arm, over all its 5 s
+lines: `hitch lines with resends a/b` (lines with `hitch_n ≥ 1` that also had
+`ph_retrans ≥ 1` or `tcp_ooo_kb > 0`) beside `clean lines with resends c/d`
+(lines with `hitch_n = 0` and `rx_fps ≥ 20` that did), and `no phone message: n`
+for the lines left out. That is X0's answer: if hitches carry resends far more
+often than clean motion does, TCP's head-of-line blocking is in the hitches.
 
 ## Measuring jank
 
@@ -278,7 +299,7 @@ path and the size request are exactly today's; a window logs one line,
 | --- | --- | --- | --- | --- |
 | `stream.present` | `immediate` / `paced` | `immediate` | `paced` holds decoded samples (at most two) and hands the oldest to the layer on each display refresh. A third arrival drops the oldest and counts `mac_drop`; a keyframe waiting is kept, and a drop asks the phone for one keyframe per 1.5 s so the decoder restarts. Adds about one frame of latency. | `m1-paced` |
 | `stream.pixels` | `backing` / `panel` | `backing` | On a scaled display the request becomes backing pixels × panel width ÷ display backing width, still encoder-aligned. The panel width is the mode Core Graphics flags native, else the largest point-size mode's pixel size. The settled capped picture stretches over the window; an unscaled display is unchanged. | `m2-panel` |
-| `stream.net` | `default` / `video` | `default` | `interactiveVideo` service class on the session's `NWParameters` (N1's Mac half). Read at dial. | `n1-mac-video`, `n1-both` |
+| `stream.net` | `default` / `video` | `default` | `SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VI` on the dialled stream socket before connect (N1's Mac half); the session line's `net_svc` is the socket's own read-back. | `n1-mac-video`, `n1-both` |
 
 On the e2e's own virtual display (1280×800 at 1x, or 2560×1600 backing at 2x)
 the reported panel width is already the display's backing width, so
