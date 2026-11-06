@@ -132,7 +132,7 @@ The order after round 2:
 1. X0 rides along in round 2.
 2. If the resends line up with the hitches, X1 comes before R3. Over UDP, R3's delay-based control comes with the transport's own estimator.
 3. C1, then T2 and T3, as arms.
-4. M3 replaces M1.
+4. M3 as a preset; M1 stays the default (see "UDP with redundancy", below).
 5. T4 last.
 
 ## How each run is measured
@@ -548,6 +548,27 @@ What it shows:
 - **Decision:** H.264 stays the default. HEVC stays as the `codec=hevc` arm. The next quality work is T2 (ROI QP for text) and a full-reference score for the bench, not the codec.
 
 Raw data: `.agent/stats/round5/` (not in the repo).
+
+## UDP with redundancy, checked against three days of logs (2026-11-06)
+
+The question: would video over UDP (unreliable datagrams, with or without FEC) remove the hitches, as game streaming and some recent remote desktops do?
+
+Unreliable datagrams and FEC only help when packets are lost. TCP's out-of-order bytes (`tcp_ooo_kb`, X0) count exactly the loss that would stall newer frames behind it. The Mac's own `stats total` lines over three days (2026-11-03 to 11-06):
+
+- **110 streams** from the app, about 62 minutes in all. 49 were with the real phone: the bench rounds and a 4-minute session outside the bench.
+- **One stream** had any out-of-order bytes: 25.4 KB, in a bench run. The other 109 had none.
+- **The 4-minute session had 95 hitches (11.8 s) and no out-of-order bytes.** None of those hitches came from a lost packet, so no transport change would have removed them.
+- **`tcp_srtt_max`** stayed at 44 ms or less.
+- **The latency is already low:** the capture-to-display `e2e_p50` has a median of 25 ms over the 49 real-phone streams (the p95 has a median of 57 ms). That is the same as the 15–30 ms that datagram-based products quote.
+
+What this means:
+- **The hitches are late packets, not lost ones.** The radio goes quiet (the Mac's AWDL, above), the access point holds the packets, and they arrive in a burst. During silence nothing gets through, redundant or not. FEC sized for a 0.3–0.7 s silence would cost the bits that round 5 showed we don't have, and it adds that much delay.
+- **On a LAN, resending is cheap.** With a 5–20 ms round trip, a resend costs about one frame, so FEC's no-wait repair saves little here. It matters on long relayed paths.
+- **X1 stays parked for the native link.** The field logs keep `tcp_ooo_kb`. A link that really loses packets (a busy channel, 2.4 GHz, a far room) will show up there and reopen it.
+- **The web client is different (ISS-41).** A relayed internet path does lose packets, and WebRTC's media pipeline adds a jitter buffer that typing feels. There the right shape is the game-stream one: H.264 frames over an unordered data channel with no resends (`ordered: false, maxRetransmits: 0`), or WebTransport datagrams on a direct path, decoded by WebCodecs in a worker and drawn on arrival. A frame with a lost piece is dropped, and recovery comes from a keyframe or X2.
+- **M3 becomes a preset, not the default.** An adaptive jitter buffer smooths motion by adding delay, which is wrong for typing, dragging and scrolling. The default stays M1, one frame (16 ms) of display delay. M3 is a "smooth video" preset.
+
+Raw data: the Mac's unified log, `subsystem == "dev.pocketdeck.mac"`, lines with `stats total` (not in the repo).
 
 ## Presets, later
 

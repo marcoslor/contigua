@@ -174,6 +174,7 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
   - **Video, two candidates for the spike:**
     - an RTP media track decoded by the browser's WebRTC pipeline;
     - or today's H.264 frames and PocketDeck's own protocol over a data channel, decoded with WebCodecs. That keeps the phone's MediaCodec path and protocol, but a lossy relay hurts it more.
+    - **Reviewer's lean (2026-11-06):** the second, on an unordered data channel with no resends (`ordered: false, maxRetransmits: 0`), decoded by WebCodecs in a worker and drawn on arrival, with no jitter buffer; or WebTransport datagrams on a direct path. A lost piece drops one frame and never holds up a newer one. See `docs/research/video-feed.md`, "UDP with redundancy".
   - **What stays browser-shaped:**
     - shortcuts the browser keeps (⌃W, ⌃T, ⌃N) unless Keyboard Lock is on in full screen (Chromium only);
     - files by drag-and-drop, `<input type=file>`, downloads, and File System Access where it exists;
