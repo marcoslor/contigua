@@ -2,11 +2,11 @@
 
 `bench.py` drives a **running** PocketDeck Mac app through its automation socket
 with the same stdio shim `macos/scripts/mcp-driver.py` uses. It opens one app
-window, runs the fixed script below, closes the window, and summarises that
-run's **closing `stats total stream=…` line** itself. One table compares the
-arms; `--out` keeps every run as CSV. `macos/scripts/stats-summary.py` still
-summarises saved 5 s lines for a person reading a log; the bench no longer
-needs it.
+window, runs one named script (default: the fixed swipe script below), closes
+the window, and summarises that run's **closing `stats total stream=…` line**
+itself. One table compares the arms; `--out` keeps every run as CSV.
+`macos/scripts/stats-summary.py` still summarises saved 5 s lines for a person
+reading a log; the bench no longer needs it.
 
 It never launches, quits or reconfigures the Mac app. Start the app (and turn
 on Settings › Automation) first.
@@ -25,7 +25,8 @@ use (`--profile e2e`, `--profile stats`).
 
 ## Requirements
 
-- Python 3.9 stdlib. The arm handling has a phone-free check:
+- Python 3.9 stdlib. The parsers and the arm handling have phone-free checks:
+  `python3 tools/stream-bench/test_phone.py` and
   `python3 tools/stream-bench/test_bench.py`.
 - `adb` on `PATH` (or `--adb PATH`); `--serial` is required and has no
   default. The bench refuses a serial that is not `device`.
@@ -45,15 +46,41 @@ window muddies every run.
 1. `open_app` for `--package` (default `com.android.settings`), and wait for
    the first `stats` line for that window (the Mac logs one every 5 s while the
    window is visible).
-2. The fixed script, through the app's own `swipe` MCP tool: 10 swipes at a
-   steady pace (400 ms each), a 3 s still, 10 fast flings (150 ms each), a 3 s
-   still. **Every swipe alternates direction** (up, down, up, …) in both the
-   steady and the fling phase, so the list never rests at an end and the
-   picture keeps moving.
+2. The selected `--script` (default `swipe`): 10 swipes at a steady pace
+   (400 ms each), a 3 s still, 10 fast flings (150 ms each), a 3 s still.
+   **Every swipe alternates direction** (up, down, up, …) in both the steady
+   and the fling phase, so the list never rests at an end and the picture keeps
+   moving.
 3. `close_window`.
 4. Wait for that run's closing `stats total stream=N …` line and score it (see
    Repeats). A run with no line in the timeout is marked **failed**; the bench
    goes on and still writes the table and the CSV.
+
+## Scripts
+
+`--script` picks one of six named scripts. Only `swipe` moves a list; the
+others isolate one stage, one input path or a long run, so their columns are
+comparable to the same stage in a swipe run.
+
+| `--script` | What it does | Why |
+| --- | --- | --- |
+| `swipe` (default) | Today's exact sequence: 10 steady swipes, a 3 s still, 10 fast flings, a 3 s still, every swipe alternating direction. No call or pause differs from the pre-`--script` bench. | The strategy comparison the table was built for |
+| `still` | Opens the app, sends no input and holds for `--still-seconds` (default 6). | First-frame and resize baselines, settled picture, panel rate, phone idle health |
+| `typing` | Taps the opened app's search field at `(0.5, 0.08)` and types `pocketdeck bench typing` through the app's own `type_text` tool, then holds 3 s. | Key input without a swipe; the text is a fixed bench string, never a person's |
+| `video` | Taps `--video-point` (default `0.5,0.5`) and plays for `--video-seconds` (default 8). | Decoder and display work on moving video rather than a scrolling list |
+| `soak` | Swipes continuously for `--soak-minutes` (default 20), one swipe per `--sample-seconds` (default 10) period, and writes one phone sample row per period. | Phone health over time: thermals, battery, CPU, PSS and Wi-Fi |
+| `tap` | Calls the Mac's `input_probe` tool once with `--tap-point` (default `0.5,0.5`) and records its `changed_ms` as `input_photon_ms` and `frames` as `input_frames`. | Input-to-photon, the number a person feels |
+
+The `tap` script needs a Mac build with the `input_probe` tool. A build without
+it does not crash the table: the run is marked **failed** and its log says
+`no input_probe tool`, while the other runs and the CSV are still written.
+
+`soak` writes `<out>.samples.csv` beside the run CSV. Its header is
+`at, repeat, arm, sample_seconds, app_fps, app_jank_pct, vd_hz,
+battery_level, battery_temp_c, thermal_status, thermal_max_c, app_cpu_pct,
+shell_cpu_pct, app_pss_kb, shell_pss_kb, wifi_rssi_dbm, wifi_mbps, wifi_mhz,
+wifi_retries, wifi_bad`; one row per sample period, and the run's own row uses
+the medians of those samples.
 
 ## Arms
 
@@ -201,6 +228,55 @@ The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
 `codec`, `qp_avg` and `rx_kbps` are columns too, so a C1 row says which codec
 produced the numbers and what rate the Mac actually received.
 
+The new run columns are appended after those, in this order:
+`script`, `input_photon_ms`, `input_frames`, `first_frame_ms`, `resize_ms`,
+`app_fps`, `app_jank_pct`, `vd_hz`, `battery_level`, `battery_temp_c`,
+`thermal_status`, `thermal_max_c`, `app_cpu_pct`, `shell_cpu_pct`,
+`app_pss_kb`, `shell_pss_kb`, `wifi_rssi_dbm`, `wifi_mbps`, `wifi_mhz`,
+`wifi_retries`, `wifi_bad`. A missing measurement is an empty cell, never a
+zero.
+
+## What each stage number means
+
+The table gains three stage columns after the long-standing ones:
+
+- `app_fps` — frames the streamed app's own UI rendered per second, from
+  `dumpsys gfxinfo <package> framestats` after the run. The bench resets that
+  counter before the run and computes the rate over the run's `secs`.
+- `vd_hz` — the refresh rate of `--display-id` (default 0, the panel the
+  virtual display mirrors), from `dumpsys display`. A device that does not
+  print a rate is `-`.
+- `input_photon_ms` — the `tap` script's `changed_ms`: send to the first
+  displayed frame that changed in the probed region. `input_frames` is how many
+  displayed-frame samples the probe saw.
+
+After the resend block the bench prints one **phone** line per arm: medians of
+battery level and temperature, thermal status and the hottest reported
+temperature, the streamed app's CPU share and PocketDeck's, both PSS totals,
+and RSSI / link speed / frequency / tx retries / tx bad. The sampler is
+read-only: `dumpsys gfxinfo` (reset before, framestats after), `dumpsys
+display`, `dumpsys battery`, `dumpsys thermalservice`, `dumpsys cpuinfo`,
+`dumpsys meminfo` for the app and for `dev.pocketdeck`, and `dumpsys wifi`. It
+never runs `settings put`, `cmd wifi`, a wake, an input event outside the app
+window, a screenshot, `adb kill-server` or a `setprop` of its own. The Wi-Fi
+parser returns numeric link facts only: the SSID, BSSID, IP and MAC never
+reach the CSV.
+
+The last block is **stages**, one line per arm:
+
+```
+stage          encoder        app    network    display      panel       int_p50 ...
+baseline    600.0 (…-…)   59.0 (…-…)  60.0 (…-…)  59.0 (…-…)  60.0 (…-…)
+```
+
+`encoder` is the phone's `phone_frames`, `app` the app's own `app_fps`,
+`network` the Mac's `rx_fps`, `display` its `shown_fps` and `panel` the
+`vd_hz`. `int_p50/int_p95/int_p99` are the arrival interval and
+`shown_p50/shown_p95/shown_p99` the display interval levels; they stay `-`
+until a Mac build logs them on the closing totals line. Failed and covered runs
+are left out of these medians; low-motion and frozen runs stay because a still
+or a dead picture is exactly the stage being measured.
+
 ## Usage
 
 ```sh
@@ -228,6 +304,19 @@ tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
 
 `--arms-filter <prefix>` keeps the arms whose name starts with the prefix,
 before the restart-arm filter.
+
+A first-frame baseline and a one-minute soak need no arm comparison:
+
+```sh
+tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
+    --script still --repeats 1 --out .agent/stats/still.csv
+tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
+    --script soak --soak-minutes 1 --sample-seconds 10 \
+    --repeats 1 --out .agent/stats/soak.csv
+```
+
+`--dry-run` prints the chosen script, the arms and the repeat count without
+touching adb, the Mac app or the log.
 
 ## Host proof without a phone
 
