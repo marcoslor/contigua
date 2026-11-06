@@ -8,6 +8,10 @@ package dev.pocketdeck.server
  * the JVM tests pin the counters and percentiles.
  */
 internal class StreamStats(
+    /** The stream id the one key-frame log line names. */
+    private val stream: Int = 0,
+    /** The field log's sink; the first 3 non-IDR key frames use it. */
+    private val log: (String) -> Unit = {},
     /** The monotonic milliseconds `onSuspendStart`/`onSuspendEnd` use. */
     private val clockMs: () -> Long = { 0L },
 ) {
@@ -15,10 +19,16 @@ internal class StreamStats(
         const val RING = 512
         /** A dequeue more than this after the capture pts is a clock change, not a delay. */
         const val MAX_ENCODE_US = 10_000_000L
+        /** The first few non-IDR key frames go to the field log; the count continues. */
+        const val KEY_LOG_LIMIT = 3
     }
 
     private var framesOut = 0L
     private var keyframesOut = 0L
+    /** ISS-40 round 3: key-flagged buffers with and without a type-5 slice. */
+    private var keyIdr = 0L
+    private var keyNotIdr = 0L
+    private var keyNotIdrLogged = 0
     private var keyframesRequested = 0L
     private var bytesOut = 0L
     private var framesSkipped = 0L
@@ -35,6 +45,8 @@ internal class StreamStats(
     private var totalSent = 0L
     private var totalSkipped = 0L
     private var totalBytes = 0L
+    private var totalKeyIdr = 0L
+    private var totalKeyNotIdr = 0L
 
     /** Q1: when the current suspend episode began, or null while flowing. */
     private var suspendStartMs: Long? = null
@@ -44,14 +56,32 @@ internal class StreamStats(
     private val encode = LongRing(RING)
     private val qp = IntRing(RING)
 
-    fun onFrame(key: Boolean, bytes: Int, encodeUs: Long?, qpValue: Int?) {
+    fun onFrame(key: Boolean, bytes: Int, encodeUs: Long?, qpValue: Int?,
+                keyNalTypes: List<Int>? = null) {
         framesOut++
         bytesOut += bytes
         totalOut++
         totalBytes += bytes
         // A forwarded buffer has bytes; a paused or skipped one is handed zero.
         if (bytes > 0) totalSent++
-        if (key) keyframesOut++
+        if (key) {
+            keyframesOut++
+            // The flag on a buffer says "key"; only a type-5 slice says the
+            // decoder can start there. Intra refresh flags recovery points.
+            if (keyNalTypes != null) {
+                if (keyNalTypes.contains(NAL_SLICE_IDR)) {
+                    keyIdr++
+                    totalKeyIdr++
+                } else {
+                    keyNotIdr++
+                    totalKeyNotIdr++
+                    if (keyNotIdrLogged < KEY_LOG_LIMIT) {
+                        keyNotIdrLogged++
+                        log("stream $stream key nal=${keyNalTypes.joinToString(",")}")
+                    }
+                }
+            }
+        }
         encodeUs?.let { if (it in 0..MAX_ENCODE_US) encode.add(it) }
         qpValue?.let { qp.add(it) }
     }
@@ -100,6 +130,8 @@ internal class StreamStats(
         val out = EncoderStats(
             frames = framesOut,
             keyframes = keyframesOut,
+            keyIdr = keyIdr,
+            keyNotIdr = keyNotIdr,
             keyframesRequested = keyframesRequested,
             bytes = bytesOut,
             framesSkipped = framesSkipped,
@@ -115,6 +147,8 @@ internal class StreamStats(
         if (reset) {
             framesOut = 0
             keyframesOut = 0
+            keyIdr = 0
+            keyNotIdr = 0
             keyframesRequested = 0
             bytesOut = 0
             framesSkipped = 0
@@ -137,6 +171,7 @@ internal class StreamStats(
     fun totalsLine(stream: Int, secs: Double, nowMs: Long = clockMs()): String =
         "stream $stream totals: out=$totalOut sent=$totalSent skipped=$totalSkipped " +
             "bytes=$totalBytes susp_ms=" + totalsSuspendedMs(nowMs) +
+            " key_idr=$totalKeyIdr key_not_idr=$totalKeyNotIdr" +
             " secs=" + String.format(java.util.Locale.US, "%.1f", secs)
 
     /** The lifetime suspension time, with an episode still open counted so far. */
@@ -168,6 +203,9 @@ data class EncoderStats(
     val suspendedEpisodes: Long = 0,
     val suspendedMs: Long = 0,
     val refined: Long = 0,
+    /** Key-flagged buffers with a type-5 slice and without one. */
+    val keyIdr: Long = 0,
+    val keyNotIdr: Long = 0,
 )
 
 /**
@@ -221,6 +259,8 @@ internal object StreamStatsWire {
             "windowMs" to windowMs,
             "frames" to encoder.frames,
             "kf" to encoder.keyframes,
+            "keyIdr" to encoder.keyIdr,
+            "keyNotIdr" to encoder.keyNotIdr,
             "kfReq" to encoder.keyframesRequested,
             "bytes" to encoder.bytes,
             "drop" to send.deltasDropped,

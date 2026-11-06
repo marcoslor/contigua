@@ -396,7 +396,8 @@ final class StreamStatsTests: XCTestCase {
                       "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
                       "kf_req=0", "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
-                      "e2e_p50=-", "e2e_p95=-"] {
+                      "e2e_p50=-", "e2e_p95=-", "max_gap_ms=",
+                      "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(line.contains(field), "missing \(field) in \(line)")
         }
     }
@@ -501,9 +502,110 @@ final class StreamStatsTests: XCTestCase {
                       "late_p99=183.3", "phone_n=3", "phone_frames=110",
                       "kf=3", "kf_req=3", "drop_ep=3", "drop_ms=110",
                       "susp_n=3", "susp_ms=30", "bytes=2500",
-                      "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000"] {
+                      "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000",
+                      "max_gap_ms=", "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
+    }
+
+    // MARK: The longest picture gap (item 0)
+
+    /// ISS-40: `max_gap_ms` is the longest interval between received frames
+    /// outside covered time, over the line's own period and the whole life;
+    /// a VIDEO_CONFIG in the middle of a gap must not hide it, because the
+    /// decoder had no picture on either side of it.
+    func testTheLongestFrameGapSurvivesAConfigAndReachesBothLines() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteReceived(now: 1.0, bytes: 100)
+        window.noteReceived(now: 1.02, bytes: 100)
+        window.noteConfig(now: 1.5)
+        window.noteReceived(now: 3.24, bytes: 100) // 2_220 ms since 1.02
+        let line = window.snapshot(now: 5.0)
+        XCTAssertEqual(line.maxGapMs, 2_220, accuracy: 0.5)
+        let text = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: line)
+        XCTAssertTrue(text.contains("max_gap_ms=2220"), text)
+        // The next line's gap starts from the last frame, not from this line.
+        XCTAssertEqual(window.snapshot(now: 10.0).maxGapMs, 0, accuracy: 0.001)
+        let total = window.total(now: 10.0)
+        XCTAssertEqual(total.maxGapMs, 2_220, accuracy: 0.5)
+        let totalText = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totalText.contains("max_gap_ms=2220"), totalText)
+    }
+
+    /// A hidden or paused window is not a picture gap: its span is covered
+    /// time (WIN-55's `covered_ms`), so the frame on either side of it must
+    /// not become a gap.
+    func testACoveredSpanIsNotAMaxGap() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteReceived(now: 1.0, bytes: 100)
+        window.notePaused(true, now: 1.1)
+        // A frame already in flight when the window was covered must not
+        // restart the gap clock: the covered silence is not a picture gap.
+        window.noteReceived(now: 1.2, bytes: 100)
+        window.notePaused(false, now: 4.0)
+        window.noteReceived(now: 4.05, bytes: 100)
+        XCTAssertEqual(window.snapshot(now: 5.0).maxGapMs, 0, accuracy: 0.001)
+        XCTAssertEqual(window.total(now: 5.0).maxGapMs, 0, accuracy: 0.001)
+    }
+
+    // MARK: The key-flagged frames without an IDR (item 3)
+
+    /// The wire flag says "key"; only a type-5 unit says the decoder can
+    /// start there. A run with intra refresh flags recovery points, so the
+    /// first three of those must reach the field log with their types.
+    func testAKeyFlaggedFrameWithoutAnIdrIsCountedAndLoggedThreeTimes() {
+        var window = StreamStatsWindow(now: 0)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: false, nalTypes: [1], now: 0), .none)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 0), .none,
+                       "an IDR key frame is not a key_not_idr")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 0),
+                       .types("6,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 1], now: 0),
+                       .types("7,8,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6], now: 0),
+                       .types("6"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 0), .none,
+                       "the fourth is counted but no longer logged")
+        let line = window.snapshot(now: 1)
+        XCTAssertEqual(line.keyNotIdr, 4)
+        XCTAssertEqual(window.snapshot(now: 2).keyNotIdr, 0, "the next line starts at zero")
+        XCTAssertEqual(window.total(now: 2).keyNotIdr, 4)
+    }
+
+    /// An IDR is never logged, before or after a drop: the phone's drop report
+    /// rides a 2 s stats message, so the Mac can't time the recovery from it.
+    func testAnIdrIsQuietAndOnlyANonIdrKeyIsNamed() {
+        var window = StreamStatsWindow(now: 0)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10), .none)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 10.1),
+                       .types("6,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.4), .none)
+    }
+
+    func testTheKeyNoteLinesAreTheDocumentedOnes() {
+        XCTAssertEqual(StreamStatsLine.keyNote(stream: 3, note: .types("6,1")),
+                       "stream 3 key nal=6,1")
+        XCTAssertNil(StreamStatsLine.keyNote(stream: 3, note: .none))
+    }
+
+    /// The phone's own key_not_idr rides every `stream.stats` message; the
+    /// Mac sums it over the window's life and prints its own count beside it.
+    func testThePhoneKeyCountsSumAcrossMessagesAndPrintOnBothLines() {
+        var window = StreamStatsWindow(now: 0)
+        window.notePhoneStats(PhoneStreamStats(json: ["keyIdr": 1, "keyNotIdr": 2]))
+        window.notePhoneStats(PhoneStreamStats(json: ["keyIdr": 1, "keyNotIdr": 2]))
+        let snapshot = window.snapshot(now: 1)
+        let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: snapshot)
+        XCTAssertTrue(line.contains("key_not_idr=0"), line)
+        XCTAssertTrue(line.contains("ph_key_not_idr=4"), line)
+        let total = window.total(now: 2)
+        XCTAssertEqual(total.phoneKeyIdr, 2)
+        XCTAssertEqual(total.phoneKeyNotIdr, 4)
+        let totalText = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totalText.contains("key_not_idr=0"), totalText)
+        XCTAssertTrue(totalText.contains("ph_key_not_idr=4"), totalText)
     }
 
     func testACloseWhilePausedCountsTheCoveredTimeSoFar() {
@@ -521,7 +623,8 @@ final class StreamStatsTests: XCTestCase {
                       "hitch_ms=0", "late_p99=-", "phone_n=0", "phone_frames=0",
                       "kf=0", "kf_req=0", "drop_ep=0", "drop_ms=-",
                       "susp_n=0", "susp_ms=0", "bytes=0", "e2e_p50=-",
-                      "e2e_p95=-", "covered_ms=0"] {
+                      "e2e_p95=-", "covered_ms=0", "max_gap_ms=0",
+                      "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
     }
