@@ -4,6 +4,7 @@
 // answer. The machine is pure and clock-injected so every transition is a K2
 // check; the decoder and the continuations are the view's.
 
+import CoreImage
 import CoreVideo
 import Foundation
 import VideoToolbox
@@ -54,33 +55,97 @@ struct InputProbeOutcome: Equatable {
     let frames: Int
 }
 enum ProbeSignal {
-    /// One luma grid from a 32BGRA pixel buffer. Nil for a missing base
-    /// address or a zero-sized region: a measurement, never a crash.
+    /// One luma grid from a decoded 32BGRA frame or a biplanar 4:2:0 display
+    /// buffer (the display layer hands back what it decoded). Nil for any
+    /// other format, a missing base address or a zero-sized region: a
+    /// measurement, never a crash.
     static func signature(of buffer: CVPixelBuffer, region: ProbeRegion) -> ProbeSignature? {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
-        guard width > 0, height > 0,
-              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
-              CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess,
-              let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        let stride = CVPixelBufferGetBytesPerRow(buffer)
-        let rect = region.rect(in: CGSize(width: width, height: height))
-        guard rect.width >= CGFloat(ProbeSignature.side), rect.height >= CGFloat(ProbeSignature.side) else {
-            return nil
+        guard width > 0, height > 0 else { return nil }
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        if format == kCVPixelFormatType_32BGRA {
+            guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess,
+                  let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+            defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            return grid(width: width, height: height, region: region) { px, py in
+                let offset = py * stride + px * 4
+                let b = Int(base.load(fromByteOffset: offset, as: UInt8.self))
+                let g = Int(base.load(fromByteOffset: offset + 1, as: UInt8.self))
+                let r = Int(base.load(fromByteOffset: offset + 2, as: UInt8.self))
+                return UInt8((299 * r + 587 * g + 114 * b) / 1000)
+            }
         }
+        if format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
+            // Plane 0 is luma, one byte per pixel: exactly the grid's input.
+            // Video range is widened to full range, so a baseline from the
+            // display layer and a frame from the probe decoder compare in the
+            // same levels (black must not read as "changed").
+            guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess,
+                  let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+            defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            let videoRange = format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            return grid(width: width, height: height, region: region) { px, py in
+                let value = Int(base.load(fromByteOffset: py * stride + px, as: UInt8.self))
+                guard videoRange else { return UInt8(value) }
+                return UInt8(min(255, max(0, ((value - 16) * 255 + 109) / 219)))
+            }
+        }
+        if format == Self.losslessVideoRange || format == Self.losslessFullRange {
+            // The display layer keeps its frames losslessly compressed; only a
+            // renderer can read pixels out of them (the screenshot path does
+            // the same through CIImage). One full-size render per probe, then
+            // the same grid as every other frame.
+            guard let rendered = Self.renderBGRA(buffer) else { return nil }
+            return signature(of: rendered, region: region)
+        }
+        return nil
+    }
+
+    /// The lossless-compressed forms of 420v/420f, the formats a display
+    /// layer's `displayedPixelBuffer()` hands back on current macOS.
+    private static let losslessVideoRange: UInt32 = 0x26387630  // '&8v0'
+    private static let losslessFullRange: UInt32 = 0x26386630  // '&8f0'
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// A full-size 32BGRA copy of any CIImage-readable buffer.
+    private static func renderBGRA(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        guard width > 0, height > 0 else { return nil }
+        var output: CVPixelBuffer?
+        let attributes: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                  kCVPixelFormatType_32BGRA,
+                                  attributes as CFDictionary, &output) == kCVReturnSuccess,
+              let output else { return nil }
+        ciContext.render(CIImage(cvPixelBuffer: buffer), to: output,
+                         bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                         colorSpace: CGColorSpaceCreateDeviceRGB())
+        return output
+    }
+
+    /// Samples a 16×16 grid of `rect` through `luma`, which maps a pixel
+    /// coordinate to its luma. The region is clipped to the picture.
+    private static func grid(width: Int, height: Int, region: ProbeRegion,
+                             luma: (Int, Int) -> UInt8) -> ProbeSignature? {
+        let rect = region.rect(in: CGSize(width: width, height: height))
+        guard rect.width >= CGFloat(ProbeSignature.side),
+              rect.height >= CGFloat(ProbeSignature.side) else { return nil }
         let side = ProbeSignature.side
         var cells = [UInt8](repeating: 0, count: side * side)
-        let bytes = base.assumingMemoryBound(to: UInt8.self)
         for row in 0..<side {
             for column in 0..<side {
                 let px = Int(rect.minX) + (column * Int(rect.width)) / side
                 let py = Int(rect.minY) + (row * Int(rect.height)) / side
-                let offset = py * stride + px * 4
-                let b = Int(bytes[offset])
-                let g = Int(bytes[offset + 1])
-                let r = Int(bytes[offset + 2])
-                cells[row * side + column] = UInt8((299 * r + 587 * g + 114 * b) / 1000)
+                cells[row * side + column] = luma(px, py)
             }
         }
         return ProbeSignature(cells: cells)
@@ -189,6 +254,7 @@ final class InputProbeDecoder {
     private var session: VTDecompressionSession?
     private var handler: ((CVPixelBuffer, Double) -> Void)?
     private var finished = true
+    private var feeds = 0
 
     func begin(format: CMVideoFormatDescription,
                handler: @escaping (CVPixelBuffer, Double) -> Void) {
@@ -201,7 +267,10 @@ final class InputProbeDecoder {
             allocator: kCFAllocatorDefault, formatDescription: format,
             decoderSpecification: nil, imageBufferAttributes: attributes as CFDictionary,
             outputCallback: nil, decompressionSessionOut: &session)
-        guard status == noErr, let session else { return }
+        guard status == noErr, let session else {
+            Log.video.info("input probe: decoder create failed \(status, privacy: .public)")  // log-ok: an OSStatus
+            return
+        }
         lock.lock()
         self.session = session
         self.handler = handler
@@ -212,7 +281,12 @@ final class InputProbeDecoder {
     func feed(_ sample: CMSampleBuffer) {
         lock.lock()
         guard !finished, let session, let handler else { lock.unlock(); return }
+        feeds += 1
+        let first = feeds == 1
         lock.unlock()
+        if first {
+            Log.video.info("input probe: first sample fed")  // log-ok: a count and a state, no pixels
+        }
         let status = VTDecompressionSessionDecodeFrame(
             session, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression],
             infoFlagsOut: nil
@@ -221,7 +295,7 @@ final class InputProbeDecoder {
             handler(image, ProcessInfo.processInfo.systemUptime * 1000)
         }
         if status != noErr {
-            Log.video.debug("input probe: decode refused (\(status, privacy: .public))")
+            Log.video.info("input probe: decode refused \(status, privacy: .public)")  // log-ok: an OSStatus
         }
     }
 

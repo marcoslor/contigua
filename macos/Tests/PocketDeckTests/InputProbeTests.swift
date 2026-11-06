@@ -35,6 +35,26 @@ final class InputProbeTests: XCTestCase {
         return buffer
     }
 
+    private func biplanarBuffer(fillY: UInt8) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, 64, 64,
+                                  kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                  attributes as CFDictionary, &buffer) == kCVReturnSuccess,
+              let buffer else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        for row in 0..<64 {
+            for column in 0..<64 {
+                bytes[row * stride + column] = fillY
+            }
+        }
+        return buffer
+    }
+
     // MARK: Region and signal
 
     func testRegionAroundTheTapStaysInsideThePicture() {
@@ -63,6 +83,22 @@ final class InputProbeTests: XCTestCase {
         XCTAssertFalse(ProbeSignal.changed(a, flat(40)))
         XCTAssertFalse(ProbeSignal.signature(of: first, region: ProbeRegion(x: 0.99, y: 0.99,
                                                                            width: 0.01, height: 0.01)) != nil)
+    }
+
+    func testAVideoRangeFrameComparesInFullRangeLevels() throws {
+        // The display layer may hand back a biplanar frame while the probe's
+        // decoder outputs BGRA: black in video range is 16, and must not read
+        // as a change against BGRA black.
+        let videoBlack = try XCTUnwrap(biplanarBuffer(fillY: 16))
+        let bgraBlack = try XCTUnwrap(buffer(fill: 0, changed: false))
+        let videoWhite = try XCTUnwrap(biplanarBuffer(fillY: 235))
+        let bgraWhite = try XCTUnwrap(buffer(fill: 255, changed: false))
+        let black = try XCTUnwrap(ProbeSignal.signature(of: videoBlack, region: .whole))
+        let bgra = try XCTUnwrap(ProbeSignal.signature(of: bgraBlack, region: .whole))
+        XCTAssertEqual(black, bgra)
+        XCTAssertFalse(ProbeSignal.changed(black, bgra))
+        XCTAssertEqual(try XCTUnwrap(ProbeSignal.signature(of: videoWhite, region: .whole)),
+                       try XCTUnwrap(ProbeSignal.signature(of: bgraWhite, region: .whole)))
     }
 
     // MARK: The machine

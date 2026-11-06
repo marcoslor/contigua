@@ -110,14 +110,20 @@ synthesized and the test-only `DebugInput` path is not used. `back`, `home` and
 `recents` are the session `nav` action; the other keys are KEY down/up frames
 with Android keycodes (enter 66, delete 67, tab 61, escape 111, arrows 19–22).
 
-`input_probe` is the measurement tool built for the pmaxx epic: it arms a
-private decoder, waits for one keyframe to become the baseline, sends the same
-TOUCH down/up `tap` sends, and reports the first frame whose 16×16 luma grid of
-the watched region changed: the tap's send time to that frame's decode is
-`changed_ms`. The display layer shows the frame on the next refresh, so the
-number is the input-to-picture part of input-to-photon (add at most one refresh
-period, 16.7 ms at 60 Hz). The decoder lives only for the probe. It is
-read-only measurement, not an input route of its own.
+`input_probe` is the measurement tool built for the pmaxx epic: it takes the
+frame the display layer is showing right now as the baseline (an idle phone
+sends nothing, so waiting for a new frame would never arm a probe on a still
+screen), and falls back to the first frame its private decoder delivers when
+the layer has nothing drawn yet. It starts that decoder and requests a
+keyframe before the tap, sends the same TOUCH down/up `tap` sends, and reports
+the first frame whose 16×16 luma grid of the watched region changed: the tap's
+send time to that frame's decode is `changed_ms`. The display layer shows the
+frame on the next refresh, so the number is the input-to-picture part of
+input-to-photon (add at most one refresh period, 16.7 ms at 60 Hz). Baselines
+are read from BGRA, biplanar 4:2:0 and the display layer's lossless-compressed
+4:2:0 (rendered once through CoreImage); video-range luma is widened to full
+range before comparing. The decoder lives only for the probe. It is read-only
+measurement, not an input route of its own.
 
 ## Threat model
 
