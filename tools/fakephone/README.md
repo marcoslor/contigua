@@ -8,7 +8,8 @@ LibreSSL cannot do TLS 1.3), plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
   KEY), the HMAC auth helper, and Annex-B helpers (NAL/access-unit splitting,
   SPS/PPS extraction, IDR detection).
 - `fakephone.py` — the fake phone server: mDNS advertising, pairing, every
-  phone→mac message, and one ffmpeg H.264 encoder per window stream.
+  phone→mac message, and one ffmpeg H.264 (or `--codec hevc` HEVC) encoder per
+  window stream.
 - `deckctl.py` — the fake Mac client, used to conformance-test any phone server
   (this fake today, the Android server later).
 - `paths.py` — the paths core: RELIABLE/ACK, the replay buffer with credit,
@@ -44,6 +45,13 @@ rig, ISS-46) has its own:
 
 ```sh
 python3.11 tools/fakephone/test_encoder_state.py   # prints OK, exit 0
+```
+
+The HEVC arm's wire helpers (NAL types, VPS/SPS/PPS, IDR/CRA, access-unit cuts,
+and the codec choice against the Mac's `hello.codecs`) have their own:
+
+```sh
+python3.11 tools/fakephone/test_hevc.py   # prints OK, exit 0
 ```
 
 It starts `fakephone` on an ephemeral port (`--no-mdns --auto-allow`), pairs with

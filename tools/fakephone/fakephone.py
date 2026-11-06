@@ -1060,9 +1060,9 @@ class EventLog(object):
         """--frame-events: the stream's cumulative frame count, once a second."""
         self._emit({"ev": "frames", "stream": stream, "n": n, "ts": time.time()})
 
-    def video_config(self, stream, w, h):
-        self._emit({"ev": "video", "stream": stream, "config": True, "w": w, "h": h,
-                    "ts": time.time()})
+    def video_config(self, stream, w, h, codec="avc"):
+        self._emit({"ev": "video", "stream": stream, "config": True,
+                    "codec": codec, "w": w, "h": h, "ts": time.time()})
 
     def audio_config(self, codec, sample_rate, channels):
         self._emit({"ev": "audio", "config": True, "codec": codec,
@@ -2049,6 +2049,9 @@ class WindowStream(object):
     def __init__(self, phone, stream_id, w, h, dpi, mode, pkg=None, activity=None):
         self.phone = phone
         self.stream_id = stream_id
+        # `--codec hevc` is the bench arm; the Mac's hello decides whether it
+        # may run, exactly as the real phone's choice does.
+        self.codec = phone.stream_codec()
         # An app stream is snapped to the encoder's own alignment (ISS-39): the
         # Mac asks for the window's exact pixels and the phone keeps all of
         # them. The mirror keeps its screen-aspect rule.
@@ -2188,9 +2191,20 @@ class WindowStream(object):
                 chain.append("%s[%d:v]overlay=%s%s" % (source, index, position, out))
                 source = out
             cmd += ["-filter_complex", ";".join(chain), "-map", "[v]"]
-        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-bf", "0", "-g", str(FRAME_RATE * 10), "-profile:v", "high",
-                "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
+        if self.codec == "hevc":
+            # The same 10 s GOP and no B-frames as the H.264 path; the headers
+            # repeat so every keyframe carries VPS/SPS/PPS in-band, and libx265
+            # emits Annex-B with `-f hevc`.
+            cmd += ["-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
+                    "-bf", "0", "-g", str(FRAME_RATE * 10), "-pix_fmt", "yuv420p",
+                    "-x265-params",
+                    "keyint=%d:min-keyint=%d:scenecut=0:repeat-headers=1:log-level=error"
+                    % (FRAME_RATE * 10, FRAME_RATE * 10),
+                    "-an", "-f", "hevc", "-"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                    "-bf", "0", "-g", str(FRAME_RATE * 10), "-profile:v", "high",
+                    "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
         return cmd
 
     def _handle(self, event, cause, resume=True):
@@ -2339,7 +2353,8 @@ class WindowStream(object):
             reader.join(timeout=5)
 
     def _read_loop(self, proc):
-        splitter = proto.AccessUnitSplitter()
+        wire_codec = proto.CODEC_HEVC if self.codec == "hevc" else proto.CODEC_H264
+        splitter = proto.AccessUnitSplitter(wire_codec)
         while True:
             if self._enc is not proc:
                 return
@@ -2361,9 +2376,12 @@ class WindowStream(object):
         nals = proto.split_nals(access_unit)
         if not nals:
             return
+        codec = self.codec
+        wire_codec = proto.CODEC_HEVC if codec == "hevc" else proto.CODEC_H264
         if not self._configured:
-            sps_pps = proto.extract_sps_pps(nals)
-            if sps_pps is None:
+            sets = (proto.extract_hevc_parameter_sets(nals) if codec == "hevc"
+                    else proto.extract_sps_pps(nals))
+            if sets is None:
                 return
             self._configured = True
             # Same lane as the config, so the Mac has the picture rect when the config lands.
@@ -2371,8 +2389,8 @@ class WindowStream(object):
             self.phone.sender.send_in_order(proto.pack_json(
                 {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
                 self.stream_id))
-            self.phone.sender.send_config(self.stream_id, proto.CODEC_H264, self.w, self.h, sps_pps)
-            self.phone.events.video_config(self.stream_id, self.w, self.h)
+            self.phone.sender.send_config(self.stream_id, wire_codec, self.w, self.h, sets)
+            self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
             if (self.phone.args.stall_after and self._stall_timer is None
                     and self._state is EncoderState.RUNNING):
                 # The phone's picture freezes while the session stays up: the
@@ -2381,7 +2399,7 @@ class WindowStream(object):
                     self.phone.args.stall_after, self._stall)
                 self._stall_timer.daemon = True
                 self._stall_timer.start()
-        flags = proto.FRAME_FLAG_KEY if proto.is_idr(nals) else 0
+        flags = proto.FRAME_FLAG_KEY if proto.is_idr(nals, wire_codec) else 0
         # --frame-gap-after/--frame-gap-ms: one forced gap in delivered frames,
         # the freeze the stats e2e counts (no encoder restart, no new config).
         if self._first_frame_at is None:
@@ -5106,7 +5124,7 @@ class Session(object):
                 drop = self.phone.args.stats_drop
                 episodes = 1
             message = {"t": "stream.stats", "stream": window.stream_id,
-                       "windowMs": 2000,
+                       "windowMs": 2000, "codec": window.codec,
                        "frames": window._stats_frames, "kf": window._stats_kf,
                        "kfReq": window._stats_kf_req, "bytes": window._stats_bytes,
                        "drop": drop, "dropEp": episodes, "skip": 0,
@@ -5117,6 +5135,7 @@ class Session(object):
             if qp is not None:
                 message["qpP50"] = qp
                 message["qpP95"] = qp
+                message["qpAvg"] = float(qp)
             resends = self.phone.args.stats_retrans
             if resends > 0:
                 # X0: a system-wide counter delta per message, as a phone that
@@ -5327,6 +5346,25 @@ class FakePhone(object):
         # Drops that finished, so bytes arriving after the result (a re-sent
         # tail) are reported like the real receiver's "more bytes than announced".
         self._finished_drops = {}
+
+    def mac_codecs(self):
+        """The codecs the live session's hello said this Mac decodes. A hello
+        without the list is an older Mac: AVC only."""
+        hello = getattr(self._session, "hello", None) or {}
+        offered = hello.get("codecs")
+        if not isinstance(offered, list):
+            return ["avc"]
+        return [name for name in offered if name in ("avc", "hevc")] or ["avc"]
+
+    def stream_codec(self):
+        """`--codec hevc` runs only when the Mac listed HEVC, as the real phone
+        does; otherwise the one fallback line names the Mac."""
+        if self.args.codec != "hevc":
+            return "avc"
+        if "hevc" not in self.mac_codecs():
+            sys.stderr.write("fakephone: codec=hevc unsupported: mac\n")
+            return "avc"
+        return "hevc"
 
     def accept_tls(self, raw):
         """One TLS 1.3 handshake per connection (the SSLContext is per
@@ -5861,6 +5899,9 @@ def build_parser():
     p.add_argument("--text-frame", metavar="WORD", default=None,
                    help="draw WORD large on a white band in every app stream "
                         "(a stable frame for the Live Text check)")
+    p.add_argument("--codec", choices=("avc", "hevc"), default="avc", metavar="CODEC",
+                   help="encode HEVC for the bench's C1 arm; it falls back to H.264 when "
+                        "the Mac's hello.codecs does not list hevc")
     p.add_argument("--encoder-align", type=int, default=2, metavar="N",
                    help="an app stream's size alignment (the encoder's own; default 2)")
     p.add_argument("--encoder-max", type=size_arg, default=(2560, 2560), metavar="WxH",
