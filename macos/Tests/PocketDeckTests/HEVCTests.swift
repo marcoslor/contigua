@@ -212,6 +212,7 @@ final class HEVCTests: XCTestCase {
         defer { VTDecompressionSessionInvalidate(decompression) }
 
         var decoded = 0
+        var built: [CMSampleBuffer] = []
         for (index, sample) in encoded.enumerated() {
             let accessUnit = try XCTUnwrap(annexB(fromAVCC: sample))
             let units = AnnexB.units(accessUnit)
@@ -220,6 +221,7 @@ final class HEVCTests: XCTestCase {
             let avcc = AnnexB.avcc(from: units, codec: .hevc)
             let input = try XCTUnwrap(VideoLayerView.makeSampleBuffer(
                 avcc: avcc, format: format, ptsUs: UInt64(index)))
+            built.append(input)
             let status = VTDecompressionSessionDecodeFrame(
                 decompression, sampleBuffer: input, flags: [], infoFlagsOut: nil
             ) { status, _, imageBuffer, _, _ in
@@ -229,5 +231,19 @@ final class HEVCTests: XCTestCase {
         }
         VTDecompressionSessionWaitForAsynchronousFrames(decompression)
         XCTAssertEqual(decoded, encoded.count, "every encoded frame decoded")
+
+        // Live Text's own route, KeyframeSnapshotter, takes its decoder from
+        // the format description: the same frames must give it a picture.
+        let snapshotter = KeyframeSnapshotter()
+        let snapshot = expectation(description: "snapshot")
+        var snapshotBuffer: CVPixelBuffer?
+        snapshotter.begin(format: format) { buffer in
+            snapshotBuffer = buffer
+            snapshot.fulfill()
+        }
+        for sample in built { snapshotter.feed(sample) }
+        wait(for: [snapshot], timeout: 3)
+        XCTAssertNotNil(snapshotBuffer, "KeyframeSnapshotter decoded the HEVC keyframe")
+        snapshotter.cancel()
     }
 }
