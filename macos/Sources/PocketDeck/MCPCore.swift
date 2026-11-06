@@ -41,6 +41,7 @@ enum MCPToolName: String, CaseIterable {
     case swipe
     case typeText = "type_text"
     case pressKey = "press_key"
+    case inputProbe = "input_probe"
     case closeWindow = "close_window"
     case sendLink = "send_link"
     case sendFile = "send_file"
@@ -87,6 +88,8 @@ enum MCPCall: Equatable {
     case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int)
     case typeText(window: Int, text: String)
     case pressKey(window: Int, key: MCPKey)
+    /// P0 (pmaxx): tap, then time the first displayed frame that changed.
+    case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
     case closeWindow(window: Int)
     case sendLink(String)
     case sendFile(String)
@@ -194,6 +197,15 @@ enum MCPTools {
                             "enum": MCPKey.allCases.map(\.rawValue),
                             "description": "back, home and recents are navigation; the rest are keys."],
                 ], required: ["window", "key"])),
+        MCPTool(name: .inputProbe,
+                description: "Tap a point and return how long until the displayed picture changed: input-to-photon, in milliseconds.",
+                schema: object([
+                    "window": window, "x": pointX, "y": pointY,
+                    "w": ["type": "number", "minimum": 0.05, "maximum": 1,
+                          "description": "Watched width, 0.05 to 1 of the picture (default: the whole picture)."],
+                    "h": ["type": "number", "minimum": 0.05, "maximum": 1,
+                          "description": "Watched height, 0.05 to 1 of the picture (default: the whole picture)."],
+                ], required: ["window", "x", "y"])),
         MCPTool(name: .closeWindow,
                 description: "Close the Phone Mirror the way its close button does.",
                 schema: object(["window": window], required: ["window"])),
@@ -277,6 +289,17 @@ enum MCPArguments {
         return value
     }
 
+    /// An optional normalized size: absent means "the whole picture", present
+    /// must still leave a region a luma grid can be taken from.
+    private static func optionalDimension(_ args: [String: Any], _ key: String) throws -> Double? {
+        guard args[key] != nil else { return nil }
+        let value = try number(args, key)
+        guard (0.05...1).contains(value) else {
+            throw MCPArgumentError(message: "“\(key)” must be between 0.05 and 1")
+        }
+        return value
+    }
+
     /// Validate `arguments` for a known tool. Throws `MCPArgumentError`; the
     /// dispatcher turns that into `-32602`.
     static func call(_ name: String, _ args: [String: Any]) throws -> MCPCall {
@@ -318,6 +341,11 @@ enum MCPArguments {
                 throw MCPArgumentError(message: "“key” must be one of \(MCPKey.allCases.map(\.rawValue).joined(separator: ", "))")
             }
             return .pressKey(window: window, key: key)
+        case .inputProbe:
+            return .inputProbe(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
+                               x: try coordinate(args, "x"), y: try coordinate(args, "y"),
+                               width: try optionalDimension(args, "w"),
+                               height: try optionalDimension(args, "h"))
         case .closeWindow:
             return .closeWindow(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
         case .sendLink:

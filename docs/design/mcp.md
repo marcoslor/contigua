@@ -83,6 +83,7 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `swipe` | `window`, `x1`, `y1`, `x2`, `y2`, `ms` ≤ 2000 | down, interpolated moves at ~60 Hz, up |
 | `type_text` | `window`, `text` ≤ 2000 chars | the same `text` frame the keyboard sends |
 | `press_key` | `window`, `key` = back/home/recents/enter/delete/tab/escape/up/down/left/right | nav or KEY frames |
+| `input_probe` | `window`, `x`, `y`, optional `w`, `h` (0.05–1) | taps, then the ms until the displayed picture's watched region changed; `changed_ms` null when nothing changed in 2 s |
 | `close_window` | `window` | closes the window the way its close button does |
 | `send_link` | `url` | LinkPolicy validates it; the existing link path sends it |
 | `send_file` | `path` (absolute, regular, readable file) | the existing drop path sends it |
@@ -108,6 +109,15 @@ keyboard use (`Session.touch`, `Session.key`, `Session.text`); no NSEvents are
 synthesized and the test-only `DebugInput` path is not used. `back`, `home` and
 `recents` are the session `nav` action; the other keys are KEY down/up frames
 with Android keycodes (enter 66, delete 67, tab 61, escape 111, arrows 19–22).
+
+`input_probe` is the measurement tool built for the pmaxx epic: it arms a
+private decoder, waits for one keyframe to become the baseline, sends the same
+TOUCH down/up `tap` sends, and reports the first frame whose 16×16 luma grid of
+the watched region changed: the tap's send time to that frame's decode is
+`changed_ms`. The display layer shows the frame on the next refresh, so the
+number is the input-to-picture part of input-to-photon (add at most one refresh
+period, 16.7 ms at 60 Hz). The decoder lives only for the probe. It is
+read-only measurement, not an input route of its own.
 
 ## Threat model
 
