@@ -75,6 +75,7 @@ RELIABLE_WRAPPER = 13      # u64 seq | u8 innerType | u32 innerStream
 MAX_INNER_PAYLOAD = MAX_FRAME - 5 - RELIABLE_WRAPPER
 
 CODEC_H264 = 1
+CODEC_HEVC = 2
 CODEC_OPUS = 2
 CODEC_AAC = 3
 
@@ -629,6 +630,12 @@ VCL_TYPES = (1, 2, 3, 4, 5)
 # Non-VCL NAL types that begin a new access unit when they follow VCL data.
 AU_START_AFTER_VCL = (6, 7, 8, 9, 14, 15, 16, 17, 18)
 
+# HEVC's slices are 0–31; every parameter set, SEI and AUD is non-VCL, so any
+# of them after a slice begins the next access unit. Its AUD is 35.
+HEVC_VCL_TYPES = tuple(range(0, 32))
+HEVC_AU_START_AFTER_VCL = tuple(range(32, 64))
+HEVC_AUD = 35
+
 
 def scan_start_codes(data):
     """Return [(index, start_code_len), ...] for every Annex-B start code."""
@@ -657,12 +664,12 @@ def _nal_offset(blob):
     return 0
 
 
-def nal_type(nal):
-    """NAL unit type from a NAL blob (with or without leading start code)."""
+def nal_type(nal, codec=CODEC_H264):
+    """NAL unit type from a blob (with or without a leading start code)."""
     off = _nal_offset(nal)
     if off >= len(nal):
         return -1
-    return nal[off] & 0x1F
+    return (nal[off] & 0x1F) if codec == CODEC_H264 else ((nal[off] >> 1) & 0x3F)
 
 
 def split_nals(data):
@@ -677,7 +684,7 @@ def split_nals(data):
 
 
 def extract_sps_pps(nal_blobs):
-    """Concatenate the SPS (7) and PPS (8) NALs, in that order, start codes kept."""
+    """Concatenate the AVC SPS (7) and PPS (8) NALs, start codes kept."""
     sps = None
     pps = None
     for nal in nal_blobs:
@@ -691,8 +698,36 @@ def extract_sps_pps(nal_blobs):
     return sps + pps
 
 
-def is_idr(nal_blobs):
-    return any(nal_type(nal) == 5 for nal in nal_blobs)
+def extract_hevc_parameter_sets(nal_blobs):
+    """Concatenate HEVC VPS (32), SPS (33) and PPS (34), in that order."""
+    vps = None
+    sps = None
+    pps = None
+    for nal in nal_blobs:
+        t = nal_type(nal, CODEC_HEVC)
+        if t == 32 and vps is None:
+            vps = nal
+        elif t == 33 and sps is None:
+            sps = nal
+        elif t == 34 and pps is None:
+            pps = nal
+    if vps is None or sps is None or pps is None:
+        return None
+    return vps + sps + pps
+
+
+def hevc_starts_picture(nal):
+    """HEVC's first_slice_segment_in_pic_flag is the MSB of the byte after the
+    two-byte NAL header. The encoder emits no AUD, so this is the boundary."""
+    off = _nal_offset(nal)
+    return off + 2 < len(nal) and bool(nal[off + 2] & 0x80)
+
+
+def is_idr(nal_blobs, codec=CODEC_H264):
+    """A decoder can start on AVC 5 or HEVC 19/20; a HEVC CRA (21) is not one."""
+    if codec == CODEC_H264:
+        return any(nal_type(nal) == 5 for nal in nal_blobs)
+    return any(nal_type(nal, codec) in (19, 20) for nal in nal_blobs)
 
 
 class AccessUnitSplitter(object):
@@ -700,11 +735,16 @@ class AccessUnitSplitter(object):
 
     Start codes bound NALs, but the final NAL in a buffer may be truncated, so a
     NAL is only complete once the *next* start code has arrived. Access units are
-    cut at an AUD (9) or at any non-VCL NAL that follows VCL data (the standard
-    H.264 boundary rule), which also works when the encoder emits no AUD.
+    cut at an AUD (9 for AVC, 35 for HEVC) or at any non-VCL NAL that follows
+    VCL data (the standard boundary rule), which also works when the encoder
+    emits no AUD.
     """
 
-    def __init__(self):
+    def __init__(self, codec=CODEC_H264):
+        # Both the wire byte and the stream token are accepted, so a caller
+        # cannot silently get the AVC rules for an HEVC stream.
+        self.codec = (CODEC_HEVC if codec == "hevc"
+                      else CODEC_H264 if codec == "avc" else codec)
         self._buf = bytearray()
         self._cur = bytearray()
         self._seen_vcl = False
@@ -738,14 +778,22 @@ class AccessUnitSplitter(object):
         self._buf = bytearray(remainder)
 
         units = []
+        aud = HEVC_AUD if self.codec == CODEC_HEVC else 9
+        vcl = HEVC_VCL_TYPES if self.codec == CODEC_HEVC else VCL_TYPES
+        after_vcl = (HEVC_AU_START_AFTER_VCL if self.codec == CODEC_HEVC
+                     else AU_START_AFTER_VCL)
         for nal in nals:
-            t = nal_type(nal)
-            if self._cur and (t == 9 or (t in AU_START_AFTER_VCL and self._seen_vcl)):
+            t = nal_type(nal, self.codec)
+            boundary = t == aud or (t in after_vcl and self._seen_vcl)
+            if (not boundary and self.codec == CODEC_HEVC and self._seen_vcl
+                    and t in vcl and hevc_starts_picture(nal)):
+                boundary = True
+            if self._cur and boundary:
                 units.append(bytes(self._cur))
                 self._cur = bytearray()
                 self._seen_vcl = False
             self._cur += nal
-            if t in VCL_TYPES:
+            if t in vcl:
                 self._seen_vcl = True
         if flush and self._cur:
             units.append(bytes(self._cur))
