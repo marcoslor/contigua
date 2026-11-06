@@ -15,7 +15,6 @@ import android.media.MediaFormat
 internal object StreamFormat {
     /** The default codec's mime, kept for the AVC probe the Mac's sizes use. */
     const val MIME = "video/avc"
-    const val FPS = 60
     const val I_FRAME_INTERVAL_S = 10
 
     /** With intra refresh there is no periodic keyframe; keyframes only on request. */
@@ -23,6 +22,12 @@ internal object StreamFormat {
 
     /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
     const val KEY_MAX_FPS = "max-fps-to-encoder"
+
+    /** `MediaFormat.KEY_OPERATING_RATE` (API 30), a hint never set at the default. */
+    const val KEY_OPERATING_RATE = "operating-rate"
+
+    /** `MediaFormat.KEY_LOW_LATENCY` (API 30), the string as the platform spells it. */
+    const val KEY_LOW_LATENCY = "low-latency"
 
     /** How long a still encoder repeats its last frame, so the Mac sees a heartbeat. */
     const val REPEAT_PREVIOUS_FRAME_US = 500_000L
@@ -39,12 +44,19 @@ internal object StreamFormat {
         repeatPreviousFrame: Boolean,
         maxFps: Int?,
         encodingStatistics: Boolean,
+        lowLatencySupported: Boolean = false,
         codec: VideoCodec = VideoCodec.Avc,
     ): Plan {
         val format = MediaFormat.createVideoFormat(codec.mime, w, h)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, strategy.fps)
+        // The default keeps the pre-switch format exactly: one rate key, no hint.
+        if (strategy.fps != StreamStrategy.DEFAULT_FPS) {
+            format.setInteger(KEY_OPERATING_RATE, strategy.fps)
+        }
+        val lowLatency = strategy.lowLatency && lowLatencySupported
+        if (lowLatency) format.setInteger(KEY_LOW_LATENCY, 1)
         val refreshFrames = strategy.intraRefreshFrames
             .takeIf { it > 0 && intraRefreshSupported } ?: 0
         if (refreshFrames > 0) {
@@ -86,6 +98,7 @@ internal object StreamFormat {
                 },
                 intraRefreshFrames = refreshFrames,
                 codec = codec,
+                lowLatency = lowLatency,
             ),
         )
     }
