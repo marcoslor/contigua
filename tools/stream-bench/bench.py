@@ -990,6 +990,8 @@ def main():
                 run = {"repeat": repeat + 1, "arm": name, "stream": 0,
                        "start": began, "end": "", "lines": 0, "sampled": [],
                        "script": args.script, "samples": []}
+                run.update({field: None for field in
+                            table_fields() + list(NEW_RUN_FIELDS)})
                 client = None
                 try:
                     settings.apply(arm)
@@ -1052,7 +1054,7 @@ def main():
                 rows.append(run)
                 summary_rows[name].append(run)
                 log("run done: codec=%s " % (run.get("codec") or "-")
-                    + " ".join("%s=%s" % (field, run[field])
+                    + " ".join("%s=%s" % (field, run.get(field))
                                for field in table_fields()))
     finally:
         settings.restore()
