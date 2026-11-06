@@ -103,7 +103,7 @@ Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.str
 | R2 | phone | Bitrate cap 8 → 16 / 25 / 40 Mbps, plus the per-pixel target. | less blockiness in motion, if the link holds it |
 | R3 | phone | Delay-based rate control: the bitrate follows the measured delivery rate and queue delay instead of −25 % on an overflow. | adapts before a stall, recovers in seconds, not 15 s |
 | R4 | phone | Intra refresh instead of the 10 s keyframe (`KEY_INTRA_REFRESH_PERIOD`). | no periodic keyframe spike; it only counts once the frame a drop resumes on is proven an IDR (`key_not_idr = 0` at both ends; the counters are NAL types, never bytes) |
-| C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). Built on `feat/hevc`: the `codec=hevc` arm, `hello.codecs`, codec-aware NALs, the Mac's refusal, and `qp_avg` on both ends; bench arms `c1-hevc` and `stall-hevc` (see “C1: HEVC”). | the same quality at fewer bits |
+| C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). Round 5: no measurable gain on the person's phone; H.264 stays the default. Built on `feat/hevc`: the `codec=hevc` arm, `hello.codecs`, codec-aware NALs, the Mac's refusal, and `qp_avg` on both ends; bench arms `c1-hevc` and `stall-hevc` (see “C1: HEVC”). | the same quality at fewer bits |
 | T1 | phone | Still refinement: about 300 ms after motion stops, one high-quality frame (a sync frame at a raised bitrate or a lower QP cap), dropped if motion resumes. | still text is sharp again within a second |
 | N1 | both | Traffic marked as video (`IP_TOS` AF41 on the phone's socket; `NET_SERVICE_TYPE_VI` on the Mac's). | fewer air stalls on a busy network |
 | M1 | Mac | Paced display: a one-frame buffer shown on the display's refresh instead of `DisplayImmediately`. | even frame spacing after a burst, at about +1 frame of latency |
@@ -517,6 +517,37 @@ c1-hevc                    1  avc     345.0 (345.0)  5.0 (5.0)  52.6 (52.6)  21.
 
 A real phone whose HEVC encoder takes the bench size, and whether it reports
 QP, is the reviewer's run; the emulator cannot answer C1's quality question.
+
+## Fifth real-phone round: HEVC against H.264 (2026-11-06)
+
+Two runs on the person's phone with v149, 06:21–06:30, same setup as round 4. The phone's HEVC encoder took every bench size: no `codec=hevc unsupported` line, and every HEVC run said `codec=hevc` at both ends. The encoder reports QP for both codecs.
+
+**At the default cap (8 Mbps), 4 arms × 3 interleaved runs:**
+
+| Arm | jank_ms per run | median | drop_ms | kbps (median) | qp_avg (median) | qp_p95 (median) |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (AVC) | 53 (low-motion, not counted), 174, 87 | **130** | 0 | 5145 | 5.7 | 1.0 |
+| c1-hevc | 198, 63, 82 | **82** | 0 | 5778 | 7.2 | 4.0 |
+| stall (AVC) | 1115, 1093, 1604 | **1115** | 283–300 | 3973 | 9.1 | 7.5 |
+| stall-hevc | 1481, 1309, 1344 | **1344** | 166–482 | 4641 | 10.1 | 10.5 |
+
+**At a 3 Mbps cap, where the rate controller has to give up quality, 2 arms × 3:**
+
+| Arm | jank_ms per run | median | kbps (median) | qp_avg (median) | qp_p95 (median) |
+| --- | --- | --- | --- | --- | --- |
+| cap3-avc | 0, 159, 0 | **0** | 2783 | 14.4 | 14.5 |
+| cap3-hevc | 0, 334, 112 | **112** | 2770 | 13.7 | 18.0 |
+
+What it shows:
+- **HEVC works end to end on the real phone.** Every HEVC drop resumed on an IDR (`nal=20`, IDR_N_LP) 26–316 ms after it began; `key_not_idr` was 0 at both ends.
+- **No measurable gain on this phone and this content.**
+  - At 8 Mbps neither codec is short of bits: QP stays at 1–10, so the picture is near its ceiling either way, and HEVC spent about 12 % *more* bits.
+  - At 3 Mbps, the same bits gave nearly the same mean QP (13.7 against 14.4) and a worse p95 (18 against 14.5). The research's "30–50 % fewer bits" doesn't show up in this encoder's real-time mode.
+  - With a 400 ms stall, HEVC's jank was higher (1344 against 1115) with more drop time, inside the run-to-run spread but not better.
+- **QP is a proxy.** The two codecs' QP scales are close but not identical, and HEVC's larger transforms and SAO can look better at the same QP. A real answer needs a full-reference score (PSNR or SSIM of the Mac's decoded frame against the phone's own capture), which the bench doesn't have.
+- **Decision:** H.264 stays the default. HEVC stays as the `codec=hevc` arm. The next quality work is T2 (ROI QP for text) and a full-reference score for the bench, not the codec.
+
+Raw data: `.agent/stats/round5/` (not in the repo).
 
 ## Presets, later
 
