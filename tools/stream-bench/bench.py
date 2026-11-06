@@ -306,9 +306,25 @@ def find_app_pid(profile):
 
 
 def has_open_window(text):
-    """True when a 5 s `stats stream=` line is in the given log text. The
-    closing `stats total stream=` line is not a live window."""
-    return any(" stats stream=" in line for line in text.splitlines())
+    """True when a live stream has a `stats stream=` line and no later close.
+
+    The closing `stats total stream=` line and the app's `stream N: closed`
+    line both end a stream; a stale stats line must not refuse the next run.
+    """
+    open_streams = set()
+    for line in text.splitlines():
+        found = re.search(r" stats stream=(\d+)\b", line)
+        if found:
+            open_streams.add(int(found.group(1)))
+            continue
+        found = re.search(r" stats total stream=(\d+)\b", line)
+        if found:
+            open_streams.discard(int(found.group(1)))
+            continue
+        found = re.search(r" stream (\d+): closed\b", line)
+        if found:
+            open_streams.discard(int(found.group(1)))
+    return bool(open_streams)
 
 
 def fields_from_line(line):
@@ -788,7 +804,7 @@ def run_script(name, mcp, window, phases, args, sleep=time.sleep, sample=None):
     elif name == "still":
         drive_still(mcp, window, phases, sleep=sleep, seconds=args.still_seconds)
     elif name == "typing":
-        drive_typing(mcp, window, phases, sleep=sleep)
+        drive_typing(mcp, window, phases, sleep=sleep, point=args.typing_point)
     elif name == "video":
         drive_video(mcp, window, phases, sleep=sleep,
                     point=args.video_point, seconds=args.video_seconds)
@@ -821,7 +837,7 @@ def app_line_values(logtext, stream):
     }
 
 
-def phone_values(texts, seconds, package, display_id=0):
+def phone_values(texts, seconds, package, display_id=None):
     """Map one set of read-only dumps into the run's phone cells."""
     gfx = texts.get("gfxinfo", "")
     frames = phone.framestats(gfx, seconds)
@@ -859,7 +875,7 @@ class PhoneSampler:
     screenshot call is made.
     """
 
-    def __init__(self, adb_path, serial, package, display_id=0, shell=None):
+    def __init__(self, adb_path, serial, package, display_id=None, shell=None):
         self.adb_path = adb_path
         self.serial = serial
         self.package = package
@@ -928,6 +944,9 @@ def main():
                         help="run script (default: swipe, today's sequence)")
     parser.add_argument("--still-seconds", type=float, default=STILL_SECONDS,
                         help="the still script's hold (default: %(default)s)")
+    parser.add_argument("--typing-point", default="0.5,0.08",
+                        help="typing script's normalized search-field point "
+                             "(default: 0.5,0.08)")
     parser.add_argument("--video-point", default="0.5,0.5",
                         help="video script's normalized play point (default: 0.5,0.5)")
     parser.add_argument("--video-seconds", type=float, default=VIDEO_SECONDS,
@@ -938,8 +957,9 @@ def main():
                         help="soak sample period in seconds (default: %(default)s)")
     parser.add_argument("--tap-point", default="0.5,0.5",
                         help="tap script's normalized probe point (default: 0.5,0.5)")
-    parser.add_argument("--display-id", type=int, default=0,
-                        help="display whose refresh rate the sampler reads (default: 0)")
+    parser.add_argument("--display-id", type=int, default=None,
+                        help="physical display id; default reads the mirror's "
+                             "pocketdeck virtual display")
     parser.add_argument("--shim", default=DEFAULT_SHIM,
                         help="pocketdeck-mcp stdio shim (default: the installed app's)")
     parser.add_argument("--app", default=None,
@@ -962,6 +982,7 @@ def main():
         fail("--soak-minutes must be positive")
     if args.still_seconds < 0 or args.video_seconds < 0:
         fail("script holds must not be negative")
+    args.typing_point = parse_point(args.typing_point)
     args.video_point = parse_point(args.video_point)
     args.tap_point = parse_point(args.tap_point)
     args.soak_seconds = args.soak_minutes * 60.0
@@ -1013,6 +1034,7 @@ def main():
                 try:
                     settings.apply(arm)
                     sampler.reset()
+                    reset_at = time.time()
                     client = MCP(args.shim, args.profile)
                     opened = client.text("open_app", {"app": args.package})
                     stream = int(opened["window"])
@@ -1037,6 +1059,9 @@ def main():
                                    sample=on_sample)
                     else:
                         probe = run_script(args.script, client, stream, phases, args)
+                        # While the app is still alive and its window open:
+                        # gfxinfo/meminfo describe the run, not the close.
+                        run.update(sampler.sample(time.time() - reset_at))
                     client.text("close_window", {"window": stream})
                     client.close()
                     client = None
@@ -1057,8 +1082,6 @@ def main():
                         run["samples"] = soak_samples
                         all_samples.extend(soak_samples)
                         run.update(median_fields(soak_samples, PHONE_FIELDS))
-                    else:
-                        run.update(sampler.sample(run["secs"] or 0.0))
                 except Exception as error:  # one failed run never stops the table
                     log("run failed: %s" % error)
                     run.update(empty_metrics())

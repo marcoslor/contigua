@@ -158,6 +158,21 @@ class DisplayTest(unittest.TestCase):
         self.assertIsNone(self.phone.display_refresh(DISPLAY, 9))
         self.assertIsNone(self.phone.display_refresh("", 0))
 
+    def test_the_mirror_virtual_display_is_the_default(self):
+        # The phone names its mirror VD "pocketdeck-N" with a virtual uniqueId;
+        # that is the display whose rate the stream sets.
+        text = DISPLAY + (
+            '    DisplayDeviceInfo{"pocketdeck-2": '
+            'uniqueId="virtual:com.android.shell,0,pocketdeck-2,145", '
+            '1800 x 1200, modeId 254, renderFrameRate 60.0, defaultModeId 254, '
+            'density 320}\n')
+        values = self.phone.display_refresh(text)
+        self.assertAlmostEqual(values["hz"], 60.0)
+        self.assertEqual((values["width"], values["height"]), (1800, 1200))
+
+    def test_no_mirror_display_is_nil_even_with_a_physical_one(self):
+        self.assertIsNone(self.phone.display_refresh(DISPLAY))
+
 
 class BatteryTest(unittest.TestCase):
     def setUp(self):
@@ -199,6 +214,11 @@ class CpuTest(unittest.TestCase):
         values = self.phone.cpu(CPU)
         self.assertAlmostEqual(values["com.example.app"], 16.3)
         self.assertAlmostEqual(values["dev.pocketdeck"], 1.2)
+
+    def test_a_zero_share_with_a_plus_prefix_is_zero_not_nil(self):
+        # `dumpsys cpuinfo` prints an idle process as `+0%`, not ` 0%`.
+        values = self.phone.cpu("+0% 1234/com.example.app: 0% user + 0% kernel\n")
+        self.assertEqual(values["com.example.app"], 0.0)
 
     def test_an_absent_package_is_nil(self):
         values = self.phone.cpu("Load: 0.0 / 0.0 / 0.0\n")
