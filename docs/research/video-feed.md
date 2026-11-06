@@ -436,12 +436,13 @@ ends count it by NAL type, never by bytes:
   key. The send queue resumes on that flag; without a type-5 slice the decoder
   keeps predicting from frames it never got, and scrolling spreads the damage.
   Jank, QP, byte counts and freeze counters cannot see that; a NAL type can.
-- **Both ends time a drop episode:** the phone logs `stream N drop: <n>
-  dropped, key after <ms> ms, nal=<types>` from the first discarded delta to
-  the key frame's send. The Mac arms on a `stream.stats` message with
-  `dropEp > 0` and logs `stream N drop recovered after <ms> ms` at its first
-  type-5 frame; its clock starts when the message arrived, so its number is an
-  observation, not the phone's in-phone time.
+- **A drop episode is timed on the phone:** `stream N drop: <n> dropped, key
+  after <ms> ms, nal=<types>`, from the first discarded delta to the key frame's
+  send, with the access unit's NAL types (never the wire header's bytes). The
+  Mac's view of the same episode is `max_gap_ms`. A Mac "recovered after" line
+  was tried and removed in review: the phone reports a drop in its 2 s stats
+  message, which often arrives after the recovery IDR, so the Mac timed the
+  next IDR instead (3,852 ms on the emulator against a 907 ms longest gap).
 - **`max_gap_ms`** is the longest interval between received frames, outside
   covered time, in each 5 s line (since the previous line) and the totals
   (the whole run). A `VIDEO_CONFIG` in the middle of a gap does not hide it.

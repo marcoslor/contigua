@@ -573,38 +573,17 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(window.total(now: 2).keyNotIdr, 4)
     }
 
-    /// ISS-40 round 3: after a phone drop marker, the first IDR is the one
-    /// frame the decoder can restart on, so its arrival time is logged.
-    func testAnIdrAfterAPhoneDropMarkerLogsTheRecovery() {
+    /// An IDR is never logged, before or after a drop: the phone's drop report
+    /// rides a 2 s stats message, so the Mac can't time the recovery from it.
+    func testAnIdrIsQuietAndOnlyANonIdrKeyIsNamed() {
         var window = StreamStatsWindow(now: 0)
-        window.noteDropMarker(now: 10.0)
-        XCTAssertEqual(
-            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.42),
-            .recovered(ms: 420),
-        )
-        XCTAssertEqual(
-            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 11.0),
-            .none,
-            "one marker, one recovery",
-        )
-    }
-
-    func testANonIdrKeyDoesNotCloseTheRecovery() {
-        var window = StreamStatsWindow(now: 0)
-        window.noteDropMarker(now: 10.0)
-        XCTAssertEqual(
-            window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 10.1),
-            .types("6,1"),
-        )
-        XCTAssertEqual(
-            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.4),
-            .recovered(ms: 400),
-        )
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10), .none)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 10.1),
+                       .types("6,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.4), .none)
     }
 
     func testTheKeyNoteLinesAreTheDocumentedOnes() {
-        XCTAssertEqual(StreamStatsLine.keyNote(stream: 3, note: .recovered(ms: 420)),
-                       "stream 3 drop recovered after 420 ms")
         XCTAssertEqual(StreamStatsLine.keyNote(stream: 3, note: .types("6,1")),
                        "stream 3 key nal=6,1")
         XCTAssertNil(StreamStatsLine.keyNote(stream: 3, note: .none))

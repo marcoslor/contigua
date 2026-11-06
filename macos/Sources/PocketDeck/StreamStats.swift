@@ -208,12 +208,13 @@ enum StatsDiscardReason: String, CaseIterable {
 }
 
 /// What a wire-key frame's NAL types say: it cannot restart the decoder
-/// (`types`, also the first three per stream), it is the IDR that closes a
-/// phone drop marker (`recovered`), or it says nothing new (`none`).
+/// (`types`, also the first three per stream), or it says nothing new (`none`).
+/// The time a drop takes to recover is the phone's `drop:` line and the Mac's
+/// `max_gap_ms`: the phone's drop report arrives in a 2 s stats message, often
+/// after the recovery IDR, so the Mac cannot time it from that message.
 enum KeyFrameNote: Equatable {
     case none
     case types(String)
-    case recovered(ms: Int)
 }
 
 /// One visible window's sliding 2 s window. Pure: every method takes the clock
@@ -252,10 +253,6 @@ struct StreamStatsWindow {
     private var keyNotIdr = 0
     private var totalKeyNotIdr = 0
     private var keyNotIdrLogged = 0
-    /// When a `stream.stats` message first reported a drop episode, until an
-    /// IDR arrives. The phone's own line has the true in-phone timing; this is
-    /// the Mac's observation of when it could show a picture again.
-    private var dropMarkerAt: TimeInterval?
     /// ISS-40 round 3: the longest interval between received frames. The line
     /// covers the time since the previous line; the totals the whole life.
     /// `lastReceived` survives `noteConfig` on purpose: a resize in the middle
@@ -342,13 +339,11 @@ struct StreamStatsWindow {
             pausedAt = nil
         }
         // The covered span is not a freeze or a picture gap: the next frame
-        // starts a fresh one. A drop that recovers while hidden has no local
-        // recovery time to report.
+        // starts a fresh one.
         if paused {
             lastEnqueue = nil
             lastEnqueuePtsUs = nil
             lastReceived = nil
-            dropMarkerAt = nil
         }
         prune(now)
     }
@@ -411,24 +406,13 @@ struct StreamStatsWindow {
         prune(now)
     }
 
-    /// The phone reported a drop episode. Measured from the message's arrival:
-    /// the phone's own line has the in-phone timing.
-    mutating func noteDropMarker(now: TimeInterval) {
-        dropMarkerAt = now
-    }
-
     /// A wire-key frame's NAL types. A frame with no type-5 unit cannot restart
     /// the decoder, so it is counted as `key_not_idr`; the first three per
-    /// stream also return their types for the field log. A type-5 unit closes
-    /// an open phone drop marker with the wait it took.
+    /// stream also return their types for the field log.
     mutating func noteKeyFrame(isKeyframe: Bool, nalTypes: [UInt8],
                                now: TimeInterval) -> KeyFrameNote {
         guard isKeyframe else { return .none }
-        if nalTypes.contains(H264NalType.sliceIdr.rawValue) {
-            guard let marker = dropMarkerAt else { return .none }
-            dropMarkerAt = nil
-            return .recovered(ms: Int(((now - marker) * 1000).rounded()))
-        }
+        if nalTypes.contains(H264NalType.sliceIdr.rawValue) { return .none }
         keyNotIdr += 1
         totalKeyNotIdr += 1
         guard keyNotIdrLogged < 3 else { return .none }
@@ -817,8 +801,6 @@ enum StreamStatsLine {
             return nil
         case .types(let types):
             return "stream \(stream) key nal=\(types)"
-        case .recovered(let ms):
-            return "stream \(stream) drop recovered after \(ms) ms"
         }
     }
 
@@ -951,14 +933,7 @@ final class StreamStatsRecorder {
     }
 
     func notePhoneStats(_ stats: PhoneStreamStats) {
-        lock.lock()
-        // The phone's message is the first thing that tells the Mac a drop
-        // happened; the marker waits for the IDR that ends it.
-        if stats.dropEpisodes > 0 {
-            model.noteDropMarker(now: ProcessInfo.processInfo.systemUptime)
-        }
-        model.notePhoneStats(stats)
-        lock.unlock()
+        lock.lock(); model.notePhoneStats(stats); lock.unlock()
     }
 
     func snapshot(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsSnapshot {
