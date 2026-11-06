@@ -714,6 +714,32 @@ motion measurement: a motion soak wants a swipe every sample period, not one
 per period.
 
 
+## P4 — the 3 Mbit/s fallback arm (planned, 2026-11-06)
+
+The person's live session was shaped with `pd-fault.sh on 100 3` — 100 ms each
+way, 3 Mbit/s, pf/dummynet on the live TCP port. The phone's log repeated a
+sawtooth every ~15 s: `drop episode: flowing --dropped(10)--> waiting`, then
+`backpressure: dropping deltas, requesting keyframe`, `bitrate -> 6.0 Mbps
+(-25%)`, and recovery back to 6.6, 7.3 and 8.0 Mbps before the next drop. The
+delta drops broke the reference chain until the IDR, so every cycle was a
+visible artifact.
+
+The cause was `QualityAdaptation`: recovery was time-only (10% every 5 s up to
+the 8 Mbps target), so a 3 Mbit/s link was refilled every cycle. The fix is a
+goodput ceiling: the session's writer measures the stream's dequeued bytes over
+the last 3 s; a drop caps recovery at 85% of that rate (floor 1 Mbit/s) and a
+5% probe lifts the cap after 30 s without a drop. On this shape the first drop
+lands near 2.55 Mbps instead of 6, and the stream stays there until the link
+changes. K1: `GoodputMeterTest` 6/0, `QualityAdaptationTest` 12/0; the shaped
+arm itself is P4's.
+
+Arm: the same shaper, 60 s of motion, with the phone log and the Mac stats
+recorded. Pass: no repeated `drop episode`/`key after` cycle and no visible
+break in the picture; the bitrate holds below the measured goodput. The script
+is `/tmp/pd-fault.sh` (copy in `.agent/pmaxx/pd-fault.sh`); `on 100 3` applies
+it, `off` restores. `pdpathfault.py` also gained `delay-throttle` for the
+emulator/fake-phone version.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:

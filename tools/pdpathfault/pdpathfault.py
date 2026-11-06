@@ -5,7 +5,7 @@ Sits between the Mac and the phone so a check can break a path exactly as a
 person's Wi-Fi would, without touching the other paths:
 
     pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
-                   --mode pass|delay|blackhole|pass-new|rst|throttle \
+                   --mode pass|delay|blackhole|pass-new|rst|throttle|delay-throttle \
                    [--delay-ms 120] [--rate-mbit 2] [--ctl-file /tmp/pdpathfault.ctl]
 
 Modes (docs/design/paths.md §10.3):
@@ -18,6 +18,7 @@ Modes (docs/design/paths.md §10.3):
                session while the old one stays silent
     rst        closes both sides with a reset at once
     throttle   caps each direction at --rate-mbit
+    delay-throttle  both at once (a 100 ms, 3 Mbit/s link)
 
 The mode can be changed at run time by writing one line to --ctl-file
 (`mode blackhole`), so a check can kill a path at a precise byte of a transfer.
@@ -38,7 +39,7 @@ import sys
 import threading
 import time
 
-MODES = ("pass", "delay", "blackhole", "pass-new", "rst", "throttle")
+MODES = ("pass", "delay", "blackhole", "pass-new", "rst", "throttle", "delay-throttle")
 CHUNK = 65536
 # Read at most this much ahead of the forwarder per direction: a real socket's
 # receive buffer is bounded, and a proxy with an unbounded queue would hide the
@@ -288,7 +289,7 @@ class Connection(object):
             # Only a throttled link models a bounded buffer: `pass` is a wire,
             # and capping it would throttle the checks that stream video and
             # file data through it side by side.
-            if self.proxy.get_mode() == "throttle":
+            if self.proxy.get_mode() in ("throttle", "delay-throttle"):
                 with self.queue_cv:
                     while self.queued[direction] >= QUEUE_CAP and not self.stop.is_set():
                         self.queue_cv.wait(0.02)
@@ -323,12 +324,12 @@ class Connection(object):
             if mode == "blackhole":
                 self._released(direction, len(data))
                 continue
-            if mode == "delay":
+            if mode in ("delay", "delay-throttle"):
                 due = enqueued + self.proxy.args.delay_ms / 1000.0
                 left = due - time.time()
                 if left > 0 and self.stop.wait(min(left, 1.0)):
                     return
-            if mode == "throttle":
+            if mode in ("throttle", "delay-throttle"):
                 self._throttle(direction, len(data))
             try:
                 dst.sendall(data)
