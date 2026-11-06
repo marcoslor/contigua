@@ -180,9 +180,11 @@ struct ByteReader {
 
 // MARK: - Typed payloads
 
-/// VIDEO_CONFIG: u8 codec · u16 width · u16 height · Annex-B SPS+PPS.
+/// VIDEO_CONFIG: u8 codec (1 AVC, 2 HEVC) · u16 width · u16 height · Annex-B
+/// parameter sets (AVC SPS+PPS; HEVC VPS+SPS+PPS).
 struct VideoConfig: Equatable {
     static let codecH264: UInt8 = 1
+    static let codecHEVC: UInt8 = 2
 
     var codec: UInt8
     var width: UInt16

@@ -103,7 +103,7 @@ Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.str
 | R2 | phone | Bitrate cap 8 → 16 / 25 / 40 Mbps, plus the per-pixel target. | less blockiness in motion, if the link holds it |
 | R3 | phone | Delay-based rate control: the bitrate follows the measured delivery rate and queue delay instead of −25 % on an overflow. | adapts before a stall, recovers in seconds, not 15 s |
 | R4 | phone | Intra refresh instead of the 10 s keyframe (`KEY_INTRA_REFRESH_PERIOD`). | no periodic keyframe spike; it only counts once the frame a drop resumes on is proven an IDR (`key_not_idr = 0` at both ends; the counters are NAL types, never bytes) |
-| C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). | the same quality at fewer bits |
+| C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). Built on `feat/hevc`: the `codec=hevc` arm, `hello.codecs`, codec-aware NALs, the Mac's refusal, and `qp_avg` on both ends; bench arms `c1-hevc` and `stall-hevc` (see “C1: HEVC”). | the same quality at fewer bits |
 | T1 | phone | Still refinement: about 300 ms after motion stops, one high-quality frame (a sync frame at a raised bitrate or a lower QP cap), dropped if motion resumes. | still text is sharp again within a second |
 | N1 | both | Traffic marked as video (`IP_TOS` AF41 on the phone's socket; `NET_SERVICE_TYPE_VI` on the Mac's). | fewer air stalls on a busy network |
 | M1 | Mac | Paced display: a one-frame buffer shown on the display's refresh instead of `DisplayImmediately`. | even frame spacing after a burst, at about +1 frame of latency |
@@ -478,6 +478,45 @@ each): the encoder applied `ir=60`, and both ends' `key_not_idr` were 0. The
 resuming frames carried a type-5 slice (`nal=5`, and one `nal=0,5` with a
 leading type-0 unit), so the emulator does not reproduce the person's
 corruption. The real phone decides R4.
+
+## C1: HEVC
+
+Built on `feat/hevc` (2026-11-06) as a bench arm, never a default flip:
+
+- **Phone:** `debug.pocketdeck.stream.codec=hevc` makes the choice only when the
+  Mac's `hello.codecs` lists `hevc` and the HEVC encoder accepts the size;
+  otherwise one line names the first failure (`codec=hevc unsupported:
+  <mac|encoder|size>`). `VIDEO_CONFIG` carries codec 1 (AVC) or 2 (HEVC), NAL
+  types are read with HEVC's field, and CRA (21) counts `key_not_idr`.
+- **Mac:** `hello.codecs` lists HEVC only when
+  `VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)`; the format description
+  is built from VPS/SPS/PPS, a VT round trip and the Live Text snapshotter both
+  decode HEVC, and a config naming a codec it cannot decode is refused before
+  any frame reaches a decoder.
+- **Measurement:** `qp_avg` is the frame-weighted mean of the encoder's
+  `KEY_VIDEO_QP_AVERAGE` values (phone 2 s snapshot and totals, Mac 5 s line
+  and totals), `-` when the encoder reports none. The bench's CSV and table
+  carry `codec`, `qp_avg` and the Mac's own received `rx_kbps`, next to the
+  phone's `kbps`.
+- **Fake phone:** `--codec hevc` encodes with libx265, Annex-B, the same 10 s
+  GOP and no B-frames, and honours the Mac's hello the way the phone does.
+
+The emulator has an HEVC encoder on paper — the system image's MediaCodecs XML
+names `c2.android.hevc.encoder` — and the phone's probe created it, but
+`isSizeSupported(900×600)` was false, so the C1 run logged
+`stream 2 codec=hevc unsupported: size` and streamed AVC. Both sides' totals
+said `codec=avc qp_avg=-`; the encoder's QP sample was `values=-`. The one-boot
+table (`baseline`, `c1-hevc`, one repeat each; the baseline run was
+`low-motion` at 19.6 fps):
+
+```
+arm                    valid  codec      jank_ms      jank_n    late_p99  shown_fps        kbps     rx_kbps      qp_avg
+baseline (low-motion)      0  avc              -           -           -          -           -           -           -
+c1-hevc                    1  avc     345.0 (345.0)  5.0 (5.0)  52.6 (52.6)  21.0 (21.0)  1214.3  1214.1           -
+```
+
+A real phone whose HEVC encoder takes the bench size, and whether it reports
+QP, is the reviewer's run; the emulator cannot answer C1's quality question.
 
 ## Presets, later
 

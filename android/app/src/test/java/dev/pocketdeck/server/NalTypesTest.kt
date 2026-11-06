@@ -1,6 +1,8 @@
 package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 
@@ -72,5 +74,32 @@ class NalTypesTest {
         assertEquals(listOf(7, 8, 5), nalTypes(buffer, au.size))
         assertEquals(position, buffer.position())
         assertEquals(limit, buffer.limit())
+    }
+
+    @Test
+    fun hevcNamesItsParameterSetsAndIdr() {
+        // HEVC: VPS 32 (0x40), SPS 33 (0x42), PPS 34 (0x44), IDR_W_RADL 19 (0x26),
+        // with both start-code widths in one access unit.
+        val au = bytes(0, 0, 0, 1, 0x40, 1,
+                       0, 0, 1, 0x42, 2,
+                       0, 0, 0, 1, 0x44, 3,
+                       0, 0, 1, 0x26, 4)
+        assertEquals(listOf(32, 33, 34, 19), nalTypes(au, codec = VideoCodec.Hevc))
+        assertTrue(isIdrAccessUnit(listOf(32, 33, 34, 19), VideoCodec.Hevc))
+    }
+
+    @Test
+    fun hevcCraIsAKeyFrameButNotAnIdr() {
+        // CRA 21 (0x2A) restarts the picture but is not an IDR: the counters
+        // must put it in key_not_idr, exactly as the wire flag says.
+        val au = bytes(0, 0, 1, 0x40, 1, 0, 0, 1, 0x42, 2, 0, 0, 1, 0x44, 3,
+                       0, 0, 1, 0x2A, 4)
+        assertEquals(listOf(32, 33, 34, 21), nalTypes(au, codec = VideoCodec.Hevc))
+        assertFalse(isIdrAccessUnit(listOf(32, 33, 34, 21), VideoCodec.Hevc))
+    }
+
+    @Test
+    fun hevcATrailingSliceIsTypeOne() {
+        assertEquals(listOf(1), nalTypes(bytes(0, 0, 1, 0x02, 9), codec = VideoCodec.Hevc))
     }
 }

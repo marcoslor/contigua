@@ -488,15 +488,49 @@ class TotalsTest(unittest.TestCase):
         self.assertEqual(by_name["stall-ir60"]["phone"],
                          {"stall_ms": "400", "ir": "60"})
         for name in ("stall", "stall-q1", "stall-q1q2-100", "stall-q2-500",
-                     "stall-paced", "stall-ir60"):
+                     "stall-paced", "stall-ir60", "stall-hevc"):
             self.assertFalse(by_name[name].get("restart", False),
                              "%s must run interleaved" % name)
+
+    def test_the_hevc_arms_ask_only_for_the_codec(self):
+        arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
+        by_name = {arm["name"]: arm for arm in arms}
+        self.assertEqual(by_name["c1-hevc"]["phone"], {"codec": "hevc"})
+        self.assertEqual(by_name["c1-hevc"]["mac"], {})
+        self.assertEqual(by_name["stall-hevc"]["phone"],
+                         {"stall_ms": "400", "codec": "hevc"})
+        self.assertEqual(by_name["stall-hevc"]["mac"], {})
+
+    def test_the_totals_carry_the_codec_and_qp_avg(self):
+        total = self.bench.parse_totals(self.totals_line(
+            secs=10.0, codec="hevc", qp_avg="24.5"), 1)
+        run = self.bench.run_metrics(total)
+        self.assertEqual(run["codec"], "hevc")
+        self.assertEqual(run["qp_avg"], 24.5)
+        missing = self.bench.run_metrics(self.bench.parse_totals(
+            self.totals_line(secs=10.0, codec="-", qp_avg="-"), 1))
+        self.assertIsNone(missing["codec"])
+        self.assertIsNone(missing["qp_avg"])
+
+    def test_the_totals_carry_the_macs_received_rate(self):
+        total = self.bench.parse_totals(self.totals_line(
+            secs=10.0, rx_kbps="812.5"), 1)
+        self.assertEqual(self.bench.run_metrics(total)["rx_kbps"], 812.5)
+
+    def test_the_codec_qp_avg_and_received_rate_are_table_and_csv_fields(self):
+        for field in ("qp_avg", "rx_kbps"):
+            self.assertIn(field, self.bench.TABLE_FIELDS)
+        self.assertIn("codec", self.bench.TABLE_TEXT_FIELDS)
+        self.assertIn("codec", self.bench.table_header(8))
+        for field in ("codec", "qp_avg", "rx_kbps"):
+            self.assertIn(field, self.bench.CSV_FIELDS)
 
     def test_arms_filter_runs_only_matching_prefixes(self):
         arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
         names = [arm["name"] for arm in self.bench.selected_arms(arms, prefix="stall")]
         self.assertEqual(names, ["stall", "stall-q1", "stall-q1q2-100",
-                                 "stall-q2-500", "stall-paced", "stall-ir60"])
+                                 "stall-q2-500", "stall-paced", "stall-ir60",
+                                 "stall-hevc"])
         names = [arm["name"] for arm in self.bench.selected_arms(arms, prefix="stall-q")]
         self.assertEqual(names, ["stall-q1", "stall-q1q2-100", "stall-q2-500"])
         self.assertEqual(self.bench.selected_arms(arms, prefix="nope"), [])

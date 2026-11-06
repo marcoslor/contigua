@@ -227,6 +227,7 @@ class Session(
         },
         onOverflow = { stream -> onQueueOverflow(stream) },
         onSuspendChanged = { stream -> applyEncoderSuspend(stream) },
+        codecFor = { stream -> streamCodecs[stream] ?: VideoCodec.Avc },
         log = { message -> log(message) },
     )
     /** Q1: one apply lock per stream; the last apply lands the latest state. */
@@ -240,6 +241,8 @@ class Session(
     @Volatile private var readerThread: Thread? = null
 
     private val streams = LinkedHashMap<Int, StreamState>()
+    /** Each stream's negotiated codec, for the drop line's NAL scan. */
+    private val streamCodecs = java.util.concurrent.ConcurrentHashMap<Int, VideoCodec>()
     /** The task-arrival rules (WIN-44, WIN-48, WIN-49); actions run in [performArrival]. */
     private val arrival = TaskArrival { message -> log(message) }
     /**
@@ -1194,6 +1197,9 @@ class Session(
         }
         clientId = Json.str(obj["clientId"]) ?: ""
         clientName = Json.str(obj["name"]) ?: "Mac"
+        // WIN-59: the Mac names the codecs it decodes in hardware. Absent means
+        // an older Mac and AVC only; a join repeats the list, so read it here.
+        display.setMacCodecs(CodecChoice.macCodecs(obj["codecs"]))
         // The iPad named itself by a stable id on the phone's memory; the TLS
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
@@ -2027,6 +2033,7 @@ class Session(
         // display forgets its counters (the CBR freeze is diagnosed from it).
         display.totalsLine(stream)?.let { log(it) }
         display.close(stream)
+        streamCodecs.remove(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
         synchronized(suspendApplies) { suspendApplies.remove(stream) }
@@ -3243,6 +3250,7 @@ class Session(
     override fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect) {
         // The picture's rect goes ahead of the config on the same lane: the Mac
         // crops each frame of this config to it.
+        streamCodecs[stream] = VideoCodec.values().firstOrNull { it.wire == codec } ?: VideoCodec.Avc
         val rect = """{"t":"window.content","stream":$stream,"x":${content.x},"y":${content.y},"w":${content.w},"h":${content.h}}"""
         val payload = Frames.encodeVideoConfig(VideoConfigPayload(codec, w, h, csd))
         gate.config(stream, rect, Frames.encode(Frames.TYPE_VIDEO_CONFIG, stream, payload))
@@ -3706,6 +3714,7 @@ class Session(
     private fun closePhoneClosed(stream: Int, reason: String) {
         val state = synchronized(streams) { streams.remove(stream) } ?: return
         display.close(stream)
+        streamCodecs.remove(stream)
         gate.forget(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to reason))

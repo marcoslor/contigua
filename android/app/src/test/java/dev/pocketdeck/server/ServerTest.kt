@@ -141,7 +141,7 @@ class ServerTest {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
         val phoneIdentity = TestTls.generate("PocketDeck Phone (empty test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (empty test)")
-        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
         val server = Server({ socket, plain, hello -> sessionFor(platform, socket, plain, hello) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()

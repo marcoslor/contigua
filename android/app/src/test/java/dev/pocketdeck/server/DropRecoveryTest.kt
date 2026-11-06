@@ -25,6 +25,10 @@ class DropRecoveryTest {
         Frames.encode(Frames.TYPE_VIDEO_FRAME, 3,
                       Frames.encodeVideoFrame(VideoFramePayload(ptsUs, true, au)))
 
+    /** HEVC VPS 32, SPS 33, PPS 34, IDR_W_RADL 19: a decoder can start here. */
+    private val hevcIdr = bytes(0, 0, 0, 1, 0x40, 1, 0, 0, 1, 0x42, 2,
+                                0, 0, 0, 1, 0x44, 3, 0, 0, 1, 0x26, 4)
+
     /** A drop episode: sent baseline, one queued delta, then four discarded. */
     private fun droppedQueue(lines: MutableList<String>, now: () -> Long): SendQueue {
         val queue = SendQueue(nowMs = now, log = { lines += it })
@@ -82,6 +86,22 @@ class DropRecoveryTest {
         queue.enqueueControl(3, wireKey(ptsUs, idr), ptsUs)
         queue.pollNow()
         assertEquals("stream 3 drop: 5 dropped, key after 100 ms, nal=7,8,5", lines.last())
+    }
+
+    @Test
+    fun aHevcDropLinePrintsTheHevcTypes() {
+        val lines = mutableListOf<String>()
+        var nowMs = 1_000L
+        val queue = SendQueue(nowMs = { nowMs }, log = { lines += it },
+                              codecFor = { VideoCodec.Hevc })
+        queue.enqueueDelta(3, 0, delta())
+        queue.pollNow()
+        queue.enqueueDelta(3, 16_667, delta())
+        queue.enqueueDelta(3, 500_000, delta())
+        nowMs = 1_100
+        queue.enqueueControl(3, wireKey(516_667, hevcIdr), 516_667)
+        queue.pollNow()
+        assertEquals("stream 3 drop: 2 dropped, key after 100 ms, nal=32,33,34,19", lines.last())
     }
 
     @Test

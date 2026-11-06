@@ -287,6 +287,9 @@ interface TaskStackEvents {
 
 /** Owns the VirtualDisplay + encoder for one window stream. */
 interface DisplayLayer {
+    /** The codecs the Mac's `hello` said it decodes (HEVC is the opt-in arm). */
+    fun setMacCodecs(codecs: Set<VideoCodec>) {}
+
     /** Create the display + encoder; returns the display id. */
     fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int
 

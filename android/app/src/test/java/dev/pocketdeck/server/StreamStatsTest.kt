@@ -60,12 +60,12 @@ class StreamStatsTest {
         stats.snapshot(reset = true)
         stats.onFrame(key = false, bytes = 250, encodeUs = 2_000, qpValue = null)
         assertEquals(
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2 codec=avc qp_avg=25.0",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
         assertEquals(
             "reading the line does not consume the lifetime counters",
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2 codec=avc qp_avg=25.0",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
     }
@@ -184,7 +184,7 @@ class StreamStatsTest {
         // carries the episode whole, from its own start.
         assertEquals(1_500L, stats.snapshot(nowMs = 2_500).suspendedMs)
         assertEquals(
-            "stream 7 totals: out=0 sent=0 skipped=0 bytes=0 susp_ms=2000 key_idr=0 key_not_idr=0 secs=3.0",
+            "stream 7 totals: out=0 sent=0 skipped=0 bytes=0 susp_ms=2000 key_idr=0 key_not_idr=0 secs=3.0 codec=avc qp_avg=-",
             stats.totalsLine(stream = 7, secs = 3.0, nowMs = 3_000),
         )
     }
@@ -235,6 +235,48 @@ class StreamStatsTest {
         assertEquals(24, message["qpP50"])
         assertEquals(31, message["qpP95"])
         assertTrue(message.containsKey("targetBps"))
+    }
+
+    @Test
+    fun qpAvgIsTheMeanOfTheWindowsFrameAverages() {
+        val stats = StreamStats()
+        stats.onFrame(key = false, bytes = 1, encodeUs = null, qpValue = 20)
+        stats.onFrame(key = false, bytes = 1, encodeUs = null, qpValue = 30)
+        stats.onFrame(key = false, bytes = 1, encodeUs = null, qpValue = null)
+        assertEquals(25.0, stats.snapshot().qpAvg!!, 0.001)
+        // A window with no QP has no mean; the lifetime mean still covers the
+        // frames that reported one.
+        assertNull(stats.snapshot().qpAvg)
+        val line = stats.totalsLine(stream = 7, secs = 4.2)
+        assertTrue(line, line.contains(" qp_avg=25.0"))
+    }
+
+    @Test
+    fun aHevcCraIsAKeyFrameWithoutAnIdr() {
+        val stats = StreamStats()
+        stats.codec = VideoCodec.Hevc
+        stats.onFrame(key = true, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(32, 33, 34, 19))
+        stats.onFrame(key = true, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(32, 33, 34, 21))
+        stats.onFrame(key = false, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(1))
+        val window = stats.snapshot()
+        assertEquals(1L, window.keyIdr)
+        assertEquals(1L, window.keyNotIdr)
+        assertEquals(VideoCodec.Hevc, window.codec)
+        assertTrue(stats.totalsLine(stream = 7, secs = 4.2).contains("codec=hevc"))
+    }
+
+    @Test
+    fun theWireMessageCarriesTheCodecOnceAndTheQpMean() {
+        val stats = StreamStats()
+        stats.codec = VideoCodec.Hevc
+        stats.onFrame(key = false, bytes = 10, encodeUs = null, qpValue = 24)
+        val encoder = stats.snapshot()
+        val message = StreamStatsWire.message(7, 2_000, encoder, SendSnapshot(0, 0, null, null))
+        assertEquals("hevc", message["codec"])
+        assertEquals(24.0, message["qpAvg"])
     }
 
     @Test

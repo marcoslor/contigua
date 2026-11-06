@@ -360,8 +360,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.onFrameDiscarded = { [weak self] reason in
             self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
         }
-        videoView.onKeyFrame = { [weak self] nalTypes in
-            self?.stats.noteKeyFrame(nalTypes: nalTypes)
+        videoView.onKeyFrame = { [weak self] nalTypes, codec in
+            self?.stats.noteKeyFrame(nalTypes: nalTypes, codec: codec)
+        }
+        videoView.onCodecRefused = { [weak self] token in
+            self?.codecRefused(token)
         }
         // One notice line per visible window every 5 s (ISS-40). Numbers only.
         let statsTimer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
@@ -491,6 +494,19 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         updateFrozen()
         Log.video.notice("stream \(self.stream, privacy: .public): opening refused")
         run(actions)
+    }
+
+    /// A VIDEO_CONFIG named a codec this Mac cannot decode (WIN-60). The
+    /// bytes never reach a decoder; the window shows its existing refusal:
+    /// the opening cover while it opens, a closed window once the picture is
+    /// live. Never the stall overlay: the phone is not stuck.
+    func codecRefused(_ token: String) {
+        Log.video.notice("stream \(self.stream, privacy: .public) codec \(token, privacy: .public) refused")  // log-ok: closed codec token
+        if isOpening {
+            refuseOpening("codec_unsupported")
+        } else {
+            window?.close()
+        }
     }
 
     /// Runs the machine's actions: the transition never touches a window.
