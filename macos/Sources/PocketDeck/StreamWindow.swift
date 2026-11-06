@@ -116,7 +116,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// This window's stats window (ISS-40): frames in, frames shown, freezes,
     /// delays and the phone's latest counters. Fed from the video and main
     /// queues; the 5 s line reads it.
-    let stats = StreamStatsRecorder()
+    let stats: StreamStatsRecorder
     private var statsTimer: Timer?
     private var watchdog = FrameWatchdog()
     /// `window.still` messages seen for this stream: a count, never content.
@@ -186,6 +186,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     init(stream: UInt32, contentSize: NSSize, manager: WindowManager, styleKey: String?) {
         self.stream = stream
+        self.stats = StreamStatsRecorder(stream: stream)
         self.manager = manager
         self.style = manager.styleStore.style(forKey: styleKey)
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
@@ -358,6 +359,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         videoView.onFrameDiscarded = { [weak self] reason in
             self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
+        }
+        videoView.onKeyFrame = { [weak self] nalTypes in
+            self?.stats.noteKeyFrame(nalTypes: nalTypes)
         }
         // One notice line per visible window every 5 s (ISS-40). Numbers only.
         let statsTimer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
