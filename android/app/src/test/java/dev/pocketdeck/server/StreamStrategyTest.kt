@@ -36,6 +36,9 @@ class StreamStrategyTest {
         assertEquals(0, strategy.intraRefreshFrames)
         assertFalse(strategy.refine)
         assertEquals(0, strategy.trafficClass)
+        assertEquals(60, strategy.fps)
+        assertEquals(0, strategy.vdRate)
+        assertFalse(strategy.lowLatency)
         assertTrue(strategy.isDefault)
     }
 
@@ -155,6 +158,68 @@ class StreamStrategyTest {
                     intraRefreshFrames = 60,
                 ),
             ),
+        )
+    }
+
+    @Test
+    fun `fps, vd_rate and low_latency parse their values`() {
+        val strategy = parse("fps" to "120", "vd_rate" to "90", "low_latency" to "on")
+        assertEquals(120, strategy.fps)
+        assertEquals(90, strategy.vdRate)
+        assertTrue(strategy.lowLatency)
+        assertFalse(strategy.isDefault)
+        assertEquals(60, parse("fps" to "60", "vd_rate" to "0", "low_latency" to "off").fps)
+        assertEquals(0, parse("low_latency" to "off").vdRate)
+        assertFalse(parse("low_latency" to "maybe").lowLatency)
+    }
+
+    @Test
+    fun `fps clamps to 30-120 and junk is 60`() {
+        assertEquals(30, parse("fps" to "29").fps)
+        assertEquals(30, parse("fps" to "1").fps)
+        assertEquals(120, parse("fps" to "200").fps)
+        assertEquals(60, parse("fps" to "soon").fps)
+        assertEquals(30, parse("fps" to "-1").fps)
+    }
+
+    @Test
+    fun `vd_rate is off at 0 or junk and clamps to 60-120`() {
+        assertEquals(0, parse("vd_rate" to "0").vdRate)
+        assertEquals(0, parse("vd_rate" to "soon").vdRate)
+        assertEquals(0, parse("vd_rate" to "-1").vdRate)
+        assertEquals(60, parse("vd_rate" to "30").vdRate)
+        assertEquals(60, parse("vd_rate" to "60").vdRate)
+        assertEquals(90, parse("vd_rate" to "90").vdRate)
+        assertEquals(120, parse("vd_rate" to "120").vdRate)
+        assertEquals(120, parse("vd_rate" to "200").vdRate)
+    }
+
+    @Test
+    fun `fps, vd_rate and low_latency print in their fixed order`() {
+        val strategy = parse(
+            "fps" to "120",
+            "vd_rate" to "90",
+            "low_latency" to "on",
+            "queue_ms" to "100",
+        )
+        assertEquals(
+            "fps=120 vd_rate=90 low_latency=on queue_ms=100",
+            strategy.describe(
+                StreamStrategy.Applied(vdRate = true, lowLatency = true),
+            ),
+        )
+    }
+
+    @Test
+    fun `a vd_rate or low_latency the codec refuses names its fallback`() {
+        val strategy = parse("vd_rate" to "90", "low_latency" to "on")
+        assertEquals(
+            "vd_rate=90 unsupported low_latency=on unsupported",
+            strategy.describe(StreamStrategy.Applied()),
+        )
+        assertEquals(
+            "default",
+            parse("fps" to "60", "vd_rate" to "0", "low_latency" to "off").describe(),
         )
     }
 
