@@ -631,6 +631,19 @@ region changed. It takes the frame the display layer is showing as the
 baseline: an idle phone sends no new frame, and waiting for one deadlocked
 the first version of the tool on a still screen.
 
+The 20-minute soak ran once with the app's window hidden (the first attempt
+was covered for 23.6 of its 24 minutes and says nothing about a live stream),
+then again with `--float-windows`: 120 samples every 10 s over 24 minutes of
+wall time, the window covered for 4.6 s only. Battery 73 → 69 %, battery
+temperature 35.0–39.7 °C (median 36.5), thermal status 0 except 13 samples at
+1, the Settings process 4.3–12.0 fps (the soak's one swipe per 10 s leaves
+most of each sample idle), PocketDeck 2.8–7.5 % of a CPU and 50–60 MB PSS,
+and the cumulative Wi-Fi retries 46.9k → 59.9k (tx bad 211 → 234). One 4.4 s
+arrival gap made the run `frozen`/`low-motion`, so it is health data, not a
+motion measurement: a motion soak wants a swipe every sample period, not one
+per period.
+
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
