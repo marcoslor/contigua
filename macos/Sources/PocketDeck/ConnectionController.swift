@@ -924,7 +924,8 @@ final class ConnectionController {
     }
 
     func cancelPairing() {
-        guard isPairing, let id = pairingDeviceId, let record = book.record(for: id) else { return }
+        guard isPairing, let id = pairingDeviceId ?? book.currentId,
+              let record = book.record(for: id) else { return }
         pairingTarget = nil
         pairingSucceeded = false
         if sheet == .code { sheet = nil }
@@ -2519,8 +2520,10 @@ final class ConnectionController {
     }
 
     private var isPairing: Bool {
-        guard let id = pairingDeviceId else { return false }
-        return isPairing(on: id)
+        if let id = pairingDeviceId { return isPairing(on: id) }
+        guard let record = book.current else { return false }
+        if case .pairing = record.machine.link { return true }
+        return false
     }
 
     private func isPairing(on id: String) -> Bool {
@@ -2618,9 +2621,16 @@ final class ConnectionController {
     }
 
     /// `--connect host:port`: the test entry point. The session may pair (the
-    /// phone's Allow is the only step) or reconnect with a pin.
+    /// phone's Allow is the only step) or reconnect with a pin. A remembered
+    /// active phone is reused only when the endpoint is its cached address;
+    /// otherwise the session starts under an empty id and learns the phone's
+    /// id from `welcome` (the second phone of the `phones` check).
     private func beginManualLaunch(host: String, port: UInt16) {
-        let ref = remembered.active?.ref ?? PhoneRef(id: "", name: host, model: "")
+        let active = remembered.active
+        let cached = active.flatMap { cache.address(forDeviceId: $0.id) }
+        let samePhone = cached?.host == host && cached?.port == port
+        let ref = samePhone ? (active?.ref ?? PhoneRef(id: "", name: host, model: ""))
+                            : PhoneRef(id: "", name: host, model: "")
         let record = book.ensureRecord(for: ref.id, phone: ref.id.isEmpty ? nil : ref)
         book.setCurrent(ref.id, phone: ref.id.isEmpty ? nil : ref, connect: false).forEach(perform)
         record.claims.insert(.current)
@@ -2912,7 +2922,7 @@ final class ConnectionController {
         case .pairCodeShown(let deviceId, let code):
             codeShown(deviceId: deviceId, code: code)
         case .pairApproved:
-            if let id = pairingDeviceId { send(.pairApproved, from: id) }
+            if let id = pairingDeviceId ?? book.currentId { send(.pairApproved, from: id) }
         case .qrPaired(let deviceId):
             finishQRPairing(deviceId: deviceId, name: session?.phone?.name)
         case .identityMismatch(let expected, let actual):
@@ -3340,7 +3350,8 @@ final class ConnectionController {
     }
 
     private func codeShown(deviceId: String?, code: String) {
-        guard let id = pairingDeviceId, let record = book.record(for: id) else { return }
+        guard let id = pairingDeviceId ?? book.currentId,
+              let record = book.record(for: id) else { return }
         let ref = record.phone ?? PhoneRef(id: deviceId ?? "", name: "your phone", model: "")
         send(.codeShown(ref, code: code), from: record)
         sheet = .code

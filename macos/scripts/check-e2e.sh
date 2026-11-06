@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -728,6 +728,8 @@ PY
 stop_fakephone() {
     [ -n "${SHARED_PID:-}" ] && return 0
     [ -n "${WORK:-}" ] && pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1
+    # The phones check runs two fake phones with their own logs.
+    [ -n "${WORK:-}" ] && pkill -f -- "--events $WORK/phones-" >/dev/null 2>&1
 }
 
 # The CGEvent helper is compiled once: `swift file.swift` re-interprets the
@@ -11343,6 +11345,117 @@ PY
 
 
 
+
+# --- Several phones: slice 1, two live sessions and one current phone --------
+
+# start_phone_fake <port> <tag> — one fakephone process with its own state,
+# events and log (docs/design/multi-phone.md §8.1). Sets PHONE_FAKE_PID.
+start_phone_fake() {
+    local port="$1" tag="$2"
+    "$FAKE_PY" "$FAKEPHONE" --port "$port" --no-mdns --auto-allow \
+        --name "Fake $tag" --state "$WORK/phones-$tag-state.json" \
+        --events "$WORK/phones-$tag-events.jsonl" \
+        > "$WORK/phones-$tag.log" 2> "$WORK/phones-$tag.err" &
+    PHONE_FAKE_PID=$!
+    local _
+    for _ in $(seq 1 40); do
+        grep -q "listening" "$WORK/phones-$tag.log" "$WORK/phones-$tag.err" 2>/dev/null && return 0
+        sleep 0.25
+    done
+    say "fakephone $tag did not start:"; cat "$WORK/phones-$tag.log" "$WORK/phones-$tag.err"
+    return 1
+}
+
+# check_phones — phase A of the `phones` check: pair A, pair B while A is kept
+# by --connect-phone, A reconnects from its own pin while B is current, both
+# answer pings for 20 s, and B's close leaves A online (PAIR-24..PAIR-29).
+check_phones() {
+    clean
+    local port_a=47995 port_b=47994
+    local ev_a="$WORK/phones-a-events.jsonl" ev_b="$WORK/phones-b-events.jsonl"
+    local report="$WORK/phones.txt" id_a id_b status
+    PHONE_FAKE_PID=""
+
+    start_phone_fake "$port_a" a || return 1
+    local pid_a="$PHONE_FAKE_PID"
+
+    # First launch: pair A and remember its pin and cached address.
+    launch --connect "127.0.0.1:$port_a" --quit-after 40
+    wait_until 35 grep -qF -- '"state":"paired"' "$ev_a"
+    if grep -qF -- '"state":"paired"' "$ev_a"; then
+        ok "[PAIR-24] phones A paired first"
+    else
+        bad "[PAIR-24] phones A did not pair (events: $(tail -3 "$ev_a" 2>/dev/null | tr '\n' '|'))"
+        stop_app; kill "$pid_a" 2>/dev/null; return 1
+    fi
+    id_a="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$WORK/phones-a-state.json" 2>/dev/null)"
+    [ -n "$id_a" ] && ok "[PAIR-24] phones A has a device id" || bad "[PAIR-24] phones A has no device id"
+    stop_app
+
+    # Second launch: pair B as the current phone and reconnect A from its own
+    # pin, kept by the test-hook claim, while B is current.
+    start_phone_fake "$port_b" b || { kill "$pid_a" 2>/dev/null; return 1; }
+    local pid_b="$PHONE_FAKE_PID"
+    : > "$ev_a"; : > "$ev_b"
+    launch --connect "127.0.0.1:$port_b" --connect-phone "127.0.0.1:$port_a" \
+        --phones-report "$report" --quit-after 90
+    wait_until 35 grep -qF -- '"state":"paired"' "$ev_b" \
+        && ok "[PAIR-24] phones B paired while A was live" \
+        || bad "[PAIR-24] phones B did not pair"
+    wait_until 25 grep -qF -- '"state":"auth_ok"' "$ev_a" \
+        && ok "[PAIR-27] phones A reconnected from its pin" \
+        || bad "[PAIR-27] phones A did not reconnect with its pin"
+    grep -qF -- '"t":"pair.request"' "$ev_a" \
+        && bad "[PAIR-27] phones A paired again instead of using its pin" \
+        || ok "[PAIR-27] phones A sent no pair.request on reconnect"
+    id_b="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$WORK/phones-b-state.json" 2>/dev/null)"
+    [ -n "$id_b" ] && [ "$id_a" != "$id_b" ] \
+        && ok "[PAIR-24] phones A and B have different device ids" \
+        || bad "[PAIR-24] phones A and B share a device id"
+    wait_until 25 grep -qF -- "phones=2 online=2 current=$id_b" "$report" \
+        && ok "[PAIR-25] phones both online, current is B" \
+        || bad "[PAIR-25] phones report never read both online with B current ($(cat "$report" 2>/dev/null | tr '\n' '|'))"
+    grep -qF -- "id=$id_a state=online current=0" "$report" \
+        && ok "[PAIR-25] phones A is online and not current" \
+        || bad "[PAIR-25] phones A is not the non-current online row"
+    grep -qF -- "id=$id_b state=online current=1" "$report" \
+        && ok "[PAIR-25] phones B is the current online row" \
+        || bad "[PAIR-25] phones B is not the current online row"
+
+    # Both sessions answer the Mac's app-level ping for 20 s. The log is
+    # cleared at the start of the window so each pong is inside it.
+    : > "$ev_a"; : > "$ev_b"
+    sleep 20
+    grep -qF -- '"ev":"pong"' "$ev_a" \
+        && ok "[PAIR-24] phones A answered a ping in the 20 s window" \
+        || bad "[PAIR-24] phones A never answered a ping"
+    grep -qF -- '"ev":"pong"' "$ev_b" \
+        && ok "[PAIR-24] phones B answered a ping in the 20 s window" \
+        || bad "[PAIR-24] phones B never answered a ping"
+    grep -qF -- "phones=2 online=2 current=$id_b" "$report" \
+        && ok "[PAIR-26] phones both stay online through the ping window" \
+        || bad "[PAIR-26] phones lost a session during the ping window ($(cat "$report" 2>/dev/null | tr '\n' '|'))"
+
+    # B's close (its process goes away) leaves A online and touches nothing of
+    # A's session.
+    kill "$pid_b" >/dev/null 2>&1
+    wait "$pid_b" 2>/dev/null
+    wait_until 20 grep -qF -- "phones=2 online=1 current=$id_b" "$report" \
+        && ok "[PAIR-24] phones B's close leaves only A online" \
+        || bad "[PAIR-24] phones B's close did not leave A alone online ($(cat "$report" 2>/dev/null | tr '\n' '|'))"
+    grep -qF -- "id=$id_a state=online" "$report" \
+        && ok "[PAIR-26] phones A's session still reads online after B's close" \
+        || bad "[PAIR-26] phones A's session changed when B closed"
+    status="$(grep -o "id=$id_b state=[^ ]*" "$report" | tail -1)"
+    case "$status" in
+        *state=online*) bad "[PAIR-26] phones B still reads online after its close" ;;
+        *) ok "[PAIR-26] phones B alone reads offline after its close" ;;
+    esac
+
+    stop_app
+    kill "$pid_a" >/dev/null 2>&1
+    wait "$pid_a" 2>/dev/null
+}
 
 # --- Windows: one window per app, and the opening cover ---------------------
 
