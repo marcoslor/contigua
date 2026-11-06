@@ -377,6 +377,44 @@ What the round found wrong with the measurement:
 
 Raw data: `.agent/stats/round2/` (not in the repo).
 
+## Third real-phone round: Q1 after its fix, against the fixed default (2026-11-05)
+
+Four arms × 3 interleaved runs on the person's phone, 21:54–22:01, with v147:
+- the setup: the phone locked, dozing and unplugged at 37 %; Settings; Wi-Fi pings 5–427 ms;
+- every stall arm has `stall_ms=400` every 5 s, so four injected stalls per 22 s run.
+
+`jank_ms` is per run, from each window's closing `stats total` line. Drops and suspends are counted from the phone's log.
+
+| Arm | jank_ms per run | median | hitch_ms | drop_ms | susp_ms | Phone: drops / suspends per 4 stalls |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (today's default, fixed) | 56, 0, 524 | **56** | 56, 0, 524 | 0 | 0 | none |
+| stall (today's default, fixed) | 1333, 250, 1091 | **1091** | 950, 0, 474 | 383, 250, 617 | 0 | 1, 1, 2 drops |
+| stall-q1 | 1453, 1199, 1160 | **1199** | 1275, 1012, 891 | 0 | 178, 187, 269 | 1, 1, 2 suspends, no timeout |
+| stall-q1q2-100 | 1346, 774, 1441 | **1346** | 971, 454, 974 | 0 | 375, 320, 467 | 2 suspends each, no timeout |
+
+What it shows:
+- **Q1 works now, and it loses.**
+  - Every suspend resumed within 0.1–0.4 s, and the 1 s timeout never fired.
+  - The phone produced 722–759 frames per run against 752–790 for the baseline, so nothing froze.
+  - Skip-at-source turns the stall into a hitch plus a suspend. The total is no smaller than the fixed default's drop, so Q1 stays off and is not a preset candidate.
+  - A 100 ms queue on top of Q1 (Q2) is worse again.
+- **The fixed default drops less.** It dropped on 1–2 of the 4 stalls per run; in round 2 the old rule dropped on most stalls. What is left is the injected stall itself (about 400 ms of nothing per stall in motion), and no queue policy can hide that.
+- **The baseline is nearly clean:** a median of 56 ms of jank per 22 s run, with no drops. Round 1's baseline isn't comparable (the default-policy fault, above).
+- **No sign that TCP resends make the hitches (X0).**
+  - Baseline: 2 of 2 hitch lines had resends, and so did 2 of 3 clean lines. Resends don't tell hitches from clean lines.
+  - `tcp_ooo_kb` was 0 in every run, and `tcp_srtt_max` stayed at 20–27 ms.
+  - On this link the case for UDP with FEC (X1) is not made. X1 stays logged, but below the encoder work. A round on a worse link (a busy channel, the person's real day) can still reopen it.
+
+What the round found wrong with the measurement:
+- **The `frozen` mark has false positives.** The Mac's 5 s line reports `rx_fps` over a 2 s sliding window, so one line samples only 2 s of the 5. Two healthy runs got the mark: streams 2 and 8, with 695 and 699 frames against 622–790 for the others, from a single swipe line at 0.0 fps. The table above counts every run.
+  - A better rule needs the longest gap between received frames (`max_gap_ms`) in the 5 s and total lines, so the bench marks a run frozen when a gap over 2.5 s lands in a swipe phase.
+- **One of those lines may be a real 2 s gap that no counter saw.**
+  - Stream 2's line at 21:55:17 had no frames for 2 s in the middle of the swipes (the Mac logged a swipe every 0.7 s). That came 4 s after the phone dropped deltas and asked for a keyframe.
+  - Yet the next line counted 912 ms of freezes and no gap that long.
+  - Either the gap wasn't there, or something resets the freeze baseline after a drop (a new `VIDEO_CONFIG` resets it). `max_gap_ms` and a per-drop recovery line (`drop: N dropped, key after X ms`, phone and Mac) settle it. That gap may be the "freeze" half of the person's freeze-then-blocky loop.
+
+Raw data: `.agent/stats/round3/` (not in the repo).
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
