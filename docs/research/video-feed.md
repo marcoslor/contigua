@@ -570,6 +570,49 @@ What this means:
 
 Raw data: the Mac's unified log, `subsystem == "dev.pocketdeck.mac"`, lines with `stats total` (not in the repo).
 
+## P0 — the stages, measured (2026-11-06)
+
+The pmaxx epic's first real-phone round. Profile `pmaxx`, H.264, TLS/TCP, the
+`baseline` arm only; three runs of each script unless named; the person's
+S25+ over Wi-Fi 6E at 5 GHz, RSSI −38…−40 dBm, link 1.0–1.7 Gbps on channel
+5180 MHz; the Mac's built-in 60 Hz 2560×1600 panel. Raw rows live in
+`.agent/pmaxx/data/round1/` and are never committed.
+
+| script | runs | encoder fps | Mac rx | Mac shown | first frame (ms) | input→photon (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| still (6 s) | 3 | 3.6 | 3.6 | 3.6 | 624 (400–702) | — |
+| swipe | 3 | 31.1 | 31.1 | 31.1 | 399 (398–485) | — |
+| typing | 3 | 10.3 | 10.9 | 10.9 | 460 (435–654) | — |
+| video (12 s) | 3 | 23.8 | 25.5 | 25.5 | 489 (427–494) | — |
+| tap (probe) | 3 | 7.6 | 10.1 | 10.1 | 408 (389–1747) | 263 (244–390) |
+
+Every motion run has encoder = rx = shown within a frame: the Mac is not
+dropping or skipping what it receives, so the stage that caps fps in these
+runs is the *source*, not the pipeline. Settings' own UI renders at only
+7.2 fps while it scrolls (gfxinfo), and the virtual display repeats the last
+picture every 500 ms when nothing changes (`REPEAT_PREVIOUS_FRAME_US`), which
+is the 2–3.6 fps "still" heartbeat and the ~500 ms p95/p99 intervals in a
+whole-run total. A whole-run p99 therefore says nothing about motion; P1
+must measure a run made of motion only.
+
+The `video` arm played in the person's YouTube app at a 25–30 fps source;
+its player surface does not show up in the app's gfxinfo (6.6 fps there), so
+that number is not the video's rate. The mirror's virtual display stayed at
+60.0 Hz in every run (`dumpsys display`, the `pocketdeck-N` display).
+
+Phone health over the round: battery 81–83 %, 32.7–35.7 °C, thermal status 0
+(no throttling), PocketDeck 2–19 % of one CPU and 56–61 MB PSS, the streamed
+app 0–15 % and 125–484 MB, Wi-Fi retries 13.5k → 18.3k and tx bad 167 → 187
+over the whole round (cumulative counters; the soak samples show the trend).
+The first frame after a fresh stream opened in 389–702 ms in 14 of 15 runs;
+one run took 1.75 s.
+
+`input_probe` (the new MCP tool) timed three taps on an idle Settings screen
+at 244–390 ms from TOUCH send to the first decoded frame whose watched
+region changed. It takes the frame the display layer is showing as the
+baseline: an idle phone sends no new frame, and waiting for one deadlocked
+the first version of the tool on a still screen.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
