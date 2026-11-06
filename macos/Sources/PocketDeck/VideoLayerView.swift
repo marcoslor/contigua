@@ -560,24 +560,30 @@ final class VideoLayerView: NSView {
 
     // MARK: Input-to-photon probe (P0, pmaxx)
 
-    /// Arms a probe: a private decoder starts with the next keyframe and the
-    /// first decoded frame becomes the baseline. Returns true once that
+    /// Arms a probe: the frame on screen now is the baseline when the display
+    /// layer has one, else the first frame the private decoder delivers is.
+    /// Either way a private decoder starts and a keyframe is requested, so the
+    /// first frame after the tap can be decoded even on an idle stream (the
+    /// phone sends nothing while the picture is still). Returns true once a
     /// baseline is in; the caller then sends the tap and calls
-    /// `inputProbeTapSent`. A window with no format waits 1.5 s and fails.
+    /// `inputProbeTapSent`. A window with no format or no frame in 1.5 s fails.
     @MainActor
     func beginInputProbe(region: ProbeRegion) async -> Bool {
         await withCheckedContinuation { continuation in
             probeLock.lock()
             probeArmedContinuation = continuation
             probeRegion = region
-            probeModel = InputProbeModel { line in
+            var model = InputProbeModel { line in
                 Log.video.info("\(line, privacy: .public)")  // log-ok: closed states and ms only
             }
+            _ = model.handle(.arm)
+            probeModel = model
             probeLock.unlock()
             videoQueue.async { [weak self] in
                 guard let self else { return }
                 self.probeDecoder?.cancel()
                 guard let format = self.formatDescription else {
+                    Log.video.info("input probe: no video format yet")  // log-ok: a state, no pixels
                     DispatchQueue.main.async { self.inputProbeBaselineFailed() }  // gcd: probe state is main's
                     return
                 }
@@ -586,12 +592,44 @@ final class VideoLayerView: NSView {
                     self?.inputProbeFrame(image, atMs: atMs)
                 }
                 self.probeDecoder = decoder
-                DispatchQueue.main.async { self.onRequestKeyframe?() }  // gcd: keyframe callback is main's
+                Log.video.info("input probe: decoder armed for \(format.mediaSubType, privacy: .public)")  // log-ok: a codec fourcc
+                DispatchQueue.main.async {  // gcd: the layer and the probe state are main's
+                    self.onRequestKeyframe?()
+                    self.inputProbeArmDisplayedBaseline()
+                }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in  // gcd: resumes a main-actor continuation
                 self?.inputProbeBaselineFailed()
             }
         }
+    }
+
+    /// The visible frame is the honest baseline for an idle stream. Only when
+    /// the layer has nothing to show yet does the probe wait for its decoder.
+    @MainActor
+    private func inputProbeArmDisplayedBaseline() {
+        var armed: CheckedContinuation<Bool, Never>?
+        let frame = copyDisplayedFrame()
+        let signature = frame.flatMap { ProbeSignal.signature(of: $0, region: probeRegion) }
+        probeLock.lock()
+        if let signature, var model = probeModel {
+            let action = model.handle(.frame(signature, atMs: ProcessInfo.processInfo.systemUptime * 1000))
+            probeModel = model
+            if case .armed? = action {
+                armed = probeArmedContinuation
+                probeArmedContinuation = nil
+            }
+        } else {
+            // The layer has no drawn frame yet (or a format the grid cannot
+            // read): the probe still waits for its own decoder's first frame.
+            if let frame {
+                Log.video.info("input probe: displayed baseline unsupported \(CVPixelBufferGetPixelFormatType(frame), privacy: .public)")  // log-ok: a codec fourcc
+            } else {
+                Log.video.info("input probe: no displayed frame yet")  // log-ok: a state, no pixels
+            }
+        }
+        probeLock.unlock()
+        armed?.resume(returning: true)
     }
 
     /// The tap went out at this Mac-monotonic millisecond.
@@ -641,7 +679,9 @@ final class VideoLayerView: NSView {
         probeLock.lock()
         let armed = probeArmedContinuation
         probeArmedContinuation = nil
-        if var model = probeModel {
+        // A baseline that already arrived cancels this timer's meaning: the
+        // model is watching and must not be marked done 1.5 s into the probe.
+        if armed != nil, var model = probeModel {
             _ = model.handle(.deadline)
             probeModel = model
         }
