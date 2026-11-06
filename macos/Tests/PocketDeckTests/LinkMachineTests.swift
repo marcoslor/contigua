@@ -18,6 +18,16 @@ final class LinkMachineTests: XCTestCase {
         return machine
     }
 
+    func testOnlyTheTwoRetryStatesAreDownForWindows() {
+        XCTAssertTrue(Link.reconnecting(phone).isDown)
+        XCTAssertTrue(Link.offline(phone, .unreachable).isDown)
+        XCTAssertFalse(Link.connecting(phone).isDown)
+        XCTAssertFalse(Link.online(phone).isDown)
+        XCTAssertFalse(Link.idle.isDown)
+        XCTAssertFalse(Link.needsPairing(phone).isDown)
+        XCTAssertFalse(Link.pairing(phone, .contacting).isDown)
+    }
+
     // MARK: Launch
 
     func testLaunchWithoutARememberedPhoneStaysIdle() {
