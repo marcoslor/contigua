@@ -60,12 +60,12 @@ class StreamStatsTest {
         stats.snapshot(reset = true)
         stats.onFrame(key = false, bytes = 250, encodeUs = 2_000, qpValue = null)
         assertEquals(
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
         assertEquals(
             "reading the line does not consume the lifetime counters",
-            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 secs=4.2",
+            "stream 7 totals: out=3 sent=3 skipped=2 bytes=1750 susp_ms=0 key_idr=0 key_not_idr=0 secs=4.2",
             stats.totalsLine(stream = 7, secs = 4.2),
         )
     }
@@ -123,6 +123,21 @@ class StreamStatsTest {
         assertEquals(0L, message["susp"])
         assertEquals(0L, message["suspMs"])
         assertEquals(0L, message["refine"])
+        assertEquals(0L, message["keyIdr"])
+        assertEquals(0L, message["keyNotIdr"])
+    }
+
+    @Test
+    fun theWireMessageCarriesTheKeyCounts() {
+        val encoder = EncoderStats(
+            frames = 60, keyframes = 3, keyframesRequested = 2, bytes = 1,
+            framesSkipped = 0, targetBps = 6_000_000,
+            encodeP50 = null, encodeP95 = null, qpP50 = null, qpP95 = null,
+            keyIdr = 2, keyNotIdr = 1,
+        )
+        val message = StreamStatsWire.message(7, 2_000, encoder, SendSnapshot(0, 0, null, null))
+        assertEquals(2L, message["keyIdr"])
+        assertEquals(1L, message["keyNotIdr"])
     }
 
     @Test
@@ -169,9 +184,48 @@ class StreamStatsTest {
         // carries the episode whole, from its own start.
         assertEquals(1_500L, stats.snapshot(nowMs = 2_500).suspendedMs)
         assertEquals(
-            "stream 7 totals: out=0 sent=0 skipped=0 bytes=0 susp_ms=2000 secs=3.0",
+            "stream 7 totals: out=0 sent=0 skipped=0 bytes=0 susp_ms=2000 key_idr=0 key_not_idr=0 secs=3.0",
             stats.totalsLine(stream = 7, secs = 3.0, nowMs = 3_000),
         )
+    }
+
+    @Test
+    fun keyFlaggedFramesAreCountedByWhetherTheyHoldAnIdr() {
+        val lines = mutableListOf<String>()
+        val stats = StreamStats(stream = 4, log = { lines += it })
+        stats.onFrame(key = true, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(7, 8, 5))
+        repeat(5) {
+            stats.onFrame(key = true, bytes = 10, encodeUs = null, qpValue = null,
+                          keyNalTypes = listOf(6, 1))
+        }
+        stats.onFrame(key = false, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(1))
+        val first = stats.snapshot()
+        assertEquals(1L, first.keyIdr)
+        assertEquals(5L, first.keyNotIdr)
+        assertEquals("only the first 3 non-IDR key frames are logged", 3, lines.size)
+        assertTrue(lines.all { it == "stream 4 key nal=6,1" })
+        // The window resets; the lifetime counts and the log cap do not.
+        val second = stats.snapshot()
+        assertEquals(0L, second.keyIdr)
+        assertEquals(0L, second.keyNotIdr)
+        stats.onFrame(key = true, bytes = 10, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(6, 1))
+        assertEquals(1L, stats.snapshot().keyNotIdr)
+        assertEquals(3, lines.size)
+    }
+
+    @Test
+    fun theTotalsLineCarriesTheIdrAndNonIdrKeyCounts() {
+        val stats = StreamStats()
+        stats.onFrame(key = true, bytes = 1, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(7, 8, 5))
+        stats.onFrame(key = true, bytes = 1, encodeUs = null, qpValue = null,
+                      keyNalTypes = listOf(6, 1))
+        val line = stats.totalsLine(stream = 7, secs = 4.2)
+        assertTrue(line, line.contains("out=2"))
+        assertTrue(line, line.contains("key_idr=1 key_not_idr=1"))
     }
 
     @Test

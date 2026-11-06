@@ -23,8 +23,8 @@ internal fun nalTypes(buffer: ByteBuffer, limit: Int): List<Int> {
 internal fun nalTypes(bytes: ByteArray, limit: Int = bytes.size): List<Int> =
     scanNalTypes(0, minOf(bytes.size, limit.coerceAtLeast(0))) { bytes[it].toInt() and 0xFF }
 
-private const val SLICE_NON_IDR = 1
-private const val SLICE_IDR = 5
+internal const val NAL_SLICE_NON_IDR = 1
+internal const val NAL_SLICE_IDR = 5
 
 private inline fun scanNalTypes(start: Int, end: Int, byteAt: (Int) -> Int): List<Int> {
     val types = ArrayList<Int>(4)
@@ -39,7 +39,7 @@ private inline fun scanNalTypes(start: Int, end: Int, byteAt: (Int) -> Int): Lis
         if (header >= end) break
         val type = byteAt(header) and 0x1F
         types.add(type)
-        if (type == SLICE_NON_IDR || type == SLICE_IDR) break
+        if (type == NAL_SLICE_NON_IDR || type == NAL_SLICE_IDR) break
         index = header + 1
     }
     return types
