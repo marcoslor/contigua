@@ -3190,7 +3190,18 @@ final class ConnectionController {
     private func ready(_ info: PhoneInfo, address: CachedAddress?, from record: PhoneSession) {
         if record.deviceId != info.id {
             let provisional = record.deviceId
-            book.adopt(record, as: info.id)
+            let wasCurrent = provisional == book.currentId
+            if let displaced = book.adopt(record, as: info.id) {
+                // The same phone under two ids: the older record's session is
+                // closed here, never left running with no owner.
+                displaced.attemptTask?.cancel()
+                displaced.attemptTask = nil
+                displaced.session?.close()
+                displaced.session = nil
+                if !wasCurrent, info.id == book.currentId, let session = record.session {
+                    windows.attach(session)
+                }
+            }
             if pairingDeviceId == provisional { pairingDeviceId = info.id }
         }
         let ref = PhoneRef(id: info.id, name: info.name, model: info.model)

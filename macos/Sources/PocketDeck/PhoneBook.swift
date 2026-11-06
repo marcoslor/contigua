@@ -170,14 +170,20 @@ final class PhoneBook {
 
     /// A manual pairing starts under a provisional id and learns the phone's
     /// device id from `welcome`; live session closures follow the record, so
-    /// only the map key and the id change.
-    func adopt(_ record: PhoneSession, as id: String) {
-        guard record.deviceId != id else { return }
+    /// only the map key and the id change. When another record already holds
+    /// that id (the same phone reached under two ids), it is handed back for
+    /// the controller to close, and its claims move to the adopted record.
+    @discardableResult
+    func adopt(_ record: PhoneSession, as id: String) -> PhoneSession? {
+        guard record.deviceId != id else { return nil }
         let old = record.deviceId
+        let displaced = records[id]
+        if let displaced { record.claims.formUnion(displaced.claims) }
         records.removeValue(forKey: old)
         record.setDeviceId(id)
         records[id] = record
         if currentId == old { currentId = id }
+        return displaced
     }
 
     /// Drive one phone's LinkMachine. Actions carry the phone id so the
