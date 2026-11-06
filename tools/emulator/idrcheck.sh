@@ -14,7 +14,7 @@
 #   * pairs the e2e Mac app through the real prompt;
 #   * runs the bench arms `stall` and `stall-ir60`, one repeat each, through
 #     the app's own MCP tools;
-#   * prints the table, every `key nal=`, `drop:` and `drop recovered` line,
+#   * prints the table, every `key nal=` and `drop:` line,
 #     both sides' totals/`stats total` lines and the strategy line (`ir=`);
 #   * kills the emulator with `adb -s emulator-5554 emu kill` in cleanup.
 set -uo pipefail
@@ -321,7 +321,7 @@ grep " stats total stream=" "$WORK/mac-stats.txt" || true
 printf '\nMac 5 s lines (tail):\n'
 grep " stats stream=" "$WORK/mac-stats.txt" | tail -6 || true
 printf '\nMac key/drop lines:\n'
-grep -E " stream [0-9]+ (key nal=|drop recovered after )" "$WORK/mac.log" || true
+grep -E " stream [0-9]+ key nal=" "$WORK/mac.log" || true
 printf '\nPhone drop/key totals:\n'
 grep -E "stream [0-9]+ (drop: |key nal=|totals: |strategy: )" "$WORK/logcat.txt" || true
 
@@ -329,8 +329,7 @@ MAC_KEY="$(grep -cE " stream [0-9]+ key nal=" "$WORK/mac.log" 2>/dev/null || tru
 PHONE_KEY="$(grep -cE "stream [0-9]+ key nal=" "$WORK/logcat.txt" 2>/dev/null || true)"
 PHONE_DROP="$(grep -cE "stream [0-9]+ drop: " "$WORK/logcat.txt" 2>/dev/null || true)"
 PHONE_TOTALS="$(grep -cE "stream [0-9]+ totals: " "$WORK/logcat.txt" 2>/dev/null || true)"
-MAC_RECOVER="$(grep -cE " stream [0-9]+ drop recovered after " "$WORK/mac.log" 2>/dev/null || true)"
-say "key nal lines: Mac=$MAC_KEY phone=$PHONE_KEY; phone drop lines=$PHONE_DROP; Mac drop recovered=$MAC_RECOVER; phone totals=$PHONE_TOTALS"
+say "key nal lines: Mac=$MAC_KEY phone=$PHONE_KEY; phone drop lines=$PHONE_DROP; phone totals=$PHONE_TOTALS"
 [ "${PHONE_TOTALS:-0}" -ge 2 ] && ok "both runs wrote a phone totals line" \
     || bad "the phone wrote ${PHONE_TOTALS:-0} totals lines, expected 2"
 grep -q "strategy:.*ir=60" "$WORK/logcat.txt" \
