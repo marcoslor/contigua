@@ -26,6 +26,30 @@ final class PhoneBookTests: XCTestCase {
         return book
     }
 
+    // MARK: Adopting a phone's id
+
+    /// A provisional record (a manual pairing, or a hook endpoint the cache
+    /// does not know) learns an id another record already holds: the old
+    /// record is handed back so the controller closes its session instead of
+    /// dropping it while it runs, and its claims move to the adopted record.
+    func testAdoptingAnIdThatHasARecordHandsTheOldOneBack() {
+        let book = PhoneBook()
+        book.setCurrent(a.id, phone: a)
+        book.addClaim(.testHook, to: b.id, phone: b)
+        let old = book.record(for: b.id)
+        let provisional = book.ensureRecord(for: "hook:pair-10.0.0.2:47994")
+
+        let displaced = book.adopt(provisional, as: b.id)
+
+        XCTAssertTrue(displaced === old)
+        XCTAssertTrue(book.record(for: b.id) === provisional)
+        XCTAssertNil(book.record(for: "hook:pair-10.0.0.2:47994"))
+        XCTAssertEqual(provisional.claims, [.testHook])
+        XCTAssertEqual(book.currentId, a.id)
+        // Adopting the id a record already has hands nothing back.
+        XCTAssertNil(book.adopt(provisional, as: b.id))
+    }
+
     // MARK: Two sessions
 
     func testTwoSessionsAreIndependent() {
