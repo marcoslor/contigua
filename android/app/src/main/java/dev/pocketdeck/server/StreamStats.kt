@@ -25,6 +25,8 @@ internal class StreamStats(
 
     private var framesOut = 0L
     private var keyframesOut = 0L
+    /** The stream's codec, set at each configure; it names the NAL types below. */
+    var codec: VideoCodec = VideoCodec.Avc
     /** ISS-40 round 3: key-flagged buffers with and without a type-5 slice. */
     private var keyIdr = 0L
     private var keyNotIdr = 0L
@@ -48,6 +50,13 @@ internal class StreamStats(
     private var totalKeyIdr = 0L
     private var totalKeyNotIdr = 0L
 
+    // QP's mean: the sum and count are enough, and unlike the rings they are
+    // never capped, so the window's mean covers every frame.
+    private var qpSum = 0L
+    private var qpCount = 0L
+    private var totalQpSum = 0L
+    private var totalQpCount = 0L
+
     /** Q1: when the current suspend episode began, or null while flowing. */
     private var suspendStartMs: Long? = null
     /** How much of the open episode earlier snapshots already reported. */
@@ -57,19 +66,20 @@ internal class StreamStats(
     private val qp = IntRing(RING)
 
     fun onFrame(key: Boolean, bytes: Int, encodeUs: Long?, qpValue: Int?,
-                keyNalTypes: List<Int>? = null) {
+                keyNalTypes: List<Int>? = null, codec: VideoCodec? = null) {
         framesOut++
         bytesOut += bytes
         totalOut++
         totalBytes += bytes
         // A forwarded buffer has bytes; a paused or skipped one is handed zero.
         if (bytes > 0) totalSent++
+        val typeCodec = codec ?: this.codec
         if (key) {
             keyframesOut++
             // The flag on a buffer says "key"; only a type-5 slice says the
             // decoder can start there. Intra refresh flags recovery points.
             if (keyNalTypes != null) {
-                if (keyNalTypes.contains(NAL_SLICE_IDR)) {
+                if (isIdrAccessUnit(keyNalTypes, typeCodec)) {
                     keyIdr++
                     totalKeyIdr++
                 } else {
@@ -83,7 +93,13 @@ internal class StreamStats(
             }
         }
         encodeUs?.let { if (it in 0..MAX_ENCODE_US) encode.add(it) }
-        qpValue?.let { qp.add(it) }
+        qpValue?.let {
+            qp.add(it)
+            qpSum += it
+            qpCount++
+            totalQpSum += it
+            totalQpCount++
+        }
     }
 
     fun onKeyframeRequested() {
@@ -143,6 +159,8 @@ internal class StreamStats(
             suspendedEpisodes = suspendedEpisodes,
             suspendedMs = suspendedMs + openMs,
             refined = refined,
+            codec = codec,
+            qpAvg = if (qpCount > 0) qpSum.toDouble() / qpCount else null,
         )
         if (reset) {
             framesOut = 0
@@ -156,6 +174,8 @@ internal class StreamStats(
             suspendedMs = 0
             if (suspendStartMs != null) suspendCountedMs += openMs
             refined = 0
+            qpSum = 0
+            qpCount = 0
             encode.clear()
             qp.clear()
         }
@@ -172,7 +192,12 @@ internal class StreamStats(
         "stream $stream totals: out=$totalOut sent=$totalSent skipped=$totalSkipped " +
             "bytes=$totalBytes susp_ms=" + totalsSuspendedMs(nowMs) +
             " key_idr=$totalKeyIdr key_not_idr=$totalKeyNotIdr" +
-            " secs=" + String.format(java.util.Locale.US, "%.1f", secs)
+            " secs=" + String.format(java.util.Locale.US, "%.1f", secs) +
+            " codec=${codec.token} qp_avg=" + (if (totalQpCount > 0) {
+                String.format(java.util.Locale.US, "%.1f", totalQpSum.toDouble() / totalQpCount)
+            } else {
+                "-"
+            })
 
     /** The lifetime suspension time, with an episode still open counted so far. */
     private fun totalsSuspendedMs(nowMs: Long): Long {
@@ -206,6 +231,10 @@ data class EncoderStats(
     /** Key-flagged buffers with a type-5 slice and without one. */
     val keyIdr: Long = 0,
     val keyNotIdr: Long = 0,
+    /** The codec whose NAL types the counts above used. */
+    val codec: VideoCodec = VideoCodec.Avc,
+    /** The mean of this window's frame QPs; null when none reported one. */
+    val qpAvg: Double? = null,
 )
 
 /**
@@ -257,6 +286,7 @@ internal object StreamStatsWire {
             "t" to "stream.stats",
             "stream" to stream,
             "windowMs" to windowMs,
+            "codec" to encoder.codec.token,
             "frames" to encoder.frames,
             "kf" to encoder.keyframes,
             "keyIdr" to encoder.keyIdr,
@@ -278,6 +308,7 @@ internal object StreamStatsWire {
         send.queueP95?.let { out["queueP95"] = it }
         encoder.qpP50?.let { out["qpP50"] = it }
         encoder.qpP95?.let { out["qpP95"] = it }
+        encoder.qpAvg?.let { out["qpAvg"] = it }
         tcp?.retransSegs?.let { out["retrans"] = it }
         tcp?.timeouts?.let { out["rto"] = it }
         tcp?.lostRetransmit?.let { out["lost_retrans"] = it }
