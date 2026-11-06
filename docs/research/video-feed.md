@@ -415,6 +415,32 @@ What the round found wrong with the measurement:
 
 Raw data: `.agent/stats/round3/` (not in the repo).
 
+## Fourth real-phone round: is the resume frame an IDR? (2026-11-06)
+
+Three arms × 3 interleaved runs on the person's phone, 00:35–00:39, with v148: the IDR counters, `max_gap_ms` and the phone's `drop:` line. Same setup as round 3.
+
+| Arm | jank_ms per run | median | drop_ms | max_gap_ms | Phone `drop:` lines |
+| --- | --- | --- | --- | --- | --- |
+| baseline | 54, 277, 434 | **277** | 0 | 517–590 | none |
+| stall | 1148, 1035, 746 | **1035** | 283–615 | 920–933 | 1–2 per run, `key after 83–135 ms, nal=5` |
+| stall-ir60 (`ir=60` applied) | 1234, 1640, 801 | **1234** | 283–699 | 894–967 | 1–2 per run, `key after 48–122 ms, nal=5` |
+
+What it shows:
+- **Every drop resumed on an IDR.**
+  - All 8 drop episodes ended on a type-5 slice 48–135 ms after the first discarded delta, intra refresh included.
+  - `key_not_idr` and `ph_key_not_idr` were 0 in every run.
+  - The round-2 hypothesis is wrong: the frame the queue resumes on is a full IDR on this phone.
+- **The picture is never gone for long.** The longest gap between received frames was 517–590 ms in the baseline and at most 967 ms under a 400 ms stall. No run is near the 2.5 s frozen rule. Round 3's 0 fps line was a 2 s window with no frames that had arrived, not a 2 s gap.
+- **The baseline varies between rounds** (a median of 56 ms in round 3, 277 ms here). Resends again sat on clean lines (4/4) as often as on hitch lines (3/6).
+- **Intra refresh is parked.**
+  - It gave no jank benefit in rounds 2–4 (1234 against 1035 here).
+  - The corruption the person saw in round 2 has no explanation yet.
+  - The one lead left: a display-layer flush (`mac_drop` reason `flush`) that drops queued samples. With a normal GOP the next IDR heals it; under intra refresh no IDR comes, and the encoder's motion vectors can carry the damage across the refreshed band. The 5 s line's `mac_drop` doesn't split its reasons. It is mostly `not_ready`, which still enqueues the frame.
+  - If R4 comes back, the first step is a per-reason `mac_drop` and a window capture during `stall-ir60`.
+- **The queue policy is settled.** Today's default, with the v147 fix, stays. The stall arms are dominated by the injected stall itself, and the policies differ by less than the run-to-run spread. The next gains are on the encoder side: C1 HEVC, T2 ROI QP, T3 super-resolution, and M3, the Mac's adaptive jitter buffer. Field logs from the person's own use come first: the 5 s lines now carry `max_gap_ms` and the drops.
+
+Raw data: `.agent/stats/round4/` (not in the repo).
+
 ### How the resuming frame is counted
 
 R4 stays off the table until the frame a drop resumes on is proven an IDR. Both
