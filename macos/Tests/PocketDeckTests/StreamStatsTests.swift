@@ -540,6 +540,9 @@ final class StreamStatsTests: XCTestCase {
         var window = StreamStatsWindow(now: 0)
         window.noteReceived(now: 1.0, bytes: 100)
         window.notePaused(true, now: 1.1)
+        // A frame already in flight when the window was covered must not
+        // restart the gap clock: the covered silence is not a picture gap.
+        window.noteReceived(now: 1.2, bytes: 100)
         window.notePaused(false, now: 4.0)
         window.noteReceived(now: 4.05, bytes: 100)
         XCTAssertEqual(window.snapshot(now: 5.0).maxGapMs, 0, accuracy: 0.001)
