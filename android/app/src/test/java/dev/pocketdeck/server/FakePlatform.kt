@@ -173,9 +173,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         qualities.add(QualityCall(stream, bitrate, maxFps))
     }
 
-    override fun onBackpressure(stream: Int) {
+    override fun onBackpressure(stream: Int, measuredBps: Int?) {
         backpressures.add(stream)
+        backpressureMeasured.add(measuredBps)
     }
+
+    /** P4: the goodput each backpressure call carried, nil when unmeasured. */
+    val backpressureMeasured = java.util.concurrent.CopyOnWriteArrayList<Int?>()
 
     /** Q1: every suspend/resume the queue asked for, in order. */
     val suspends = java.util.concurrent.CopyOnWriteArrayList<Pair<Int, Boolean>>()

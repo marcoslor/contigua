@@ -57,6 +57,35 @@ class QualityAdaptationTest {
     }
 
     @Test
+    fun `a measured goodput caps the drop and its recovery`() {
+        q.setTarget(8_000_000)
+        assertEquals(2_550_000, q.onDrop(0, measuredBps = 3_000_000))
+        assertEquals(2_550_000, q.ceilingBps)
+        assertNull("already at the measured cap", q.maybeRecover(5_000))
+        // 30 s later the 5% probe lifts the cap, then the normal +10% step.
+        assertEquals(2_677_500, q.maybeRecover(30_000))
+        assertEquals(2_677_500, q.ceilingBps)
+    }
+
+    @Test
+    fun `a later higher measurement raises the cap`() {
+        q.setTarget(8_000_000)
+        assertEquals(2_550_000, q.onDrop(0, measuredBps = 3_000_000))
+        assertEquals(1_912_500, q.onDrop(1_000, measuredBps = 5_000_000))
+        assertEquals(4_250_000, q.ceilingBps)
+        assertEquals(2_103_750, q.maybeRecover(6_000))
+    }
+
+    @Test
+    fun `a new target resets the measured cap`() {
+        q.setTarget(8_000_000)
+        q.onDrop(0, measuredBps = 3_000_000)
+        assertEquals(2_550_000, q.ceilingBps)
+        assertEquals(6_000_000, q.setTarget(6_000_000))
+        assertEquals(6_000_000, q.ceilingBps)
+    }
+
+    @Test
     fun `recovery never grows past the target`() {
         q.setTarget(1_100_000)
         q.onDrop(0) // -> 1_000_000, the floor

@@ -230,6 +230,8 @@ class Session(
         codecFor = { stream -> streamCodecs[stream] ?: VideoCodec.Avc },
         log = { message -> log(message) },
     )
+    /** P4: the writer's recent goodput, the cap the TCP recovery may not cross. */
+    private val goodput = GoodputMeter()
     /** Q1: one apply lock per stream; the last apply lands the latest state. */
     private val suspendApplies = HashMap<Int, Any>()
     private val pairLock = Object()
@@ -1099,17 +1101,22 @@ class Session(
                         }
                     }
                 }
-                // A frame's queue delay ends when its socket write finished
-                // (ISS-40), so the callback rides the path's writer. Only while
-                // the Mac asked: no timer runs otherwise.
-                val written = if (statsOn && entry.stream != 0 && entry.enqueuedUs > 0) {
+                // A frame's socket write is both the end of its queue delay
+                // (ISS-40) and the goodput sample P4's recovery cap reads. The
+                // stats part runs only while the Mac asked; the goodput note
+                // always runs, because the fallback cap must exist without it.
+                val written = if (entry.stream != 0 && entry.enqueuedUs > 0) {
                     val enqueued = entry.enqueuedUs
                     val stream = entry.stream
+                    val size = entry.bytes.size
                     {
-                        val delay = monoUs() - enqueued
-                        synchronized(statsLock) {
-                            sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
+                        if (statsOn) {
+                            val delay = monoUs() - enqueued
+                            synchronized(statsLock) {
+                                sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
+                            }
                         }
+                        goodput.note(stream, size, monoUs())
                     }
                 } else null
                 // Reliable frames are wrapped and kept for a switch; lossy ones
@@ -3373,9 +3380,11 @@ class Session(
     }
 
     private fun onDeltaDrop(stream: Int) {
-        log("stream $stream backpressure: dropping deltas, requesting keyframe")
+        val measured = goodput.rateBps(stream, monoUs())
+        log("stream $stream backpressure: dropping deltas, requesting keyframe" +
+            (measured?.let { " (measured ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: ""))
         runCatching { display.requestKeyframe(stream) }
-        runCatching { display.onBackpressure(stream) }
+        runCatching { display.onBackpressure(stream, measured) }
     }
 
     /**
@@ -3399,7 +3408,7 @@ class Session(
     /** Q1: the suspend policy passed its budget; lower the bitrate, no keyframe. */
     private fun onQueueOverflow(stream: Int) {
         log("stream $stream backpressure: queue over budget, lowering bitrate")
-        runCatching { display.onBackpressure(stream) }
+        runCatching { display.onBackpressure(stream, goodput.rateBps(stream, monoUs())) }
     }
 
     /**

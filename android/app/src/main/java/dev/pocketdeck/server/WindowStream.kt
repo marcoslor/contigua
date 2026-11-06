@@ -494,11 +494,17 @@ internal class WindowStream(
     /**
      * The session dropped delta frames for this stream: take 25% off the bitrate
      * (floor 1 Mbps). Recovery happens in the drain loop, 10% every 5 s without
-     * a drop, back up to the target.
+     * a drop, up to the target. [measuredBps] is the writer's recent goodput; it
+     * caps recovery at 85% of what the link actually carried, so a slow TCP
+     * fallback cannot climb back to the encoder cap and refill the queue.
      */
-    fun onBackpressure() {
-        val bps = quality.onDrop(SystemClock.elapsedRealtime()) ?: return
+    fun onBackpressure(measuredBps: Int? = null) {
+        val bps = quality.onDrop(SystemClock.elapsedRealtime(), measuredBps) ?: return
         log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%)")
+        if (measuredBps != null) {
+            log("stream $stream quality: recovery cap ${mbps(quality.ceilingBps)} " +
+                "(measured ${mbps(measuredBps)})")
+        }
         applyBitrate()
     }
 
@@ -1271,8 +1277,8 @@ internal class AndroidDisplayLayer(
         get(stream)?.setQuality(bitrate, maxFps)
     }
 
-    override fun onBackpressure(stream: Int) {
-        get(stream)?.onBackpressure()
+    override fun onBackpressure(stream: Int, measuredBps: Int?) {
+        get(stream)?.onBackpressure(measuredBps)
     }
 
     override fun setEncoderSuspend(stream: Int, suspended: Boolean) {
