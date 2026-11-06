@@ -16281,6 +16281,15 @@ for i in range(1500):
     open(os.path.join(root, "many", "m%04d.txt" % i), "wb").close()
 PY
     FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 2" start_fake || return 1
+    # A build's first launch pays for dyld, the scene, Live Text and the control
+    # host. That cold launch is not the one a person judges: two whole runs in a
+    # row on the same build measured 3216 ms cold and 1284 ms warm (ISS-46,
+    # 2026-11-06). Warm the process up once against a closed port, so it cannot
+    # pair or cache icons for the measured launch, then time that launch.
+    launch --connect "127.0.0.1:1" --quit-after 30
+    sleep 5
+    stop_app
+    sleep 1
     t0="$(now_ms)"
     nfr_launch --files-bridge-dir "$WORK/bridge"
     nfr_wait_ready 30 || { bad "NFR the app never paired"; stop_app; stop_fakephone; return 1; }
