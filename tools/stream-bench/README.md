@@ -32,6 +32,10 @@ use (`--profile e2e`, `--profile stats`).
   default. The bench refuses a serial that is not `device`.
 - The shim at `/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp`, or
   `--shim PATH` for a built bundle.
+- `--app PATH` brings that bundle to the front after each window opens. The
+  phone pauses a stream whose Mac window is hidden, so a run on a window
+  behind another app measures a still picture; activation is best effort and
+  such a run is marked `low_motion`/`frozen`, never given a fake number.
 - `/usr/bin/log` readable for the app's `dev.pocketdeck.mac` subsystem.
 
 ## One run

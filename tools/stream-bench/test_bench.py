@@ -1037,6 +1037,27 @@ class DryRunEveryScriptTest(unittest.TestCase):
             self.assertIn("script=%s" % script, output.getvalue())
 
 
+class ActivateAppTest(unittest.TestCase):
+    def test_activate_brings_the_named_bundle_to_the_front(self):
+        bench = load_bench()
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+
+        bench.activate_app("/x/PocketDeck.app", run=run)
+        self.assertEqual(calls[0][0], ["open", "-a", "/x/PocketDeck.app"])
+        self.assertFalse(calls[0][1].get("check", True))
+
+    def test_an_activation_failure_is_best_effort(self):
+        bench = load_bench()
+
+        def boom(argv, **kwargs):
+            raise OSError("open is gone")
+
+        bench.activate_app("/x/PocketDeck.app", run=boom)
+
+
 class BenchMainStillTest(unittest.TestCase):
     """One `still` run through main(): table, phone line, stages, CSV cells."""
 
@@ -1118,16 +1139,21 @@ esac
                 "--adb", adb, "--shim", shim, "--script", "still",
                 "--still-seconds", "0", "--repeats", "1",
                 "--arms-filter", "baseline", "--out", out,
+                "--app", "/x/PocketDeck.app",
                 "--package", "com.android.settings"]
+        activated = []
         output = io.StringIO()
         with mock.patch.object(bench, "require_device", lambda *a: None), \
                 mock.patch.object(bench, "find_app_pid", lambda profile: 123), \
                 mock.patch.object(bench, "recent_lines", lambda *a, **k: ""), \
                 mock.patch.object(bench, "stats_lines", lambda *a, **k: self.LOG), \
                 mock.patch.object(bench, "load_mcp", lambda: FakeMCP), \
+                mock.patch.object(bench, "activate_app",
+                                  lambda path, **k: activated.append(path)), \
                 mock.patch("sys.argv", argv), \
                 contextlib.redirect_stdout(output):
             self.assertEqual(bench.main(), 0)
+        self.assertEqual(activated, ["/x/PocketDeck.app"])
 
         text = output.getvalue()
         self.assertIn("phone:", text)

@@ -887,6 +887,20 @@ class PhoneSampler:
         return phone_values(texts, seconds, self.package, self.display_id)
 
 
+def activate_app(path, run=subprocess.run):
+    """Bring the app at `path` to the front.
+
+    The phone pauses a stream whose Mac window is hidden (the encoder keeps
+    running, nothing goes out), so a run on a window behind another app
+    measures a still picture. Best effort: a run without it shows up as
+    `low_motion`/`frozen`, never as a fake number.
+    """
+    try:
+        run(["open", "-a", path], check=False, timeout=10)
+    except Exception:
+        pass
+
+
 def median_fields(rows, fields):
     """Per field, the median over the rows that measured it (else None)."""
     values = {}
@@ -928,6 +942,9 @@ def main():
                         help="display whose refresh rate the sampler reads (default: 0)")
     parser.add_argument("--shim", default=DEFAULT_SHIM,
                         help="pocketdeck-mcp stdio shim (default: the installed app's)")
+    parser.add_argument("--app", default=None,
+                        help="app bundle to bring to the front after opening a window "
+                             "(a hidden stream pauses); e.g. a profile build's .app")
     parser.add_argument("--adb", default="adb", help="adb binary (default: adb)")
     parser.add_argument("--include-restart-arms", action="store_true",
                         help="also run arms marked restart (they need the app restarted "
@@ -1000,6 +1017,8 @@ def main():
                     opened = client.text("open_app", {"app": args.package})
                     stream = int(opened["window"])
                     run["stream"] = stream
+                    if args.app:
+                        activate_app(args.app)
                     if not wait_for_first_line(stream, began, predicate,
                                                args.first_line_timeout):
                         raise BenchFailure("no stats line for stream %d" % stream)
