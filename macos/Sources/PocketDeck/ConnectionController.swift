@@ -2667,7 +2667,7 @@ final class ConnectionController {
     /// when the event came from the current phone (PAIR-26).
     private func handle(_ event: SessionEvent, from record: PhoneSession) {
         switch event {
-        case .state(.failed(let reason), let detail):
+        case .state(.failed, let detail):
             record.pathOutage = .none
             attemptEnded(reason: detail ?? "closed", from: record)
         case .ready(let info, _, let address):
@@ -2689,7 +2689,7 @@ final class ConnectionController {
 
     private func handleCurrent(_ event: SessionEvent) {
         switch event {
-        case .state(let state, let detail):
+        case .state(let state, _):
             switch state {
             case .failed(let reason):
                 clearPathOutage()
