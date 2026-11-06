@@ -589,6 +589,47 @@ def table_header(width=3):
                                               for field in table_fields()))
 
 
+def _stage_values(runs, field):
+    values = [run.get(field) for run in runs if run.get(field) is not None]
+    return values
+
+
+def _stage_cell(values):
+    if not values:
+        return "-"
+    return "%.1f (%.1f-%.1f)" % (statistics.median(values), min(values), max(values))
+
+
+def stage_runs(runs):
+    """Runs a stage median may use: no failed or covered run.
+
+    A still is low-motion by design and a frozen run is still a measurement;
+    the stage block is descriptive, so both stay (the table's own medians keep
+    their stricter marks).
+    """
+    return [run for run in runs if not run.get("failed") and not run.get("covered")]
+
+
+def stage_header(width=3):
+    """The stage block's header: five stages and six interval levels."""
+    parts = ["%-*s" % (width, "stage")]
+    parts.extend(name.rjust(9) for name in STAGE_NAMES)
+    parts.extend(field.rjust(12) for field in INTERVAL_FIELDS)
+    return "  ".join(parts)
+
+
+def stage_line(name, runs, width=3):
+    """One arm's stage line: encoder, app, network, display, panel, intervals."""
+    valid = stage_runs(runs)
+    parts = ["%-*s" % (width, name)]
+    for field in STAGE_FIELDS:
+        parts.append(_stage_cell(_stage_values(valid, field)).rjust(9))
+    for field in INTERVAL_FIELDS:
+        parts.append(("%s=%s" % (field, _stage_cell(
+            _stage_values(valid, field)))).rjust(12))
+    return "  ".join(parts)
+
+
 def _phone_cell(values, decimals):
     if not values:
         return "-"
@@ -1048,6 +1089,10 @@ def main():
     for arm in run_arms:
         print(phone_line(arm["name"], summary_rows[arm["name"]], width))
     print()
+    print("stages:")
+    print(stage_header(width))
+    for arm in run_arms:
+        print(stage_line(arm["name"], summary_rows[arm["name"]], width))
     print()
     print("CSV: %s" % args.out)
     if all_samples:

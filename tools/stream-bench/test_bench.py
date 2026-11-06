@@ -963,6 +963,59 @@ class PhoneBlockTest(unittest.TestCase):
         self.assertNotIn("99", line)
 
 
+class StageBlockTest(unittest.TestCase):
+    """One stage block: encoder, app, network, display, panel, intervals."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def runrow(self, **fields):
+        values = {"failed": 0, "covered": 0, "frozen": 0, "low_motion": 0,
+                  "phone_frames": 540, "app_fps": 58.0, "rx_fps": 59.0,
+                  "shown_fps": 58.5, "vd_hz": 60.0,
+                  "int_p50": 12.0, "int_p95": 20.0, "int_p99": 30.0,
+                  "shown_p50": 8.0, "shown_p95": 16.0, "shown_p99": 24.0}
+        values.update(fields)
+        return values
+
+    def test_the_header_names_every_stage_and_interval(self):
+        header = self.bench.stage_header(8)
+        for word in ("encoder", "app", "network", "display", "panel",
+                     "int_p50", "int_p95", "int_p99",
+                     "shown_p50", "shown_p95", "shown_p99"):
+            self.assertIn(word, header)
+
+    def test_the_line_shows_the_medians(self):
+        line = self.bench.stage_line("baseline", [self.runrow(),
+                                                  self.runrow(phone_frames=600,
+                                                              app_fps=60.0)])
+        self.assertIn("570.0", line)     # encoder
+        self.assertIn("59.0", line)      # app
+        self.assertIn("60.0", line)      # panel
+        self.assertIn("int_p50=12.0", line)
+
+    def test_missing_interval_levels_print_a_dash(self):
+        line = self.bench.stage_line("still", [self.runrow(
+            int_p50=None, int_p95=None, int_p99=None,
+            shown_p50=None, shown_p95=None, shown_p99=None)])
+        self.assertIn("int_p50=-", line)
+        self.assertIn("shown_p99=-", line)
+
+    def test_failed_and_covered_runs_are_left_out(self):
+        line = self.bench.stage_line("baseline", [
+            self.runrow(),
+            self.runrow(failed=1, phone_frames=0, app_fps=0.0),
+            self.runrow(covered=1, phone_frames=999, app_fps=999.0)])
+        self.assertIn("540.0", line)
+        self.assertNotIn("999", line)
+
+    def test_a_low_motion_still_run_still_has_stage_numbers(self):
+        line = self.bench.stage_line("still", [self.runrow(
+            low_motion=1, phone_frames=0, app_fps=0.0, rx_fps=0.0,
+            shown_fps=0.0)])
+        self.assertIn("0.0", line)
+
+
 class DryRunEveryScriptTest(unittest.TestCase):
     def test_every_script_dry_runs_without_a_device(self):
         import contextlib
