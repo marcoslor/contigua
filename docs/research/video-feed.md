@@ -595,7 +595,7 @@ is the 2–3.6 fps "still" heartbeat and the ~500 ms p95/p99 intervals in a
 whole-run total. A whole-run p99 therefore says nothing about motion; P1
 must measure a run made of motion only.
 
-The `video` arm played in the person's YouTube app at a 25–30 fps source;
+The `video` arm played in the person's video app at a 25–30 fps source;
 its player surface does not show up in the app's gfxinfo (6.6 fps there), so
 that number is not the video's rate. The mirror's virtual display stayed at
 60.0 Hz in every run (`dumpsys display`, the `pocketdeck-N` display).
