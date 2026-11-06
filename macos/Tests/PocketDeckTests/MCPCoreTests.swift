@@ -89,7 +89,7 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertEqual(tools.compactMap { $0["name"] as? String }, [
             "phone_status", "list_apps", "open_app", "list_windows", "screenshot",
             "tap", "long_press", "swipe", "type_text", "press_key",
-            "close_window", "send_link", "send_file",
+            "input_probe", "close_window", "send_link", "send_file",
         ])
         for tool in tools {
             XCTAssertFalse((tool["description"] as? String ?? "").isEmpty)
@@ -136,6 +136,10 @@ final class MCPCoreTests: XCTestCase {
              .swipe(window: 3, x1: 0.1, y1: 0.2, x2: 0.9, y2: 0.8, ms: 2000)),
             ("type_text", ["window": 3, "text": "hello"], .typeText(window: 3, text: "hello")),
             ("press_key", ["window": 3, "key": "enter"], .pressKey(window: 3, key: .enter)),
+            ("input_probe", ["window": 3, "x": 0.5, "y": 0.5],
+             .inputProbe(window: 3, x: 0.5, y: 0.5, width: nil, height: nil)),
+            ("input_probe", ["window": 3, "x": 0.5, "y": 0.5, "w": 0.4, "h": 0.4],
+             .inputProbe(window: 3, x: 0.5, y: 0.5, width: 0.4, height: 0.4)),
             ("close_window", ["window": 3], .closeWindow(window: 3)),
             ("send_link", ["url": "https://example.com"], .sendLink("https://example.com")),
             ("send_file", ["path": "/tmp/a.bin"], .sendFile("/tmp/a.bin")),
@@ -163,6 +167,10 @@ final class MCPCoreTests: XCTestCase {
         }
         XCTAssertThrowsError(try MCPArguments.call("swipe",
             ["window": 1, "x1": 0, "y1": 0, "x2": 2, "y2": 1]))
+        XCTAssertThrowsError(try MCPArguments.call("input_probe",
+            ["window": 1, "x": 0.5, "y": 0.5, "w": 0.01]))
+        XCTAssertThrowsError(try MCPArguments.call("input_probe",
+            ["window": 1, "x": 0.5, "y": 0.5, "h": 1.01]))
     }
 
     func testWindowMustBeAPositiveInteger() {

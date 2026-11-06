@@ -118,6 +118,16 @@ final class VideoLayerView: NSView {
     /// (WIN-60). Runs on the main queue.
     var onCodecRefused: ((String) -> Void)?
 
+    /// P0 (pmaxx): the input-to-photon probe's private decoder, model and
+    /// continuations. Only alive while one probe runs (a few seconds); the
+    /// decoder watches the stream's own frames, the model is pure.
+    private var probeDecoder: InputProbeDecoder?
+    private var probeModel: InputProbeModel?
+    private var probeRegion: ProbeRegion = .whole
+    private let probeLock = NSLock()
+    private var probeArmedContinuation: CheckedContinuation<Bool, Never>?
+    private var probeResultContinuation: CheckedContinuation<InputProbeOutcome, Never>?
+
     /// How the picture is placed in the view, by the name the stats line uses.
     var placementName: String {
         switch placement() {
@@ -548,6 +558,147 @@ final class VideoLayerView: NSView {
         return renderer.displayedPixelBuffer()
     }
 
+    // MARK: Input-to-photon probe (P0, pmaxx)
+
+    /// Arms a probe: a private decoder starts with the next keyframe and the
+    /// first decoded frame becomes the baseline. Returns true once that
+    /// baseline is in; the caller then sends the tap and calls
+    /// `inputProbeTapSent`. A window with no format waits 1.5 s and fails.
+    @MainActor
+    func beginInputProbe(region: ProbeRegion) async -> Bool {
+        await withCheckedContinuation { continuation in
+            probeLock.lock()
+            probeArmedContinuation = continuation
+            probeRegion = region
+            probeModel = InputProbeModel { line in
+                Log.video.info("\(line, privacy: .public)")  // log-ok: closed states and ms only
+            }
+            probeLock.unlock()
+            videoQueue.async { [weak self] in
+                guard let self else { return }
+                self.probeDecoder?.cancel()
+                guard let format = self.formatDescription else {
+                    DispatchQueue.main.async { self.inputProbeBaselineFailed() }  // gcd: probe state is main's
+                    return
+                }
+                let decoder = InputProbeDecoder()
+                decoder.begin(format: format) { [weak self] image, atMs in
+                    self?.inputProbeFrame(image, atMs: atMs)
+                }
+                self.probeDecoder = decoder
+                DispatchQueue.main.async { self.onRequestKeyframe?() }  // gcd: keyframe callback is main's
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in  // gcd: resumes a main-actor continuation
+                self?.inputProbeBaselineFailed()
+            }
+        }
+    }
+
+    /// The tap went out at this Mac-monotonic millisecond.
+    @MainActor
+    func inputProbeTapSent(atMs: Double) {
+        probeLock.lock()
+        if var model = probeModel {
+            _ = model.handle(.tapSent(atMs: atMs))
+            probeModel = model
+        }
+        probeLock.unlock()
+    }
+
+    /// The first changed frame, or a timing-out answer. The caller ends the
+    /// probe either way.
+    @MainActor
+    func awaitInputProbe(timeout: TimeInterval) async -> InputProbeOutcome {
+        await withCheckedContinuation { continuation in
+            probeLock.lock()
+            probeResultContinuation = continuation
+            probeLock.unlock()
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in  // gcd: resumes a main-actor continuation
+                self?.inputProbeDeadline()
+            }
+        }
+    }
+
+    @MainActor
+    func endInputProbe() {
+        videoQueue.async { [weak self] in
+            self?.probeDecoder?.cancel()
+            self?.probeDecoder = nil
+        }
+        probeLock.lock()
+        let armed = probeArmedContinuation
+        let result = probeResultContinuation
+        let frames = probeModel?.frames ?? 0
+        probeArmedContinuation = nil
+        probeResultContinuation = nil
+        probeModel = nil
+        probeLock.unlock()
+        armed?.resume(returning: false)
+        result?.resume(returning: InputProbeOutcome(armed: false, changedMs: nil, frames: frames))
+    }
+
+    private func inputProbeBaselineFailed() {
+        probeLock.lock()
+        let armed = probeArmedContinuation
+        probeArmedContinuation = nil
+        if var model = probeModel {
+            _ = model.handle(.deadline)
+            probeModel = model
+        }
+        probeLock.unlock()
+        armed?.resume(returning: false)
+    }
+
+    @MainActor
+    private func inputProbeDeadline() {
+        probeLock.lock()
+        var outcome: InputProbeOutcome?
+        let result = probeResultContinuation
+        if var model = probeModel, model.handle(.deadline) != nil {
+            outcome = InputProbeOutcome(armed: true, changedMs: nil, frames: model.frames)
+            probeModel = model
+            probeResultContinuation = nil
+        }
+        probeLock.unlock()
+        if let outcome {
+            result?.resume(returning: outcome)
+        }
+    }
+
+    /// Runs on the decoder's queue. The model is pure; the continuations are
+    /// resumed outside the lock.
+    private func inputProbeFrame(_ image: CVPixelBuffer, atMs: Double) {
+        var armed: CheckedContinuation<Bool, Never>?
+        var result: CheckedContinuation<InputProbeOutcome, Never>?
+        var outcome: InputProbeOutcome?
+        probeLock.lock()
+        if var model = probeModel,
+           let signature = ProbeSignal.signature(of: image, region: probeRegion) {
+            let action = model.handle(.frame(signature, atMs: atMs))
+            probeModel = model
+            switch action {
+            case .armed?:
+                armed = probeArmedContinuation
+                probeArmedContinuation = nil
+            case .changed(let ms)?:
+                outcome = InputProbeOutcome(armed: true, changedMs: ms, frames: model.frames)
+                result = probeResultContinuation
+                probeResultContinuation = nil
+            case .timedOut?:
+                outcome = InputProbeOutcome(armed: true, changedMs: nil, frames: model.frames)
+                result = probeResultContinuation
+                probeResultContinuation = nil
+            case .none:
+                break
+            }
+        }
+        probeLock.unlock()
+        armed?.resume(returning: true)
+        if let outcome {
+            result?.resume(returning: outcome)
+        }
+    }
+
     // MARK: Frame snapshot (Live Text's second route)
 
     /// Touched only on `videoQueue`.
@@ -684,6 +835,7 @@ final class VideoLayerView: NSView {
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
             self.snapshotter?.feed(sample)
+            self.probeDecoder?.feed(sample)
             // The byte work above is the expensive part and stays off the main
             // thread, but CALayer is main-thread-only: reading or mutating the
             // display layer from here is undefined and leaves it accepting
