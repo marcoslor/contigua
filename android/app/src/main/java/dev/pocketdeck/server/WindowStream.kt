@@ -145,7 +145,11 @@ internal class WindowStream(
     private val quality = QualityAdaptation()
 
     /** `stream.stats` counters (ISS-40); rings fill only while the Mac asked. */
-    private val stats = StreamStats { SystemClock.elapsedRealtime() }
+    private val stats = StreamStats(
+        stream = stream,
+        log = log,
+        clockMs = { SystemClock.elapsedRealtime() },
+    )
     @Volatile private var statsWanted = false
 
     /** When this stream's encoder first existed; the closing line's `secs`. */
@@ -981,6 +985,13 @@ internal class WindowStream(
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                     val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    // The flag says "key"; the NAL types say whether the
+                    // decoder can start there (intra refresh flags otherwise).
+                    val keyNalTypes = if (key) {
+                        buf.position(info.offset)
+                        buf.limit(info.offset + info.size)
+                        nalTypes(buf, info.size)
+                    } else null
                     // The encoder path's clock: Surface input pts are
                     // CLOCK_MONOTONIC microseconds, as System.nanoTime is.
                     val encodeUs = if (statsWanted) {
@@ -1004,16 +1015,15 @@ internal class WindowStream(
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
-                        stats.onFrame(key, 0, encodeUs, statsQp)
+                        stats.onFrame(key, 0, encodeUs, statsQp, keyNalTypes)
                     } else {
                         heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
                         noteRefineFrame(now, key, info.size)
                         val skipped = dropForFps(info.presentationTimeUs)
                         if (skipped) stats.onSkipped()
-                        stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, statsQp)
+                        stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, statsQp,
+                                      keyNalTypes)
                         if (!skipped) {
-                            buf.position(info.offset)
-                            buf.limit(info.offset + info.size)
                             val data = ByteArray(info.size)
                             buf.get(data)
                             sink.onFrame(stream, info.presentationTimeUs, key, data)

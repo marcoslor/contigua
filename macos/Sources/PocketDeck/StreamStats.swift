@@ -77,6 +77,9 @@ struct ClockOffsetEstimator {
 struct PhoneStreamStats: Equatable {
     var frames = 0
     var keyframes = 0
+    /// ISS-40 round 3: key-flagged buffers with and without a type-5 slice.
+    var keyIdr = 0
+    var keyNotIdr = 0
     var keyframesRequested = 0
     var bytes = 0
     var deltasDropped = 0
@@ -109,6 +112,8 @@ struct PhoneStreamStats: Equatable {
     init(json: [String: Any]) {
         frames = Self.int(json["frames"])
         keyframes = Self.int(json["kf"])
+        keyIdr = Self.int(json["keyIdr"])
+        keyNotIdr = Self.int(json["keyNotIdr"])
         keyframesRequested = Self.int(json["kfReq"])
         bytes = Self.int(json["bytes"])
         deltasDropped = Self.int(json["drop"])
@@ -136,6 +141,8 @@ struct PhoneStreamStats: Equatable {
     mutating func addCounters(_ other: PhoneStreamStats) {
         frames += other.frames
         keyframes += other.keyframes
+        keyIdr += other.keyIdr
+        keyNotIdr += other.keyNotIdr
         keyframesRequested += other.keyframesRequested
         bytes += other.bytes
         deltasDropped += other.deltasDropped
@@ -200,6 +207,16 @@ enum StatsDiscardReason: String, CaseIterable {
     case paced
 }
 
+/// What a wire-key frame's NAL types say: it cannot restart the decoder
+/// (`types`, also the first three per stream), or it says nothing new (`none`).
+/// The time a drop takes to recover is the phone's `drop:` line and the Mac's
+/// `max_gap_ms`: the phone's drop report arrives in a 2 s stats message, often
+/// after the recovery IDR, so the Mac cannot time it from that message.
+enum KeyFrameNote: Equatable {
+    case none
+    case types(String)
+}
+
 /// One visible window's sliding 2 s window. Pure: every method takes the clock
 /// (Mac monotonic seconds) and the caller feeds it from the session or main
 /// queue under its own lock.
@@ -232,6 +249,17 @@ struct StreamStatsWindow {
     private var hitchCount = 0
     private var hitchMs = 0.0
     private var macDropCount = 0
+    /// ISS-40 round 3: key-flagged frames whose units carry no IDR.
+    private var keyNotIdr = 0
+    private var totalKeyNotIdr = 0
+    private var keyNotIdrLogged = 0
+    /// ISS-40 round 3: the longest interval between received frames. The line
+    /// covers the time since the previous line; the totals the whole life.
+    /// `lastReceived` survives `noteConfig` on purpose: a resize in the middle
+    /// of a gap does not mean the picture came back.
+    private var lastReceived: TimeInterval?
+    private var lineMaxGapMs = 0.0
+    private var totalMaxGapMs = 0.0
     private var lastEnqueue: TimeInterval?
     private var lastEnqueuePtsUs: UInt64?
     private var firstReceived: TimeInterval?
@@ -266,6 +294,8 @@ struct StreamStatsWindow {
     private var totalPhoneMessages = 0
     private var totalPhoneFrames = 0
     private var totalPhoneKeyframes = 0
+    private var totalPhoneKeyIdr = 0
+    private var totalPhoneKeyNotIdr = 0
     private var totalPhoneKeyframesRequested = 0
     private var totalDropEpisodes = 0
     private var totalDropGapMs: Int?
@@ -295,6 +325,8 @@ struct StreamStatsWindow {
         lastEnqueuePtsUs = nil
         firstReceived = nil
         firstEnqueue = nil
+        // `lastReceived` and the max-gap values stay: a config can land in
+        // the middle of a gap, and that gap still happened.
     }
 
     mutating func notePaused(_ paused: Bool, now: TimeInterval) {
@@ -306,16 +338,28 @@ struct StreamStatsWindow {
             totalCoveredMs += max(0, now - began) * 1000
             pausedAt = nil
         }
-        // The covered span is not a freeze; the next frame starts a fresh one.
+        // The covered span is not a freeze or a picture gap: the next frame
+        // starts a fresh one.
         if paused {
             lastEnqueue = nil
             lastEnqueuePtsUs = nil
+            lastReceived = nil
         }
         prune(now)
     }
 
     mutating func noteReceived(now: TimeInterval, bytes: Int) {
         if firstReceived == nil { firstReceived = now }
+        // While covered, a frame already in flight must not restart the gap
+        // clock: the covered silence is not a picture gap.
+        if !paused {
+            if let last = lastReceived, now > last {
+                let gapMs = (now - last) * 1000
+                lineMaxGapMs = max(lineMaxGapMs, gapMs)
+                totalMaxGapMs = max(totalMaxGapMs, gapMs)
+            }
+            lastReceived = now
+        }
         received.append(Received(at: now, bytes: bytes))
         totalReceived += 1
         prune(now)
@@ -362,6 +406,20 @@ struct StreamStatsWindow {
         prune(now)
     }
 
+    /// A wire-key frame's NAL types. A frame with no type-5 unit cannot restart
+    /// the decoder, so it is counted as `key_not_idr`; the first three per
+    /// stream also return their types for the field log.
+    mutating func noteKeyFrame(isKeyframe: Bool, nalTypes: [UInt8],
+                               now: TimeInterval) -> KeyFrameNote {
+        guard isKeyframe else { return .none }
+        if nalTypes.contains(H264NalType.sliceIdr.rawValue) { return .none }
+        keyNotIdr += 1
+        totalKeyNotIdr += 1
+        guard keyNotIdrLogged < 3 else { return .none }
+        keyNotIdrLogged += 1
+        return .types(nalTypes.map(String.init).joined(separator: ","))
+    }
+
     mutating func notePhoneStats(_ stats: PhoneStreamStats) {
         phoneMessages += 1
         if var accumulated = phone {
@@ -374,6 +432,8 @@ struct StreamStatsWindow {
         totalPhoneMessages += 1
         totalPhoneFrames += stats.frames
         totalPhoneKeyframes += stats.keyframes
+        totalPhoneKeyIdr += stats.keyIdr
+        totalPhoneKeyNotIdr += stats.keyNotIdr
         totalPhoneKeyframesRequested += stats.keyframesRequested
         totalDropEpisodes += stats.dropEpisodes
         if let gap = stats.dropGapMs { totalDropGapMs = (totalDropGapMs ?? 0) + gap }
@@ -406,6 +466,8 @@ struct StreamStatsWindow {
             phoneMessages: totalPhoneMessages,
             phoneFrames: totalPhoneFrames,
             phoneKeyframes: totalPhoneKeyframes,
+            phoneKeyIdr: totalPhoneKeyIdr,
+            phoneKeyNotIdr: totalPhoneKeyNotIdr,
             phoneKeyframesRequested: totalPhoneKeyframesRequested,
             dropEpisodes: totalDropEpisodes,
             dropGapMs: totalDropGapMs,
@@ -415,6 +477,8 @@ struct StreamStatsWindow {
             e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
             coveredMs: covered,
+            maxGapMs: totalMaxGapMs,
+            keyNotIdr: totalKeyNotIdr,
             tcpOutOfOrderKB: Self.deltaKB(latest: latestTCP, first: firstTCP),
             tcpSrttMaxMs: tcpSrttMaxMs,
             phoneRetransmissions: totalPhoneRetransmissions,
@@ -438,6 +502,8 @@ struct StreamStatsWindow {
         let hitches = hitchCount
         let hitchTime = hitchMs
         let drops = macDropCount
+        let keys = keyNotIdr
+        let maxGap = lineMaxGapMs
         let phoneStats = phone
         let phoneCount = phoneMessages
         freezeCount = 0
@@ -445,6 +511,8 @@ struct StreamStatsWindow {
         hitchCount = 0
         hitchMs = 0
         macDropCount = 0
+        keyNotIdr = 0
+        lineMaxGapMs = 0
         phone = nil
         phoneMessages = 0
 
@@ -477,6 +545,8 @@ struct StreamStatsWindow {
             enqueueP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             phone: phoneStats,
             phoneMessages: phoneCount,
+            keyNotIdr: keys,
+            maxGapMs: maxGap,
             tcpSrttMs: link.srttMs,
             tcpRttvar: link.rttvar,
             tcpOutOfOrderKB: link.outOfOrderKB
@@ -595,6 +665,11 @@ struct StreamStatsSnapshot {
     var phone: PhoneStreamStats?
     /// How many phone messages this line folded in (0 when none arrived).
     var phoneMessages = 0
+    /// ISS-40 round 3: wire-key frames with no type-5 unit since the last line.
+    var keyNotIdr = 0
+    /// ISS-40 round 3: the longest gap between received frames since the
+    /// previous line, outside covered time.
+    var maxGapMs = 0.0
     /// X0: the socket's smoothed RTT and variance (ms), and the bytes that
     /// arrived out of order since the previous line (KB). Nil is `-`.
     var tcpSrttMs: Int?
@@ -640,6 +715,8 @@ struct StreamStatsTotal {
     var phoneMessages: Int
     var phoneFrames: Int
     var phoneKeyframes: Int
+    var phoneKeyIdr: Int = 0
+    var phoneKeyNotIdr: Int = 0
     var phoneKeyframesRequested: Int
     var dropEpisodes: Int
     var dropGapMs: Int?
@@ -649,6 +726,11 @@ struct StreamStatsTotal {
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
     var coveredMs: Double
+    /// ISS-40 round 3: the longest gap between received frames over the
+    /// window's life, outside covered time, and the wire-key frames with no
+    /// type-5 unit over the same life.
+    var maxGapMs = 0.0
+    var keyNotIdr = 0
     /// X0: out-of-order bytes over the window's life (KB) and its worst SRTT.
     var tcpOutOfOrderKB: Double?
     var tcpSrttMaxMs: Int?
@@ -690,6 +772,8 @@ enum StreamStatsLine {
             "susp_ms=\(phone?.suspendedMs ?? 0)",
             "refine_n=\(phone?.refined ?? 0)",
             "kf=\(phone?.keyframes ?? 0)",
+            "key_not_idr=\(stats.keyNotIdr)",
+            "ph_key_not_idr=\(phone?.keyNotIdr ?? 0)",
             "kf_req=\(phone?.keyframesRequested ?? 0)",
             "kbps=\(kbps.map { String(Int($0.rounded())) } ?? "-")",
             "target_kbps=\(phone.map { String(Int((Double($0.targetBps) / 1000).rounded())) } ?? "-")",
@@ -700,6 +784,7 @@ enum StreamStatsLine {
             "queue_p95=\(ms(phone?.queueP95Us))",
             "e2e_p50=\(one(stats.e2eP50Ms))",
             "e2e_p95=\(one(stats.e2eP95Ms))",
+            "max_gap_ms=\(Int(stats.maxGapMs.rounded()))",
             "tcp_srtt=\(stats.tcpSrttMs.map(String.init) ?? "-")",
             "tcp_rttvar=\(stats.tcpRttvar.map(String.init) ?? "-")",
             "tcp_ooo_kb=\(stats.tcpOutOfOrderKB.map { one($0) } ?? "-")",
@@ -707,6 +792,16 @@ enum StreamStatsLine {
             "ph_rto=\(phone.map { $0.rtoTimeouts.map(String.init) ?? "-" } ?? "-")",
             "ph_lost=\(phone.map { $0.lostRetransmits.map(String.init) ?? "-" } ?? "-")",
         ].joined(separator: " ")
+    }
+
+    /// The two event lines a key frame may write. Types and durations only.
+    static func keyNote(stream: UInt32, note: KeyFrameNote) -> String? {
+        switch note {
+        case .none:
+            return nil
+        case .types(let types):
+            return "stream \(stream) key nal=\(types)"
+        }
     }
 
     static func one(_ value: Double?) -> String {
@@ -733,6 +828,8 @@ enum StreamStatsLine {
             "phone_n=\(total.phoneMessages)",
             "phone_frames=\(total.phoneFrames)",
             "kf=\(total.phoneKeyframes)",
+            "key_not_idr=\(total.keyNotIdr)",
+            "ph_key_not_idr=\(total.phoneKeyNotIdr)",
             "kf_req=\(total.phoneKeyframesRequested)",
             "drop_ep=\(total.dropEpisodes)",
             "drop_ms=\(total.dropGapMs.map(String.init) ?? "-")",
@@ -742,6 +839,7 @@ enum StreamStatsLine {
             "e2e_p50=\(one(total.e2eP50Ms))",
             "e2e_p95=\(one(total.e2eP95Ms))",
             "covered_ms=\(Int(total.coveredMs.rounded()))",
+            "max_gap_ms=\(Int(total.maxGapMs.rounded()))",
             "tcp_ooo_kb=\(total.tcpOutOfOrderKB.map { one($0) } ?? "-")",
             "tcp_srtt_max=\(total.tcpSrttMaxMs.map(String.init) ?? "-")",
             "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
@@ -796,6 +894,23 @@ struct StatsSubscription {
 final class StreamStatsRecorder {
     private var model = StreamStatsWindow()
     private let lock = NSLock()
+    private let stream: UInt32
+
+    init(stream: UInt32 = 0) {
+        self.stream = stream
+    }
+
+    /// A wire-key frame's NAL types; the first three non-IDR frames per stream
+    /// are logged (types only, never content).
+    func noteKeyFrame(nalTypes: [UInt8]) {
+        lock.lock()
+        let note = model.noteKeyFrame(isKeyframe: true, nalTypes: nalTypes,
+                                      now: ProcessInfo.processInfo.systemUptime)
+        lock.unlock()
+        if let line = StreamStatsLine.keyNote(stream: stream, note: note) {
+            Log.video.notice("\(line, privacy: .public)")  // log-ok: NAL types and a duration only; no frame bytes
+        }
+    }
 
     func noteConfig(now: TimeInterval) {
         lock.lock(); model.noteConfig(now: now); lock.unlock()

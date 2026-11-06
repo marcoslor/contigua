@@ -102,7 +102,7 @@ Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.str
 | R1 | phone | CBR instead of VBR. | flatter frame sizes, fewer bursts |
 | R2 | phone | Bitrate cap 8 → 16 / 25 / 40 Mbps, plus the per-pixel target. | less blockiness in motion, if the link holds it |
 | R3 | phone | Delay-based rate control: the bitrate follows the measured delivery rate and queue delay instead of −25 % on an overflow. | adapts before a stall, recovers in seconds, not 15 s |
-| R4 | phone | Intra refresh instead of the 10 s keyframe (`KEY_INTRA_REFRESH_PERIOD`). | no periodic keyframe spike |
+| R4 | phone | Intra refresh instead of the 10 s keyframe (`KEY_INTRA_REFRESH_PERIOD`). | no periodic keyframe spike; it only counts once the frame a drop resumes on is proven an IDR (`key_not_idr = 0` at both ends; the counters are NAL types, never bytes) |
 | C1 | phone | HEVC instead of H.264 (the Mac says it can decode it). | the same quality at fewer bits |
 | T1 | phone | Still refinement: about 300 ms after motion stops, one high-quality frame (a sync frame at a raised bitrate or a lower QP cap), dropped if motion resumes. | still text is sharp again within a second |
 | N1 | both | Traffic marked as video (`IP_TOS` AF41 on the phone's socket; `NET_SERVICE_TYPE_VI` on the Mac's). | fewer air stalls on a busy network |
@@ -407,13 +407,51 @@ What it shows:
 
 What the round found wrong with the measurement:
 - **The `frozen` mark has false positives.** The Mac's 5 s line reports `rx_fps` over a 2 s sliding window, so one line samples only 2 s of the 5. Two healthy runs got the mark: streams 2 and 8, with 695 and 699 frames against 622–790 for the others, from a single swipe line at 0.0 fps. The table above counts every run.
-  - A better rule needs the longest gap between received frames (`max_gap_ms`) in the 5 s and total lines, so the bench marks a run frozen when a gap over 2.5 s lands in a swipe phase.
+  - The rule now reads the longest gap between received frames (`max_gap_ms`) from the closing totals line, over the run's whole life outside covered time: a run is frozen when it is over 2,500 ms. The 5 s `rx_fps < 10` rule survives only for older logs without the field.
 - **One of those lines may be a real 2 s gap that no counter saw.**
   - Stream 2's line at 21:55:17 had no frames for 2 s in the middle of the swipes (the Mac logged a swipe every 0.7 s). That came 4 s after the phone dropped deltas and asked for a keyframe.
   - Yet the next line counted 912 ms of freezes and no gap that long.
-  - Either the gap wasn't there, or something resets the freeze baseline after a drop (a new `VIDEO_CONFIG` resets it). `max_gap_ms` and a per-drop recovery line (`drop: N dropped, key after X ms`, phone and Mac) settle it. That gap may be the "freeze" half of the person's freeze-then-blocky loop.
+  - Either the gap wasn't there, or something resets the freeze baseline after a drop (a new `VIDEO_CONFIG` resets it). `max_gap_ms` now survives a config, and both ends time the recovery (below), so the next real-phone run settles it. That gap may be the "freeze" half of the person's freeze-then-blocky loop.
 
 Raw data: `.agent/stats/round3/` (not in the repo).
+
+### How the resuming frame is counted
+
+R4 stays off the table until the frame a drop resumes on is proven an IDR. Both
+ends count it by NAL type, never by bytes:
+
+- **Phone:** each output buffer the encoder flags key has its access unit's
+  leading start codes scanned (SPS/PPS/SEI, up to the first slice).
+  `key_idr` counts a buffer with a type-5 slice; `key_not_idr` counts a
+  key-flagged buffer without one. Both are in the 2 s `stream.stats` message
+  and the closing `stream N totals:` line, and the first three non-IDR frames
+  per stream write `stream N key nal=<types>`. The types say why: `6,1` is an
+  SEI plus a P slice, the shape intra refresh emits when it flags a
+  recovery point rather than an IDR.
+- **Mac:** the same test on the wire flag and the units it actually decodes.
+  `key_not_idr=` goes in the 5 s line and `stats total`; `ph_key_not_idr=` is
+  the phone's own count from its messages. The first three non-IDR frames per
+  stream write `stream N key nal=<types>`.
+- **Why:** with intra refresh the encoder may flag a recovery-point frame as
+  key. The send queue resumes on that flag; without a type-5 slice the decoder
+  keeps predicting from frames it never got, and scrolling spreads the damage.
+  Jank, QP, byte counts and freeze counters cannot see that; a NAL type can.
+- **A drop episode is timed on the phone:** `stream N drop: <n> dropped, key
+  after <ms> ms, nal=<types>`, from the first discarded delta to the key frame's
+  send, with the access unit's NAL types (never the wire header's bytes). The
+  Mac's view of the same episode is `max_gap_ms`. A Mac "recovered after" line
+  was tried and removed in review: the phone reports a drop in its 2 s stats
+  message, which often arrives after the recovery IDR, so the Mac timed the
+  next IDR instead (3,852 ms on the emulator against a 907 ms longest gap).
+- **`max_gap_ms`** is the longest interval between received frames, outside
+  covered time, in each 5 s line (since the previous line) and the totals
+  (the whole run). A `VIDEO_CONFIG` in the middle of a gap does not hide it.
+
+One-boot emulator round (2026-11-05, arms `stall` and `stall-ir60`, one run
+each): the encoder applied `ir=60`, and both ends' `key_not_idr` were 0. The
+resuming frames carried a type-5 slice (`nal=5`, and one `nal=0,5` with a
+leading type-0 unit), so the emulator does not reproduce the person's
+corruption. The real phone decides R4.
 
 ## Presets, later
 

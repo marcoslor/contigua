@@ -11975,9 +11975,9 @@ PY
     case "$line" in *"stats stream="*) ;; *) missing=" stats" ;; esac
     for field in stream size view place rx_fps shown_fps int_p95 int_p99 \
                  freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop phone_drop \
-                 drop_ep drop_ms skip kf kf_req \
+                 drop_ep drop_ms skip kf kf_req key_not_idr ph_key_not_idr \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
-                 e2e_p50 e2e_p95 tcp_srtt tcp_rttvar tcp_ooo_kb \
+                 e2e_p50 e2e_p95 max_gap_ms tcp_srtt tcp_rttvar tcp_ooo_kb \
                  ph_retrans ph_rto ph_lost; do
         case "$line" in
             *"$field="*) ;;
@@ -12006,8 +12006,9 @@ PY
     local total_line total_missing=""
     total_line="$(stats_total_log | tail -1)"
     for field in secs rx_frames shown_frames hitch_n hitch_ms late_p99 \
-                 phone_n phone_frames kf kf_req drop_ep drop_ms susp_n susp_ms \
-                 bytes e2e_p50 e2e_p95 covered_ms tcp_ooo_kb tcp_srtt_max \
+                 phone_n phone_frames kf kf_req key_not_idr ph_key_not_idr \
+                 drop_ep drop_ms susp_n susp_ms \
+                 bytes e2e_p50 e2e_p95 covered_ms max_gap_ms tcp_ooo_kb tcp_srtt_max \
                  ph_retrans ph_rto ph_lost; do
         case "$total_line" in
             *"$field="*) ;;
@@ -12020,7 +12021,9 @@ PY
     total_field() {
         printf '%s\n' "$total_line" | tr ' ' '\n' | grep -F "$1=" | head -1 | cut -d= -f2
     }
-    local total_drop_ep total_covered total_secs total_rx
+    local total_drop_ep total_covered total_secs total_rx total_gap total_keys
+    total_gap="$(total_field max_gap_ms)"
+    total_keys="$(total_field key_not_idr)"
     total_drop_ep="$(total_field drop_ep)"
     total_covered="$(total_field covered_ms)"
     total_secs="$(total_field secs)"
@@ -12038,6 +12041,16 @@ PY
     else
         bad "STATS totals secs=${total_secs:-missing} rx_frames=${total_rx:-missing} are not positive"
     fi
+    if awk -v v="$total_gap" 'BEGIN { exit !(v > 0 && v <= 2500) }'; then
+        ok "STATS totals max_gap_ms=$total_gap is a measured gap under the frozen mark"
+    else
+        bad "STATS totals max_gap_ms=${total_gap:-missing} is missing or over 2500"
+    fi
+    # The fake phone flags a key frame only for a real IDR (proto.is_idr), so
+    # a non-zero count here would mean the Mac's check reads the wrong units.
+    [ "$total_keys" = "0" ] \
+        && ok "STATS totals key_not_idr=0 on the fake phone's IDR key frames" \
+        || bad "STATS totals key_not_idr=$total_keys, expected 0"
     stop_app
     stop_fakephone
 }
