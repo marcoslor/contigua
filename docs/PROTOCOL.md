@@ -50,7 +50,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | type | name | dir | payload |
 |---|---|---|---|
 | `0x01` | JSON | both | UTF-8 JSON object, always has string field `"t"` |
-| `0x02` | VIDEO_CONFIG | phone→mac | `u8 codec` (1 = H.264) · `u16 width` · `u16 height` · Annex-B SPS+PPS bytes |
+| `0x02` | VIDEO_CONFIG | phone→mac | `u8 codec` (1 = H.264/AVC, 2 = HEVC) · `u16 width` · `u16 height` · Annex-B parameter sets (AVC: SPS+PPS; HEVC: VPS+SPS+PPS) |
 | `0x03` | VIDEO_FRAME | phone→mac | `u64 ptsUs` · `u8 flags` (bit0 = keyframe) · Annex-B access unit |
 | `0x04` | AUDIO_CONFIG | phone→mac | `u8 codec` (2 = Opus, 3 = AAC-LC) · `u32 sampleRate` · `u8 channels` · `u16 frameMs` · codec setup bytes (Opus: empty; AAC: ASC) |
 | `0x05` | AUDIO_FRAME | phone→mac | `u64 ptsUs` · one encoder packet (one Opus frame or one AAC access unit) |
@@ -88,6 +88,27 @@ display id on every injected event.
   picture, scaled to fill its window, and its aspect lock follows the picture's, not the
   frame's. Input maps over the picture, which is the screen.
 - One VIDEO_FRAME = exactly one access unit (one MediaCodec output buffer).
+- **Codec.** H.264 is the default. HEVC is used only when the stream's arm asks
+  for it (`codec=hevc`), the Mac's `hello.codecs` listed it as hardware-decodable,
+  and the phone's HEVC encoder accepts the size; otherwise the stream stays H.264
+  and the phone writes one line, `codec=hevc unsupported: <mac|encoder|size>`,
+  naming the first condition that failed. `VIDEO_CONFIG`'s codec byte names every
+  stream's codec (1 = avc, 2 = hevc). A hello with no `codecs` (an older Mac)
+  means AVC only, and a phone that predates the field sends 1 in every config, so
+  an older phone's stream reads as AVC.
+- **NAL types are codec-aware.** H.264's type is `byte & 0x1F`; HEVC's is
+  `(byte >> 1) & 0x3F`. HEVC parameter sets are VPS 32, SPS 33 and PPS 34; IDR
+  slices are 19 and 20, CRA 21 is a key frame that is **not** an IDR, and slices
+  are 0–31. `key_idr`/`key_not_idr`, `kf`, the drop line's `nal=` and the Mac's
+  `key_not_idr` keep their meaning for both codecs: a wire-keyed frame holding
+  an IDR slice (AVC 5; HEVC 19 or 20) counts as an IDR, and a HEVC CRA counts
+  `key_not_idr`. Both ends print the codec's own type numbers plus `codec=` once
+  in the snapshot.
+- **A codec the Mac cannot decode is refused.** IF a `VIDEO_CONFIG` names a codec
+  the Mac does not decode (its own hardware test says no, or an unknown number)
+  THEN the Mac refuses that stream with one log line naming the stream id and
+  the codec, shows the window's error state, and never hands the bytes to
+  another codec's decoder.
 - On resize the phone sends a **new VIDEO_CONFIG** (new size) followed by a
   keyframe, then `window.resize.ack`. The Mac must rebuild its format description on
   every CONFIG. Frames received before the new CONFIG are old-size frames and may be
@@ -203,7 +224,7 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>"}`,
+2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>","codecs":["avc","hevc"]}`,
    plus `"pair":true` when the person asked this attempt to pair (a user-driven
    pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
    believes it is already paired. `path` names this connection (its path id,
@@ -213,6 +234,10 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
    A `v` other than 4 gets `{"t":"error","code":"version","v":4}` and a close:
    `v` is the version that refused, so the Mac can name which app to update
    (see "Versioning").
+   `codecs` lists the codecs this Mac decodes in hardware — `"avc"` always and
+   `"hevc"` only when `VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)` says
+   so. A hello without it (an older Mac) means `["avc"]`, so an old Mac never
+   gets HEVC.
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
    paired or not, with `{"t":"error","code":"connections_off"}` and a close —
@@ -240,7 +265,9 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
    `encoder` is the H.264 encoder's own limits, probed once per session: the
    alignment each axis takes, the maximum frame, and the largest pixel count it
    encodes at 60 fps. The Mac asks an app window for its exact backing pixels
-   inside these limits and draws them one to one (WIN-5, WIN-52). A phone that
+   inside these limits and draws them one to one (WIN-5, WIN-52); a stream that
+   runs HEVC is fitted to that encoder's own limits too and falls back to H.264
+   when the size does not fit. A phone that
    sends no `encoder` (an older build, or an encoder it cannot probe) makes the
    Mac keep its 16 px / 2560 px rule. `session` is this
    session's id: 128 random bits as 32 lowercase hex, a new one for every new
