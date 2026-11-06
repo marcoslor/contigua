@@ -10,6 +10,13 @@ struct LaunchOptions {
     var connect: (host: String, port: UInt16)?
     /// `--connect2`: the test-only second LAN provider (PATH-20's e2e).
     var connect2: (host: String, port: UInt16)?
+    /// `--connect-phone host:port` (repeatable, test builds only): connect one
+    /// more phone beside the current one without making it current
+    /// (docs/design/multi-phone.md §8.1, e2e `phones`).
+    var connectPhones: [(host: String, port: UInt16)] = []
+    /// `--phones-report FILE` (test builds only): one line per phone for the
+    /// `phones` check: `phones=<n> online=<n> current=<id>` and one row each.
+    var phonesReport: String?
     var openPackages: [String] = []
     var openPhone = false
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
@@ -129,6 +136,8 @@ struct LaunchOptions {
     static let testHooks: [String: Bool] = [
         "--connect": true,
         "--connect2": true,
+        "--connect-phone": true,
+        "--phones-report": true,
         "--open": true,
         "--open-phone": false,
         "--resize-stream": true,
@@ -207,6 +216,13 @@ struct LaunchOptions {
                    let port = UInt16(value[value.index(after: colon)...]) {
                     options.connect2 = (String(value[..<colon]), port)
                 }
+            case "--connect-phone":
+                if let value = next(), let colon = value.lastIndex(of: ":"),
+                   let port = UInt16(value[value.index(after: colon)...]) {
+                    options.connectPhones.append((String(value[..<colon]), port))
+                }
+            case "--phones-report":
+                options.phonesReport = next()
             case "--open":
                 if let value = next() {
                     options.openPackages += value.split(separator: ",").map(String.init)

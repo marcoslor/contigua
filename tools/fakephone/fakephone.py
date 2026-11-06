@@ -969,6 +969,10 @@ class EventLog(object):
         """The session id this phone welcomed (an id only, never a value)."""
         self._emit({"ev": "welcome", "session": session, "ts": time.time()})
 
+    def pong(self, ts):
+        """One answered app-level ping: times only, never content."""
+        self._emit({"ev": "pong", "ping": ts, "at": time.time()})
+
     def paths(self, ports):
         self._emit({"ev": "paths", "ports": ports, "count": len(ports),
                     "ts": time.time()})
@@ -3310,6 +3314,7 @@ class Session(object):
         handler(msg)
 
     def _on_ping(self, msg):
+        self.phone.events.pong(msg.get("ts"))
         self._send({"t": "pong", "ts": msg.get("ts"), "now": self.phone.clock_us()})
 
     # -- fake-only path conformance hooks (deckctl) --

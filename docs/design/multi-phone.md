@@ -419,6 +419,31 @@ changes no A state. E2E `phones` phase A with two fake phones: pair A, pair B,
 reconnect A from its pin while B is current; both `welcome`, both answer pings
 for 20 s, B's close leaves A online.
 
+**Phone sessions and claims.** `PhoneBook` holds one `PhoneSession` per device
+id; the session lives while at least one claim names it (the current phone, the
+`--connect-phone` test hook; later slices add feature claims). The claim set is
+a set, never a bool: two claims can name one phone, and removing one does not
+end its session. The connection state inside a session is the `LinkMachine`
+(`docs/specs/pairing.md`'s state table); the claim set decides that session's
+lifetime.
+
+| State | Event | Result |
+|---|---|---|
+| no session | `claim added` (`current`, `testHook`) | connect that phone; one attempt on its own timer |
+| connecting / online / reconnecting / offline | `claim added` | session and link unchanged; no new attempt |
+| any live state, two or more claims | `claim removed` | session and link unchanged |
+| any live state, one claim | `claim removed` | close that phone's session and cancel its retry; link → `idle`; every other phone untouched |
+| no session | `claim removed` | ignored |
+
+**Done on `feat/mp1`.** `PhoneBook`/`PhoneSession` own the session, the
+`LinkMachine`, the attempt task, the retry state and the path outage per phone;
+`ConnectionController.session`, `machine` and `link` are views of the current
+record. K2 `PhoneBookTests` (14 tests) covers the claim set, switching,
+per-phone retry, event isolation and shutdown. E2E `phones` phase A passes
+16/16 on ports 47995/47994: A paired, B paired while A stayed live through the
+test hook, A reconnected from its pin while B was current, both answered pings
+for 20 s, and B's close left A online. The other phases stay for their slices.
+
 **Size.** M. No wire change.
 
 ### Slice 2 — Per-phone state, and pairing beside a live phone
