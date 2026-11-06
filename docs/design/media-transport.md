@@ -86,8 +86,14 @@ Adversaries considered:
   plus the per-direction `u64` sequence, and the 18-byte outer header as
   associated data. Any authentication failure drops the packet silently.
 - **Replay window.** One `u64` sequence space per direction (all packet types
-  share it), a 1024-packet sliding window, and a duplicate/old packet is
-  dropped before it can reach the assembler.
+  share it), a **1024-packet** sliding window, and a duplicate/old packet is
+  dropped before it can reach the assembler. The window is sized for the
+  shipped 8 Mbit/s cap: 8e6 / (1140 bytes × 8) = **877 packets/s** at full
+  fragments, so 1024 packets cover **1.17 s** — longer than the 1 s the policy
+  needs to see a loss event. A future cap must raise the window:
+  `requiredReplayWindow(capBps) = ceil(capBps / (1140 × 8))` at 1 s;
+  `MediaReplayWindowTest` computes it from `cap_kbps`, asserts the shipped
+  constant satisfies the shipped cap, and asserts 20 Mbit/s would not.
 - **Session and epoch binding.** The HKDF salt contains the session id and
   both public keys; the outer header carries the media epoch, so a packet from
   a previous transport epoch can never be stitched into the current picture.
@@ -223,7 +229,9 @@ The `stream.transport` strategy key (`tcp` default, `auto`/`udp` for the
 bench) is read once per session; `tcp` disables the machine, `udp` starts it in
 `probe` even on a non-`lan` provider (the bench's fake phone), and `auto` is
 the table above. The shipped default stays `tcp` through P3; flipping it to
-`auto` is P5's merge decision, after P4's blind test.
+`auto` is P5's merge decision, after P4's blind test. `MediaDefaultsTest`
+asserts the shipped strategy value is `tcp` and that a default session offers
+no `media` field and sends no probe — the default is a test, not a comment.
 
 ## 6. The switch
 
