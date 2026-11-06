@@ -271,6 +271,9 @@ behaviour and the line says so in a closed token (`rc=cbr unsupported`,
 | `refine` | `off` / `on` | `off` | after 300 ms without a *new* encoded picture, one frame at 3× the current target (up to the cap) with a sync request; motion before it lands cancels and restores at once; one per still period | codec refusing the sync simply ends it at the 1 s timeout | `t1-refine`, `combo-a` |
 | `tos` | 0–255 | 0 (unset) | `setTrafficClass(N)` on the accepted socket before the TLS handshake (AF41 is 136, `0x88`) | the OS refusing it logs `tos=0x88 unsupported` and the stream is unchanged | `n1-af41`, `combo-a` |
 | `stall_ms`, `stall_every_ms` | 0 (off) or 50–2000 / 1000–30000 (default 5000) | 0 / 5000 | a stall on demand: while that stream has frames queued, the session's writer writes nothing to the socket for `stall_ms` every `stall_every_ms`, so the queue fills exactly as it does when the link stalls; other streams' frames wait too (it is the link) | 0 and junk are off; out of range clamps | `stall`, `stall-q1`, `stall-q1q2-100`, `stall-q2-500`, `stall-paced`, `stall-ir60` |
+| `fps` | 30–120 | 60 | the encoder's `KEY_FRAME_RATE` and `KEY_OPERATING_RATE` (the same value); at 60 only the frame-rate key is set, as today | out of range clamps; junk is 60 | P1's rate round |
+| `vd_rate` | 0 (off) or 60–120 | 0 | the app window's display asks `VirtualDisplayConfig.Builder.setRequestedRefreshRate` through reflection; a build without the method keeps today's display and the strategy line says `vd_rate=<n> unsupported`, and the classic path logs `rate=<n> unsupported (classic)` | 0 and junk are off; out of range clamps | P1's rate round |
+| `low_latency` | `off` / `on` | `off` | sets `MediaFormat` `"low-latency"` to 1 when the codec reports `FEATURE_LowLatency` | a codec without it keeps today's format and the line says `low_latency=on unsupported` | P2's round |
 
 `stall_ms`/`stall_every_ms` are the round-2 fix for what round 1 could not
 exercise: one drop episode in 32 runs and no suspend. Each injected stall logs
@@ -285,10 +288,25 @@ an encoder exposes (its Surface input is not readable). New size, or a
 keyframe, means motion.
 
 These are experiment switches for the bench, not product behaviour: they have
-no spec rows, no on-screen setting, and every one defaults to today's stream.
-The arms live in `tools/stream-bench/arms.json`; `combo-a` runs all of them
-except `bpp_milli`. The bench's per-arm strategy line and its `susp_n`,
-`susp_ms` and `refine_n` columns show which switches the phone applied.
+no on-screen setting and every one defaults to today's stream. The arms live
+in `tools/stream-bench/arms.json`; `combo-a` runs all of them except
+`bpp_milli`. The bench's per-arm strategy line and its `susp_n`, `susp_ms` and
+`refine_n` columns show which switches the phone applied.
+
+### Refresh and frame-rate knobs (P1, P2)
+
+P1 asks what caps the frame rate. Three switches answer it without changing
+today's stream: `fps` moves the encoder's frame-rate and operating-rate keys
+together (default 60, no operating-rate key), `vd_rate` asks the app window's
+virtual display for a refresh rate when the build has
+`VirtualDisplayConfig.Builder.setRequestedRefreshRate` (default 0, no request),
+and P2's `low_latency` asks a supporting encoder for `"low-latency"`
+(default off). They are read once per configure (the display rate once per
+display creation) and logged in the one strategy line as `fps=120
+vd_rate=120 low_latency=on`; a request the build or codec refuses keeps today's
+behaviour and prints its `unsupported` token. WIN-61 is their spec row. No
+wire field changes: the encoder's frame rate is not in `VIDEO_CONFIG` or
+`VIDEO_FRAME`, and `window.quality.maxFps` keeps its old meaning.
 
 ### The Mac's switches
 
