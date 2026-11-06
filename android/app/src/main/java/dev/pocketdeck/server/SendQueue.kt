@@ -1,5 +1,7 @@
 package dev.pocketdeck.server
 
+import dev.pocketdeck.proto.Frames
+
 /**
  * Outbound send queue with the protocol's priority and backpressure rules:
  * JSON > keyframes/config > audio > delta frames, and no more than ~250 ms of queued
@@ -348,7 +350,10 @@ internal class SendQueue(
         lastSentPtsUs[stream] = entry.ptsUs
         // The first key frame handed to the socket closes the episode. Its
         // types say whether the picture can actually restart from it.
-        if (entry.key) advanceDrop(stream, DropEvent.KeySent(nowMs(), nalTypes(entry.bytes)))
+        if (entry.key) {
+            val types = nalTypes(entry.bytes, offset = Frames.VIDEO_FRAME_DATA_OFFSET)
+            advanceDrop(stream, DropEvent.KeySent(nowMs(), types))
+        }
     }
 
     /** Applies one drop-episode event; the machine's line is the field log. */

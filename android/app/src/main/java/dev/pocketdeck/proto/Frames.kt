@@ -31,6 +31,12 @@ object Frames {
     const val MAX_FRAME = 8 * 1024 * 1024
     private const val HEADER = 5 // type(1) + stream(4)
 
+    /**
+     * Where a `TYPE_VIDEO_FRAME`'s access unit starts in [encode]'s output:
+     * length(4), type(1), stream(4), then [encodeVideoFrame]'s pts(8) and flags(1).
+     */
+    const val VIDEO_FRAME_DATA_OFFSET = 4 + HEADER + 9
+
     const val TYPE_JSON = 0x01
     const val TYPE_VIDEO_CONFIG = 0x02
     const val TYPE_VIDEO_FRAME = 0x03
