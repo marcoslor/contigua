@@ -297,6 +297,10 @@ struct StreamStatsWindow {
     /// The frame bytes this Mac actually received, for the run's own rate.
     /// The phone's `bytes` counter says what it queued, not what arrived.
     private var totalReceivedBytes = 0
+    /// Every arrival and display interval over the window's life, thinned to
+    /// bounded memory: the stage distributions, not only their p95 (pmaxx P0).
+    private var totalIntervals = ThinnedSamples()
+    private var totalShownIntervals = ThinnedSamples()
     private var totalEnqueued = 0
     private var totalHitchCount = 0
     private var totalHitchMs = 0.0
@@ -374,6 +378,7 @@ struct StreamStatsWindow {
                 let gapMs = (now - last) * 1000
                 lineMaxGapMs = max(lineMaxGapMs, gapMs)
                 totalMaxGapMs = max(totalMaxGapMs, gapMs)
+                totalIntervals.append(gapMs)
             }
             lastReceived = now
         }
@@ -394,6 +399,7 @@ struct StreamStatsWindow {
         var lateMs: Double?
         if !paused, let last = lastEnqueue, let lastPts = lastEnqueuePtsUs, ptsUs > lastPts {
             let shownGap = now - last
+            totalShownIntervals.append(shownGap * 1000)
             let ptsGap = Double(ptsUs - lastPts) / 1_000_000
             let late = shownGap - ptsGap
             lateMs = late * 1000
@@ -510,6 +516,13 @@ struct StreamStatsWindow {
             receivedBytes: totalReceivedBytes,
             e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
+            e2eP99Ms: Self.percentile(totalLatencyMs.values, 0.99),
+            intervalP50Ms: Self.percentile(totalIntervals.values, 0.50),
+            intervalP95Ms: Self.percentile(totalIntervals.values, 0.95),
+            intervalP99Ms: Self.percentile(totalIntervals.values, 0.99),
+            shownP50Ms: Self.percentile(totalShownIntervals.values, 0.50),
+            shownP95Ms: Self.percentile(totalShownIntervals.values, 0.95),
+            shownP99Ms: Self.percentile(totalShownIntervals.values, 0.99),
             coveredMs: covered,
             maxGapMs: totalMaxGapMs,
             keyNotIdr: totalKeyNotIdr,
@@ -763,6 +776,15 @@ struct StreamStatsTotal {
     var receivedBytes: Int
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
+    /// P0 (pmaxx): the tail a person feels as a stall, plus the arrival and
+    /// display interval distributions over the whole life.
+    var e2eP99Ms: Double?
+    var intervalP50Ms: Double?
+    var intervalP95Ms: Double?
+    var intervalP99Ms: Double?
+    var shownP50Ms: Double?
+    var shownP95Ms: Double?
+    var shownP99Ms: Double?
     var coveredMs: Double
     /// ISS-40 round 3: the longest gap between received frames over the
     /// window's life, outside covered time, and the wire-key frames with no
@@ -885,8 +907,15 @@ enum StreamStatsLine {
             "rx_kbps=\(one(rxKbps))",
             "e2e_p50=\(one(total.e2eP50Ms))",
             "e2e_p95=\(one(total.e2eP95Ms))",
+            "e2e_p99=\(one(total.e2eP99Ms))",
             "covered_ms=\(Int(total.coveredMs.rounded()))",
             "max_gap_ms=\(Int(total.maxGapMs.rounded()))",
+            "int_p50=\(one(total.intervalP50Ms))",
+            "int_p95=\(one(total.intervalP95Ms))",
+            "int_p99=\(one(total.intervalP99Ms))",
+            "shown_p50=\(one(total.shownP50Ms))",
+            "shown_p95=\(one(total.shownP95Ms))",
+            "shown_p99=\(one(total.shownP99Ms))",
             "tcp_ooo_kb=\(total.tcpOutOfOrderKB.map { one($0) } ?? "-")",
             "tcp_srtt_max=\(total.tcpSrttMaxMs.map(String.init) ?? "-")",
             "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
