@@ -740,6 +740,16 @@ is `/tmp/pd-fault.sh` (copy in `.agent/pmaxx/pd-fault.sh`); `on 100 3` applies
 it, `off` restores. `pdpathfault.py` also gained `delay-throttle` for the
 emulator/fake-phone version.
 
+**The 17:23 shaped read is invalid.** `pm install -r` had left the 14:59
+`:pocketdeck` service running the deleted, pre-fix base.apk, so the "no
+artifacts, just latency" result was not this code. The sawtooth diagnosis
+above predates the fix and stands; the fix's own shaped result is still to be
+measured. Every phone read now starts with `tools/phone_install_check.py`
+(the running pid must map the current base.apk); `tools/phone_install.sh`
+installs, kills the exact service pid, launches the app and runs that check.
+The phone was left on the current APK (pid 8394 at the person's 18:12
+reinstall), idle, shaping off at the person's request.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
