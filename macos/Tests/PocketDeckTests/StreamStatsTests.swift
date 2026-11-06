@@ -589,6 +589,50 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertNil(StreamStatsLine.keyNote(stream: 3, note: .none))
     }
 
+    /// HEVC reads its own type field: an IDR (19/20) is clean and a CRA (21) is
+    /// a key frame the decoder cannot restart an IDR on, so it is counted.
+    func testAHevcCraIsKeyNotIdr() {
+        var window = StreamStatsWindow(now: 0)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [32, 33, 34, 19],
+                                          codec: .hevc, now: 0), .none)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [32, 33, 34, 21],
+                                          codec: .hevc, now: 0),
+                       .types("32,33,34,21"))
+        XCTAssertEqual(window.snapshot(now: 1).keyNotIdr, 1)
+        XCTAssertEqual(window.total(now: 2).keyNotIdr, 1)
+    }
+
+    /// WIN-59/60: the line names the stream's codec and the phone's QP mean;
+    /// the totals' mean is weighted by each message's frames.
+    func testTheCodecAndQpMeanReachBothLines() {
+        var window = StreamStatsWindow(now: 0)
+        window.notePhoneStats(PhoneStreamStats(json: ["codec": "hevc", "frames": 60,
+                                                      "qpAvg": 20.0]))
+        window.notePhoneStats(PhoneStreamStats(json: ["codec": "hevc", "frames": 40,
+                                                      "qpAvg": 30.0]))
+        let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: window.snapshot(now: 1))
+        XCTAssertTrue(line.contains("codec=hevc"), line)
+        XCTAssertTrue(line.contains("qp_avg=30.0"), "the latest message's level")
+        let total = window.total(now: 2)
+        let totals = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totals.contains("codec=hevc"), totals)
+        XCTAssertTrue(totals.contains("qp_avg=24.0"), totals)
+        XCTAssertTrue(totals.contains("ph_key_not_idr=0"), totals)
+    }
+
+    func testACodecOrQpMeanThePhoneNeverSentPrintsDash() {
+        var window = StreamStatsWindow(now: 0)
+        window.notePhoneStats(PhoneStreamStats(json: ["frames": 10]))
+        let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: window.snapshot(now: 1))
+        XCTAssertTrue(line.contains("codec=-"), line)
+        XCTAssertTrue(line.contains("qp_avg=-"), line)
+        let totals = StreamStatsLine.totalText(stream: 1, total: window.total(now: 2))
+        XCTAssertTrue(totals.contains("codec=-"), totals)
+        XCTAssertTrue(totals.contains("qp_avg=-"), totals)
+    }
+
     /// The phone's own key_not_idr rides every `stream.stats` message; the
     /// Mac sums it over the window's life and prints its own count beside it.
     func testThePhoneKeyCountsSumAcrossMessagesAndPrintOnBothLines() {
