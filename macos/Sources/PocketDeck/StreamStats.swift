@@ -94,6 +94,9 @@ struct PhoneStreamStats: Equatable {
     /// T1: refined frames sent for a still period.
     var refined = 0
     var targetBps = 0
+    /// The stream's codec token and the mean of its frame QPs in this window.
+    var codec: String?
+    var qpAvg: Double?
     var encodeP50Us: Double?
     var encodeP95Us: Double?
     var queueP50Us: Double?
@@ -124,6 +127,10 @@ struct PhoneStreamStats: Equatable {
         suspendedMs = Self.int(json["suspMs"])
         refined = Self.int(json["refine"])
         targetBps = Self.int(json["targetBps"])
+        codec = (json["codec"] as? String).flatMap { name in
+            name == VideoCodec.avc.token || name == VideoCodec.hevc.token ? name : nil
+        }
+        qpAvg = Self.double(json["qpAvg"])
         encodeP50Us = Self.double(json["encP50"])
         encodeP95Us = Self.double(json["encP95"])
         queueP50Us = Self.double(json["queueP50"])
@@ -166,6 +173,8 @@ struct PhoneStreamStats: Equatable {
 
     mutating func takeLevels(from other: PhoneStreamStats) {
         targetBps = other.targetBps
+        codec = other.codec
+        qpAvg = other.qpAvg
         encodeP50Us = other.encodeP50Us
         encodeP95Us = other.encodeP95Us
         queueP50Us = other.queueP50Us
@@ -305,6 +314,11 @@ struct StreamStatsWindow {
     private var totalPhoneRetransmissions: Int?
     private var totalPhoneRTOs: Int?
     private var totalPhoneLostRetransmits: Int?
+    /// The phone's latest codec token and the frame-weighted QP mean over the
+    /// window's whole life.
+    private var latestCodec: String?
+    private var totalQpWeighted = 0.0
+    private var totalQpFrames = 0
 
     init(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         startedAt = now
@@ -406,13 +420,23 @@ struct StreamStatsWindow {
         prune(now)
     }
 
-    /// A wire-key frame's NAL types. A frame with no type-5 unit cannot restart
-    /// the decoder, so it is counted as `key_not_idr`; the first three per
-    /// stream also return their types for the field log.
+    /// A wire-key frame's NAL types. A frame with no IDR unit cannot restart
+    /// the decoder, so it is counted as `key_not_idr`; the types are already in
+    /// [codec]'s numbering (AVC 5; HEVC 19/20, a CRA 21 is not an IDR). The
+    /// first three per stream also return their types for the field log.
     mutating func noteKeyFrame(isKeyframe: Bool, nalTypes: [UInt8],
+                               codec: VideoCodec = .avc,
                                now: TimeInterval) -> KeyFrameNote {
         guard isKeyframe else { return .none }
-        if nalTypes.contains(H264NalType.sliceIdr.rawValue) { return .none }
+        let idr: Bool
+        switch codec {
+        case .avc:
+            idr = nalTypes.contains(H264NalType.sliceIdr.rawValue)
+        case .hevc:
+            idr = nalTypes.contains(HEVCNalType.sliceIdrWRADL.rawValue)
+                || nalTypes.contains(HEVCNalType.sliceIdrNLp.rawValue)
+        }
+        if idr { return .none }
         keyNotIdr += 1
         totalKeyNotIdr += 1
         guard keyNotIdrLogged < 3 else { return .none }
@@ -422,6 +446,11 @@ struct StreamStatsWindow {
 
     mutating func notePhoneStats(_ stats: PhoneStreamStats) {
         phoneMessages += 1
+        if let codec = stats.codec { latestCodec = codec }
+        if let average = stats.qpAvg, stats.frames > 0 {
+            totalQpWeighted += average * Double(stats.frames)
+            totalQpFrames += stats.frames
+        }
         if var accumulated = phone {
             accumulated.addCounters(stats)
             accumulated.takeLevels(from: stats)
@@ -483,7 +512,9 @@ struct StreamStatsWindow {
             tcpSrttMaxMs: tcpSrttMaxMs,
             phoneRetransmissions: totalPhoneRetransmissions,
             phoneRTOs: totalPhoneRTOs,
-            phoneLostRetransmits: totalPhoneLostRetransmits
+            phoneLostRetransmits: totalPhoneLostRetransmits,
+            codec: latestCodec,
+            qpAvg: totalQpFrames > 0 ? totalQpWeighted / Double(totalQpFrames) : nil
         )
     }
 
@@ -738,6 +769,9 @@ struct StreamStatsTotal {
     var phoneRetransmissions: Int?
     var phoneRTOs: Int?
     var phoneLostRetransmits: Int?
+    /// WIN-59: the stream's codec and the phone's frame-weighted QP mean.
+    var codec: String?
+    var qpAvg: Double?
 }
 
 /// The one `notice` line per visible window every 5 s. Numbers only: no
@@ -791,6 +825,8 @@ enum StreamStatsLine {
             "ph_retrans=\(phone.map { $0.retransmissions.map(String.init) ?? "-" } ?? "-")",
             "ph_rto=\(phone.map { $0.rtoTimeouts.map(String.init) ?? "-" } ?? "-")",
             "ph_lost=\(phone.map { $0.lostRetransmits.map(String.init) ?? "-" } ?? "-")",
+            "codec=\(phone?.codec ?? "-")",
+            "qp_avg=\(phone?.qpAvg.map { one($0) } ?? "-")",
         ].joined(separator: " ")
     }
 
@@ -845,6 +881,8 @@ enum StreamStatsLine {
             "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
             "ph_rto=\(total.phoneRTOs.map(String.init) ?? "-")",
             "ph_lost=\(total.phoneLostRetransmits.map(String.init) ?? "-")",
+            "codec=\(total.codec ?? "-")",
+            "qp_avg=\(total.qpAvg.map { one($0) } ?? "-")",
         ].joined(separator: " ")
     }
 }
@@ -902,9 +940,9 @@ final class StreamStatsRecorder {
 
     /// A wire-key frame's NAL types; the first three non-IDR frames per stream
     /// are logged (types only, never content).
-    func noteKeyFrame(nalTypes: [UInt8]) {
+    func noteKeyFrame(nalTypes: [UInt8], codec: VideoCodec = .avc) {
         lock.lock()
-        let note = model.noteKeyFrame(isKeyframe: true, nalTypes: nalTypes,
+        let note = model.noteKeyFrame(isKeyframe: true, nalTypes: nalTypes, codec: codec,
                                       now: ProcessInfo.processInfo.systemUptime)
         lock.unlock()
         if let line = StreamStatsLine.keyNote(stream: stream, note: note) {
