@@ -2370,6 +2370,12 @@ final class ConnectionController {
             clipImageBuffer.discard()
         }
         if result.currentLinkRestored { windows.linkRestored() }
+        // A window that was opening during the one-shot transition follows
+        // the current Link value too: the zombie-service case left it on
+        // "Not responding" while the link was already retrying.
+        if link.isDown != windows.linkIsDown {
+            if link.isDown { windows.linkLost() } else { windows.linkRestored() }
+        }
         writePhonesReport()
     }
 

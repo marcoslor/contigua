@@ -81,6 +81,16 @@ enum Link: Equatable {
         }
     }
 
+    /// True while the window overlays should show a down state. A window can
+    /// miss the one-shot online -> offline transition while it is opening, so
+    /// the controller reconciles against this value, not only the edge.
+    var isDown: Bool {
+        switch self {
+        case .reconnecting, .offline: return true
+        case .idle, .connecting, .online, .needsPairing, .pairing: return false
+        }
+    }
+
     var isOnline: Bool {
         if case .online = self { return true }
         return false
