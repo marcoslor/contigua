@@ -446,6 +446,12 @@ class FrozenTest(unittest.TestCase):
         self.assertEqual(cells["jank_ms"], (100, 100, 100))
         self.assertEqual(self.bench.valid_runs([clean, frozen, quiet]), 1)
 
+    def test_a_tap_run_counts_although_the_screen_does_not_move(self):
+        # The tap script measures one input; its screen is idle by design.
+        probe = self.metrics(0, low_motion=1, script="tap")
+        self.assertTrue(self.bench.counted(probe))
+        self.assertEqual(self.bench.valid_runs([probe]), 1)
+
     def test_the_table_marks_them_and_counts_the_valid_runs(self):
         clean = self.metrics(100)
         frozen = self.metrics(0, frozen=1)

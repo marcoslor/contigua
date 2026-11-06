@@ -450,10 +450,13 @@ def is_frozen(total, sampled, phases=None):
 
 
 def counted(run):
-    """The runs that make an arm's medians: not failed, covered, frozen or
-    low-motion."""
-    return not (run.get("failed") or run.get("covered") or run.get("frozen")
-                or run.get("low_motion"))
+    """The runs that make an arm's medians: not failed, covered or frozen.
+
+    A low-motion run is left out too, except the `tap` script: its screen is
+    idle by design and its `input_photon_ms` is the measurement."""
+    if run.get("failed") or run.get("covered") or run.get("frozen"):
+        return False
+    return run.get("script") == "tap" or not run.get("low_motion")
 
 
 def valid_runs(runs):

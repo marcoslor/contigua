@@ -189,8 +189,8 @@ between two 5 s lines still counts. A log from before the field existed keeps
 the older rule (a 5 s line in a swipe phase with `rx_fps < 10`). A run with
 `covered_ms > 0` is
 marked **`covered`**. `failed`, `covered`, `frozen` and `low-motion` runs are
-all left out of the arm's medians, and the table's `valid` column says how many
-runs made them. A run with no closing line is **`failed`**; its cells are `-`
+all left out of the arm's medians (a `tap` run counts: its idle screen is the
+measurement), and the table's `valid` column says how many runs made them. A run with no closing line is **`failed`**; its cells are `-`
 and the table and CSV are still written. `phone gaps` marks a run that received
 no phone message at all (`phone_n=0`), and `no drop_ms` a phone that sends no
 `dropGapMs`. The phone's own `stream N totals:` line carries `susp_ms` too, and
