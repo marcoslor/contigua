@@ -1108,8 +1108,10 @@ final class WindowManager {
         case .phoneStats(let stream, let stats):
             controller(for: stream)?.stats.notePhoneStats(stats)
         case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
-            Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private))")
-            controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
+            let controller = controller(for: stream)
+            let ms = controller?.takeResizeAckMs().map { String(format: "%.1f", $0) } ?? "-"
+            Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private)) in \(ms, privacy: .public) ms")
+            controller?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
         case .windowOpened(let stream, _, _, _, let started):
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
