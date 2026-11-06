@@ -253,3 +253,535 @@ should reuse them as they are:
 This is why the audit's S row count is high: the data model is already
 multi-phone. The one-phone assumption is in the owner objects, not in the
 storage.
+
+## 5. The target model
+
+### 5.1 One session per phone
+
+The layer above `Session` becomes a **phone book**: a map from device id to a
+**phone session**, plus one current id. A phone session is the per-phone
+counterpart of today's single controller state. It owns:
+
+- the live `Session` (one TLS session, one to three paths);
+- its `LinkMachine` and `Link` — the connection state machine of that phone,
+  unchanged;
+- `PhoneInfo` and `PhoneStatus` — the phone's own report;
+- the app list and its icons;
+- the notification seen set and the no-access flag for that phone;
+- the files client for that phone;
+- the phone's window set: app, link and handoff windows, and one Phone Mirror;
+- the drop sender, APK installer and clipboard-image buffer for that phone;
+- the ringing flag, the path outage and the retry state.
+
+The controller keeps what is genuinely shared: the remembered list, the pins,
+the Mac identity, discovery, the current id, the pairing flow, the menu bar,
+the Deck, Settings, MCP, Spotlight, the Dock, one Notification Center, one Now
+Playing controller, one audio engine and the stats log. The views that exist
+today keep their names and read the current phone; a view that names a phone
+reads that phone's record.
+
+The wire does not change. A phone already sees one Mac; the Mac holding two
+sessions to two different phones is invisible to both. `welcome` already carries
+`device.id`, the pins are per phone, and `docs/design/paths.md` already defines
+one session per Mac-phone pair. There is no protocol version bump and no
+phone-side change for the target model.
+
+### 5.2 Shared and per phone
+
+| Thing | Scope | Why |
+|---|---|---|
+| App process, profile, identity, pins | shared | One Mac app, one trust store; pins are already per phone |
+| Menu-bar status item | shared | One icon should mean "PocketDeck", not one icon per phone |
+| Deck window | shared, showing the current phone | One home window; a phone switcher, not a second Deck |
+| Settings window | shared, every phone a row | One management window; already built that way |
+| MCP server | shared | One automation endpoint; calls take a phone |
+| Spotlight index | shared object, one domain per phone | Already per device id |
+| Session, link, status, apps, icons | per phone | The feature |
+| Stream windows and Phone Mirror | per phone | A window is one phone's picture and input |
+| File Provider domain, bridge, id map, replica | per phone | A Finder location is one phone's storage |
+| Notification store | shared object, keys per phone | One Notification Center, banners grouped per phone |
+| Live store | shared object, keys per phone | One panel, rows per phone |
+| Media state and Now Playing | shared system slot, one owner at a time | macOS has one Now Playing entry |
+| Clipboard | shared pasteboard, one target at a time | macOS has one general pasteboard |
+| Audio | shared engine, one source at a time | macOS has one output route for the app |
+| Dock and Launchpad shims | per phone | Already one shim per app per phone |
+| Stats and logs | per window, tagged with the phone | One log, no ambiguous stream ids |
+
+### 5.3 The current phone and the target
+
+Every action has a **target**. A surface that names a phone (a window, a
+notification, a Finder location, an intent's phone, an MCP `phone`, a link's
+`phone`) uses that target. A surface that names none uses the **current
+phone**:
+
+- the Deck and its grid;
+- the menu-bar panel;
+- the phone-level menu items when no app window is key;
+- a copy on the Mac (the clipboard poll);
+- a drop on the Deck;
+- Start Timer… from the menu.
+
+The current phone is set by Settings ▸ Use This Phone, and by a finished
+pairing (the new phone becomes current, as today). Opening a window on another
+phone does not change the current phone: the window is already the strongest
+target, and the Deck may keep showing the phone the person was looking at.
+
+In the target model, changing the current phone no longer ends a session and
+no longer closes a window. It changes what the Deck and the panel show, where
+the clipboard poll points, and which phone an untargeted action uses. Slices 1
+and 2 keep today's window closing for a switch until slice 3 moves the windows
+to their own phones; only the session already survives those slices.
+
+### 5.4 How a surface says which phone it is
+
+A window says it in its title, which already carries the phone name
+(`WIN-3`/`WIN-28`): "WhatsApp (Work)" or "Chrome — Inbox (Personal)". The
+opening cover says "Opening on <phone>". The Window menu groups windows by
+phone when two or more are online; the Dock shim names already include the
+phone. The menu items that change one phone (Ring, DND, Ringer, Volume, Turn
+Off Screen, Move to Mac) name the phone in their title while two or more are
+online, because the action may be invoked from a window of the other phone.
+
+A small phone chip in the window bar is a visual decision. It is not needed for
+correctness; it is a prototype round if the person wants more than the title.
+
+## 6. The rules for conflicts
+
+The rules below are the target behaviour. They are the parts a slice must not
+improvise.
+
+| Action | Target | Rule |
+|---|---|---|
+| A copy on the Mac (the poll) | current phone | One pasteboard, one mirror. The poll sends to the current phone only; on a switch, stop the old sync and start the new. A background phone's clipboard gate stays off. |
+| ⌘V of an image or files in a window | the window's phone | The window's paste flow owns the stream. The image or file goes on that window's session, never on the current phone's. Text ⌘V types into the window as today. |
+| A copy on a phone to the Mac | current phone | A background phone's copy does not silently replace the Mac's pasteboard. Its gate is off until it becomes current. A notification for a background phone's copy is a later feature. |
+| A file dropped on a window | the window's phone | One drop per phone; a second drop on the same phone is refused as today. Two phones can receive a file at the same time. |
+| A file dropped on the Deck | current phone | The Deck is the current phone's surface. |
+| A link with `phone=<id>` | that phone | Send on that phone's own session when it is online; otherwise keep the link for up to 120 s and send when that phone is ready. The current phone does not change. |
+| A link with no phone, 2+ paired | the person's pick | The picker lists remembered phones, connected first. The chosen phone gets the link; the current phone does not change. |
+| Start Timer… | current phone, or the phone whose Live section was used | The timer is created in that phone's Clock app and the live item carries that phone. Two phones can each have a timer. |
+| `phone_status`, `list_apps`, `open_app`, `send_link`, `send_file` (MCP) | the call's `phone`, else current | An unknown or ambiguous phone is a tool error that lists the phones. Window tools use the window's phone. |
+| Ring, DND, ringer, volume, Turn Off Screen, Move to Mac | the key window's phone, else current | These change one phone. Their menu titles name the phone when two or more are online. |
+| A notification click, reply or dismiss | the notification's phone | Open that app's window on that phone and send the action on its session. |
+| Now Playing | the phone that is playing | If the current phone is playing, it wins. Otherwise the most recently updated playing phone wins. A pick in the panel wins until that phone's session ends or it stops playing. Transport commands go to the phone that owns the displayed state. |
+| Audio | current phone, and only while one of its windows is open and unpaused | One route. Switching stops the old phone's capture and starts the new one only if it has an open window. Two phones do not mix. |
+| Finder | the location's phone | Each location is one phone's storage. A copy, drop or install started from a location goes to that phone. |
+| Phone Mirror | its own window's phone | One mirror per phone, both may be open. |
+| Pairing | the phone being paired | A pairing does not end another phone's session or close its windows. The new phone becomes current when the pairing finishes. |
+| Forgetting a phone | that phone | Forget one and the others keep their sessions, pins, windows and files. |
+
+Two rules make the rest small:
+
+1. **A window is the target.** Anything that starts inside a window (input,
+   paste, drop, link, notification click) uses that window's phone. A window
+   never asks "which phone is current?".
+2. **A phone-level action is explicit.** If an action changes a phone rather
+   than a window, it either comes from that phone's own surface (its
+   notification, its Finder location, its live row) or names the current phone,
+   and its title says which. It never guesses from a list order.
+
+## 7. The slices
+
+Each slice ships alone and has its own proof. The first is deliberately small:
+two phones can be connected at once and neither breaks, while most surfaces
+still act on one current phone.
+
+### Slice 1 — Two live sessions, one current phone
+
+**Goal.** The app owns a session per phone and a current id. A second phone can
+be connected while the first stays live. The UI still shows and acts on the
+current phone; switching still closes the current phone's windows, as today.
+
+**Changes.**
+
+- Add the phone book and the phone session (session, link machine, phone info,
+  attempt timer, backoff, path outage).
+- `ConnectionController.session`, `machine` and `link` become views of the
+  current phone's session. `currentId` is the in-memory current; the persisted
+  choice stays `RememberedPhones.active`.
+- `connect(deviceId:)` and `disconnect(deviceId:)` replace the one
+  `start`/`closeSession`. A phone's retry loop is its own.
+- `handle(_:from:)` takes the phone id. Events from a non-current phone update
+  only that phone's session and link; they never touch the current phone's
+  clipboard, notifications, files, media or windows. A failure on a
+  non-current phone clears nothing global.
+- `use(deviceId:)` changes the current phone, closes the current phone's
+  windows as today, and leaves the other session running.
+- `shutdown` closes every session. A pairing still replaces the current phone's
+  session, as today; reconnecting a remembered phone uses its own pin.
+- One test hook: `--connect-phone <host:port>` (repeatable, test builds only)
+  connects an additional phone without making it current; a report file says
+  `phones=<n> online=<n> current=<id>` with one row per phone.
+
+**Proof.** K2 `PhoneBookTests`: two sessions are independent; switching changes
+the current view; closing one leaves the other ready; a failed event on B
+changes no A state. E2E `phones` phase A with two fake phones: pair A, pair B,
+reconnect A from its pin while B is current; both `welcome`, both answer pings
+for 20 s, B's close leaves A online.
+
+**Size.** M. No wire change.
+
+### Slice 2 — Per-phone state, and pairing beside a live phone
+
+**Goal.** Everything the current phone shows is that phone's own data, and a
+pairing no longer ends another phone's session.
+
+**Changes.**
+
+- Move the status, app list, icons, notification seen/no-access sets, ringing
+  flag and path outage into the phone session.
+- The current-only views read `current`; a phone's Settings page reads that
+  phone. `DevicesPreview.presence` uses each phone's own link, so a connected
+  non-current phone reads Connected.
+- A pairing becomes its own flow: one sheet at a time, refused with a sentence
+  while another pairing runs. `beginPairing` does not close the live session or
+  its windows; on success the new phone becomes current, and the old phone
+  stays live.
+- `use` still closes the current phone's windows (slice 3 changes that) but
+  keeps its session.
+
+**Proof.** K2 `PhoneSessionDataTests`, `PairingWhileLiveTests`. E2E `phones`
+phase B: pair B while A streams; A's window and session are untouched; B's
+Settings page says Connected; B's app list does not replace A's grid; B's
+failure clears none of A's banners.
+
+**Size.** M.
+
+### Slice 3 — Windows per phone
+
+**Goal.** Windows belong to their phone and stay open across a switch. This is
+the user-facing heart of the feature.
+
+**Changes.**
+
+- `WindowManager` is one shared object keyed by `WindowKey(deviceId, stream)`,
+  with a global stream allocator. Its per-phone fields (phone info, name, cap,
+  link phase, screen, panel, secure) become per-phone records.
+- Every window holds its phone session and sends open, resize, input, keyframe,
+  paste and close on it. `LinkWindow` and `PhoneWindow` gain a phone id.
+- Video and events route by `(source phone, stream)`; a second phone's video no
+  longer hits a guard.
+- `use` stops closing windows. The Deck switches its grid; windows of both
+  phones stay and keep streaming.
+- One Phone Mirror per phone; `openPhoneWindow(on:)`; screen/secure/panel state
+  per phone.
+- Titles use the window's phone. The Window menu groups by phone when two or
+  more are online; New/list/⌘\` use the key window's phone (its app's windows on
+  that phone).
+- The app-wide cap is each phone's own `maxWindows`, as the phone reports it.
+
+**Proof.** K2 `WindowKeyTests`, `MultiPhoneWindowTests`. E2E `phones` phase C:
+A and B each have one app window; A keeps receiving frames while B's window
+opens; input, a paste and a drop on A's window appear only in A's fake-phone
+event log and vice versa; each title names its phone; ⌘W closes only that
+window; switching current leaves both windows; two Phone Mirrors open at once.
+
+**Size.** L.
+
+### Slice 4 — Finder files per phone
+
+**Goal.** Every phone with the Finder feature on gets its own location, and one
+phone's files cannot resolve in another phone's domain.
+
+**Changes.**
+
+- `FilesDomain.identifier` includes the phone id, not only the profile. The
+  display name is that phone's nickname/name.
+- One bridge socket per phone; `FilesBridge` becomes a keyed registry; one
+  `SessionBridgeHost`, `FilesIdMap` and `FilesReplica` file per phone. The
+  extension finds its socket from its `NSFileProviderDomain` identifier.
+- The switch: one Mac-wide "Show phone files in Finder" adds every paired
+  phone's location (recommended), or one switch per phone (section 10).
+- `FILES-1`, `FILES-2` and `FILES-16` change with the slices.
+
+**Proof.** K2 id-map isolation; host `files-bridge` with two sockets; VM
+`files-domain` with two fake phones: two locations, each lists its own root,
+the same relative path resolves to each location's own file, a delete on one
+domain leaves the other's item. This is the only slice that needs a VM boot.
+
+**Size.** L.
+
+### Slice 5 — Notifications, Live and media per phone
+
+**Goal.** Every phone with its switch on delivers, and one phone's notification
+or media state cannot replace another's.
+
+**Changes.**
+
+- `NotifyCenter` keys every store by `(phoneId, id)`; `clearPhone(deviceId)`
+  replaces every cross-phone `clearAll()`; the banner thread and request id
+  stay per phone.
+- `NotifyLiveStore` keys by `(phoneId, id)`; `NotifyLiveItem` carries the
+  phone; the panel's Live section is per phone.
+- `NowPlayingController` carries the phone id; the panel's picker lists phones
+  as well as apps when two or more are online; `clear` only for the phone that
+  ended; transport goes to the owner.
+- A notification click, reply or dismiss uses the notification's phone and
+  opens that app's window on that phone.
+
+**Proof.** K2 `NotifyKeyTests`, `LivePerPhoneTests`, `NowPlayingPhoneTests`.
+E2E `phones` phase D: B posts while A is current — both banners appear under
+their own names; clearing B's session leaves A's banner; two timers run; the
+panel picker switches the song between phones; Play goes to the displayed
+phone.
+
+**Size.** M.
+
+### Slice 6 — Clipboard and audio, one target at a time
+
+**Goal.** One pasteboard and one output route with an explicit owner.
+
+**Changes.**
+
+- One `ClipboardSync`, retargeted when the current phone changes. ⌘V in a
+  window uses that window's phone. The clipboard-image buffer is per phone.
+- One `AudioEngine`; its source is the current phone when at least one of its
+  windows is open and unpaused. `syncAudio` stops the old source on a switch or
+  when the last window closes; it never mixes two phones.
+- The UI names the audio source ("Sound plays from <phone>") when two or more
+  are online.
+
+**Proof.** E2E `phones` phase E: a Mac copy reaches A only; ⌘V in B's window
+writes B's clipboard; audio frames arrive from A and stop when A is no longer
+current or has no window; switching starts B only if B has an open window.
+
+**Size.** M.
+
+### Slice 7 — The remaining entry points
+
+**Goal.** Every way into the app names or implies the right phone, and the
+stats/log can tell two phones apart.
+
+**Changes.**
+
+- Links: send on the target's session without switching (C3).
+- Share phone → Mac: the inbox is per phone, or keyed by `(phone, id)` (C4).
+- Drops and APK installs: one sender/installer per phone (C5, C6).
+- MCP: a `phone` argument on phone-level tools; a `phone` field in
+  `list_windows`; an error that lists the choices (G3).
+- App Intents: resolve a named phone and act on its session without `use`
+  (G4).
+- Dock: reconcile every connected phone's cached app list (G5).
+- Stats and logs: `phone=<short id>` on every `stats stream=` line and every
+  per-window line; stream ids are globally unique (L1).
+- Menu items that change a phone name it in their title when two or more are
+  online (W9).
+
+**Proof.** The existing `links`, `sharein`, `drop`, `apk`, `mcp`, `intents`,
+`dock` and `stats` checks, extended with a second fake phone for the phases
+that need one; E2E `phones` phase F for the mixed cases. K2 covers the routing
+functions.
+
+**Size.** M.
+
+## 8. The test rig
+
+### 8.1 Can the fake phone run twice?
+
+Yes. One `fakephone.py` process is one phone: one identity, one port, one
+session at a time. Two processes on different ports, state files and event
+logs are two independent phones:
+
+```
+python3.11 tools/fakephone/fakephone.py --no-mdns --auto-allow \
+  --port 47811 --state "$WORK/a-state.json" --events "$WORK/a-events.jsonl" \
+  --name "Fake A"
+python3.11 tools/fakephone/fakephone.py --no-mdns --auto-allow \
+  --port 47812 --state "$WORK/b-state.json" --events "$WORK/b-events.jsonl" \
+  --name "Fake B"
+```
+
+Each keeps its own device id in its state file and still answers a second
+session with `busy`. That is the phone-side rule and should stay: the feature
+is a Mac with two phones, not a phone with two Macs.
+
+The app needs one test hook because `--connect` is a single endpoint and
+discovery is off under `--no-mdns`: `--connect-phone <host:port>` (repeatable,
+`PD_TEST_HOOKS` only) starts or resumes a session for that endpoint without
+making it current, and `--phones-report FILE` writes one line per phone
+(`id`, state, current) for the check. A release build ignores both, like the
+other test hooks.
+
+### 8.2 The e2e check
+
+One check, `phones`, with phases A–F in the order of the slices. It uses two
+fake phones on two ports and one profile, one window per phone at most (two
+ffmpeg encoders), and reads each phone's own `--events` file to prove which
+phone received an action. It never opens a second app instance and never uses
+the person's default profile.
+
+The phases:
+
+- **A:** both phones pair and connect; both answer pings for 20 s; A's session
+  survives B's close; switching back does not re-handshake.
+- **B:** pair B while A streams; A's window, session and banners are untouched;
+  B's Settings row says Connected.
+- **C:** one app window and one mirror on each phone; A's frames continue while
+  B opens; input, paste and drop land only in the owning phone's log; titles;
+  ⌘W; switch current with both window sets alive.
+- **D:** a notification and a timer from the non-current phone; banners and
+  rows under the right names; clearing one phone leaves the other; media
+  picker and transport.
+- **E:** clipboard and audio ownership on a switch.
+- **F:** link, share, drop, APK and MCP targeting with both phones live.
+
+Each `ok` line names its requirement ID when the corresponding spec rows land.
+
+### 8.3 The cheapest proof
+
+- **K2** for every pure machine and key: the phone book, link per phone,
+  `WindowKey`, notification and live keys, media ownership, link routing. These
+  need no phone and no boot.
+- **Two fake phones** for the cross-session wiring. They are Python processes
+  plus one ffmpeg per open window; two windows total is well inside the 8 GB
+  Mac's budget. They run under the same e2e lock as any other check.
+- **The phone side** needs no new boot: `SessionSlotTest`, `ServerTest` and
+  `tools/fakephone/test_busy_reject.py` already pin one Mac at a time, including
+  the `busy`, supersede and join paths. The phone code does not change for this
+  feature.
+- **No two emulators.** The emulator is only for phone-side behaviour, which
+  this feature does not touch. If a phone must ever serve two Macs, the cheap
+  proof is the JVM `SessionSlot`/`ServerTest` pair, not a second emulator; two
+  emulators on this Mac would also compete for the one heavy lock and the 8 GB
+  of memory.
+- **The VM** is needed only for slice 4 (File Provider). One boot, two fake
+  phones, two domains.
+
+## 9. Risks
+
+### 9.1 Memory and CPU with two streams
+
+Each open window holds one decoded picture, at most 16 MiB at the 2560 px cap
+(`WIN-33`). Today one phone can have four app windows plus its mirror; the
+target could hold ten streams (four app windows and a mirror on each of two
+phones) — about 160 MiB of pictures, plus two H.264 decoders per stream and the
+Mac's decoder-session limit. The per-phone cap does not bound the total.
+
+Mitigations, in order:
+
+1. Pause hidden and occluded windows as today (`window.pause` already stops the
+   encoder and detaches the surface); a hidden window keeps only its last
+   frame.
+2. Measure the app's resident size and CPU with two phones and two, four and
+   six windows, and with the panel/Deck open. The measurement goes in the NFR
+   notes before a limit is chosen.
+3. If the numbers need it, add a Mac-wide stream cap (for example 8 total) next
+   to each phone's cap, with the same "Close a window to open another."
+   sentence. That is a product limit, hence section 10.
+4. Two phones streaming at once also double the Mac's TLS, ping and ACK work;
+   that is small compared with video, but the session layer must not run one
+   global timer that scans every phone on every tick.
+
+### 9.2 Battery
+
+An idle connected phone costs one listening socket, one 15 s app-level ping and
+no virtual display, encoder or wake lock (`ARCHITECTURE.md` "Session end /
+battery"). A second idle phone adds one socket and one ping; a second streaming
+phone costs its own encoder and radio, exactly as if it were the only phone.
+The Mac's choice that matters is whether it connects every remembered phone at
+launch. Connecting all of them keeps every radio awake and every phone's
+notification listener busy; connecting lazily keeps the idle cost to the
+phones in use. Section 10 asks the person.
+
+Do not add a poll to discover a second phone. The existing Bonjour browse and
+the per-phone retry backoff are enough.
+
+### 9.3 Privacy on a shared Mac
+
+The pins, cached files, File Provider domains and notification settings live in
+the macOS user's home (`~/Library/Application Support/PocketDeck…`, the user's
+defaults and caches). Another macOS account cannot read them: the OS account is
+the boundary. A household that shares one macOS account shares every paired
+phone: both phones' notifications, Finder locations, media and clipboard are
+visible to anyone at that Mac.
+
+Options: keep the OS account as the boundary and say so; add a per-phone "Show
+on this Mac" switch; or add a macOS-user check. The first is the current design
+and needs no code; the second is a later feature; the third is not possible
+with one account. The product call is section 10.
+
+The logs must not get worse: every per-window line may carry a short phone id
+(a hash prefix or the device id's first characters, never the name), and no
+notification text, file name, media title, clipboard content or key material
+enters a log. `CONV-PD-05` and `R-PRIV-1` already say this.
+
+### 9.4 Wrong-phone actions
+
+The dangerous cases are the phone-level actions with no window: Ring, DND,
+ringer, volume, Turn Off Screen, Move to Mac, Install APK, Start Timer and a
+notification reply. Each gets an explicit target in section 6, and the menu or
+card names the phone when two or more are online. The old behaviour (act on
+`link.phone`) is not enough once two phones are online; a wrong Ring or a wrong
+DND is a visible, personal mistake.
+
+A second risk is a delayed action: a link or install that waits 120 s must
+remember its phone, not fall back to "whichever is current when it becomes
+ready". The existing pending queues already carry a `deviceId`; keep that and
+make every wait check the phone id.
+
+### 9.5 Decoder, File Provider and system limits
+
+- **VideoToolbox**: many simultaneous H.264 decodes can exhaust the Mac's
+  session limit. The Mac-wide cap (9.1) is the mitigation; a failed decoder
+  shows the window's cover, never a frozen frame as if live.
+- **File Provider**: two domains mean two Finder locations and two
+  registrations. The System Settings extension switch is per extension, not per
+  domain, so both appear or disappear together; the VM check must prove two
+  domains coexist and that removing one leaves the other. Adding a domain is
+  slow (the add can take seconds); do it once per phone, not on every switch.
+- **Notification Center**: two phones' banners share one center; the thread and
+  request id already carry the phone, so grouping is per phone. A phone's mute
+  list is per phone; do not merge them.
+- **Now Playing**: macOS has one entry. Two players will fight unless the rule
+  in section 6 is enforced in one place (`NowPlayingController`), not in each
+  caller.
+- **Audio**: one route. Two phones playing at once is the case the rule
+  forbids; the UI must say which phone owns the sound.
+
+## 10. Open questions
+
+Each line is a product call, not something the code can settle. The
+recommendation is the one the plan assumes.
+
+- [NEEDS CLARIFICATION] Should a household's phones all show in one panel, or
+  only the phones of the macOS user who paired them? Recommended: every phone
+  paired by this macOS account shows; the OS account is the privacy boundary,
+  and sharing one account means sharing every phone.
+- [NEEDS CLARIFICATION] One Deck and one panel with a phone switcher, or a
+  section per phone (all phones visible at once)? Recommended: one current
+  phone with a switcher in the Deck toolbar and the panel header; a section per
+  phone is a redesign of the 300 pt card.
+- [NEEDS CLARIFICATION] Does the Mac connect every remembered phone at launch,
+  or only the current phone plus any phone a feature needs (notifications,
+  Finder)? Recommended: lazily — current phone, plus a phone when a feature is
+  turned on or an entry point names it — to keep idle battery low.
+- [NEEDS CLARIFICATION] Should a background phone's copy reach the Mac
+  clipboard? Recommended: no; only the current phone's copy does, and a
+  notification for a background phone's copy is a later feature.
+- [NEEDS CLARIFICATION] Should two phones' audio mix, or only the current
+  phone's play? Recommended: one phone at a time; two calls or two songs mixed
+  into one Mac route is worse than a switch.
+- [NEEDS CLARIFICATION] When both phones play media, which wins Now Playing:
+  the current phone, the most recently updated, or the person's pick?
+  Recommended: the person's pick, else the current phone, else the most
+  recently updated; transport always goes to the displayed phone.
+- [NEEDS CLARIFICATION] One Mac-wide "Show phone files in Finder" switch that
+  mounts every paired phone, or a switch per phone? Recommended: one switch,
+  every paired phone's location; forgetting a phone removes its location.
+- [NEEDS CLARIFICATION] Keep each phone's window cap only, or add a Mac-wide cap
+  for the 8 GB Mac? Recommended: add a total cap (8 is the starting proposal)
+  beside the per-phone cap, with the same sentence.
+- [NEEDS CLARIFICATION] Does "Use This Phone" still exist as one current phone,
+  or does every surface pick its own phone and the Deck show all phones?
+  Recommended: keep a current phone for surfaces with no target; every surface
+  with a target ignores it.
+- [NEEDS CLARIFICATION] Where does a non-current phone's problem show (Pair
+  again, offline, a missing permission): a row in Settings, a badge on the
+  phone switcher, or a second banner? Recommended: a badge on the switcher and
+  the phone's Settings row; the one Deck banner stays the current phone's.
+- [NEEDS CLARIFICATION] May one phone be connected to two Macs at the same time?
+  Recommended: no for this feature; the phone's one-slot rule stays. It would be
+  a separate L change to the phone's shared audio, panel, clipboard and notify
+  owners.
+- [NEEDS CLARIFICATION] May a second pairing run while a phone is live?
+  Recommended: yes, one sheet at a time, and the live phone keeps its session.
