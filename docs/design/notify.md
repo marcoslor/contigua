@@ -246,9 +246,11 @@ the emulator run records exactly what Android 16 did. `EXTRA_REQUEST_PROMOTED_ON
 API 36.1 and is not in this project's compileSdk 36; on 36 promotion is the
 system's decision for a notification that already qualifies, so nothing requests
 it. A notification that is ongoing and not promoted is skipped exactly as before
-(service chrome). The debug poster's own ongoing notifications stay forwardable
-in debug builds (the test seam that made the dismiss rule testable) and carry
-their own `promoted=` record.
+(service chrome), **except** that `live.md` `LIVE-3`/`LIVE-5` may accept an
+allowed app's legacy card as a live item; the live surface owns that rule and
+the item is not a banner. The debug poster's own ongoing notifications stay
+forwardable in debug builds (the test seam that made the dismiss rule testable)
+and carry their own `promoted=` record.
 
 The wire adds `live` to `notify.post`: `{progress?: 0..1, chip?: ≤ 16 chars,
 chrono?: <epoch ms>, countDown?: bool}`.
