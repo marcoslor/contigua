@@ -107,7 +107,8 @@ display id on every injected event.
 - **A codec the Mac cannot decode is refused.** IF a `VIDEO_CONFIG` names a codec
   the Mac does not decode (its own hardware test says no, or an unknown number)
   THEN the Mac refuses that stream with one log line naming the stream id and
-  the codec, shows the window's error state, and never hands the bytes to
+  the codec, shows its existing refusal state (the opening cover's refusal while
+  it is opening; a refused stream once live), and never hands the bytes to
   another codec's decoder.
 - On resize the phone sends a **new VIDEO_CONFIG** (new size) followed by a
   keyframe, then `window.resize.ack`. The Mac must rebuild its format description on
