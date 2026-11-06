@@ -50,7 +50,7 @@ TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
 # cells and the marks a reader needs to exclude a run.
 CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
                "failed", "covered", "secs", "rx_frames", "shown_frames",
-               "phone_frames", "kf_req", "bytes", "covered_ms",
+               "phone_frames", "kf_req", "bytes", "covered_ms", "max_gap_ms",
                "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"]
               + list(TABLE_FIELDS) + ["frozen", "low_motion", "no_drop_ms", "phone_gaps"])
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
@@ -332,13 +332,25 @@ def swipe_windows(phases):
     return windows
 
 
-def is_frozen(sampled, phases=None):
-    """True when a 5 s line in a swipe phase shows under 10 fps.
+# A picture gone for longer than this across the run is frozen. The 5 s line
+# is a 2 s sample, so it can miss a gap that falls between two lines; the
+# totals' max_gap_ms covers the whole life.
+FROZEN_GAP_MS = 2500
 
-    A frozen picture produces no late frame, so the hitch rule cannot see it;
-    the still phases carry heartbeat frames only and never count. Without
-    phases (a fixture) every sampled line is a swipe line.
+
+def is_frozen(total, sampled, phases=None):
+    """True when the run's picture was gone for over 2.5 s.
+
+    `max_gap_ms` on the closing totals line is the run's longest interval
+    between received frames, outside covered time: it sees a freeze that a
+    5 s line's 2 s window can miss. An older log has no such field, so then a
+    5 s line in a swipe phase under 10 fps still marks the run frozen. The
+    still phases carry heartbeat frames only and never count; without phases
+    (a fixture) every sampled line is a swipe line.
     """
+    gap = number(total or {}, "max_gap_ms")
+    if gap is not None:
+        return gap > FROZEN_GAP_MS
     windows = swipe_windows(phases)
     for row in sampled:
         fps = number(row, "rx_fps")
@@ -404,7 +416,7 @@ def run_metrics(total, sampled=(), phases=None):
         "qp_p95": median(qp),
         "e2e_p50": number(total, "e2e_p50"),
         "e2e_p95": number(total, "e2e_p95"),
-        "frozen": is_frozen(sampled, phases),
+        "frozen": is_frozen(total, sampled, phases),
         "low_motion": (rx / secs) < 20 if secs > 0 else True,
         "no_drop_ms": total.get("drop_ms") in (None, "-"),
         "phone_gaps": phone_n <= 0,
@@ -417,6 +429,7 @@ def run_metrics(total, sampled=(), phases=None):
         "kf_req": number(total, "kf_req"),
         "bytes": phone_bytes,
         "covered_ms": covered_ms,
+        "max_gap_ms": number(total, "max_gap_ms"),
         "tcp_ooo_kb": number(total, "tcp_ooo_kb"),
         "tcp_srtt_max": number(total, "tcp_srtt_max"),
         "ph_retrans": number(total, "ph_retrans"),
@@ -431,7 +444,7 @@ def empty_metrics():
     values.update({"frozen": 0, "low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
                    "covered": 0, "failed": 1, "secs": None, "rx_frames": None,
                    "shown_frames": None, "phone_frames": None, "kf_req": None,
-                   "bytes": None, "covered_ms": None})
+                   "bytes": None, "covered_ms": None, "max_gap_ms": None})
     return values
 
 

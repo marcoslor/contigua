@@ -396,7 +396,7 @@ final class StreamStatsTests: XCTestCase {
                       "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
                       "kf_req=0", "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
-                      "e2e_p50=-", "e2e_p95=-"] {
+                      "e2e_p50=-", "e2e_p95=-", "max_gap_ms="] {
             XCTAssertTrue(line.contains(field), "missing \(field) in \(line)")
         }
     }
@@ -501,9 +501,48 @@ final class StreamStatsTests: XCTestCase {
                       "late_p99=183.3", "phone_n=3", "phone_frames=110",
                       "kf=3", "kf_req=3", "drop_ep=3", "drop_ms=110",
                       "susp_n=3", "susp_ms=30", "bytes=2500",
-                      "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000"] {
+                      "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000",
+                      "max_gap_ms="] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
+    }
+
+    // MARK: The longest picture gap (item 0)
+
+    /// ISS-40: `max_gap_ms` is the longest interval between received frames
+    /// outside covered time, over the line's own period and the whole life;
+    /// a VIDEO_CONFIG in the middle of a gap must not hide it, because the
+    /// decoder had no picture on either side of it.
+    func testTheLongestFrameGapSurvivesAConfigAndReachesBothLines() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteReceived(now: 1.0, bytes: 100)
+        window.noteReceived(now: 1.02, bytes: 100)
+        window.noteConfig(now: 1.5)
+        window.noteReceived(now: 3.24, bytes: 100) // 2_220 ms since 1.02
+        let line = window.snapshot(now: 5.0)
+        XCTAssertEqual(line.maxGapMs, 2_220, accuracy: 0.5)
+        let text = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: line)
+        XCTAssertTrue(text.contains("max_gap_ms=2220"), text)
+        // The next line's gap starts from the last frame, not from this line.
+        XCTAssertEqual(window.snapshot(now: 10.0).maxGapMs, 0, accuracy: 0.001)
+        let total = window.total(now: 10.0)
+        XCTAssertEqual(total.maxGapMs, 2_220, accuracy: 0.5)
+        let totalText = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totalText.contains("max_gap_ms=2220"), totalText)
+    }
+
+    /// A hidden or paused window is not a picture gap: its span is covered
+    /// time (WIN-55's `covered_ms`), so the frame on either side of it must
+    /// not become a gap.
+    func testACoveredSpanIsNotAMaxGap() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteReceived(now: 1.0, bytes: 100)
+        window.notePaused(true, now: 1.1)
+        window.notePaused(false, now: 4.0)
+        window.noteReceived(now: 4.05, bytes: 100)
+        XCTAssertEqual(window.snapshot(now: 5.0).maxGapMs, 0, accuracy: 0.001)
+        XCTAssertEqual(window.total(now: 5.0).maxGapMs, 0, accuracy: 0.001)
     }
 
     func testACloseWhilePausedCountsTheCoveredTimeSoFar() {
@@ -521,7 +560,7 @@ final class StreamStatsTests: XCTestCase {
                       "hitch_ms=0", "late_p99=-", "phone_n=0", "phone_frames=0",
                       "kf=0", "kf_req=0", "drop_ep=0", "drop_ms=-",
                       "susp_n=0", "susp_ms=0", "bytes=0", "e2e_p50=-",
-                      "e2e_p95=-", "covered_ms=0"] {
+                      "e2e_p95=-", "covered_ms=0", "max_gap_ms=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
     }

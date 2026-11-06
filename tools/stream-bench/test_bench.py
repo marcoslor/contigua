@@ -230,8 +230,15 @@ class ResendSummaryTest(unittest.TestCase):
     def test_the_table_gains_the_two_resend_columns_and_the_csv_the_totals(self):
         self.assertIn("tcp_ooo_kb", self.bench.TABLE_FIELDS)
         self.assertIn("ph_retrans", self.bench.TABLE_FIELDS)
-        for field in ("tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"):
+        for field in ("tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost",
+                      "max_gap_ms"):
             self.assertIn(field, self.bench.CSV_FIELDS)
+
+    def test_the_totals_carry_the_longest_gap_into_the_run(self):
+        total = self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "secs=10.0 rx_frames=600 max_gap_ms=1830\n", 1)
+        self.assertEqual(self.bench.run_metrics(total)["max_gap_ms"], 1830)
 
     def test_the_totals_carry_the_new_fields_into_the_run(self):
         total = self.bench.parse_totals(
@@ -359,13 +366,13 @@ class FrozenTest(unittest.TestCase):
             "2026-11-05 15:57:50.000000-0300 mac PocketDeck[7]: "
             "stats total stream=14 secs=21.6 rx_frames=540 shown_frames=540 "
             "hitch_n=0 hitch_ms=0 drop_ep=0 drop_ms=0 susp_n=0 susp_ms=0 "
-            "phone_n=10 phone_frames=540\n"
+            "phone_n=10 phone_frames=540 max_gap_ms=10800\n"
         )
         sampled = self.bench.parse_rows(text, 14)
         total = self.bench.parse_totals(text, 14)
         values = self.bench.run_metrics(total, sampled)
         self.assertTrue(values["frozen"])
-        self.assertTrue(self.bench.is_frozen(sampled))
+        self.assertTrue(self.bench.is_frozen(total, sampled))
         self.assertFalse(values["low_motion"])
 
     def test_stream_15_shaped_lines_are_frozen_and_low_motion(self):
@@ -374,7 +381,8 @@ class FrozenTest(unittest.TestCase):
         # the round.
         total = self.total(secs=21.8, rx_frames=33, shown_frames=33,
                            hitch_n=0, hitch_ms=0, drop_ep=0, drop_ms=0,
-                           susp_n=1, susp_ms=19, phone_n=10, phone_frames=33)
+                           susp_n=1, susp_ms=19, phone_n=10, phone_frames=33,
+                           max_gap_ms=10700)
         sampled = [{"at": 0, "rx_fps": "60"},
                    {"at": 5, "rx_fps": "0"},
                    {"at": 10, "rx_fps": "0"}]
@@ -384,12 +392,33 @@ class FrozenTest(unittest.TestCase):
 
     def test_a_slow_still_phase_does_not_freeze_a_run(self):
         # The 3 s stills send heartbeat frames only; a 5 s line there is no
-        # frozen picture while the content moves.
+        # frozen picture while the content moves, and the whole run's longest
+        # gap stays under the 2.5 s mark.
         phases = [("swipes", 1_000.0), ("still", 1_020.0),
                   ("flings", 1_030.0), ("settle", 1_040.0)]
         sampled = [{"at": 1_025.0, "rx_fps": "1"},
                    {"at": 1_035.0, "rx_fps": "60"}]
-        self.assertFalse(self.bench.is_frozen(sampled, phases))
+        total = self.total(secs=21.0, rx_frames=600, max_gap_ms=1200)
+        self.assertFalse(self.bench.is_frozen(total, sampled, phases))
+
+    def test_stream_2_shaped_run_under_the_gap_is_not_frozen(self):
+        # Round 3's stream 2: one 5 s line with zero frames while a swipe ran,
+        # then frames again. The run's longest gap was 1.8 s, so the picture
+        # never stopped for 2.5 s: the old 5 s line rule called it frozen.
+        total = self.total(secs=22.0, rx_frames=300, shown_frames=300,
+                           drop_ep=1, drop_ms=383, max_gap_ms=1800)
+        sampled = [{"at": 1.0, "rx_fps": "16.8"},
+                   {"at": 6.0, "rx_fps": "0.0"},
+                   {"at": 11.0, "rx_fps": "16.8"}]
+        values = self.bench.run_metrics(total, sampled)
+        self.assertFalse(values["frozen"])
+        self.assertFalse(self.bench.is_frozen(total, sampled))
+
+    def test_an_older_totals_line_without_max_gap_keeps_the_five_second_rule(self):
+        # A log from before the field existed still marks a dead 5 s line.
+        total = self.total(secs=22.0, rx_frames=300, shown_frames=300)
+        sampled = [{"at": 6.0, "rx_fps": "0.0"}]
+        self.assertTrue(self.bench.is_frozen(total, sampled))
 
     def test_frozen_and_low_motion_runs_leave_the_medians(self):
         clean = self.metrics(100)
