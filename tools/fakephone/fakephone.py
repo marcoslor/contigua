@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import base64
+import enum
 import errno
 import hashlib
 import hmac
@@ -1922,6 +1923,123 @@ class PathConn(object):
                 self.session._inbound.put(("down", self.path_id))
 
 
+# --- the fake encoder's own state machine ---------------------------------
+class EncoderState(enum.Enum):
+    """What the ffmpeg process behind one window stream is doing.
+
+    A stall is a state, not a pause flag: while STALLED the stream ignores
+    every request to start it (a keyframe, a resize, a resume, a cleared
+    backlog, a path switch), because a real stalled encoder does not come back
+    because it was asked. Only --stall-for or closing the window leaves it.
+    """
+    IDLE = "idle"        # the window exists; no encoder yet
+    HELD = "held"        # --first-frame-delay: the opening cover holds frame one
+    RUNNING = "running"
+    PAUSED = "paused"
+    STALLED = "stalled"
+    STOPPED = "stopped"
+
+
+class EncoderEvent(enum.Enum):
+    START = "start"              # open, resize, resume, keyframe, rotate, adopt, black
+    HOLD = "hold"                # --first-frame-delay: hold frame one
+    HOLD_ENDED = "hold-ended"    # the first-frame timer fired
+    PAUSE = "pause"              # window.pause, or the phone's screen going off
+    STALL = "stall"              # --stall-after
+    STALL_ENDED = "stall-ended"  # --stall-for
+    STOP = "stop"                # window.closed
+
+
+class EncoderAction(enum.Enum):
+    SPAWN = "spawn"                      # start ffmpeg, reset config/au counters
+    KILL = "kill"                        # stop ffmpeg and join its reader
+    CANCEL_TIMERS = "cancel-timers"      # stall-after and stall-for timers
+    ANNOUNCE_STALL = "announce-stall"    # the ev stall line + the timers after it
+    ANNOUNCE_RESUME = "announce-resume"  # the ev resume line
+    IGNORE = "ignore"                    # one stderr line naming the request
+
+
+def encoder_transition(state, event, resume=True):
+    """(state, event) -> (state, actions). Pure; the caller runs the actions.
+
+    `resume` is only read by START: the backlog-cleared caller passes
+    `start(False)` so it cannot undo a pause that landed under it. Every other
+    caller starts or restarts the encoder.
+    """
+    spawn = [EncoderAction.SPAWN]
+    stop = [EncoderAction.CANCEL_TIMERS, EncoderAction.KILL]
+    if state is EncoderState.IDLE:
+        if event is EncoderEvent.START:
+            return (EncoderState.RUNNING, spawn)
+        if event is EncoderEvent.HOLD:
+            return (EncoderState.HELD, [])
+        if event is EncoderEvent.PAUSE:
+            return (EncoderState.PAUSED, [])
+        if event is EncoderEvent.STALL:
+            return (EncoderState.STALLED, [EncoderAction.ANNOUNCE_STALL])
+        if event is EncoderEvent.STOP:
+            return (EncoderState.STOPPED, [EncoderAction.CANCEL_TIMERS])
+        if event is EncoderEvent.HOLD_ENDED or event is EncoderEvent.STALL_ENDED:
+            return (state, [EncoderAction.IGNORE])
+    if state is EncoderState.HELD:
+        if event is EncoderEvent.HOLD_ENDED:
+            return (EncoderState.RUNNING, spawn)
+        if event is EncoderEvent.START or event is EncoderEvent.HOLD:
+            return (state, [EncoderAction.IGNORE])
+        if event is EncoderEvent.PAUSE:
+            return (EncoderState.PAUSED, [])
+        if event is EncoderEvent.STALL:
+            return (EncoderState.STALLED, [EncoderAction.ANNOUNCE_STALL])
+        if event is EncoderEvent.STOP:
+            return (EncoderState.STOPPED, [EncoderAction.CANCEL_TIMERS])
+        if event is EncoderEvent.STALL_ENDED:
+            return (state, [EncoderAction.IGNORE])
+    if state is EncoderState.RUNNING:
+        if event is EncoderEvent.START:
+            return (state, [EncoderAction.KILL] + spawn)
+        if event is EncoderEvent.PAUSE:
+            return (EncoderState.PAUSED, [EncoderAction.KILL])
+        if event is EncoderEvent.STALL:
+            return (EncoderState.STALLED,
+                    [EncoderAction.KILL, EncoderAction.ANNOUNCE_STALL])
+        if event is EncoderEvent.STOP:
+            return (EncoderState.STOPPED, stop)
+        if (event is EncoderEvent.HOLD or event is EncoderEvent.HOLD_ENDED
+                or event is EncoderEvent.STALL_ENDED):
+            return (state, [EncoderAction.IGNORE])
+    if state is EncoderState.PAUSED:
+        if event is EncoderEvent.START:
+            if resume:
+                return (EncoderState.RUNNING, spawn)
+            return (state, [EncoderAction.IGNORE])
+        if event is EncoderEvent.STALL:
+            return (EncoderState.STALLED, [EncoderAction.ANNOUNCE_STALL])
+        if event is EncoderEvent.STOP:
+            return (EncoderState.STOPPED, [EncoderAction.CANCEL_TIMERS])
+        if (event is EncoderEvent.HOLD or event is EncoderEvent.HOLD_ENDED
+                or event is EncoderEvent.PAUSE or event is EncoderEvent.STALL_ENDED):
+            return (state, [EncoderAction.IGNORE])
+    if state is EncoderState.STALLED:
+        if event is EncoderEvent.STALL_ENDED:
+            return (EncoderState.RUNNING,
+                    [EncoderAction.CANCEL_TIMERS] + spawn
+                    + [EncoderAction.ANNOUNCE_RESUME])
+        if event is EncoderEvent.STOP:
+            return (EncoderState.STOPPED, stop)
+        if (event is EncoderEvent.START or event is EncoderEvent.HOLD
+                or event is EncoderEvent.HOLD_ENDED or event is EncoderEvent.PAUSE
+                or event is EncoderEvent.STALL):
+            return (state, [EncoderAction.IGNORE])
+    if state is EncoderState.STOPPED:
+        if event is EncoderEvent.START or event is EncoderEvent.HOLD:
+            return (state, [EncoderAction.IGNORE])
+        if (event is EncoderEvent.PAUSE or event is EncoderEvent.STALL
+                or event is EncoderEvent.HOLD_ENDED or event is EncoderEvent.STALL_ENDED
+                or event is EncoderEvent.STOP):
+            return (state, [])
+    raise AssertionError("encoder: unhandled %r in %r" % (event, state))
+
+
 # --- one encoder-backed window stream -------------------------------------
 class WindowStream(object):
     def __init__(self, phone, stream_id, w, h, dpi, mode, pkg=None, activity=None):
@@ -1963,16 +2081,22 @@ class WindowStream(object):
         self._stats_kf_req = 0
         self._first_frame_at = None
         self._gap_done = False
-        # --first-frame-delay holds the first start; a wake or resize that
-        # arrives before the timer must not send the frame early.
-        self._start_held = False
-        self._paused = False
+        # The encoder is one explicit state (encoder_transition); --first-frame-
+        # delay holds the first start, and a wake or resize before its timer
+        # must not send the frame early.
+        self._state = EncoderState.IDLE
         # --secure-after: the encoder sends solid black while a secure surface
         # would be blanked in the mirror.
         self._black = False
         self._stall_timer = None
+        self._stall_end_timer = None
         self._power_timer = None
         self._lock = threading.Lock()
+
+    @property
+    def streaming(self):
+        """True while the encoder is sending frames (stream.stats reads this)."""
+        return self._state is EncoderState.RUNNING
 
     @staticmethod
     def _label_for(pkg):
@@ -2065,41 +2189,83 @@ class WindowStream(object):
                 "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
         return cmd
 
+    def _handle(self, event, cause, resume=True):
+        """Run one encoder event through the transition table and its actions.
+
+        Actions that spawn or kill ffmpeg run under the window lock; the ev
+        lines and stderr write run after it, so their own locks never nest
+        under this one.
+        """
+        announce = []
+        ignored = False
+        with self._lock:
+            before = self._state
+            state, actions = encoder_transition(before, event, resume=resume)
+            self._state = state
+            for action in actions:
+                if action is EncoderAction.SPAWN:
+                    self._spawn_locked()
+                elif action is EncoderAction.KILL:
+                    self._stop_locked()
+                elif action is EncoderAction.CANCEL_TIMERS:
+                    self._cancel_timers_locked()
+                else:
+                    announce.append(action)
+            ignored = any(action is EncoderAction.IGNORE for action in actions)
+        if before is not state:
+            sys.stderr.write("fakephone: stream %d encoder %s --%s--> %s\n"
+                             % (self.stream_id, before.value, event.value, state.value))
+        if ignored:
+            sys.stderr.write("fakephone: stream %d %s ignored (%s)\n"
+                             % (self.stream_id, cause, state.value))
+        for action in announce:
+            if action is EncoderAction.ANNOUNCE_STALL:
+                self._announce_stall()
+            elif action is EncoderAction.ANNOUNCE_RESUME:
+                self.phone.events.resume(self.stream_id, self._frames_sent)
+
+    def _spawn_locked(self):
+        self._stop_locked()
+        self._configured = False
+        self._au_index = 0
+        self._enc = subprocess.Popen(self._cmd(), stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                     bufsize=0)
+        proc = self._enc
+        self._reader = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
+        self._reader.start()
+
+    def _cancel_timers_locked(self):
+        for name in ("_stall_timer", "_stall_end_timer"):
+            timer = getattr(self, name)
+            if timer is not None:
+                timer.cancel()
+                setattr(self, name, None)
+
     def start_after(self, delay, alive):
         """The opening cover's fake: hold the first config and frame for a
-        while. A wake, resize or keyframe in the meantime must not start the
-        encoder early; a window closed in the meantime never starts it."""
-        self._start_held = True
+        while. A wake, resize or keyframe in the meantime is ignored by the
+        HELD state; a window closed in the meantime never starts it."""
+        self._handle(EncoderEvent.HOLD, "start_after")
+
         def go():
-            self._start_held = False
             if alive():
-                self.start()
+                self._handle(EncoderEvent.HOLD_ENDED, "start_after")
+
         timer = threading.Timer(delay, go)
         timer.daemon = True
         timer.start()
 
-    def start(self, resume=True):
+    def start(self, resume=True, cause="start"):
         """(Re)start the encoder: used by open, resize, resume and keyframe.
 
         `resume=False` is the backlog-cleared path: it must not undo a pause
         that landed between the caller's check and this call (the paths layer
         drains the queue often, and Live Text pauses the stream under it).
+        While STALLED every cause is ignored: a stalled encoder does not come
+        back because it was asked.
         """
-        if self._start_held:
-            return
-        with self._lock:
-            if self._paused and not resume:
-                return
-            self._stop_locked()
-            self._configured = False
-            self._au_index = 0
-            self._paused = False
-            self._enc = subprocess.Popen(self._cmd(), stdout=subprocess.PIPE,
-                                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                         bufsize=0)
-            proc = self._enc
-        self._reader = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
-        self._reader.start()
+        self._handle(EncoderEvent.START, cause, resume=resume)
 
     def black_for(self, seconds, alive):
         """Solid black frames for a secure surface, then the normal picture.
@@ -2108,17 +2274,14 @@ class WindowStream(object):
         be restarted by the timer.
         """
         self._black = True
-        self.start()
+        self.start(cause="black")
         time.sleep(seconds)
         self._black = False
         if alive():
-            self.start()
+            self.start(cause="black")
 
     def pause(self):
-        with self._lock:
-            if not self._paused:
-                self._stop_locked()
-                self._paused = True
+        self._handle(EncoderEvent.PAUSE, "pause")
 
     def _stall(self):
         """--stall-after: stop the encoder but keep the session and its socket.
@@ -2126,7 +2289,9 @@ class WindowStream(object):
         --stall-for restarts it after that many seconds: the picture comes
         back and a check can see the window's stall state clear.
         """
-        self.pause()
+        self._handle(EncoderEvent.STALL, "stall")
+
+    def _announce_stall(self):
         self.phone.events.stall(self.stream_id, self._frames_sent)
         if self.phone.args.power_locked_after > 0 and self._power_timer is None:
             # The person's power press lands with the stall: the phone re-lights
@@ -2138,6 +2303,7 @@ class WindowStream(object):
         if self.phone.args.stall_for > 0:
             timer = threading.Timer(self.phone.args.stall_for, self._resume_after_stall)
             timer.daemon = True
+            self._stall_end_timer = timer
             timer.start()
 
     def _power_locked(self):
@@ -2146,16 +2312,10 @@ class WindowStream(object):
         self.phone.sender.send_json({"t": "power.locked"})
 
     def _resume_after_stall(self):
-        self.phone.events.resume(self.stream_id, self._frames_sent)
-        self.start()
+        self._handle(EncoderEvent.STALL_ENDED, "stall-for")
 
     def stop(self):
-        with self._lock:
-            if self._stall_timer is not None:
-                self._stall_timer.cancel()
-                self._stall_timer = None
-            self._stop_locked()
-            self._paused = True
+        self._handle(EncoderEvent.STOP, "stop")
 
     def _stop_locked(self):
         proc = self._enc
@@ -2209,7 +2369,8 @@ class WindowStream(object):
                 self.stream_id))
             self.phone.sender.send_config(self.stream_id, proto.CODEC_H264, self.w, self.h, sps_pps)
             self.phone.events.video_config(self.stream_id, self.w, self.h)
-            if self.phone.args.stall_after and self._stall_timer is None:
+            if (self.phone.args.stall_after and self._stall_timer is None
+                    and self._state is EncoderState.RUNNING):
                 # The phone's picture freezes while the session stays up: the
                 # stale-picture and frozen-mode checks start here.
                 self._stall_timer = threading.Timer(
@@ -3252,7 +3413,7 @@ class Session(object):
         self.phone.events.screen("on")
         for window in self.windows.values():
             if window.mode == "phone":
-                window.start()
+                window.start(cause="screen-on")
         self.send_state()
 
     def _on_phone_panel(self, msg):
@@ -4696,7 +4857,7 @@ class Session(object):
             window.start_after(self.phone.args.first_frame_delay,
                                lambda: self.windows.get(stream_id) is window)
         else:
-            window.start()
+            window.start(cause="open")
         if mode == "phone" and self.phone.args.rotate_after > 0:
             threading.Thread(target=self._rotate_later, args=(window,), daemon=True).start()
         if mode == "phone" and self.phone.args.screen_off_after > 0:
@@ -4754,7 +4915,7 @@ class Session(object):
                     "taskId": task_id, "started": "moved"})
         self._send(window.title_message())
         self.phone.events.adopt(stream_id, task_id)
-        window.start()
+        window.start(cause="adopt")
         if (self.phone.args.moved_to_phone_after > 0 and self._report_source
                 and self._report_source[1] == pkg):
             threading.Thread(target=self._move_to_phone_later,
@@ -4786,7 +4947,7 @@ class Session(object):
         self.phone.screen = (screen_h, screen_w)
         box = turn_box(window.w, window.h, *self.phone.screen)
         window.w, window.h = mirror_fit(*box + self.phone.screen)
-        window.start()
+        window.start(cause="rotate")
 
     def _secure_later(self, window):
         """A secure surface covers display 0: state.secure true and black frames,
@@ -4846,7 +5007,7 @@ class Session(object):
         self.phone.events.task_continue(stream_id, mode, started)
         self._send({"t": "window.opened", "stream": stream_id, "displayId": window.display_id,
                     "w": window.w, "h": window.h, "taskId": window.task_id, "started": started})
-        window.start()
+        window.start(cause="continue")
         # The real phone's title watcher reports the top app of every display;
         # the Mac titles the window ("Settings (FakePhone)") from it.
         self._send(window.title_message())
@@ -4888,7 +5049,7 @@ class Session(object):
             # `window.resize.ack`, and a same-size dpi change only relayouts the
             # display, so no new VIDEO_CONFIG follows either.
             return
-        window.start()
+        window.start(cause="resize")
         if quiet:
             return
         # Every resize is answered (PROTOCOL.md `window.resize.ack`): the echo is
@@ -4930,7 +5091,7 @@ class Session(object):
             return
         self._stats_next = now + 2.0
         for window in list(self.windows.values()):
-            if window._paused:
+            if not window.streaming:
                 continue
             drop = 0
             episodes = 0
@@ -4969,13 +5130,13 @@ class Session(object):
     def _on_window_resume(self, msg):
         window = self._stream_or_error(msg)
         if window is not None:
-            window.start()
+            window.start(cause="resume")
 
     def _on_window_keyframe(self, msg):
         window = self._stream_or_error(msg)
         if window is not None:
             window._stats_kf_req += 1
-            window.start()
+            window.start(cause="keyframe")
 
     def _on_window_quality(self, msg):
         # Accepted for protocol completeness; the fake's ffmpeg pipeline keeps
@@ -5283,7 +5444,8 @@ class FakePhone(object):
             return
         window = session.windows.get(stream_id)
         if window is not None:
-            threading.Thread(target=window.start, args=(False,), daemon=True).start()
+            threading.Thread(target=window.start, args=(False, "backlog"),
+                             daemon=True).start()
 
     def _reject_busy(self, conn):
         try:

@@ -39,6 +39,13 @@ connection over TLS, with a client that stalls on it):
 python3.11 tools/fakephone/test_busy_reject.py   # prints OK, exit 0
 ```
 
+The window stream encoder's state machine (the `--stall-after`/`--stall-for`
+rig, ISS-46) has its own:
+
+```sh
+python3.11 tools/fakephone/test_encoder_state.py   # prints OK, exit 0
+```
+
 It starts `fakephone` on an ephemeral port (`--no-mdns --auto-allow`), pairs with
 `deckctl`, runs `apps`, `icon`, `open`, `resize-test`, `input-test`,
 `pause-test`, `latency`, checks that a second simultaneous session is rejected
@@ -105,6 +112,38 @@ down to a multiple of 16. Deltas are dropped past ~250 ms of backlog per stream
 (JSON > config/key > delta). A phone that cannot capture display 0 answers a
 phone-mode `window.open` with `{"t":"error","code":"mirror_unavailable"}`
 (`--mirror-unavailable`), sending no `window.opened` and no frames.
+
+### The window stream encoder's states
+
+A stream's encoder is one explicit state machine (`encoder_transition` in
+`fakephone.py`), not a pause flag. `--stall-after` stops the encoder because
+the phone's picture froze; that is `Stalled`, and it is not something a request
+from the Mac can undo.
+
+| state | what the encoder is doing | leaves on |
+| --- | --- | --- |
+| `Idle` | the window exists, no encoder yet | `start` → `Running`; `hold` → `Held` |
+| `Held` | `--first-frame-delay` holds frame one | the first-frame timer → `Running`; `pause` → `Paused`; `stop` → `Stopped` |
+| `Running` | ffmpeg is encoding and frames flow | `start` (restart); `pause`/`stall` → `Paused`/`Stalled`; `stop` → `Stopped` |
+| `Paused` | stopped by `window.pause` or the screen going off | `start` → `Running` (except a cleared backlog's `start(False)`); `stop` → `Stopped` |
+| `Stalled` | stopped by `--stall-after`, session still up | only `--stall-for` → `Running`, or `stop` → `Stopped` |
+| `Stopped` | the window closed | nothing (terminal) |
+
+Every `start` cause (open, resize, resume, keyframe, rotate, adopt, continue,
+black, screen-on, backlog cleared, and a path switch) is one `Start` event.
+While `Stalled`, every one of them is ignored: a stalled encoder does not come
+back because it was asked. Each ignored request still counts where it counts
+(the keyframe counter), and prints one line to stderr:
+
+```
+fakephone: stream N <cause> ignored (stalled)
+```
+
+Transitions print to stderr as well, so a field log shows the path:
+
+```
+fakephone: stream N encoder <from> --<event>--> <to>
+```
 
 ### Event log (`--events`)
 
