@@ -785,3 +785,192 @@ recommendation is the one the plan assumes.
   owners.
 - [NEEDS CLARIFICATION] May a second pairing run while a phone is live?
   Recommended: yes, one sheet at a time, and the live phone keeps its session.
+
+## 11. Spec notes
+
+These are the spec lines that must change when the plan lands. They are listed
+here, not edited: a behaviour change updates its spec in the same commit
+(`AGENTS.md`). Line numbers are at `3144abd1`. Where the spec is already right
+for the target, there is no entry.
+
+### 11.1 Phone-count sections that are wrong for 2+
+
+**`docs/specs/app-windows.md:195`** (the 2+ row). It says the window belongs to
+the phone in use and that switching closes every window of the previous phone.
+Replace it with: "Each window belongs to its phone and stays open when another
+phone becomes current; its title names its phone. New Window, the open-window
+list and ⌘\` act on the key window's phone; with no key window, the current
+phone. Each phone's cap counts its own streams." Also change `WIN-35`
+(`:71`) from "act on the phone in use only" to "act on the key window's phone,
+else the current phone"; its proof's "e2e `multiwin` `[WIN-35]` with a second
+fake phone" does not exist today (the `multiwin` check runs one phone), so point
+it at the `phones` check's phase C or mark it untested. The `CONV-PD-01` answer
+(`:234`) then reads "windows follow their phone; Settings switches the current
+phone and closes nothing."
+
+**`docs/specs/deck.md:114`** (the 2+ row). It says the Deck offers no phone
+switch. Replace it with: "Phone mode for the current phone, with a phone
+switcher in the toolbar that lists every connected phone and its state;
+Settings ▸ Use This Phone does the same. Changing the current phone closes no
+window." Update the `CONV-PD-01` answer (`:150`) and the assumption at `:164`
+("The phone in use is the one `activePhoneId` names") to "the current phone".
+Whether the Deck shows one current phone or all phones at once is section 10's
+question; this replacement is the recommended one.
+
+**`docs/specs/files.md:128`** (the 2+ row). It says the one location follows
+the phone in use and the other phones are not mounted. Replace it with: "Every
+phone with the switch on has its own location, 'PocketDeck (<name>)'; a
+location's listings, thumbnails, drops and installs act on that phone." The
+same change reaches three requirement rows: `FILES-1` (`:28`) makes the domain
+identifier the profile **and** the phone id instead of the profile name;
+`FILES-2` (`:29`) makes the name per phone; `FILES-16` (`:43`) drops "and, if it
+is not the one in use, SHALL make it the phone in use first (one session
+teardown, as settings.md SET-DEV-03)" and sends the install to the named
+phone's session. Update the `CONV-PD-01` answer (`:165`) and the non-goal at
+`:192` ("Installing an app on a phone other than the one in use").
+
+**`docs/specs/live.md:86`** (the 2+ row). It says only the phone in use has a
+session, and switching clears the controls. Replace it with: "Every connected
+phone with its switch on has its items, allowlist and history; each item names
+its phone; the panel groups the rows per phone; switching the current phone
+changes the focused section, not the items." Also `LIVE-10` (`:33`) and
+`LIVE-15` (`:38`) say "a session end" / "WHEN the session ends"; make both "that
+phone's session". `LIVE-13` (`:36`) already says per phone and needs no change.
+
+**`docs/specs/media.md:91`** (the 2+ row). It says only the phone in use sends
+media and there is no cross-phone picker. Replace it with: "Every connected
+phone with its switch on reports media. Now Playing follows the playing phone:
+the current phone when it plays, else the most recently updated playing phone,
+else the person's pick; the panel offers a phone picker when two or more play.
+Transport goes to the displayed phone." Also `MEDIA-6` (`:37`) changes "another
+phone becomes the one in use" to "the displayed phone's session ends or it stops
+playing"; `MEDIA-8` (`:39`) changes "the phone in use" to "the current phone,
+when at least one of its windows is open"; update `CONV-PD-01` (`:127`) and
+remove the non-goal "Media from a phone that is not in use, or several phones at
+once" (`:150`).
+
+**`docs/specs/menus.md:81`** (the 2+ row). It says every action acts on the
+phone in use and the menus offer no picker. Replace it with: "Every action acts
+on the key window's phone; with no key window, the current phone. A phone-level
+item's title names the phone when two or more are online. Settings ▸ Use This
+Phone changes the current phone." Update `CONV-PD-01` (`:118`).
+
+**`docs/specs/notifications.md:195`** (the 2+ row). It says only the phone in
+use has a live session, so only its notifications arrive. Replace it with:
+"Every connected phone with its switch on delivers. Every store is keyed by the
+phone and the phone's notification id; a phone's session end clears only that
+phone's banners and live state; banners are grouped and titled per phone." The
+rest of the row (its own switch, click target and mute set) is already right.
+This spec describes the target better than the code does: the code's
+`NotifyCenter` is keyed by the notification id alone.
+
+**`docs/specs/panel.md:108`** (the 2+ row). It says the card shows the phone in
+use only and offers no picker. Replace it with: "The current phone, named in the
+header, with a phone picker in the header when two or more are online; each
+phone's controls, media and live rows follow that phone. Settings ▸ Use This
+Phone does the same." Add the picker to `PANEL-5`'s top-to-bottom list (`:29`),
+update `CONV-PD-01` (`:147`), and change the assumption at `:160` ("The card's
+phone is the one in use") to "the current phone".
+
+**`docs/specs/phone-mirror.md:101`** (the 2+ row). It says one window per phone
+but describes switching phones and opening again. Replace it with: "One mirror
+per phone; both can be open at once; switching the current phone changes
+nothing; each window's title names its phone." `CONV-PD-01` (`:139`) stays
+right.
+
+**`docs/specs/settings.md:141`** (the 2+ row). It says every phone is a row and
+the in-use one is marked. Replace it with: "Every phone is one row with its own
+presence (Connected, Connecting, Offline, Pair again); the current phone is
+marked; several phones may be Connected; one phone's page is open at a time and
+every other phone is one click away." Then `SET-DEV-03` (`:67`) must stop saying
+Use This Phone changes "every surface (Deck, menu-bar panel, windows,
+notifications, Dock shims)"; it changes the Deck, the panel and the actions
+with no target, and does not close another phone's windows or end its session.
+`SET-DEV-08` (`:71`) drops "one session teardown, one connect" for the remaining
+phones, and the state table's `use(phone)` row (`:112`) drops "windows of the
+previous phone close, one session teardown". `SET-DEV-02` (`:66`, exactly one
+in-use mark) stays: one current phone, several connected.
+
+**`docs/specs/share-clipboard.md:150`** (the 2+ row). It says clipboard and
+Send to Mac belong to the phone in use only, and a link switches to the chosen
+phone. Replace it with: "Clipboard sync follows the current phone; ⌘V of an
+image or files belongs to the window's phone; a drop on a window goes to its
+phone and on the Deck to the current phone; Open on Phone asks when none is
+named and sends on the chosen phone without changing the current phone." Also
+`SHARE-8` (`:41`) changes "a phone that is not the connected one SHALL become
+the phone in use and get the link after `welcome`" to "receives the link on its
+own session; the current phone does not change"; the waiting table row (`:139`)
+and the non-goal at `:198` carry the same change. `CONV-PD-01` (`:186`) stays.
+
+**`docs/specs/transport.md:159`** (the 2+ row). Replace "One session per Mac,
+and the Mac app is single-phone today (settings.md): the phone in use is the one
+with a session" with "One session per Mac-phone pair; the Mac holds one session
+for each connected phone. Each phone still serves one Mac at a time." The rest
+of the row (the phone publishes one Aware service per Mac) stays.
+
+**`docs/specs/dock.md:56`** (the 2+ sentence in the paragraph, not a table
+row). Its ids and names are right. Change "an app list reconciles only that
+phone's shims" to "every connected phone's app list, live or cached, reconciles
+its own shims." This closes the gap where only the live phone's list is
+reconciled.
+
+### 11.2 Requirement rows that carry the same one-phone rule
+
+These are not in a "Phone count" section but state the rule the feature
+changes; they change in the same commits as their slice:
+
+- `docs/specs/app-windows.md:71` — `WIN-35` (the target and its e2e proof).
+- `docs/specs/files.md:28-29,43` — `FILES-1`, `FILES-2`, `FILES-16`.
+- `docs/specs/live.md:33,38` — `LIVE-10`, `LIVE-15`.
+- `docs/specs/media.md:37,39` — `MEDIA-6`, `MEDIA-8`.
+- `docs/specs/settings.md:67,71,112` — `SET-DEV-03`, `SET-DEV-08`, the `use`
+  state row.
+- `docs/specs/share-clipboard.md:41,139` — `SHARE-8` and the waiting row.
+- `docs/specs/pairing.md:32` — `PAIR-7` says a finished pairing makes the new
+  phone "the one in use"; add "without ending another phone's session or
+  closing its windows." The 2+ row (`:102`) is already right.
+- `docs/specs/spotlight.md:38` — already right; add that a click on another
+  phone's result opens the app on that phone without changing the current
+  phone (after slice 3).
+- `docs/specs/controls.md:128` — already right (per-phone memory); add that a
+  control acts on the key window's phone, else the current phone.
+- `docs/specs/phone-app.md:192` — already right: one Mac at a time is the
+  phone's limit and stays. Add one sentence that the Mac may hold sessions to
+  several phones, so a reader does not read it as a Mac limit.
+
+### 11.3 Missing specs and design lines
+
+- **MCP has no surface spec.** Its 2+ answer lives only in
+  `docs/design/mcp.md:76-79`, where the phone-level tools have no phone
+  argument. If a spec is written, its 2+ row must say: a `phone` argument on
+  `phone_status`, `list_apps`, `open_app`, `send_link` and `send_file`; the
+  current phone when the argument is absent; a `phone` field in
+  `list_windows`; an unknown or ambiguous name is a tool error that lists the
+  phones.
+- **App Intents has no surface spec.** `docs/design/intents.md:8` says the
+  default is "the connected phone, else the only paired one"; change it to "the
+  current phone, else the only paired one", because with two phones connected
+  "the connected phone" is ambiguous. The optional phone parameter is already
+  the right shape.
+- **`docs/design/paths.md:834`** lists "several sessions or several phones at
+  once" as a non-goal. Reword it to "one session per Mac-phone pair; several
+  pairs on one Mac is feature 2, not a second session for one pair." The
+  session layer itself needs no change.
+- **`docs/design/files.md:1233`** ("The extension dials the phone itself. One
+  session per phone (`busy`)") stays true; add that the domain per phone is the
+  new part (slice 4). This is a design note, not a spec.
+
+### 11.4 Sections that are right as written
+
+These already answer 2+ phones correctly and need no edit for the target, only
+the code behind them:
+
+- `docs/specs/pairing.md:102` — each phone pinned separately; one row per Mac on
+  the phone.
+- `docs/specs/phone-app.md:192` — one Mac at a time on the phone.
+- `docs/specs/spotlight.md:38` — one domain and one verification per device id.
+- `docs/specs/controls.md:128` — per-phone memory.
+- `docs/specs/dock.md` ids and names — per phone (only the reconcile sentence
+  changes, 11.1).
+- `docs/specs/settings.md` row list — every phone is a row (only presence and
+  the switch change, 11.1).
