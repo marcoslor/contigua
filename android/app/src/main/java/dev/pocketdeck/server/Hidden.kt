@@ -37,11 +37,26 @@ internal object Hidden {
         null
     }
 
-    /** `android.os.SystemProperties.get(name)`; "" when unset, null when unavailable. */
+    /**
+     * `android.os.SystemProperties.get(name)`; "" when unset, null when
+     * unavailable. Android 17 refuses the hidden call for a service loaded
+     * from an app APK even as shell (the person's phone), so a refused lookup
+     * falls back to the same read through `/system/bin/getprop`.
+     */
     fun systemProperty(name: String): String? = try {
         Class.forName("android.os.SystemProperties")
             .getMethod("get", String::class.java)
             .invoke(null, name) as? String
+    } catch (_: Throwable) {
+        getprop(name)
+    }
+
+    /** The shell's own read, for when the hidden Java call is refused. */
+    private fun getprop(name: String): String? = try {
+        val p = Runtime.getRuntime().exec(arrayOf("/system/bin/getprop", name))
+        val text = p.inputStream.bufferedReader().use { it.readText() }.trim()
+        p.waitFor()
+        text.takeIf { it.isNotEmpty() }
     } catch (_: Throwable) {
         null
     }
