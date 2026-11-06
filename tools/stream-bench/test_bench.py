@@ -9,6 +9,7 @@ is not enough (adb drops the empty argument before the device shell sees it).
 """
 
 import datetime
+import csv
 import importlib.util
 import os
 import tempfile
@@ -1133,7 +1134,7 @@ esac
         self.assertIn("stages:", text)
         self.assertIn("still", text)
         with open(out, "r", encoding="utf-8") as handle:
-            rows = list(__import__("csv").DictReader(handle))
+            rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["script"], "still")
