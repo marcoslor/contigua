@@ -657,5 +657,331 @@ class ParseRowsTest(unittest.TestCase):
         self.assertEqual(bench.number(row, "rx_fps"), 60)
 
 
+OLD_CSV_FIELDS = ["repeat", "arm", "stream", "start", "end", "lines",
+                  "codec", "failed", "covered", "secs", "rx_frames", "shown_frames",
+                  "phone_frames", "kf_req", "bytes", "covered_ms", "max_gap_ms",
+                  "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost",
+                  "jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
+                  "late_p99", "shown_fps", "kf", "key_not_idr", "ph_key_not_idr",
+                  "kbps", "rx_kbps", "tcp_ooo_kb", "ph_retrans", "qp_p95",
+                  "qp_avg", "e2e_p50", "e2e_p95", "frozen", "low_motion",
+                  "no_drop_ms", "phone_gaps"]
+
+NEW_RUN_FIELDS = ["script", "input_photon_ms", "input_frames", "first_frame_ms",
+                  "resize_ms", "app_fps", "app_jank_pct", "vd_hz", "battery_level",
+                  "battery_temp_c", "thermal_status", "thermal_max_c",
+                  "app_cpu_pct", "shell_cpu_pct", "app_pss_kb", "shell_pss_kb",
+                  "wifi_rssi_dbm", "wifi_mbps", "wifi_mhz", "wifi_retries",
+                  "wifi_bad"]
+
+
+class ScriptPlanTest(unittest.TestCase):
+    """The named scripts compose; swipe stays today's exact call sequence."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def args(self, **overrides):
+        import types
+        values = dict(still_seconds=6, video_point={"x": 0.5, "y": 0.5},
+                      video_seconds=8, soak_seconds=60, sample_seconds=10,
+                      tap_point={"x": 0.5, "y": 0.5})
+        values.update(overrides)
+        return types.SimpleNamespace(**values)
+
+    def run_calls(self, script, **overrides):
+        calls = []
+
+        class FakeMCP:
+            def text(self, name, arguments):
+                calls.append((name, arguments))
+
+        phases = []
+        self.bench.run_script(script, FakeMCP(), 3, phases,
+                              self.args(**overrides), sleep=lambda seconds: None)
+        return calls, phases
+
+    def test_the_six_scripts_are_named_and_swipe_is_the_default(self):
+        self.assertEqual(self.bench.SCRIPTS,
+                         ("swipe", "still", "typing", "video", "soak", "tap"))
+        self.assertEqual(self.bench.DEFAULT_SCRIPT, "swipe")
+
+    def test_the_default_swipe_script_is_todays_exact_sequence(self):
+        calls, phases = self.run_calls("swipe")
+        self.assertEqual([name for name, _ in calls], ["swipe"] * 20)
+        for index, (_, arguments) in enumerate(calls):
+            self.assertEqual(arguments["y1"], 0.78 if index % 2 == 0 else 0.22)
+            self.assertEqual(arguments["ms"], 400 if index < 10 else 150)
+            self.assertEqual(arguments["window"], 3)
+        self.assertEqual([name for name, _ in phases],
+                         ["swipes", "still", "flings", "settle"])
+
+    def test_the_still_script_sends_no_swipe(self):
+        calls, phases = self.run_calls("still")
+        self.assertEqual(calls, [])
+        self.assertEqual([name for name, _ in phases], ["still"])
+
+    def test_the_typing_script_taps_the_documented_point_then_types(self):
+        calls, phases = self.run_calls("typing")
+        self.assertEqual([name for name, _ in calls], ["tap", "type_text"])
+        self.assertEqual(calls[0][1]["x"], self.bench.TYPING_POINT["x"])
+        self.assertEqual(calls[0][1]["y"], self.bench.TYPING_POINT["y"])
+        self.assertEqual(calls[0][1]["window"], 3)
+        self.assertIn("pocketdeck", calls[1][1]["text"])
+        self.assertEqual([name for name, _ in phases], ["typing"])
+
+    def test_the_video_script_taps_the_play_point(self):
+        calls, _ = self.run_calls("video", video_point={"x": 0.25, "y": 0.75})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "tap")
+        self.assertEqual((calls[0][1]["x"], calls[0][1]["y"]), (0.25, 0.75))
+
+    def test_the_soak_script_samples_once_per_period(self):
+        calls, phases = self.run_calls("soak", soak_seconds=60, sample_seconds=10)
+        self.assertEqual([name for name, _ in calls], ["swipe"] * 6)
+        self.assertEqual([name for name, _ in phases], ["soak", "soak-done"])
+
+    def test_the_soak_cadence_uses_the_last_partial_period(self):
+        steps = []
+        calls = []
+
+        class FakeMCP:
+            def text(self, name, arguments):
+                calls.append(name)
+
+        phases = []
+        self.bench.run_script(
+            "soak", FakeMCP(), 3, phases, self.args(soak_seconds=25, sample_seconds=10),
+            sleep=lambda seconds: steps.append(seconds),
+            sample=lambda seconds: steps.append(-seconds))
+        self.assertEqual(steps, [10, -10, 10, -10, 5, -5])
+        self.assertEqual(len(calls), 3)
+
+
+class TapProbeTest(unittest.TestCase):
+    """`tap` carries the Mac's input-to-photon number, or fails cleanly."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def test_the_reply_becomes_the_photon_and_frame_count(self):
+        class Probe:
+            def text(self, name, arguments):
+                self.call = (name, arguments)
+                return {"ok": True, "window": 7, "sent_ms": 1000,
+                        "changed_ms": 1042, "frames": 3}
+
+        phases = []
+        values = self.bench.drive_tap(Probe(), 7, phases)
+        self.assertEqual(values["input_photon_ms"], 1042)
+        self.assertEqual(values["input_frames"], 3)
+        self.assertEqual([name for name, _ in phases], ["tap"])
+
+    def test_a_missing_tool_fails_the_run_with_the_mark(self):
+        class NoProbe:
+            def text(self, name, arguments):
+                raise RuntimeError("unknown tool input_probe")
+
+        with self.assertRaises(self.bench.BenchFailure) as caught:
+            self.bench.drive_tap(NoProbe(), 1, [])
+        self.assertIn("no input_probe tool", str(caught.exception))
+
+    def test_a_failed_tap_run_leaves_a_marked_row_and_a_table(self):
+        run = {"arm": "tap", "repeat": 1, "script": "tap"}
+        run.update(self.bench.empty_metrics())
+        line = self.bench.table_line("tap", [run])
+        self.assertIn("failed", line.split("  ")[0])
+        self.assertIn("-", line)
+
+
+class NewFieldsTest(unittest.TestCase):
+    """New CSV columns are appended; the old columns keep their places."""
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def test_the_new_run_fields_are_appended_in_the_documented_order(self):
+        self.assertEqual(list(self.bench.CSV_FIELDS[-len(NEW_RUN_FIELDS):]),
+                         NEW_RUN_FIELDS)
+
+    def test_the_old_csv_prefix_is_byte_for_byte_the_same(self):
+        self.assertEqual(list(self.bench.CSV_FIELDS[:len(OLD_CSV_FIELDS)]),
+                         OLD_CSV_FIELDS)
+
+    def test_every_new_field_is_a_run_cell(self):
+        values = self.bench.empty_metrics()
+        for field in NEW_RUN_FIELDS:
+            self.assertIn(field, values)
+
+    def test_the_table_gains_app_fps_vd_hz_and_the_photon(self):
+        self.assertEqual(list(self.bench.TABLE_EXTRA_FIELDS),
+                         ["app_fps", "vd_hz", "input_photon_ms"])
+        header = self.bench.table_header(8)
+        for field in self.bench.TABLE_EXTRA_FIELDS:
+            self.assertIn(field, header)
+
+    def test_the_totals_carry_rx_fps_and_the_interval_levels(self):
+        total = self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "secs=10.0 rx_frames=600 int_p50=12 int_p95=20 int_p99=30 "
+            "shown_p50=8 shown_p95=16 shown_p99=24\n", 1)
+        values = self.bench.run_metrics(total)
+        self.assertEqual(values["rx_fps"], 60)
+        self.assertEqual((values["int_p50"], values["int_p95"], values["int_p99"]),
+                         (12, 20, 30))
+        self.assertEqual((values["shown_p50"], values["shown_p95"], values["shown_p99"]),
+                         (8, 16, 24))
+        missing = self.bench.run_metrics(self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "secs=10.0 rx_frames=600\n", 1))
+        self.assertIsNone(missing["int_p50"])
+
+    def test_the_app_lines_fill_first_frame_and_resize(self):
+        text = ("2026-11-06 10:00:01.000000-0300 mac PocketDeck[7]: "
+                "stream 3: first frame, 123.5 ms\n"
+                "2026-11-06 10:00:02.000000-0300 mac PocketDeck[7]: "
+                "stream 3 resize ack 720x1280 dpi=320 (applied) 42 ms\n")
+        values = self.bench.app_line_values(text, 3)
+        self.assertEqual(values["first_frame_ms"], 123.5)
+        self.assertEqual(values["resize_ms"], 42)
+        self.assertIsNone(self.bench.app_line_values(text, 9)["first_frame_ms"])
+
+
+class PhoneValuesTest(unittest.TestCase):
+    """The sampler maps read-only dumps into the new run cells."""
+
+    TEXTS = {
+        "gfxinfo": (
+            "Total frames rendered: 2\nJanky frames: 1 (50.00%)\n"
+            "---PROFILEDATA---\n"
+            "Flags,IntendedVsync,Vsync,OldestInputEvent,NewestInputEvent,"
+            "HandleInputStart,AnimationStart,PerformTraversalsStart,DrawStart,"
+            "SyncStart,IssueDrawCommandsStart,SwapBuffers,FrameCompleted,\n"
+            "0,1000000000,1001000000,0,0,0,0,0,0,0,0,0,1016000000,\n"
+            "0,1002000000,1003000000,0,0,0,0,0,0,0,0,0,1020000000,\n"
+            "---PROFILEDATA---\n"),
+        "display": '    DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", '
+                   '1080 x 2400, modeId 1, renderFrameRate 60.0}\n',
+        "battery": "  level: 73\n  temperature: 291\n  voltage: 4021\n"
+                   "  USB powered: true\n",
+        "thermal": "  Thermal Status: 2\n  Temperature{mValue=35.5, mType=0}\n",
+        "cpu": "  12.0% 1000/com.example.app: 8.0% user + 4.0% kernel\n"
+               "   1.5% 2000/dev.pocketdeck: 1.0% user + 0.5% kernel\n",
+        "app_mem": "TOTAL PSS:    8000\n",
+        "shell_mem": "TOTAL PSS:   24000\n",
+        "wifi": "RSSI: -55, Link speed: 433Mbps, Frequency: 5180MHz "
+                "txRetries=7 txBad=3\n",
+    }
+
+    def setUp(self):
+        self.bench = load_bench()
+
+    def test_the_dumps_fill_every_phone_cell(self):
+        values = self.bench.phone_values(self.TEXTS, 10.0, "com.example.app")
+        self.assertAlmostEqual(values["app_fps"], 0.2)
+        self.assertAlmostEqual(values["app_jank_pct"], 50.0)
+        self.assertAlmostEqual(values["vd_hz"], 60.0)
+        self.assertEqual(values["battery_level"], 73)
+        self.assertAlmostEqual(values["battery_temp_c"], 29.1)
+        self.assertEqual(values["thermal_status"], 2)
+        self.assertAlmostEqual(values["thermal_max_c"], 35.5)
+        self.assertAlmostEqual(values["app_cpu_pct"], 12.0)
+        self.assertAlmostEqual(values["shell_cpu_pct"], 1.5)
+        self.assertEqual(values["app_pss_kb"], 8000)
+        self.assertEqual(values["shell_pss_kb"], 24000)
+        self.assertEqual(values["wifi_rssi_dbm"], -55)
+        self.assertEqual(values["wifi_mbps"], 433)
+        self.assertEqual(values["wifi_mhz"], 5180)
+        self.assertEqual(values["wifi_retries"], 7)
+        self.assertEqual(values["wifi_bad"], 3)
+
+    def test_absent_dumps_leave_empty_cells(self):
+        values = self.bench.phone_values({}, 10.0, "com.example.app")
+        for field in ("app_fps", "vd_hz", "battery_level", "thermal_status",
+                      "app_cpu_pct", "app_pss_kb", "wifi_rssi_dbm"):
+            self.assertIsNone(values[field])
+
+    def test_the_sampler_runs_read_only_dumps_only(self):
+        commands = []
+
+        def shell(*args):
+            commands.append(args)
+            return self.TEXTS.get({
+                ("dumpsys", "gfxinfo", "com.example.app", "framestats"): "gfxinfo",
+                ("dumpsys", "display"): "display",
+                ("dumpsys", "battery"): "battery",
+                ("dumpsys", "thermalservice"): "thermal",
+                ("dumpsys", "cpuinfo"): "cpu",
+                ("dumpsys", "meminfo", "com.example.app"): "app_mem",
+                ("dumpsys", "meminfo", "dev.pocketdeck"): "shell_mem",
+                ("dumpsys", "wifi"): "wifi",
+            }.get(args), "")
+
+        sampler = self.bench.PhoneSampler("adb", "emulator-5554", "com.example.app",
+                                          shell=shell)
+        sampler.reset()
+        sampler.sample(10.0)
+        self.assertIn(("dumpsys", "gfxinfo", "com.example.app", "reset"), commands)
+        self.assertIn(("dumpsys", "gfxinfo", "com.example.app", "framestats"), commands)
+        self.assertIn(("dumpsys", "meminfo", "dev.pocketdeck"), commands)
+        for command in commands:
+            self.assertEqual(command[0], "dumpsys")
+            for forbidden in ("setprop", "settings", "cmd", "input", "screencap"):
+                self.assertNotIn(forbidden, command)
+
+
+class PhoneBlockTest(unittest.TestCase):
+    def setUp(self):
+        self.bench = load_bench()
+
+    def runrow(self, **fields):
+        values = {"failed": 0, "covered": 0, "battery_level": 70,
+                  "battery_temp_c": 30.0, "thermal_status": 1,
+                  "thermal_max_c": 35.0, "app_cpu_pct": 10.0,
+                  "shell_cpu_pct": 1.0, "app_pss_kb": 8000,
+                  "shell_pss_kb": 24000, "wifi_rssi_dbm": -55,
+                  "wifi_mbps": 400, "wifi_mhz": 5180,
+                  "wifi_retries": 5, "wifi_bad": 2}
+        values.update(fields)
+        return values
+
+    def test_the_block_reports_medians_for_battery_thermal_cpu_pss_and_wifi(self):
+        line = self.bench.phone_line("baseline", [self.runrow(), self.runrow(
+            battery_level=76, battery_temp_c=32.0, app_cpu_pct=14.0,
+            app_pss_kb=9000, wifi_rssi_dbm=-49)])
+        for label in ("battery", "thermal", "app cpu", "shell cpu",
+                      "app pss", "shell pss", "wifi"):
+            self.assertIn(label, line)
+        self.assertIn("73", line)
+        self.assertIn("31.0", line)
+        self.assertIn("-52", line)
+
+    def test_failed_and_covered_runs_do_not_move_the_medians(self):
+        line = self.bench.phone_line("baseline", [self.runrow(), self.runrow(
+            failed=1, battery_level=0, thermal_status=9, app_cpu_pct=99.0)])
+        self.assertIn("70", line)
+        self.assertNotIn("99", line)
+
+
+class DryRunEveryScriptTest(unittest.TestCase):
+    def test_every_script_dry_runs_without_a_device(self):
+        import contextlib
+        import io
+        import unittest.mock as mock
+        bench = load_bench()
+        for script in bench.SCRIPTS:
+            argv = ["bench.py", "--dry-run", "--script", script,
+                    "--profile", "bench2", "--serial", "emulator-5554",
+                    "--out", os.path.join(tempfile.gettempdir(), "bench-script.csv"),
+                    "--repeats", "1"]
+            output = io.StringIO()
+            with mock.patch.object(bench, "require_device",
+                                   side_effect=AssertionError("dry run touched adb")), \
+                    mock.patch("sys.argv", argv), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(bench.main(), 0)
+            self.assertIn("script=%s" % script, output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

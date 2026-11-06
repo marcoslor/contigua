@@ -40,6 +40,19 @@ DEFAULT_SHIM = "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"
 PROFILE_DOMAIN = "dev.pocketdeck.mac"
 STATS_PREFIX = "debug.pocketdeck.stream."
 
+# The scripts are composable: swipe is today's exact sequence, and the others
+# exercise one stage or one input path each.
+SCRIPTS = ("swipe", "still", "typing", "video", "soak", "tap")
+DEFAULT_SCRIPT = "swipe"
+STILL_SECONDS = 6.0
+VIDEO_SECONDS = 8.0
+SOAK_SECONDS = 20 * 60.0
+SAMPLE_SECONDS = 10.0
+TYPING_POINT = {"x": 0.5, "y": 0.08}
+TYPING_TEXT = "pocketdeck bench typing"
+PLAY_POINT = {"x": 0.5, "y": 0.5}
+TAP_POINT = {"x": 0.5, "y": 0.5}
+
 # One row per arm; each cell is median (min–max) across the arm's runs.
 # jank_* lead: what a person feels while the phone's content moves is a hitch
 # on the Mac, a drop gap on the phone, or a suspend (Q1).
@@ -47,16 +60,65 @@ TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
                 "late_p99", "shown_fps", "kf", "key_not_idr", "ph_key_not_idr",
                 "kbps", "rx_kbps", "tcp_ooo_kb", "ph_retrans", "qp_p95",
                 "qp_avg", "e2e_p50", "e2e_p95")
+# The per-stage table columns are appended after the long-standing fields so a
+# reader comparing rounds still finds the old columns where they were.
+TABLE_EXTRA_FIELDS = ("app_fps", "vd_hz", "input_photon_ms")
 # The stream's codec is a name, not a number: it gets its own table column.
 TABLE_TEXT_FIELDS = ("codec",)
 # One CSV row per run: the table fields plus the totals that are not table
-# cells and the marks a reader needs to exclude a run.
+# cells and the marks a reader needs to exclude a run. New columns go after
+# the old ones, in the order the brief names them.
+NEW_RUN_FIELDS = ("script", "input_photon_ms", "input_frames", "first_frame_ms",
+                  "resize_ms", "app_fps", "app_jank_pct", "vd_hz", "battery_level",
+                  "battery_temp_c", "thermal_status", "thermal_max_c",
+                  "app_cpu_pct", "shell_cpu_pct", "app_pss_kb", "shell_pss_kb",
+                  "wifi_rssi_dbm", "wifi_mbps", "wifi_mhz", "wifi_retries",
+                  "wifi_bad")
 CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
                "codec", "failed", "covered", "secs", "rx_frames", "shown_frames",
                "phone_frames", "kf_req", "bytes", "covered_ms", "max_gap_ms",
                "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"]
-              + list(TABLE_FIELDS) + ["frozen", "low_motion", "no_drop_ms", "phone_gaps"])
+              + list(TABLE_FIELDS)
+              + ["frozen", "low_motion", "no_drop_ms", "phone_gaps"]
+              + list(NEW_RUN_FIELDS))
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
+
+STAGE_FIELDS = ("phone_frames", "app_fps", "rx_fps", "shown_fps", "vd_hz")
+STAGE_NAMES = ("encoder", "app", "network", "display", "panel")
+INTERVAL_FIELDS = ("int_p50", "int_p95", "int_p99",
+                   "shown_p50", "shown_p95", "shown_p99")
+PHONE_FIELDS = ("app_fps", "app_jank_pct", "vd_hz", "battery_level",
+                "battery_temp_c", "thermal_status", "thermal_max_c",
+                "app_cpu_pct", "shell_cpu_pct", "app_pss_kb", "shell_pss_kb",
+                "wifi_rssi_dbm", "wifi_mbps", "wifi_mhz", "wifi_retries",
+                "wifi_bad")
+SAMPLE_FIELDS = ("at", "repeat", "arm", "sample_seconds") + PHONE_FIELDS
+# label, run field, unit, decimals: one `phone` line per arm.
+PHONE_COLUMNS = (("battery", "battery_level", "%", 0),
+                 ("temp", "battery_temp_c", "C", 1),
+                 ("thermal", "thermal_status", "", 0),
+                 ("thermal max", "thermal_max_c", "C", 1),
+                 ("app cpu", "app_cpu_pct", "%", 1),
+                 ("shell cpu", "shell_cpu_pct", "%", 1),
+                 ("app pss", "app_pss_kb", "kB", 0),
+                 ("shell pss", "shell_pss_kb", "kB", 0),
+                 ("wifi", "wifi_rssi_dbm", "dBm", 0),
+                 ("wifi mbps", "wifi_mbps", "Mbps", 0),
+                 ("wifi mhz", "wifi_mhz", "MHz", 0),
+                 ("wifi retries", "wifi_retries", "", 0),
+                 ("wifi bad", "wifi_bad", "", 0))
+
+
+def load_phone():
+    """The parser module; loaded by path so the bench runs from any cwd."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phone.py")
+    spec = importlib.util.spec_from_file_location("stream_phone", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+phone = load_phone()
 
 
 def profile_domain(profile):
@@ -85,6 +147,10 @@ def log(message):
 def fail(message):
     print("bench: FAIL " + message, file=sys.stderr, flush=True)
     raise SystemExit(2)
+
+
+class BenchFailure(Exception):
+    """One run failed: the bench marks it and goes on."""
 
 
 def load_mcp():
@@ -424,6 +490,13 @@ def run_metrics(total, sampled=(), phases=None):
         "codec": total.get("codec") if total.get("codec") not in (None, "-") else None,
         "e2e_p50": number(total, "e2e_p50"),
         "e2e_p95": number(total, "e2e_p95"),
+        "rx_fps": rx / secs if secs > 0 else None,
+        "int_p50": number(total, "int_p50"),
+        "int_p95": number(total, "int_p95"),
+        "int_p99": number(total, "int_p99"),
+        "shown_p50": number(total, "shown_p50"),
+        "shown_p95": number(total, "shown_p95"),
+        "shown_p99": number(total, "shown_p99"),
         "frozen": is_frozen(total, sampled, phases),
         "low_motion": (rx / secs) < 20 if secs > 0 else True,
         "no_drop_ms": total.get("drop_ms") in (None, "-"),
@@ -448,7 +521,11 @@ def run_metrics(total, sampled=(), phases=None):
 
 def empty_metrics():
     """A failed run's cells: every number absent, its marks set."""
-    values = {field: None for field in TABLE_FIELDS}
+    values = {field: None for field in TABLE_FIELDS + TABLE_EXTRA_FIELDS}
+    values.update({field: None for field in NEW_RUN_FIELDS})
+    values.update({field: None for field in
+                   ("rx_fps", "int_p50", "int_p95", "int_p99",
+                    "shown_p50", "shown_p95", "shown_p99")})
     values.update({"frozen": 0, "low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
                    "covered": 0, "failed": 1, "secs": None, "rx_frames": None,
                    "shown_frames": None, "phone_frames": None, "kf_req": None,
@@ -457,13 +534,18 @@ def empty_metrics():
     return values
 
 
+def table_fields():
+    """The table's numeric columns: the long-standing ones, then the stages."""
+    return TABLE_FIELDS + TABLE_EXTRA_FIELDS
+
+
 def summarise(runs):
     """One cell per table field: the median and min–max of the runs that count.
     Failed, covered, frozen and low-motion runs are excluded; no valid run
     leaves the cell `-`."""
     valid = [run for run in runs if counted(run)]
     cells = {}
-    for field in TABLE_FIELDS:
+    for field in table_fields():
         values = [run[field] for run in valid if run.get(field) is not None]
         cells[field] = (statistics.median(values), min(values), max(values)) if values else None
     return cells
@@ -489,7 +571,7 @@ def table_line(name, runs, width=3):
     codec = "/".join(codecs) if codecs else "-"
     cells = summarise(runs)
     rendered = []
-    for field in TABLE_FIELDS:
+    for field in table_fields():
         cell = cells[field]
         if cell is None:
             rendered.append("-".rjust(10))
@@ -503,7 +585,29 @@ def table_line(name, runs, width=3):
 def table_header(width=3):
     """The table's one header row, with the valid count before the medians."""
     return "%-*s  %5s  %-6s  %s" % (width, "arm", "valid", "codec",
-                                    "  ".join(field.rjust(10) for field in TABLE_FIELDS))
+                                    "  ".join(field.rjust(10)
+                                              for field in table_fields()))
+
+
+def _phone_cell(values, decimals):
+    if not values:
+        return "-"
+    middle, low, high = statistics.median(values), min(values), max(values)
+    pattern = "%%.%df (%%.%df-%%.%df)" % (decimals, decimals, decimals)
+    return pattern % (middle, low, high)
+
+
+def phone_line(name, runs, width=3):
+    """One arm's phone-health line: battery, thermal, CPU, PSS and Wi-Fi."""
+    valid = [run for run in runs
+             if not run.get("failed") and not run.get("covered")]
+    parts = []
+    for label, field, unit, decimals in PHONE_COLUMNS:
+        values = [run.get(field) for run in valid if run.get(field) is not None]
+        cell = _phone_cell(values, decimals)
+        parts.append("%s %s%s" % (label, cell, (" " + unit) if unit else ""))
+    return "%-*s  %s" % (width, name, "  ".join(parts))
+
 
 
 def resend_counts(rows):
@@ -567,8 +671,188 @@ def drive(mcp, window, phases, sleep=time.sleep):
     sleep(3)
 
 
-class BenchFailure(Exception):
-    """One run failed: the bench marks it and goes on."""
+def drive_still(mcp, window, phases, sleep=time.sleep, seconds=STILL_SECONDS):
+    """The baseline: no input, straight to the app's own first-frame line."""
+    phases.append(("still", time.time()))
+    log("still %g s" % seconds)
+    sleep(seconds)
+
+
+def drive_typing(mcp, window, phases, sleep=time.sleep, point=None, text=TYPING_TEXT):
+    """Tap the opened app's search field and type: key input without a swipe."""
+    point = point or TYPING_POINT
+    phases.append(("typing", time.time()))
+    mcp.text("tap", {"window": window, **point})
+    mcp.text("type_text", {"window": window, "text": text})
+    sleep(3)
+
+
+def drive_video(mcp, window, phases, sleep=time.sleep, point=None, seconds=VIDEO_SECONDS):
+    """Open `--package`, tap its play point and watch the decoder, not a list."""
+    point = point or PLAY_POINT
+    phases.append(("video", time.time()))
+    mcp.text("tap", {"window": window, **point})
+    log("video %g s" % seconds)
+    sleep(seconds)
+
+
+def drive_tap(mcp, window, phases, point=None):
+    """One tap through the Mac's `input_probe`; returns its photon number.
+
+    The probe is the lead's new Mac tool. A build without it raises here and
+    the run is marked `failed`; the table and the CSV still get written.
+    """
+    point = point or TAP_POINT
+    phases.append(("tap", time.time()))
+    try:
+        reply = mcp.text("input_probe", {"window": window, **point})
+    except Exception as error:  # a missing tool must mark the run, not crash it
+        raise BenchFailure("no input_probe tool (%s)" % error)
+    if not isinstance(reply, dict) or not reply.get("ok"):
+        raise BenchFailure("no input_probe tool (bad reply %r)" % (reply,))
+    return {
+        "input_photon_ms": number(reply, "changed_ms"),
+        "input_frames": number(reply, "frames"),
+    }
+
+
+def drive_soak(mcp, window, phases, sleep=time.sleep, seconds=SOAK_SECONDS,
+               sample_seconds=SAMPLE_SECONDS, sample=None):
+    """Keep the list moving and call `sample(step)` once per sample period.
+
+    The caller resets its counters and writes one sample row in the callback;
+    a final short period still produces one sample, so the ring's length is
+    `ceil(seconds / sample_seconds)`.
+    """
+    phases.append(("soak", time.time()))
+    remaining = float(seconds)
+    index = 0
+    while remaining > 0:
+        step = min(float(sample_seconds), remaining)
+        swipe = SWIPE_UP if index % 2 == 0 else SWIPE_DOWN
+        mcp.text("swipe", {"window": window,
+                           "ms": min(400, max(1, int(step * 1000))), **swipe})
+        sleep(step)
+        remaining -= step
+        index += 1
+        if sample is not None:
+            sample(step)
+    phases.append(("soak-done", time.time()))
+
+
+def run_script(name, mcp, window, phases, args, sleep=time.sleep, sample=None):
+    """Run one named script. `swipe` is today's drive() with no extra call."""
+    if name == "swipe":
+        drive(mcp, window, phases, sleep=sleep)
+    elif name == "still":
+        drive_still(mcp, window, phases, sleep=sleep, seconds=args.still_seconds)
+    elif name == "typing":
+        drive_typing(mcp, window, phases, sleep=sleep)
+    elif name == "video":
+        drive_video(mcp, window, phases, sleep=sleep,
+                    point=args.video_point, seconds=args.video_seconds)
+    elif name == "soak":
+        drive_soak(mcp, window, phases, sleep=sleep, seconds=args.soak_seconds,
+                   sample_seconds=args.sample_seconds, sample=sample)
+    elif name == "tap":
+        return drive_tap(mcp, window, phases, point=args.tap_point)
+    else:
+        raise BenchFailure("unknown script %s" % name)
+    return None
+
+
+def parse_point(text):
+    """`0.5,0.5` → normalized point; a person's typo is a usage error."""
+    parts = text.split(",")
+    if len(parts) != 2:
+        fail("point must be x,y: %r" % text)
+    try:
+        return {"x": float(parts[0]), "y": float(parts[1])}
+    except ValueError:
+        fail("point must be x,y: %r" % text)
+
+
+def app_line_values(logtext, stream):
+    """The app's own first-frame and resize milliseconds for this stream."""
+    return {
+        "first_frame_ms": phone.first_frame_ms(logtext, stream),
+        "resize_ms": phone.resize_ack_ms(logtext, stream),
+    }
+
+
+def phone_values(texts, seconds, package, display_id=0):
+    """Map one set of read-only dumps into the run's phone cells."""
+    gfx = texts.get("gfxinfo", "")
+    frames = phone.framestats(gfx, seconds)
+    summary = phone.gfxinfo_summary(gfx)
+    display = phone.display_refresh(texts.get("display", ""), display_id) or {}
+    battery = phone.battery(texts.get("battery", "")) or {}
+    thermal = phone.thermal(texts.get("thermal", "")) or {}
+    cpu = phone.cpu(texts.get("cpu", ""), (package, "dev.pocketdeck"))
+    wifi_values = phone.wifi(texts.get("wifi", "")) or {}
+    return {
+        "app_fps": frames["fps"] if gfx.strip() else None,
+        "app_jank_pct": summary["janky_pct"],
+        "vd_hz": display.get("hz"),
+        "battery_level": battery.get("level"),
+        "battery_temp_c": battery.get("temp_c"),
+        "thermal_status": thermal.get("status"),
+        "thermal_max_c": thermal.get("max_c"),
+        "app_cpu_pct": cpu.get(package),
+        "shell_cpu_pct": cpu.get("dev.pocketdeck"),
+        "app_pss_kb": phone.meminfo(texts.get("app_mem", "")),
+        "shell_pss_kb": phone.meminfo(texts.get("shell_mem", "")),
+        "wifi_rssi_dbm": wifi_values.get("rssi_dbm"),
+        "wifi_mbps": wifi_values.get("mbps"),
+        "wifi_mhz": wifi_values.get("mhz"),
+        "wifi_retries": wifi_values.get("retries"),
+        "wifi_bad": wifi_values.get("bad"),
+    }
+
+
+class PhoneSampler:
+    """The read-only phone sampling every run records.
+
+    `reset` clears gfxinfo before the script, `sample` reads the dumps after
+    it. Nothing here writes the phone: no setprop, settings, cmd, input or
+    screenshot call is made.
+    """
+
+    def __init__(self, adb_path, serial, package, display_id=0, shell=None):
+        self.adb_path = adb_path
+        self.serial = serial
+        self.package = package
+        self.display_id = display_id
+        self._shell = shell or self._adb_shell
+
+    def _adb_shell(self, *args):
+        result = adb(self.adb_path, self.serial, "shell", *args, check=False)
+        return result.stdout or ""
+
+    def reset(self):
+        self._shell("dumpsys", "gfxinfo", self.package, "reset")
+
+    def sample(self, seconds):
+        texts = {
+            "gfxinfo": self._shell("dumpsys", "gfxinfo", self.package, "framestats"),
+            "display": self._shell("dumpsys", "display"),
+            "battery": self._shell("dumpsys", "battery"),
+            "thermal": self._shell("dumpsys", "thermalservice"),
+            "cpu": self._shell("dumpsys", "cpuinfo"),
+            "app_mem": self._shell("dumpsys", "meminfo", self.package),
+            "shell_mem": self._shell("dumpsys", "meminfo", "dev.pocketdeck"),
+            "wifi": self._shell("dumpsys", "wifi"),
+        }
+        return phone_values(texts, seconds, self.package, self.display_id)
+
+
+def median_fields(rows, fields):
+    """Per field, the median over the rows that measured it (else None)."""
+    values = {}
+    for field in fields:
+        measured = [row[field] for row in rows if row.get(field) is not None]
+        values[field] = statistics.median(measured) if measured else None
+    return values
 
 
 def main():
@@ -585,6 +869,22 @@ def main():
                              "(e.g. stall)")
     parser.add_argument("--package", default="com.android.settings",
                         help="app to open for a run (default: Settings)")
+    parser.add_argument("--script", choices=SCRIPTS, default=DEFAULT_SCRIPT,
+                        help="run script (default: swipe, today's sequence)")
+    parser.add_argument("--still-seconds", type=float, default=STILL_SECONDS,
+                        help="the still script's hold (default: %(default)s)")
+    parser.add_argument("--video-point", default="0.5,0.5",
+                        help="video script's normalized play point (default: 0.5,0.5)")
+    parser.add_argument("--video-seconds", type=float, default=VIDEO_SECONDS,
+                        help="video script's play hold (default: %(default)s)")
+    parser.add_argument("--soak-minutes", type=float, default=SOAK_SECONDS / 60.0,
+                        help="soak script's length in minutes (default: %(default)s)")
+    parser.add_argument("--sample-seconds", type=float, default=SAMPLE_SECONDS,
+                        help="soak sample period in seconds (default: %(default)s)")
+    parser.add_argument("--tap-point", default="0.5,0.5",
+                        help="tap script's normalized probe point (default: 0.5,0.5)")
+    parser.add_argument("--display-id", type=int, default=0,
+                        help="display whose refresh rate the sampler reads (default: 0)")
     parser.add_argument("--shim", default=DEFAULT_SHIM,
                         help="pocketdeck-mcp stdio shim (default: the installed app's)")
     parser.add_argument("--adb", default="adb", help="adb binary (default: adb)")
@@ -598,14 +898,24 @@ def main():
     args = parser.parse_args()
     if args.repeats < 1:
         fail("--repeats must be at least 1")
+    if args.sample_seconds <= 0:
+        fail("--sample-seconds must be positive")
+    if args.soak_minutes <= 0:
+        fail("--soak-minutes must be positive")
+    if args.still_seconds < 0 or args.video_seconds < 0:
+        fail("script holds must not be negative")
+    args.video_point = parse_point(args.video_point)
+    args.tap_point = parse_point(args.tap_point)
+    args.soak_seconds = args.soak_minutes * 60.0
 
     arms = read_arms(args.arms)
     run_arms = selected_arms(arms, args.include_restart_arms, args.arms_filter)
     if not run_arms:
         fail("%s lists no arms for this run" % args.arms)
     if args.dry_run:
-        print("dry-run: %d arm(s) x %d repeat(s): %s"
-              % (len(run_arms), args.repeats, ", ".join(arm["name"] for arm in run_arms)))
+        print("dry-run: script=%s %d arm(s) x %d repeat(s): %s"
+              % (args.script, len(run_arms), args.repeats,
+                 ", ".join(arm["name"] for arm in run_arms)))
         return 0
 
     require_device(args.adb, args.serial)
@@ -624,20 +934,25 @@ def main():
         fail("another window is open")
     MCP = load_mcp()
     settings = ArmSettings(args.adb, args.serial, domain)
+    sampler = PhoneSampler(args.adb, args.serial, args.package, args.display_id)
 
     rows = []
+    all_samples = []
     summary_rows = {arm["name"]: [] for arm in run_arms}
     try:
         for repeat in range(args.repeats):
             for arm in run_arms:
                 name = arm["name"]
-                log("run %d/%d arm=%s" % (repeat + 1, args.repeats, name))
+                log("run %d/%d arm=%s script=%s"
+                    % (repeat + 1, args.repeats, name, args.script))
                 began = time.strftime("%Y-%m-%d %H:%M:%S")
                 run = {"repeat": repeat + 1, "arm": name, "stream": 0,
-                       "start": began, "end": "", "lines": 0, "sampled": []}
+                       "start": began, "end": "", "lines": 0, "sampled": [],
+                       "script": args.script, "samples": []}
                 client = None
                 try:
                     settings.apply(arm)
+                    sampler.reset()
                     client = MCP(args.shim, args.profile)
                     opened = client.text("open_app", {"app": args.package})
                     stream = int(opened["window"])
@@ -646,7 +961,20 @@ def main():
                                                args.first_line_timeout):
                         raise BenchFailure("no stats line for stream %d" % stream)
                     phases = []
-                    drive(client, stream, phases)
+                    probe = None
+                    soak_samples = []
+                    if args.script == "soak":
+                        def on_sample(step):
+                            values = sampler.sample(step)
+                            values.update({"at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                           "repeat": repeat + 1, "arm": name,
+                                           "sample_seconds": step})
+                            soak_samples.append(values)
+                            sampler.reset()
+                        run_script(args.script, client, stream, phases, args,
+                                   sample=on_sample)
+                    else:
+                        probe = run_script(args.script, client, stream, phases, args)
                     client.text("close_window", {"window": stream})
                     client.close()
                     client = None
@@ -655,10 +983,20 @@ def main():
                                             args.first_line_timeout)
                     if total is None:
                         raise BenchFailure("no totals line for stream %d" % stream)
-                    sampled = parse_rows(stats_lines(began, predicate), stream)
+                    logtext = stats_lines(began, predicate)
+                    sampled = parse_rows(logtext, stream)
                     run["lines"] = len(sampled)
                     run["sampled"] = sampled
                     run.update(run_metrics(total, sampled, phases))
+                    run.update(app_line_values(logtext, stream))
+                    if probe:
+                        run.update(probe)
+                    if args.script == "soak":
+                        run["samples"] = soak_samples
+                        all_samples.extend(soak_samples)
+                        run.update(median_fields(soak_samples, PHONE_FIELDS))
+                    else:
+                        run.update(sampler.sample(run["secs"] or 0.0))
                 except Exception as error:  # one failed run never stops the table
                     log("run failed: %s" % error)
                     run.update(empty_metrics())
@@ -666,6 +1004,7 @@ def main():
                     if client is not None:
                         client.close()
                     settings.restore()
+                run["script"] = args.script
                 for key in ("frozen", "low_motion", "no_drop_ms", "phone_gaps",
                             "covered", "failed"):
                     run[key] = 1 if run.get(key) else 0
@@ -673,7 +1012,7 @@ def main():
                 summary_rows[name].append(run)
                 log("run done: codec=%s " % (run.get("codec") or "-")
                     + " ".join("%s=%s" % (field, run[field])
-                               for field in TABLE_FIELDS))
+                               for field in table_fields()))
     finally:
         settings.restore()
 
@@ -682,6 +1021,13 @@ def main():
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+    samples_path = args.out + ".samples.csv"
+    if all_samples:
+        with open(samples_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=SAMPLE_FIELDS,
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(all_samples)
 
     # One row per arm: median of the runs that count and their min–max.
     text_rows = [table_line(arm["name"], summary_rows[arm["name"]]) for arm in run_arms]
@@ -698,7 +1044,14 @@ def main():
                 for row in run.get("sampled", [])]
         print(resend_line(arm["name"], rows, width))
     print()
+    print("phone:")
+    for arm in run_arms:
+        print(phone_line(arm["name"], summary_rows[arm["name"]], width))
+    print()
+    print()
     print("CSV: %s" % args.out)
+    if all_samples:
+        print("samples CSV: %s" % samples_path)
     return 0
 
 
