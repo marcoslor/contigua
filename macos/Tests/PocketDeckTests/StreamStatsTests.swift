@@ -396,7 +396,8 @@ final class StreamStatsTests: XCTestCase {
                       "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
                       "kf_req=0", "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
                       "enc_p50=-", "enc_p95=-", "queue_p95=-",
-                      "e2e_p50=-", "e2e_p95=-", "max_gap_ms="] {
+                      "e2e_p50=-", "e2e_p95=-", "max_gap_ms=",
+                      "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(line.contains(field), "missing \(field) in \(line)")
         }
     }
@@ -502,7 +503,7 @@ final class StreamStatsTests: XCTestCase {
                       "kf=3", "kf_req=3", "drop_ep=3", "drop_ms=110",
                       "susp_n=3", "susp_ms=30", "bytes=2500",
                       "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000",
-                      "max_gap_ms="] {
+                      "max_gap_ms=", "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
     }
@@ -545,6 +546,46 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(window.total(now: 5.0).maxGapMs, 0, accuracy: 0.001)
     }
 
+    // MARK: The key-flagged frames without an IDR (item 3)
+
+    /// The wire flag says "key"; only a type-5 unit says the decoder can
+    /// start there. A run with intra refresh flags recovery points, so the
+    /// first three of those must reach the field log with their types.
+    func testAKeyFlaggedFrameWithoutAnIdrIsCountedAndLoggedThreeTimes() {
+        var window = StreamStatsWindow(now: 0)
+        XCTAssertNil(window.noteKeyFrame(isKeyframe: false, nalTypes: [1]))
+        XCTAssertNil(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5]),
+                     "an IDR key frame is not a key_not_idr")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1]), "6,1")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 1]), "7,8,1")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6]), "6")
+        XCTAssertNil(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1]),
+                     "the fourth is counted but no longer logged")
+        let line = window.snapshot(now: 1)
+        XCTAssertEqual(line.keyNotIdr, 4)
+        XCTAssertEqual(window.snapshot(now: 2).keyNotIdr, 0, "the next line starts at zero")
+        XCTAssertEqual(window.total(now: 2).keyNotIdr, 4)
+    }
+
+    /// The phone's own key_not_idr rides every `stream.stats` message; the
+    /// Mac sums it over the window's life and prints its own count beside it.
+    func testThePhoneKeyCountsSumAcrossMessagesAndPrintOnBothLines() {
+        var window = StreamStatsWindow(now: 0)
+        window.notePhoneStats(PhoneStreamStats(json: ["keyIdr": 1, "keyNotIdr": 2]))
+        window.notePhoneStats(PhoneStreamStats(json: ["keyIdr": 1, "keyNotIdr": 2]))
+        let snapshot = window.snapshot(now: 1)
+        let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: snapshot)
+        XCTAssertTrue(line.contains("key_not_idr=0"), line)
+        XCTAssertTrue(line.contains("ph_key_not_idr=4"), line)
+        let total = window.total(now: 2)
+        XCTAssertEqual(total.phoneKeyIdr, 2)
+        XCTAssertEqual(total.phoneKeyNotIdr, 4)
+        let totalText = StreamStatsLine.totalText(stream: 1, total: total)
+        XCTAssertTrue(totalText.contains("key_not_idr=0"), totalText)
+        XCTAssertTrue(totalText.contains("ph_key_not_idr=4"), totalText)
+    }
+
     func testACloseWhilePausedCountsTheCoveredTimeSoFar() {
         var window = StreamStatsWindow(now: 0)
         window.notePaused(true, now: 2.0)
@@ -560,7 +601,8 @@ final class StreamStatsTests: XCTestCase {
                       "hitch_ms=0", "late_p99=-", "phone_n=0", "phone_frames=0",
                       "kf=0", "kf_req=0", "drop_ep=0", "drop_ms=-",
                       "susp_n=0", "susp_ms=0", "bytes=0", "e2e_p50=-",
-                      "e2e_p95=-", "covered_ms=0", "max_gap_ms=0"] {
+                      "e2e_p95=-", "covered_ms=0", "max_gap_ms=0",
+                      "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
         }
     }

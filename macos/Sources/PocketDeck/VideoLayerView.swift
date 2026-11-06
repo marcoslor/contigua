@@ -109,6 +109,8 @@ final class VideoLayerView: NSView {
     /// A frame did not reach the layer, and why. `beforeConfig` also covers a
     /// payload with no access unit; the line only carries the count.
     var onFrameDiscarded: ((StatsDiscardReason) -> Void)?
+    /// A frame the phone flagged key: its NAL types, for the IDR check.
+    var onKeyFrame: (([UInt8]) -> Void)?
 
     /// How the picture is placed in the view, by the name the stats line uses.
     var placementName: String {
@@ -655,6 +657,11 @@ final class VideoLayerView: NSView {
             // The presenter must not drop a keyframe while a delta can go:
             // without one the decoder cannot restart (M1's queue cap).
             let keyframe = units.contains { AnnexB.nalType($0) == H264NalType.sliceIdr.rawValue }
+            if frame.isKeyframe {
+                // The wire flag, not this IDR test: the stats must count what
+                // the phone claimed, including the frames that cannot restart.
+                self.onKeyFrame?(units.map { AnnexB.nalType($0) })
+            }
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
