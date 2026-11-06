@@ -19,9 +19,16 @@ internal fun nalTypes(buffer: ByteBuffer, limit: Int): List<Int> {
     return scanNalTypes(start, end) { buffer.get(it).toInt() and 0xFF }
 }
 
-/** The same scan for a copied access unit (the send queue's bytes). */
-internal fun nalTypes(bytes: ByteArray, limit: Int = bytes.size): List<Int> =
-    scanNalTypes(0, minOf(bytes.size, limit.coerceAtLeast(0))) { bytes[it].toInt() and 0xFF }
+/**
+ * The same scan over a byte array from [offset]. The send queue holds whole
+ * wire frames, so it passes `Frames.VIDEO_FRAME_DATA_OFFSET`: the pts and flags
+ * before the access unit can read as a start code (`00 00 01`).
+ */
+internal fun nalTypes(bytes: ByteArray, limit: Int = bytes.size, offset: Int = 0): List<Int> {
+    val start = offset.coerceIn(0, bytes.size)
+    val end = minOf(bytes.size, start + limit.coerceAtLeast(0))
+    return scanNalTypes(start, end) { bytes[it].toInt() and 0xFF }
+}
 
 internal const val NAL_SLICE_NON_IDR = 1
 internal const val NAL_SLICE_IDR = 5

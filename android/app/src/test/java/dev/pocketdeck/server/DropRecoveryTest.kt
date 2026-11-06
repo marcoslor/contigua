@@ -1,5 +1,7 @@
 package dev.pocketdeck.server
 
+import dev.pocketdeck.proto.Frames
+import dev.pocketdeck.proto.VideoFramePayload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -17,6 +19,11 @@ class DropRecoveryTest {
 
     /** SEI (6), non-IDR slice (1): flagged key, not an IDR (intra refresh). */
     private val nonIdrKey = bytes(0, 0, 1, 0x06, 9, 0, 0, 1, 0x41, 4)
+
+    /** A key frame as production queues it: the whole wire frame. */
+    private fun wireKey(ptsUs: Long, au: ByteArray): ByteArray =
+        Frames.encode(Frames.TYPE_VIDEO_FRAME, 3,
+                      Frames.encodeVideoFrame(VideoFramePayload(ptsUs, true, au)))
 
     /** A drop episode: sent baseline, one queued delta, then four discarded. */
     private fun droppedQueue(lines: MutableList<String>, now: () -> Long): SendQueue {
@@ -36,7 +43,7 @@ class DropRecoveryTest {
         var nowMs = 1_000L
         val queue = droppedQueue(lines) { nowMs }
         nowMs = 1_712
-        queue.enqueueControl(3, idr, 533_334)
+        queue.enqueueControl(3, wireKey(533_334, idr), 533_334)
         queue.pollNow()
         assertEquals(
             "stream 3 drop: 5 dropped, key after 712 ms, nal=7,8,5",
@@ -52,7 +59,7 @@ class DropRecoveryTest {
         var nowMs = 1_000L
         val queue = droppedQueue(lines) { nowMs }
         nowMs = 1_250
-        queue.enqueueControl(3, nonIdrKey, 533_334)
+        queue.enqueueControl(3, wireKey(533_334, nonIdrKey), 533_334)
         queue.pollNow()
         assertEquals(
             "stream 3 drop: 5 dropped, key after 250 ms, nal=6,1",
@@ -60,11 +67,28 @@ class DropRecoveryTest {
         )
     }
 
+    /**
+     * Production queues the whole wire frame (length, type, stream, pts, flags,
+     * then the access unit). A pts whose low bytes are zero followed by the key
+     * flag reads as `00 00 01`: the scan must start at the access unit.
+     */
+    @Test
+    fun theDropLineReadsTheAccessUnitNotTheWireHeader() {
+        val lines = mutableListOf<String>()
+        var nowMs = 1_000L
+        val queue = droppedQueue(lines) { nowMs }
+        nowMs = 1_100
+        val ptsUs = 0x10000L // bytes ... 01 00 00, then the key flag 01
+        queue.enqueueControl(3, wireKey(ptsUs, idr), ptsUs)
+        queue.pollNow()
+        assertEquals("stream 3 drop: 5 dropped, key after 100 ms, nal=7,8,5", lines.last())
+    }
+
     @Test
     fun aKeyFrameWhileFlowingLogsNoDropLine() {
         val lines = mutableListOf<String>()
         val queue = SendQueue(nowMs = { 0L }, log = { lines += it })
-        queue.enqueueControl(3, idr, 0)
+        queue.enqueueControl(3, wireKey(0, idr), 0)
         queue.pollNow()
         assertFalse(lines.any { it.startsWith("stream 3 drop:") })
     }
@@ -79,7 +103,7 @@ class DropRecoveryTest {
         queue.enqueueDelta(3, 16_667, delta())
         queue.enqueueDelta(3, 500_000, delta())
         nowMs = 1_100
-        queue.enqueueControl(3, idr, 516_667)
+        queue.enqueueControl(3, wireKey(516_667, idr), 516_667)
         queue.pollNow()
         assertEquals("stream 3 drop: 2 dropped, key after 100 ms, nal=7,8,5", lines.last())
 
@@ -87,7 +111,7 @@ class DropRecoveryTest {
         queue.enqueueDelta(3, 1_000_000, delta())
         queue.enqueueDelta(3, 1_500_000, delta())
         nowMs = 2_500
-        queue.enqueueControl(3, idr, 1_516_667)
+        queue.enqueueControl(3, wireKey(1_516_667, idr), 1_516_667)
         queue.pollNow()
         assertEquals("stream 3 drop: 2 dropped, key after 500 ms, nal=7,8,5", lines.last())
     }
