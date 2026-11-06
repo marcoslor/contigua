@@ -149,30 +149,41 @@ final class ConnectionController {
 
     // MARK: Published state
 
-    private(set) var machine = LinkMachine()
-    /// The link the UI and every action reads. A live session with no usable
-    /// path is not online: requests would queue into the grace's dead session
-    /// (PATH-17), so it reads as Reconnecting until a path joins or the session
-    /// ends. The machine's own link is untouched, so no new attempt is started
-    /// over the session the paths layer is trying to bring back.
+    /// One connection record per phone, and the in-memory current id
+    /// (docs/design/multi-phone.md §5.1; the persisted choice stays
+    /// `RememberedPhones.active`).
+    let book = PhoneBook()
+    /// Preview runs have no session at all; their staged link lives here.
+    private var previewMachine: LinkMachine?
+    /// The phone a pairing sheet is driving; it is current while the sheet is
+    /// up, so `link` and the code sheet read its record.
+    private(set) var pairingDeviceId: String?
+    /// Where a cancelled pairing goes back to.
+    private var pairingResumeId: String?
+
+    /// The LinkMachine of the current phone (previews stage one without a
+    /// session). Mutations go through `book`; the setter exists for previews.
+    var machine: LinkMachine {
+        get { previewMachine ?? book.current?.machine ?? LinkMachine() }
+        set {
+            if let current = book.current, previewMachine == nil { current.machine = newValue }
+            else { previewMachine = newValue }
+        }
+    }
+    /// The link the UI and every action reads: the current phone's record. A
+    /// live session with no usable path is not online: requests would queue
+    /// into the grace's dead session (PATH-17), so it reads as Reconnecting
+    /// until a path joins or the session ends. The machine's own link is
+    /// untouched, so no new attempt is started over the session the paths
+    /// layer is trying to bring back.
     var link: Link {
-        guard pathsDown, case .online(let phone) = machine.link else { return machine.link }
-        return .reconnecting(phone)
+        if let previewMachine { return previewMachine.link }
+        return book.currentLink
     }
-    /// The live session's path outage (PATH-17), one state rather than flags
-    /// kept in step: none, or down since a moment and, after the windows' 15 s,
-    /// offline. The panel shows Reconnecting at once and Offline after that,
-    /// while the session keeps its own 30 s grace underneath (PATH-6).
-    enum PathOutage: Equatable {
-        case none
-        case down(since: Date, offline: Bool)
-    }
-    private(set) var pathOutage = PathOutage.none
-    var pathsDown: Bool { pathOutage != .none }
-    var pathsOffline: Bool {
-        if case .down(_, let offline) = pathOutage { return offline }
-        return false
-    }
+    var currentId: String? { book.currentId }
+    var pathsDown: Bool { book.current?.pathsDown ?? false }
+    var pathsOffline: Bool { book.current?.pathsOffline ?? false }
+    var pathOutage: PathOutage { book.current?.pathOutage ?? .none }
     private(set) var transientBanner: Banner?
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
@@ -435,14 +446,15 @@ final class ConnectionController {
 
     // MARK: Private state
 
-    private var session: Session?
+    /// The current phone's live session and timer (the UI's one phone). A
+    /// specific phone's code uses its `PhoneSession` instead.
+    private var session: Session? {
+        get { book.current?.session }
+        set { book.current?.session = newValue }
+    }
     private var clipboardSync: ClipboardSync?
-    private var attemptTimer: DispatchWorkItem?
     private var tickTimer: Timer?
     private var launchAt = Date()
-    private var lastAttemptWasService = false
-    private var lastAttemptFailed = false
-    private var pinInterface = true
     private var didAutoOpen = false
     private var everOnline = false
     private var pendingOpen: SpotlightOpenRequest?
@@ -737,8 +749,11 @@ final class ConnectionController {
             beginManualLaunch(host: connect.host, port: connect.port)
         } else {
             if let active = remembered.active { resetPhoneData(for: active.ref) }
-            send(.launch(remembered.active?.ref))
+            apply(book.start(active: remembered.active?.ref, at: Date()))
         }
+        // `--connect-phone`: an extra phone connects beside the current one and
+        // is kept by the test hook, never by the current choice.
+        for hook in options.connectPhones { connectHook(host: hook.host, port: hook.port) }
         // The UN delegate is installed eagerly, before any notification from
         // either side (share or phone); share responses route back to their
         // actions through it.
@@ -777,7 +792,10 @@ final class ConnectionController {
         mcp.stop()
         windows.beginShutdown()
         stopQR()
-        attemptTimer?.cancel()
+        for record in book.all {
+            record.attemptTask?.cancel()
+            record.attemptTask = nil
+        }
         stopClipboardSync()
         dropSender.connectionLost()
         clipImageBuffer.discard()
@@ -788,35 +806,73 @@ final class ConnectionController {
         audio.stop()
         nowPlaying.clear()
         notifyCenter.clearAll()
-        // Quit path only: give the teardown a bounded moment so the process
+        // Quit path only: give each teardown a bounded moment so the process
         // does not exit with a half-closed channel (arch H4).
-        session?.closeAndWait()
-        session = nil
+        for record in book.all {
+            record.session?.closeAndWait()
+            record.session = nil
+        }
+        book.closeAll()
     }
 
     private func tick() {
-        send(.tick)
-        if case .down(let since, let offline) = pathOutage {
+        for id in book.records.keys { send(.tick, from: id) }
+        if let record = book.current, case .down(let since, let offline) = record.pathOutage {
             let now = Date().timeIntervalSince(since) >= LinkMachine.offlineAfter
-            if now != offline { pathOutage = .down(since: since, offline: now) }
+            if now != offline { record.pathOutage = .down(since: since, offline: now) }
         }
         if let qr, !qr.expired, !qr.succeeded, qr.payload.isExpired() { expireQR() }
+        writePhonesReport()
+    }
+
+    /// `--phones-report FILE`: the e2e's view of the book. One header line and
+    /// one row per phone; device ids only, never a name (privacy rule).
+    private func writePhonesReport() {
+        guard let path = options.phonesReport else { return }
+        let all = book.all
+        let online = all.filter(\.isOnline).count
+        var lines = ["phones=\(all.count) online=\(online) current=\(book.currentId ?? "-")"]
+        for record in all {
+            let state: String
+            switch record.link {
+            case .idle: state = "idle"
+            case .connecting: state = "connecting"
+            case .online: state = "online"
+            case .reconnecting: state = "reconnecting"
+            case .offline(_, let cause): state = "offline:\(cause)"
+            case .needsPairing: state = "needsPairing"
+            case .pairing(_, let pairing): state = "pairing:\(pairing)"
+            }
+            lines.append("id=\(record.deviceId) state=\(state) current=\(record.deviceId == book.currentId ? 1 : 0)")
+        }
+        try? (lines.joined(separator: "\n") + "\n")
+            .write(to: URL(fileURLWithPath: path), atomically: true, encoding: .utf8)
     }
 
     /// The session's path layer lost or regained every path (`pathsReconnecting`).
     /// The windows switch at once; the panel follows the same two steps as a
     /// dropped link so a path outage is never shown as Connected (PANEL-12).
-    private func setPathsDown(_ down: Bool) {
+    private func setPathsDown(_ down: Bool, from record: PhoneSession) {
         if down {
-            guard pathOutage == .none else { return }
-            pathOutage = .down(since: Date(), offline: false)
+            guard record.pathOutage == .none else { return }
+            record.pathOutage = .down(since: Date(), offline: false)
         } else {
-            clearPathOutage()
+            record.pathOutage = .none
+        }
+        guard record.deviceId == book.currentId else { return }
+        if down {
+            windows.linkLost()
+            // No banner, live row or attachment outlives the phone (the same
+            // rule as a session close): the grace keeps the session for a
+            // join, never the person's data.
+            notifyCenter.clearAll()
+        } else {
+            windows.linkRestored()
         }
     }
 
     private func clearPathOutage() {
-        pathOutage = .none
+        book.current?.pathOutage = .none
     }
 
     private func observeSystem() {
@@ -830,7 +886,7 @@ final class ConnectionController {
     // MARK: Intents (the UI calls these)
 
     func tryNow() {
-        send(.tryNow)
+        if let id = book.currentId { send(.tryNow, from: id) }
     }
 
     func markWelcomeSeen() {
@@ -868,12 +924,20 @@ final class ConnectionController {
     }
 
     func cancelPairing() {
-        guard isPairing else { return }
+        guard isPairing, let id = pairingDeviceId, let record = book.record(for: id) else { return }
         pairingTarget = nil
         pairingSucceeded = false
         if sheet == .code { sheet = nil }
-        closeSession()
-        send(.cancelPairing)
+        send(.cancelPairing, from: record)
+        closeSession(deviceId: id)
+        if record.claims.subtracting([.current]).isEmpty {
+            book.removeRecord(id)
+            if let resume = pairingResumeId {
+                book.setCurrent(resume, phone: remembered.phone(id: resume)?.ref).forEach(perform)
+            }
+        }
+        pairingDeviceId = nil
+        pairingResumeId = nil
     }
 
     /// A sheet went away (Esc, Cancel, or programmatically): stop what it was running.
@@ -884,19 +948,25 @@ final class ConnectionController {
 
     /// Settings ▸ Phones ▸ Use This Phone.
     func use(_ phone: RememberedPhone) {
-        guard link.phone?.id != phone.id else { return }
+        guard book.currentId != phone.id else { return }
         // The §3 mirror follows the phone in use: it is that phone's record
         // from here on, and the TLS layer checks the record itself.
         mirrorIdentityPin(deviceId: phone.id)
         remembered.setActive(id: phone.id)
         windows.closeAll()
-        closeSession()
+        stopClipboardSync()
+        book.setCurrent(phone.id, phone: phone.ref).forEach(perform)
+        if let session = book.current?.session {
+            windows.attach(session)
+            startClipboardSync(on: session)
+            session.enableClipboard(ClipboardSync.isEnabled(in: profile.defaults))
+            session.requestApps()
+        }
         resetPhoneData(for: phone.ref)
-        send(.activate(phone.ref))
     }
 
     func forget(_ phone: RememberedPhone) {
-        let wasActive = link.phone?.id == phone.id || remembered.active?.id == phone.id
+        let wasActive = book.currentId == phone.id || remembered.active?.id == phone.id
         pins.forget(deviceId: phone.id)
         syncIdentityPinMirrorAfterForget(deviceId: phone.id)
         cache.forget(deviceId: phone.id)
@@ -911,17 +981,19 @@ final class ConnectionController {
         shortcutBuilding = shortcutBuilding.filter { !$0.hasPrefix("\(phone.id)/") }
         dockRevision += 1
         rememberedPhones = remembered.all
-        if link.phone?.id == phone.id {
+        if book.record(for: phone.id) != nil {
+            send(.forget(deviceId: phone.id), from: phone.id)
+            disconnect(deviceId: phone.id)
+        }
+        if wasActive {
             windows.closeAll()
-            closeSession()
             apps = []
             appsLoaded = false
             status = nil
-        }
-        send(.forget(deviceId: phone.id))
-        if wasActive, let next = remembered.active {
-            resetPhoneData(for: next.ref)
-            send(.activate(next.ref))
+            if let next = remembered.active {
+                resetPhoneData(for: next.ref)
+                book.setCurrent(next.id, phone: next.ref).forEach(perform)
+            }
         }
     }
 
@@ -1882,7 +1954,7 @@ final class ConnectionController {
         menuBurstStep += 1
         let charging = menuBurstStep % 2 == 1
         let status = self.status
-        handle(.phoneState(locked: status?.locked ?? true,
+        handleOnCurrent(.phoneState(locked: status?.locked ?? true,
                            battery: charging ? 42 : 87,
                            charging: charging,
                            dnd: status?.dnd,
@@ -1892,7 +1964,7 @@ final class ConnectionController {
                            screen: status?.screen,
                            secure: nil,
                            panel: nil))
-        handle(.mediaState(MediaState(playing: charging,
+        handleOnCurrent(.mediaState(MediaState(playing: charging,
                                       pkg: "com.example.player",
                                       positionMs: Int64(menuBurstStep) * 1000,
                                       receivedAt: Date().timeIntervalSince1970)))
@@ -2227,21 +2299,28 @@ final class ConnectionController {
         discovered = phones
         searchedLong = false
         scheduleSearchedLong()
-        if let ref = link.phone, !ref.id.isEmpty,
-           phones.contains(where: { $0.deviceId == ref.id }), !before.contains(ref.id) {
-            reachabilityHint()
+        for record in book.all {
+            guard let ref = record.phone, !ref.id.isEmpty,
+                  phones.contains(where: { $0.deviceId == ref.id }),
+                  !before.contains(ref.id) else { continue }
+            send(.reachabilityHint, from: record)
         }
         if qr != nil { qrRound() }
     }
 
     private func discoveryDenied(_ denied: Bool) {
         browseDenied = denied
-        if denied { send(.localNetworkDenied) }
-        else { tryNowIfDenied() }
+        if denied {
+            for id in book.records.keys { send(.localNetworkDenied, from: id) }
+        } else {
+            tryNowIfDenied()
+        }
     }
 
     private func tryNowIfDenied() {
-        if case .offline(let phone, .localNetworkDenied) = link { send(.activate(phone)) }
+        if case .offline(let phone, .localNetworkDenied) = link, let id = book.currentId {
+            send(.activate(phone), from: id)
+        }
     }
 
     private func scheduleSearchedLong() {
@@ -2257,83 +2336,131 @@ final class ConnectionController {
     }
 
     private func reachabilityHint() {
-        send(.reachabilityHint)
+        for id in book.records.keys { send(.reachabilityHint, from: id) }
     }
 
     // MARK: Link plumbing
 
-    /// The only way the machine is driven: runs its actions, then reacts to the
-    /// new link (sheet, window pills).
-    private func send(_ event: LinkEvent) {
-        let before = link
-        let actions = machine.handle(event, at: Date())
-        for action in actions {
-            switch action {
-            case .attempt(let delay): scheduleAttempt(after: delay)
-            case .stopAttempts:
-                attemptTimer?.cancel()
-                attemptTimer = nil
-            case .startPairing: break
-            }
-        }
+    /// The only way a phone's machine is driven: runs its actions, then reacts
+    /// to the new link when that phone is current.
+    private func send(_ event: LinkEvent, from record: PhoneSession) {
+        apply(book.handle(event, from: record.deviceId, at: Date()))
+    }
+
+    private func send(_ event: LinkEvent, from id: String) {
+        guard let record = book.record(for: id) else { return }
+        send(event, from: record)
+    }
+
+    private func apply(_ result: PhoneBookEventResult) {
+        for action in result.actions { perform(action) }
+        guard result.affectsCurrent else { return }
         if case .pairing = link, qr == nil { sheet = .code }
         if isPairing {
             if pairingStartedAt == nil { pairingStartedAt = Date() }
         } else {
             pairingStartedAt = nil
         }
-        if before.isOnline, !link.isOnline {
+        if result.currentLinkLost {
             windows.linkLost()
             dropFlow.sessionEnded()
             dropSender.connectionLost()
             windows.pasteSessionEnded()
             clipImageBuffer.discard()
         }
-        if !before.isOnline, link.isOnline { windows.linkRestored() }
+        if result.currentLinkRestored { windows.linkRestored() }
+        writePhonesReport()
     }
 
-    private func scheduleAttempt(after delay: TimeInterval) {
-        attemptTimer?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.runAttempt() }
+    private func perform(_ action: PhoneBookAction) {
+        switch action {
+        case .connect(let id): connect(deviceId: id)
+        case .close(let id): closeSession(deviceId: id)
+        case .attempt(let id, let delay): scheduleAttempt(after: delay, for: id)
+        case .stopAttempts(let id): stopAttempts(deviceId: id)
+        case .startPairing: break
         }
-        attemptTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func closeSession() {
-        attemptTimer?.cancel()
-        attemptTimer = nil
-        stopClipboardSync()
-        session?.close()
-        session = nil
+    /// Connect or resume one phone without making it current (the
+    /// `--connect-phone` hook and a switch to a phone that has no session).
+    func connect(deviceId: String) {
+        guard let record = book.record(for: deviceId), record.session == nil else { return }
+        let ref = record.phone ?? PhoneRef(id: deviceId, name: "Phone", model: "")
+        send(.activate(ref), from: record)
     }
 
-    private func runAttempt() {
-        attemptTimer = nil
-        guard let ref = link.phone, !isPairing else { return }
+    /// Close one phone's session and forget its record; every other phone stays.
+    func disconnect(deviceId: String) {
+        guard book.record(for: deviceId) != nil else { return }
+        closeSession(deviceId: deviceId)
+        book.removeRecord(deviceId)
+    }
+
+    private func scheduleAttempt(after delay: TimeInterval, for id: String) {
+        guard let record = book.record(for: id) else { return }
+        record.attemptTask?.cancel()
+        record.attemptTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.runAttempt(from: id)
+        }
+    }
+
+    private func stopAttempts(deviceId: String) {
+        guard let record = book.record(for: deviceId) else { return }
+        record.attemptTask?.cancel()
+        record.attemptTask = nil
+    }
+
+    /// Close one phone's session; the clipboard is the current phone's only.
+    private func closeSession(deviceId: String) {
+        guard let record = book.record(for: deviceId) else { return }
+        stopAttempts(deviceId: deviceId)
+        if deviceId == book.currentId { stopClipboardSync() }
+        record.session?.close()
+        record.session = nil
+        record.pathOutage = .none
+    }
+
+    private func runAttempt(from id: String) {
+        guard let record = book.record(for: id) else { return }
+        record.attemptTask = nil
+        guard let ref = record.machine.link.phone, !isPairing(on: id) else { return }
         // A preempted attempt that has not authenticated is cancelled, never leaked.
-        if let session, session.state != .ready { session.close() }
-        if session?.state == .ready { return }
+        if let session = record.session, session.state != .ready { session.close() }
+        if record.session?.state == .ready { return }
         // A test profile never dials a Bonjour-discovered phone on its own:
         // discovery would find the real phones on this Mac's LAN (DialPolicy).
         let found = DialPolicy.mayDialDiscovered(profile)
             ? discovered.first { $0.deviceId == ref.id } : nil
-        if found == nil, let connect = options.connect {
-            lastAttemptWasService = false
-            let endpoints = manualEndpoints(connect)
+        let known = ref.id.isEmpty || ref.id.hasPrefix("hook:") ? nil : ref.id
+        if found == nil, let hook = record.hookEndpoint {
+            record.lastAttemptWasService = false
+            let endpoints = [Session.Endpoint.hostPort(host: hook.host, port: hook.port)]
             start(Session(endpoint: endpoints[0], endpoints: endpoints,
-                          knownDeviceId: ref.id.isEmpty ? nil : ref.id, clientId: clientId,
+                          knownDeviceId: known, clientId: clientId,
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
                           onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-                  policy: .never)
+                  for: record, policy: .allowed)
+            return
+        }
+        if found == nil, let connect = options.connect, id == book.currentId {
+            record.lastAttemptWasService = false
+            let endpoints = manualEndpoints(connect)
+            start(Session(endpoint: endpoints[0], endpoints: endpoints,
+                          knownDeviceId: known, clientId: clientId,
+                          identity: identity, pinnedPhone: pins.record(for: ref.id),
+                          pinStore: pins,
+                          onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
+                  for: record, policy: .never)
             return
         }
         let cached = cache.address(forDeviceId: ref.id)
         let choice = EndpointPlanner().choose(discovered: found != nil, cached: cached,
-                                              lastAttemptWasService: lastAttemptWasService,
-                                              lastAttemptFailed: lastAttemptFailed,
+                                              lastAttemptWasService: record.lastAttemptWasService,
+                                              lastAttemptFailed: record.lastAttemptFailed,
                                               sinceLaunch: Date().timeIntervalSince(launchAt))
         let endpoint: Session.Endpoint
         var strict: String?
@@ -2341,25 +2468,25 @@ final class ConnectionController {
         case .service:
             guard let found else { return }
             // After a failed service attempt, try the other interface policy.
-            if lastAttemptFailed, lastAttemptWasService { pinInterface.toggle() }
-            endpoint = .service(found.endpoint, pinnedTo: pinInterface ? found.interface : nil)
-            lastAttemptWasService = true
+            if record.lastAttemptFailed, record.lastAttemptWasService { record.pinInterface.toggle() }
+            endpoint = .service(found.endpoint, pinnedTo: record.pinInterface ? found.interface : nil)
+            record.lastAttemptWasService = true
         case .cached(let address):
             endpoint = .hostPort(host: address.host, port: address.port)
             strict = ref.id
-            lastAttemptWasService = false
+            record.lastAttemptWasService = false
         case .wait(let seconds):
-            scheduleAttempt(after: seconds)
+            scheduleAttempt(after: seconds, for: id)
             return
         case .none:
-            noEndpoint()
+            noEndpoint(from: id)
             return
         }
-        start(Session(endpoint: endpoint, knownDeviceId: ref.id, strictDeviceId: strict,
+        start(Session(endpoint: endpoint, knownDeviceId: known, strictDeviceId: strict,
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-              policy: .never)
+              for: record, policy: .never)
     }
 
     /// identity.json's §3 `pin` mirrors the fingerprint of the phone in use.
@@ -2386,36 +2513,46 @@ final class ConnectionController {
 
     /// Nothing to connect to (not discovered, no remembered address): count it as
     /// a failed attempt so the backoff and the 15 s offline rule still run.
-    private func noEndpoint() {
-        lastAttemptFailed = true
-        send(.attemptFailed(reason: "timeout"))
+    private func noEndpoint(from id: String) {
+        book.record(for: id)?.lastAttemptFailed = true
+        send(.attemptFailed(reason: "timeout"), from: id)
     }
 
     private var isPairing: Bool {
-        if case .pairing = link { return true }
+        guard let id = pairingDeviceId else { return false }
+        return isPairing(on: id)
+    }
+
+    private func isPairing(on id: String) -> Bool {
+        guard let record = book.record(for: id) else { return false }
+        if case .pairing = record.machine.link { return true }
         return false
     }
 
-    private func start(_ newSession: Session, policy: Session.PairingPolicy) {
-        stopClipboardSync()
-        clearPathOutage()
-        session?.close()
-        session = newSession
+    private func start(_ newSession: Session, for record: PhoneSession, policy: Session.PairingPolicy) {
+        let isCurrent = record.deviceId == book.currentId
+        if isCurrent { stopClipboardSync() }
+        record.pathOutage = .none
+        record.session?.close()
+        record.session = newSession
         newSession.pairingPolicy = policy
-        windows.attach(newSession)
-        newSession.onEvent = { [weak self, weak newSession] event in
+        if isCurrent { windows.attach(newSession) }
+        newSession.onEvent = { [weak self, weak newSession, weak record] event in
             MainActor.assumeIsolated {
-                guard let self, let newSession, newSession === self.session else { return }
-                self.handle(event)
+                guard let self, let newSession, let record, record.session === newSession else { return }
+                self.handle(event, from: record)
             }
         }
-        newSession.onVideoEvent = { [weak self, weak newSession] event in
-            guard let self, let newSession else { return }
+        newSession.onVideoEvent = { [weak self, weak newSession, weak record] event in
+            guard let self, let newSession, let record,
+                  record.deviceId == self.book.currentId,
+                  record.session === newSession else { return }
             self.windows.handleVideo(event, from: newSession)
         }
-        newSession.onAudioEvent = { [weak self, weak newSession] event in
-            guard let self, let newSession else { return }
-            guard newSession === self.session else { return }
+        newSession.onAudioEvent = { [weak self, weak newSession, weak record] event in
+            guard let self, let newSession, let record,
+                  record.deviceId == self.book.currentId,
+                  record.session === newSession else { return }
             switch event {
             case .config(let config): self.audio.configure(config)
             case .frame(let frame): self.audio.receive(frame)
@@ -2429,38 +2566,68 @@ final class ConnectionController {
     private func beginPairing(_ target: PairingTarget, ref: PhoneRef) {
         pairingTarget = target
         pairingSucceeded = false
+        pairingResumeId = book.currentId
         windows.closeAll()
-        closeSession()
+        stopClipboardSync()
         // A person re-running the pairing revokes the old pin here (§7): the
         // next connect lands in pairing mode (no record, no §3 mirror).
         if case .discovered(let phone) = target {
             pins.forget(deviceId: phone.deviceId)
             syncIdentityPinMirrorAfterForget(deviceId: phone.deviceId)
         }
-        sheet = .code
-        send(.beginPairing(ref))
+        let id: String
         let endpoint: Session.Endpoint
+        let known: String?
         switch target {
-        case .discovered(let phone): endpoint = .service(phone.endpoint, pinnedTo: phone.interface)
-        case .manual(let host, let port): endpoint = .hostPort(host: host, port: port)
+        case .discovered(let phone):
+            id = phone.deviceId
+            endpoint = .service(phone.endpoint, pinnedTo: phone.interface)
+            known = phone.deviceId
+        case .manual(let host, let port):
+            id = "hook:pair-\(host):\(port)"
+            endpoint = .hostPort(host: host, port: port)
+            known = nil
         }
-        let known: String? = { if case .discovered(let phone) = target { return phone.deviceId } else { return nil } }()
+        pairingDeviceId = id
+        // The pairing record is current while the sheet is up; a previous
+        // phone stays live only while another claim names it.
+        book.setCurrent(id, phone: ref.id.isEmpty ? nil : ref, connect: false).forEach(perform)
+        let record = book.ensureRecord(for: id, phone: ref.id.isEmpty ? nil : ref)
+        record.claims.insert(.current)
+        sheet = .code
+        send(.beginPairing(ref), from: record)
         start(Session(endpoint: endpoint, knownDeviceId: known, clientId: clientId,
                       identity: identity, pinnedPhone: nil, pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
                       connectTimeout: connectTimeout, pairingTimeout: pairingTimeout),
-              policy: .allowed)
+              for: record, policy: .allowed)
+    }
+
+    /// `--connect-phone host:port`: dial one more phone without making it
+    /// current. A remembered phone is resumed from its own cached address and
+    /// pin; an unknown endpoint starts under a provisional id and takes the
+    /// phone's own id from `welcome`. The test-hook claim keeps it live across
+    /// switches (PAIR-24/PAIR-25).
+    private func connectHook(host: String, port: UInt16) {
+        let cached = cache.devices.first { $0.address.host == host && $0.address.port == port }
+        let id = cached?.deviceId ?? "hook:\(host):\(port)"
+        let ref = remembered.phone(id: id)?.ref ?? PhoneRef(id: id, name: host, model: "")
+        let record = book.ensureRecord(for: id, phone: ref)
+        record.hookEndpoint = (host, port)
+        book.addClaim(.testHook, to: id, phone: ref).forEach(perform)
     }
 
     /// `--connect host:port`: the test entry point. The session may pair (the
     /// phone's Allow is the only step) or reconnect with a pin.
     private func beginManualLaunch(host: String, port: UInt16) {
         let ref = remembered.active?.ref ?? PhoneRef(id: "", name: host, model: "")
-        send(.launch(ref))
-        attemptTimer?.cancel()
-        attemptTimer = nil
+        let record = book.ensureRecord(for: ref.id, phone: ref.id.isEmpty ? nil : ref)
+        book.setCurrent(ref.id, phone: ref.id.isEmpty ? nil : ref, connect: false).forEach(perform)
+        record.claims.insert(.current)
+        send(.launch(ref), from: record)
+        stopAttempts(deviceId: ref.id)
         if qr != nil { return } // the QR probes own the first handshake
-        startManual(host: host, port: port, ref: ref)
+        startManual(host: host, port: port, ref: ref, record: record)
     }
 
     /// The test-only second provider rides beside the LAN one (PATH-20/§10).
@@ -2472,19 +2639,45 @@ final class ConnectionController {
         return endpoints
     }
 
-    private func startManual(host: String, port: UInt16, ref: PhoneRef) {
+    private func startManual(host: String, port: UInt16, ref: PhoneRef, record: PhoneSession) {
         let endpoints = manualEndpoints((host, port))
         start(Session(endpoint: endpoints[0], endpoints: endpoints,
                       knownDeviceId: ref.id.isEmpty ? nil : ref.id,
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
-                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout), policy: .allowed)
+                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout),
+              for: record, policy: .allowed)
     }
 
     // MARK: Session events
 
-    private func handle(_ event: SessionEvent) {
+    /// One session's events. Link-bearing events update that phone's record
+    /// for every phone; everything else reaches the one-phone surfaces only
+    /// when the event came from the current phone (PAIR-26).
+    private func handle(_ event: SessionEvent, from record: PhoneSession) {
+        switch event {
+        case .state(.failed(let reason), let detail):
+            record.pathOutage = .none
+            attemptEnded(reason: detail ?? "closed", from: record)
+        case .ready(let info, _, let address):
+            ready(info, address: address, from: record)
+            return
+        case .pathsReconnecting(let on):
+            setPathsDown(on, from: record)
+            return
+        default:
+            break
+        }
+        guard record.deviceId == book.currentId else { return }
+        handleCurrent(event)
+    }
+
+    private func handleOnCurrent(_ event: SessionEvent) {
+        if let record = book.current { handle(event, from: record) }
+    }
+
+    private func handleCurrent(_ event: SessionEvent) {
         switch event {
         case .state(let state, let detail):
             switch state {
@@ -2512,7 +2705,6 @@ final class ConnectionController {
                     Log.session.notice("dropping cached address for \(id, privacy: .public) (the TLS pin refuses it)")
                     cache.forget(deviceId: id)
                 }
-                attemptEnded(reason: detail ?? "closed")
             case .closed:
                 clearPathOutage()
                 stopClipboardSync()
@@ -2531,19 +2723,6 @@ final class ConnectionController {
                 notifyCenter.clearAll()
             default:
                 break
-            }
-        case .pathsReconnecting(let on):
-            // PATH-17: the windows say so at once while there is no path, and
-            // return to the live picture by themselves when one joins.
-            setPathsDown(on)
-            if on {
-                windows.linkLost()
-                // No banner, live row or attachment outlives the phone (the
-                // same rule as a session close): the grace keeps the session
-                // for a join, never the person's data.
-                notifyCenter.clearAll()
-            } else {
-                windows.linkRestored()
             }
         case .pathsSwitched:
             if let session { windows.requestKeyframes(from: session) }
@@ -2592,8 +2771,7 @@ final class ConnectionController {
         case .shareFileEnd(let id, let size, let sha256):
             shareInbox.fileEnd(id: id, size: size, sha256: sha256)
         case .shareFileAbort(let id):
-            shareInbox.fileAbort(id: id)        case .ready(let info, _, let address):
-            ready(info, address: address)
+            shareInbox.fileAbort(id: id)
         case .fsItems(let id, let page, let digest, let items):
             fsClient?.items(id: id, page: page, digest: digest, items: items)
             filesBridgeClient?.items(id: id, page: page, digest: digest, items: items)
@@ -2734,7 +2912,7 @@ final class ConnectionController {
         case .pairCodeShown(let deviceId, let code):
             codeShown(deviceId: deviceId, code: code)
         case .pairApproved:
-            send(.pairApproved)
+            if let id = pairingDeviceId { send(.pairApproved, from: id) }
         case .qrPaired(let deviceId):
             finishQRPairing(deviceId: deviceId, name: session?.phone?.name)
         case .identityMismatch(let expected, let actual):
@@ -2760,9 +2938,9 @@ final class ConnectionController {
         windows.handle(event)
     }
 
-    private func attemptEnded(reason: String) {
-        lastAttemptFailed = true
-        send(.attemptFailed(reason: reason))
+    private func attemptEnded(reason: String, from record: PhoneSession) {
+        record.lastAttemptFailed = true
+        send(.attemptFailed(reason: reason), from: record)
     }
 
     /// Plain-text clipboard sync for the session that just became ready — plus
@@ -2999,20 +3177,34 @@ final class ConnectionController {
         windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
     }
 
-    private func ready(_ info: PhoneInfo, address: CachedAddress?) {
+    private func ready(_ info: PhoneInfo, address: CachedAddress?, from record: PhoneSession) {
+        if record.deviceId != info.id {
+            let provisional = record.deviceId
+            book.adopt(record, as: info.id)
+            if pairingDeviceId == provisional { pairingDeviceId = info.id }
+        }
         let ref = PhoneRef(id: info.id, name: info.name, model: info.model)
-        let wasPairing = isPairing
-        remembered.remember(ref)
+        let isCurrent = record.deviceId == book.currentId
+        let wasPairing = isPairing(on: record.deviceId)
+        record.phone = ref
+        record.lastAttemptFailed = false
+        remembered.remember(ref, makeActive: isCurrent)
         rememberedPhones = remembered.all
-        // A successful connect (a fresh pairing or an enforced reconnect):
-        // the §3 mirror is this phone's record from now on.
-        mirrorIdentityPin(deviceId: info.id)
         markWelcomeSeen()
         if let address {
             cache.store(address, deviceId: info.id)
             cache.store(name: info.name, deviceId: info.id)
         }
-        lastAttemptFailed = false
+        send(.welcome(ref), from: record)
+        guard isCurrent else { return }
+        // A successful connect (a fresh pairing or an enforced reconnect):
+        // the §3 mirror is this phone's record from now on.
+        mirrorIdentityPin(deviceId: info.id)
+        readyCurrent(info, ref: ref, wasPairing: wasPairing)
+    }
+
+    /// The one-phone surfaces, only for the current phone (PAIR-25/PAIR-26).
+    private func readyCurrent(_ info: PhoneInfo, ref: PhoneRef, wasPairing: Bool) {
         layerRefresh.reset()
         iconRequests = [:]
         dockIconAsked = []
@@ -3030,7 +3222,6 @@ final class ConnectionController {
             batteryMemory.record(deviceId: info.id, level: battery, charging: info.charging ?? false)
         }
         if apps.isEmpty || link.phone?.id != info.id { resetPhoneData(for: ref) }
-        send(.welcome(ref))
         // The File Provider bridge answers from here on (docs/design/files.md
         // §1): the app owns the session, so the extension asks this socket.
         if let session {
@@ -3149,8 +3340,9 @@ final class ConnectionController {
     }
 
     private func codeShown(deviceId: String?, code: String) {
-        let ref = link.phone ?? PhoneRef(id: deviceId ?? "", name: "your phone", model: "")
-        send(.codeShown(ref, code: code))
+        guard let id = pairingDeviceId, let record = book.record(for: id) else { return }
+        let ref = record.phone ?? PhoneRef(id: deviceId ?? "", name: "your phone", model: "")
+        send(.codeShown(ref, code: code), from: record)
         sheet = .code
     }
 
@@ -4185,13 +4377,16 @@ final class ConnectionController {
         rememberedPhones = remembered.all
         markWelcomeSeen()
         windows.closeAll()
-        closeSession()
+        if let previous = book.currentId { disconnect(deviceId: previous) }
+        let record = book.ensureRecord(for: ref.id, phone: ref)
+        book.setCurrent(ref.id, phone: ref, connect: false).forEach(perform)
+        record.claims.insert(.current)
         // The probe's socket has to be gone first: the phone serves one session.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.resetPhoneData(for: ref)
-                self.send(.activate(ref))
+                self.send(.activate(ref), from: record)
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
