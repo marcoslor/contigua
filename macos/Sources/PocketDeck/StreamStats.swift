@@ -207,6 +207,15 @@ enum StatsDiscardReason: String, CaseIterable {
     case paced
 }
 
+/// What a wire-key frame's NAL types say: it cannot restart the decoder
+/// (`types`, also the first three per stream), it is the IDR that closes a
+/// phone drop marker (`recovered`), or it says nothing new (`none`).
+enum KeyFrameNote: Equatable {
+    case none
+    case types(String)
+    case recovered(ms: Int)
+}
+
 /// One visible window's sliding 2 s window. Pure: every method takes the clock
 /// (Mac monotonic seconds) and the caller feeds it from the session or main
 /// queue under its own lock.
@@ -243,6 +252,10 @@ struct StreamStatsWindow {
     private var keyNotIdr = 0
     private var totalKeyNotIdr = 0
     private var keyNotIdrLogged = 0
+    /// When a `stream.stats` message first reported a drop episode, until an
+    /// IDR arrives. The phone's own line has the true in-phone timing; this is
+    /// the Mac's observation of when it could show a picture again.
+    private var dropMarkerAt: TimeInterval?
     /// ISS-40 round 3: the longest interval between received frames. The line
     /// covers the time since the previous line; the totals the whole life.
     /// `lastReceived` survives `noteConfig` on purpose: a resize in the middle
@@ -329,11 +342,13 @@ struct StreamStatsWindow {
             pausedAt = nil
         }
         // The covered span is not a freeze or a picture gap: the next frame
-        // starts a fresh one.
+        // starts a fresh one. A drop that recovers while hidden has no local
+        // recovery time to report.
         if paused {
             lastEnqueue = nil
             lastEnqueuePtsUs = nil
             lastReceived = nil
+            dropMarkerAt = nil
         }
         prune(now)
     }
@@ -392,18 +407,29 @@ struct StreamStatsWindow {
         prune(now)
     }
 
+    /// The phone reported a drop episode. Measured from the message's arrival:
+    /// the phone's own line has the in-phone timing.
+    mutating func noteDropMarker(now: TimeInterval) {
+        dropMarkerAt = now
+    }
+
     /// A wire-key frame's NAL types. A frame with no type-5 unit cannot restart
     /// the decoder, so it is counted as `key_not_idr`; the first three per
-    /// stream also return their types for the field log.
-    mutating func noteKeyFrame(isKeyframe: Bool, nalTypes: [UInt8]) -> String? {
-        guard isKeyframe, !nalTypes.contains(H264NalType.sliceIdr.rawValue) else {
-            return nil
+    /// stream also return their types for the field log. A type-5 unit closes
+    /// an open phone drop marker with the wait it took.
+    mutating func noteKeyFrame(isKeyframe: Bool, nalTypes: [UInt8],
+                               now: TimeInterval) -> KeyFrameNote {
+        guard isKeyframe else { return .none }
+        if nalTypes.contains(H264NalType.sliceIdr.rawValue) {
+            guard let marker = dropMarkerAt else { return .none }
+            dropMarkerAt = nil
+            return .recovered(ms: Int(((now - marker) * 1000).rounded()))
         }
         keyNotIdr += 1
         totalKeyNotIdr += 1
-        guard keyNotIdrLogged < 3 else { return nil }
+        guard keyNotIdrLogged < 3 else { return .none }
         keyNotIdrLogged += 1
-        return nalTypes.map(String.init).joined(separator: ",")
+        return .types(nalTypes.map(String.init).joined(separator: ","))
     }
 
     mutating func notePhoneStats(_ stats: PhoneStreamStats) {
@@ -780,6 +806,18 @@ enum StreamStatsLine {
         ].joined(separator: " ")
     }
 
+    /// The two event lines a key frame may write. Types and durations only.
+    static func keyNote(stream: UInt32, note: KeyFrameNote) -> String? {
+        switch note {
+        case .none:
+            return nil
+        case .types(let types):
+            return "stream \(stream) key nal=\(types)"
+        case .recovered(let ms):
+            return "stream \(stream) drop recovered after \(ms) ms"
+        }
+    }
+
     static func one(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "-" }
         return String(format: "%.1f", value)
@@ -880,10 +918,11 @@ final class StreamStatsRecorder {
     /// are logged (types only, never content).
     func noteKeyFrame(nalTypes: [UInt8]) {
         lock.lock()
-        let line = model.noteKeyFrame(isKeyframe: true, nalTypes: nalTypes)
+        let note = model.noteKeyFrame(isKeyframe: true, nalTypes: nalTypes,
+                                      now: ProcessInfo.processInfo.systemUptime)
         lock.unlock()
-        if let line {
-            Log.video.notice("stream \(self.stream) key nal=\(line, privacy: .public)")  // log-ok: NAL types only; no frame bytes
+        if let line = StreamStatsLine.keyNote(stream: stream, note: note) {
+            Log.video.notice("\(line, privacy: .public)")  // log-ok: NAL types and a duration only; no frame bytes
         }
     }
 
@@ -908,7 +947,14 @@ final class StreamStatsRecorder {
     }
 
     func notePhoneStats(_ stats: PhoneStreamStats) {
-        lock.lock(); model.notePhoneStats(stats); lock.unlock()
+        lock.lock()
+        // The phone's message is the first thing that tells the Mac a drop
+        // happened; the marker waits for the IDR that ends it.
+        if stats.dropEpisodes > 0 {
+            model.noteDropMarker(now: ProcessInfo.processInfo.systemUptime)
+        }
+        model.notePhoneStats(stats)
+        lock.unlock()
     }
 
     func snapshot(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsSnapshot {
