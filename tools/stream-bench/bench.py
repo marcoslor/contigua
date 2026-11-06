@@ -83,7 +83,7 @@ CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
               + list(NEW_RUN_FIELDS))
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)([+-]\d{4})")
 
-STAGE_FIELDS = ("phone_frames", "app_fps", "rx_fps", "shown_fps", "vd_hz")
+STAGE_FIELDS = ("phone_fps", "app_fps", "rx_fps", "shown_fps", "vd_hz")
 STAGE_NAMES = ("encoder", "app", "network", "display", "panel")
 INTERVAL_FIELDS = ("int_p50", "int_p95", "int_p99",
                    "shown_p50", "shown_p95", "shown_p99")
@@ -477,6 +477,7 @@ def run_metrics(total, sampled=(), phases=None):
     active = max(0.0, secs - covered_ms / 1000.0)
     rx = number(total, "rx_frames") or 0
     shown = number(total, "shown_frames") or 0
+    phone_frames = number(total, "phone_frames")
     hitch_n = int(number(total, "hitch_n") or 0)
     hitch_ms = number(total, "hitch_ms") or 0
     drop_ep = int(number(total, "drop_ep") or 0)
@@ -507,6 +508,8 @@ def run_metrics(total, sampled=(), phases=None):
         "e2e_p50": number(total, "e2e_p50"),
         "e2e_p95": number(total, "e2e_p95"),
         "rx_fps": rx / secs if secs > 0 else None,
+        "phone_fps": (phone_frames / secs
+                      if secs > 0 and phone_frames is not None else None),
         "int_p50": number(total, "int_p50"),
         "int_p95": number(total, "int_p95"),
         "int_p99": number(total, "int_p99"),
@@ -522,7 +525,7 @@ def run_metrics(total, sampled=(), phases=None):
         "secs": secs,
         "rx_frames": rx,
         "shown_frames": shown,
-        "phone_frames": number(total, "phone_frames"),
+        "phone_frames": phone_frames,
         "kf_req": number(total, "kf_req"),
         "bytes": phone_bytes,
         "covered_ms": covered_ms,
@@ -544,7 +547,8 @@ def empty_metrics():
                     "shown_p50", "shown_p95", "shown_p99")})
     values.update({"frozen": 0, "low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
                    "covered": 0, "failed": 1, "secs": None, "rx_frames": None,
-                   "shown_frames": None, "phone_frames": None, "kf_req": None,
+                   "shown_frames": None, "phone_frames": None, "phone_fps": None,
+                   "kf_req": None,
                    "bytes": None, "covered_ms": None, "max_gap_ms": None,
                    "codec": None})
     return values

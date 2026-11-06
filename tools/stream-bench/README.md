@@ -275,7 +275,8 @@ stage          encoder        app    network    display      panel       int_p50
 baseline    600.0 (…-…)   59.0 (…-…)  60.0 (…-…)  59.0 (…-…)  60.0 (…-…)
 ```
 
-`encoder` is the phone's `phone_frames`, `app` the app's own `app_fps`,
+`encoder` is the phone's `phone_frames` over the run's `secs` (its
+output fps), `app` the app's own `app_fps`,
 `network` the Mac's `rx_fps`, `display` its `shown_fps` and `panel` the
 `vd_hz`. `int_p50/int_p95/int_p99` are the arrival interval and
 `shown_p50/shown_p95/shown_p99` the display interval levels; they stay `-`

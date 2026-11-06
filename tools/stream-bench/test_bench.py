@@ -996,7 +996,8 @@ class StageBlockTest(unittest.TestCase):
 
     def runrow(self, **fields):
         values = {"failed": 0, "covered": 0, "frozen": 0, "low_motion": 0,
-                  "phone_frames": 540, "app_fps": 58.0, "rx_fps": 59.0,
+                  "phone_frames": 540, "phone_fps": 54.0,
+                  "app_fps": 58.0, "rx_fps": 59.0,
                   "shown_fps": 58.5, "vd_hz": 60.0,
                   "int_p50": 12.0, "int_p95": 20.0, "int_p99": 30.0,
                   "shown_p50": 8.0, "shown_p95": 16.0, "shown_p99": 24.0}
@@ -1012,9 +1013,9 @@ class StageBlockTest(unittest.TestCase):
 
     def test_the_line_shows_the_medians(self):
         line = self.bench.stage_line("baseline", [self.runrow(),
-                                                  self.runrow(phone_frames=600,
+                                                  self.runrow(phone_fps=60.0,
                                                               app_fps=60.0)])
-        self.assertIn("570.0", line)     # encoder
+        self.assertIn("57.0", line)      # encoder, frames over the run's seconds
         self.assertIn("59.0", line)      # app
         self.assertIn("60.0", line)      # panel
         self.assertIn("int_p50=12.0", line)
@@ -1029,14 +1030,14 @@ class StageBlockTest(unittest.TestCase):
     def test_failed_and_covered_runs_are_left_out(self):
         line = self.bench.stage_line("baseline", [
             self.runrow(),
-            self.runrow(failed=1, phone_frames=0, app_fps=0.0),
-            self.runrow(covered=1, phone_frames=999, app_fps=999.0)])
-        self.assertIn("540.0", line)
+            self.runrow(failed=1, phone_fps=0.0, app_fps=0.0),
+            self.runrow(covered=1, phone_fps=999.0, app_fps=999.0)])
+        self.assertIn("54.0", line)
         self.assertNotIn("999", line)
 
     def test_a_low_motion_still_run_still_has_stage_numbers(self):
         line = self.bench.stage_line("still", [self.runrow(
-            low_motion=1, phone_frames=0, app_fps=0.0, rx_fps=0.0,
+            low_motion=1, phone_fps=0.0, app_fps=0.0, rx_fps=0.0,
             shown_fps=0.0)])
         self.assertIn("0.0", line)
 
