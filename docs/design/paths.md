@@ -831,7 +831,7 @@ One check the reviewer runs on the person's own phone and Mac (never an agent):
 
 ## 11. Non-goals
 
-- Several sessions or several phones at once: one session per Mac-phone pair.
+- Several sessions to one phone: one session per Mac-phone pair; several pairs on one Mac is feature 2, not a second session for one pair.
 - Deciding a switch on the phone: the phone computes, follows, and never
   switches on its own.
 - Replaying lossy frames, or a decoder's own error-recovery beyond
