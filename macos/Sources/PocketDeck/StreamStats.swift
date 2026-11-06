@@ -294,6 +294,9 @@ struct StreamStatsWindow {
     // consumed by the 5 s lines or reset by a config.
     private let startedAt: TimeInterval
     private var totalReceived = 0
+    /// The frame bytes this Mac actually received, for the run's own rate.
+    /// The phone's `bytes` counter says what it queued, not what arrived.
+    private var totalReceivedBytes = 0
     private var totalEnqueued = 0
     private var totalHitchCount = 0
     private var totalHitchMs = 0.0
@@ -376,6 +379,7 @@ struct StreamStatsWindow {
         }
         received.append(Received(at: now, bytes: bytes))
         totalReceived += 1
+        totalReceivedBytes += bytes
         prune(now)
     }
 
@@ -503,6 +507,7 @@ struct StreamStatsWindow {
             suspendedEpisodes: totalSuspendedEpisodes,
             suspendedMs: totalSuspendedMs,
             phoneBytes: totalPhoneBytes,
+            receivedBytes: totalReceivedBytes,
             e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
             coveredMs: covered,
@@ -754,6 +759,8 @@ struct StreamStatsTotal {
     var suspendedEpisodes: Int
     var suspendedMs: Int
     var phoneBytes: Int
+    /// The bytes the Mac's own frame path received over the window's life.
+    var receivedBytes: Int
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
     var coveredMs: Double
@@ -853,7 +860,10 @@ enum StreamStatsLine {
     /// The one line a window writes as it closes (WIN-55/56): every counter
     /// over its whole life, `covered_ms` the pause it spent hidden.
     static func totalText(stream: UInt32, total: StreamStatsTotal) -> String {
-        [
+        let rxKbps = total.seconds > 0
+            ? Double(total.receivedBytes) * 8 / (total.seconds * 1000)
+            : nil
+        return [
             "stats total stream=\(stream)",
             "secs=\(String(format: "%.1f", total.seconds))",
             "rx_frames=\(total.receivedFrames)",
@@ -872,6 +882,7 @@ enum StreamStatsLine {
             "susp_n=\(total.suspendedEpisodes)",
             "susp_ms=\(total.suspendedMs)",
             "bytes=\(total.phoneBytes)",
+            "rx_kbps=\(one(rxKbps))",
             "e2e_p50=\(one(total.e2eP50Ms))",
             "e2e_p95=\(one(total.e2eP95Ms))",
             "covered_ms=\(Int(total.coveredMs.rounded()))",

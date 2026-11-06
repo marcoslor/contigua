@@ -492,6 +492,7 @@ final class StreamStatsTests: XCTestCase {
         XCTAssertEqual(total.suspendedEpisodes, 3)
         XCTAssertEqual(total.suspendedMs, 30)
         XCTAssertEqual(total.phoneBytes, 2_500)
+        XCTAssertEqual(total.receivedBytes, 3_000)
         XCTAssertEqual(total.e2eP50Ms ?? -1, 183.3, accuracy: 0.2)
         XCTAssertEqual(total.e2eP95Ms ?? -1, 183.3, accuracy: 0.2)
         XCTAssertEqual(total.coveredMs, 2_000, accuracy: 1)
@@ -502,6 +503,7 @@ final class StreamStatsTests: XCTestCase {
                       "late_p99=183.3", "phone_n=3", "phone_frames=110",
                       "kf=3", "kf_req=3", "drop_ep=3", "drop_ms=110",
                       "susp_n=3", "susp_ms=30", "bytes=2500",
+                      "rx_kbps=2.4",
                       "e2e_p50=183.3", "e2e_p95=183.3", "covered_ms=2000",
                       "max_gap_ms=", "key_not_idr=0", "ph_key_not_idr=0"] {
             XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")

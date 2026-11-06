@@ -81,7 +81,8 @@ window muddies every run.
   and the counters simply don't change.
 - Nothing else on the phone is written. The bench never runs `adb kill-server`.
 
-The shipped arms are the ISS-40 switches: `baseline` (no properties), the Q1
+The shipped arms are the ISS-40 switches: `baseline` (no properties), C1's HEVC
+arm (`c1-hevc`, `codec=hevc`), the Q1
 and Q2 queue arms, R1's CBR, R2's two caps, R4's intra refresh, T1's refinement,
 N1's traffic class (`n1-af41` on the phone, `n1-mac-video` on the Mac and
 `n1-both` for both), the Mac's presentation and pixel switches (`m1-paced`,
@@ -94,9 +95,10 @@ also proves what the app applied.
 The stall arms make the link stall on demand: `stall` (400 ms every 5 s),
 `stall-q1` (plus `overflow=suspend`), `stall-q1q2-100` (plus a 100 ms queue),
 `stall-q2-500` (a 500 ms queue), `stall-paced` (plus the Mac's paced
-presentation) and `stall-ir60` (plus intra refresh). The phone logs one
+presentation), `stall-ir60` (plus intra refresh) and `stall-hevc` (plus C1's
+HEVC). The phone logs one
 `stream N injected stall 400` line per pause. `--arms-filter stall` runs these
-six alone; `--arms-filter stall-q` runs the three queue variants.
+seven alone; `--arms-filter stall-q` runs the three queue variants.
 
 `n1-mac-video`, `n1-both` and `n1-af41` set `stream.net`/`tos`, which the app
 and the phone read once when the session starts (dial and socket accept).
@@ -133,13 +135,18 @@ jank_ms = hitch_ms + drop_ms + susp_ms
 Both come from the closing totals line and cover the window's whole life:
 5 s samples and a config never reset them. `shown_fps` is `shown_frames` over
 the run's active time (`secs` minus `covered_ms`), `late_p99` is every shown
-frame, `kbps` is `bytes × 8 / secs`, and `kf` totals keyframes. **The totals
-have no phases**, so there is no swipe/fling filter any more; a run that moved
-too little shows up as low-motion below instead.
+frame, `kbps` is the phone's `bytes × 8 / secs`, `rx_kbps` is the Mac's own
+received frame bytes × 8 / secs, `codec` is the stream's codec, and `kf` totals
+keyframes. **The totals have no phases**, so there is no swipe/fling filter any
+more; a run that moved too little shows up as low-motion below instead.
 
-**`qp_p95` is the one sampled number**: a level, not a counter, and the totals
-line has none. It is the median over the 5 s lines that folded in a phone
-message (`phone_n ≥ 1`); a line with no message is no sample.
+**`qp_p95` is the one sampled QP level**: a level, not a counter, and the
+totals line has none. It is the median over the 5 s lines that folded in a phone
+message (`phone_n ≥ 1`); a line with no message is no sample. The totals line
+does carry `qp_avg`, the phone's frame-weighted mean over the window's whole
+life (`-` when the encoder reported none), and the table shows it as one more
+column. `codec` is a name (`avc`/`hevc`), so its column prints the arm's codec
+rather than a median.
 
 A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
 when `rx_frames / secs` is under 20: the content did not move, so the run cannot
@@ -159,9 +166,9 @@ no phone message at all (`phone_n=0`), and `no drop_ms` a phone that sends no
 counts a suspend still open at close.
 
 ```
-arm                 valid   jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
-stall                  2    310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
-stall-q1 (frozen)      0      -          -         -           -         -          -
+arm                 valid codec  jank_ms    jank_n   hitch_ms    drop_ms   susp_ms   late_p99  ...
+stall                  2   avc   310 (…-…)  5 (…-…)  110 (…-…)   150 (…-…)  50 (…-…)  283 (…-…)
+stall-q1 (frozen)      0   avc     -          -         -           -         -          -
 ```
 
 Two columns read the connection's own counter deltas from the totals:
@@ -190,7 +197,9 @@ counts and reported as `no phone message`; a phone that could not read its
 The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
 `frozen`, `secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`,
 `bytes`, `covered_ms`, `max_gap_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`,
-`ph_rto`, `ph_lost`, `low_motion`, `no_drop_ms` and `phone_gaps`.
+`ph_rto`, `ph_lost`, `low_motion`, `no_drop_ms` and `phone_gaps`. The table's
+`codec`, `qp_avg` and `rx_kbps` are columns too, so a C1 row says which codec
+produced the numbers and what rate the Mac actually received.
 
 ## Usage
 

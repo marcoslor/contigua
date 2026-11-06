@@ -12091,7 +12091,7 @@ PY
                  drop_ep drop_ms skip kf kf_req key_not_idr ph_key_not_idr \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
                  e2e_p50 e2e_p95 max_gap_ms tcp_srtt tcp_rttvar tcp_ooo_kb \
-                 ph_retrans ph_rto ph_lost; do
+                 ph_retrans ph_rto ph_lost codec qp_avg; do
         case "$line" in
             *"$field="*) ;;
             *) missing="$missing $field" ;;
@@ -12100,6 +12100,14 @@ PY
     [ -z "$missing" ] \
         && ok "STATS the line carries every documented field" \
         || bad "STATS the line is missing:$missing"
+    case "$line" in
+        *"codec=avc"*) ok "STATS the line names the default codec=avc" ;;
+        *) bad "STATS the line has no codec=avc" ;;
+    esac
+    case "$line" in
+        *"qp_avg=24.0"*) ok "STATS the line carries the phone's qp_avg=24.0" ;;
+        *) bad "STATS the line has no qp_avg=24.0" ;;
+    esac
 
     # The closing totals line (WIN-55/56): complete over the window's whole
     # life, including the minimize stop above (covered_ms). The bench reads
@@ -12121,8 +12129,8 @@ PY
     for field in secs rx_frames shown_frames hitch_n hitch_ms late_p99 \
                  phone_n phone_frames kf kf_req key_not_idr ph_key_not_idr \
                  drop_ep drop_ms susp_n susp_ms \
-                 bytes e2e_p50 e2e_p95 covered_ms max_gap_ms tcp_ooo_kb tcp_srtt_max \
-                 ph_retrans ph_rto ph_lost; do
+                 bytes rx_kbps e2e_p50 e2e_p95 covered_ms max_gap_ms tcp_ooo_kb tcp_srtt_max \
+                 ph_retrans ph_rto ph_lost codec qp_avg; do
         case "$total_line" in
             *"$field="*) ;;
             *) total_missing="$total_missing $field" ;;
@@ -12131,9 +12139,24 @@ PY
     [ -z "$total_missing" ] \
         && ok "STATS the totals line carries every documented field" \
         || bad "STATS the totals line is missing:$total_missing"
+    local total_codec total_qp total_rx
     total_field() {
         printf '%s\n' "$total_line" | tr ' ' '\n' | grep -F "$1=" | head -1 | cut -d= -f2
     }
+    total_codec="$(total_field codec)"
+    total_qp="$(total_field qp_avg)"
+    total_rx="$(total_field rx_kbps)"
+    [ "$total_codec" = "avc" ] \
+        && ok "STATS totals codec=avc on the default H.264 arm" \
+        || bad "STATS totals codec=${total_codec:-missing}, expected avc"
+    [ "$total_qp" = "24.0" ] \
+        && ok "STATS totals qp_avg=24.0 counts the fake phone's QP" \
+        || bad "STATS totals qp_avg=${total_qp:-missing}, expected 24.0"
+    if awk -v v="$total_rx" 'BEGIN { exit !(v > 0) }'; then
+        ok "STATS totals rx_kbps=$total_rx is the Mac's received rate"
+    else
+        bad "STATS totals rx_kbps=${total_rx:-missing} is not positive"
+    fi
     local total_drop_ep total_covered total_secs total_rx total_gap total_keys
     total_gap="$(total_field max_gap_ms)"
     total_keys="$(total_field key_not_idr)"

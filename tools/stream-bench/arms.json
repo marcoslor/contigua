@@ -6,6 +6,13 @@
       "mac": {}
     },
     {
+      "name": "c1-hevc",
+      "phone": {
+        "codec": "hevc"
+      },
+      "mac": {}
+    },
+    {
       "name": "q1-suspend",
       "phone": {
         "overflow": "suspend"
@@ -101,6 +108,14 @@
       "phone": {
         "stall_ms": "400",
         "ir": "60"
+      },
+      "mac": {}
+    },
+    {
+      "name": "stall-hevc",
+      "phone": {
+        "stall_ms": "400",
+        "codec": "hevc"
       },
       "mac": {}
     },
