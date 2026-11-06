@@ -346,6 +346,38 @@ round also answers P0's video question: the earlier video runs that showed
 0–3 fps were high-bitrate 1800×1200 video, more than the TLS/TCP link could
 carry. Video is a bitrate case, not a capture path of its own.
 
+### P2 on the phone (2026-11-06)
+
+The remaining P2 switches were measured on the same phone. The probe ran in
+Settings' two-pane layout: a tap on a left-pane row switches the detail page,
+so alternating "Connections" and "Sounds and vibration" changes the picture
+without ever reaching system back, which at the Settings root exits the app
+and closes the stream. Each arm opened a fresh stream, confirmed its strategy
+line, and ran three `input_probe` taps; the first tap after a fresh window
+(one per arm) returned `changed_ms=null` with 54 frames and is discarded — a
+tap during the open transition is not counted. The three valid taps follow.
+
+| arm | strategy line | `changed_ms` (ms) | median | e2e p50 / p95 |
+| --- | --- | --- | --- | --- |
+| default | `default` | 207.5, 176.6, 182.0 | 182.0 | 24.3 / 28.0 (control) |
+| `low_latency=on` | `low_latency=on unsupported` | 186.1, 208.4, 186.9 | 186.9 | 22.7 / 66.4 |
+| `queue_ms=100` | `queue_ms=100` | 191.3, 191.9, 201.6 | 191.9 | 23.9 / 38.7 |
+
+The phone's AVC encoder does not declare `FEATURE_LowLatency`, so the gate
+drops the switch and prints its token: `low_latency=on` is a no-op on this
+device, and the three arms are indistinguishable (medians 182–192 ms, spread
+±25 ms inside every arm). The queue budget never binds either: `queue_p95`
+read 0.6 ms with both the 100 ms and the 250 ms budget while swipe motion
+pushed 65–120 fps through the stream, and the capture→Mac-enqueue part stayed
+at 22–24 ms p50. The ~180–190 ms seen by `input_probe` is therefore not the
+video queue: most of it is input delivery, the app's own reaction and the
+first changed draw, all upstream of the capture timestamp the stats line
+starts from.
+
+P2 changes no stream code: the fallback WIN-61 already specifies is what the
+phone does, and neither knob moves the interactive number. They stay bench
+switches with today's defaults.
+
 ### The Mac's switches
 
 The Mac's three knobs follow the same rule: a `defaults` key in the app
