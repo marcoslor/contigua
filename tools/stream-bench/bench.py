@@ -45,12 +45,14 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 # on the Mac, a drop gap on the phone, or a suspend (Q1).
 TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
                 "late_p99", "shown_fps", "kf", "key_not_idr", "ph_key_not_idr",
-                "kbps", "tcp_ooo_kb", "ph_retrans", "qp_p95",
-                "e2e_p50", "e2e_p95")
+                "kbps", "rx_kbps", "tcp_ooo_kb", "ph_retrans", "qp_p95",
+                "qp_avg", "e2e_p50", "e2e_p95")
+# The stream's codec is a name, not a number: it gets its own table column.
+TABLE_TEXT_FIELDS = ("codec",)
 # One CSV row per run: the table fields plus the totals that are not table
 # cells and the marks a reader needs to exclude a run.
 CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
-               "failed", "covered", "secs", "rx_frames", "shown_frames",
+               "codec", "failed", "covered", "secs", "rx_frames", "shown_frames",
                "phone_frames", "kf_req", "bytes", "covered_ms", "max_gap_ms",
                "tcp_ooo_kb", "tcp_srtt_max", "ph_retrans", "ph_rto", "ph_lost"]
               + list(TABLE_FIELDS) + ["frozen", "low_motion", "no_drop_ms", "phone_gaps"])
@@ -416,7 +418,10 @@ def run_metrics(total, sampled=(), phases=None):
         "key_not_idr": number(total, "key_not_idr"),
         "ph_key_not_idr": number(total, "ph_key_not_idr"),
         "kbps": phone_bytes * 8 / (secs * 1000) if secs > 0 else None,
+        "rx_kbps": number(total, "rx_kbps"),
         "qp_p95": median(qp),
+        "qp_avg": number(total, "qp_avg"),
+        "codec": total.get("codec") if total.get("codec") not in (None, "-") else None,
         "e2e_p50": number(total, "e2e_p50"),
         "e2e_p95": number(total, "e2e_p95"),
         "frozen": is_frozen(total, sampled, phases),
@@ -447,7 +452,8 @@ def empty_metrics():
     values.update({"frozen": 0, "low_motion": 0, "no_drop_ms": 0, "phone_gaps": 0,
                    "covered": 0, "failed": 1, "secs": None, "rx_frames": None,
                    "shown_frames": None, "phone_frames": None, "kf_req": None,
-                   "bytes": None, "covered_ms": None, "max_gap_ms": None})
+                   "bytes": None, "covered_ms": None, "max_gap_ms": None,
+                   "codec": None})
     return values
 
 
@@ -479,6 +485,8 @@ def table_line(name, runs, width=3):
     if any(run.get("phone_gaps") for run in runs):
         marks.append("phone gaps")
     label = name + (" (%s)" % ", ".join(marks) if marks else "")
+    codecs = sorted({run.get("codec") for run in runs if run.get("codec")})
+    codec = "/".join(codecs) if codecs else "-"
     cells = summarise(runs)
     rendered = []
     for field in TABLE_FIELDS:
@@ -488,13 +496,14 @@ def table_line(name, runs, width=3):
         else:
             middle, low, high = cell
             rendered.append(("%.1f (%.1f-%.1f)" % (middle, low, high)).rjust(10))
-    return "%-*s  %5d  %s" % (width, label, valid_runs(runs), "  ".join(rendered))
+    return "%-*s  %5d  %-6s  %s" % (width, label, valid_runs(runs), codec,
+                                    "  ".join(rendered))
 
 
 def table_header(width=3):
     """The table's one header row, with the valid count before the medians."""
-    return "%-*s  %5s  %s" % (width, "arm", "valid",
-                              "  ".join(field.rjust(10) for field in TABLE_FIELDS))
+    return "%-*s  %5s  %-6s  %s" % (width, "arm", "valid", "codec",
+                                    "  ".join(field.rjust(10) for field in TABLE_FIELDS))
 
 
 def resend_counts(rows):
@@ -662,8 +671,9 @@ def main():
                     run[key] = 1 if run.get(key) else 0
                 rows.append(run)
                 summary_rows[name].append(run)
-                log("run done: " + " ".join("%s=%s" % (field, run[field])
-                                            for field in TABLE_FIELDS))
+                log("run done: codec=%s " % (run.get("codec") or "-")
+                    + " ".join("%s=%s" % (field, run[field])
+                               for field in TABLE_FIELDS))
     finally:
         settings.restore()
 

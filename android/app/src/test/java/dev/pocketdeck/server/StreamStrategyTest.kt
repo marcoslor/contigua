@@ -159,6 +159,33 @@ class StreamStrategyTest {
     }
 
     @Test
+    fun `the codec key parses, clamps and prints`() {
+        assertEquals(VideoCodec.Avc, StreamStrategy.DEFAULT.codec)
+        assertEquals(VideoCodec.Hevc, parse("codec" to "hevc").codec)
+        assertEquals(VideoCodec.Avc, parse("codec" to "avc").codec)
+        assertEquals("junk is the default, never a guess", VideoCodec.Avc,
+                     parse("codec" to "h265").codec)
+        assertEquals("codec=hevc",
+                     parse("codec" to "hevc").describe(
+                         StreamStrategy.Applied(codec = VideoCodec.Hevc),
+                     ))
+        // A requested codec the MAC or the encoder refused is not advertised
+        // as applied; the choice's own reason line names the condition.
+        assertEquals("default",
+                     parse("codec" to "hevc").describe(StreamStrategy.Applied()))
+    }
+
+    @Test
+    fun `the hevc format names its own mime`() {
+        val plan = build(format = parse("codec" to "hevc"), cbrSupported = true,
+                         intraRefreshSupported = true, codec = VideoCodec.Hevc)
+        assertEquals(VideoCodec.Hevc.mime, plan.format.getString(MediaFormat.KEY_MIME))
+        assertEquals(VideoCodec.Hevc, plan.applied.codec)
+        assertEquals(VideoCodec.Avc.mime,
+                     build(StreamStrategy.DEFAULT, true, true).format.getString(MediaFormat.KEY_MIME))
+    }
+
+    @Test
     fun `the default format is exactly the pre-switch format`() {
         val plan = build(format = StreamStrategy.DEFAULT, cbrSupported = true, intraRefreshSupported = true)
         val format = plan.format
@@ -230,6 +257,7 @@ class StreamStrategyTest {
         format: StreamStrategy,
         cbrSupported: Boolean,
         intraRefreshSupported: Boolean,
+        codec: VideoCodec = VideoCodec.Avc,
     ): StreamFormat.Plan = StreamFormat.build(
         w = 1232,
         h = 2410,
@@ -240,5 +268,6 @@ class StreamStrategyTest {
         repeatPreviousFrame = true,
         maxFps = null,
         encodingStatistics = false,
+        codec = codec,
     )
 }

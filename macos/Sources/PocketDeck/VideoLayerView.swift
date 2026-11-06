@@ -26,6 +26,7 @@ final class VideoLayerView: NSView {
     private let videoQueue = DispatchQueue(label: "dev.pocketdeck.video")
     /// Touched only on `videoQueue`.
     private var formatDescription: CMVideoFormatDescription?
+    private var currentCodec: VideoCodec = .avc
     private var lastPtsUs: UInt64 = 0
 
     /// M1's waiting room (ISS-40), main-thread only: decoded samples wait for
@@ -109,8 +110,13 @@ final class VideoLayerView: NSView {
     /// A frame did not reach the layer, and why. `beforeConfig` also covers a
     /// payload with no access unit; the line only carries the count.
     var onFrameDiscarded: ((StatsDiscardReason) -> Void)?
-    /// A frame the phone flagged key: its NAL types, for the IDR check.
-    var onKeyFrame: (([UInt8]) -> Void)?
+    /// A frame the phone flagged key: its NAL types and the stream's codec, for
+    /// the IDR check.
+    var onKeyFrame: (([UInt8], VideoCodec) -> Void)?
+
+    /// A VIDEO_CONFIG named a codec this Mac cannot decode: refuse the stream
+    /// (WIN-60). Runs on the main queue.
+    var onCodecRefused: ((String) -> Void)?
 
     /// How the picture is placed in the view, by the name the stats line uses.
     var placementName: String {
@@ -594,8 +600,18 @@ final class VideoLayerView: NSView {
     }
 
     func configure(_ config: VideoConfig, picture: PictureRect) {
-        guard let format = Self.makeFormatDescription(config) else {
-            Log.video.error("VIDEO_CONFIG without SPS/PPS")
+        let codec: VideoCodec
+        switch VideoCodecPolicy.decision(for: config.codec) {
+        case .refuse(let token):
+            // Never hand the bytes to another codec's decoder: the window
+            // refuses the stream through its existing refusal state.
+            DispatchQueue.main.async { [weak self] in self?.onCodecRefused?(token) }  // gcd: the refusal reaches the window on main, like every other picture state
+            return
+        case .decode(let accepted):
+            codec = accepted
+        }
+        guard let format = Self.makeFormatDescription(config, codec: codec) else {
+            Log.video.error("VIDEO_CONFIG without its codec's parameter sets")
             onRequestKeyframe?()
             return
         }
@@ -603,6 +619,7 @@ final class VideoLayerView: NSView {
         videoQueue.async { [weak self] in
             guard let self else { return }
             self.formatDescription = format
+            self.currentCodec = codec
             self.lastPtsUs = 0
             // The flush rides the same ordered hand-off as the samples, so a
             // drain can never put new-format samples ahead of it.
@@ -649,18 +666,19 @@ final class VideoLayerView: NSView {
                 return
             }
             let units = AnnexB.units(frame.annexB)
-            let avcc = AnnexB.avcc(from: units)
+            let codec = self.currentCodec
+            let avcc = AnnexB.avcc(from: units, codec: codec)
             guard !avcc.isEmpty else {
                 self.onFrameDiscarded?(.beforeConfig)
                 return
             }
             // The presenter must not drop a keyframe while a delta can go:
             // without one the decoder cannot restart (M1's queue cap).
-            let keyframe = units.contains { AnnexB.nalType($0) == H264NalType.sliceIdr.rawValue }
+            let keyframe = AnnexB.isIdr(units, codec: codec)
             if frame.isKeyframe {
                 // The wire flag, not this IDR test: the stats must count what
                 // the phone claimed, including the frames that cannot restart.
-                self.onKeyFrame?(units.map { AnnexB.nalType($0) })
+                self.onKeyFrame?(units.map { AnnexB.nalType($0, codec: codec) }, codec)
             }
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
@@ -820,9 +838,21 @@ final class VideoLayerView: NSView {
         }
     }
 
-    private static func makeFormatDescription(_ config: VideoConfig) -> CMVideoFormatDescription? {
-        guard let (sps, pps) = AnnexB.parameterSets(from: config.parameterSets) else { return nil }
-        return makeFormatDescription(sps: sps, pps: pps)
+    static func makeFormatDescription(_ config: VideoConfig) -> CMVideoFormatDescription? {
+        guard let codec = VideoCodec(rawValue: config.codec) else { return nil }
+        return makeFormatDescription(config, codec: codec)
+    }
+
+    static func makeFormatDescription(_ config: VideoConfig,
+                                      codec: VideoCodec) -> CMVideoFormatDescription? {
+        switch codec {
+        case .avc:
+            guard let (sps, pps) = AnnexB.parameterSets(from: config.parameterSets) else { return nil }
+            return makeFormatDescription(sps: sps, pps: pps)
+        case .hevc:
+            guard let sets = AnnexB.hevcParameterSets(from: config.parameterSets) else { return nil }
+            return makeHEVCFormatDescription(vps: sets.vps, sps: sets.sps, pps: sets.pps)
+        }
     }
 
     private static func makeFormatDescription(sps: [UInt8], pps: [UInt8]) -> CMVideoFormatDescription? {
@@ -836,6 +866,27 @@ final class VideoLayerView: NSView {
                     parameterSetSizes: [sps.count, pps.count],
                     nalUnitHeaderLength: 4,
                     formatDescriptionOut: &format)
+            }
+        }
+        return status == noErr ? format : nil
+    }
+
+    private static func makeHEVCFormatDescription(vps: [UInt8], sps: [UInt8],
+                                                  pps: [UInt8]) -> CMVideoFormatDescription? {
+        var format: CMVideoFormatDescription?
+        let status = vps.withUnsafeBufferPointer { vpsBuffer in
+            sps.withUnsafeBufferPointer { spsBuffer in
+                pps.withUnsafeBufferPointer { ppsBuffer in
+                    CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        allocator: kCFAllocatorDefault,
+                        parameterSetCount: 3,
+                        parameterSetPointers: [vpsBuffer.baseAddress!, spsBuffer.baseAddress!,
+                                               ppsBuffer.baseAddress!],
+                        parameterSetSizes: [vps.count, sps.count, pps.count],
+                        nalUnitHeaderLength: 4,
+                        extensions: nil,
+                        formatDescriptionOut: &format)
+                }
             }
         }
         return status == noErr ? format : nil

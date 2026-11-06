@@ -4,7 +4,7 @@ Prefix: `MIRROR`. Owner docs: [design/phone-mirror.md](../design/phone-mirror.md
 
 ## Purpose
 
-The Phone Mirror shows the phone's own screen — home screen, apps, notification shade, lock screen — in a window on the Mac, 1:1 and live, so the person can use the phone with a mouse and keyboard while it stays in their hand or on the desk. It is one of the app's two stream windows (the other is an app's own window): it is passive — it launches nothing on the phone and changes nothing there unless the person asks for "Turn Off Phone Screen" — and it is the only window where the phone's own screen *is* the content, so the phone's screen power, its secure surfaces and its rotation are first-class states rather than edge cases.
+The Phone Mirror shows the phone's own screen — home screen, apps, notification shade, lock screen — in a window on the Mac, 1:1 and live, so the person can use the phone with a mouse and keyboard while it stays in their hand or on the desk. It is one of the app's two stream windows (the other is an app's own window): it is passive — it launches nothing on the phone and changes nothing there unless the person asks for "Turn Off Phone Screen" — and it is the only window where the phone's own screen *is* the content, so the phone's screen power, its secure surfaces and its rotation are first-class states rather than edge cases. Its stream follows WIN-59 and WIN-60: the same codec choice, and the same refusal of a codec the Mac cannot decode.
 
 ## User stories
 

@@ -718,6 +718,12 @@ final class Session {
         Log.session.notice("attempt: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(attempt.machine.phase.token, privacy: .public) (path \(id, privacy: .public))")  // log-ok: closed phase tokens and a path id
     }
 
+    /// The hello's codec list (WIN-59): AVC always, HEVC only when VideoToolbox
+    /// reports hardware decode. A Mac with no list (an older build) means AVC.
+    static func helloCodecs(hevcHardware: Bool = VideoCodec.hevcHardwareSupported) -> [String] {
+        VideoCodec.hardwareTokens(hevcSupported: hevcHardware)
+    }
+
     /// Sends this path's `hello` directly (no seq space exists before welcome).
     private func sendHello(on id: String, join: String?) {
         guard var attempt = attempts[id], let send = attempt.sendRaw else { return }
@@ -732,6 +738,7 @@ final class Session {
         var hello: [String: Any] = [
             "t": "hello", "v": PathVersion.current, "path": id,
             "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId,
+            "codecs": Self.helloCodecs(),
         ]
         if let join { hello["join"] = join }
         if pairingAttempt, join == nil { hello["pair"] = true }
