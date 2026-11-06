@@ -308,6 +308,44 @@ behaviour and prints its `unsupported` token. WIN-61 is their spec row. No
 wire field changes: the encoder's frame rate is not in `VIDEO_CONFIG` or
 `VIDEO_FRAME`, and `window.quality.maxFps` keeps its old meaning.
 
+### P1 on the phone (2026-11-06)
+
+The switches had only been exercised on the emulator. On the person's Android
+17 user build the hidden `SystemProperties.get` is refused for the Shizuku
+service's classloader; every knob read as unset until the lookup fell back to
+`/system/bin/getprop` (commit 80ddab07). The same
+`setprop debug.pocketdeck.stream.*` names then applied, and the round ran three
+arms on one source: a full-screen `requestAnimationFrame` canvas in the
+mirrored browser, its own counter printing the frames it drew.
+
+| arm | strategy line | display | Mac rx / shown fps |
+| --- | --- | --- | --- |
+| 60 / 0 | `default` | 60 Hz (`renderFrameRate 60.0`) | 57–61 |
+| 60 / 120 | `vd_rate=120` | 120 Hz (`rate=120`) | 59–60.5 |
+| 120 / 120 | `fps=120 vd_rate=120` | 120 Hz (`mode 286`, `presDeadline 8.33 ms`, `renderFrameRate 120.0`, `vsync 120`) | 58.5–60.5 |
+
+Each arm is five or six 5 s stats lines with motion the whole time; the canvas
+counter read 846 frames at 14.22 s (59.5 fps) during the 120/120 arm.
+
+The 120 Hz request reaches the display: the mode is 286 at 120 Hz and the
+presentation deadline is 8.33 ms, and the encoder keys are set. But the
+**apps on that display still draw at 60**: a Settings fling measured
+`dumpsys gfxinfo com.android.settings framestats` at 120 frames over 2.18 s
+with a 16.67 ms median vsync interval (60 fps); the same simple 120 fps clip
+on the `vd_panel_group=1` (device display group) display also streamed at 60,
+so neither group nor the display mode is the cap. The **virtual display's app
+compositor** is the 60 fps stage, not the encoder keys, the Mac decoder or its
+panel (60 Hz). A 120 fps test clip did make the encoder burst to 26 Mbps; the
+TLS/TCP link carried none of it (the queue's 250 ms budget and the lossy path
+cap drop the excess), while a simple 120 fps clip at ~0.5 Mbps streamed at the
+app's 60.
+
+So **120 is not reachable end to end on this phone**; the P1 bar, steady 60 on
+the Mac in motion, is met at 60.0–60.5 fps with a 21 ms p95 interval. The
+round also answers P0's video question: the earlier video runs that showed
+0–3 fps were high-bitrate 1800×1200 video, more than the TLS/TCP link could
+carry. Video is a bitrate case, not a capture path of its own.
+
 ### The Mac's switches
 
 The Mac's three knobs follow the same rule: a `defaults` key in the app
