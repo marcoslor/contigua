@@ -2719,7 +2719,7 @@ window_gone() {
 # drag resizes the window and the display.
 check_chrome() {
     begin_shared || return 1
-    rm -f "$WORK/chrome.txt"
+    rm -f "$WORK/chrome.txt" "$WORK/chrome-step-bar"
     local on_virtual=()
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
     "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
@@ -2732,8 +2732,10 @@ check_chrome() {
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
 
     # --- Framed: the permanent bar over the stream ---
-    # The pointer rests in the window, below the bar.
-    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
+    # The pointer rests in the window, below the bar; the check's go later
+    # clicks the middle of the bar's band (ISS-49).
+    printf '%s\n' "hoverat 0 200" "waitfile $WORK/chrome-step-bar" "clickat 0 14" "wait 0.6" \
+        > "$WORK/chrome-framed.txt"
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
         || { kill "$backdrop"; return 1; }
@@ -2788,6 +2790,17 @@ check_chrome() {
     [ "$edges" = "left=stream right=stream bottom=stream" ] \
         && ok "[WIN-4] C14 the window's sides and bottom are the stream's edges ($edges)" \
         || bad "[WIN-4] C14 window edges: $edges"
+
+    # ISS-49: the bar is a blurred mirror, not the picture. A click in the
+    # middle of its band is the window's, never a touch on the phone.
+    local bar_touches bar_touches_after
+    bar_touches="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
+    touch "$WORK/chrome-step-bar"
+    sleep 1
+    bar_touches_after="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "$bar_touches_after" -eq "$bar_touches" ] \
+        && ok "[WIN-4] C14 a click in the bar's band made no touch ($bar_touches)" \
+        || bad "[WIN-4] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
 
     # The virtual display is the stream's in either style and while switching
     # (checked over all three launches at the end).
