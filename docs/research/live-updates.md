@@ -89,7 +89,14 @@ When the chip has no short critical text, `setWhen` drives it: a `when` at least
 - Reports through One UI 8's life say third-party Live Updates on the stable build are inconsistent: some apps appear, others need **Developer options → Live notifications for all apps**, and some never appear. One UI 8.5 is reported to widen support and to add alarms to the Now Bar. **(unverified)**
 - Samsung publishes no developer API for the Now Bar. Its behaviour is a layer above Android's promotion flag; it is not a second promotion mechanism an app can call.
 
-**For the person's Galaxy S25+ on One UI 8 / API 36:** if the build is the base Android 16 platform (not QPR1), AOSP has no general promotion path; if Samsung backported QPR1's policy, the posting app still needs the permission and the request. In both cases the Now Bar's per-app switches can hide the card. The only way to know is to read `FLAG_PROMOTED_ONGOING` from a known card on the phone. The probe in `.agent/liveupd/phone-probe.md` does that without printing any content.
+**The person's phone (read 2026-11-06):** a Galaxy S25+ on **Android 17 (API 37), One UI 9** (`ro.build.version.oneui=90000`, security patch 2026-09-05). That is past QPR1, so the promotion API exists: `POST_PROMOTED_NOTIFICATIONS`, `setRequestPromotedOngoing` and `FLAG_PROMOTED_ONGOING` are all live, and One UI 9's Now Bar sits on top of them. Whether a given app's card is promoted is still the app's request plus the person's per-app switch, so only the flag tells.
+
+The probe's first run on that phone (`phone-probe.py`, flags and shapes only) found 135 notification records, 3 ongoing and **none promoted**:
+- Samsung Clock posted an ongoing foreground-service card with a standard style, a title and a text, two actions, channel importance 3 and no chronometer. It is not promoted and exposes no deadline, so the Mac can't count down from it. Whether that card was a running timer is not known; the probe prints no text.
+- The other two were service cards (Samsung Routines and a utility app), which LIVE-3 already leaves out.
+- One UI 9's dump spells the flags by name (`AUTO_CANCEL|ONGOING_EVENT|…`) and wraps extras as `Type (value)`; the probe now reads both.
+
+Still open: a running Clock timer and stopwatch (the probe's steps 2 and 3, started by hand), and a third-party tracker with `promoted=1`.
 
 **Recommendation:** do not make the first release depend on promotion on this phone. Treat a promoted card as the best source when it exists, and build the timer path on the Clock's own notification and actions.
 
@@ -265,13 +272,13 @@ Live cards carry exactly what makes them useful: a restaurant and a driver's nam
 
 ## What this note could not verify
 
-- Whether One UI 8 on the person's S25+ marks any third-party notification `FLAG_PROMOTED_ONGOING`, and whether Samsung Clock's own timer is promoted.
+- Whether One UI 9 on the person's S25+ (Android 17) marks any third-party notification `FLAG_PROMOTED_ONGOING`, and whether Samsung Clock's own running timer is promoted. The first probe run found no promoted card.
 - Samsung Clock's notification style, category, extras, actions, channel importance and `EXTRA_SKIP_UI` behaviour.
-- Whether One UI 8's Now Bar per-app switches gate a card that Android already promoted, and whether the Developer options switch is needed on stable.
+- Whether One UI 9's Now Bar per-app switches gate a card that Android already promoted, and whether the Developer options switch is needed on stable.
 - AOSP DeskClock's behaviour on the emulator build (the source was read, not run), and whether the custom view renders correctly through `RemoteViews.apply` in a listener process.
 - The real cost and success rate of rendering custom views on the person's phone, including collections, images and theme differences.
 - The `remove_remote_views` flag on OEM builds, and OEM-specific RemoteViews size limits.
-- Whether a Mac app can start `AlarmClock.ACTION_SET_TIMER` from the background on One UI 8, and whether Samsung Clock honours `EXTRA_SKIP_UI`.
+- Whether a Mac app can start `AlarmClock.ACTION_SET_TIMER` from the background on One UI 9, and whether Samsung Clock honours `EXTRA_SKIP_UI`.
 - The exact clock skew between the Mac and the phone.
 - Status-item visibility under the notch on the person's Mac, and macOS 27's overflow behaviour with several items.
 - Where a Mac-originated ActivityKit Live Activity would appear on macOS 27.3.
