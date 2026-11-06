@@ -56,7 +56,7 @@ internal class SendQueue(
 ) {
     /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
     class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0,
-                val ptsUs: Long = -1)
+                val ptsUs: Long = -1, val key: Boolean = false)
 
     private val lock = Object()
 
@@ -84,6 +84,8 @@ internal class SendQueue(
     private val dropStartPtsUs = HashMap<Int, Long>()
     /** A drop episode's pts span in ms, measured when flow resumes. */
     private val dropGapMs = HashMap<Int, Long>()
+    /** Each stream's open drop episode: what it dropped and when it began. */
+    private val dropStates = HashMap<Int, DropEpisode>()
     private val bulk = ArrayDeque<Entry>()
     private var bulkBytes = 0
     private var closed = false
@@ -131,7 +133,9 @@ internal class SendQueue(
                         stream, overflowStep(before, OverflowEvent.Control))
                 }
             }
-            control.addLast(Entry(bytes, stream, ptsUs = ptsUs))
+            // A video key frame is the only control entry with a pts; config
+            // and JSON entries carry -1 and must not close a drop episode.
+            control.addLast(Entry(bytes, stream, ptsUs = ptsUs, key = ptsUs >= 0))
             lock.notifyAll()
         }
         if (changed) onSuspendChanged(stream)
@@ -145,6 +149,7 @@ internal class SendQueue(
             if (stream in dropping) {
                 // Still waiting for the keyframe: this delta is discarded too.
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + 1
+                advanceDrop(stream, DropEvent.DeltasDropped(1, nowMs()))
                 return
             }
             // Read the queue switch only when this stream's first delta is
@@ -177,6 +182,7 @@ internal class SendQueue(
                             dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
                             dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
                             dropping.add(stream)
+                            advanceDrop(stream, DropEvent.DeltasDropped(discarded, nowMs()))
                             dropped = stream != 0
                         }
                     }
@@ -189,6 +195,7 @@ internal class SendQueue(
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + discarded
                 dropEpisodes[stream] = (dropEpisodes[stream] ?: 0) + 1
                 dropping.add(stream)
+                advanceDrop(stream, DropEvent.DeltasDropped(discarded, nowMs()))
                 dropped = stream != 0
                 return@synchronized
             }
@@ -235,6 +242,7 @@ internal class SendQueue(
         dropGapMs.remove(stream)
         overflowStates.remove(stream)
         suspendSinceMs.remove(stream)
+        dropStates.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -338,6 +346,25 @@ internal class SendQueue(
             dropGapMs[stream] = (dropGapMs[stream] ?: 0) + (gapUs + 500) / 1000
         }
         lastSentPtsUs[stream] = entry.ptsUs
+        // The first key frame handed to the socket closes the episode. Its
+        // types say whether the picture can actually restart from it.
+        if (entry.key) advanceDrop(stream, DropEvent.KeySent(nowMs(), nalTypes(entry.bytes)))
+    }
+
+    /** Applies one drop-episode event; the machine's line is the field log. */
+    private fun advanceDrop(stream: Int, event: DropEvent) {
+        val before = dropStates[stream] ?: DropEpisode()
+        val step = dropEpisodeTransition(stream, before, event)
+        if (step.episode.phase == DropPhase.Flowing) dropStates.remove(stream)
+        else dropStates[stream] = step.episode
+        if (step.transition) {
+            val eventWire = when (event) {
+                is DropEvent.DeltasDropped -> "dropped(${event.count})"
+                is DropEvent.KeySent -> "key"
+            }
+            log("stream $stream drop episode: ${before.phase.wire} --$eventWire--> ${step.episode.phase.wire}")
+        }
+        step.line?.let(log)
     }
 
     /** The first delta a drop discards starts the episode's gap at the last sent frame. */

@@ -232,6 +232,13 @@ struct StreamStatsWindow {
     private var hitchCount = 0
     private var hitchMs = 0.0
     private var macDropCount = 0
+    /// ISS-40 round 3: the longest interval between received frames. The line
+    /// covers the time since the previous line; the totals the whole life.
+    /// `lastReceived` survives `noteConfig` on purpose: a resize in the middle
+    /// of a gap does not mean the picture came back.
+    private var lastReceived: TimeInterval?
+    private var lineMaxGapMs = 0.0
+    private var totalMaxGapMs = 0.0
     private var lastEnqueue: TimeInterval?
     private var lastEnqueuePtsUs: UInt64?
     private var firstReceived: TimeInterval?
@@ -295,6 +302,8 @@ struct StreamStatsWindow {
         lastEnqueuePtsUs = nil
         firstReceived = nil
         firstEnqueue = nil
+        // `lastReceived` and the max-gap values stay: a config can land in
+        // the middle of a gap, and that gap still happened.
     }
 
     mutating func notePaused(_ paused: Bool, now: TimeInterval) {
@@ -306,16 +315,24 @@ struct StreamStatsWindow {
             totalCoveredMs += max(0, now - began) * 1000
             pausedAt = nil
         }
-        // The covered span is not a freeze; the next frame starts a fresh one.
+        // The covered span is not a freeze or a picture gap: the next frame
+        // starts a fresh one.
         if paused {
             lastEnqueue = nil
             lastEnqueuePtsUs = nil
+            lastReceived = nil
         }
         prune(now)
     }
 
     mutating func noteReceived(now: TimeInterval, bytes: Int) {
         if firstReceived == nil { firstReceived = now }
+        if let last = lastReceived, now > last {
+            let gapMs = (now - last) * 1000
+            lineMaxGapMs = max(lineMaxGapMs, gapMs)
+            totalMaxGapMs = max(totalMaxGapMs, gapMs)
+        }
+        lastReceived = now
         received.append(Received(at: now, bytes: bytes))
         totalReceived += 1
         prune(now)
@@ -415,6 +432,7 @@ struct StreamStatsWindow {
             e2eP50Ms: Self.percentile(totalLatencyMs.values, 0.50),
             e2eP95Ms: Self.percentile(totalLatencyMs.values, 0.95),
             coveredMs: covered,
+            maxGapMs: totalMaxGapMs,
             tcpOutOfOrderKB: Self.deltaKB(latest: latestTCP, first: firstTCP),
             tcpSrttMaxMs: tcpSrttMaxMs,
             phoneRetransmissions: totalPhoneRetransmissions,
@@ -438,6 +456,7 @@ struct StreamStatsWindow {
         let hitches = hitchCount
         let hitchTime = hitchMs
         let drops = macDropCount
+        let maxGap = lineMaxGapMs
         let phoneStats = phone
         let phoneCount = phoneMessages
         freezeCount = 0
@@ -445,6 +464,7 @@ struct StreamStatsWindow {
         hitchCount = 0
         hitchMs = 0
         macDropCount = 0
+        lineMaxGapMs = 0
         phone = nil
         phoneMessages = 0
 
@@ -477,6 +497,7 @@ struct StreamStatsWindow {
             enqueueP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
             phone: phoneStats,
             phoneMessages: phoneCount,
+            maxGapMs: maxGap,
             tcpSrttMs: link.srttMs,
             tcpRttvar: link.rttvar,
             tcpOutOfOrderKB: link.outOfOrderKB
@@ -595,6 +616,9 @@ struct StreamStatsSnapshot {
     var phone: PhoneStreamStats?
     /// How many phone messages this line folded in (0 when none arrived).
     var phoneMessages = 0
+    /// ISS-40 round 3: the longest gap between received frames since the
+    /// previous line, outside covered time.
+    var maxGapMs = 0.0
     /// X0: the socket's smoothed RTT and variance (ms), and the bytes that
     /// arrived out of order since the previous line (KB). Nil is `-`.
     var tcpSrttMs: Int?
@@ -649,6 +673,9 @@ struct StreamStatsTotal {
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
     var coveredMs: Double
+    /// ISS-40 round 3: the longest gap between received frames over the
+    /// window's life, outside covered time.
+    var maxGapMs = 0.0
     /// X0: out-of-order bytes over the window's life (KB) and its worst SRTT.
     var tcpOutOfOrderKB: Double?
     var tcpSrttMaxMs: Int?
@@ -700,6 +727,7 @@ enum StreamStatsLine {
             "queue_p95=\(ms(phone?.queueP95Us))",
             "e2e_p50=\(one(stats.e2eP50Ms))",
             "e2e_p95=\(one(stats.e2eP95Ms))",
+            "max_gap_ms=\(Int(stats.maxGapMs.rounded()))",
             "tcp_srtt=\(stats.tcpSrttMs.map(String.init) ?? "-")",
             "tcp_rttvar=\(stats.tcpRttvar.map(String.init) ?? "-")",
             "tcp_ooo_kb=\(stats.tcpOutOfOrderKB.map { one($0) } ?? "-")",
@@ -742,6 +770,7 @@ enum StreamStatsLine {
             "e2e_p50=\(one(total.e2eP50Ms))",
             "e2e_p95=\(one(total.e2eP95Ms))",
             "covered_ms=\(Int(total.coveredMs.rounded()))",
+            "max_gap_ms=\(Int(total.maxGapMs.rounded()))",
             "tcp_ooo_kb=\(total.tcpOutOfOrderKB.map { one($0) } ?? "-")",
             "tcp_srtt_max=\(total.tcpSrttMaxMs.map(String.init) ?? "-")",
             "ph_retrans=\(total.phoneRetransmissions.map(String.init) ?? "-")",
