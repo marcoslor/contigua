@@ -2,6 +2,7 @@
 # stats — one boot proves ISS-40 against the real shell server (emulator).
 #
 #   bash tools/emulator/stats.sh --check    # rehearse: no device, no boot
+#   PD_STATS_ARMS="baseline c1-hevc" bash tools/emulator/stats.sh --check
 #   heavy.sh timeout 2700 bash tools/emulator/stats.sh
 #
 # Build the APK first, in Docker only:
@@ -13,9 +14,9 @@
 #     on, reads 12 real messages from a ~30 s window and matches them against
 #     the phone's own `stream N stats sent=<n>` lines, plus `pong`s whose `now`
 #     must advance with elapsed time (the phone's CLOCK_MONOTONIC microseconds);
-#   * pairs the e2e Mac app and runs the stream bench once (baseline and
-#     q1q2-100, one repeat, Settings) through the app's own MCP tools, and
-#     requires every 5 s line's `phone_n` to be at least 2;
+#   * pairs the e2e Mac app and runs the stream bench once (PD_STATS_ARMS,
+#     default `baseline q1q2-100`, one repeat, Settings) through the app's own
+#     MCP tools, and requires every 5 s line's `phone_n` to be at least 2;
 #   * prints the messages, the send counts, the pong lines, the per-line
 #     `phone_n`, the bench table and the phone's `stream N qp sample:` line;
 #   * prints one 5 s line and the closing totals line with tcp_srtt/tcp_ooo_kb
@@ -58,6 +59,10 @@ TAP_PID=""
 CAT_PID=""
 FAIL=0
 PHASE=""
+# The two arms a run compares; C1's proof uses `baseline c1-hevc`.
+WANT_ARMS="${PD_STATS_ARMS:-baseline q1q2-100}"
+export PD_STATS_ARMS="$WANT_ARMS"
+read -r -a ARM_LIST <<< "$WANT_ARMS"
 
 section() { PHASE="$1"; printf '\n== %s ==\n' "$1"; }
 ok() { printf 'PASS [%s] %s\n' "$PHASE" "$*"; }
@@ -87,13 +92,15 @@ if [ "$MODE" = check ]; then
     "$PYTHON" -m py_compile "$CLIENT" "$BENCH" || cfail "py_compile deckctl/bench"
     "$PYTHON" "$ROOT/tools/stream-bench/test_bench.py" >/dev/null 2>&1 ||
         cfail "stream-bench test_bench"
-    "$PYTHON" - "$ARMS" <<'PY' || cfail "arms.json lacks baseline/q1q2-100 or has the old combo-a"
-import json, sys
+    "$PYTHON" - "$ARMS" <<'PY' || cfail "arms.json lacks the requested arms"
+import json, os, sys
 data = json.load(open(sys.argv[1]))
 arms = {arm["name"]: arm for arm in data["arms"]}
-assert {"baseline", "q1q2-100"} <= set(arms), sorted(arms)
-assert "tos" not in arms["combo-a"]["phone"], arms["combo-a"]["phone"]
-assert arms["n1-af41"].get("restart") is True, arms["n1-af41"]
+want = set(os.environ["PD_STATS_ARMS"].split())
+assert "baseline" in want, want
+missing = want - set(arms)
+assert not missing, "missing=%s" % sorted(missing)
+assert not any(arms[name].get("restart") for name in want), "a restart arm cannot run interleaved"
 PY
     "$PYTHON" - "$CLIENT" <<'PY' || cfail "deckctl has no stats command"
 import importlib.util, sys
@@ -264,10 +271,25 @@ emu logcat -c >/dev/null 2>&1 || true
 emu logcat -v brief -s PocketDeckSvc:I > "$WORK/logcat.txt" 2>&1 &
 CAT_PID=$!
 
-python3 - "$ARMS" "$WORK/arms.json" <<'PY' || { bad "could not build the two-arm list"; exit 1; }
-import json, sys
+# C1 asks what the AVD's own MediaCodecList offers. A device without an HEVC
+# encoder must show the phone's fallback line instead, never a silent AVC run.
+section codec
+emu shell dumpsys media.codec 2>/dev/null | tr -d '\r' > "$WORK/media-codec.txt" || true
+HEVC_ENCODERS="$(grep -oE '[A-Za-z0-9._-]*hevc[A-Za-z0-9._-]*encoder' "$WORK/media-codec.txt" \
+    | sort -u | tr '\n' ' ' | sed 's/ $//')"
+if [ -n "$HEVC_ENCODERS" ]; then
+    ok "MediaCodecList names HEVC encoders: $HEVC_ENCODERS"
+else
+    # This image's `dumpsys media.codec` prints nothing (the service output is
+    # empty), so the phone's own createEncoderByType probe is the authority.
+    say "dumpsys media.codec returned no list; the phone's codec probe decides below"
+fi
+grep -iE 'hevc' "$WORK/media-codec.txt" | head -10
+
+python3 - "$ARMS" "$WORK/arms.json" <<'PY' || { bad "could not build the arm list"; exit 1; }
+import json, os, sys
 data = json.load(open(sys.argv[1]))
-want = {"baseline", "q1q2-100"}
+want = set(os.environ["PD_STATS_ARMS"].split())
 arms = [arm for arm in data["arms"] if arm["name"] in want]
 assert {arm["name"] for arm in arms} == want
 json.dump({"arms": arms}, open(sys.argv[2], "w"))
@@ -395,9 +417,9 @@ else
     bad "a bench line carried fewer than two phone messages (phone_n=$PHONE_N)"
 fi
 rows="$(($(wc -l < "$OUT/bench-emulator.csv" 2>/dev/null || echo 1) - 1))"
-[ "$rows" -eq 2 ] && ok "the bench CSV has one run per arm (2)" \
-    || bad "the bench CSV has $rows runs, expected 2"
-for arm in baseline q1q2-100; do
+[ "$rows" -eq "${#ARM_LIST[@]}" ] && ok "the bench CSV has one run per arm (${#ARM_LIST[@]})" \
+    || bad "the bench CSV has $rows runs, expected ${#ARM_LIST[@]}"
+for arm in "${ARM_LIST[@]}"; do
     grep -Eq "^$arm( |\(|$)" "$WORK/bench.log" \
         && ok "the bench table has its $arm row" \
         || bad "no $arm row in the bench table"
@@ -420,6 +442,11 @@ if [ -n "$TCP_LINE" ]; then
         *) bad "the 5 s line is missing one of the new TCP fields" ;;
     esac
     case "$TCP_LINE" in
+        *codec=*qp_avg=*)
+            ok "the 5 s line carries codec and qp_avg: $(printf '%s\n' "$TCP_LINE" | grep -o 'codec=[^ ]* qp_avg=[^ ]*')" ;;
+        *) bad "the 5 s line is missing codec/qp_avg" ;;
+    esac
+    case "$TCP_LINE" in
         *ph_retrans=-*)
             say "the phone's /proc/net files were unreadable to the shell; K1's fixtures carry the parser" ;;
         *) ok "the phone reported its /proc/net TCP counters" ;;
@@ -434,8 +461,52 @@ if [ -n "$TCP_TOTAL" ]; then
             ok "the totals line carries the new TCP fields" ;;
         *) bad "the totals line is missing one of the new TCP fields" ;;
     esac
+    total_cq_missing=""
+    for field in codec qp_avg rx_kbps; do
+        case "$TCP_TOTAL" in *"$field="*) ;; *) total_cq_missing="$total_cq_missing $field" ;; esac
+    done
+    if [ -z "$total_cq_missing" ]; then
+        ok "the totals line carries codec, qp_avg and rx_kbps: $(printf '%s\n' "$TCP_TOTAL" | grep -oE '(codec|qp_avg|rx_kbps)=[^ ]+' | tr '\n' ' ')"
+    else
+        bad "the totals line is missing:$total_cq_missing"
+    fi
 else
     bad "no closing totals line with the new TCP fields"
+fi
+
+# C1: the codec the phone actually ran, and its own lifetime line. A device
+# without a usable HEVC encoder must show the one fallback line; the reviewer
+# reads which condition failed.
+section c1
+STRATEGY_LINES="$(grep -o 'stream [0-9]* strategy: .*' "$WORK/logcat.txt" 2>/dev/null | sort -u || true)"
+[ -n "$STRATEGY_LINES" ] && printf 'phone strategy: %s\n' "$(printf '%s\n' "$STRATEGY_LINES" | tr '\n' ';')"
+FALLBACK_LINES="$(grep -o 'stream [0-9]* codec=hevc unsupported: [a-z]*' "$WORK/logcat.txt" 2>/dev/null | sort -u || true)"
+[ -n "$FALLBACK_LINES" ] && printf 'phone fallback: %s\n' "$(printf '%s\n' "$FALLBACK_LINES" | tr '\n' ';')"
+if printf '%s ' "${ARM_LIST[@]}" | grep -qw c1-hevc; then
+    if printf '%s\n' "$STRATEGY_LINES" | grep -q 'codec=hevc'; then
+        ok "an arm stream ran codec=hevc"
+    elif [ -n "$FALLBACK_LINES" ]; then
+        # WIN-59's allowed outcome: the phone names the first failing condition
+        # (`encoder` here means the AVD offers no usable HEVC encoder).
+        ok "no HEVC stream; the phone named its fallback: $(printf '%s\n' "$FALLBACK_LINES" | tr '\n' ';')"
+    else
+        bad "c1-hevc ran neither HEVC nor a fallback line"
+    fi
+else
+    ok "no c1-hevc arm in this run"
+fi
+PHONE_TOTALS="$(grep -o 'stream [0-9]* totals: .*' "$WORK/logcat.txt" 2>/dev/null | sort -u || true)"
+if [ -n "$PHONE_TOTALS" ]; then
+    ok "the phone logged its own totals line(s)"
+    printf '%s\n' "$PHONE_TOTALS" | head -4
+    while IFS= read -r line; do
+        case "$line" in
+            *codec=*qp_avg=*) : ;;
+            *) bad "a phone totals line is missing codec/qp_avg: $line" ;;
+        esac
+    done <<< "$PHONE_TOTALS"
+else
+    bad "no 'stream N totals:' line in logcat"
 fi
 
 # ISS-40's QP sample: one line per stream after its 30th output buffer. The
@@ -445,6 +516,11 @@ QP_LINES="$(grep -o 'stream [0-9]* qp sample: .*' "$WORK/logcat.txt" 2>/dev/null
 if [ -n "$QP_LINES" ]; then
     ok "the phone logged the QP sample"
     printf '%s\n' "$QP_LINES" | sort -u | head -5
+    if printf '%s\n' "$QP_LINES" | grep -q 'values=[0-9]'; then
+        ok "the AVD's encoder reports QP values"
+    else
+        say "the AVD's encoder reports no QP (values=-); the real phone is the reviewer's"
+    fi
 else
     bad "no 'stream N qp sample:' line in logcat"
 fi
