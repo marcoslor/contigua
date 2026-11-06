@@ -458,12 +458,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// The stream's first frame arrived (WindowManager); once per window.
     func noteFirstFrame() {
-        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: now()) else { return }
+        let at = now()
+        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: at) else { return }
         openingTimer?.invalidate()
         openingTimer = nil
         openingPhase = nil
         showOpeningPhase()
-        Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        let ms = max(0, at - opening.startedAt) * 1000
+        Log.video.notice("stream \(self.stream, privacy: .public): first frame \(String(format: "%.1f", ms), privacy: .public) ms after open, opening cover off")
         // The extension view builds its backdrop once the stream it mirrors has
         // a frame: turn its radius up now that it exists (WIN-40). This is also
         // where a macOS without the filter gets its one fact line.
@@ -830,6 +832,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The stall was said once for this window: a phone that never answers must
     /// not fill the log with the same line.
     private var resizeStallLogged = false
+    /// When the in-flight resize request went out, for the ack's own latency.
+    private var resizeSentAt: TimeInterval?
 
     private func resizeRequest() -> ResizeRequest {
         let pixels = displayPixels()
@@ -870,6 +874,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         for action in actions {
             switch action {
             case .send(let request):
+                resizeSentAt = now()
                 session.resizeWindow(stream: stream, width: request.w, height: request.h,
                                      dpi: Double(request.dpi))
                 armSettleTimer()
@@ -879,6 +884,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             settleTimer?.invalidate()
             settleTimer = nil
         }
+    }
+
+    /// The ms from the resize request this ack settles to the ack; nil when
+    /// none is in flight. The ack's log line reads it once.
+    func takeResizeAckMs() -> Double? {
+        guard let sent = resizeSentAt else { return nil }
+        resizeSentAt = nil
+        return max(0, now() - sent) * 1000
     }
 
     private func armSettleTimer() {
@@ -896,6 +909,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func settleTimedOut() {
         settleTimer = nil
         guard resizes.inFlight != nil else { return }
+        resizeSentAt = nil
         if !resizeStallLogged {
             resizeStallLogged = true
             Log.video.notice("stream \(self.stream, privacy: .public): resize unanswered, moving on")
