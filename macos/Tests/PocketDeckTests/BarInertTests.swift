@@ -1,6 +1,6 @@
 // The Framed bar is a blurred mirror of the stream's top edge, not the
 // picture: a click on it drags the window and must never become a touch on
-// the phone (WIN-4). The extension view fills the window with the stream as
+// the phone (WIN-61). The extension view fills the window with the stream as
 // its content view — that is how the bar draws its mirror — so the hit test
 // must decide from the bar's own band, never from where the picture's view
 // ends up.
