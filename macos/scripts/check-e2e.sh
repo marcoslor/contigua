@@ -2799,8 +2799,8 @@ check_chrome() {
     sleep 1
     bar_touches_after="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
     [ "$bar_touches_after" -eq "$bar_touches" ] \
-        && ok "[WIN-4] C14 a click in the bar's band made no touch ($bar_touches)" \
-        || bad "[WIN-4] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
+        && ok "[WIN-61] C14 a click in the bar's band made no touch ($bar_touches)" \
+        || bad "[WIN-61] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
 
     # The virtual display is the stream's in either style and while switching
     # (checked over all three launches at the end).
