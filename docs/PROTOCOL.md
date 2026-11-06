@@ -423,19 +423,22 @@ nothing from datagrams once video no longer blocks it. Type 2 is reserved. The d
   `TlsExporter`). There is no key-exchange message. Each derives:
 
 ```
-c2s = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+context = session_id || macPin || phonePin || "EXPORTER-pocketdeck-pair"
+c2s = HKDF-SHA256(ikm = pairingExporter, salt = context,
                   info = "pocketdeck-media-c2s", 32)
-s2c = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+s2c = HKDF-SHA256(ikm = pairingExporter, salt = context,
                   info = "pocketdeck-media-s2c", 32)
 keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 ```
 
-  The phone opens Mac→phone datagrams with `c2s` and seals phone→Mac with
-  `s2c`; the Mac does the reverse. A `keyId` in `welcome` that differs from
-  the Mac's own derivation means the exporters disagree: it sends no probe
-  and stays on TCP. The exporter is the founding path's and stays with the
-  session; a path switch does not change it. Keys last for the session and
-  are discarded with it. No key byte is ever logged.
+  `macPin` and `phonePin` are the 32-byte SPKI SHA-256 fingerprints in that
+  order. The phone opens Mac→phone datagrams with `c2s` and seals phone→Mac
+  with `s2c`; the Mac does the reverse. A `keyId` in `welcome` that differs
+  from the Mac's own derivation means the exporters disagree: it sends no
+  probe and stays on TCP. The exporter is the founding path's and stays with
+  the session; a path switch does not change it. Keys last for the session
+  and are discarded with it; the key buffers are zeroed, and no key byte is
+  ever logged or written to a file (no `SSLKEYLOGFILE`).
 
 ### The datagram
 

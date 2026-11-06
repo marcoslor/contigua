@@ -75,21 +75,31 @@ Adversaries considered:
   domain-separated HKDF step on that value:
 
 ```
-c2s = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+context = session_id || macPin || phonePin || "EXPORTER-pocketdeck-pair"
+c2s = HKDF-SHA256(ikm = pairingExporter, salt = context,
                   info = "pocketdeck-media-c2s", 32)
-s2c = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+s2c = HKDF-SHA256(ikm = pairingExporter, salt = context,
                   info = "pocketdeck-media-s2c", 32)
 keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 ```
 
-  No `media.key` message, no X25519 generation, no new trust path and no extra
-  round trip: the exporter is already bound to the pinned TLS session and is
+  `macPin` and `phonePin` are the existing 32-byte SPKI SHA-256 fingerprints,
+  in that fixed order; both ends already hold them (the Mac's pin ledger and
+  the phone's `TlsView`). The context therefore binds the session id, both
+  identities and the exporter label, not just the session id: two sessions —
+  or the same session id with different pins — produce unrelated keys, and
+  `MediaKeyTest` proves it. There is no exchange message and no extra round
+  trip; the exporter is already bound to the pinned TLS session and is
   forward-secret. It is taken from the **founding** path and kept for the
-  session; a join does not change it. Using the established pairing exporter
-  with fresh labels avoids touching the proven TLS plumbing on either side,
-  and HKDF's domain separation keeps the pairing code and the media keys
-  independent. A side that cannot read the exporter simply omits the media
-  capability.
+  session; a join does not change it. HKDF's domain separation keeps the
+  pairing code and the media keys independent. A side that cannot read the
+  exporter simply omits the media capability.
+- **The master secret never leaves memory.** `KeyLogCapture` keeps it in memory
+  per connection; only the derived 32-byte pairing exporter is used for media,
+  the media key buffers are zeroed after derivation, and nothing is written to
+  a file, the environment (no `SSLKEYLOGFILE`) or the log. K2
+  `MediaKeyHygieneTests` asserts the environment/file/log invariants and the
+  zeroing; the only exporter line ever logged is the existing SHA-256.
 - **AEAD on every datagram.** AES-256-GCM, a 96-bit nonce of four zero bytes
   plus the per-direction `u64` sequence, and the 18-byte outer header as
   associated data. Any authentication failure drops the packet silently.
@@ -348,9 +358,12 @@ unit a browser client carries.
 ## 9. Tests and rounds
 
 - K1 pure: header encode/decode, fragment/reassemble (any order, duplicates,
-  missing, 8 MiB cap), AEAD vectors and tamper, replay window, HKDF vectors,
+  missing, 8 MiB cap), AEAD vectors and tamper, replay window, HKDF vectors
+  (a fixed exporter/context, and two different sessions give unrelated keys),
   the policy table (every state × event), the controller vectors (overuse,
   loss, recovery, floors), NACK/parity.
+- K2 `MediaKeyHygieneTests`: no `SSLKEYLOGFILE`, no disk write, no secret in a
+  log, and the key buffers are zeroed.
 - K2: the Mac assembler hands the existing dispatcher an exact `VIDEO_FRAME`;
   a malformed/tampered datagram changes nothing; stats fields.
 - fakephone: a UDP media socket (the existing fake phone grows one), so the
