@@ -355,12 +355,16 @@ struct StreamStatsWindow {
 
     mutating func noteReceived(now: TimeInterval, bytes: Int) {
         if firstReceived == nil { firstReceived = now }
-        if let last = lastReceived, now > last {
-            let gapMs = (now - last) * 1000
-            lineMaxGapMs = max(lineMaxGapMs, gapMs)
-            totalMaxGapMs = max(totalMaxGapMs, gapMs)
+        // While covered, a frame already in flight must not restart the gap
+        // clock: the covered silence is not a picture gap.
+        if !paused {
+            if let last = lastReceived, now > last {
+                let gapMs = (now - last) * 1000
+                lineMaxGapMs = max(lineMaxGapMs, gapMs)
+                totalMaxGapMs = max(totalMaxGapMs, gapMs)
+            }
+            lastReceived = now
         }
-        lastReceived = now
         received.append(Received(at: now, bytes: bytes))
         totalReceived += 1
         prune(now)
