@@ -1099,7 +1099,7 @@ class BenchMainStillTest(unittest.TestCase):
         "shown_p50=8 shown_p95=16 shown_p99=24 codec=avc\n"
     )
 
-    def test_one_still_run_writes_the_table_and_the_new_cells(self):
+    def test_one_still_run_samples_before_the_close_and_writes_the_cells(self):
         import contextlib
         import io
         import unittest.mock as mock
