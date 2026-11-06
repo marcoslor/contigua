@@ -54,7 +54,8 @@ class StatsSummaryTest(unittest.TestCase):
         self.assertEqual(summary["fields"]["late_p99"]["samples"], 2)
 
     def test_the_new_event_counters_are_clock_fields(self):
-        for name in ("hitch_n", "hitch_ms", "drop_ms", "drop_ep", "phone_n"):
+        for name in ("hitch_n", "hitch_ms", "drop_ms", "drop_ep", "phone_n",
+                     "key_not_idr", "ph_key_not_idr"):
             self.assertIn(name, self.summary.CLOCK_FIELDS)
         self.assertNotIn("late_p99", self.summary.CLOCK_FIELDS)
 
