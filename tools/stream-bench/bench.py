@@ -44,8 +44,9 @@ STATS_PREFIX = "debug.pocketdeck.stream."
 # jank_* lead: what a person feels while the phone's content moves is a hitch
 # on the Mac, a drop gap on the phone, or a suspend (Q1).
 TABLE_FIELDS = ("jank_ms", "jank_n", "hitch_ms", "drop_ms", "susp_ms",
-                "late_p99", "shown_fps", "kf", "kbps", "tcp_ooo_kb",
-                "ph_retrans", "qp_p95", "e2e_p50", "e2e_p95")
+                "late_p99", "shown_fps", "kf", "key_not_idr", "ph_key_not_idr",
+                "kbps", "tcp_ooo_kb", "ph_retrans", "qp_p95",
+                "e2e_p50", "e2e_p95")
 # One CSV row per run: the table fields plus the totals that are not table
 # cells and the marks a reader needs to exclude a run.
 CSV_FIELDS = (["repeat", "arm", "stream", "start", "end", "lines",
@@ -412,6 +413,8 @@ def run_metrics(total, sampled=(), phases=None):
         "late_p99": number(total, "late_p99"),
         "shown_fps": shown / active if active > 0 else None,
         "kf": number(total, "kf"),
+        "key_not_idr": number(total, "key_not_idr"),
+        "ph_key_not_idr": number(total, "ph_key_not_idr"),
         "kbps": phone_bytes * 8 / (secs * 1000) if secs > 0 else None,
         "qp_p95": median(qp),
         "e2e_p50": number(total, "e2e_p50"),

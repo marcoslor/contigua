@@ -240,6 +240,23 @@ class ResendSummaryTest(unittest.TestCase):
             "secs=10.0 rx_frames=600 max_gap_ms=1830\n", 1)
         self.assertEqual(self.bench.run_metrics(total)["max_gap_ms"], 1830)
 
+    def test_the_key_counts_from_both_sides_reach_the_run(self):
+        # The Mac's own count and the phone's, both on the closing totals line
+        # (the phone's arrives through its 2 s messages).
+        total = self.bench.parse_totals(
+            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "secs=10.0 rx_frames=600 key_not_idr=4 ph_key_not_idr=9\n", 1)
+        run = self.bench.run_metrics(total)
+        self.assertEqual(run["key_not_idr"], 4)
+        self.assertEqual(run["ph_key_not_idr"], 9)
+
+    def test_the_key_counts_are_table_and_csv_fields(self):
+        for field in ("key_not_idr", "ph_key_not_idr"):
+            self.assertIn(field, self.bench.TABLE_FIELDS)
+            self.assertIn(field, self.bench.CSV_FIELDS)
+        header = self.bench.table_header(8)
+        self.assertIn("key_not_idr", header)
+
     def test_the_totals_carry_the_new_fields_into_the_run(self):
         total = self.bench.parse_totals(
             "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
