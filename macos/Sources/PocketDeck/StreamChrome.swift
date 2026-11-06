@@ -601,17 +601,23 @@ final class StreamChromeView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
+        let hit = super.hitTest(point)
+        guard barHeight > 0,
+              convert(point, from: superview).y >= bounds.height - barHeight else { return hit }
+        guard let hit else { return nil }
         // The bar's mirrored band is the window's own: a click on it is a drag
-        // (and counts), while the kind's actions keep their clicks.
-        if hit === ext { return self }
-        // The disconnection overlay is the bar's ground while it is up: its band
-        // still drags the window, and its body takes the click (the stream is
-        // frozen, WIN-39).
-        if hit === stallOverlay, convert(point, from: superview).y >= video.frame.maxY {
-            return self
-        }
-        return hit
+        // (and counts). The band decides, not which view the mirror's content
+        // ends up in: the extension view stretches the video over the window,
+        // so the picture can answer for the bar's points (ISS-49). The bar's
+        // own controls keep their clicks — the kind's actions, the Live Text
+        // capsule and its button, and the pill (harmless in framed). The
+        // disconnection overlay's band drags here too; its body below the band
+        // takes the click (WIN-39).
+        if hit === actions || hit.isDescendant(of: actions) { return hit }
+        if hit === liveTextCapsule || hit.isDescendant(of: liveTextCapsule) { return hit }
+        if hit === liveTextButton || hit.isDescendant(of: liveTextButton) { return hit }
+        if hit === pillView || hit.isDescendant(of: pillView) { return hit }
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
