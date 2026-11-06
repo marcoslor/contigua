@@ -1036,5 +1036,115 @@ class DryRunEveryScriptTest(unittest.TestCase):
             self.assertIn("script=%s" % script, output.getvalue())
 
 
+class BenchMainStillTest(unittest.TestCase):
+    """One `still` run through main(): table, phone line, stages, CSV cells."""
+
+    LOG = (
+        "2026-11-06 10:00:05.000000-0300 mac PocketDeck[7]: "
+        "stats stream=1 rx_fps=60 shown_fps=60 phone_n=2\n"
+        "2026-11-06 10:00:06.000000-0300 mac PocketDeck[7]: "
+        "stream 1: first frame, 123.5 ms\n"
+        "2026-11-06 10:00:07.000000-0300 mac PocketDeck[7]: "
+        "stream 1 resize ack 720x1280 dpi=320 (applied) 42 ms\n"
+        "2026-11-06 10:00:10.000000-0300 mac PocketDeck[7]: "
+        "stats total stream=1 secs=10.0 rx_frames=600 shown_frames=590 "
+        "phone_frames=600 hitch_n=0 hitch_ms=0 drop_ep=0 drop_ms=0 "
+        "susp_n=0 susp_ms=0 phone_n=5 int_p50=12 int_p95=20 int_p99=30 "
+        "shown_p50=8 shown_p95=16 shown_p99=24 codec=avc\n"
+    )
+
+    def test_one_still_run_writes_the_table_and_the_new_cells(self):
+        import contextlib
+        import io
+        import unittest.mock as mock
+        bench = load_bench()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        adb = os.path.join(directory.name, "adb")
+        shim = os.path.join(directory.name, "shim")
+        out = os.path.join(directory.name, "still.csv")
+        with open(shim, "w", encoding="utf-8") as handle:
+            handle.write("")
+        with open(adb, "w", encoding="utf-8") as handle:
+            handle.write("""#!/bin/sh
+case "$*" in
+  *get-state*) echo device ;;
+  *getprop*) echo "" ;;
+  *"dumpsys gfxinfo com.android.settings framestats"*)
+    echo "Total frames rendered: 10"
+    echo "Janky frames: 1 (10.00%)"
+    echo "---PROFILEDATA---"
+    echo "Flags,IntendedVsync,Vsync,OldestInputEvent,NewestInputEvent,HandleInputStart,AnimationStart,PerformTraversalsStart,DrawStart,SyncStart,IssueDrawCommandsStart,SwapBuffers,FrameCompleted,"
+    i=0
+    while [ $i -lt 10 ]; do
+      echo "0,1000000000,1001000000,0,0,0,0,0,0,0,0,0,1010000000,"
+      i=$((i + 1))
+    done
+    echo "---PROFILEDATA---" ;;
+  *"dumpsys gfxinfo"*)
+    echo "Total frames rendered: 10"
+    echo "Janky frames: 1 (10.00%)" ;;
+  *"dumpsys display"*)
+    echo 'DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1080 x 2400, renderFrameRate 60.0}' ;;
+  *"dumpsys battery"*)
+    printf '  level: 73\\n  temperature: 291\\n  USB powered: true\\n' ;;
+  *"dumpsys thermalservice"*)
+    printf '  Thermal Status: 2\\n  Temperature{mValue=35.5, mType=0}\\n' ;;
+  *"dumpsys cpuinfo"*)
+    printf '  12.0%% 1000/com.android.settings: 8.0%% user + 4.0%% kernel\\n'
+    printf '   1.5%% 2000/dev.pocketdeck: 1.0%% user + 0.5%% kernel\\n' ;;
+  *"dumpsys meminfo com.android.settings"*) echo "TOTAL PSS:    8000" ;;
+  *"dumpsys meminfo dev.pocketdeck"*) echo "TOTAL PSS:   24000" ;;
+  *"dumpsys wifi"*)
+    echo "RSSI: -55, Link speed: 433Mbps, Frequency: 5180MHz txRetries=7 txBad=3" ;;
+esac
+""")
+        os.chmod(adb, 0o755)
+
+        class FakeMCP:
+            def __init__(self, shim_path, profile):
+                pass
+
+            def text(self, name, arguments):
+                if name == "open_app":
+                    return {"window": 1}
+                return {}
+
+            def close(self):
+                pass
+
+        argv = ["bench.py", "--profile", "bench2", "--serial", "emulator-5554",
+                "--adb", adb, "--shim", shim, "--script", "still",
+                "--still-seconds", "0", "--repeats", "1",
+                "--arms-filter", "baseline", "--out", out,
+                "--package", "com.android.settings"]
+        output = io.StringIO()
+        with mock.patch.object(bench, "require_device", lambda *a: None), \
+                mock.patch.object(bench, "find_app_pid", lambda profile: 123), \
+                mock.patch.object(bench, "recent_lines", lambda *a, **k: ""), \
+                mock.patch.object(bench, "stats_lines", lambda *a, **k: self.LOG), \
+                mock.patch.object(bench, "load_mcp", lambda: FakeMCP), \
+                mock.patch("sys.argv", argv), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(bench.main(), 0)
+
+        text = output.getvalue()
+        self.assertIn("phone:", text)
+        self.assertIn("stages:", text)
+        self.assertIn("still", text)
+        with open(out, "r", encoding="utf-8") as handle:
+            rows = list(__import__("csv").DictReader(handle))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["script"], "still")
+        self.assertEqual(row["failed"], "0")
+        self.assertEqual(row["battery_level"], "73")
+        self.assertAlmostEqual(float(row["battery_temp_c"]), 29.1)
+        self.assertAlmostEqual(float(row["vd_hz"]), 60.0)
+        self.assertAlmostEqual(float(row["first_frame_ms"]), 123.5)
+        self.assertAlmostEqual(float(row["resize_ms"]), 42.0)
+        self.assertAlmostEqual(float(row["app_fps"]), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

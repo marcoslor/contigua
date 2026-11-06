@@ -991,7 +991,7 @@ def main():
                        "start": began, "end": "", "lines": 0, "sampled": [],
                        "script": args.script, "samples": []}
                 run.update({field: None for field in
-                            table_fields() + list(NEW_RUN_FIELDS)})
+                            list(table_fields()) + list(NEW_RUN_FIELDS)})
                 client = None
                 try:
                     settings.apply(arm)
