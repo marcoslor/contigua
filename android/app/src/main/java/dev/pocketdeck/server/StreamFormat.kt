@@ -13,6 +13,7 @@ import android.media.MediaFormat
  * refused switch leaves today's key in place.
  */
 internal object StreamFormat {
+    /** The default codec's mime, kept for the AVC probe the Mac's sizes use. */
     const val MIME = "video/avc"
     const val FPS = 60
     const val I_FRAME_INTERVAL_S = 10
@@ -38,8 +39,9 @@ internal object StreamFormat {
         repeatPreviousFrame: Boolean,
         maxFps: Int?,
         encodingStatistics: Boolean,
+        codec: VideoCodec = VideoCodec.Avc,
     ): Plan {
-        val format = MediaFormat.createVideoFormat(MIME, w, h)
+        val format = MediaFormat.createVideoFormat(codec.mime, w, h)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
@@ -83,6 +85,7 @@ internal object StreamFormat {
                     StreamStrategy.RateControl.Vbr
                 },
                 intraRefreshFrames = refreshFrames,
+                codec = codec,
             ),
         )
     }

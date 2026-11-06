@@ -25,6 +25,8 @@ internal class WindowStream(
     val stream: Int,
     private val sink: VideoSink,
     private val log: (String) -> Unit,
+    /** The codecs the Mac said it decodes; the arm's HEVC needs it. */
+    private val macCodecs: () -> Set<VideoCodec> = { setOf(VideoCodec.Avc) },
 ) {
 
     private companion object {
@@ -101,7 +103,15 @@ internal class WindowStream(
     private var caps: MediaCodecInfo.VideoCapabilities? = null
 
     /** [started] is false for a codec configured for [persistent]: it starts when attached. */
-    private class Prepared(val codec: MediaCodec, val surface: Surface, val started: Boolean = true)
+    private class Prepared(
+        val codec: MediaCodec,
+        val surface: Surface,
+        val kind: VideoCodec,
+        val started: Boolean = true,
+    )
+
+    /** The codec the current encoder runs; set when its drain starts. */
+    @Volatile private var videoCodec = VideoCodec.Avc
 
     /**
      * The display's one input surface for its whole life (app windows only).
@@ -211,7 +221,7 @@ internal class WindowStream(
         vd = createMirror(size.w, size.h, next.surface)
         displayIdValue = DEFAULT_DISPLAY
         encoder = next.codec
-        startDrain(next.codec)
+        startDrain(next.codec, next.kind)
         rotationThread = Thread({ watchRotation() }, "pocketdeck-mirror-$stream").also { it.start() }
         log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${size.w}x${size.h}")
         ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
@@ -272,7 +282,7 @@ internal class WindowStream(
         displayIdValue = display.display.displayId
         vd = display
         encoder = next.codec
-        startDrain(next.codec)
+        startDrain(next.codec, next.kind)
         hideIme(displayIdValue)
         val requested = flags()
         log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}")
@@ -360,7 +370,7 @@ internal class WindowStream(
         lastDistinctMs = SystemClock.elapsedRealtime()
         heartbeat(IdleFrameWatchdogEvent.Resume(SystemClock.elapsedRealtime()))
         if (persistent != null && encoder != null) {
-            lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture) }
+            lastCsd?.let { sink.onConfig(stream, videoCodec.wire, width, height, it, picture) }
             requestKeyframe()
             // The app may have nothing new to draw: the redraw guard nudges it.
             guard.onAttached(SystemClock.elapsedRealtime())
@@ -514,35 +524,45 @@ internal class WindowStream(
     /**
      * Builds the next encoder (configured, input surface made, started) at the
      * size the codec will actually take. Leaves the current stream untouched.
+     *
+     * The strategy is read once per configure here, and the codec choice is the
+     * pure decision of WIN-59: the arm may ask for HEVC, but a Mac that cannot
+     * decode it or an encoder that cannot take the size falls back to H.264
+     * with one reason line.
      */
     private fun prepareEncoder(want: IntSize): IntSize? {
         val (w, h) = want
+        val strategy = StreamStrategy.read()
+        this.strategy = strategy
+        val chosenSize = if (mirrorScreen != null) want else fitToEncoder(w, h)
+        val choice = chooseCodec(strategy, chosenSize)
+        choice.fallbackLine?.let { log("stream $stream $it") }
+        val kind = choice.codec
         val codec = try {
-            MediaCodec.createEncoderByType(MIME)
+            MediaCodec.createEncoderByType(kind.mime)
         } catch (e: Throwable) {
-            log("stream $stream: no H.264 encoder: ${e.message}")
+            log("stream $stream: no ${kind.token} encoder: ${e.message}")
             return null
         }
         try {
-            learnLimits(codec)
-            val size = if (mirrorScreen != null) want else fitToEncoder(w, h)
-            configure(codec, size.w, size.h)
+            learnLimits(codec, kind)
+            configure(codec, chosenSize.w, chosenSize.h, strategy, kind)
             val shared = persistent
             if (shared != null) {
                 // Started when attached: one codec at a time on the surface.
-                width = size.w
-                height = size.h
-                picture = pictureOf(size)
-                prepared = Prepared(codec, shared, started = false)
-                return size
+                width = chosenSize.w
+                height = chosenSize.h
+                picture = pictureOf(chosenSize)
+                prepared = Prepared(codec, shared, kind, started = false)
+                return chosenSize
             }
             val surface = codec.createInputSurface()
             codec.start()
-            width = size.w
-            height = size.h
-            picture = pictureOf(size)
-            prepared = Prepared(codec, surface)
-            return size
+            width = chosenSize.w
+            height = chosenSize.h
+            picture = pictureOf(chosenSize)
+            prepared = Prepared(codec, surface, kind)
+            return chosenSize
         } catch (e: Throwable) {
             log("stream $stream: encoder for ${w}x$h failed: ${e.message}")
             runCatching { codec.release() }
@@ -550,8 +570,35 @@ internal class WindowStream(
         }
     }
 
-    private fun learnLimits(codec: MediaCodec) {
-        val found = runCatching { codec.codecInfo.getCapabilitiesForType(MIME).videoCapabilities }.getOrNull() ?: return
+    /** The one codec decision for [size]; probes HEVC only when the arm asks. */
+    private fun chooseCodec(strategy: StreamStrategy, size: IntSize): CodecChoice.Choice {
+        if (strategy.codec != VideoCodec.Hevc) return CodecChoice.Choice(VideoCodec.Avc)
+        val (available, fits) = hevcEncoder(size)
+        return CodecChoice.choose(strategy.codec, macCodecs(), available, fits)
+    }
+
+    /**
+     * Whether this phone has an HEVC encoder and takes [size]. The probe codec is
+     * created and released at once; a missing encoder or capability is a
+     * fallback, never a crash.
+     */
+    private fun hevcEncoder(size: IntSize): Pair<Boolean, Boolean> {
+        val probe = runCatching { MediaCodec.createEncoderByType(VideoCodec.Hevc.mime) }
+            .getOrNull() ?: return false to false
+        return try {
+            val caps = runCatching {
+                probe.codecInfo.getCapabilitiesForType(VideoCodec.Hevc.mime).videoCapabilities
+            }.getOrNull()
+            true to (caps?.isSizeSupported(size.w, size.h) == true)
+        } finally {
+            runCatching { probe.release() }
+        }
+    }
+
+    private fun learnLimits(codec: MediaCodec, kind: VideoCodec) {
+        val found = runCatching {
+            codec.codecInfo.getCapabilitiesForType(kind.mime).videoCapabilities
+        }.getOrNull() ?: return
         adoptLimits(found)
     }
 
@@ -630,7 +677,7 @@ internal class WindowStream(
             }
             encoder = next.codec
             guard.onAttached(SystemClock.elapsedRealtime())
-            startDrain(next.codec)
+            startDrain(next.codec, next.kind)
             return
         }
         previous = encoder
@@ -642,7 +689,7 @@ internal class WindowStream(
         } else runCatching { vd?.setSurface(next.surface) }
             .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
         guard.onAttached(SystemClock.elapsedRealtime())
-        startDrain(next.codec)
+        startDrain(next.codec, next.kind)
     }
 
     private fun createPersistentSurface(): Surface? {
@@ -721,19 +768,20 @@ internal class WindowStream(
         }
     }
 
-    private fun configure(codec: MediaCodec, w: Int, h: Int) {
+    private fun configure(codec: MediaCodec, w: Int, h: Int, strategy: StreamStrategy,
+                          kind: VideoCodec) {
         // The switches are read once per configure (open, resize, encoder
         // rebuild): a bench sets the properties and then opens a window. Never
-        // per frame.
-        val strategy = StreamStrategy.read()
+        // per frame. The caller read it before choosing the codec.
         this.strategy = strategy
+        this.videoCodec = kind
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).
         quality.setTarget(requestedBitrate ?: strategy.bitrateFor(w, h))
         if (StreamDebug.ignoreRepeatFrame()) {
             log("stream $stream: ${StreamDebug.IGNORE_REPEAT}=1, no repeat-previous-frame heartbeat")
         }
-        val caps = runCatching { codec.codecInfo.getCapabilitiesForType(MIME) }.getOrNull()
+        val caps = runCatching { codec.codecInfo.getCapabilitiesForType(kind.mime) }.getOrNull()
         val cbrSupported = caps?.encoderCapabilities
             ?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true
         val intraRefreshSupported = caps
@@ -752,6 +800,7 @@ internal class WindowStream(
             repeatPreviousFrame = !StreamDebug.ignoreRepeatFrame(),
             maxFps = maxFps,
             encodingStatistics = encodingStatistics,
+            codec = kind,
         )
         val format = plan.format
         stats.setTarget(quality.bitrate)
@@ -860,7 +909,9 @@ internal class WindowStream(
         }
     }
 
-    private fun startDrain(codec: MediaCodec) {
+    private fun startDrain(codec: MediaCodec, kind: VideoCodec) {
+        videoCodec = kind
+        stats.codec = kind
         heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
         // A rebuild while the queue was suspended must not restart a flowing
         // encoder: re-apply the input stop to the new codec.
@@ -870,7 +921,7 @@ internal class WindowStream(
         }
         lastOutputSize = -1
         lastDistinctMs = SystemClock.elapsedRealtime()
-        drainThread = Thread({ drain(codec) }, "pocketdeck-drain-$stream").also { it.start() }
+        drainThread = Thread({ drain(codec, kind) }, "pocketdeck-drain-$stream").also { it.start() }
     }
 
     /**
@@ -936,7 +987,7 @@ internal class WindowStream(
         log("stream $stream bitrate ${mbps(bps)} ($reason${if (ok) "" else ", encoder not running"})")
     }
 
-    private fun drain(codec: MediaCodec) {
+    private fun drain(codec: MediaCodec, kind: VideoCodec) {
         val info = MediaCodec.BufferInfo()
         var nextFreezeCheckMs = 0L
         var frozen = false
@@ -976,7 +1027,7 @@ internal class WindowStream(
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let {
                     lastCsd = it
-                    sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture)
+                    sink.onConfig(stream, kind.wire, width, height, it, picture)
                 }
                 continue
             }
@@ -990,7 +1041,7 @@ internal class WindowStream(
                     val keyNalTypes = if (key) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        nalTypes(buf, info.size)
+                        nalTypes(buf, info.size, kind)
                     } else null
                     // The encoder path's clock: Surface input pts are
                     // CLOCK_MONOTONIC microseconds, as System.nanoTime is.
@@ -1015,14 +1066,14 @@ internal class WindowStream(
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
-                        stats.onFrame(key, 0, encodeUs, statsQp, keyNalTypes)
+                        stats.onFrame(key, 0, encodeUs, statsQp, keyNalTypes, kind)
                     } else {
                         heartbeat(IdleFrameWatchdogEvent.Frame(now, key))
                         noteRefineFrame(now, key, info.size)
                         val skipped = dropForFps(info.presentationTimeUs)
                         if (skipped) stats.onSkipped()
                         stats.onFrame(key, if (skipped) 0 else info.size, encodeUs, statsQp,
-                                      keyNalTypes)
+                                      keyNalTypes, kind)
                         if (!skipped) {
                             val data = ByteArray(info.size)
                             buf.get(data)
@@ -1134,10 +1185,17 @@ internal class AndroidDisplayLayer(
 
     private val streams = StreamTable<WindowStream>()
     @Volatile private var statsOn = false
+    /** The codecs the Mac's hello said it decodes; HEVC only arrives here on request. */
+    @Volatile private var macCodecs: Set<VideoCodec> = setOf(VideoCodec.Avc)
+
+    override fun setMacCodecs(codecs: Set<VideoCodec>) {
+        macCodecs = codecs
+    }
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
         take(stream)?.close()
-        val ws = WindowStream(ctx, stream, sink, log).also { it.setStatsWanted(statsOn) }
+        val ws = WindowStream(ctx, stream, sink, log, macCodecs = { macCodecs })
+            .also { it.setStatsWanted(statsOn) }
         // start() can throw after it created the persistent surface and an
         // encoder; close what it built before the session sees the failure.
         val id = try {
@@ -1155,7 +1213,8 @@ internal class AndroidDisplayLayer(
 
     override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize {
         take(stream)?.close()
-        val ws = WindowStream(ctx, stream, sink, log).also { it.setStatsWanted(statsOn) }
+        val ws = WindowStream(ctx, stream, sink, log, macCodecs = { macCodecs })
+            .also { it.setStatsWanted(statsOn) }
         val size = try {
             ws.startMirror(w, h)
         } catch (e: Throwable) {

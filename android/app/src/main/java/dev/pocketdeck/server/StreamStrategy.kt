@@ -21,6 +21,8 @@ data class StreamStrategy(
     /** The on-demand link stall: 0 is off, otherwise the pause length in ms. */
     val stallMs: Int = 0,
     val stallEveryMs: Int = DEFAULT_STALL_EVERY_MS,
+    /** The arm's codec request; the choice may still fall back to AVC. */
+    val codec: VideoCodec = VideoCodec.Avc,
 ) {
 
     enum class Overflow { Drop, Suspend }
@@ -56,6 +58,7 @@ data class StreamStrategy(
      */
     fun describe(applied: Applied = Applied()): String {
         val parts = ArrayList<String>()
+        if (codec == VideoCodec.Hevc && applied.codec == VideoCodec.Hevc) parts += "codec=hevc"
         if (rateControl == RateControl.Cbr) {
             parts += if (applied.rateControl == RateControl.Cbr) "rc=cbr" else "rc=cbr unsupported"
         }
@@ -87,6 +90,7 @@ data class StreamStrategy(
     data class Applied(
         val rateControl: RateControl = RateControl.Vbr,
         val intraRefreshFrames: Int = 0,
+        val codec: VideoCodec = VideoCodec.Avc,
     )
 
     companion object {
@@ -122,6 +126,7 @@ data class StreamStrategy(
                 stallMs = raw("stall_ms").parseStallMs(),
                 stallEveryMs = raw("stall_every_ms")
                     .parseInt(DEFAULT_STALL_EVERY_MS, 1_000..30_000),
+                codec = if (raw("codec") == VideoCodec.Hevc.token) VideoCodec.Hevc else VideoCodec.Avc,
             )
         }
 

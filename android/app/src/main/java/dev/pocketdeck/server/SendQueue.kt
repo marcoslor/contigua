@@ -48,6 +48,8 @@ internal class SendQueue(
         { QueuePolicy.today(maxDeltaBytesPerStream, maxDeltaDurationUs) },
     /** Q1: the queue overflowed under `overflow=suspend`; lower the bitrate. */
     private val onOverflow: (stream: Int) -> Unit = {},
+    /** The stream's codec for the drop line's NAL types (AVC unless HEVC is on). */
+    private val codecFor: (stream: Int) -> VideoCodec = { VideoCodec.Avc },
     /**
      * Q1: this stream's suspend state may have changed. The session reads
      * [isSuspended] and applies it, so an apply that ran late still applies the
@@ -351,7 +353,8 @@ internal class SendQueue(
         // The first key frame handed to the socket closes the episode. Its
         // types say whether the picture can actually restart from it.
         if (entry.key) {
-            val types = nalTypes(entry.bytes, offset = Frames.VIDEO_FRAME_DATA_OFFSET)
+            val types = nalTypes(entry.bytes, offset = Frames.VIDEO_FRAME_DATA_OFFSET,
+                                 codec = codecFor(stream))
             advanceDrop(stream, DropEvent.KeySent(nowMs(), types))
         }
     }

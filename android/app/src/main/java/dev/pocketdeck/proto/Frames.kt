@@ -53,6 +53,7 @@ object Frames {
     const val TYPE_FS_DATA = 0x24
 
     const val CODEC_H264 = 1
+    const val CODEC_HEVC = 2
     const val CODEC_OPUS = 2
     const val CODEC_AAC = 3
 
