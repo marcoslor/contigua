@@ -786,6 +786,16 @@ recommendation is the one the plan assumes.
 - [NEEDS CLARIFICATION] May a second pairing run while a phone is live?
   Recommended: yes, one sheet at a time, and the live phone keeps its session.
 
+**Decided by the reviewer (2026-11-06).** These are technical defaults, so the plan proceeds on them:
+- **Connect at launch:** lazily. The current phone, plus a phone when a feature that needs it is on (notifications, Finder) or an entry point names it.
+- **Window cap:** a Mac-wide total cap of 8 beside the per-phone cap, with the same sentence.
+- **The current phone stays.** It serves surfaces with no target; every surface with a target ignores it.
+- **A non-current phone's problem** shows as a badge on the switcher and in its Settings row. The Deck banner stays the current phone's.
+- **Finder:** one Mac-wide switch shows every paired phone's location.
+- **Pairing:** a second pairing may run while a phone is live, one sheet at a time.
+
+**For the person** (product calls; slice 1 depends on none of them): the privacy boundary on a shared Mac; the Deck and panel shape (visual, so a prototype round before slice 3); whether a background phone's copy reaches the clipboard; audio mixing and the Now Playing winner; one phone on two Macs.
+
 ## 11. Spec notes
 
 These are the spec lines that must change when the plan lands. They are listed
