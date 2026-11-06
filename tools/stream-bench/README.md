@@ -144,9 +144,12 @@ message (`phone_n ≥ 1`); a line with no message is no sample.
 A run is marked **`low-motion`** (in the table and as `low_motion=1` in the CSV)
 when `rx_frames / secs` is under 20: the content did not move, so the run cannot
 compare strategies. A run is marked **`frozen`** (in the table and as
-`frozen=1` in the CSV) when a 5 s line in a swipe phase — the steady swipes or
-the flings — has `rx_fps < 10`: the picture stopped while the content moved, so
-its low jank score is an accident, not a win. A run with `covered_ms > 0` is
+`frozen=1` in the CSV) when the totals' `max_gap_ms` is over 2,500: the picture
+was gone for longer than that across the run, so its low jank score is an
+accident, not a win. The totals cover the whole life, so a gap that falls
+between two 5 s lines still counts. A log from before the field existed keeps
+the older rule (a 5 s line in a swipe phase with `rx_fps < 10`). A run with
+`covered_ms > 0` is
 marked **`covered`**. `failed`, `covered`, `frozen` and `low-motion` runs are
 all left out of the arm's medians, and the table's `valid` column says how many
 runs made them. A run with no closing line is **`failed`**; its cells are `-`
@@ -161,10 +164,14 @@ stall                  2    310 (…-…)  5 (…-…)  110 (…-…)   150 (…
 stall-q1 (frozen)      0      -          -         -           -         -          -
 ```
 
-Two more columns read the connection's own counter deltas from the totals:
+Two columns read the connection's own counter deltas from the totals:
 `tcp_ooo_kb` (the Mac's out-of-order bytes over the run, the receiver's trace
 of a hole TCP is holding) and `ph_retrans` (the phone's system-wide
-retransmitted segments over the run).
+retransmitted segments over the run). `key_not_idr` is the Mac's count of
+frames the phone flagged key whose units held no IDR, and `ph_key_not_idr` is
+the phone's own count from its messages; both are NAL-type counts, never bytes.
+A run with either above 0 has a resuming frame a decoder cannot restart on, and
+the field log names its types (`stream N key nal=6,1`).
 
 Under the table, each arm gets one **resend block**, over all its 5 s lines:
 
@@ -182,8 +189,8 @@ counts and reported as `no phone message`; a phone that could not read its
 
 The CSV (`--out`) has every run with the same fields plus `failed`, `covered`,
 `frozen`, `secs`, `rx_frames`, `shown_frames`, `phone_frames`, `kf_req`,
-`bytes`, `covered_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`, `ph_rto`,
-`ph_lost`, `low_motion`, `no_drop_ms` and `phone_gaps`.
+`bytes`, `covered_ms`, `max_gap_ms`, `tcp_ooo_kb`, `tcp_srtt_max`, `ph_retrans`,
+`ph_rto`, `ph_lost`, `low_motion`, `no_drop_ms` and `phone_gaps`.
 
 ## Usage
 
