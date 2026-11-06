@@ -632,6 +632,22 @@ class TotalsTest(unittest.TestCase):
             "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
             "stats total stream=1 secs=10.0\n"))
 
+    def test_a_stats_line_followed_by_that_streams_close_is_not_open(self):
+        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+                "stats stream=1 rx_fps=60 phone_n=2\n"
+                "2026-11-05 10:00:06.000000-0300 mac PocketDeck[7]: "
+                "stream 1: closed, stills=3\n")
+        self.assertFalse(self.bench.has_open_window(text))
+
+    def test_one_closed_stream_does_not_hide_another_open_one(self):
+        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+                "stats stream=1 rx_fps=60 phone_n=2\n"
+                "2026-11-05 10:00:06.000000-0300 mac PocketDeck[7]: "
+                "stream 1: closed, stills=3\n"
+                "2026-11-05 10:00:07.000000-0300 mac PocketDeck[7]: "
+                "stats stream=2 rx_fps=60 phone_n=2\n")
+        self.assertTrue(self.bench.has_open_window(text))
+
     def test_dry_run_reads_the_arms_and_touches_no_device(self):
         import unittest.mock as mock
         argv = ["bench.py", "--dry-run", "--profile", "bench2",
@@ -686,6 +702,7 @@ class ScriptPlanTest(unittest.TestCase):
         import types
         values = dict(still_seconds=6, video_point={"x": 0.5, "y": 0.5},
                       video_seconds=8, soak_seconds=60, sample_seconds=10,
+                      typing_point={"x": 0.5, "y": 0.08},
                       tap_point={"x": 0.5, "y": 0.5})
         values.update(overrides)
         return types.SimpleNamespace(**values)
@@ -730,6 +747,10 @@ class ScriptPlanTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["window"], 3)
         self.assertIn("pocketdeck", calls[1][1]["text"])
         self.assertEqual([name for name, _ in phases], ["typing"])
+
+    def test_the_typing_point_can_follow_the_apps_search_field(self):
+        calls, _ = self.run_calls("typing", typing_point={"x": 0.5, "y": 0.92})
+        self.assertEqual((calls[0][1]["x"], calls[0][1]["y"]), (0.5, 0.92))
 
     def test_the_video_script_taps_the_play_point(self):
         calls, _ = self.run_calls("video", video_point={"x": 0.25, "y": 0.75})
@@ -862,7 +883,10 @@ class PhoneValuesTest(unittest.TestCase):
             "0,1002000000,1003000000,0,0,0,0,0,0,0,0,0,1020000000,\n"
             "---PROFILEDATA---\n"),
         "display": '    DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", '
-                   '1080 x 2400, modeId 1, renderFrameRate 60.0}\n',
+                   '1080 x 2400, modeId 1, renderFrameRate 48.0}\n'
+                   '    DisplayDeviceInfo{"pocketdeck-1": '
+                   'uniqueId="virtual:com.android.shell,0,pocketdeck-1,145", '
+                   '1800 x 1200, modeId 254, renderFrameRate 60.0}\n',
         "battery": "  level: 73\n  temperature: 291\n  voltage: 4021\n"
                    "  USB powered: true\n",
         "thermal": "  Thermal Status: 2\n  Temperature{mValue=35.5, mType=0}\n",
@@ -1107,7 +1131,8 @@ case "$*" in
     echo "Total frames rendered: 10"
     echo "Janky frames: 1 (10.00%)" ;;
   *"dumpsys display"*)
-    echo 'DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1080 x 2400, renderFrameRate 60.0}' ;;
+    echo 'DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1080 x 2400, renderFrameRate 48.0}'
+    echo 'DisplayDeviceInfo{"pocketdeck-1": uniqueId="virtual:com.android.shell,0,pocketdeck-1,145", 1800 x 1200, renderFrameRate 60.0}' ;;
   *"dumpsys battery"*)
     printf '  level: 73\\n  temperature: 291\\n  USB powered: true\\n' ;;
   *"dumpsys thermalservice"*)
@@ -1123,17 +1148,33 @@ esac
 """)
         os.chmod(adb, 0o755)
 
+        order = []
+
         class FakeMCP:
             def __init__(self, shim_path, profile):
                 pass
 
             def text(self, name, arguments):
+                order.append(name)
                 if name == "open_app":
                     return {"window": 1}
                 return {}
 
             def close(self):
                 pass
+
+        real_sampler = bench.PhoneSampler
+
+        class OrderedSampler(real_sampler):
+            def reset(self):
+                order.append("reset")
+                return super().reset()
+
+            def sample(self, seconds):
+                order.append("sample")
+                # The stub script finishes instantly; a real run's interval is
+                # measured, this test's own framestats fixture covers 10 s.
+                return super().sample(10.0)
 
         argv = ["bench.py", "--profile", "bench2", "--serial", "emulator-5554",
                 "--adb", adb, "--shim", shim, "--script", "still",
@@ -1148,12 +1189,15 @@ esac
                 mock.patch.object(bench, "recent_lines", lambda *a, **k: ""), \
                 mock.patch.object(bench, "stats_lines", lambda *a, **k: self.LOG), \
                 mock.patch.object(bench, "load_mcp", lambda: FakeMCP), \
+                mock.patch.object(bench, "PhoneSampler", OrderedSampler), \
                 mock.patch.object(bench, "activate_app",
                                   lambda path, **k: activated.append(path)), \
                 mock.patch("sys.argv", argv), \
                 contextlib.redirect_stdout(output):
             self.assertEqual(bench.main(), 0)
         self.assertEqual(activated, ["/x/PocketDeck.app"])
+        self.assertLess(order.index("sample"), order.index("close_window"),
+                        "the phone is sampled while the app is alive")
 
         text = output.getvalue()
         self.assertIn("phone:", text)

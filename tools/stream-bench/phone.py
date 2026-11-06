@@ -83,16 +83,27 @@ def framestats(text, seconds):
     }
 
 
-def display_refresh(text, display_id):
+def display_refresh(text, display_id=None):
     """The device line for one display: refresh rate and pixel size.
 
-    `nil` when this `dumpsys display` has no line for the display (the bench
-    then leaves `vd_hz` empty instead of guessing).
+    With no `display_id`, the mirror's virtual display (the phone names it
+    "pocketdeck-N", uniqueId "virtual:…") is the one measured: that is the
+    display whose rate the stream sets. A numeric id keeps the physical
+    `local:<id>` lookup.
+
+    `nil` when this `dumpsys display` has no matching line (the bench then
+    leaves `vd_hz` empty instead of guessing).
     """
     marker = re.compile(r"DisplayDeviceInfo\{")
-    unique = re.compile(r"uniqueId\s*[=:]\s*\"?local:%d\"?" % display_id)
+    unique = (re.compile(r"uniqueId\s*[=:]\s*\"?local:%d\"?" % display_id)
+              if display_id is not None else None)
     for line in text.splitlines():
-        if not marker.search(line) or not unique.search(line):
+        if not marker.search(line):
+            continue
+        if display_id is None:
+            if "pocketdeck-" not in line:
+                continue
+        elif not unique.search(line):
             continue
         size = re.search(r"(\d+)\s*x\s*(\d+)", line)
         hz = _number(r"renderFrameRate\s+([\d.]+)", line)
@@ -146,7 +157,7 @@ def cpu(text, packages=("com.example.app", "dev.pocketdeck")):
     """
     totals = {package: None for package in packages}
     for line in text.splitlines():
-        match = re.match(r"\s*([\d.]+)%\s+\d+/(\S+)", line)
+        match = re.match(r"\s*([+-]?[\d.]+)%\s+\d+/(\S+)", line)
         if not match:
             continue
         name = match.group(2).rstrip(":")

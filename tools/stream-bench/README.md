@@ -70,7 +70,7 @@ comparable to the same stage in a swipe run.
 | --- | --- | --- |
 | `swipe` (default) | Today's exact sequence: 10 steady swipes, a 3 s still, 10 fast flings, a 3 s still, every swipe alternating direction. No call or pause differs from the pre-`--script` bench. | The strategy comparison the table was built for |
 | `still` | Opens the app, sends no input and holds for `--still-seconds` (default 6). | First-frame and resize baselines, settled picture, panel rate, phone idle health |
-| `typing` | Taps the opened app's search field at `(0.5, 0.08)` and types `pocketdeck bench typing` through the app's own `type_text` tool, then holds 3 s. | Key input without a swipe; the text is a fixed bench string, never a person's |
+| `typing` | Taps the opened app's search field at `--typing-point` (default `0.5,0.08`) and types `pocketdeck bench typing` through the app's own `type_text` tool, then holds 3 s. | Key input without a swipe; the text is a fixed bench string, never a person's |
 | `video` | Taps `--video-point` (default `0.5,0.5`) and plays for `--video-seconds` (default 8). | Decoder and display work on moving video rather than a scrolling list |
 | `soak` | Swipes continuously for `--soak-minutes` (default 20), one swipe per `--sample-seconds` (default 10) period, and writes one phone sample row per period. | Phone health over time: thermals, battery, CPU, PSS and Wi-Fi |
 | `tap` | Calls the Mac's `input_probe` tool once with `--tap-point` (default `0.5,0.5`) and records its `changed_ms` as `input_photon_ms` and `frames` as `input_frames`. | Input-to-photon, the number a person feels |
@@ -246,10 +246,12 @@ The table gains three stage columns after the long-standing ones:
 
 - `app_fps` — frames the streamed app's own UI rendered per second, from
   `dumpsys gfxinfo <package> framestats` after the run. The bench resets that
-  counter before the run and computes the rate over the run's `secs`.
-- `vd_hz` — the refresh rate of `--display-id` (default 0, the panel the
-  virtual display mirrors), from `dumpsys display`. A device that does not
-  print a rate is `-`.
+  counter before the run, samples while the app is still alive (before the
+  window closes), and computes the rate over that interval.
+- `vd_hz` — the refresh rate of the mirror's virtual display (the phone names
+  it `pocketdeck-N`, a `virtual:` display) from `dumpsys display`; the panel
+  the VD mirrors is not the stream's rate. `--display-id N` reads a physical
+  `local:N` instead. A device that does not print a rate is `-`.
 - `input_photon_ms` — the `tap` script's `changed_ms`: send to the first
   displayed frame that changed in the probed region. `input_frames` is how many
   displayed-frame samples the probe saw.
