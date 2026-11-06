@@ -156,7 +156,7 @@ publish running (the network is released at once); a publish callback after
 |---|---|
 | 0 phones | No session, no path, no publish (no key exists without a paired Mac): one listening socket and the mDNS registration, as today. |
 | 1 phone | One session, one to three paths. The direct path exists only if both switches are on and the probe says `ok`; with the phone's switch on and a key stored, the phone also publishes **with no session**, so a later attempt can start on the direct path. |
-| 2+ phones | One session per Mac, and the Mac app is single-phone today (settings.md): the phone in use is the one with a session. The phone publishes one Aware service per Mac with direct on, up to the platform's 8. |
+| 2+ phones | One session per Mac-phone pair; the Mac holds one session for each connected phone. Each phone still serves one Mac at a time. The phone publishes one Aware service per Mac with direct on, up to the platform's 8. |
 | Connecting | The Mac starts every ready provider at once (Bonjour, the cached address, and the helper's `dial` in a direct build) and serializes only the hello: one plain `hello`, the first `welcome` founds the session, the rest join (PATH-20). A direct-only start is allowed and takes the NDP's few seconds. |
 | Connected | One current path, up to two standbys; a switch is invisible but for a keyframe (video) and one audio frame. |
 | Offline / reconnecting | `Orphaned` for 30 s with the windows saying so within 2 s; at 30 s the session ends and the Mac's ordinary backoff retries — and the next attempt may be a direct one even with the LAN gone, because the phone is still publishing (DIRECT-1). |

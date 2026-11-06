@@ -189,7 +189,7 @@ This surface runs on one phone. Its own list counts **Macs**; the Mac-side surfa
 |---|---|
 | 0 Macs | Ready (or an attention state); "No Macs paired yet."; Pair new Mac; a pairing prompt can still be answered. |
 | 1 Mac | Its row with Connected now or the last-connected time; Connected to <Mac> while it serves. |
-| 2+ Macs | One row each, live first then most recent; only one Mac can be connected at a time (a second is refused as busy); forget one and the others keep their pins. |
+| 2+ Macs | One row each, live first then most recent; only one Mac can be connected at a time (a second is refused as busy); the Mac may hold a session to each of several phones at once, which does not change this limit; forget one and the others keep their pins. |
 | The Mac is connecting | The phone's card still says Ready; the session's own state is the Mac's side (pairing.md PAIR-6, deck.md). |
 | Connected | "Connected to <Mac name>" · "<n> windows open"; the ongoing notification says the same with no port. |
 | The Mac is offline / reconnecting | Ready (the Mac's name is dropped when the session ends); the last-connected time updates. |
