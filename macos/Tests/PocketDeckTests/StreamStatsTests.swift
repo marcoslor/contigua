@@ -553,18 +553,58 @@ final class StreamStatsTests: XCTestCase {
     /// first three of those must reach the field log with their types.
     func testAKeyFlaggedFrameWithoutAnIdrIsCountedAndLoggedThreeTimes() {
         var window = StreamStatsWindow(now: 0)
-        XCTAssertNil(window.noteKeyFrame(isKeyframe: false, nalTypes: [1]))
-        XCTAssertNil(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5]),
-                     "an IDR key frame is not a key_not_idr")
-        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1]), "6,1")
-        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 1]), "7,8,1")
-        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6]), "6")
-        XCTAssertNil(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1]),
-                     "the fourth is counted but no longer logged")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: false, nalTypes: [1], now: 0), .none)
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 0), .none,
+                       "an IDR key frame is not a key_not_idr")
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 0),
+                       .types("6,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 1], now: 0),
+                       .types("7,8,1"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6], now: 0),
+                       .types("6"))
+        XCTAssertEqual(window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 0), .none,
+                       "the fourth is counted but no longer logged")
         let line = window.snapshot(now: 1)
         XCTAssertEqual(line.keyNotIdr, 4)
         XCTAssertEqual(window.snapshot(now: 2).keyNotIdr, 0, "the next line starts at zero")
         XCTAssertEqual(window.total(now: 2).keyNotIdr, 4)
+    }
+
+    /// ISS-40 round 3: after a phone drop marker, the first IDR is the one
+    /// frame the decoder can restart on, so its arrival time is logged.
+    func testAnIdrAfterAPhoneDropMarkerLogsTheRecovery() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteDropMarker(now: 10.0)
+        XCTAssertEqual(
+            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.42),
+            .recovered(ms: 420),
+        )
+        XCTAssertEqual(
+            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 11.0),
+            .none,
+            "one marker, one recovery",
+        )
+    }
+
+    func testANonIdrKeyDoesNotCloseTheRecovery() {
+        var window = StreamStatsWindow(now: 0)
+        window.noteDropMarker(now: 10.0)
+        XCTAssertEqual(
+            window.noteKeyFrame(isKeyframe: true, nalTypes: [6, 1], now: 10.1),
+            .types("6,1"),
+        )
+        XCTAssertEqual(
+            window.noteKeyFrame(isKeyframe: true, nalTypes: [7, 8, 5], now: 10.4),
+            .recovered(ms: 400),
+        )
+    }
+
+    func testTheKeyNoteLinesAreTheDocumentedOnes() {
+        XCTAssertEqual(StreamStatsLine.keyNote(stream: 3, note: .recovered(ms: 420)),
+                       "stream 3 drop recovered after 420 ms")
+        XCTAssertEqual(StreamStatsLine.keyNote(stream: 3, note: .types("6,1")),
+                       "stream 3 key nal=6,1")
+        XCTAssertNil(StreamStatsLine.keyNote(stream: 3, note: .none))
     }
 
     /// The phone's own key_not_idr rides every `stream.stats` message; the
