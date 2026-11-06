@@ -413,26 +413,29 @@ nothing from datagrams once video no longer blocks it. Type 2 is reserved. The d
 
 - A Mac that has the strategy `auto` or `udp` and speaks it adds
   `"media":["udp"]` to `hello`. A phone that speaks it adds
-  `"media":{"udp":<port>,"pub":"<64 lowercase hex>"}` to the **founding**
-  `welcome`, only when the hello offered `udp`; a join's welcome does not
-  repeat it (if it does, the Mac verifies it is unchanged). Either side missing
-  the field means TCP only — no probe, no error.
-- The Mac answers `{"t":"media.key","pub":"<64 hex>"}` (its fresh X25519
-  public key) on the reliable path; the phone derives and answers
-  `{"t":"media.key.ok","keyId":"<8 hex>"}`. Only then does the Mac probe.
-- Both sides compute:
+  `"media":{"udp":<port>,"keyId":"<8 hex>"}` to the **founding** `welcome`,
+  only when the hello offered `udp`; a join's welcome does not repeat it (if it
+  does, the Mac verifies it is unchanged). Either side missing the field means
+  TCP only — no probe, no error.
+- Both sides already hold the session's 32-byte TLS exporter
+  (`EXPORTER-pocketdeck-pair`: the Mac from BoringSSL's keylog secret and
+  `ExporterV2`, the phone from `SSLSockets.exportKeyingMaterial` and
+  `TlsExporter`). There is no key-exchange message. Each derives:
 
 ```
-secret = X25519(own private, peer public)
-salt   = session_id || mac_pub || phone_pub || "pocketdeck-media-v1"
-c2s    = HKDF-SHA256(secret, salt, "pocketdeck-media-c2s", 32)
-s2c    = HKDF-SHA256(secret, salt, "pocketdeck-media-s2c", 32)
-keyId  = lowercase hex of SHA-256(c2s || s2c)[0..4]
+c2s = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+                  info = "pocketdeck-media-c2s", 32)
+s2c = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+                  info = "pocketdeck-media-s2c", 32)
+keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 ```
 
   The phone opens Mac→phone datagrams with `c2s` and seals phone→Mac with
-  `s2c`; the Mac does the reverse. Keys last for the session and are discarded
-  with it. No key byte is ever logged.
+  `s2c`; the Mac does the reverse. A `keyId` in `welcome` that differs from
+  the Mac's own derivation means the exporters disagree: it sends no probe
+  and stays on TCP. The exporter is the founding path's and stays with the
+  session; a path switch does not change it. Keys last for the session and
+  are discarded with it. No key byte is ever logged.
 
 ### The datagram
 

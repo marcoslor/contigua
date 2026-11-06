@@ -67,21 +67,29 @@ Adversaries considered:
 
 ### 2.3 Mitigations
 
-- **Keys are per session and ephemeral.** Each side generates a fresh X25519
-  key pair after `welcome`, exchanges the public key over the *pinned reliable
-  path*, and derives direction-split 256-bit AES-GCM keys with HKDF-SHA256.
-  Private keys are discarded when the session ends and are never written to
-  disk or to a log.
-- **Why not the TLS exporter.** The brief offers the TLS exporter; the Mac's
-  public TLS stack (swift-nio-ssl) does not expose one (`NIOSSL` surfaces
-  channel binding, not exporters), and reaching into CNIOBoringSSL's `SSL*`
-  would couple us to a private pointer. An authenticated ephemeral ECDH over
-  the same pinned TLS channel has the same trust properties for this use: no
-  new trust path, forward secrecy for recorded media, and keys bound to the
-  session id and both public keys. Android's
-  `SSLSockets.exportKeyingMaterial` exists, but both ends must use the same
-  derivation, so the portable choice is the in-band exchange. A side that
-  cannot generate X25519 omits the capability; no new dependency is added.
+- **Keys come from the session's TLS exporter, not a new exchange.** Both ends
+  already derive the 32-byte pairing exporter (`EXPORTER-pocketdeck-pair`) from
+  the TLS 1.3 exporter master secret — the Mac through BoringSSL's keylog
+  secret and `ExporterV2`, the phone through
+  `SSLSockets.exportKeyingMaterial` and `TlsExporter`. The media keys are a
+  domain-separated HKDF step on that value:
+
+```
+c2s = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+                  info = "pocketdeck-media-c2s", 32)
+s2c = HKDF-SHA256(ikm = pairingExporter, salt = session_id,
+                  info = "pocketdeck-media-s2c", 32)
+keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
+```
+
+  No `media.key` message, no X25519 generation, no new trust path and no extra
+  round trip: the exporter is already bound to the pinned TLS session and is
+  forward-secret. It is taken from the **founding** path and kept for the
+  session; a join does not change it. Using the established pairing exporter
+  with fresh labels avoids touching the proven TLS plumbing on either side,
+  and HKDF's domain separation keeps the pairing code and the media keys
+  independent. A side that cannot read the exporter simply omits the media
+  capability.
 - **AEAD on every datagram.** AES-256-GCM, a 96-bit nonce of four zero bytes
   plus the per-direction `u64` sequence, and the 18-byte outer header as
   associated data. Any authentication failure drops the packet silently.
@@ -95,8 +103,9 @@ Adversaries considered:
   `MediaReplayWindowTest` computes it from `cap_kbps`, asserts the shipped
   constant satisfies the shipped cap, and asserts 20 Mbit/s would not.
 - **Session and epoch binding.** The HKDF salt contains the session id and
-  both public keys; the outer header carries the media epoch, so a packet from
-  a previous transport epoch can never be stitched into the current picture.
+  the exporter is the session's own; the outer header carries the media epoch,
+  so a packet from a previous transport epoch can never be stitched into the
+  current picture.
 - **No amplification.** The phone answers a probe only when it authenticates,
   the reply is not larger than the probe, and replies are limited to 100 per
   second per source. An unauthenticated datagram allocates nothing.
@@ -116,40 +125,31 @@ Traffic analysis (when the person is active, how large the screen changes
 are), and a compromised endpoint. Neither is a regression against the TLS/TCP
 path, whose ciphertext also reveals timing and size.
 
-## 3. Capability and key exchange
+## 3. Capability and keys
 
 - `hello` gains an optional `"media":["udp"]`; `welcome` gains an optional
-  `"media":{"udp":<port>,"pub":"<64 hex>"}`. Either side missing the field means
+  `"media":{"udp":<port>,"keyId":"<8 hex>"}`. Either side missing the field means
   **TCP only**, with no probe, no error and no user-visible change. This is an
   optional media plane, not a second session mode: the session layer itself
   still has no reduced mode (paths.md §1.1).
 - The phone binds one UDP socket when the session starts and advertises its
-  port and X25519 public key in the founding `welcome`. The Mac sends to the
+  port and the derived `keyId` in the founding `welcome`. The Mac sends to the
   TCP path's peer address and that port; the phone replies to the source of
-  the authenticated probe, so no new address exchange or discovery exists. The exchange happens
-  once per session, on the founding path; a join's welcome does not repeat it
-  (if it does, the Mac verifies it is unchanged). The media plane resets to
-  TCP on a later path switch (PATH-35) and re-probes if the new path is
-  `lan`.
-- The Mac sends `{"t":"media.key","pub":"<64 hex>"}` on the reliable path. The
-  phone derives, replies `{"t":"media.key.ok","keyId":"<8 hex>"}`, and only
-  then does the Mac start probing. Both sides compute:
-
-```
-secret = X25519(own private, peer public)
-salt   = session_id || mac_pub || phone_pub || "pocketdeck-media-v1"
-c2s    = HKDF-SHA256(secret, salt, "pocketdeck-media-c2s", 32)
-s2c    = HKDF-SHA256(secret, salt, "pocketdeck-media-s2c", 32)
-keyId  = lowercase hex of SHA-256(c2s || s2c)[0..4]
-```
-
-  The phone uses `c2s` to open Mac→phone packets and `s2c` to seal its own;
-  the Mac does the reverse. A key id mismatch is a dropped packet, not an
-  error. A malformed or off-curve public key means no UDP and no error. Keys
-  live for the session; the media epoch changes on a transport switch but the
-  keys do not. The phone learns the Mac's source address from each
-  authenticated probe and replies there, so a Mac that roams to another
-  address keeps the media plane without a new exchange.
+  the authenticated probe, so no new address exchange or discovery exists.
+  The exporter and port are per session and come from the founding path; a
+  join's welcome does not repeat them (if it does, the Mac verifies they are
+  unchanged). The media plane resets to TCP on a later path switch (PATH-35)
+  and re-probes if the new path is `lan`.
+- Both sides derive the keys from the exporter as in §2.3 and start probing
+  as soon as the welcome is read: no key-exchange message, no extra round
+  trip. The phone uses `c2s` to open Mac→phone packets and `s2c` to seal its
+  own; the Mac does the reverse. A key id mismatch is a dropped packet, not
+  an error. Keys live for the session; the media epoch changes on a transport
+  switch but the keys do not. A `keyId` in `welcome` that differs from the
+  Mac's own derivation means the exporters disagree: no probe, stay on TCP.
+  The phone learns the Mac's source address from each authenticated probe and
+  replies there, so a Mac that roams to another address keeps the media plane
+  without a new exchange.
 
 ## 4. The datagram
 
