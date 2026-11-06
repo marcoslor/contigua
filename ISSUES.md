@@ -148,7 +148,11 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
    - **Better than iPhone:** actions both ways, countdowns that tick on the Mac with no traffic, several at once, per-app control, a short history of finished ones ("Delivered 12:40").
    - **Timers both ways come first,** as the cleanest Live Update and the two-way case: a phone timer, stopwatch or alarm becomes a live countdown with pause and stop; "Start Timer…" on the Mac sets it in the phone's own Clock app, so it rings even when the Mac sleeps.
    - **Requirements gate:** research note (Android 16/17 Live Updates, One UI's Now Bar, what disqualifies promotion), surface spec, then a visual prototype round with 3–4 real renders (menu-bar items per update; one menu-bar item with a stack; an island around the notch; a desktop widget), the person picks.
+   - **Status 2026-11-06:** research (`docs/research/live-updates.md`) and spec (`docs/specs/live.md`, LIVE-1..22) merged; prototype round done (`proto/live` 61dd193e, sheets in `.agent/proto/live/`; no widget option, an ad-hoc WidgetKit extension is unproven). Waiting on the person's pick: A (one menu-bar item per update, folding into one item at 3+; recommended), B (one item with a stack) or C (a floating pill).
 2. **Several phones at once.** An audit and a plan come first; the session layer holds one session today.
+   - **Audit and plan:** `docs/design/multi-phone.md` (merged 2026-11-06).
+   - **Slice 1, done on main (merge 82879bdd):** one `PhoneSession` per phone in a `PhoneBook`, kept alive by a claim set; one current phone as before, so nothing a person sees changes; PAIR-24..29; e2e `phones` 16/0.
+   - **Next slices wait on the person's 5 product calls:** the privacy boundary, the Deck and panel shape, background clipboard, audio and Now Playing, and one phone on two Macs.
 3. **Calls and messages.** Answer or decline, place calls, and reply to texts. Starts with the notification reply path.
 4. **Instant Hotspot.** One click in the menu bar turns on the phone's hotspot and joins it.
 5. **Handoff, Mac to phone.** The open tab or document continues on the phone.
