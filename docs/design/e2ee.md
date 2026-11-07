@@ -110,8 +110,9 @@ Evidence (spike s1-mac, two rounds):
   app's `minSdk` is 30. The call is guarded by
   `TlsExporter.exportSupported(Build.VERSION.SDK_INT)` (31+) and
   `SSLSockets.isSupportedSocket(socket)`. On API 30 the helper returns null
-  and pairing/media fail closed with `pair_exporter`; the phone never reaches
-  the missing method. It operates on the platform `SSLSocket`, so the shell-UID
+  and pairing fails closed with `pair_exporter`; the phone never reaches the
+  missing method. The planned media plane would derive no keys either, and no
+  media code exists in this merge. It operates on the platform `SSLSocket`, so the shell-UID
   server terminates each session on a **`SSLSocket`** (not `SSLEngine`) and asks
   that same socket for the 32 bytes after the handshake (§4b). No additional
   dependency — the `org.conscrypt: conscrypt-android` AAR route was rejected

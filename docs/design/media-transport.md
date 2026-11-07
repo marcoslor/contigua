@@ -121,7 +121,7 @@ keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
   fragments, so 1024 packets cover **1.17 s** — longer than the 1 s the policy
   needs to see a loss event. A future cap must raise the window:
   `requiredReplayWindow(capBps) = ceil(capBps / (1140 × 8))` at 1 s;
-  `MediaReplayWindowTest` computes it from `cap_kbps`, asserts the shipped
+  `MediaReplayWindowTest` computes it from `capBps`, asserts the shipped
   constant satisfies the shipped cap, and asserts 20 Mbit/s would not.
 - **Session and epoch binding.** The HKDF salt contains the session id and
   the exporter is the session's own; the outer header carries the media epoch,
@@ -254,7 +254,8 @@ Every transition logs one line with closed tokens and numbers, e.g.
 The strategy key is a phone debug property in this merge (`stream.transport`,
 `tcp` default, `auto`/`udp` for the bench); the Mac-side key the final design
 assumes does not exist yet, so this merge reads it only where the stream
-strategy is constructed. It is read once per session; `tcp` disables the
+strategy is constructed. It is read once per configure (open, resize, encoder
+rebuild), not per frame; `tcp` disables the
 machine, `udp` starts it in `probe` only when the current provider is `lan` (the
 bench's fake phone is `lan`); a non-`lan` current path stays `off` with no
 probe (PATH-25), and PATH-35 re-probes only after a switch to `lan`. `auto`

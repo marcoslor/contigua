@@ -2353,7 +2353,7 @@ final class ConnectionController {
         send(event, from: record)
     }
 
-    private func apply(_ result: PhoneBookEventResult) {
+    func apply(_ result: PhoneBookEventResult) {
         for action in result.actions { perform(action) }
         guard result.affectsCurrent else { return }
         if case .pairing = link, qr == nil { sheet = .code }
