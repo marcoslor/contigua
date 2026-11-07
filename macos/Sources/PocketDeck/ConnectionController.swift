@@ -2372,10 +2372,12 @@ final class ConnectionController {
         if result.currentLinkRestored { windows.linkRestored() }
         // A window that was opening during the one-shot transition follows
         // the current Link value too: the zombie-service case left it on
-        // "Not responding" while the link was already retrying.
-        if link.isDown != windows.linkIsDown {
-            if link.isDown { windows.linkLost() } else { windows.linkRestored() }
-        }
+        // "Not responding" while the link was already retrying. A pairing
+        // failure is neither down nor online: the one-shot linkLost above is
+        // the truth, and restoring here would put a live window over no session.
+        if link.isDown, !windows.linkIsDown { windows.linkLost() }
+        if link.isOnline, windows.linkIsDown { windows.linkRestored() }
+        if let down = link.windowDesiredDown { windows.reconcileLinkDown(down) }
         writePhonesReport()
     }
 
