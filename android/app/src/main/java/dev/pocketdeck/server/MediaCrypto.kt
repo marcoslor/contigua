@@ -91,6 +91,24 @@ object MediaCrypto {
         }
     }
 
+    /**
+     * Opens a datagram and only then advances [replay]: AEAD must verify
+     * before a sequence is accepted. If the window moved first, one tampered
+     * high-seq datagram would push every valid packet out of the window.
+     * Returns the plaintext inner bytes, or null when the tag fails or the
+     * sequence is a duplicate/outside the window.
+     */
+    fun openAndAccept(
+        key: ByteArray,
+        datagram: ByteArray,
+        replay: MediaReplayWindow,
+    ): ByteArray? {
+        val outer = MediaDatagram.parseOuter(datagram) ?: return null
+        val inner = open(key, datagram) ?: return null
+        if (!replay.accept(outer.seq)) return null
+        return inner
+    }
+
     /** The 96-bit nonce: 4 zero bytes then the per-direction u64 sequence. */
     fun nonce(seq: Long): ByteArray =
         ByteBuffer.allocate(NONCE_BYTES).order(ByteOrder.BIG_ENDIAN).putInt(0).putLong(seq).array()
@@ -130,7 +148,10 @@ object MediaCrypto {
     fun requiredReplayWindow(capBps: Int, seconds: Int = 1): Int {
         require(capBps > 0) { "cap" }
         val perSecond = MediaDatagram.MAX_FRAGMENT * 8L
-        return ((capBps.toLong() * seconds + perSecond - 1) / perSecond).toInt()
+        val packets = (capBps.toLong() * seconds + perSecond - 1) / perSecond
+        // MediaReplayWindow takes a multiple of 64: round the requirement up so
+        // the caller can construct it directly (20 Mbit/s needs 2193 -> 2240).
+        return ((packets + 63) / 64 * 64).toInt()
     }
 
     fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)

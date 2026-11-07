@@ -8,10 +8,18 @@ package dev.pocketdeck.server
  * ~250 ms of video) takes 25% off, with a 1 Mbps floor; each 5 s without a drop
  * gives 10% back, up to the target.
  *
- * A drop also carries the writer's recent goodput. When it is known, recovery
- * is capped at 85% of that rate (plus a 5% probe every 30 s): the old
+ * A drop also carries the writer's recent goodput. When it reads clearly below
+ * the current bitrate, recovery is capped at 85% of that rate: the old
  * time-only rule climbed back to the 8 Mbps cap on a 3 Mbit/s link every
  * ~15 s, filling the queue and breaking the reference chain on every cycle.
+ * A single sample close to the current bitrate is treated as transient; only
+ * two measured drops in a row lower the ceiling for it. The cap probes upward
+ * by 5% at most [CEILING_PROBES] times, then holds: unbounded probes walked a
+ * hard 3 Mbit/s link back into the sawtooth in about two minutes. A drop after
+ * a probe spends the rest of the budget, so one failed probe stops the walk.
+ *
+ * A reconfigure at the same target keeps the measured cap and the current
+ * bitrate; resetting them made every resize replay the drop from the top.
  *
  * Pure math: the caller passes the clock and applies the returned bitrate to the
  * encoder, so the policy is testable without a codec.
@@ -28,6 +36,8 @@ internal class QualityAdaptation(
     private var ceiling = Int.MAX_VALUE
     private var nextRecoverAtMs = Long.MAX_VALUE
     private var nextCeilingProbeAtMs = Long.MAX_VALUE
+    private var measuredDrops = 0
+    private var probesLeft = CEILING_PROBES
 
     /** The bitrate the encoder should use now. */
     val bitrate: Int get() = current
@@ -38,27 +48,43 @@ internal class QualityAdaptation(
     /** The goodput-derived recovery cap; equal to [target] until a drop measures one. */
     val ceilingBps: Int get() = ceiling
 
-    /** A new target (computed or requested): the stream restarts at it. */
+    /**
+     * A new target (computed or requested): the stream restarts at it. A
+     * reconfigure that repeats the current target is not a restart: the
+     * measured cap, the current bitrate and the recovery clock stay.
+     */
     fun setTarget(bps: Int): Int {
-        target = bps.coerceAtLeast(0)
+        val next = bps.coerceAtLeast(0)
+        if (next == target) return current
+        target = next
         current = target
         ceiling = target
         nextRecoverAtMs = Long.MAX_VALUE
         nextCeilingProbeAtMs = Long.MAX_VALUE
+        measuredDrops = 0
+        probesLeft = CEILING_PROBES
         return current
     }
 
     /**
      * The session dropped delta frames for this stream: take 25% off and, when
-     * [measuredBps] is known, lower the recovery ceiling to 85% of it.
+     * [measuredBps] reads clearly below the current bitrate (or this is the
+     * second measured drop in a row), lower the recovery ceiling to 85% of it.
      * @return the new bitrate, or null when it did not move.
      */
     fun onDrop(nowMs: Long, measuredBps: Int? = null): Int? {
         nextRecoverAtMs = nowMs + recoverIntervalMs
         if (measuredBps != null && measuredBps > 0) {
-            val cap = maxOf(floorBps, (measuredBps * GOODPUT_HEADROOM).toInt())
-            ceiling = minOf(target, cap)
-            nextCeilingProbeAtMs = nowMs + CEILING_PROBE_MS
+            measuredDrops++
+            val clearlySlower = measuredBps.toLong() * 10 < current.toLong() * 9
+            if (clearlySlower || measuredDrops >= 2) {
+                val cap = maxOf(floorBps, (measuredBps * GOODPUT_HEADROOM).toInt())
+                ceiling = minOf(target, cap)
+                // A measured drop after a probe means the probe found the
+                // limit; hold it. A fresh cap starts a new, bounded walk.
+                probesLeft = if (probesLeft < CEILING_PROBES) 0 else CEILING_PROBES
+                nextCeilingProbeAtMs = nowMs + CEILING_PROBE_MS
+            }
         }
         val floor = minOf(floorBps, target)
         val next = (current * dropFactor).toInt()
@@ -75,10 +101,15 @@ internal class QualityAdaptation(
      */
     fun maybeRecover(nowMs: Long): Int? {
         if (current >= target) return null
-        // At the measured cap, probe upward 5% every 30 s; a drop resets it.
-        if (nowMs >= nextCeilingProbeAtMs && ceiling < target) {
+        // At the measured cap, probe upward 5% at most twice; a drop resets it.
+        if (nowMs >= nextCeilingProbeAtMs && ceiling < target && probesLeft > 0) {
             ceiling = minOf(target, ceiling + maxOf(1, (ceiling * CEILING_PROBE).toInt()))
-            nextCeilingProbeAtMs = nowMs + CEILING_PROBE_MS
+            probesLeft--
+            nextCeilingProbeAtMs = if (probesLeft > 0) {
+                nowMs + CEILING_PROBE_MS
+            } else {
+                Long.MAX_VALUE
+            }
         }
         if (nowMs < nextRecoverAtMs) return null
         val next = minOf(target, ceiling, (current * recoverFactor).toInt())
@@ -96,5 +127,7 @@ internal class QualityAdaptation(
         /** A 5% probe upward at the cap, after 30 s without a drop. */
         const val CEILING_PROBE = 0.05
         const val CEILING_PROBE_MS = 30_000L
+        /** Two no-drop probes, then hold: 2.55 -> 2.81 Mbit/s, below a 3 Mbit/s link. */
+        const val CEILING_PROBES = 2
     }
 }

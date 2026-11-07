@@ -37,6 +37,7 @@ class SessionTest {
     @Volatile private var session: Session? = null
     @Volatile private var topTask: TopTask? = null
     @Volatile private var taskPresent = false
+    @Volatile private var taskChecks = 0
     private var acceptThread: Thread? = null
     private var clock = 1_000L
 
@@ -54,7 +55,8 @@ class SessionTest {
                         gates: () -> GateSettings? = { GateSettings(true, true) },
                         secureProbe: SecureProbe? = null,
                         strays: Int = 0,
-                        waitForPrevious: Boolean = true) {
+                        waitForPrevious: Boolean = true,
+                        tlsView: Session.TlsView = TlsV2Fixture.view) {
         // A test of the fast re-adopt (ISS-13) connects while the old teardown
         // still runs; every other test keeps PAIR-21's one-at-a-time rule.
         if (waitForPrevious) awaitPreviousSessionEnded()
@@ -88,7 +90,7 @@ class SessionTest {
                 store = platform,
                 callback = platform,
                 titleObserver = { topTask },
-                taskPresence = { taskPresent },
+                taskPresence = { taskPresent.also { taskChecks++ } },
                 clipboard = platform,
                 packages = null,
                 taskMove = taskMove,
@@ -101,7 +103,7 @@ class SessionTest {
                 pairCooldown = pairCooldown ?: PairCooldown(),
                 pendingQrProvider = pendingQr ?: { null },
                 pendingQrConsumer = onQrConsumed ?: {},
-                tlsView = TlsV2Fixture.view,
+                tlsView = tlsView,
                 gateProvider = gates,
                 secureProbe = secureProbe,
             )
@@ -254,11 +256,15 @@ class SessionTest {
      * (PAIR-23): without it the phone reads the Mac as one that believes it is
      * paired and answers `not_paired`.
      */
-    private fun hello(clientId: String, name: String, pairing: Boolean = false) {
+    private fun hello(clientId: String, name: String, pairing: Boolean = false,
+                      media: Boolean = false) {
         val fields = mutableMapOf<String, Any?>(
             "t" to "hello", "v" to 4, "path" to "a1b2c3d4", "clientId" to clientId, "name" to name,
         )
         if (pairing) fields["pair"] = true
+        // The planned UDP capability: a hello may offer it, but this merge has
+        // no UDP plane, so the welcome must not answer with a media field.
+        if (media) fields["media"] = listOf("udp")
         send(fields)
     }
 
@@ -386,6 +392,24 @@ class SessionTest {
         val request = platform.pairRequests.first()
         assertEquals(expectedCode, request.code)
         assertTrue(Regex("\\d{6}").matches(request.code))
+    }
+
+    @Test
+    fun aPairingWithoutAnExporterFailsClosed() {
+        connect(
+            pairDecisionTimeoutMs = 30_000,
+            tlsView = Session.TlsView(
+                peerFingerprint = { TlsV2Fixture.macFpBytes },
+                exporter = { null },
+            ),
+        )
+        hello("c2", "NewMac", pairing = true)
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97"))
+        val error = readUntil("error")
+        assertEquals("pair_exporter", error["code"])
+        assertTrue("no code may be shown", platform.pairRequests.isEmpty())
     }
 
     @Test
@@ -1167,6 +1191,18 @@ class SessionTest {
     }
 
     @Test
+    fun aDefaultSessionOffersNoMediaField() {
+        // PATH-25: the shipped default is TCP and a default session offers no
+        // media field. A hello that offers udp still gets no capability back
+        // in this merge: the UDP plane is planned (ISS-50), not implemented.
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        hello("c1", "MacBook", media = true)
+        val welcome = readUntil("welcome")
+        assertFalse("no media field in this merge", welcome.containsKey("media"))
+        assertTrue(welcome.containsKey("session"))
+    }
+
+    @Test
     fun appExitClosesWindowWithReason() {
         addAndAuthenticate()
         // The app's task is already there when the window opens, so the watch
@@ -1174,7 +1210,9 @@ class SessionTest {
         taskPresent = true
         send(mapOf("t" to "window.open", "stream" to 4, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
         readUntil("window.opened")
-        Thread.sleep(300)
+        // Wait for the watch loop's first look, so hadTask is true before the
+        // task goes away (a fixed sleep raced the poll on a slow host).
+        await { taskChecks > 0 }
         // …and the user backs out of it.
         taskPresent = false
         val closed = readUntil("window.closed")

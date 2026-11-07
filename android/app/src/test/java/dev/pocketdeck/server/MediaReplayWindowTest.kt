@@ -25,6 +25,18 @@ class MediaReplayWindowTest {
     }
 
     @Test
+    fun `the sequence space is session lifetime, not epoch lifetime`() {
+        val window = MediaReplayWindow()
+        for (seq in 1L..1004L) assertTrue(window.accept(seq))
+        // The headline is the sequence, not the media epoch: switching epochs
+        // continues the same space. A sender that restarted at 1 would reuse
+        // a nonce, and the receiver would still refuse the duplicate.
+        assertFalse("a reset to 1 after an epoch switch is a duplicate", window.accept(1))
+        assertTrue("the next sequence continues across the switch", window.accept(1005))
+        assertEquals(1005L, window.highest())
+    }
+
+    @Test
     fun `a jump past the window resets it`() {
         val window = MediaReplayWindow()
         for (seq in 1L..2048L) assertTrue(window.accept(seq))
@@ -49,9 +61,13 @@ class MediaReplayWindowTest {
     fun `1024 covers one second at 8 Mbit but not at 20 Mbit`() {
         val at8 = MediaCrypto.requiredReplayWindow(8_000_000)
         val at20 = MediaCrypto.requiredReplayWindow(20_000_000)
-        assertEquals(878, at8)
-        assertEquals(2193, at20)
+        assertEquals(896, at8)
+        assertEquals(2240, at20)
         assertTrue(at8 <= MediaReplayWindow.SHIPPED)
         assertTrue("a raised cap must raise the window", at20 > MediaReplayWindow.SHIPPED)
+        // Both are valid constructor sizes, so a future cap can use the answer
+        // without a second rounding step (B/R13).
+        MediaReplayWindow(at8)
+        MediaReplayWindow(at20)
     }
 }

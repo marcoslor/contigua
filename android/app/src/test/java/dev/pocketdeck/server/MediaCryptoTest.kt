@@ -59,6 +59,62 @@ class MediaCryptoTest {
         assertNotEquals(hex(base.c2s), hex(otherPin.c2s))
     }
 
+    private fun inner(flags: Int = MediaDatagram.FLAG_KEYFRAME) =
+        MediaDatagram.inner(MediaDatagram.Type.Video, flags, 7, 9, 123_456, 0, 1, 42)
+
+    private fun datagram(keys: MediaCrypto.Keys, seq: Long, epoch: Int = 1,
+                         flags: Int = MediaDatagram.FLAG_KEYFRAME): ByteArray {
+        val bytes = inner(flags)
+        val outer = MediaDatagram.outer(keys.keyId, epoch, seq, bytes.size + MediaDatagram.TAG)
+        return MediaCrypto.seal(keys.c2s, seq, outer, bytes)
+    }
+
+    @Test
+    fun `the same seal at the same sequence is the identical datagram`() {
+        val keys = MediaCrypto.derive(exporter(), session, pin(0x11), pin(0x22))
+        // A NACK retransmit resends the original bytes, not a re-seal with a
+        // fresh sequence: same key + same nonce yields the identical ciphertext.
+        assertArrayEquals(datagram(keys, 10), datagram(keys, 10))
+        val replay = MediaReplayWindow()
+        assertArrayEquals(inner(), MediaCrypto.openAndAccept(keys.c2s, datagram(keys, 10), replay))
+        assertNull("the duplicate is delivered once", MediaCrypto.openAndAccept(keys.c2s, datagram(keys, 10), replay))
+    }
+
+    @Test
+    fun `a retry may take a fresh sequence instead`() {
+        val keys = MediaCrypto.derive(exporter(), session, pin(0x11), pin(0x22))
+        val first = datagram(keys, 10)
+        val retry = datagram(keys, 11, flags = MediaDatagram.FLAG_RETRANSMIT)
+        assertTrue(!first.contentEquals(retry))
+        val replay = MediaReplayWindow()
+        assertArrayEquals(inner(), MediaCrypto.openAndAccept(keys.c2s, first, replay))
+        assertArrayEquals(inner(MediaDatagram.FLAG_RETRANSMIT),
+            MediaCrypto.openAndAccept(keys.c2s, retry, replay))
+    }
+
+    @Test
+    fun `a tampered high sequence never moves the replay window`() {
+        val keys = MediaCrypto.derive(exporter(), session, pin(0x11), pin(0x22))
+        val replay = MediaReplayWindow()
+        val tampered = datagram(keys, 5000).copyOf().also { it[20] = (it[20] + 1).toByte() }
+        assertNull("AEAD fails", MediaCrypto.openAndAccept(keys.c2s, tampered, replay))
+        assertEquals("the window did not advance", 0L, replay.highest())
+        // A valid low sequence is still accepted; had the window moved first,
+        // seq 1 would be outside the 1024-packet window.
+        assertArrayEquals(inner(), MediaCrypto.openAndAccept(keys.c2s, datagram(keys, 1), replay))
+        assertEquals(1L, replay.highest())
+    }
+
+    @Test
+    fun `a valid packet is accepted once`() {
+        val keys = MediaCrypto.derive(exporter(), session, pin(0x11), pin(0x22))
+        val replay = MediaReplayWindow()
+        val at10 = datagram(keys, 10)
+        assertArrayEquals(inner(), MediaCrypto.openAndAccept(keys.c2s, at10, replay))
+        assertNull(MediaCrypto.openAndAccept(keys.c2s, at10, replay))
+        assertArrayEquals(inner(), MediaCrypto.openAndAccept(keys.c2s, datagram(keys, 11), replay))
+    }
+
     @Test
     fun `seal and open round-trip, and every tamper is refused`() {
         val keys = MediaCrypto.derive(exporter(), session, pin(0x11), pin(0x22))
