@@ -94,6 +94,10 @@ final class WindowManager {
     private var linkOfflineTimer: Timer?
     var linkIsDown: Bool { linkPhase != .up }
 
+    /// The one drop time every window counts from. A window opened mid-outage
+    /// must not restart the 15 s: it reads this, not its own open time (R5).
+    var linkDownAt: TimeInterval? { linkClock.downAt }
+
     /// A window of an app was refused because the phone is at its cap: the
     /// Deck's banner carries the same sentence the New item would (WIN-32).
     var onTooManyWindows: ((String) -> Void)?
@@ -129,6 +133,29 @@ final class WindowManager {
         linkClock.linkRestored()
         publishLinkPhase()
         for controller in allControllers() { controller.setLinkDown(false) }
+    }
+
+    /// Reconcile every window against the Link value, not the manager's phase:
+    /// a window can miss the one-shot transition (it opened during the drop,
+    /// or a pairing failure arrived between the edge and this call). The
+    /// caller decides the desired state; nil leaves windows untouched.
+    func reconcileLinkDown(_ down: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let time = down ? (linkClock.downAt ?? now) : now
+        for controller in allControllers() where controller.isLinkDown != down {
+            if down {
+                controller.setLinkDown(true, at: time)
+            } else {
+                controller.setLinkDown(false, at: time)
+            }
+        }
+    }
+
+    /// A window opening while the link is down counts from the shared drop,
+    /// not from its own opening, so its 1 s/15 s agree with the panel (R5).
+    func markLinkDown(_ controller: StreamWindowController) {
+        guard let downAt = linkClock.downAt else { return }
+        controller.setLinkDown(true, at: downAt)
     }
 
     private func linkPhaseTicked() {
@@ -422,7 +449,7 @@ final class WindowManager {
         store(controller, stream: stream)
         // A window opened while a drop runs or its outcome is up shows the pill.
         controller.setDropPill(dropPill)
-        if linkIsDown { controller.setLinkDown(true) }
+        markLinkDown(controller)
         controller.setDropFailure(dropFailure)
         controller.present()
         controller.sendOpen()
@@ -492,7 +519,7 @@ final class WindowManager {
         }
         store(controller, stream: stream)
         controller.setDropPill(dropPill)
-        if linkIsDown { controller.setLinkDown(true) }
+        markLinkDown(controller)
         controller.present()
         controller.sendOpen(newInstance: true)
         noteFront(stream)
@@ -541,7 +568,7 @@ final class WindowManager {
         }
         store(adopted, stream: stream)
         adopted.setDropPill(dropPill)
-        if linkIsDown { adopted.setLinkDown(true) }
+        markLinkDown(adopted)
         adopted.setTaskLabel(label)
         adopted.present()
         adopted.sendAdopt(taskId: taskId)

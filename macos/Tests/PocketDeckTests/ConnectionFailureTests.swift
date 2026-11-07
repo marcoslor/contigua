@@ -23,8 +23,8 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testEveryPhoneErrorCodeInTheProtocolHasAMessage() {
-        for code in ["busy", "bad_pin", "pair_denied", "pair_timeout", "version", "protocol", "no_stream",
-                     "launch_failed", "connections_off", "pairing_off"] {
+        for code in ["busy", "bad_pin", "pair_denied", "pair_timeout", "pair_exporter", "version",
+                     "protocol", "no_stream", "launch_failed", "connections_off", "pairing_off"] {
             XCTAssertNotNil(ConnectionFailure.message(for: code), code)
         }
     }
@@ -39,6 +39,8 @@ final class ConnectionFailureTests: XCTestCase {
     func testPairingTimeoutSaysWhatHappened() {
         XCTAssertEqual(ConnectionFailure.message(for: "pair_timeout"),
                        "Nobody tapped Allow on the phone in time. Try again.")
+        XCTAssertEqual(ConnectionFailure.message(for: "pair_exporter"),
+                       "This phone's Android version can't make a secure pairing code. Update Android or PocketDeck.")
     }
 
     func testIdentityMismatchExplainsTheRememberedAddress() {
@@ -63,6 +65,7 @@ final class ConnectionFailureTests: XCTestCase {
     func testPairingFailuresDoNotRetryBecauseEveryRetryPromptsThePhone() {
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_denied"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_timeout"))
+        XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_exporter"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("version"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pin-mismatch"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("bad_pin"))
