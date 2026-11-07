@@ -1,5 +1,14 @@
 # Media transport — UDP datagrams (P3)
 
+> **PLANNED / NOT IMPLEMENTED IN THIS MERGE.** This document specifies the
+> P3.2/P3.3 UDP media plane. The P0/P1/P2 merge carries no UDP capability,
+> socket, sender, assembler, probe/switch machine, feedback/controller,
+> NACK/parity or fault arm. Only the pure Android primitives exist:
+> `MediaDatagramTest`, `MediaCryptoTest`, `MediaReplayWindowTest` and
+> `MediaDefaultsTest`. Every other test name below is planned. `ISS-50` lists
+> what remains, and `epic/pmaxx` is kept for it; main carries this
+> specification only, marked planned.
+
 Design for the datagram half of P3. It extends the session layer in
 [paths.md](paths.md); it does not fork it. The requirements are
 `docs/specs/transport.md` (`PATH-25`…`PATH-35`), the wire is
@@ -88,7 +97,7 @@ keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
   the phone's `TlsView`). The context therefore binds the session id, both
   identities and the exporter label, not just the session id: two sessions —
   or the same session id with different pins — produce unrelated keys, and
-  `MediaKeyTest` proves it. There is no exchange message and no extra round
+  `MediaCryptoTest` proves it. There is no exchange message and no extra round
   trip; the exporter is already bound to the pinned TLS session and is
   forward-secret. It is taken from the **founding** path and kept for the
   session; a join does not change it. HKDF's domain separation keeps the
@@ -97,15 +106,17 @@ keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 - **The master secret never leaves memory.** `KeyLogCapture` keeps it in memory
   per connection; only the derived 32-byte pairing exporter is used for media,
   the media key buffers are zeroed after derivation, and nothing is written to
-  a file, the environment (no `SSLKEYLOGFILE`) or the log. K2
-  `MediaKeyHygieneTests` asserts the environment/file/log invariants and the
-  zeroing; the only exporter line ever logged is the existing SHA-256.
+  a file, the environment (no `SSLKEYLOGFILE`) or the log. The planned K2 test
+  `MediaKeyHygieneTests` (planned) will assert the environment/file/log invariants and the zeroing; the only exporter line ever logged is the existing SHA-256.
 - **AEAD on every datagram.** AES-256-GCM, a 96-bit nonce of four zero bytes
   plus the per-direction `u64` sequence, and the 18-byte outer header as
-  associated data. Any authentication failure drops the packet silently.
-- **Replay window.** One `u64` sequence space per direction (all packet types
-  share it), a **1024-packet** sliding window, and a duplicate/old packet is
-  dropped before it can reach the assembler. The window is sized for the
+  associated data. Any authentication failure drops the packet silently. The
+  tag is verified **before** the replay window advances, so one tampered
+  high-sequence datagram cannot move `highest` and make valid packets look old.
+- **Replay window.** One `u64` sequence space per direction for the whole
+  session (all packet types share it; an epoch switch never resets it), a
+  **1024-packet** sliding window, and a duplicate/old packet is dropped before
+  it can reach the assembler. The window is sized for the
   shipped 8 Mbit/s cap: 8e6 / (1140 bytes × 8) = **877 packets/s** at full
   fragments, so 1024 packets cover **1.17 s** — longer than the 1 s the policy
   needs to see a loss event. A future cap must raise the window:
@@ -142,8 +153,10 @@ path, whose ciphertext also reveals timing and size.
   **TCP only**, with no probe, no error and no user-visible change. This is an
   optional media plane, not a second session mode: the session layer itself
   still has no reduced mode (paths.md §1.1).
-- The phone binds one UDP socket when the session starts and advertises its
-  port and the derived `keyId` in the founding `welcome`. The Mac sends to the
+- The phone binds one UDP socket when the founding `hello` offers
+  `"media":["udp"]` and the current provider is `lan`; a default session (no
+  field) binds none and stays TCP. It advertises its port and the derived
+  `keyId` in the founding `welcome`. The Mac sends to the
   TCP path's peer address and that port; the phone replies to the source of
   the authenticated probe, so no new address exchange or discovery exists.
   The exporter and port are per session and come from the founding path; a
@@ -155,7 +168,9 @@ path, whose ciphertext also reveals timing and size.
   trip. The phone uses `c2s` to open Mac→phone packets and `s2c` to seal its
   own; the Mac does the reverse. A key id mismatch is a dropped packet, not
   an error. Keys live for the session; the media epoch changes on a transport
-  switch but the keys do not. A `keyId` in `welcome` that differs from the
+  switch but the keys do not. The per-direction sequence is session-lifetime
+  too: it never resets on an epoch switch (the nonce is the sequence alone, so
+  a reset would reuse a nonce). A `keyId` in `welcome` that differs from the
   Mac's own derivation means the exporters disagree: no probe, stay on TCP.
   The phone learns the Mac's source address from each authenticated probe and
   replies there, so a Mac that roams to another address keeps the media plane
@@ -174,7 +189,8 @@ outer (plaintext, AEAD associated data)
   u8  version = 1
   u32 keyId
   u16 epoch           // first UDP media epoch is 1, +1 on every switch
-  u64 seq             // per direction, starts at 1, all packet types
+  u64 seq             // per direction for the whole session: starts at 1,
+                      // never resets on an epoch switch, all packet types
   u16 ciphertextLen   // inner header + payload + 16-byte tag
 ciphertext (AES-256-GCM)
   u8  type            // 1 video, 2 audio (reserved), 3 feedback, 4 nack, 5 probe, 6 probe reply, 7 parity
@@ -235,13 +251,19 @@ Every transition logs one line with closed tokens and numbers, e.g.
 `media: tcp -> probe`, `media: probe -> tcp (loss=0.30 rtt=41)`,
 `media: udp -> fallback (owd_rel_p95=280)`. No address, key or payload.
 
-The `stream.transport` strategy key (`tcp` default, `auto`/`udp` for the
-bench) is read once per session; `tcp` disables the machine, `udp` starts it in
-`probe` even on a non-`lan` provider (the bench's fake phone), and `auto` is
-the table above. The shipped default stays `tcp` through P3; flipping it to
+The strategy key is a phone debug property in this merge (`stream.transport`,
+`tcp` default, `auto`/`udp` for the bench); the Mac-side key the final design
+assumes does not exist yet, so this merge reads it only where the stream
+strategy is constructed. It is read once per session; `tcp` disables the
+machine, `udp` starts it in `probe` only when the current provider is `lan` (the
+bench's fake phone is `lan`); a non-`lan` current path stays `off` with no
+probe (PATH-25), and PATH-35 re-probes only after a switch to `lan`. `auto`
+is the table above. The shipped default stays `tcp` through P3; flipping it to
 `auto` is P5's merge decision, after P4's blind test. `MediaDefaultsTest`
-asserts the shipped strategy value is `tcp` and that a default session offers
-no `media` field and sends no probe — the default is a test, not a comment.
+asserts only the phone's shipped strategy value is `tcp`; the absence of a
+`media` field is pinned by `SessionTest.aDefaultSessionOffersNoMediaField`.
+There is no probe to send in this merge because no sender exists. The Mac-side
+`stream.transport` switch is planned with the plane.
 
 ## 6. The switch
 
@@ -275,7 +297,9 @@ Make-before-break, one keyframe, no replay:
   JSON.
 - **NACK** (receiver→sender): up to 32 missing sequence numbers for frames
   whose deadline has not passed, at most 200 per second. The sender resends a
-  named fragment once if it still holds it, flagged `retransmit`. A sent
+  named fragment once if it still holds it, flagged `retransmit`; the resend is
+  the identical datagram (same sequence and ciphertext) or takes a fresh
+  sequence, never a re-seal under the old sequence. A sent
   frame's fragments are held for **200 ms** (a long round trip) and then
   freed; a later NACK is ignored. On a LAN one retransmit costs about one
   frame interval; that is cheaper than FEC.
@@ -310,7 +334,7 @@ state, so both ends run the same vectors in tests.
   for a stream while its media runs on UDP; the controller is the only writer
   of that stream's bitrate.
 - **No feedback.** A missing feedback window holds the target (no
-  increase); two missing windows (2 s) halve it once and log it.
+  increase); two missing windows (200 ms) halve it once and log it.
 - **Pacing.** Datagrams leave at the controller's target rate through a token
   bucket with a burst of at most two frames' bytes; a keyframe's excess is
   spread over its bits, never dumped as a burst. If the bucket is empty the
@@ -362,8 +386,8 @@ unit a browser client carries.
   (a fixed exporter/context, and two different sessions give unrelated keys),
   the policy table (every state × event), the controller vectors (overuse,
   loss, recovery, floors), NACK/parity.
-- K2 `MediaKeyHygieneTests`: no `SSLKEYLOGFILE`, no disk write, no secret in a
-  log, and the key buffers are zeroed.
+- planned K2 `MediaKeyHygieneTests`: no `SSLKEYLOGFILE`, no disk write, no
+  secret in a log, and the key buffers are zeroed. It does not exist yet.
 - K2: the Mac assembler hands the existing dispatcher an exact `VIDEO_FRAME`;
   a malformed/tampered datagram changes nothing; stats fields.
 - fakephone: a UDP media socket (the existing fake phone grows one), so the
