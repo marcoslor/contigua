@@ -325,7 +325,7 @@ interface DisplayLayer {
      * The session dropped delta frames for this stream because its backlog
      * exceeded the protocol's budget; the encoder should lower its bitrate.
      */
-    fun onBackpressure(stream: Int) {}
+    fun onBackpressure(stream: Int, measuredBps: Int? = null) {}
 
     /**
      * Q1 (`overflow=suspend`): stop (true) or resume (false) taking frames at

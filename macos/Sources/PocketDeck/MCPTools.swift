@@ -33,6 +33,9 @@ struct MCPToolHost {
                 return try typeText(window: window, text: text)
             case .pressKey(let window, let key):
                 return try pressKey(window: window, key: key)
+            case .inputProbe(let window, let x, let y, let width, let height):
+                return try await inputProbe(window: window, x: x, y: y,
+                                            width: width, height: height)
             case .closeWindow(let window):
                 return try closeWindow(window)
             case .sendLink(let url):
@@ -225,8 +228,42 @@ struct MCPToolHost {
         return .text(try json(["ok": true, "window": id, "key": key.rawValue]))
     }
 
-    private func send(_ command: InputMapper.Command, to window: StreamWindowController) {
-        let session = controller.windows.session
+    /// P0 (pmaxx): the tap goes through the same session path a click does;
+    /// the probe's private decoder watches the stream's frames and reports the
+    /// first one that changed. `changed_ms` is from the send to that frame's
+    /// decode; the display layer shows it on the next refresh (≤ 16.7 ms at
+    /// 60 Hz), so the tool's number is the input-to-picture part of
+    /// input-to-photon.
+    private func inputProbe(window id: Int, x: Double, y: Double,
+                            width: Double?, height: Double?) async throws -> MCPToolResult {
+        let window = try requireInputWindow(id)
+        let region: ProbeRegion = {
+            if let width, let height {
+                return ProbeRegion.around(x: x, y: y, width: width, height: height)
+            }
+            return .whole
+        }()
+        let armed = await window.videoView.beginInputProbe(region: region)
+        guard armed else {
+            await window.videoView.endInputProbe()
+            var body: [String: Any] = ["ok": true, "window": id, "frames": 0]
+            body["sent_ms"] = NSNull()
+            body["changed_ms"] = NSNull()
+            return .text(try json(body))
+        }
+        let sent = ProcessInfo.processInfo.systemUptime * 1000
+        send(.touch(TouchEvent(action: .down, nx: Float(x), ny: Float(y))), to: window)
+        send(.touch(TouchEvent(action: .up, nx: Float(x), ny: Float(y))), to: window)
+        window.videoView.inputProbeTapSent(atMs: sent)
+        let outcome = await window.videoView.awaitInputProbe(timeout: 2.0)
+        await window.videoView.endInputProbe()
+        var body: [String: Any] = ["ok": true, "window": id, "frames": outcome.frames]
+        body["sent_ms"] = sent
+        body["changed_ms"] = outcome.changedMs.map { $0 as Any } ?? NSNull()
+        return .text(try json(body))
+    }
+
+    private func send(_ command: InputMapper.Command, to window: StreamWindowController) {        let session = controller.windows.session
         switch command {
         case .touch(let event): session.touch(event, stream: window.stream)
         case .key(let event): session.key(event, stream: window.stream)

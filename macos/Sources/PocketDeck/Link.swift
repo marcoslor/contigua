@@ -81,6 +81,26 @@ enum Link: Equatable {
         }
     }
 
+    /// True while the window overlays should show a down state. A window can
+    /// miss the one-shot online -> offline transition while it is opening, so
+    /// the controller reconciles against this value, not only the edge.
+    var isDown: Bool {
+        switch self {
+        case .reconnecting, .offline: return true
+        case .idle, .connecting, .online, .needsPairing, .pairing: return false
+        }
+    }
+
+    /// The window state this Link demands: down while retrying, up only when a
+    /// session is online, unchanged for pairing/idle/first-connect. A pairing
+    /// failure must not restore windows: `needsPairing` is not "down", but it
+    /// is no live session either (the one-shot linkLost already ran).
+    var windowDesiredDown: Bool? {
+        if isDown { return true }
+        if isOnline { return false }
+        return nil
+    }
+
     var isOnline: Bool {
         if case .online = self { return true }
         return false
@@ -329,7 +349,8 @@ struct LinkMachine {
             case "pair_denied": link = .pairing(phone, .denied)
             case "pair_cooldown": link = .pairing(phone, .coolingDown)
             case "pair_timeout": link = .pairing(phone, .timedOut)
-            case "connections_off", "pairing_off": link = .pairing(phone, .refused(reason))
+            case "connections_off", "pairing_off", "pair_exporter":
+                link = .pairing(phone, .refused(reason))
             default: link = .pairing(phone, .unreachable)
             }
             return []

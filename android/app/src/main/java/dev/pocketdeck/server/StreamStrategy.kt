@@ -23,11 +23,21 @@ data class StreamStrategy(
     val stallEveryMs: Int = DEFAULT_STALL_EVERY_MS,
     /** The arm's codec request; the choice may still fall back to AVC. */
     val codec: VideoCodec = VideoCodec.Avc,
+    /** P1: the encoder's frame rate and operating-rate hint, 30–120. */
+    val fps: Int = DEFAULT_FPS,
+    /** P1: the virtual display's requested refresh rate; 0 is off. */
+    val vdRate: Int = 0,
+    /** P2: ask a supporting codec for low-latency mode. */
+    val lowLatency: Boolean = false,
+    /** P3: the media plane. `tcp` is the shipped default until P5. */
+    val transport: Transport = Transport.Tcp,
 ) {
 
     enum class Overflow { Drop, Suspend }
 
     enum class RateControl { Vbr, Cbr }
+
+    enum class Transport(val token: String) { Tcp("tcp"), Auto("auto"), Udp("udp") }
 
     val capBps: Int get() = capKbps * 1000
 
@@ -71,6 +81,14 @@ data class StreamStrategy(
                 "ir=$intraRefreshFrames unsupported"
             }
         }
+        if (fps != DEFAULT_FPS) parts += "fps=$fps"
+        if (vdRate > 0) {
+            parts += if (applied.vdRate) "vd_rate=$vdRate" else "vd_rate=$vdRate unsupported"
+        }
+        if (lowLatency) {
+            parts += if (applied.lowLatency) "low_latency=on" else "low_latency=on unsupported"
+        }
+        if (transport != Transport.Tcp) parts += "transport=${transport.token}"
         if (queueMs != DEFAULT_QUEUE_MS) parts += "queue_ms=$queueMs"
         if (overflow == Overflow.Suspend) parts += "overflow=suspend"
         if (refine) parts += "refine=on"
@@ -91,6 +109,9 @@ data class StreamStrategy(
         val rateControl: RateControl = RateControl.Vbr,
         val intraRefreshFrames: Int = 0,
         val codec: VideoCodec = VideoCodec.Avc,
+        /** The builder's refresh-rate setter exists and was used. */
+        val vdRate: Boolean = false,
+        val lowLatency: Boolean = false,
     )
 
     companion object {
@@ -102,6 +123,11 @@ data class StreamStrategy(
         const val DEFAULT_QUEUE_DURATION_US = 250_000L
         const val MIN_BITRATE = 500_000
         const val DEFAULT_STALL_EVERY_MS = 5_000
+        const val DEFAULT_FPS = 60
+        const val MIN_FPS = 30
+        const val MAX_FPS = 120
+        const val MIN_VD_RATE = 60
+        const val MAX_VD_RATE = 120
 
         val DEFAULT = StreamStrategy()
 
@@ -127,6 +153,14 @@ data class StreamStrategy(
                 stallEveryMs = raw("stall_every_ms")
                     .parseInt(DEFAULT_STALL_EVERY_MS, 1_000..30_000),
                 codec = if (raw("codec") == VideoCodec.Hevc.token) VideoCodec.Hevc else VideoCodec.Avc,
+                fps = raw("fps").parseInt(DEFAULT_FPS, MIN_FPS..MAX_FPS),
+                vdRate = raw("vd_rate").parseVdRate(),
+                lowLatency = raw("low_latency") == "on",
+                transport = when (raw("transport")) {
+                    "auto" -> Transport.Auto
+                    "udp" -> Transport.Udp
+                    else -> Transport.Tcp
+                },
             )
         }
 
@@ -152,4 +186,11 @@ private fun String?.parseStallMs(): Int {
     val value = this?.toIntOrNull() ?: return 0
     if (value <= 0) return 0
     return value.coerceIn(50, 2_000)
+}
+
+/** `vd_rate`: 0 (and junk) is off; any other value clamps to 60–120 Hz. */
+private fun String?.parseVdRate(): Int {
+    val value = this?.toIntOrNull() ?: return 0
+    if (value <= 0) return 0
+    return value.coerceIn(StreamStrategy.MIN_VD_RATE, StreamStrategy.MAX_VD_RATE)
 }

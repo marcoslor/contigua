@@ -285,7 +285,8 @@ internal class WindowStream(
         startDrain(next.codec, next.kind)
         hideIme(displayIdValue)
         val requested = flags()
-        log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}")
+        log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}" +
+            (DisplayRate.displayToken(created.rate)?.let { " $it" } ?: ""))
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
         log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
         // What a repeat is measured against is the request as it was asked, not
@@ -493,11 +494,17 @@ internal class WindowStream(
     /**
      * The session dropped delta frames for this stream: take 25% off the bitrate
      * (floor 1 Mbps). Recovery happens in the drain loop, 10% every 5 s without
-     * a drop, back up to the target.
+     * a drop, up to the target. [measuredBps] is the writer's recent goodput; it
+     * caps recovery at 85% of what the link actually carried, so a slow TCP
+     * fallback cannot climb back to the encoder cap and refill the queue.
      */
-    fun onBackpressure() {
-        val bps = quality.onDrop(SystemClock.elapsedRealtime()) ?: return
+    fun onBackpressure(measuredBps: Int? = null) {
+        val bps = quality.onDrop(SystemClock.elapsedRealtime(), measuredBps) ?: return
         log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%)")
+        if (measuredBps != null) {
+            log("stream $stream quality: recovery cap ${mbps(quality.ceilingBps)} " +
+                "(measured ${mbps(measuredBps)})")
+        }
         applyBitrate()
     }
 
@@ -786,6 +793,12 @@ internal class WindowStream(
             ?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true
         val intraRefreshSupported = caps
             ?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_IntraRefresh) == true
+        val lowLatencySupported = caps
+            ?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true
+        // The strategy line is written before the display exists, so the
+        // builder method's presence is the fallback signal; an invocation that
+        // still throws is named by createDisplay's classic line.
+        val vdRateSupported = strategy.vdRate <= 0 || refreshRateMethodExists()
         // Per-frame average QP rides each output buffer's format, but only
         // when the codec declares the feature; asking elsewhere fails configure.
         encodingStatistics = caps
@@ -800,6 +813,7 @@ internal class WindowStream(
             repeatPreviousFrame = !StreamDebug.ignoreRepeatFrame(),
             maxFps = maxFps,
             encodingStatistics = encodingStatistics,
+            lowLatencySupported = lowLatencySupported,
             codec = kind,
         )
         val format = plan.format
@@ -814,7 +828,7 @@ internal class WindowStream(
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
         synchronized(refineLock) { refineModel = RefineModel() }
-        log("stream $stream strategy: ${strategy.describe(plan.applied)}")
+        log("stream $stream strategy: ${strategy.describe(plan.applied.copy(vdRate = vdRateSupported))}")
     }
 
     private fun flags(): Int {
@@ -843,7 +857,8 @@ internal class WindowStream(
      * with the display's group: a fallback that loses flags would show up here.
      */
     private fun createDisplay(w: Int, h: Int, dpi: Int, surface: Surface): Created {
-        val config = buildConfig(w, h, dpi, surface)
+        val rate = DisplayRate.requested(strategy.vdRate, refreshRateMethodExists())
+        val config = buildConfig(w, h, dpi, surface, rate)
         if (config != null) {
             val dm = displayManager()
             val method = dm.javaClass.methods.firstOrNull {
@@ -855,17 +870,29 @@ internal class WindowStream(
                 val args = arrayOfNulls<Any?>(method.parameterTypes.size)
                 args[0] = config
                 runCatching { method.invoke(dm, *args) as? VirtualDisplay }.getOrNull()?.let {
-                    return Created(it, "VirtualDisplayConfig")
+                    return Created(it, "VirtualDisplayConfig", rate)
                 }
             }
         }
         val classic = displayManager().createVirtualDisplay("pocketdeck-$stream", w, h, dpi, surface, flags())
-        return Created(classic, "classic")
+        DisplayRate.classicUnsupported(strategy.vdRate)?.let { log("stream $stream $it") }
+        return Created(classic, "classic", null)
     }
 
-    private class Created(val display: VirtualDisplay, val path: String)
+    private class Created(
+        val display: VirtualDisplay,
+        val path: String,
+        /** The refresh rate the builder was given, or null when not requested. */
+        val rate: Float? = null,
+    )
 
-    private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface): Any? = runCatching {
+    /** API 36's `VirtualDisplayConfig.Builder.setRequestedRefreshRate`, if this build has it. */
+    private fun refreshRateMethodExists(): Boolean = runCatching {
+        Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
+            .getMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType)
+    }.isSuccess
+
+    private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface, rate: Float?): Any? = runCatching {
         val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
         val ctor = builderClass.getDeclaredConstructor(
             String::class.java,
@@ -877,6 +904,10 @@ internal class WindowStream(
         val builder = ctor.newInstance("pocketdeck-$stream", w, h, dpi)
         builderClass.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags())
         builderClass.getMethod("setSurface", Surface::class.java).invoke(builder, surface)
+        if (rate != null) {
+            builderClass.getMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType)
+                .invoke(builder, rate)
+        }
         if (Build.VERSION.SDK_INT >= 36) {
             runCatching {
                 builderClass.getMethod("setIgnoreActivitySizeRestrictions", Boolean::class.javaPrimitiveType)
@@ -1246,8 +1277,8 @@ internal class AndroidDisplayLayer(
         get(stream)?.setQuality(bitrate, maxFps)
     }
 
-    override fun onBackpressure(stream: Int) {
-        get(stream)?.onBackpressure()
+    override fun onBackpressure(stream: Int, measuredBps: Int?) {
+        get(stream)?.onBackpressure(measuredBps)
     }
 
     override fun setEncoderSuspend(stream: Int, suspended: Boolean) {

@@ -66,6 +66,32 @@ final class LiveTextInputGateTests: XCTestCase {
         XCTAssertTrue(commands.isEmpty)
     }
 
+    /// R6 follow-up: the frozen frame must not kill the bar's keys or the
+    /// paste pill's Esc. Both are local UI and run before the phone gate.
+    func testBarAndOverlayKeysSurviveTheFrozenFrame() {
+        suspended = true
+        var barKeys = 0
+        var barUp = 0
+        var overlayKeys = 0
+        mapper.barKey = { _ in barKeys += 1; return true }
+        mapper.barKeyUp = { _ in barUp += 1; return true }
+        mapper.overlayKey = { _ in overlayKeys += 1; return true }
+
+        mapper.keyDown(keyEvent("x", code: 7))
+        mapper.keyUp(keyEvent("x", code: 7))
+        XCTAssertEqual(barKeys, 1, "the bar must see its key while frozen")
+        XCTAssertEqual(barUp, 1, "the bar must see the release too")
+        XCTAssertEqual(overlayKeys, 0, "the bar consumed it first")
+        XCTAssertTrue(commands.isEmpty)
+
+        // The bar declines Esc; the paste pill takes it before Live Text.
+        mapper.barKey = { _ in false }
+        mapper.keyDown(keyEvent("\u{1b}", code: InputMapper.keyCodeEscape))
+        XCTAssertEqual(overlayKeys, 1, "the paste pill's Esc must still dismiss")
+        XCTAssertEqual(escapes, 0, "the overlay consumed Esc before the mode")
+        XCTAssertTrue(commands.isEmpty)
+    }
+
     func testTrackpadGesturesAreDropped() {
         suspended = true
         let fingers = [TrackpadFinger(id: 1, x: 0.4, y: 0.5), TrackpadFinger(id: 2, x: 0.6, y: 0.5)]

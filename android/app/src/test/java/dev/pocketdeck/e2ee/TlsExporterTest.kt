@@ -1,6 +1,8 @@
 package dev.pocketdeck.e2ee
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.security.MessageDigest
 
@@ -14,6 +16,14 @@ class TlsExporterTest {
         val labeled = MessageDigest.getInstance("SHA-256").digest(labeledInput)
         assertEquals("68544181667677211b2823d71b530f48800be1ab6e762a4612d2d4fe85312d80",
             TlsExporter.toHex(TlsExporter.derive(labeled)))
+    }
+
+    @Test
+    fun thePlatformExporterNeedsApi31() {
+        assertFalse(TlsExporter.exportSupported(30))
+        assertFalse(TlsExporter.exportSupported(29))
+        assertTrue(TlsExporter.exportSupported(31))
+        assertTrue(TlsExporter.exportSupported(36))
     }
 
     @Test

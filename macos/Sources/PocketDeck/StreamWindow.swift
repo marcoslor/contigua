@@ -85,10 +85,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var isOpening: Bool { showsOpeningCover && opening.isUp }
 
     /// What freezes the phone-side actions: Live Text (the frame is frozen),
-    /// a stalled picture, the opening cover, or, in the phone window, a cover
-    /// over the mirror. One predicate for the shortcuts, the bar's buttons,
-    /// the Navigate menu and the input mapper.
-    var frozen: Bool { liveText.isActive || isStalled || isOpening }
+    /// a stalled picture, the opening cover, a dropped link (WIN-16/PATH-17:
+    /// input is dropped, not queued), or, in the phone window, a cover over
+    /// the mirror. One predicate for the shortcuts, the bar's buttons, the
+    /// Navigate menu and the input mapper.
+    var frozen: Bool { liveText.isActive || isStalled || isOpening || isLinkDown }
 
     /// The mirror's bar from the keyboard (MIRROR-13): picture ↔ bar(index).
     /// One machine decides, one place applies it, and every transition is
@@ -132,14 +133,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The link is down: the bar's phone-side controls are dimmed, with the
     /// reason, so a click cannot vanish into a dead session (M3, item 8).
     private(set) var phoneControlsOffline = false
-    private var linkIsDown: Bool { picture.isLinkDown }
+    /// Read by the manager's per-window reconcile, so one window that missed
+    /// the broadcast is fixed without touching the others.
+    var isLinkDown: Bool { picture.isLinkDown }
 
     /// The watchdog's rule: a live session, the window on screen, and a picture
     /// that is wanted (not paused, not Live Text, no cover). While it is false
     /// the clock is idle and any stall is dropped: a covered or paused picture
     /// has no "live" claim to be wrong about.
     var expectsFrames: Bool {
-        guard !isPaused, !liveText.isActive, !linkIsDown, !isOpening,
+        guard !isPaused, !liveText.isActive, !isLinkDown, !isOpening,
               let window, window.isVisible, !window.isMiniaturized,
               !isWindowOccluded else { return false }
         return true
@@ -458,12 +461,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// The stream's first frame arrived (WindowManager); once per window.
     func noteFirstFrame() {
-        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: now()) else { return }
+        let at = now()
+        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: at) else { return }
         openingTimer?.invalidate()
         openingTimer = nil
         openingPhase = nil
         showOpeningPhase()
-        Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        let ms = max(0, at - opening.startedAt) * 1000
+        Log.video.notice("stream \(self.stream, privacy: .public): first frame \(String(format: "%.1f", ms), privacy: .public) ms after open, opening cover off")
         // The extension view builds its backdrop once the stream it mirrors has
         // a frame: turn its radius up now that it exists (WIN-40). This is also
         // where a macOS without the filter gets its one fact line.
@@ -830,6 +835,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The stall was said once for this window: a phone that never answers must
     /// not fill the log with the same line.
     private var resizeStallLogged = false
+    /// When the in-flight resize request went out, for the ack's own latency.
+    private var resizeSentAt: TimeInterval?
 
     private func resizeRequest() -> ResizeRequest {
         let pixels = displayPixels()
@@ -870,6 +877,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         for action in actions {
             switch action {
             case .send(let request):
+                resizeSentAt = now()
                 session.resizeWindow(stream: stream, width: request.w, height: request.h,
                                      dpi: Double(request.dpi))
                 armSettleTimer()
@@ -879,6 +887,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             settleTimer?.invalidate()
             settleTimer = nil
         }
+    }
+
+    /// The ms from the resize request this ack settles to the ack; nil when
+    /// none is in flight. The ack's log line reads it once.
+    func takeResizeAckMs() -> Double? {
+        guard let sent = resizeSentAt else { return nil }
+        resizeSentAt = nil
+        return max(0, now() - sent) * 1000
     }
 
     private func armSettleTimer() {
@@ -896,6 +912,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func settleTimedOut() {
         settleTimer = nil
         guard resizes.inFlight != nil else { return }
+        resizeSentAt = nil
         if !resizeStallLogged {
             resizeStallLogged = true
             Log.video.notice("stream \(self.stream, privacy: .public): resize unanswered, moving on")

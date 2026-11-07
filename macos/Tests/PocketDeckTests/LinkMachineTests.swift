@@ -18,6 +18,28 @@ final class LinkMachineTests: XCTestCase {
         return machine
     }
 
+    func testOnlyTheTwoRetryStatesAreDownForWindows() {
+        XCTAssertTrue(Link.reconnecting(phone).isDown)
+        XCTAssertTrue(Link.offline(phone, .unreachable).isDown)
+        XCTAssertFalse(Link.connecting(phone).isDown)
+        XCTAssertFalse(Link.online(phone).isDown)
+        XCTAssertFalse(Link.idle.isDown)
+        XCTAssertFalse(Link.needsPairing(phone).isDown)
+        XCTAssertFalse(Link.pairing(phone, .contacting).isDown)
+    }
+
+    func testAPairingFailureDoesNotRestoreTheWindows() {
+        // online -> needsPairing is not "down", but it is no session either.
+        // The one-shot linkLost is the truth; the reconcile must leave it.
+        XCTAssertEqual(Link.online(phone).windowDesiredDown, false)
+        XCTAssertNil(Link.needsPairing(phone).windowDesiredDown)
+        XCTAssertNil(Link.idle.windowDesiredDown)
+        XCTAssertNil(Link.connecting(phone).windowDesiredDown)
+        XCTAssertNil(Link.pairing(phone, .verifying).windowDesiredDown)
+        XCTAssertEqual(Link.reconnecting(phone).windowDesiredDown, true)
+        XCTAssertEqual(Link.offline(phone, .unreachable).windowDesiredDown, true)
+    }
+
     // MARK: Launch
 
     func testLaunchWithoutARememberedPhoneStaysIdle() {

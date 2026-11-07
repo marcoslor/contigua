@@ -232,7 +232,8 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
 2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>","codecs":["avc","hevc"]}`,
    plus `"pair":true` when the person asked this attempt to pair (a user-driven
    pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
-   believes it is already paired. `path` names this connection (its path id,
+   believes it is already paired. (The planned UDP plane would add
+   `"media":["udp"]`; this merge never sends it.) `path` names this connection (its path id,
    8 lowercase hex, unique among the session's live paths) and is on every
    hello. A hello on a **later** connection for the same session also carries
    `"join":"<32 hex>"`, the session id from `welcome` — see "Paths".
@@ -266,7 +267,9 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
      handshake timeout.
 4. Phone → `{"t":"welcome","session":"<32 hex>","device":{"id":..,"name":..,"model":..,"sdk":36,
    "screen":{"w":1080,"h":2340,"dpi":450},"locked":true,
-   "encoder":{"widthAlign":2,"heightAlign":2,"maxWidth":8192,"maxHeight":8192,"maxPixels60":36864000}}}`.
+   "encoder":{"widthAlign":2,"heightAlign":2,"maxWidth":8192,"maxHeight":8192,"maxPixels60":36864000}}}`
+   (the planned UDP plane would add `"media":{"udp":<port>,"keyId":"<8 hex>"}`;
+   this merge answers no media field, even when the hello offers `udp`).
    `encoder` is the H.264 encoder's own limits, probed once per session: the
    alignment each axis takes, the maximum frame, and the largest pixel count it
    encodes at 60 fps. The Mac asks an app window for its exact backing pixels
@@ -401,6 +404,154 @@ never part of the session before (the phone is published with no session open,
 so the next connection can found a new one too). A frame in a `VIDEO_*`, `AUDIO_*` or `HOVER` frame that was in flight is
 lost; the keyframe request above repairs the picture.
 
+## Media over UDP
+
+> **PLANNED / NOT IMPLEMENTED IN THIS MERGE.** The UDP media plane described in
+> this section is a specification for `epic/pmaxx` P3.2/P3.3; the merge of
+> P0/P1/P2 carries no media capability, socket, sender, assembler, probe,
+> switch, feedback, NACK or parity code. Only the pure Android primitives
+> (`MediaDatagramTest`, `MediaCryptoTest`, `MediaReplayWindowTest`,
+> `MediaDefaultsTest`) exist. See `ISS-50`.
+
+Video access units can move on an unreliable, unordered datagram plane;
+everything else (JSON, input, files, audio and the CONFIG frames) stays on the
+reliable path. Audio stays reliable in this phase: it is low-rate and gains
+nothing from datagrams once video no longer blocks it. Type 2 is reserved. The design, its threat model and the policy machine are
+`docs/design/media-transport.md`; the requirements are PATH-25…PATH-36.
+
+### Capability and keys
+
+- A Mac that has the strategy `auto` or `udp` and speaks it adds
+  `"media":["udp"]` to `hello`. A phone that speaks it adds
+  `"media":{"udp":<port>,"keyId":"<8 hex>"}` to the **founding** `welcome`,
+  only when the hello offered `udp`; a join's welcome does not repeat it (if it
+  does, the Mac verifies it is unchanged). Either side missing the field means
+  TCP only — no probe, no error.
+- Both sides already hold the session's 32-byte TLS exporter
+  (`EXPORTER-pocketdeck-pair`: the Mac from BoringSSL's keylog secret and
+  `ExporterV2`, the phone from `SSLSockets.exportKeyingMaterial` and
+  `TlsExporter`). There is no key-exchange message. Each derives:
+
+```
+context = session_id || macPin || phonePin || "EXPORTER-pocketdeck-pair"
+c2s = HKDF-SHA256(ikm = pairingExporter, salt = context,
+                  info = "pocketdeck-media-c2s", 32)
+s2c = HKDF-SHA256(ikm = pairingExporter, salt = context,
+                  info = "pocketdeck-media-s2c", 32)
+keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
+```
+
+  `macPin` and `phonePin` are the 32-byte SPKI SHA-256 fingerprints in that
+  order. The phone opens Mac→phone datagrams with `c2s` and seals phone→Mac
+  with `s2c`; the Mac does the reverse. A `keyId` in `welcome` that differs
+  from the Mac's own derivation means the exporters disagree: it sends no
+  probe and stays on TCP. The exporter is the founding path's and stays with
+  the session; a path switch does not change it. Keys last for the session
+  and are discarded with it; the key buffers are zeroed, and no key byte is
+  ever logged or written to a file (no `SSLKEYLOGFILE`).
+
+### The datagram
+
+One UDP datagram is one fragment, at most **1200 bytes** (never IP-fragmented):
+
+```
+outer (plaintext, the AEAD associated data)                         18 bytes
+  u8  magic = 0x50
+  u8  version = 1
+  u32 keyId
+  u16 epoch            // first UDP media epoch is 1, +1 per switch
+  u64 seq              // per direction for the whole session: starts at 1, never
+                       // resets on an epoch switch, one space for every type
+  u16 ciphertextLen    // inner header + payload + 16-byte tag
+ciphertext (AES-256-GCM, 96-bit nonce = 00000000 || u64 seq)
+  u8  type             // 1 video, 2 audio (reserved), 3 feedback, 4 nack, 5 probe, 6 probe reply, 7 parity
+  u8  flags            // bit0 keyframe, bit1 retransmit
+  u32 stream
+  u32 frameId          // per stream, increments for every access unit
+  u64 ptsUs            // the access unit's pts; 0 for control packets
+  u16 fragmentIndex
+  u16 fragmentCount
+  u32 sendUs           // the sender's monotonic µs, low 32 bits
+  u8  payload[]        // the access unit's bytes (Annex-B for video, packet for audio)
+```
+
+The inner header is 26 bytes; with the 18-byte outer header and the 16-byte tag
+one fragment carries at most **1140 bytes** of an access unit. A packet bigger
+than 1200 bytes, with another magic/version/keyId, an old epoch, a failed tag or
+a sequence outside the 1024-packet replay window is dropped silently. The tag is
+verified **before** the replay window advances: a tampered high sequence must
+not move the window and make valid packets look old. A NACK resend is the
+identical datagram (same sequence and ciphertext) or a fresh sequence; it is
+never re-sealed under the old sequence.
+
+Example outer header for a 46-byte ciphertext (probe, epoch 1, seq 1, keyId 1):
+
+```
+50 01 00 00 00 01 00 01 00 00 00 00 00 00 00 01 00 2e
+```
+
+### Payloads
+
+| type | direction | payload |
+|---|---|---|
+| 1 VIDEO | phone→mac | Annex-B bytes of one access unit; the receiver rebuilds `VIDEO_FRAME` (`ptsUs`, flags, bytes) |
+| 2 AUDIO | — | reserved; audio stays on the reliable path in this phase |
+| 3 FEEDBACK | mac→phone | `u64 highestSeq · u32 received · u32 lost · u32 rttMs · i32 owdTrendUsPerS · u32 owdP95Us (relative to the session minimum) · u32 queueAgeMs` (32 bytes, every 100 ms) |
+| 4 NACK | receiver→sender | `u16 count` then `count` × `u64 seq` (count ≤ 32, at most 200/s) |
+| 5 PROBE | mac→phone | `u32 nonce` |
+| 6 PROBE REPLY | phone→mac | the same `u32 nonce`; authenticated, never larger than the probe |
+| 7 PARITY | sender→receiver | `u64 firstSeq · u16 count` then the XOR bytes covering `count` consecutive data packets from `firstSeq`; at most one per 10 data packets, `stream.fec=parity` only |
+
+- A frame is reassembled by `(epoch, stream, frameId)` from any fragment order.
+  An incomplete delta is dropped **100 ms** after its first fragment; an
+  incomplete keyframe gets **1 s**, because its bits can take that long at the
+  target rate. The display never waits for it; there is no jitter buffer.
+- A dropped non-key frame triggers the existing `window.keyframe` request
+  path, at most one per stream per 500 ms; an incomplete keyframe is NACKed
+  first.
+- NACK, feedback and probes share the one per-direction sequence space, so the
+  replay window protects every packet type.
+
+### The switch
+
+| t | fields | meaning |
+|---|---|---|
+| `media.switch` | `to`: `udp`/`tcp`, `epoch` | the Mac's decision, reliable (JSON priority) |
+| `media.switch.ack` | `epoch` | the phone stops the old plane here |
+| `media.epoch` | `epoch` | on the way back to TCP: the epoch of the TCP video that follows |
+
+1. The Mac sends `media.switch{to:udp,epoch:N}` after the probe passes. The
+   phone acks, stops TCP **video** at the ack (audio is on TCP and unaffected),
+   and sends a fresh IDR on UDP in epoch `N`; the Mac shows the last TCP picture until that keyframe is
+   complete, then ignores TCP video. Config is unchanged.
+2. The Mac sends `media.switch{to:tcp,epoch:N}` on a failure. The phone acks,
+   sends `media.epoch{N}` on the reliable path, then a TCP keyframe; the Mac
+   ignores older-epoch UDP packets. One IDR per switch, never a replay, never
+   a second `window.keyframe` for the same switch.
+3. The first UDP media epoch is 1. A switch that does not produce its keyframe
+   within 2 s is cancelled with one more `media.switch`.
+
+### Limits and failure
+
+- One access unit is at most 8 MiB (the existing frame cap), so at most 7359
+  fragments; more is a dropped frame, not a closed session.
+- Reassembly holds at most 2 MiB per session and 1 MiB per stream; the UDP
+  socket is one per session; the send buffer is 1 MiB.
+- UDP never ends a session and never delays reliable frames. Any failure
+  returns media to TCP with one keyframe; the phone's slot, the pins and the
+  path machine are unchanged.
+- The phone answers at most 100 probes per second per source, and only after
+  the datagram authenticates.
+
+### Browser mapping
+
+The inner header and payload are the browser's unit: a WebTransport client
+sends them as datagrams (WebTransport supplies the security, so the 18-byte
+outer header and GCM tag are omitted), and a WebRTC client sends the same bytes
+on a data channel with `ordered:false, maxRetransmits:0`. RTP is not used; it
+would add a second packetization and its own jitter buffer. No browser client
+is built in this epic.
+
 ## Direct link
 
 Only a build compiled with the direct provider offers this
@@ -449,6 +600,11 @@ exporter = TLS-Exporter("EXPORTER-pocketdeck-pair", empty context, 32 bytes)
 code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
                              || Nm || Np)[0..8]) mod 1_000_000   // "123 456"
 ```
+
+   If the phone has no exporter, it sends `{"t":"error","code":"pair_exporter"}`
+   and closes before revealing `Np` or showing a code; it never fills the
+   exporter with zeros. (The exporter call is API 31+, so an Android 11 phone
+   fails closed here rather than throwing `NoSuchMethodError`.)
 
    The phone shows it with its Allow/Deny prompt ("Pair with <Mac name>?"), the
    Mac shows it next to the phone row.
@@ -1299,6 +1455,10 @@ Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair
 not match the commit), `version` (this side's protocol version differs; `v` carries the
 version that refused, so the other side can say which app to update), `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
+`pair_exporter` (the phone's TLS stack exposed no exporter, so it cannot derive
+the pairing code: the phone refuses to pair instead of substituting a zero key
+— shipped Android 11 cannot expose one, so the Mac says to update Android or
+PocketDeck),
 `no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
 the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
 window still opening is refused on its cover, a live one closes as on `window.closed`),
