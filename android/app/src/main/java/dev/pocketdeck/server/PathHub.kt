@@ -315,7 +315,8 @@ class PathHub(
     /**
      * Sends a reliable frame wrapped, or a lossy one bare (PATH-4/5).
      * [onWritten] runs once the current path's socket flush for this frame
-     * finished; it is for the lossy video path's queue-delay stat only.
+     * finished; it feeds the lossy video queue-delay stat and P4's goodput
+     * meter.
      */
     fun send(bytes: ByteArray, onWritten: (() -> Unit)? = null) {
         val type = bytes[4].toInt() and 0xFF

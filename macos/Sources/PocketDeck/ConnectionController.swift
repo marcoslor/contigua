@@ -2353,7 +2353,7 @@ final class ConnectionController {
         send(event, from: record)
     }
 
-    private func apply(_ result: PhoneBookEventResult) {
+    func apply(_ result: PhoneBookEventResult) {
         for action in result.actions { perform(action) }
         guard result.affectsCurrent else { return }
         if case .pairing = link, qr == nil { sheet = .code }
@@ -2370,6 +2370,14 @@ final class ConnectionController {
             clipImageBuffer.discard()
         }
         if result.currentLinkRestored { windows.linkRestored() }
+        // A window that was opening during the one-shot transition follows
+        // the current Link value too: the zombie-service case left it on
+        // "Not responding" while the link was already retrying. A pairing
+        // failure is neither down nor online: the one-shot linkLost above is
+        // the truth, and restoring here would put a live window over no session.
+        if link.isDown, !windows.linkIsDown { windows.linkLost() }
+        if link.isOnline, windows.linkIsDown { windows.linkRestored() }
+        if let down = link.windowDesiredDown { windows.reconcileLinkDown(down) }
         writePhonesReport()
     }
 

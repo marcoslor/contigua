@@ -510,6 +510,37 @@ final class StreamStatsTests: XCTestCase {
         }
     }
 
+    /// P0 (pmaxx): the closing totals carry every stage's distribution, not
+    /// only the p95. The arrival intervals show the link's pacing, the shown
+    /// intervals show the display's, and e2e_p99 shows the tail a person sees
+    /// as a stall even when the median is fine.
+    func testTheTotalsCarryEveryStagePercentile() {
+        var window = StreamStatsWindow(now: 0)
+        for index in 0..<6 {
+            window.noteReceived(now: Double(index) * 0.1, bytes: 100)
+        }
+        window.noteReceived(now: 1.0, bytes: 100) // one 500 ms link gap
+        for index in 0..<6 {
+            window.noteEnqueued(now: Double(index) * 0.02,
+                                ptsUs: UInt64(index) * 16_667, offsetUs: 0)
+        }
+        window.noteEnqueued(now: 0.5, ptsUs: 100_002, offsetUs: 0) // one 420 ms shown gap
+        let total = window.total(now: 2.0)
+        XCTAssertEqual(total.intervalP50Ms ?? -1, 100, accuracy: 0.5)
+        XCTAssertEqual(total.intervalP95Ms ?? -1, 500, accuracy: 0.5)
+        XCTAssertEqual(total.intervalP99Ms ?? -1, 500, accuracy: 0.5)
+        XCTAssertEqual(total.shownP50Ms ?? -1, 20, accuracy: 0.5)
+        XCTAssertEqual(total.shownP95Ms ?? -1, 400, accuracy: 0.5)
+        XCTAssertEqual(total.shownP99Ms ?? -1, 400, accuracy: 0.5)
+        XCTAssertEqual(total.e2eP99Ms ?? -1, 400, accuracy: 1)
+        let text = StreamStatsLine.totalText(stream: 9, total: total)
+        for field in ["e2e_p99=", "int_p50=100.0", "int_p95=500.0",
+                      "int_p99=500.0", "shown_p50=20.0", "shown_p95=400.0",
+                      "shown_p99=400.0"] {
+            XCTAssertTrue(text.contains(field), "missing \(field) in \(text)")
+        }
+    }
+
     // MARK: The longest picture gap (item 0)
 
     /// ISS-40: `max_gap_ms` is the longest interval between received frames

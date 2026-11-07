@@ -579,16 +579,19 @@ final class InputMapper {
     // MARK: Keyboard
 
     func keyDown(_ event: NSEvent) {
+        // The bar's own keys first (MIRROR-13): ⌃Tab takes the keyboard to the
+        // bar, and while it has it the bar's keys never reach the phone. They
+        // are local UI, so a frozen picture (Live Text, stall, link down) must
+        // not kill them. The paste pill's Esc is the same: it dismisses the
+        // overlay, not the phone's Back.
+        if barKey?(event) == true { return }
+        if overlayKey?(event) == true { return }
         if suspended {
             // Esc is the mode's own key: it leaves, and nothing reaches the
             // phone. Every other key is dropped while the frame is frozen.
             if event.keyCode == Self.keyCodeEscape { onLiveTextEscape?() }
             return
         }
-        // The bar's own keys first (MIRROR-13): ⌃Tab takes the keyboard to the
-        // bar, and while it has it the bar's keys never reach the phone.
-        if barKey?(event) == true { return }
-        if overlayKey?(event) == true { return }
         let flags = event.modifierFlags
         // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
         // ⌘F: a disabled menu item does not consume its key equivalent, so the
@@ -689,8 +692,10 @@ final class InputMapper {
     }
 
     func keyUp(_ event: NSEvent) {
-        guard !suspended else { return }
+        // The bar's releases are local UI too: a frozen picture must not leave
+        // a bar key stuck down.
         if barKeyUp?(event) == true { return }
+        guard !suspended else { return }
         // The style switch's key never reached the phone on the way down, so
         // its release must not either.
         if event.modifierFlags.contains(.command), event.modifierFlags.contains(.option),

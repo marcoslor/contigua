@@ -221,6 +221,82 @@ final class StallOverlayTests: XCTestCase {
         XCTAssertTrue(controller.expectsFrames)
     }
 
+    /// WIN-16's blip: under a second says nothing, and a reconnect dismisses
+    /// whatever the clock had already shown.
+    func testALinkBlipSaysNothingAndTheOverlayGoesOnReconnect() throws {
+        let manager = makeManager()
+        let controller = try makeWindow(manager)
+        defer { controller.window?.close() }
+        let overlay = controller.chrome.stallOverlay
+        let t0 = ProcessInfo.processInfo.systemUptime
+
+        controller.setLinkDown(true, at: t0)
+        controller.tickPicture(at: t0 + 0.9)
+        XCTAssertFalse(overlay.isShowing, "a blip is not news")
+        controller.setLinkDown(false, at: t0 + 1)
+        XCTAssertFalse(overlay.isShowing)
+        XCTAssertFalse(controller.frozen)
+    }
+
+    /// R5: a window opened mid-outage counts from the shared drop, not from
+    /// its own open time, so its words agree with the panel's.
+    func testAWindowOpenedMidOutageUsesTheSharedDropClock() throws {
+        let manager = makeManager()
+        manager.setPhoneName("Test Phone")
+        let t0 = ProcessInfo.processInfo.systemUptime
+        manager.linkLost(at: t0)
+        XCTAssertEqual(manager.linkDownAt, t0)
+
+        let controller = try makeWindow(manager)
+        defer { controller.window?.close() }
+        manager.markLinkDown(controller)
+        let overlay = controller.chrome.stallOverlay
+        controller.tickPicture(at: t0 + 1)
+        XCTAssertTrue(overlay.isShowing, "the shared 1 s already passed")
+        XCTAssertEqual(overlay.titleText, "Reconnecting…")
+    }
+
+    /// R6/WIN-16: a drop drops input; it does not queue it for the reconnect.
+    func testALinkDownFreezesPhoneInput() throws {
+        let manager = makeManager()
+        let controller = try makeWindow(manager)
+        defer { controller.window?.close() }
+        var commands: [InputMapper.Command] = []
+        let mapper = InputMapper(stream: 1)
+        mapper.send = { commands.append($0) }
+        mapper.inputSuspended = { controller.frozen }
+        let t0 = ProcessInfo.processInfo.systemUptime
+
+        controller.setLinkDown(true, at: t0)
+        XCTAssertTrue(controller.frozen)
+        mapper.mouseDown(mouseEvent(.leftMouseDown))
+        mapper.mouseUp(mouseEvent(.leftMouseUp))
+        mapper.keyDown(keyEvent("a", code: 0))
+        mapper.keyUp(keyEvent("a", code: 0))
+        mapper.scroll(ScrollSample(phase: .changed, deltaY: 10), at: .zero)
+        XCTAssertTrue(commands.isEmpty, "input reached the phone during the drop")
+
+        controller.setLinkDown(false, at: t0 + 16)
+        XCTAssertFalse(controller.frozen)
+        mapper.mouseDown(mouseEvent(.leftMouseDown))
+        XCTAssertEqual(commands.count, 1, "input works again after the reconnect")
+    }
+
+    private func mouseEvent(_ type: NSEvent.EventType) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: CGPoint(x: 10, y: 10), modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: 0, context: nil, eventNumber: 0,
+                           clickCount: 1, pressure: 1)!
+    }
+
+    private func keyEvent(_ characters: String, code: UInt16) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                         timestamp: ProcessInfo.processInfo.systemUptime,
+                         windowNumber: 0, context: nil, characters: characters,
+                         charactersIgnoringModifiers: characters, isARepeat: false,
+                         keyCode: code)!
+    }
+
     /// WIN-39: the overlay reaches over the framed bar, so the bar's mirror is
     /// not the bright stream; a frame restores the live mirror.
     func testTheOverlayCoversTheBarAndAFrameRestoresIt() throws {

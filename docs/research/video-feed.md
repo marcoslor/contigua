@@ -271,6 +271,9 @@ behaviour and the line says so in a closed token (`rc=cbr unsupported`,
 | `refine` | `off` / `on` | `off` | after 300 ms without a *new* encoded picture, one frame at 3× the current target (up to the cap) with a sync request; motion before it lands cancels and restores at once; one per still period | codec refusing the sync simply ends it at the 1 s timeout | `t1-refine`, `combo-a` |
 | `tos` | 0–255 | 0 (unset) | `setTrafficClass(N)` on the accepted socket before the TLS handshake (AF41 is 136, `0x88`) | the OS refusing it logs `tos=0x88 unsupported` and the stream is unchanged | `n1-af41`, `combo-a` |
 | `stall_ms`, `stall_every_ms` | 0 (off) or 50–2000 / 1000–30000 (default 5000) | 0 / 5000 | a stall on demand: while that stream has frames queued, the session's writer writes nothing to the socket for `stall_ms` every `stall_every_ms`, so the queue fills exactly as it does when the link stalls; other streams' frames wait too (it is the link) | 0 and junk are off; out of range clamps | `stall`, `stall-q1`, `stall-q1q2-100`, `stall-q2-500`, `stall-paced`, `stall-ir60` |
+| `fps` | 30–120 | 60 | the encoder's `KEY_FRAME_RATE` and `KEY_OPERATING_RATE` (the same value); at 60 only the frame-rate key is set, as today | out of range clamps; junk is 60 | P1's rate round |
+| `vd_rate` | 0 (off) or 60–120 | 0 | the app window's display asks `VirtualDisplayConfig.Builder.setRequestedRefreshRate` through reflection; a build without the method keeps today's display and the strategy line says `vd_rate=<n> unsupported`, and the classic path logs `rate=<n> unsupported (classic)` | 0 and junk are off; out of range clamps | P1's rate round |
+| `low_latency` | `off` / `on` | `off` | sets `MediaFormat` `"low-latency"` to 1 when the codec reports `FEATURE_LowLatency` | a codec without it keeps today's format and the line says `low_latency=on unsupported` | P2's round |
 
 `stall_ms`/`stall_every_ms` are the round-2 fix for what round 1 could not
 exercise: one drop episode in 32 runs and no suspend. Each injected stall logs
@@ -285,10 +288,95 @@ an encoder exposes (its Surface input is not readable). New size, or a
 keyframe, means motion.
 
 These are experiment switches for the bench, not product behaviour: they have
-no spec rows, no on-screen setting, and every one defaults to today's stream.
-The arms live in `tools/stream-bench/arms.json`; `combo-a` runs all of them
-except `bpp_milli`. The bench's per-arm strategy line and its `susp_n`,
-`susp_ms` and `refine_n` columns show which switches the phone applied.
+no on-screen setting and every one defaults to today's stream. The arms live
+in `tools/stream-bench/arms.json`; `combo-a` runs all of them except
+`bpp_milli`. The bench's per-arm strategy line and its `susp_n`, `susp_ms` and
+`refine_n` columns show which switches the phone applied.
+
+### Refresh and frame-rate knobs (P1, P2)
+
+P1 asks what caps the frame rate. Three switches answer it without changing
+today's stream: `fps` moves the encoder's frame-rate and operating-rate keys
+together (default 60, no operating-rate key), `vd_rate` asks the app window's
+virtual display for a refresh rate when the build has
+`VirtualDisplayConfig.Builder.setRequestedRefreshRate` (default 0, no request),
+and P2's `low_latency` asks a supporting encoder for `"low-latency"`
+(default off). They are read once per configure (the display rate once per
+display creation) and logged in the one strategy line as `fps=120
+vd_rate=120 low_latency=on`; a request the build or codec refuses keeps today's
+behaviour and prints its `unsupported` token. WIN-61 is their spec row. No
+wire field changes: the encoder's frame rate is not in `VIDEO_CONFIG` or
+`VIDEO_FRAME`, and `window.quality.maxFps` keeps its old meaning.
+
+### P1 on the phone (2026-11-06)
+
+The switches had only been exercised on the emulator. On the person's Android
+17 user build the hidden `SystemProperties.get` is refused for the Shizuku
+service's classloader; every knob read as unset until the lookup fell back to
+`/system/bin/getprop` (commit 80ddab07). The same
+`setprop debug.pocketdeck.stream.*` names then applied, and the round ran three
+arms on one source: a full-screen `requestAnimationFrame` canvas in the
+mirrored browser, its own counter printing the frames it drew.
+
+| arm | strategy line | display | Mac rx / shown fps |
+| --- | --- | --- | --- |
+| 60 / 0 | `default` | 60 Hz (`renderFrameRate 60.0`) | 57–61 |
+| 60 / 120 | `vd_rate=120` | 120 Hz (`rate=120`) | 59–60.5 |
+| 120 / 120 | `fps=120 vd_rate=120` | 120 Hz (`mode 286`, `presDeadline 8.33 ms`, `renderFrameRate 120.0`, `vsync 120`) | 58.5–60.5 |
+
+Each arm is five or six 5 s stats lines with motion the whole time; the canvas
+counter read 846 frames at 14.22 s (59.5 fps) during the 120/120 arm.
+
+The 120 Hz request reaches the display: the mode is 286 at 120 Hz and the
+presentation deadline is 8.33 ms, and the encoder keys are set. But the
+**apps on that display still draw at 60**: a Settings fling measured
+`dumpsys gfxinfo com.android.settings framestats` at 120 frames over 2.18 s
+with a 16.67 ms median vsync interval (60 fps); the same simple 120 fps clip
+on the `vd_panel_group=1` (device display group) display also streamed at 60,
+so neither group nor the display mode is the cap. The **virtual display's app
+compositor** is the 60 fps stage, not the encoder keys, the Mac decoder or its
+panel (60 Hz). A 120 fps test clip did make the encoder burst to 26 Mbps; the
+TLS/TCP link carried none of it (the queue's 250 ms budget and the lossy path
+cap drop the excess), while a simple 120 fps clip at ~0.5 Mbps streamed at the
+app's 60.
+
+So **120 is not reachable end to end on this phone**; the P1 bar, steady 60 on
+the Mac in motion, is met at 60.0–60.5 fps with a 21 ms p95 interval. The
+round also answers P0's video question: the earlier video runs that showed
+0–3 fps were high-bitrate 1800×1200 video, more than the TLS/TCP link could
+carry. Video is a bitrate case, not a capture path of its own.
+
+### P2 on the phone (2026-11-06)
+
+The remaining P2 switches were measured on the same phone. The probe ran in
+Settings' two-pane layout: a tap on a left-pane row switches the detail page,
+so alternating "Connections" and "Sounds and vibration" changes the picture
+without ever reaching system back, which at the Settings root exits the app
+and closes the stream. Each arm opened a fresh stream, confirmed its strategy
+line, and ran three `input_probe` taps; the first tap after a fresh window
+(one per arm) returned `changed_ms=null` with 54 frames and is discarded — a
+tap during the open transition is not counted. The three valid taps follow.
+
+| arm | strategy line | `changed_ms` (ms) | median | e2e p50 / p95 |
+| --- | --- | --- | --- | --- |
+| default | `default` | 207.5, 176.6, 182.0 | 182.0 | 24.3 / 28.0 (control) |
+| `low_latency=on` | `low_latency=on unsupported` | 186.1, 208.4, 186.9 | 186.9 | 22.7 / 66.4 |
+| `queue_ms=100` | `queue_ms=100` | 191.3, 191.9, 201.6 | 191.9 | 23.9 / 38.7 |
+
+The phone's AVC encoder does not declare `FEATURE_LowLatency`, so the gate
+drops the switch and prints its token: `low_latency=on` is a no-op on this
+device, and the three arms are indistinguishable (medians 182–192 ms, spread
+±25 ms inside every arm). The queue budget never binds either: `queue_p95`
+read 0.6 ms with both the 100 ms and the 250 ms budget while swipe motion
+pushed 65–120 fps through the stream, and the capture→Mac-enqueue part stayed
+at 22–24 ms p50. The ~180–190 ms seen by `input_probe` is therefore not the
+video queue: most of it is input delivery, the app's own reaction and the
+first changed draw, all upstream of the capture timestamp the stats line
+starts from.
+
+P2 changes no stream code: the fallback WIN-61 already specifies is what the
+phone does, and neither knob moves the interactive number. They stay bench
+switches with today's defaults.
 
 ### The Mac's switches
 
@@ -569,6 +657,102 @@ What this means:
 - **M3 becomes a preset, not the default.** An adaptive jitter buffer smooths motion by adding delay, which is wrong for typing, dragging and scrolling. The default stays M1, one frame (16 ms) of display delay. M3 is a "smooth video" preset.
 
 Raw data: the Mac's unified log, `subsystem == "dev.pocketdeck.mac"`, lines with `stats total` (not in the repo).
+
+## P0 — the stages, measured (2026-11-06)
+
+The pmaxx epic's first real-phone round. Profile `pmaxx`, H.264, TLS/TCP, the
+`baseline` arm only; three runs of each script unless named; the person's
+S25+ over Wi-Fi 6E at 5 GHz, RSSI −38…−40 dBm, link 1.0–1.7 Gbps on channel
+5180 MHz; the Mac's built-in 60 Hz 2560×1600 panel. Raw rows live in
+`.agent/pmaxx/data/round1/` and are never committed.
+
+| script | runs | encoder fps | Mac rx | Mac shown | first frame (ms) | input→photon (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| still (6 s) | 3 | 3.6 | 3.6 | 3.6 | 624 (400–702) | — |
+| swipe | 3 | 31.1 | 31.1 | 31.1 | 399 (398–485) | — |
+| typing | 3 | 10.3 | 10.9 | 10.9 | 460 (435–654) | — |
+| video (12 s) | 3 | 23.8 | 25.5 | 25.5 | 489 (427–494) | — |
+| tap (probe) | 3 | 7.6 | 10.1 | 10.1 | 408 (389–1747) | 263 (244–390) |
+
+Every motion run has encoder = rx = shown within a frame: the Mac is not
+dropping or skipping what it receives, so the stage that caps fps in these
+runs is the *source*, not the pipeline. Settings' own UI renders at only
+7.2 fps while it scrolls (gfxinfo), and the virtual display repeats the last
+picture every 500 ms when nothing changes (`REPEAT_PREVIOUS_FRAME_US`), which
+is the 2–3.6 fps "still" heartbeat and the ~500 ms p95/p99 intervals in a
+whole-run total. A whole-run p99 therefore says nothing about motion; P1
+must measure a run made of motion only.
+
+The `video` arm played in the person's video app at a 25–30 fps source;
+its player surface does not show up in the app's gfxinfo (6.6 fps there), so
+that number is not the video's rate. The mirror's virtual display stayed at
+60.0 Hz in every run (`dumpsys display`, the `pocketdeck-N` display).
+
+Phone health over the round: battery 81–83 %, 32.7–35.7 °C, thermal status 0
+(no throttling), PocketDeck 2–19 % of one CPU and 56–61 MB PSS, the streamed
+app 0–15 % and 125–484 MB, Wi-Fi retries 13.5k → 18.3k and tx bad 167 → 187
+over the whole round (cumulative counters; the soak samples show the trend).
+The first frame after a fresh stream opened in 389–702 ms in 14 of 15 runs;
+one run took 1.75 s.
+
+`input_probe` (the new MCP tool) timed three taps on an idle Settings screen
+at 244–390 ms from TOUCH send to the first decoded frame whose watched
+region changed. It takes the frame the display layer is showing as the
+baseline: an idle phone sends no new frame, and waiting for one deadlocked
+the first version of the tool on a still screen.
+
+The 20-minute soak ran once with the app's window hidden (the first attempt
+was covered for 23.6 of its 24 minutes and says nothing about a live stream),
+then again with `--float-windows`: 120 samples every 10 s over 24 minutes of
+wall time, the window covered for 4.6 s only. Battery 73 → 69 %, battery
+temperature 35.0–39.7 °C (median 36.5), thermal status 0 except 13 samples at
+1, the Settings process 4.3–12.0 fps (the soak's one swipe per 10 s leaves
+most of each sample idle), PocketDeck 2.8–7.5 % of a CPU and 50–60 MB PSS,
+and the cumulative Wi-Fi retries 46.9k → 59.9k (tx bad 211 → 234). One 4.4 s
+arrival gap made the run `frozen`/`low-motion`, so it is health data, not a
+motion measurement: a motion soak wants a swipe every sample period, not one
+per period.
+
+
+## P4 — the 3 Mbit/s fallback arm (planned, 2026-11-06)
+
+The person's live session was shaped with `pd-fault.sh on 100 3` — 100 ms each
+way, 3 Mbit/s, pf/dummynet on the live TCP port. The phone's log repeated a
+sawtooth every ~15 s: `drop episode: flowing --dropped(10)--> waiting`, then
+`backpressure: dropping deltas, requesting keyframe`, `bitrate -> 6.0 Mbps
+(-25%)`, and recovery back to 6.6, 7.3 and 8.0 Mbps before the next drop. The
+delta drops broke the reference chain until the IDR, so every cycle was a
+visible artifact.
+
+The cause was `QualityAdaptation`: recovery was time-only (10% every 5 s up to
+the 8 Mbps target), so a 3 Mbit/s link was refilled every cycle. The fix is a
+goodput ceiling: the session's writer measures the stream's dequeued bytes over
+the last contiguous backlogged run (a sample gap over 200 ms starts a new run,
+so a static 2 fps screen is not the link's rate, and keyframes count); a drop
+caps recovery at 85% of that rate (floor 1 Mbit/s) when the measurement reads
+clearly below the current bitrate or after two measured drops in a row. A 5%
+probe lifts the cap after 30 s without a drop, but at most twice, and a drop
+after a probe stops the walk. On this shape the first drop lands near
+2.55 Mbps instead of 6, the cap rises to 2.81 Mbps and holds below the 3 Mbit/s
+link. A reconfigure at the same target keeps the measured cap. K1: `GoodputMeterTest` 10/0, `QualityAdaptationTest` 18/0; the shaped
+arm itself is P4's.
+
+Arm: the same shaper, 120 s of motion (both 30 s probes and the hold after them), with the phone log and the Mac stats
+recorded. Pass: no repeated `drop episode`/`key after` cycle and no visible
+break in the picture; the bitrate holds below the measured goodput. The script
+is `/tmp/pd-fault.sh` (copy in `.agent/pmaxx/pd-fault.sh`); `on 100 3` applies
+it, `off` restores. `pdpathfault.py` also gained `delay-throttle` for the
+emulator/fake-phone version.
+
+**The 17:23 shaped read is invalid.** `pm install -r` had left the 14:59
+`:pocketdeck` service running the deleted, pre-fix base.apk, so the "no
+artifacts, just latency" result was not this code. The sawtooth diagnosis
+above predates the fix and stands; the fix's own shaped result is still to be
+measured. Every phone read now starts with `tools/phone_install_check.py`
+(the running pid must map the current base.apk); `tools/phone_install.sh`
+installs, kills the exact service pid, launches the app and runs that check.
+The phone was left on the current APK (pid 8394 at the person's 18:12
+reinstall), idle, shaping off at the person's request.
 
 ## Presets, later
 
