@@ -1516,9 +1516,25 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
+            + " geom=\(geometryLine())"
             + " video_gap=\(Int(videoView.videoGap().rounded()))"
             + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
+    }
+
+    /// The e2e's geometry: the window, the content and the chrome, the mirror
+    /// and the titlebar, so a check can see which band a click lands in.
+    private func geometryLine() -> String {
+        func rect(_ r: NSRect) -> String {
+            "\(Int(r.minX.rounded())),\(Int(r.minY.rounded())),\(Int(r.width.rounded()))x\(Int(r.height.rounded()))"
+        }
+        guard let window else { return "none" }
+        let titlebar = window.standardWindowButton(.closeButton)?.superview?.frame ?? .zero
+        return "win:\(rect(window.frame)) content:\(rect(window.contentView?.frame ?? .zero))"
+            + " chrome:\(rect(chrome.frame)) ext:\(rect(chrome.mirrorFrame))"
+            + " video:\(rect(chrome.video.frame)) layout:\(rect(window.contentLayoutRect))"
+            + " tb:\(rect(titlebar)) mask:\(window.styleMask.rawValue)"
+            + " bar:\(Int(chrome.barHeight.rounded()))"
     }
 
     /// The dwell's state machine keeps its own time; the pill's fade and the
