@@ -727,13 +727,17 @@ visible artifact.
 The cause was `QualityAdaptation`: recovery was time-only (10% every 5 s up to
 the 8 Mbps target), so a 3 Mbit/s link was refilled every cycle. The fix is a
 goodput ceiling: the session's writer measures the stream's dequeued bytes over
-the last 3 s; a drop caps recovery at 85% of that rate (floor 1 Mbit/s) and a
-5% probe lifts the cap after 30 s without a drop. On this shape the first drop
-lands near 2.55 Mbps instead of 6, and the stream stays there until the link
-changes. K1: `GoodputMeterTest` 6/0, `QualityAdaptationTest` 12/0; the shaped
+the last contiguous backlogged run (a sample gap over 200 ms starts a new run,
+so a static 2 fps screen is not the link's rate, and keyframes count); a drop
+caps recovery at 85% of that rate (floor 1 Mbit/s) when the measurement reads
+clearly below the current bitrate or after two measured drops in a row. A 5%
+probe lifts the cap after 30 s without a drop, but at most twice, and a drop
+after a probe stops the walk. On this shape the first drop lands near
+2.55 Mbps instead of 6, the cap rises to 2.81 Mbps and holds below the 3 Mbit/s
+link. A reconfigure at the same target keeps the measured cap. K1: `GoodputMeterTest` 6/0, `QualityAdaptationTest` 12/0; the shaped
 arm itself is P4's.
 
-Arm: the same shaper, 60 s of motion, with the phone log and the Mac stats
+Arm: the same shaper, 120 s of motion (both 30 s probes and the hold after them), with the phone log and the Mac stats
 recorded. Pass: no repeated `drop episode`/`key after` cycle and no visible
 break in the picture; the bitrate holds below the measured goodput. The script
 is `/tmp/pd-fault.sh` (copy in `.agent/pmaxx/pd-fault.sh`); `on 100 3` applies

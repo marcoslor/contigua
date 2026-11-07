@@ -105,15 +105,18 @@ Evidence (spike s1-mac, two rounds):
   subset the Swift spike proved round-1; pinned tests for round-trip parse on
   Java/BoringSSL validate it). Spike S2 used `sun.security.x509` (JDK-only) to
   keep the spike cheap, as the phase-1 document is the only place that notes it.
-- **Exporter on the phone (rev 2)**: Android exposes the TLS exporter through a
-  public API since API 29 (`minSdk` is 30): `android.net.ssl.SSLSockets
-  .exportKeyingMaterial(socket, label, context, length)`, guarded by
-  `SSLSockets.isSupportedSocket(socket)`. It operates on the platform
-  `SSLSocket`, so the shell-UID server terminates each session on a
-  **`SSLSocket`** (not `SSLEngine`) and asks that same socket for the 32 bytes
-  after the handshake (§4b). No additional dependency — the `org.conscrypt:
-  conscrypt-android` AAR route was rejected for size. The K1 JVM tests pin the
-  §4b HKDF math as vectors (no TLS engine needed); the platform call itself is
+- **Exporter on the phone (rev 3)**: `android.net.ssl.SSLSockets
+  .exportKeyingMaterial(socket, label, context, length)` is **API 31**; the
+  app's `minSdk` is 30. The call is guarded by
+  `TlsExporter.exportSupported(Build.VERSION.SDK_INT)` (31+) and
+  `SSLSockets.isSupportedSocket(socket)`. On API 30 the helper returns null
+  and pairing/media fail closed with `pair_exporter`; the phone never reaches
+  the missing method. It operates on the platform `SSLSocket`, so the shell-UID
+  server terminates each session on a **`SSLSocket`** (not `SSLEngine`) and asks
+  that same socket for the 32 bytes after the handshake (§4b). No additional
+  dependency — the `org.conscrypt: conscrypt-android` AAR route was rejected
+  for size. The K1 JVM tests pin the §4b HKDF math as vectors (no TLS engine
+  needed); the platform call itself is
   verified in K4 (emulator step 10).
 
 ## 3. Mac private key at rest
@@ -241,9 +244,9 @@ Acquisition per stack (both are named by the review):
   (K2). Use: only on the freshly-completed pairing session, consumed in memory.
 - **Phone (Conscrypt)**: `android.net.ssl.SSLSockets.exportKeyingMaterial(
   sslSocket, "EXPORTER-pocketdeck-pair", empty context, 32)` on the platform
-  `SSLSocket` (public SDK API, API 29+; `isSupportedSocket` guard). JVM unit
-  vector (K1) pins the HKDF
-  math; the on-device engine call is K4.
+  `SSLSocket` (public SDK API, **API 31+**; `isSupportedSocket` guard, plus a
+  `Build.VERSION.SDK_INT >= 31` guard because minSdk is 30). JVM unit vector
+  (K1) pins the HKDF math; the on-device engine call is K4.
 
 ## 5. Cost on the video path: negligible at 20 Mbit/s
 
