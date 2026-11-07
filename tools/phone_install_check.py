@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the running PocketDeck shell service maps the current base.apk.
+"""Check that every running PocketDeck shell service maps the current base.apk.
 
 `adb install -r` replaces the APK but does not restart the root/Shizuku
 `:pocketdeck` service. The old process keeps the deleted base.apk mapped and
@@ -51,6 +51,34 @@ def mapped_base(maps_text, package=PACKAGE):
     return None
 
 
+def evaluate(entries, current):
+    """Decide from (pid, maps) pairs and `pm path`'s answer.
+
+    `entries` is every running service pid with its maps text; `current` is
+    the live base.apk path from `pm path`, or None/empty when pm knows nothing.
+    This is pure so the parser's decision is tested without adb.
+    """
+    if not entries:
+        return False, ("no %s process: launch %s once, then retry" % (SERVICE, PACKAGE))
+    if not current:
+        return False, "pm path returned no base.apk; install the app first"
+    for pid, maps in entries:
+        deleted = deleted_base(maps)
+        if deleted:
+            return False, ("pid %s still maps the deleted %s; kill every %s pid and launch the app"
+                           % (pid, deleted, SERVICE))
+    mapped = []
+    for pid, maps in entries:
+        base = mapped_base(maps)
+        if not base:
+            return False, "pid %s maps no base.apk" % pid
+        if base != current:
+            return False, ("pid %s maps %s, but pm path says %s; restart the service"
+                           % (pid, base, current))
+        mapped.append(base)
+    return True, "pids %s map %s" % (",".join(pid for pid, _ in entries), mapped[0])
+
+
 def _adb(adb, serial, *args, check=True):
     command = [adb]
     if serial:
@@ -60,12 +88,11 @@ def _adb(adb, serial, *args, check=True):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def service_pid(adb, serial):
+def service_pids(adb, serial):
     result = _adb(adb, serial, "pidof", SERVICE, check=False)
     if result.returncode != 0:
-        return None
-    pids = result.stdout.split()
-    return pids[0] if pids else None
+        return []
+    return [pid for pid in result.stdout.split() if pid]
 
 
 def read_maps(adb, serial, pid):
@@ -87,24 +114,11 @@ def current_base(adb, serial):
 
 
 def check(adb, serial):
-    pid = service_pid(adb, serial)
-    if not pid:
-        return False, ("no %s process: launch %s once, then retry" % (SERVICE, PACKAGE))
-    maps = read_maps(adb, serial, pid)
-    if not maps:
-        return False, "cannot read /proc/%s/maps" % pid
-    deleted = deleted_base(maps)
-    if deleted:
-        return False, ("pid %s still maps the deleted %s; kill %s and launch the app"
-                       % (pid, deleted, SERVICE))
-    mapped = mapped_base(maps)
-    current = current_base(adb, serial)
-    if current and mapped and current != mapped:
-        return False, ("pid %s maps %s, but pm path says %s; restart the service"
-                       % (pid, mapped, current))
-    if not mapped:
-        return False, "pid %s maps no base.apk" % pid
-    return True, "pid %s maps %s" % (pid, mapped)
+    pids = service_pids(adb, serial)
+    if not pids:
+        return evaluate([], None)
+    entries = [(pid, read_maps(adb, serial, pid)) for pid in pids]
+    return evaluate(entries, current_base(adb, serial))
 
 
 def main(argv=None):
