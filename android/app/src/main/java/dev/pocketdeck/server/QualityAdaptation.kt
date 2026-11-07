@@ -37,6 +37,7 @@ internal class QualityAdaptation(
     private var nextRecoverAtMs = Long.MAX_VALUE
     private var nextCeilingProbeAtMs = Long.MAX_VALUE
     private var measuredDrops = 0
+    private var lastDropAtMs = Long.MIN_VALUE
     private var probesLeft = CEILING_PROBES
 
     /** The bitrate the encoder should use now. */
@@ -62,6 +63,7 @@ internal class QualityAdaptation(
         nextRecoverAtMs = Long.MAX_VALUE
         nextCeilingProbeAtMs = Long.MAX_VALUE
         measuredDrops = 0
+        lastDropAtMs = Long.MIN_VALUE
         probesLeft = CEILING_PROBES
         return current
     }
@@ -74,15 +76,24 @@ internal class QualityAdaptation(
      */
     fun onDrop(nowMs: Long, measuredBps: Int? = null): Int? {
         nextRecoverAtMs = nowMs + recoverIntervalMs
+        // "Two in a row" means inside one recovery interval. A non-drop
+        // window since the last drop starts a new row, even if the bitrate
+        // was already back at its target and no recovery step was needed.
+        if (lastDropAtMs == Long.MIN_VALUE || nowMs - lastDropAtMs > recoverIntervalMs) {
+            measuredDrops = 0
+        }
+        lastDropAtMs = nowMs
+        val probeFailed = probesLeft < CEILING_PROBES
+        if (probeFailed) probesLeft = 0
         if (measuredBps != null && measuredBps > 0) {
             measuredDrops++
             val clearlySlower = measuredBps.toLong() * 10 < current.toLong() * 9
-            if (clearlySlower || measuredDrops >= 2) {
+            if (probeFailed || clearlySlower || measuredDrops >= 2) {
                 val cap = maxOf(floorBps, (measuredBps * GOODPUT_HEADROOM).toInt())
                 ceiling = minOf(target, cap)
-                // A measured drop after a probe means the probe found the
-                // limit; hold it. A fresh cap starts a new, bounded walk.
-                probesLeft = if (probesLeft < CEILING_PROBES) 0 else CEILING_PROBES
+                // A drop after a probe means the probe found the limit; hold
+                // it. A fresh cap starts a new, bounded walk.
+                probesLeft = if (probeFailed) 0 else CEILING_PROBES
                 nextCeilingProbeAtMs = nowMs + CEILING_PROBE_MS
             }
         }
@@ -105,6 +116,9 @@ internal class QualityAdaptation(
         if (nowMs >= nextCeilingProbeAtMs && ceiling < target && probesLeft > 0) {
             ceiling = minOf(target, ceiling + maxOf(1, (ceiling * CEILING_PROBE).toInt()))
             probesLeft--
+            // The link carried the cap for 30 s, so the previous drop row is
+            // broken even if this probe is followed by a new drop later.
+            measuredDrops = 0
             nextCeilingProbeAtMs = if (probesLeft > 0) {
                 nowMs + CEILING_PROBE_MS
             } else {
@@ -115,6 +129,8 @@ internal class QualityAdaptation(
         val next = minOf(target, ceiling, (current * recoverFactor).toInt())
         if (next <= current) return null
         current = next
+        // A recovery step is a non-drop window: the drop row is broken.
+        measuredDrops = 0
         nextRecoverAtMs = nowMs + recoverIntervalMs
         return current
     }

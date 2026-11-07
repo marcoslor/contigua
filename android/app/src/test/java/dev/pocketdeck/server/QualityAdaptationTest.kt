@@ -102,6 +102,22 @@ class QualityAdaptationTest {
     }
 
     @Test
+    fun `a near-target drop after a recovery row does not cap`() {
+        q.setTarget(8_000_000)
+        // One healthy-link drop, then a full recovery: the row is broken by the
+        // non-drop windows, so a later near-target drop is not the second one.
+        assertEquals(6_000_000, q.onDrop(0, measuredBps = 7_600_000))
+        assertEquals(8_000_000, q.ceilingBps)
+        q.maybeRecover(5_000)
+        q.maybeRecover(10_000)
+        q.maybeRecover(15_000)
+        q.maybeRecover(20_000)
+        assertEquals(8_000_000, q.bitrate)
+        assertEquals(6_000_000, q.onDrop(25_000, measuredBps = 7_700_000))
+        assertEquals(8_000_000, q.ceilingBps)
+    }
+
+    @Test
     fun `two measured drops in a row trust the measurement`() {
         q.setTarget(8_000_000)
         assertEquals(6_000_000, q.onDrop(0, measuredBps = 7_600_000))

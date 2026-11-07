@@ -734,7 +734,7 @@ clearly below the current bitrate or after two measured drops in a row. A 5%
 probe lifts the cap after 30 s without a drop, but at most twice, and a drop
 after a probe stops the walk. On this shape the first drop lands near
 2.55 Mbps instead of 6, the cap rises to 2.81 Mbps and holds below the 3 Mbit/s
-link. A reconfigure at the same target keeps the measured cap. K1: `GoodputMeterTest` 6/0, `QualityAdaptationTest` 12/0; the shaped
+link. A reconfigure at the same target keeps the measured cap. K1: `GoodputMeterTest` 10/0, `QualityAdaptationTest` 18/0; the shaped
 arm itself is P4's.
 
 Arm: the same shaper, 120 s of motion (both 30 s probes and the hold after them), with the phone log and the Mac stats

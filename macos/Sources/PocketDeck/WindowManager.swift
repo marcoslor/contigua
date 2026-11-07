@@ -1006,6 +1006,14 @@ final class WindowManager {
         lock.lock(); streams[stream] = controller; lock.unlock()
     }
 
+    #if DEBUG
+    /// Test seam: register a window without a phone session, so the controller
+    /// link-reconcile tests drive the same manager path production uses.
+    func registerForTesting(_ controller: StreamWindowController, stream: UInt32) {
+        store(controller, stream: stream)
+    }
+    #endif
+
     /// Asks for or stops the phone's `stream.stats` at the one moment the
     /// window set crosses empty↔non-empty (StatsSubscription). A send the
     /// session refuses (opened before the link was ready) is not lost: the

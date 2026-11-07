@@ -39,7 +39,7 @@ settings *pages* are settings.md's, and every message's meaning for a feature
 
 ## Requirements
 
-> **PLANNED / NOT IMPLEMENTED IN THIS MERGE (PATH-25…PATH-36).** This is the
+> **PLANNED / NOT IMPLEMENTED IN THIS MERGE (PATH-25…PATH-35; PATH-36 IS IMPLEMENTED).** This is the
 > P3 media epic's specification. The merge of P0/P1/P2 carries only PATH-36,
 > the TCP fallback goodput cap, and the pure Android primitives named below:
 > `MediaDatagramTest`, `MediaCryptoTest`, `MediaReplayWindowTest`,
