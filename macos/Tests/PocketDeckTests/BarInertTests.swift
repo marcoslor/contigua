@@ -52,4 +52,42 @@ final class BarInertTests: XCTestCase {
         XCTAssertTrue(hit === button || hit?.isDescendant(of: button) == true,
                       "the bar's own button must keep its click")
     }
+
+    /// The native titlebar is taller than the 28 pt bar (32 pt on macOS 26):
+    /// its bottom rows are still the window's edge above the stream's first
+    /// visible row, so a click there must drag, not reach the picture.
+    func testAClickUnderTheTitlebarIsStillTheBars() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 800),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable,
+                                          .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        defer { window.close() }
+        window.isReleasedWhenClosed = false
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 800))
+        let chrome = StreamChromeView(video: video, style: .framed)
+        window.contentView = chrome
+        window.orderFront(nil)
+        window.layoutIfNeeded()
+        chrome.layoutSubtreeIfNeeded()
+        let titlebar = window.frame.height - window.contentLayoutRect.maxY
+        try XCTSkipIf(titlebar <= ChromeBar.height,
+                      "this titlebar (\(titlebar) pt) is not taller than the bar")
+        // The extension view stretches the picture over the window, as it
+        // does in a real window.
+        chrome.video.frame = chrome.bounds
+        let point = NSPoint(x: chrome.bounds.midX,
+                            y: chrome.bounds.height - titlebar + 1)
+        let hit = chrome.hitTest(point)
+        XCTAssertFalse(hit === chrome.video,
+                       "the titlebar's bottom row is the bar's edge, not the picture's")
+        XCTAssertTrue(hit === chrome, "the titlebar's bottom row drags the window")
+        // The stream's first visible row below the titlebar is still the
+        // picture's and keeps its touch.
+        let stream = NSPoint(x: chrome.bounds.midX,
+                             y: chrome.bounds.height - titlebar - 1)
+        XCTAssertFalse(chrome.hitTest(stream) === chrome,
+                       "the stream below the titlebar must stay the picture's")
+    }
 }
