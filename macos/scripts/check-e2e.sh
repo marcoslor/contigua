@@ -2719,7 +2719,7 @@ window_gone() {
 # drag resizes the window and the display.
 check_chrome() {
     begin_shared || return 1
-    rm -f "$WORK/chrome.txt" "$WORK/chrome-step-bar"
+    rm -f "$WORK/chrome.txt"
     local on_virtual=()
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
     "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
@@ -2732,10 +2732,8 @@ check_chrome() {
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
 
     # --- Framed: the permanent bar over the stream ---
-    # The pointer rests in the window, below the bar; the check's go later
-    # clicks the middle of the bar's band (ISS-49).
-    printf '%s\n' "hoverat 0 200" "waitfile $WORK/chrome-step-bar" "clickat 0 14" "wait 0.6" \
-        > "$WORK/chrome-framed.txt"
+    # The pointer rests in the window, below the bar.
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
         || { kill "$backdrop"; return 1; }
@@ -2791,16 +2789,42 @@ check_chrome() {
         && ok "[WIN-4] C14 the window's sides and bottom are the stream's edges ($edges)" \
         || bad "[WIN-4] C14 window edges: $edges"
 
-    # ISS-49: the bar is a blurred mirror, not the picture. A click in the
-    # middle of its band is the window's, never a touch on the phone.
-    local bar_touches bar_touches_after
-    bar_touches="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
-    touch "$WORK/chrome-step-bar"
-    sleep 1
-    bar_touches_after="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
-    [ "$bar_touches_after" -eq "$bar_touches" ] \
-        && ok "[WIN-61] C14 a click in the bar's band made no touch ($bar_touches)" \
-        || bad "[WIN-61] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
+    # WIN-61: real clicks through the window server on the band. The middle is
+    # the bar's press; the last rows under the native titlebar (taller than the
+    # 28 pt bar) are still the window's edge and used to reach the picture.
+    # A quiet run cannot post them (they move the pointer), so this step runs
+    # in a visible one, like the rig's other real-input steps.
+    if [ "$VISIBLE" = "1" ]; then
+        local bar_touches bar_touches_after bar_clicks bar_clicks_after
+        local geom win_h layout_h titlebar band_click
+        geom="$(sed -n 's/.* \(geom=.*\)/\1/p' "$WORK/chrome.txt")"
+        win_h="$(sed -n 's/.*win:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
+        layout_h="$(sed -n 's/.*layout:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
+        titlebar=$(( win_h - layout_h ))
+        band_click=$(( titlebar - 2 ))
+        say "BAR geometry: $geom (titlebar $titlebar pt, band click $band_click pt)"
+        bar_touches="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
+        bar_clicks="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
+        # Three points, each 200 pt apart so none is read as a double-click:
+        # the band's middle, then the titlebar's bottom row twice (an inactive
+        # window's first click may only activate it).
+        cg_input click --window "$win" --top 14 --dx -200
+        sleep 0.6
+        cg_input click --window "$win" --top "$band_click" --dx 0
+        sleep 0.6
+        cg_input click --window "$win" --top "$band_click" --dx 200
+        sleep 1
+        bar_touches_after="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
+        bar_clicks_after="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
+        [ "$bar_touches_after" -eq "$bar_touches" ] \
+            && ok "[WIN-61] C14 real clicks in the bar's band made no touch ($bar_touches)" \
+            || bad "[WIN-61] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
+        [ "${bar_clicks_after:-0}" -gt "${bar_clicks:-0}" ] \
+            && ok "[WIN-61] C14 the clicks were the bar's own press (clicks $bar_clicks -> $bar_clicks_after)" \
+            || bad "[WIN-61] C14 the bar's band click never reached the chrome (clicks ${bar_clicks:-?} -> ${bar_clicks_after:-?})"
+    else
+        skip_visible "WIN-61 the bar's band click as a real CGEvent"
+    fi
 
     # The virtual display is the stream's in either style and while switching
     # (checked over all three launches at the end).

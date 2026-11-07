@@ -28,6 +28,8 @@ final class StreamChromeWindowTests: XCTestCase {
     /// reads on its own (the rest of the line is compared exactly).
     private func withoutVideo(_ line: String) -> String {
         line.replacingOccurrences(of: #" video=\d+,\d+,\d+,\d+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #" geom=\S+.*? video_gap="#, with: " video_gap=",
+                                  options: .regularExpression)
     }
 
     private func makeManager() -> WindowManager {
