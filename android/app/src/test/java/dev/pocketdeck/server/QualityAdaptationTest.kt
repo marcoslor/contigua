@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -74,6 +75,69 @@ class QualityAdaptationTest {
         assertEquals(1_912_500, q.onDrop(1_000, measuredBps = 5_000_000))
         assertEquals(4_250_000, q.ceilingBps)
         assertEquals(2_103_750, q.maybeRecover(6_000))
+    }
+
+    @Test
+    fun `a reconfigure at the same target keeps the measured cap`() {
+        q.setTarget(8_000_000)
+        q.onDrop(0, measuredBps = 3_000_000)
+        assertEquals(2_550_000, q.bitrate)
+        assertEquals(2_550_000, q.ceilingBps)
+        // configure() repeats the target on every resize/open; it is not a new
+        // stream and must not replay the drop from 8 Mbit/s.
+        assertEquals(2_550_000, q.setTarget(8_000_000))
+        assertEquals(2_550_000, q.ceilingBps)
+        assertEquals(8_000_000, q.targetBps)
+    }
+
+    @Test
+    fun `one drop on a healthy link does not lower the ceiling`() {
+        q.setTarget(8_000_000)
+        assertEquals(6_000_000, q.onDrop(0, measuredBps = 7_600_000))
+        assertEquals("7.6 of 8 Mbit/s is a transient, not the link", 8_000_000, q.ceilingBps)
+        assertEquals(6_600_000, q.maybeRecover(5_000))
+        assertEquals(7_260_000, q.maybeRecover(10_000))
+        assertEquals(7_986_000, q.maybeRecover(15_000))
+        assertEquals(8_000_000, q.maybeRecover(20_000))
+    }
+
+    @Test
+    fun `two measured drops in a row trust the measurement`() {
+        q.setTarget(8_000_000)
+        assertEquals(6_000_000, q.onDrop(0, measuredBps = 7_600_000))
+        assertEquals(8_000_000, q.ceilingBps)
+        assertEquals(4_500_000, q.onDrop(1_000, measuredBps = 7_600_000))
+        assertEquals(6_460_000, q.ceilingBps)
+    }
+
+    @Test
+    fun `the ceiling probe is bounded to two steps`() {
+        q.setTarget(8_000_000)
+        q.onDrop(0, measuredBps = 3_000_000)
+        q.maybeRecover(30_000)
+        assertEquals(2_677_500, q.ceilingBps)
+        q.maybeRecover(60_000)
+        assertEquals(2_811_375, q.ceilingBps)
+        // A hard 3 Mbit/s link: the cap holds below the link instead of walking
+        // 2.55 -> 3.10 Mbit/s after four probes and re-entering the sawtooth.
+        q.maybeRecover(90_000)
+        q.maybeRecover(120_000)
+        assertEquals(2_811_375, q.ceilingBps)
+        assertTrue(q.ceilingBps < 3_000_000)
+    }
+
+    @Test
+    fun `a drop after a probe stops the walk`() {
+        q.setTarget(8_000_000)
+        q.onDrop(0, measuredBps = 3_000_000)
+        q.maybeRecover(30_000) // one probe spent
+        assertEquals(2_677_500, q.ceilingBps)
+        q.onDrop(31_000, measuredBps = 2_900_000)
+        assertEquals(2_465_000, q.ceilingBps)
+        q.maybeRecover(61_000)
+        q.maybeRecover(91_000)
+        q.maybeRecover(121_000)
+        assertEquals("no further probes after a probe-induced drop", 2_465_000, q.ceilingBps)
     }
 
     @Test

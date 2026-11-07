@@ -1103,14 +1103,16 @@ class Session(
                 }
                 // A frame's socket write is both the end of its queue delay
                 // (ISS-40) and the goodput sample P4's recovery cap reads. The
-                // stats part runs only while the Mac asked; the goodput note
-                // always runs, because the fallback cap must exist without it.
-                val written = if (entry.stream != 0 && entry.enqueuedUs > 0) {
+                // stats part runs only for a queued delta while the Mac asked;
+                // the goodput note runs for every video entry (keyframes
+                // included), because the fallback cap must see all the bytes
+                // the link actually carried.
+                val written = if (entry.stream != 0) {
                     val enqueued = entry.enqueuedUs
                     val stream = entry.stream
                     val size = entry.bytes.size
                     {
-                        if (statsOn) {
+                        if (statsOn && enqueued > 0) {
                             val delay = monoUs() - enqueued
                             synchronized(statsLock) {
                                 sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
@@ -1390,8 +1392,14 @@ class Session(
         }
         if (nmBytes.size != 16) return onPairingMissingState()
         // §4 steps 3-4: reveal what we committed to; both sides derive the code.
+        val exporter = tlsFacts.exporter()
+        if (exporter == null) {
+            // PMX-8: a missing exporter must fail closed. A zero-filled
+            // substitute would make the pairing code predictable.
+            log("pair code refused: no exporter under TLS")
+            return finishWithError("pair_exporter", "no TLS exporter on this phone")
+        }
         sendJson(mapOf("t" to "pair.reveal", "n" to PairingCodeV2.hex(np)))
-        val exporter = tlsFacts.exporter() ?: ByteArray(32)
         val code = PairingCodeV2.code(exporter, pendingMacFp, pendingPhoneFp, nmBytes, np)
         val codeStr = PairingCodeV2.codeHex(code)
         // The code itself never reaches a log (rule: hashes/lengths only).
@@ -1770,6 +1778,7 @@ class Session(
             synchronized(streams) { streams.remove(stream) }
             display.close(stream)
             gate.forget(stream)
+            goodput.forget(stream)
             updatePower()
             sendError("cannot_adopt", "the task could not be moved", stream)
             log("adopt: refused stream=$stream task=$taskId")
@@ -2043,6 +2052,7 @@ class Session(
         streamCodecs.remove(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
+        goodput.forget(stream)
         synchronized(suspendApplies) { suspendApplies.remove(stream) }
         val sentAtClose = synchronized(statsLock) {
             sendStats.remove(stream)
@@ -3725,6 +3735,7 @@ class Session(
         display.close(stream)
         streamCodecs.remove(stream)
         gate.forget(stream)
+        goodput.forget(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to reason))
         updatePower()

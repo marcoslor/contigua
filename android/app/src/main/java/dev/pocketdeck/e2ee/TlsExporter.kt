@@ -1,6 +1,7 @@
 package dev.pocketdeck.e2ee
 
 import android.net.ssl.SSLSockets
+import android.os.Build
 
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -17,6 +18,11 @@ import javax.crypto.spec.SecretKeySpec
 object TlsExporter {
     const val LABEL = "EXPORTER-pocketdeck-pair"
     const val CONTEXT_EMPTY = ""
+
+    /** `SSLSockets.exportKeyingMaterial` arrived in API 31; minSdk is 30. */
+    const val MIN_EXPORT_SDK = 31
+
+    fun exportSupported(sdkInt: Int): Boolean = sdkInt >= MIN_EXPORT_SDK
 
     /** RFC 8446 §7.5: two HKDF-Expand-Label steps, empty context. */
     fun derive(exporterSecret: ByteArray): ByteArray {
@@ -61,19 +67,19 @@ object TlsExporter {
     fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     /**
-     * Platform acquisition (Android API 29+, minSdk 30). Resolved by
-     * reflection so this module still compiles/tests on the JVM where
-     * `android.net.ssl.SSLSockets` is absent. Returns null outside Android or
-     * when the socket is not supported. The caller (the shell server, on a
-     * platform SSLSocket) obtains the 32 RFC bytes after the handshake.
+     * Platform acquisition. `SSLSockets.exportKeyingMaterial` is API 31; the
+     * app's minSdk is 30, so an API 30 phone MUST NOT reach the call (it would
+     * throw `NoSuchMethodError`). It returns null there, and the pairing path
+     * fails closed with `pair_exporter`; the Mac says the phone needs a newer
+     * Android. On API 31+ the call is guarded by `isSupportedSocket` and any
+     * engine refusal is null, never a zero key.
      *
-     * Production call site equivalent:
+     * The platform call is:
      *   android.net.ssl.SSLSockets.exportKeyingMaterial(sslSocket, LABEL,
      *       emptyContext, 32)
-     * guarded by
-     *   android.net.ssl.SSLSockets.isSupportedSocket(sslSocket)
      */
     fun tryExportKeyingMaterial(socket: javax.net.ssl.SSLSocket): ByteArray? {
+        if (!exportSupported(Build.VERSION.SDK_INT)) return null
         if (!SSLSockets.isSupportedSocket(socket)) return null
         return try {
             SSLSockets.exportKeyingMaterial(socket, LABEL, ByteArray(0), 32)
