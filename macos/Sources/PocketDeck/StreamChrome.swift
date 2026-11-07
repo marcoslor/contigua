@@ -203,6 +203,9 @@ final class StreamChromeView: NSView {
     /// The pill, for the window tests (they look inside).
     var pill: DwellPillView { pillView }
 
+    /// The mirror's frame in the chrome (the e2e's geometry).
+    var mirrorFrame: NSRect { ext.frame }
+
     /// The Show Touches dots' layer, for the tests and the chrome state.
     var touchDotsLayer: CALayer { touchDots }
 
@@ -600,10 +603,24 @@ final class StreamChromeView: NSView {
         liveTextCapsule.material = material
     }
 
+    /// The bottom edge of the band that belongs to the window: the framed bar
+    /// plus whatever the native titlebar covers. The titlebar is taller than
+    /// the bar on macOS 26 (32 against 28), and its last rows still show the
+    /// stream's top edge at the window's edge. A click there is the bar's, not
+    /// the picture's (ISS-49); without this the click under the titlebar
+    /// reaches VideoLayerView and becomes a touch. No window (tests build the
+    /// chrome alone): the bar alone.
+    private var inertBandBottom: CGFloat {
+        let barBottom = bounds.height - barHeight
+        guard let window else { return barBottom }
+        let contentTop = convert(window.contentLayoutRect, from: nil).maxY
+        return min(barBottom, contentTop)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         guard barHeight > 0,
-              convert(point, from: superview).y >= bounds.height - barHeight else { return hit }
+              convert(point, from: superview).y >= inertBandBottom else { return hit }
         guard let hit else { return nil }
         // The bar's mirrored band is the window's own: a click on it is a drag
         // (and counts). The band decides, not which view the mirror's content
