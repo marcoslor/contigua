@@ -183,6 +183,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var closingFromRemote = false
     /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
     private var dwellTimer: Timer?
+    /// The last pointer point in window coordinates: when the pill appears
+    /// under a pointer that is resting in the hot zone, the hover over the
+    /// phone ends without waiting for the next move.
+    private var lastPointerWindowPoint: CGPoint?
     /// Rewrites the chrome state when the picture's own size changes, so the
     /// e2e's `video=` rect is the settled one, not the pre-answer rectangle.
     private var videoSizeObserver: NSObjectProtocol?
@@ -346,10 +350,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                 && !(self.window?.styleMask.contains(.fullScreen) ?? false)
         }
         videoView.macUIAtWindowPoint = { [weak self] point in
-            guard let self, self.chrome.effectiveStyle == .immersive, self.chrome.showsPill else { return false }
-            let height = self.chrome.bounds.height
-            let streamPoint = CGPoint(x: point.x, y: height - point.y)
-            return self.chrome.pillStreamRect.insetBy(dx: -4, dy: -4).contains(streamPoint)
+            guard let self else { return false }
+            // Window point to the chrome's own space: the chrome decides for
+            // clicks (hitTest) and hover alike (WIN-61).
+            return self.chrome.ownsPoint(self.chrome.convert(point, from: nil))
         }
         videoView.onRequestKeyframe = { [weak self] in
             guard let self else { return }
@@ -766,6 +770,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if dwell.shown != lastPillShown {
             lastPillShown = dwell.shown
             chrome.setPill(dwell.shown)
+            // The pill came up under a pointer that has not moved: it is Mac
+            // UI now, so the phone's hover ends here rather than at the next
+            // move (ISS-49).
+            if dwell.shown, let point = lastPointerWindowPoint {
+                videoView.hoverPointerMoved(toWindowPoint: point)
+            }
         }
         writeChromeState()
     }
@@ -1436,6 +1446,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The pointer moved to a point in the window (also the scripted driver's
     /// hover): the immersive dwell's feed, and the phone's mouse hover.
     func pointerMoved(toWindowPoint point: CGPoint) {
+        lastPointerWindowPoint = point
         if chrome.effectiveStyle == .immersive && !chromeAlwaysVisible {
             // DwellChrome's zone is in stream coordinates, top-left origin: in
             // immersive the window is exactly the stream.
