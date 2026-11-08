@@ -12,7 +12,8 @@ Stability:
 1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
 2. The fade to black and the two-press wake on a phone wake while a window is open (ISS-3, ISS-24): the virtual-device display move, requirements first.
 3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
-4. Re-check the older connection items: ISS-8, ISS-9, ISS-12, ISS-7.
+4. Finder still showing phone files that are gone (ISS-37): slices 2–4.
+5. Re-check the older connection items and the untested requirements: ISS-8, ISS-9, ISS-12, ISS-7, ISS-14.
 
 Performance:
 1. Scrolling looks like low fps: find where a trackpad or mouse scroll loses motion (Mac input, phone injection, app frames). In progress: `probe/motionfps`.
@@ -20,9 +21,10 @@ Performance:
 3. The first connect after an install takes 3.2 s (ISS-46, left open).
 4. The real-phone sharpness check (ISS-39).
 5. The UDP media plane (ISS-50) waits until a measurement shows TCP is the limit.
-6. The Deck zoom-drag margin (ISS-31, rig only).
+6. The battery cost of keep-alive pings (ISS-11).
+7. The Deck zoom-drag margin (ISS-31, rig only).
 
-Then the features: Live Updates (in progress: `spike/liveany`), the Stock style (ISS-45, `feat/stock`), several phones.
+Then the features: Live Updates (in progress: `spike/liveany`), the Stock style (ISS-45, `feat/stock`), several phones (with ISS-38). The test-setup items (§ 4) go to whichever worker next touches that check.
 
 ## 1. High QoL, next up
 
