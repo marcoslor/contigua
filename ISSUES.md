@@ -214,6 +214,21 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
   - **UI toolkit:** open again, since GPUI's web build needs WebGPU (or WebGL2) and cross-origin isolation, which our own origin can serve. It's still experimental (one canvas per page, no menus, canvas text and IME). A DOM app is the safer default. Decide by one prototype round: the Deck and one stream window in each. Nothing needs to move off SwiftUI on the Mac. What's shared regardless is the protocol, the fake-phone conformance checks and the visual language.
   - **First step, a spike:** a Windows or Linux browser opens the site with nothing installed and pairs by QR. It plays one stream both ways (RTP track and data channel with WebCodecs), with keyboard and pointer input, on the LAN and through a TURN relay. It measures latency, CPU and the phone's added size and memory against the Mac app.
 
+- **ISS-53 Icons look flat next to macOS 26's glass icons (the person, 2026-11-08).** Apple's own Mac and iPhone icons aren't flat: the system draws a glass rim on them, a specular highlight on the edges lit from above, with a little refraction, translucency and a soft shadow. PocketDeck's icons have none of it.
+  - **What the platform does:**
+    - Icons made with Icon Composer (an `.icon` package: up to four layers in groups, plus an `icon.json` with specular, refraction, translucency, blur and shadow per group, and light, dark, clear and tinted variants) are rendered live by the system. The light comes from above by default, and highlights sit inside or outside each layer.
+    - A plain bitmap or `.icns` gets none of that.
+    - The `.icon` package is compiled by `actool` (Xcode). Apple documents no other way to build one, and the format is known only from a third-party write-up.
+  - **Two cases:**
+    - **PocketDeck's own app icon:** rebuild it as an `.icon` in Icon Composer and compile it into the bundle at build time (Xcode is on the build machine). The system then draws the glass and the appearance variants.
+    - **Android app icons on the Mac** (the Deck grid, the Dock shims, Spotlight, the Finder location): they're made at run time on the person's Mac, where there's no Xcode. So bake one preset into the bitmap: macOS's continuous-corner squircle mask, a rim highlight from the top, a faint inner edge band for the refraction, and a soft drop shadow, at every size the system uses. Check whether a shim app could carry a prebuilt `.icon` with the Android icon as its only layer instead; that would let the system do the glass.
+  - **Plan (a visual change, so prototypes come first):**
+    - research the exact look: measure native icons from Dock and Finder captures, light and dark;
+    - make 3–4 preset options, rendered on real Android icons (flat, adaptive with a background, a photo-like one, a white one) next to native icons;
+    - the reviewer looks first, then the person picks;
+    - only then build it, with a pixel check against the chosen render.
+
+  Queued after the stability items.
 - **ISS-45 A third window style, "Stock" (or "Default"), whose frame mirrors macOS Quick Look's preview window 1:1 (the person, 2026-11-05).** It joins today's two styles, Framed (which the person calls "compact") and Immersive (WIN-7); the name and whether it becomes the default are the person's call.
   - **Scope (the person):** mirror the frame exactly, meaning its borders, paddings, corners and material. Everything inside the bar is PocketDeck's own UI: the traffic lights, the title and our controls. Nothing of Quick Look's own buttons carries over.
   - **The reference:** Finder's Quick Look preview of a landscape picture, dark appearance, measured from the person's 2× screenshot (not kept in the repo: it shows a personal photo).
