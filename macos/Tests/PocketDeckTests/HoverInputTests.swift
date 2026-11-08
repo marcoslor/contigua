@@ -267,4 +267,114 @@ final class HoverInputTests: XCTestCase {
         controller.pointerMoved(toWindowPoint: hotZone)
         XCTAssertEqual(sent.actions, [.enter, .exit])
     }
+
+    // MARK: The band is never phone input (WIN-61)
+
+    /// The window's top band is the window's own for hover as it is for
+    /// clicks: the extension view stretches the picture over the whole
+    /// window, so the framed bar's mirror is still inside the video view, and
+    /// moving the pointer there must end the phone's hover and send nothing
+    /// while it stays (ISS-49, WIN-61).
+    func testHoverIntoTheFramedBandLeavesThePhoneAndStaysOut() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.noteFirstFrame()
+        // The real window's geometry: the extension view's contentView (the
+        // video) fills the window, mirroring its top edge into the bar.
+        controller.videoView.frame = controller.chrome.bounds
+        var sent = Sent()
+        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
+        mapper.scheduleHoverMove = { _, work in work() }
+        mapper.send = { command in
+            if case .hover(let event) = command { sent.hovers.append(event) }
+        }
+        let bounds = controller.chrome.bounds
+        let bandBottom = min(bounds.height - ChromeBar.height, window.contentLayoutRect.maxY)
+        let x = bounds.midX
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: bandBottom - 20))
+        XCTAssertEqual(sent.actions, [.enter], "the picture below the band is the phone's")
+
+        // The bar's own 28 pt and the titlebar rows above the stream's first
+        // visible row are both the band.
+        for y in [bandBottom + 1, bounds.height - 1] {
+            controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: y))
+            XCTAssertEqual(sent.actions, [.enter, .exit], "hover at y=\(y) enters the band")
+            controller.pointerMoved(toWindowPoint: CGPoint(x: x + 40, y: y))
+            XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the band")
+        }
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: bandBottom - 20))
+        XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "below the band the hover resumes")
+    }
+
+    /// The Phone Mirror wears the same chrome: its framed band belongs to the
+    /// window, not to the phone's own screen.
+    func testHoverIntoThePhoneMirrorsFramedBandLeavesThePhone() throws {
+        let manager = makeManager()
+        let controller = PhoneWindowController(stream: 1, phone: nil, manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.noteFirstFrame()
+        controller.videoView.frame = controller.chrome.bounds
+        var sent = Sent()
+        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
+        mapper.scheduleHoverMove = { _, work in work() }
+        mapper.send = { command in
+            if case .hover(let event) = command { sent.hovers.append(event) }
+        }
+        let bounds = controller.chrome.bounds
+        let bandBottom = min(bounds.height - ChromeBar.height, window.contentLayoutRect.maxY)
+        let x = bounds.midX
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: bandBottom - 40))
+        XCTAssertEqual(sent.actions, [.enter])
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: bandBottom + 1))
+        XCTAssertEqual(sent.actions, [.enter, .exit])
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x + 40, y: bandBottom + 1))
+        XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the band")
+        controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: bandBottom - 40))
+        XCTAssertEqual(sent.actions, [.enter, .exit, .enter])
+    }
+
+    /// In immersive the pill appears under a pointer that is resting in the
+    /// hot zone. The pointer does not move to leave the phone: the pill's
+    /// arrival itself must end the hover, once, and further moves over it send
+    /// nothing until the pointer is back on the picture.
+    func testTheImmersivePillAppearingUnderARestingPointerEndsTheHover() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.setStyle(.immersive)
+        window.orderFront(nil)
+        controller.noteFirstFrame()
+        var sent = Sent()
+        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
+        mapper.scheduleHoverMove = { _, work in work() }
+        mapper.send = { command in
+            if case .hover(let event) = command { sent.hovers.append(event) }
+        }
+        let hotZone = CGPoint(x: 20, y: window.frame.height - 16)
+        controller.pointerMoved(toWindowPoint: hotZone)
+        XCTAssertEqual(sent.actions, [.enter], "at rest the hot zone is still the picture")
+
+        pump(0.5)
+        XCTAssertTrue(controller.chrome.showsPill, "the pill is up")
+        XCTAssertEqual(sent.actions, [.enter, .exit],
+                       "the pill came up under the resting pointer: the hover ends")
+
+        controller.pointerMoved(toWindowPoint: hotZone)
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 40, y: hotZone.y))
+        XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the pill")
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 40, y: hotZone.y - 80))
+        XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "the picture below resumes the hover")
+    }
 }
