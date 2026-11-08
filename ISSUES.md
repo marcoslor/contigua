@@ -179,6 +179,13 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
    - **Requirements gate:** research note (Android 16/17 Live Updates, One UI's Now Bar, what disqualifies promotion), surface spec, then a visual prototype round with 3–4 real renders (menu-bar items per update; one menu-bar item with a stack; an island around the notch; a desktop widget), the person picks.
    - **Scope refined 2026-11-08 (the person):** persistent notifications are a first-class source and on by default; the source rules are brand-neutral, so any Android phone works and a brand's extras only enrich (LIVE-3, LIVE-23); timers and alarms (next alarm, ringing with Dismiss/Snooze; LIVE-24, LIVE-25) and deliveries and rides come first. Proof on the emulator with Google Clock; no second real phone.
    - **PoC step 1 (2026-11-07, `spike/livecap`, the person's phone):** a countdown's deadline reads brand-neutrally from the `Chronometer` in a card's views (under 1 s on One UI 9 Clock, +2.1 s on Google Clock on the emulator); a Mac redraw from fields matches the phone card; a third-party app's Android 16 promoted notification works on One UI 9. Next: step 1b, the generic view extractor, the classifier, a debug survey of card shapes, delivery and ride shapes, next alarm and ringing.
+   - **PoC step 1b (2026-11-08, `spike/liveany`, emulator):**
+     - The classifier gave the expected verdict for every stand-in shape: delivery, ride (deadline read from the card's own views), navigation, download, a VPN-like card waiting forever, and the service, media, call and group-summary refusals.
+     - A Google Clock timer's deadline came within 1 s, read from its views.
+     - The next alarm reads, and changes after a snooze. A ringing alarm is detected through its full-screen intent.
+     - A ringing Google timer keeps its card with a past deadline, so LIVE-25 now covers that.
+     - `DISMISS_TIMER` works from the shell, not from the app process.
+     - Unverified: the paused-timer signal and the advertised Stop/Dismiss actions. They go to the reviewer's real-phone pass on an APK of main plus the spike (`spike/liveany-main`).
    - **Status 2026-11-06:** research (`docs/research/live-updates.md`) and spec (`docs/specs/live.md`, LIVE-1..22) merged; prototype round done (`proto/live` 61dd193e, sheets in `.agent/proto/live/`; no widget option, an ad-hoc WidgetKit extension is unproven). Waiting on the person's pick: A (one menu-bar item per update, folding into one item at 3+; recommended), B (one item with a stack) or C (a floating pill).
 2. **Several phones at once.** An audit and a plan come first; the session layer holds one session today.
    - **Audit and plan:** `docs/design/multi-phone.md` (merged 2026-11-06).
