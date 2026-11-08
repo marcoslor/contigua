@@ -6,6 +6,24 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **Closing:** the reviewer deletes an item once the fix is merged and verified, and names its ID in the merge commit. Numbers are never reused.
 - **Re-check** means the item may already be fixed by later work. Confirm it before working on it.
 
+## Order now (the person, 2026-11-08: stability, then performance)
+
+Stability:
+1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
+2. The fade to black and the two-press wake on a phone wake while a window is open (ISS-3, ISS-24): the virtual-device display move, requirements first.
+3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
+4. Re-check the older connection items: ISS-8, ISS-9, ISS-12, ISS-7.
+
+Performance:
+1. Scrolling looks like low fps: find where a trackpad or mouse scroll loses motion (Mac input, phone injection, app frames). In progress: `probe/motionfps`.
+2. Tap to screen in 182 ms: split it into input, app reaction and first draw.
+3. The first connect after an install takes 3.2 s (ISS-46, left open).
+4. The real-phone sharpness check (ISS-39).
+5. The UDP media plane (ISS-50) waits until a measurement shows TCP is the limit.
+6. The Deck zoom-drag margin (ISS-31, rig only).
+
+Then the features: Live Updates (in progress: `spike/liveany`), the Stock style (ISS-45, `feat/stock`), several phones.
+
 ## 1. High QoL, next up
 
 - **ISS-37 Finder keeps phone files that are gone.** On the person's phone (2026-11-04), Finder listed 568 entries in DCIM/Camera; the phone had 109. The other 459 were photos moved off or deleted on the phone since June (and 15 of Android's `.trashed-…` files), so Finder showed them, asked thumbnails for them, and got `fs_not_found` (334 of 446 asks).
