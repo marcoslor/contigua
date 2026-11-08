@@ -82,6 +82,8 @@ internal class SendQueue(
     private val dropping = HashSet<Int>()
     private val dropCounts = HashMap<Int, Int>()
     private val dropEpisodes = HashMap<Int, Int>()
+    /** The largest key frame's size against the byte budget, one line per new max. */
+    private val keyMaxBytes = HashMap<Int, Int>()
     /** The pts of the last frame the writer sent, per stream. */
     private val lastSentPtsUs = HashMap<Int, Long>()
     /** The last sent pts before the open drop episode's first discarded delta. */
@@ -127,6 +129,7 @@ internal class SendQueue(
      */
     fun enqueueControl(stream: Int, bytes: ByteArray, ptsUs: Long = -1) {
         var changed = false
+        var keyLog: String? = null
         synchronized(lock) {
             if (stream != 0) {
                 dropping.remove(stream)
@@ -140,8 +143,16 @@ internal class SendQueue(
             // A video key frame is the only control entry with a pts; config
             // and JSON entries carry -1 and must not close a drop episode.
             control.addLast(Entry(bytes, stream, ptsUs = ptsUs, key = ptsUs >= 0))
+            if (stream != 0 && ptsUs >= 0 && bytes.size > (keyMaxBytes[stream] ?: 0)) {
+                keyMaxBytes[stream] = bytes.size
+                // The overrun arm needs a key frame's size against the budget
+                // it must fit in; sizes and rates only.
+                keyLog = "stream $stream key frame: bytes=${bytes.size} " +
+                    "budget=${policyOf(stream).maxBytes}"
+            }
             lock.notifyAll()
         }
+        keyLog?.let(log)
         if (changed) onSuspendChanged(stream)
     }
 
@@ -247,6 +258,7 @@ internal class SendQueue(
         overflowStates.remove(stream)
         suspendSinceMs.remove(stream)
         dropStates.remove(stream)
+        keyMaxBytes.remove(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {

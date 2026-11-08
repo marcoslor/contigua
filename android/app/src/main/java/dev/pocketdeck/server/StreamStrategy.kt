@@ -31,6 +31,12 @@ data class StreamStrategy(
     val lowLatency: Boolean = false,
     /** P3: the media plane. `tcp` is the shipped default until P5. */
     val transport: Transport = Transport.Tcp,
+    /**
+     * Overrun arm A: the encoder's bitrate key is this many times the target
+     * the sender believes (a VBR encoder that overshoots its target). 1 is
+     * off; the product never sets it.
+     */
+    val overshoot: Int = 1,
 ) {
 
     enum class Overflow { Drop, Suspend }
@@ -91,6 +97,7 @@ data class StreamStrategy(
         if (transport != Transport.Tcp) parts += "transport=${transport.token}"
         if (queueMs != DEFAULT_QUEUE_MS) parts += "queue_ms=$queueMs"
         if (overflow == Overflow.Suspend) parts += "overflow=suspend"
+        if (overshoot != DEFAULT_OVERSHOOT) parts += "overshoot=$overshoot"
         if (refine) parts += "refine=on"
         if (trafficClass != 0) parts += "tos=0x%02x".format(trafficClass)
         if (stallMs > 0) parts += "stall=$stallMs/$stallEveryMs"
@@ -128,6 +135,8 @@ data class StreamStrategy(
         const val MAX_FPS = 120
         const val MIN_VD_RATE = 60
         const val MAX_VD_RATE = 120
+        const val DEFAULT_OVERSHOOT = 1
+        const val MAX_OVERSHOOT = 32
 
         val DEFAULT = StreamStrategy()
 
@@ -161,6 +170,8 @@ data class StreamStrategy(
                     "udp" -> Transport.Udp
                     else -> Transport.Tcp
                 },
+                overshoot = raw("overshoot")
+                    .parseInt(DEFAULT_OVERSHOOT, 1..MAX_OVERSHOOT),
             )
         }
 

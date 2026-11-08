@@ -500,7 +500,7 @@ internal class WindowStream(
      */
     fun onBackpressure(measuredBps: Int? = null) {
         val bps = quality.onDrop(SystemClock.elapsedRealtime(), measuredBps) ?: return
-        log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%)")
+        log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%, encoder ${mbps(encoderBitrate(bps))})")
         if (measuredBps != null) {
             log("stream $stream quality: recovery cap ${mbps(quality.ceilingBps)} " +
                 "(measured ${mbps(measuredBps)})")
@@ -785,6 +785,9 @@ internal class WindowStream(
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).
         quality.setTarget(requestedBitrate ?: strategy.bitrateFor(w, h))
+        if (strategy.overshoot != StreamStrategy.DEFAULT_OVERSHOOT) {
+            log("stream $stream: encoder overshoot ${strategy.overshoot}x the target")
+        }
         if (StreamDebug.ignoreRepeatFrame()) {
             log("stream $stream: ${StreamDebug.IGNORE_REPEAT}=1, no repeat-previous-frame heartbeat")
         }
@@ -806,7 +809,7 @@ internal class WindowStream(
         val plan = StreamFormat.build(
             w = w,
             h = h,
-            bitrateBps = quality.bitrate,
+            bitrateBps = encoderBitrate(quality.bitrate),
             strategy = strategy,
             cbrSupported = cbrSupported,
             intraRefreshSupported = intraRefreshSupported,
@@ -818,7 +821,7 @@ internal class WindowStream(
         )
         val format = plan.format
         stats.setTarget(quality.bitrate)
-        appliedBitrate = quality.bitrate
+        appliedBitrate = encoderBitrate(quality.bitrate)
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         } catch (e: Throwable) {
@@ -1009,13 +1012,20 @@ internal class WindowStream(
     /** A bitrate for the refined frame only; the adaptation's target is untouched. */
     private fun setLiveBitrate(bps: Int, reason: String) {
         val codec = encoder ?: return
+        val encoderBps = encoderBitrate(bps)
         val ok = runCatching {
             val params = Bundle()
-            params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps)
+            params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, encoderBps)
             codec.setParameters(params)
             true
         }.getOrDefault(false)
-        log("stream $stream bitrate ${mbps(bps)} ($reason${if (ok) "" else ", encoder not running"})")
+        log("stream $stream bitrate ${mbps(encoderBps)} ($reason${if (ok) "" else ", encoder not running"})")
+    }
+
+    /** Arm A's overshoot: what the codec is told, while the sender's target stays [bps]. */
+    private fun encoderBitrate(bps: Int): Int {
+        val factor = strategy.overshoot.coerceAtLeast(1).toLong()
+        return (bps.toLong() * factor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     private fun drain(codec: MediaCodec, kind: VideoCodec) {
@@ -1137,8 +1147,8 @@ internal class WindowStream(
 
     /** Applies the current bitrate through `setParameters`; logs each change once. */
     private fun applyBitrate() {
-        val bps = quality.bitrate
-        stats.setTarget(bps)
+        val bps = encoderBitrate(quality.bitrate)
+        stats.setTarget(quality.bitrate)
         if (bps == appliedBitrate) return
         val codec = encoder
         val ok = codec != null && runCatching {
