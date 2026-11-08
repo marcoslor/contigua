@@ -261,9 +261,11 @@ final class HoverInputTests: XCTestCase {
         controller.pointerMoved(toWindowPoint: hotZone)
         pump(0.5)
         XCTAssertTrue(controller.chrome.showsPill, "the pill is up")
-        XCTAssertEqual(sent.actions, [.enter])
+        // The pill came up under the resting pointer: it is Mac UI now, so
+        // the hover ends without another move.
+        XCTAssertEqual(sent.actions, [.enter, .exit])
 
-        // The same point is now Mac UI: the phone sees the mouse leave.
+        // The same point is Mac UI: the phone sees nothing more.
         controller.pointerMoved(toWindowPoint: hotZone)
         XCTAssertEqual(sent.actions, [.enter, .exit])
     }
