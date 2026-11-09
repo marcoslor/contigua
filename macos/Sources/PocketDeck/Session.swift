@@ -123,6 +123,8 @@ enum VideoEvent {
     case config(stream: UInt32, config: VideoConfig, picture: PictureRect)
     /// `path` is the path the frame arrived on, for the e2e frame log.
     case frame(stream: UInt32, frame: VideoFrameData, path: String)
+    /// R6: the VIDEO_CHUNK assembler threw an incomplete access unit away.
+    case chunkIncomplete(stream: UInt32)
 }
 
 enum SessionEvent {
@@ -305,6 +307,8 @@ final class Session {
     private var decoder = FrameDecoder()
     /// window.content for each stream, waiting for the VIDEO_CONFIG it precedes (read on the reader).
     private var pendingPictures: [UInt32: PictureRect] = [:]
+    /// R4: one incomplete chunked access unit per stream.
+    private var videoChunks = VideoChunkAssembler()
     /// The dialed host:port of the current/most recent attempt (§2): welcome
     /// turns it into the cached address the planner falls back on (C10).
     private var dialedAddress: CachedAddress?
@@ -750,6 +754,9 @@ final class Session {
             "t": "hello", "v": PathVersion.current, "path": id,
             "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId,
             "codecs": Self.helloCodecs(),
+            // R4: this Mac reassembles VIDEO_CHUNK fragments, so a phone may
+            // split a large access unit and let audio pass between the pieces.
+            "videoChunks": true,
         ]
         if let join { hello["join"] = join }
         if pairingAttempt, join == nil { hello["pair"] = true }
@@ -1445,6 +1452,22 @@ final class Session {
             }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
             onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
+        case .videoChunk:
+            guard let chunk = try? VideoChunkData(payload: frame.payload) else {
+                Log.session.error("bad VIDEO_CHUNK payload, stream \(frame.stream, privacy: .public)")
+                if videoChunks.forget(stream: frame.stream) {
+                    onVideoEvent?(.chunkIncomplete(stream: frame.stream))
+                }
+                return
+            }
+            let result = videoChunks.add(stream: frame.stream, chunk: chunk)
+            if result.discardedIncomplete {
+                // R6: the stub it discarded was a picture the decoder needed.
+                onVideoEvent?(.chunkIncomplete(stream: frame.stream))
+            }
+            guard let data = result.frame else { return }
+            LatencyLog.shared.noteVideoFrame(stream: frame.stream)
+            onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
         case .shareData:
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
         case .clipData:
@@ -1704,6 +1727,10 @@ final class Session {
             // (D-1's active test); a Mac close skips sendClose, so this is the
             // only place the id is forgotten.
             forgetStream(closed)
+            // R6: an incomplete chunked unit dies with its stream.
+            if videoChunks.forget(stream: closed) {
+                onVideoEvent?(.chunkIncomplete(stream: closed))
+            }
             emit(.windowClosed(stream: closed,
                                reason: message.string("reason") ?? ""))
         case "window.title":

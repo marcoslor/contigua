@@ -56,6 +56,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x03` | VIDEO_FRAME | phone→mac | `u64 ptsUs` · `u8 flags` (bit0 = keyframe) · Annex-B access unit |
 | `0x04` | AUDIO_CONFIG | phone→mac | `u8 codec` (2 = Opus, 3 = AAC-LC) · `u32 sampleRate` · `u8 channels` · `u16 frameMs` · codec setup bytes (Opus: empty; AAC: ASC) |
 | `0x05` | AUDIO_FRAME | phone→mac | `u64 ptsUs` · one encoder packet (one Opus frame or one AAC access unit) |
+| `0x06` | VIDEO_CHUNK | phone→mac | `u64 ptsUs` · `u8 flags` (bit0 = keyframe) · `u16 index` · `u16 count` · one ≤16 KiB fragment of the access unit; see "Video rules" |
 | `0x10` | TOUCH | mac→phone | `u8 action` (0 down, 1 up, 2 move, 3 cancel) · `u8 pointerId` · `f32 nx` · `f32 ny` — one frame per pointer; the phone stamps each event with its arrival time, so the Mac sends them as they happen (a drag's cadence is its fling velocity) |
 | `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` — mouse-wheel units, injected as `ACTION_SCROLL` (`SOURCE_MOUSE`) with these as `AXIS_HSCROLL` / `AXIS_VSCROLL` at (nx, ny). `vscroll > 0` = content moves down (wheel up), `hscroll > 0` = content moves left (wheel right). One unit is one wheel notch (Android's default 64 dp scroll factor); fractions are fine. The Mac sends SCROLL for mouse wheels only: a trackpad's two-finger scroll is a one-finger drag in TOUCH (DOWN, MOVEs, UP), so Android's own drag, overscroll and fling apply |
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
@@ -90,6 +91,20 @@ display id on every injected event.
   picture, scaled to fill its window, and its aspect lock follows the picture's, not the
   frame's. Input maps over the picture, which is the screen.
 - One VIDEO_FRAME = exactly one access unit (one MediaCodec output buffer).
+- **Large access units may arrive as VIDEO_CHUNKs** when the Mac's hello has
+  `videoChunks:true`. One access unit becomes `count` fragments of at most
+  16 KiB, each carrying the same `ptsUs` and `flags` and its `index` (0-based).
+  The fragments of one stream go on the wire in index order and contiguous
+  within that stream: audio, JSON and another stream's frames may be written
+  between them (MEDIA-16), but never another frame of the same stream — a
+  partly sent frame keeps the head of its lane. The receiver reassembles by
+  `(stream, ptsUs, flags)` and only then hands the decoder one access unit,
+  exactly as a whole `VIDEO_FRAME` would. A missing fragment (or a stub the
+  phone discarded, e.g. at a drop episode or a new control frame) costs that
+  one frame: the Mac discards the incomplete unit, treats it as a break of the
+  reference chain (no delta reaches the decoder until a keyframe, MEDIA-19),
+  and the next keyframe restarts cleanly. A phone sends whole `VIDEO_FRAME`s
+  to a Mac without the field.
 - **Codec.** H.264 is the default. HEVC is used only when the stream's arm asks
   for it (`codec=hevc`), the Mac's `hello.codecs` listed it as hardware-decodable,
   and the phone's HEVC encoder accepts the size; otherwise the stream stays H.264
@@ -222,6 +237,12 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
 - Backpressure: at most ~250 ms of queued audio; older packets are dropped,
   never blocking JSON/video (send-queue priority: JSON > keyframes/config >
   audio > video deltas).
+- **Audio overtakes video inside a large frame (R4).** The phone writes audio
+  before video deltas and between the fragments of a `VIDEO_CHUNK`ed access
+  unit, and keeps at most 16 KiB unsent in the socket (`TCP_NOTSENT_LOWAT`),
+  so an audio packet never waits behind more than one 16 KiB fragment. The
+  Mac's jitter buffer then sees audio no later than the measured link jitter
+  (MEDIA-16/17).
 
 ## Session handshake
 
@@ -231,7 +252,7 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>","codecs":["avc","hevc"]}`,
+2. Mac → `{"t":"hello","v":4,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>","path":"<8 hex>","codecs":["avc","hevc"],"videoChunks":true}`,
    plus `"pair":true` when the person asked this attempt to pair (a user-driven
    pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
    believes it is already paired. (The planned UDP plane would add
@@ -245,7 +266,9 @@ there is no estimate and capture→receive/capture→enqueue are `-`.
    `codecs` lists the codecs this Mac decodes in hardware — `"avc"` always and
    `"hevc"` only when `VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)` says
    so. A hello without it (an older Mac) means `["avc"]`, so an old Mac never
-   gets HEVC.
+   gets HEVC. `videoChunks:true` says this Mac reassembles `VIDEO_CHUNK`; a
+   hello without it (a Mac before the 2026-11 audio fix) gets whole
+   `VIDEO_FRAME`s only.
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
    paired or not, with `{"t":"error","code":"connections_off"}` and a close —
@@ -324,9 +347,9 @@ starting at 1:
 
 - reliable, sent wrapped in a `RELIABLE` (`0x30`) frame: `JSON` (`0x01`), `TOUCH`,
   `SCROLL`, `KEY`, `APK_DATA`, `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`;
-- lossy, sent bare: `VIDEO_CONFIG`, `VIDEO_FRAME`, `AUDIO_CONFIG`, `AUDIO_FRAME`,
-  `HOVER`. They are never replayed, and a new frame type is lossy unless it is
-  listed above.
+- lossy, sent bare: `VIDEO_CONFIG`, `VIDEO_FRAME`, `VIDEO_CHUNK`, `AUDIO_CONFIG`,
+  `AUDIO_FRAME`, `HOVER`. They are never replayed, and a new frame type is lossy
+  unless it is listed above.
 
 ```
 RELIABLE (0x30):  len = 18 + n; type 0x30; stream = innerStream
@@ -1493,7 +1516,11 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 
 `v` = **4** in `hello` is the protocol version (4 added the paths layer — session
 ids, joins, `RELIABLE`/`ACK`, `path.*` — and the direct-link messages; 3 added
-`window.content`, which every VIDEO_CONFIG needs). `window.still` is an ordinary
+`window.content`, which every VIDEO_CONFIG needs). `VIDEO_CHUNK` (0x06) is a v4
+lossy type added with the 2026-11 audio fix: it stays v4 because a v4 peer that
+does not advertise `videoChunks` still receives and reads whole `VIDEO_FRAME`s,
+and a peer that does not know 0x06 ignores it. A phone sends chunks only to a
+Mac whose hello carried `videoChunks:true`. `window.still` is an ordinary
 phone→Mac JSON message under v4: it travels as a reliable, seq'd frame like every
 other JSON frame, and an unknown `t` is still ignored. Both apps ship together and
 there is no older-peer mode: a peer that does not serve 4 replies
