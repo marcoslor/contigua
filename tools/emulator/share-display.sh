@@ -389,12 +389,35 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
 
 # The stand-ins ship disabled (the person's phone runs debug builds; an enabled
 # SEND filter would show a test target in every share sheet). Enable them on the
-# emulator only, after every install.
+# emulator only, after every install. The first enable after a fresh install
+# used to run while the package manager was still in dexopt on a loaded rig: it
+# got cut off by the short adb timeout and left the package path unanswerable.
+# Wait for the package manager to know the package (bounded 60 s), then enable
+# with the long timeout and one retry.
 enable_stand_ins() {
-  local activity
+  local activity out try waited
+  waited=0
+  while ! timeout 5 "$ADB" -s "$SERIAL" shell pm path dev.pocketdeck 2>/dev/null | grep -q '^package:'; do
+    if [ "$waited" -ge 60 ]; then
+      section stand-ins FAIL "pm path dev.pocketdeck: no answer after 60 s"
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
   for activity in ShareDebugActivity ShareDebugSendActivity ShareDebugPickerActivity; do
-    emu shell pm enable "dev.pocketdeck/dev.pocketdeck.app.$activity" >/dev/null 2>&1 \
-      || { section stand-ins FAIL "pm enable $activity"; return 1; }
+    out=""
+    for try in 1 2; do
+      if out="$(emu_long shell pm enable "dev.pocketdeck/dev.pocketdeck.app.$activity" 2>&1)"; then
+        out=""
+        break
+      fi
+      sleep 2
+    done
+    if [ -n "$out" ]; then
+      section stand-ins FAIL "pm enable $activity: $(printf '%s\n' "$out" | head -3 | tr '\n' ' ')"
+      return 1
+    fi
   done
   section stand-ins PASS "the three debug activities are enabled on the emulator"
 }
