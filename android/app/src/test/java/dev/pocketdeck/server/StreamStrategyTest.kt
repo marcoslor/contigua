@@ -236,19 +236,20 @@ class StreamStrategyTest {
 
     @Test
     fun `the codec key parses, clamps and prints`() {
-        assertEquals(VideoCodec.Avc, StreamStrategy.DEFAULT.codec)
+        assertEquals(VideoCodec.Hevc, StreamStrategy.DEFAULT.codec)
         assertEquals(VideoCodec.Hevc, parse("codec" to "hevc").codec)
         assertEquals(VideoCodec.Avc, parse("codec" to "avc").codec)
-        assertEquals("junk is the default, never a guess", VideoCodec.Avc,
+        assertEquals("junk is the default, never a guess", VideoCodec.Hevc,
                      parse("codec" to "h265").codec)
-        assertEquals("codec=hevc",
-                     parse("codec" to "hevc").describe(
-                         StreamStrategy.Applied(codec = VideoCodec.Hevc),
-                     ))
-        // A requested codec the MAC or the encoder refused is not advertised
-        // as applied; the choice's own reason line names the condition.
+        // The line prints what differs from the default: only a forced AVC.
+        assertEquals("codec=avc",
+                     parse("codec" to "avc").describe(StreamStrategy.Applied(codec = VideoCodec.Avc)))
         assertEquals("default",
-                     parse("codec" to "hevc").describe(StreamStrategy.Applied()))
+                     parse("codec" to "hevc").describe(StreamStrategy.Applied(codec = VideoCodec.Hevc)))
+        // A requested HEVC the MAC or the encoder refused has its own reason
+        // line; the strategy line stays at the default.
+        assertEquals("default",
+                     parse("codec" to "hevc").describe(StreamStrategy.Applied(codec = VideoCodec.Avc)))
     }
 
     @Test
