@@ -35,6 +35,9 @@ struct PhoneControlsState: Equatable {
 
     var phoneName = "your phone"
     var connection: Connection = .idle
+    /// The sticky problem the Deck's banner also shows (PAIR-33/35). A
+    /// transient notice (a ring, an install) never reaches this row.
+    var notice: Banner?
     var battery: Int?
     var charging = false
 
@@ -237,6 +240,7 @@ struct PhoneControlsActions {
     var installApk: () -> Void = {}
     var turnOffScreen: () -> Void = {}
     var disconnectAgent: () -> Void = {}
+    var pairAgain: () -> Void = {}
 
     init() {}
 
@@ -258,6 +262,22 @@ struct PhoneControlsActions {
         installApk = { [weak controller] in controller?.chooseApk() }
         turnOffScreen = { [weak controller] in controller?.windows.togglePhonePanelOff() }
         disconnectAgent = { [weak controller] in controller?.mcp.disconnectAgents() }
+        pairAgain = { [weak controller] in controller?.pairAgain() }
+    }
+}
+
+/// The panel's sticky banner (PAIR-33/35): the same sentence the Deck shows for
+/// a phone that no longer trusts this Mac, whose connections switch is off, or
+/// that cannot be found. Never a code, never a transient line.
+enum PhonePanelNotice {
+    static func banner(for link: Link,
+                       naming: (PhoneRef) -> String = \.name) -> Banner? {
+        switch link {
+        case .needsPairing, .offline(_, .connectionsOff), .offline(_, .notFound):
+            return link.banner(naming: naming)
+        default:
+            return nil
+        }
     }
 }
 
@@ -287,6 +307,7 @@ extension PhoneControlsState {
         } ?? "your phone"
         connection = .resolve(link: controller.link, pathsDown: controller.pathsDown,
                               pathsOffline: controller.pathsOffline)
+        notice = PhonePanelNotice.banner(for: controller.link) { controller.displayName(for: $0) }
         battery = controller.status?.battery
         charging = controller.status?.charging ?? false
         agentCount = controller.mcp.clientCount
@@ -551,6 +572,9 @@ struct PhonePanelView: View {
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if let notice = state.notice {
+                noticeRow(notice).padding(.top, PhonePanelMetrics.sectionGap)
+            }
             if state.agentCount > 0 { agentRow.padding(.top, PhonePanelMetrics.sectionGap) }
             tiles
             volumeRow.padding(.top, PhonePanelMetrics.sectionGap)
@@ -567,6 +591,39 @@ struct PhonePanelView: View {
         }
         .padding(inset)
         .frame(width: Self.width)
+    }
+
+    /// The Deck's sticky banner in the panel (PAIR-33/35): text, the one line
+    /// that names the fix, and at most Pair again. No close control.
+    private func noticeRow(_ notice: Banner) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.text)
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail = notice.detail {
+                    Text(detail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 6)
+            if notice.action == .pairAgain {
+                Button("Pair again", action: actions.pairAgain)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.small)
+                    .accessibilityLabel("Pair again")
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.12), in: .rect(cornerRadius: PhonePanelMetrics.rowCorner))
+        .accessibilityElement(children: .contain)
     }
 
     /// The phone's value is the slider's value while idle; a drag or a settle

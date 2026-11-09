@@ -12804,6 +12804,23 @@ check_settings() {
     [ "$(report_value mutedCount)" = "None" ] && ok "SET [SET-DEV-12] no muted apps reads None" \
         || bad "SET [SET-DEV-12] mutedCount=$(report_value mutedCount)"
 
+    # --- trust lost: row and header read Pair again (PAIR-34, SET-DEV-17/26) ---
+    state devices-trust-lost || return 1
+    [ "$(report_value selection)" = "Galaxy S25+" ] \
+        && [ "$(report_value header.state)" = "Pair again" ] \
+        && [ "$(report_value header.inUse)" = "1" ] \
+        && ok "[SET-DEV-17] a trust-lost phone's page header reads Pair again and In Use" \
+        || bad "[SET-DEV-17] selection=$(report_value selection) state=$(report_value header.state) inUse=$(report_value header.inUse)"
+    [ "$(report_value header.action)" = "Pair Again…" ] \
+        && ok "[PAIR-34] [SET-DEV-26] a trust-lost phone's header offers Pair Again… as its action" \
+        || bad "[PAIR-34] [SET-DEV-26] header.action=$(report_value header.action)"
+    dump_has "row|Galaxy S25+|SM-S936B|Pair again|" \
+        && ok "[SET-DEV-17] its sidebar row reads Pair again" \
+        || bad "[SET-DEV-17] row: $(grep '^row|' "$dump" | tr '\n' '|')"
+    awk -F'|' '$1=="row" && $2=="Galaxy S25+" && $7=="1" && $8=="0" { found=1 } END { exit !found }' "$dump" \
+        && ok "[SET-DEV-17] the row marks Pair again and does not pretend it can be used" \
+        || bad "[SET-DEV-17] row flags: $(grep '^row|Galaxy S25+' "$dump" | head -1)"
+
     # --- missing listener access: the page says how to fix it --------------
     stop_app
     local device

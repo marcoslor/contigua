@@ -119,7 +119,7 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    the Dock, **glass app icons**, default window density, **reveal controls
    after**), **Input** (**hover over Android apps**) and **Automation**. A phone opens its page in the detail:
    a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when it no longer
-   trusts this Mac), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
+   trusts this Mac, also beside **In Use**), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
    and Now Playing**, **When I click a notification** with **Open on this Mac** / **Open on the phone** / **Do
    nothing**, and **Muted apps** with its count, a search field and a **Muted** checkbox column), **Applications**
    (**Save all apps as shortcuts**, with the sentence that it gives every app of that phone a real Mac app in

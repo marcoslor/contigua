@@ -283,8 +283,7 @@ struct SettingsSidebarView: View {
                 Form {
                     PhoneSettingsPage(deviceId: id,
                                       onRename: { controller.beginRename($0) },
-                                      onForget: { controller.beginForget($0) },
-                                      onAdd: addPhone)
+                                      onForget: { controller.beginForget($0) })
                 }
                 .formStyle(.grouped)
             } else {
