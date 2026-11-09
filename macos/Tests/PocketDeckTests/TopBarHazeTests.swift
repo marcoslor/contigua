@@ -113,16 +113,21 @@ final class TopBarHazeTests: XCTestCase {
         XCTAssertEqual(lightTop.alphaComponent, 0.30, accuracy: 0.005, "the light haze's top alpha")
 
         // The opening cover's ground is up: no haze over it.
-        chrome.openingCover.isHidden = false
+        chrome.openingCover.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9",
+                                                       phoneMode: false), icon: nil)
         chrome.layoutChrome()
         XCTAssertTrue(haze.isHidden, "the haze is hidden while the opening cover is up")
-        chrome.openingCover.isHidden = true
+        chrome.openingCover.show(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        chrome.layoutChrome()
 
-        // The stall overlay's acrylic owns the bar.
-        chrome.stallOverlay.isHidden = false
+        // The stall overlay's cover owns the bar.
+        chrome.stallOverlay.show(StallOverlayDisplay(kind: .stalled, phone: "Pixel 9"), icon: nil)
         chrome.layoutChrome()
         XCTAssertTrue(haze.isHidden, "the haze is hidden while the stall overlay is up")
-        chrome.stallOverlay.isHidden = true
+        chrome.stallOverlay.hide()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        chrome.layoutChrome()
 
         // Immersive has no bar.
         chrome.setStyle(.immersive)

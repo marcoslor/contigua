@@ -1,11 +1,11 @@
 // The window's picture state and its one presentation (docs/specs/app-windows.md
 // WIN-39): a live picture, a stall (WIN-17), and the link's two down steps
 // (WIN-16). The overlay is what a stalled picture or a dropped link looks like —
-// the last frame under one acrylic that reaches over the framed bar, the
-// window's icon, the title and "Waiting for <phone>…" — so there are no
-// parallel flags: the machine's state is the truth, and the controller runs its
-// actions. Time stays outside (the window's 0.25 s tick feeds it), so every
-// edge is pinned by a test with a fake clock.
+// the shared frosted cover (WIN-65) over the last frame, the window's icon, the
+// title and "Waiting for <phone>…" — so there are no parallel flags: the
+// machine's state is the truth, and the controller runs its actions. Time stays
+// outside (the window's 0.25 s tick feeds it), so every edge is pinned by a test
+// with a fake clock.
 
 import AppKit
 
@@ -179,16 +179,11 @@ struct StallOverlayDisplay: Equatable {
         secondary = "Waiting for \(phone.isEmpty ? "your phone" : phone)…"
     }
 }
-
-/// The overlay's ink and the acrylic it is measured against. The ground is the
-/// acrylic's average colour behind the words, measured from the review shots
-/// (`.agent/stall-overlay/stall-stalled-{dark,light}.png`) over the fake phone's
-/// colour-bar frame; the secondary line must keep WCAG AA 4.5:1 against it.
+/// The shared cover's ink against the dimmed picture. Both appearances use
+/// white ink over the 0.55 black dim: over a white frame the ground is 0.45
+/// white (4.86:1) and over black it is black.
 struct StallOverlayStyle: Equatable {
     let name: String
-    /// The black sheet over the blur. S1/S3's 0.38 in dark; the light material
-    /// is bright, so light mode dims deeper or no ink can reach 4.5:1 behind
-    /// the line (the prototype's 0.38 sheet measured 3.6:1 with pure white).
     let dimAlpha: CGFloat
     let ground: NSColor
     let title: NSColor
@@ -197,21 +192,18 @@ struct StallOverlayStyle: Equatable {
 
     static let dark = StallOverlayStyle(
         name: "dark",
-        dimAlpha: 0.38,
-        ground: NSColor(srgbRed: 0x40 / 255, green: 0x41 / 255, blue: 0x42 / 255, alpha: 1),
-        title: NSColor(white: 0.94, alpha: 1),
-        secondary: NSColor(white: 0.74, alpha: 1),
+        dimAlpha: FrostedCoverStyle.dimAlpha,
+        ground: NSColor(white: 1 - FrostedCoverStyle.dimAlpha, alpha: 1),
+        title: .white,
+        secondary: .white,
         iconTint: NSColor(white: 0.92, alpha: 1))
 
-    /// The light acrylic takes white ink: on the deeper sheet it is the only
-    /// ink with the margin AA wants, so the title and the secondary line share
-    /// it and the hierarchy is size and weight.
     static let light = StallOverlayStyle(
         name: "light",
-        dimAlpha: 0.50,
-        ground: NSColor(srgbRed: 0x63 / 255, green: 0x62 / 255, blue: 0x61 / 255, alpha: 1),
-        title: NSColor(white: 1, alpha: 1),
-        secondary: NSColor(white: 1, alpha: 1),
+        dimAlpha: FrostedCoverStyle.dimAlpha,
+        ground: NSColor(white: 1 - FrostedCoverStyle.dimAlpha, alpha: 1),
+        title: .white,
+        secondary: .white,
         iconTint: NSColor(white: 0.92, alpha: 1))
 
     static func style(for appearance: NSAppearance) -> StallOverlayStyle {
@@ -240,145 +232,50 @@ struct StallOverlayStyle: Equatable {
     var secondaryContrast: Double { Self.contrast(secondary, ground) }
 }
 
-/// The disconnection screen (WIN-39): the last frame blurred and dimmed by one
-/// acrylic that reaches over the framed bar, with the icon, the title and the
-/// waiting line centred in the body. It takes every click that is not the bar's
-/// and sends nothing to the phone; it offers no buttons.
-final class StallOverlayView: NSView {
-    private let blur = NSVisualEffectView()
-    private let dim = NSView()
-    private let iconView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let secondaryLabel = NSTextField(labelWithString: "")
+/// The disconnection screen (WIN-39) drawn by the shared cover: the last frame
+/// blurred and darkened, the window's icon, the title and the waiting line. It
+/// takes every click that is not the bar's and sends nothing to the phone; it
+/// offers no buttons.
+final class StallOverlayView: FrostedCoverView {
     private(set) var style = StallOverlayStyle.dark
     /// The icon the window passed, not the placeholder: the chrome state and
     /// the tests read whether the app's own icon had arrived.
     private(set) var iconImage: NSImage?
-    /// The framed bar's height: the words stay centred in the body, which is
-    /// the window less the bar the overlay reaches over.
-    var topInset: CGFloat = 0 {
-        didSet { if topInset != oldValue { needsLayout = true } }
-    }
 
-    var isShowing: Bool { !isHidden }
-    var hasIcon: Bool { iconImage != nil }
-    var titleText: String { titleLabel.stringValue }
-    var secondaryText: String { secondaryLabel.stringValue }
-    var secondaryColor: NSColor { secondaryLabel.textColor ?? .clear }
-
-    /// The opening cover's icon metrics: the same picture at the same size.
-    static let iconSide: CGFloat = 96
-    static let iconCornerRadius: CGFloat = 22
-    private static let textInset: CGFloat = 32
-    private static let iconGap: CGFloat = 16
-    private static let lineGap: CGFloat = 8
+    var secondaryText: String { lineText }
+    var secondaryColor: NSColor { .white }
+    override var hasIcon: Bool { iconImage != nil }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        blur.material = .hudWindow
-        blur.blendingMode = .withinWindow
-        blur.state = .active
-        blur.autoresizingMask = [.width, .height]
-        addSubview(blur)
-        // A dim over the blur so white text keeps its contrast over any frame.
-        dim.wantsLayer = true
-        dim.autoresizingMask = [.width, .height]
-        addSubview(dim)
-
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.wantsLayer = true
-        iconView.layer?.cornerRadius = Self.iconCornerRadius
-        iconView.layer?.cornerCurve = .continuous
-        iconView.layer?.masksToBounds = true
-        addSubview(iconView)
-
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingTail
-        addSubview(titleLabel)
-
-        secondaryLabel.font = .systemFont(ofSize: 12.5)
-        secondaryLabel.alignment = .center
-        secondaryLabel.maximumNumberOfLines = 0
-        secondaryLabel.lineBreakMode = .byWordWrapping
-        secondaryLabel.cell?.wraps = true
-        addSubview(secondaryLabel)
-
         applyAppearanceStyle()
-        // The measured ratio is a design constant: the field log keeps it
-        // beside the shots the reviewer checks it against.
-        let contrast = style.secondaryContrast
-        Log.video.info("stall overlay: secondary contrast \(contrast)")  // log-ok: a design constant, no person's data
-        isHidden = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }  // unrecoverable: NSCoder is never used
 
-    override var isOpaque: Bool { false }
-
     /// Shows the screen for `display`, or takes it away.
-    func show(_ display: StallOverlayDisplay, icon: NSImage?) {
+    func show(_ display: StallOverlayDisplay, icon: NSImage?, heldFrame: CVPixelBuffer? = nil) {
         iconImage = icon
-        titleLabel.stringValue = display.title
-        secondaryLabel.stringValue = display.secondary
         // Before the app's icon has arrived, the same generic app mark the
         // opening cover uses keeps the one large picture.
-        iconView.image = icon ?? NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
-        isHidden = false
-        applyAppearanceStyle()
-        needsLayout = true
+        super.show(FrostedCoverContent(title: display.title, line: display.secondary,
+                                       icon: icon, showsIcon: true, topInset: topInset),
+                   heldFrame: heldFrame)
     }
 
     func hide() {
-        isHidden = true
+        super.show(nil)
     }
 
-    /// The acrylic is one sheet in either appearance; the ink follows it.
+    /// The shared cover's ink is white in both appearances; the style's ground
+    /// is the white-frame worst case the contrast test measures.
     func applyAppearanceStyle() {
         style = StallOverlayStyle.style(for: effectiveAppearance)
-        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(style.dimAlpha).cgColor
-        titleLabel.textColor = style.title
-        secondaryLabel.textColor = style.secondary
-        iconView.contentTintColor = style.iconTint
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyAppearanceStyle()
-    }
-
-    override func layout() {
-        super.layout()
-        blur.frame = bounds
-        dim.frame = bounds
-        let bodyHeight = max(bounds.height - topInset, 0)
-        let titleHeight = titleLabel.intrinsicContentSize.height
-        let secondaryHeight = ceil(secondaryLabel.cell?.cellSize(
-            forBounds: NSRect(x: 0, y: 0, width: bounds.width - Self.textInset * 2, height: 400)).height ?? 16)
-        let total = Self.iconSide + Self.iconGap + titleHeight + Self.lineGap + secondaryHeight
-        var y = topInset + (bodyHeight + total) / 2
-        y -= Self.iconSide
-        iconView.frame = NSRect(x: (bounds.width - Self.iconSide) / 2, y: y,
-                                width: Self.iconSide, height: Self.iconSide)
-        y -= Self.iconGap + titleHeight
-        titleLabel.frame = NSRect(x: Self.textInset, y: y, width: bounds.width - Self.textInset * 2,
-                                  height: titleHeight)
-        y -= Self.lineGap + secondaryHeight
-        secondaryLabel.frame = NSRect(x: Self.textInset, y: y, width: bounds.width - Self.textInset * 2,
-                                      height: secondaryHeight)
-    }
-
-    /// The screen takes every click: the stream is frozen and the phone must
-    /// never see a click meant for the overlay.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, let superview else { return nil }
-        guard bounds.contains(convert(point, from: superview)) else { return nil }
-        return self
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        // A frozen window: a click on the screen is not a click on the stream.
     }
 }

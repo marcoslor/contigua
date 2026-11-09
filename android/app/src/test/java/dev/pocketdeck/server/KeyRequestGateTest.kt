@@ -38,6 +38,27 @@ class KeyRequestGateTest {
         assertEquals(KeyRequestGate.KeyRequest.Send, gate.onRequest(999))
     }
 
+    /**
+     * The phone's drop rule throws deltas away after an IDR and waits for the
+     * next key: that IDR can no longer start the decoder, so it answers nothing
+     * (the person's YouTube launch, 2026-11-09 14:19: the request was satisfied
+     * by an IDR 97 ms old, no key came, and the window said "Not responding").
+     */
+    @Test
+    fun `a delta drop after the idr leaves nothing to answer a request`() {
+        gate.onIdr(1_000)
+        gate.onDeltasDropped()
+        assertEquals(KeyRequestGate.KeyRequest.Send, gate.onRequest(1_097))
+    }
+
+    @Test
+    fun `an idr after the drop answers again`() {
+        gate.onIdr(1_000)
+        gate.onDeltasDropped()
+        gate.onIdr(1_200)
+        assertEquals(KeyRequestGate.KeyRequest.Satisfied(50), gate.onRequest(1_250))
+    }
+
     @Test
     fun `a reset forgets the idr`() {
         gate.onIdr(1_000)

@@ -131,7 +131,9 @@ final class PhoneScreenOverlayTests: XCTestCase {
 
         manager.setPhoneScreen(.on)
         XCTAssertFalse(phone.screenModel.isShowing)
-        XCTAssertTrue(phone.chrome.phoneOverlay.isHidden)
+        XCTAssertFalse(phone.chrome.phoneOverlay.isShowing, "the cover is logically gone at once")
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        XCTAssertTrue(phone.chrome.phoneOverlay.isHidden, "the 200 ms fade-out ends hidden")
         let on = try String(contentsOf: stateFile, encoding: .utf8)
         XCTAssertTrue(on.contains("screen=on overlay=0"), on)
     }

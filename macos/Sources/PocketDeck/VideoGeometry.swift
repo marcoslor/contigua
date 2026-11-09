@@ -147,13 +147,15 @@ enum Letterbox {
     ///   (a coarser encoder step, an older phone's 16 px floor, the cap) is
     ///   stretched over the view: no bars, under 2 % off in shape. Only a
     ///   settled frame of a clearly different shape is fitted.
-    /// - The phone window mirrors a fixed screen: its letterbox is never
-    ///   cropped, pending or not.
+    /// - The phone window mirrors a fixed screen and is never cropped by more
+    ///   than a rendering artefact: a whole-point window size can leave the
+    ///   fit under a point short at 2×, so a sub-point miss fills (a crop
+    ///   under a pixel, ISS-65). Only a clearly different picture is fitted.
     static func placement(video: CGSize, bounds: CGSize, backingScale: Double = 1,
                           alignment: Int = VideoSize.granularity,
                           resizePending: Bool, phoneMode: Bool) -> Placement {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return .fit }
-        if phoneMode { return .fit }
+        if phoneMode { return phonePlacement(video: video, bounds: bounds) }
         let backingWidth = bounds.width * CGFloat(max(backingScale, 1))
         let backingHeight = bounds.height * CGFloat(max(backingScale, 1))
         // The strip a 1:1 frame may leave is under one alignment step and
@@ -170,6 +172,24 @@ enum Letterbox {
         // the view (no bars, every pixel kept, < 2 % off in shape).
         if sameShape(video: video, bounds: bounds) { return .stretch }
         return .fit
+    }
+
+    /// A phone-mode fit miss under one point is filled: it is the whole-point
+    /// window sizing's rounding, not a picture of another shape, and at 2× it
+    /// shows as a black row or column (ISS-65). Filling crops under a pixel.
+    static let phoneFillSlack: CGFloat = 1
+
+    static func phonePlacement(video: CGSize, bounds: CGSize) -> Placement {
+        let slack = fitSlack(video: video, bounds: bounds)
+        return max(slack.width, slack.height) < phoneFillSlack ? .fill : .fit
+    }
+
+    /// What a fit of `video` leaves uncovered on each axis, in bounds units.
+    static func fitSlack(video: CGSize, bounds: CGSize) -> CGSize {
+        guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width / video.width, bounds.height / video.height)
+        return CGSize(width: bounds.width - video.width * scale,
+                      height: bounds.height - video.height * scale)
     }
 
     /// Where the video is drawn inside `bounds` for a placement. `fill` is
