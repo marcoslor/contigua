@@ -9,6 +9,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## Order now (the person, 2026-11-08: stability, then performance)
 
 Stability:
+0. Blocky corruption on a good link (ISS-54): next free worker slot.
 1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
 2. The phone's own screen never times out while a window is open (ISS-52), then the fade to black and the two-press wake (ISS-3, ISS-24): the virtual-device display move, requirements first.
 3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
@@ -42,6 +43,16 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
 
 ## 2. Bugs you can see
 
+- **ISS-54 Blocky corruption on a good link** (the person, 2026-11-08 21:41: "on great conditions, some packets seem to be dropping, causing artifacts"). The Phone Mirror showed smeared macroblocks over the recents screen.
+  - **The evidence:**
+    - the link was healthy: `tcp_srtt` 16–28 ms, `ph_retrans=1`;
+    - the phone dropped nothing (`phone_drop=0`, `drop_ep=0`);
+    - the Mac counted `mac_drop=1`, then `2`, in the same 5 s lines, around a burst at `rx_fps=109.6` and a resize at 21:41:29.
+    - the Mac fed deltas after a break in their reference chain;
+    - `PacedPresenter`'s comment says a backlog is never dropped, but the `paced` discard reason says "dropped the oldest";
+    - `handToLayer` flushes without waiting for a keyframe.
+  - **Fix:** never feed a delta after a chain break; hold the last good picture and ask for a keyframe (brief `.agent/chain/brief.md`).
+  - The phone's own self-made drop (`drop episode … measured 32.6 Mbps`, 21:42:26) is the overrun case, ISS-40.
 - **ISS-52 The phone's own screen never times out while an app window is open** (the person, 2026-11-08 20:10: "something is keeping the phone on the lock screen, awake"). This breaks PHONE-13 (PocketDeck shall not change a screen timeout).
   - **Seen on the person's phone (S936B, v149):** after a wake press to the lock screen, the panel stayed on with the keyguard showing for more than 80 s with no touch (`mLastWakeTime` 81 s ago, keyguard showing, timeout 30 s). After an unlock it stayed on from 20:01:59 to the person's press at 20:06:08. `dumpsys power` shows `SCREEN_BRIGHT_WAKE_LOCK 'pocketdeck:vd'` on `displayId=257` but **`powerGroupId=0`**, plus `PARTIAL 'pocketdeck:streams'`, `mWakeLockSummary=0x23`, and the keep-alive at `interval=2000ms` poking `userActivity` on the same group.
   - **Cause:** One UI puts our virtual displays in group 0 (ISS-3), so the display-scoped wake lock and the keep-alive pokes meant for the window's display keep the phone's own panel awake as well. While the person owns the panel (`WakeOwner.PERSON_TOOK_OVER`), nothing lets Android's timeout run. The relight path only starts on an off edge, and with these held none comes except a power press.
