@@ -65,6 +65,8 @@ final class ConnectionFailureTests: XCTestCase {
     func testPairingFailuresDoNotRetryBecauseEveryRetryPromptsThePhone() {
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_denied"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_timeout"))
+        // R2: a cooldown retries only on the person's click, never by itself.
+        XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_cooldown"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_exporter"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("version"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pin-mismatch"))

@@ -15,7 +15,7 @@ enum DevicesPreview {
     /// The live link for the phone in use, a staged value for another.
     @MainActor
     static func presence(of phone: RememberedPhone, in controller: ConnectionController) -> DevicePresence {
-        if controller.activePhone?.id == phone.id { return DevicePresence(controller.link) }
+        if controller.activePhone?.id == phone.id { return controller.presentation.settingsPresence }
         // PAIR-32/SET-DEV-17: a phone whose record says trust was lost reads
         // Pair again even when its key is still on disk.
         if controller.remembered.trustLost(id: phone.id) != nil { return .pairAgain }
