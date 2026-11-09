@@ -15,7 +15,10 @@ import java.lang.reflect.Method
  * unpaused stream also holds a display-scoped SCREEN_BRIGHT wake lock bound to
  * its virtual display, which keeps that display's power group awake on its own —
  * the keep-alive timer then slows to 60 s and is only a safety net. Without the
- * hidden call the timer stays at 10 s.
+ * hidden call the timer stays at 10 s. On a build that puts the display in the
+ * panel's group, that lock and the poke would keep the phone's own screen awake;
+ * while the person owns the panel both are released and the phone's own timeout
+ * runs (PHONE-22), and its off edge re-lights the streams.
  *
  * `wakeUpWithDisplayId` wakes the power group of that display's display group
  * (`PowerManagerService.wakeUpWithDisplayId`). AOSP gives an `OWN_DISPLAY_GROUP`
@@ -244,7 +247,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                     synchronized(lock) { startTimerLocked() }
                     startPowerWatch()
                 }
-                is EpisodeAction.Hold -> synchronized(lock) { holdDisplayLockLocked(action.display) }
+                is EpisodeAction.Hold -> {
+                    // A stream that opens while the person owns a shared group
+                    // must not take the panel's group with it (PHONE-22).
+                    val shared = DisplayProbe.displayGroupId(action.display) == DisplayProbe.DEFAULT_GROUP_ID
+                    if (groupHold(wakeOwner.owner(), shared, streamsUp = true).displayLock) {
+                        synchronized(lock) { holdDisplayLockLocked(action.display) }
+                    }
+                }
                 is EpisodeAction.Drop -> synchronized(lock) { releaseDisplayLockLocked(action.display) }
                 EpisodeAction.Pause -> {
                     val now = SystemClock.uptimeMillis()
@@ -413,11 +423,15 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         if (synchronized(policyLock) { policy.personUsed(PanelYieldReason.UNLOCK) }) {
             panelYielded(PanelYieldReason.UNLOCK, wake = false)
         }
+        // The person owns the panel from here: on a shared group the display
+        // lock and the pokes stop, so the phone's own timeout can run (PHONE-22).
+        applyGroupHold()
     }
 
     /** `state.screen`: a screen-on edge outside our own wake is the person's. */
     override fun onPersonScreen(on: Boolean) {
         wakeOwner.dispatch(WakeEvent.ScreenReported(on, SystemClock.uptimeMillis()))
+        applyGroupHold()
     }
 
     private fun awaitInteractive(pm: PowerManager): Boolean {
@@ -460,6 +474,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val requestOnly = ids.isEmpty()
         if (requestOnly) ids = intArrayOf(PANEL_DISPLAY_ID)
         val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        // The person's panel on a shared group is held by neither a display
+        // lock nor a poke: release the first, and the loop below sends none
+        // (PHONE-22).
+        val group = applyGroupHold()
         // The hold owns the mirror's panel: its step settles the take-over and
         // re-asserts the panel off. A paused mirror runs no step at all.
         if (hold.holdsPanel) performHold(hold.dispatch(PanelHoldEvent.KeepAliveStep(panelOn)))
@@ -484,7 +502,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
         // A take-over in flight (the episode start woke the group before its
         // launch) keeps the group lit even though this step issues no wake.
-        keepLit = plan.wake || plan.panelOff
+        keepLit = (plan.wake || plan.panelOff) && group.poke
         val wasDark = darkEpisode
         darkEpisode = plan.panelOff
         if (plan.panelOff) startPowerWatch()
@@ -532,9 +550,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // and on a build that gives it its own group the panel's group would
         // time out and read as a power press.
         if (holding) userActivity(PANEL_DISPLAY_ID)
-        for (id in ids) {
-            userActivity(id)
-            if (wake) wakeDisplay(id)
+        if (group.poke) {
+            for (id in ids) {
+                userActivity(id)
+                if (wake) wakeDisplay(id)
+            }
         }
         // The hold's own action already wrote the panel off this step.
         if (plan.panelOff && !holding) applyPanelOff(plan.transitional)
@@ -630,6 +650,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             userActivity(id)
             wakeDisplay(id)
         }
+        // The relight takes the shared group back: the display lock and the
+        // pokes resume with it, exactly as after a power press (PHONE-22).
+        applyGroupHold(relight = true)
         val returned = SystemClock.uptimeMillis()
         onPowerLocked?.invoke()
         applyPanelOff(transitional = true)
@@ -686,6 +709,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     private fun panelYielded(reason: PanelYieldReason, wake: Boolean) {
         log("panel_yield reason=${reason.wire}")
         stopPanelInput()
+        // The owner moved to the person: release a shared group's display lock
+        // before the panel comes back, so its own timeout runs (PHONE-22).
+        applyGroupHold()
         handBackPanel(wake)
     }
 
@@ -770,6 +796,8 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // The wake machine hears every close, whatever the panel policy owned:
         // a stale "ours" must never survive into the next episode.
         val wake = wakeOwner.dispatch(WakeEvent.StreamsStopped)
+        // No stream is open: no display lock may outlive its stream (PHONE-22).
+        applyGroupHold()
         if (!owned) {
             logWakeClose(wake)
             if (overrideLive) standDownOverride()
@@ -1005,6 +1033,37 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         wakeLock = null
         runCatching { wl.release() }
         log("partial wake lock released")
+    }
+
+    /**
+     * Applies [groupHold] to the display wake locks: while the person owns a
+     * shared group they are released and the step sends no poke, so the phone's
+     * own screen timeout runs; the relight takes them again ([relight]).
+     */
+    private fun applyGroupHold(relight: Boolean = false): GroupHold {
+        val ids = synchronized(lock) { episode.state.displays.toList() }
+        val shared = ids.any { DisplayProbe.displayGroupId(it) == DisplayProbe.DEFAULT_GROUP_ID }
+        val decision = groupHold(wakeOwner.owner(), shared, ids.isNotEmpty())
+        synchronized(lock) {
+            if (!decision.displayLock) {
+                if (displayWakeLocks.isNotEmpty()) {
+                    releaseDisplayLocksLocked()
+                    val reason = if (ids.isEmpty()) DisplayLockReason.STOPPED else DisplayLockReason.PERSON_OWNS
+                    log("displaylock released reason=${reason.wire}")
+                }
+            } else if (displayWakeLocks.size < ids.size) {
+                for (id in ids) holdDisplayLockLocked(id)
+                if (relight) log("displaylock held reason=${DisplayLockReason.RELIGHT.wire}")
+            }
+        }
+        return decision
+    }
+
+    /** Why a display lock batch was released or re-taken: closed tokens for the log. */
+    private enum class DisplayLockReason(val wire: String) {
+        PERSON_OWNS("person_owns"),
+        RELIGHT("relight"),
+        STOPPED("stopped"),
     }
 
     /**
