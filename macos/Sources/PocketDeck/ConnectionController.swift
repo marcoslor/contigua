@@ -836,6 +836,7 @@ final class ConnectionController {
             if now != offline { record.pathOutage = .down(since: since, offline: now) }
         }
         if let qr, !qr.expired, !qr.succeeded, qr.payload.isExpired() { expireQR() }
+        if audioStarted { audio.logStatsIfDue() }
         writePhonesReport()
     }
 

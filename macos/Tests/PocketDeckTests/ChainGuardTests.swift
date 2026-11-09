@@ -88,6 +88,6 @@ final class ChainGuardTests: XCTestCase {
 
     func testTheReasonTokensAreTheClosedSet() {
         XCTAssertEqual(ChainGuard.Reason.allCases.map(\.rawValue),
-                       ["config", "flush", "before_config", "layer_failed"])
+                       ["config", "flush", "before_config", "layer_failed", "incomplete"])
     }
 }

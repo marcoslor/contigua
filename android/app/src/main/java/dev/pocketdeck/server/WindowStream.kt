@@ -1113,6 +1113,8 @@ internal class WindowStream(
 
     private fun drain(codec: MediaCodec, kind: VideoCodec) {
         val info = MediaCodec.BufferInfo()
+        // WIN-63: one per encoder, so its first format always goes out.
+        val configChange = ConfigChange()
         var nextFreezeCheckMs = 0L
         var frozen = false
         while (!released && encoder === codec) {
@@ -1154,7 +1156,12 @@ internal class WindowStream(
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let {
                     lastCsd = it
-                    sink.onConfig(stream, kind.wire, width, height, it, picture)
+                    // Per-frame statistics change the format with the same
+                    // parameter sets: only a real change reaches the Mac.
+                    val rect = picture
+                    if (configChange.shouldSend(kind.wire, width, height, rect, it)) {
+                        sink.onConfig(stream, kind.wire, width, height, it, rect)
+                    }
                 }
                 continue
             }

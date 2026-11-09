@@ -83,7 +83,7 @@ object TcpKeepalive {
      * own socket code takes; the repo's other shell-side probes use hidden
      * members the same way. Null when they are not there.
      */
-    private fun fileDescriptorOf(socket: Socket): FileDescriptor? {
+    internal fun fileDescriptorOf(socket: Socket): FileDescriptor? {
         return try {
             val getDescriptor = Socket::class.java.getDeclaredMethod("getFileDescriptor$")
             getDescriptor.isAccessible = true
