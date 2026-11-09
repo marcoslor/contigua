@@ -57,7 +57,7 @@ final class LinkPresentationTests: XCTestCase {
     func testTheCurrentLinkIsObservable() {
         let book = PhoneBook()
         book.start(active: phone, at: t0)
-        final class Flag { var changed = false }
+        final class Flag: @unchecked Sendable { var changed = false }
         let flag = Flag()
         withObservationTracking {
             _ = book.currentLink

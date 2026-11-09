@@ -20,7 +20,9 @@ Automatic flow detail (numeric comparison, nothing is typed): the Mac sheet read
 large monospaced digits grouped "123 456", and the line **"Tap Allow on your phone if it shows the same code."** with **Cancel**.
 The person compares the two screens and taps **Allow** on the phone; that is the only step. The sheet then shows "Pairing…" and
 a checkmark. States: *Contacting *phone name*…* (before the code arrives) · *Pairing…* · "Pairing was denied on the phone." ·
-"Nobody tapped Allow in time. Try again." (the phone gives up after 120 s) · "Couldn't reach *phone name*. Try again." The Mac waits
+"Nobody tapped Allow in time. Try again." (the phone gives up after 120 s) · "Couldn't reach *phone name*. Try again." ·
+in the phone's 30 s cooldown, "Wait a moment, then try again." with a small secondary "23 s" counting down (Try again is
+disabled until 0, and nothing retries by itself). The Mac waits
 the whole 120 s; Cancel hangs up and the phone dismisses its prompt. The code is derived from both devices' TLS
 certificate fingerprints, so it is only ever displayed, never typed.
 

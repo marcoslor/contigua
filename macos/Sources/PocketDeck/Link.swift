@@ -59,10 +59,12 @@ enum Pairing: Equatable {
     case comparing(code: String)
     /// The person tapped Allow; the key and `welcome` are on their way.
     case verifying
-    case denied
+    /// The person denied on the phone: its own 30 s window started at that
+    /// moment, and the sheet counts it down (R2).
+    case denied(until: Date)
     /// The phone is inside its 30 s window after a Deny or a timeout: the next
-    /// attempt must wait, and the sheet says so (PAIR-5).
-    case coolingDown
+    /// attempt must wait, and the sheet says so (PAIR-5, R2).
+    case coolingDown(until: Date)
     /// The phone refused the pairing itself (its master or pairing switch is off).
     case refused(String)
     /// Nobody answered on the phone within its 120 s.
@@ -71,10 +73,54 @@ enum Pairing: Equatable {
     case unreachable
 }
 
+extension Pairing {
+    /// The deadline a countdown runs to, when this state has one.
+    var countdownUntil: Date? {
+        switch self {
+        case .denied(let until), .coolingDown(let until): return until
+        default: return nil
+        }
+    }
+
+    /// Whole seconds left, never negative: the sheet's one number (R2).
+    func remaining(at now: Date) -> Int {
+        countdownUntil.map { Self.remaining(until: $0, at: now) } ?? 0
+    }
+
+    static func remaining(until: Date, at now: Date) -> Int {
+        max(0, Int(until.timeIntervalSince(now).rounded(.up)))
+    }
+
+    /// R2 rule 2: Try Again is offered only at 0; nothing retries by itself.
+    func canTryAgain(at now: Date) -> Bool {
+        countdownUntil.map { Self.canTryAgain(until: $0, at: now) } ?? true
+    }
+
+    static func canTryAgain(until: Date, at now: Date) -> Bool { now >= until }
+
+    /// A closed token for the report and the link log (never a date).
+    var token: String {
+        switch self {
+        case .contacting: return "contacting"
+        case .comparing: return "comparing"
+        case .verifying: return "verifying"
+        case .denied: return "denied"
+        case .coolingDown: return "coolingDown"
+        case .refused: return "refused"
+        case .timedOut: return "timedOut"
+        case .unreachable: return "unreachable"
+        }
+    }
+}
+
 /// The pairing sheet's failure lines that are worth pinning in a test (the
 /// others name the phone and are built there).
 enum PairingCopy {
     static let coolingDown = "Wait a moment, then try again."
+    static let denied = "Pairing was denied on the phone."
+
+    /// The countdown's one number (R2): seconds only, no new sentence.
+    static func countdown(_ seconds: Int) -> String { "\(max(0, seconds)) s" }
     /// PAIR-6: a prompt that has waited 20 s may be invisible because the
     /// phone's notifications are off; the Mac names that possibility.
     static let slowHint = "Check your phone: PocketDeck's notifications may be turned off."
@@ -142,6 +188,34 @@ enum Link: Equatable {
         default: return false
         }
     }
+
+    /// A closed name for the R4 link log: never a person's words, never a
+    /// reason string the phone chose.
+    var token: String {
+        switch self {
+        case .idle: return "idle"
+        case .connecting: return "connecting"
+        case .online: return "online"
+        case .reconnecting: return "reconnecting"
+        case .offline(_, let cause): return "offline(\(cause.token))"
+        case .needsPairing: return "needsPairing"
+        case .pairing(_, let pairing): return "pairing(\(pairing.token))"
+        }
+    }
+}
+
+extension Cause {
+    var token: String {
+        switch self {
+        case .unreachable: return "unreachable"
+        case .busy: return "busy"
+        case .versionMismatch: return "versionMismatch"
+        case .localNetworkDenied: return "localNetworkDenied"
+        case .connectionsOff: return "connectionsOff"
+        case .pairingsOff: return "pairingsOff"
+        case .notFound: return "notFound"
+        }
+    }
 }
 
 /// One line under the toolbar, with at most one button. Derived from `Link`;
@@ -152,6 +226,9 @@ struct Banner: Equatable {
     var action: Action?
     /// One line under the text, for the step that fixes the state (PAIR-35).
     var detail: String? = nil
+    /// A live countdown the view draws as "23 s" (R2); the deadline lives in
+    /// the machine's state, never in a view timer.
+    var countdownUntil: Date? = nil
 
     var actionTitle: String? {
         switch action {
@@ -192,6 +269,10 @@ extension Link {
                           action: .openSettings)
         case .needsPairing(let p):
             return Banner(text: "\(naming(p)) no longer trusts this Mac.", action: .pairAgain)
+        case .pairing(_, .denied(let until)):
+            return Banner(text: PairingCopy.denied, action: nil, countdownUntil: until)
+        case .pairing(_, .coolingDown(let until)):
+            return Banner(text: PairingCopy.coolingDown, action: nil, countdownUntil: until)
         default:
             return nil
         }
@@ -262,6 +343,28 @@ enum LinkEvent: Equatable {
     case forget(deviceId: String)
     case localNetworkDenied
     case tick
+
+    /// A closed name for the R4 link log (a failure keeps its reason code:
+    /// those are the protocol's, and the log is what names the bug).
+    var token: String {
+        switch self {
+        case .launch: return "launch"
+        case .activate: return "activate"
+        case .welcome: return "welcome"
+        case .attemptFailed(let reason): return "fail:\(reason)"
+        case .reachabilityHint: return "reachabilityHint"
+        case .reachability: return "reachability"
+        case .restoreTrustLost: return "restoreTrustLost"
+        case .tryNow: return "tryNow"
+        case .beginPairing: return "beginPairing"
+        case .codeShown: return "codeShown"
+        case .pairApproved: return "pairApproved"
+        case .cancelPairing: return "cancelPairing"
+        case .forget: return "forget"
+        case .localNetworkDenied: return "localNetworkDenied"
+        case .tick: return "tick"
+        }
+    }
 }
 
 enum LinkAction: Equatable {
@@ -281,6 +384,9 @@ struct LinkMachine {
     static let notFoundAfter: TimeInterval = 30
     /// The connections-off refusal's own cadence (PAIR-35).
     static let connectionsOffRetry: TimeInterval = 30
+    /// The phone's post-deny window (Session.kt PairCooldown): the sheet counts
+    /// from the deny or from the first `pair_cooldown` it hears (R2).
+    static let cooldownWindow: TimeInterval = 30
 
     private(set) var link: Link = .idle
     private var outageStart: Date?
@@ -502,8 +608,10 @@ struct LinkMachine {
     private mutating func failed(_ reason: String, at now: Date) -> [LinkAction] {
         if case .pairing(let phone, _) = link {
             switch reason {
-            case "pair_denied": link = .pairing(phone, .denied)
-            case "pair_cooldown": link = .pairing(phone, .coolingDown)
+            case "pair_denied":
+                link = .pairing(phone, .denied(until: now.addingTimeInterval(Self.cooldownWindow)))
+            case "pair_cooldown":
+                link = .pairing(phone, .coolingDown(until: now.addingTimeInterval(Self.cooldownWindow)))
             case "pair_timeout": link = .pairing(phone, .timedOut)
             case "connections_off", "pairing_off", "pair_exporter":
                 link = .pairing(phone, .refused(reason))
@@ -517,8 +625,9 @@ struct LinkMachine {
         case "pair_cooldown":
             // A launch that meets a phone inside its 30 s window: the person
             // is pairing (or just tried to), so the sheet says to wait rather
-            // than leaving a silent offline link (PAIR-5).
-            link = .pairing(phone, .coolingDown)
+            // than leaving a silent offline link (PAIR-5). The deadline is the
+            // upper bound: the Mac did not see the deny that opened it (R2).
+            link = .pairing(phone, .coolingDown(until: now.addingTimeInterval(Self.cooldownWindow)))
             return [.stopAttempts]
         case "forgotten":
             // The phone's own authenticated word (PAIR-30): no attempt can fix
@@ -620,5 +729,27 @@ struct LinkMachine {
             }
             return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
         }
+    }
+}
+
+// MARK: - One presentation for every surface (R1)
+
+/// What the Deck, the menu-bar panel and the Settings row show for one Link
+/// value. Pure, so the table test can walk every state and prove the three
+/// surfaces never disagree (AGENTS.md: one truth, one derivation).
+struct LinkPresentation: Equatable {
+    var banner: Banner?
+    /// The Deck's app grid and its Phone button are live only online.
+    var deckInteractive: Bool
+    var panelNotice: Banner?
+    var settingsPresence: DevicePresence
+    var chip: Chip?
+
+    init(link: Link, naming: @escaping (PhoneRef) -> String = { $0.name }) {
+        banner = link.banner(naming: naming)
+        deckInteractive = link.isOnline
+        panelNotice = PhonePanelNotice.banner(for: link, naming: naming)
+        settingsPresence = DevicePresence(link)
+        chip = link.chip
     }
 }

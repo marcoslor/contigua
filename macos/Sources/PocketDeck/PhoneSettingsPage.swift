@@ -188,7 +188,7 @@ struct PhoneSettingsPage: View {
             case .inUse:
                 EmptyView()
             case .pairAgain:
-                Button("Pair Again…") { controller.pairAgain(for: phone) }
+                Button("Pair Again…") { controller.pairAgain(for: phone, source: .settings) }
                     .help("Forget the old pairing and pair this phone again.")
             case .useThisPhone:
                 Button("Use This Phone") { controller.use(phone) }

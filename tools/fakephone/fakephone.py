@@ -5677,6 +5677,18 @@ class FakePhone(object):
             except ValueError:
                 pass
             return
+        if command == "cooldown" and len(parts) >= 2:
+            # The check's seam for the phone's post-deny window: `cooldown N`
+            # re-arms it for N s, `cooldown end` closes it early. The Mac's own
+            # 30 s deadline never changes (R2).
+            if parts[1] == "end":
+                self.phone.pair_cooldown_until = 0.0
+            else:
+                try:
+                    self.phone.pair_cooldown_until = time.time() + float(parts[1])
+                except ValueError:
+                    pass
+            return
         session = self._session
         if session is None or session.hub is None:
             return
