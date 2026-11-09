@@ -6,7 +6,7 @@
 # `adb install -r` does not restart `:pocketdeck`: the old process keeps the
 # deleted base.apk and the LAN listener, and the Mac times out on SYN while the
 # phone looks healthy. This script installs, kills every service pid with su
-# (KernelSU; falls back to stopping the app), launches MainActivity once, and
+# (KernelSU), else as adb's shell (a uid-2000 service), else stops the app, launches MainActivity once, and
 # asserts every new pid maps the current base.apk.
 set -euo pipefail
 
@@ -30,7 +30,10 @@ if [ -n "$PIDS" ]; then
   echo "restarting the shell service (pids $(echo "$PIDS" | tr '\n' ' '))"
   kill_failed=0
   for PID in $PIDS; do
-    if ! "${adb_cmd[@]}" shell "su -c 'kill $PID'" >/dev/null 2>&1; then
+    # A service started by the app's own shell (uid 2000) can be killed by
+    # adb's shell without su; a root service needs su.
+    if ! "${adb_cmd[@]}" shell "su -c 'kill $PID'" >/dev/null 2>&1 \
+      && ! "${adb_cmd[@]}" shell "kill $PID" >/dev/null 2>&1; then
       kill_failed=1
     fi
   done
