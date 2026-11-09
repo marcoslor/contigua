@@ -154,6 +154,13 @@ internal class WindowStream(
     /** Live bitrate policy: computed target or `window.quality`, drops and recovery. */
     private val quality = QualityAdaptation()
 
+    /**
+     * The cap on the codec's key, closed on the encoder's measured output: a
+     * VBR encoder that puts out more than the link is brought down even when
+     * the sender's believed target is already at its floor.
+     */
+    private val encoderCap = EncoderCap()
+
     /** `stream.stats` counters (ISS-40); rings fill only while the Mac asked. */
     private val stats = StreamStats(
         stream = stream,
@@ -498,14 +505,25 @@ internal class WindowStream(
      * caps recovery at 85% of what the link actually carried, so a slow TCP
      * fallback cannot climb back to the encoder cap and refill the queue.
      */
-    fun onBackpressure(measuredBps: Int? = null) {
-        val bps = quality.onDrop(SystemClock.elapsedRealtime(), measuredBps) ?: return
-        log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%, encoder ${mbps(encoderBitrate(bps))})")
+    fun onBackpressure(measuredBps: Int? = null, encodedBps: Int? = null) {
+        val now = SystemClock.elapsedRealtime()
+        // The key that produced the measured output is the one the codec ran
+        // with; the quality drop below has not reached the codec yet.
+        val keyBefore = appliedBitrate.takeIf { it > 0 } ?: encoderBitrate(quality.bitrate)
+        val bps = quality.onDrop(now, measuredBps)
+        val capped = encoderCap.onDrop(now, measuredBps, encodedBps, keyBefore)
+        if (capped != null && measuredBps != null && encodedBps != null) {
+            log("stream $stream encoder cap: key ${mbps(keyBefore)} -> ${mbps(capped)} " +
+                "(output ${mbps(encodedBps)}, link ${mbps(measuredBps)})")
+        }
+        if (bps != null) {
+            log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%, encoder ${mbps(encoderBitrate(bps))})")
+        }
         if (measuredBps != null) {
             log("stream $stream quality: recovery cap ${mbps(quality.ceilingBps)} " +
                 "(measured ${mbps(measuredBps)})")
         }
-        applyBitrate()
+        if (bps != null || capped != null) applyBitrate()
     }
 
     @Synchronized
@@ -1022,10 +1040,14 @@ internal class WindowStream(
         log("stream $stream bitrate ${mbps(encoderBps)} ($reason${if (ok) "" else ", encoder not running"})")
     }
 
-    /** Arm A's overshoot: what the codec is told, while the sender's target stays [bps]. */
+    /**
+     * What the codec is told: arm A's overshoot times the sender's target,
+     * then the cap the encoder's measured output closed on the link.
+     */
     private fun encoderBitrate(bps: Int): Int {
         val factor = strategy.overshoot.coerceAtLeast(1).toLong()
-        return (bps.toLong() * factor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val key = (bps.toLong() * factor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return minOf(key, encoderCap.capBps)
     }
 
     private fun drain(codec: MediaCodec, kind: VideoCodec) {
@@ -1063,6 +1085,14 @@ internal class WindowStream(
             // only grows the bitrate when the stream is alive anyway.
             quality.maybeRecover(now)?.let { bps ->
                 log("stream $stream quality: bitrate recovered to ${mbps(bps)} (+10%)")
+                applyBitrate()
+            }
+            // The cap on the codec key probes upward on the same drain clock;
+            // it is independent of the target's recovery, which may be at its
+            // floor while the encoder still overshoots the link.
+            encoderCap.maybeProbe(now)?.let { cap ->
+                log("stream $stream encoder cap: key ${mbps(cap)} (probe, " +
+                    "${encoderCap.probesLeft} left)")
                 applyBitrate()
             }
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -1287,8 +1317,8 @@ internal class AndroidDisplayLayer(
         get(stream)?.setQuality(bitrate, maxFps)
     }
 
-    override fun onBackpressure(stream: Int, measuredBps: Int?) {
-        get(stream)?.onBackpressure(measuredBps)
+    override fun onBackpressure(stream: Int, measuredBps: Int?, encodedBps: Int?) {
+        get(stream)?.onBackpressure(measuredBps, encodedBps)
     }
 
     override fun setEncoderSuspend(stream: Int, suspended: Boolean) {

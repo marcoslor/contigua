@@ -324,8 +324,10 @@ interface DisplayLayer {
     /**
      * The session dropped delta frames for this stream because its backlog
      * exceeded the protocol's budget; the encoder should lower its bitrate.
+     * [measuredBps] is the link's recent goodput and [encodedBps] the encoder's
+     * own measured output; the cap on the codec's key reads both.
      */
-    fun onBackpressure(stream: Int, measuredBps: Int? = null) {}
+    fun onBackpressure(stream: Int, measuredBps: Int? = null, encodedBps: Int? = null) {}
 
     /**
      * Q1 (`overflow=suspend`): stop (true) or resume (false) taking frames at

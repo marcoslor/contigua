@@ -94,6 +94,14 @@ internal class SendQueue(
     private val budgets = HashMap<Int, BudgetState>()
     /** The encoder's own output rate, measured from the frames it enqueues. */
     private val encodedRate = GoodputMeter(windowUs = 1_000_000L, minSpanUs = 50_000L)
+
+    /**
+     * The encoder's measured output for [stream] over the recent run, or null
+     * without a sample. The closed loop on the key reads it when a drop happens;
+     * it counts every encoded frame, including the ones the queue discards.
+     */
+    fun encoderBps(stream: Int): Int? = encodedRate.rateBps(stream, nowUs())
+
     /** The pts of the last frame the writer sent, per stream. */
     private val lastSentPtsUs = HashMap<Int, Long>()
     /** The last sent pts before the open drop episode's first discarded delta. */
@@ -145,6 +153,9 @@ internal class SendQueue(
             if (stream != 0) {
                 dropping.remove(stream)
                 discardDeltas(stream)
+                // The discarded deltas were the ones the old key's credit was
+                // paying for; a new control entry starts a fresh budget.
+                noteDrainedIfEmpty(stream)
                 val before = overflowStates[stream]
                 if (before != null && before != OverflowState.Flowing) {
                     changed = setOverflowState(
@@ -454,10 +465,11 @@ internal class SendQueue(
             .coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
     }
 
-    /** The byte budget: 250 ms at the measured rate, plus any key frame. */
+    /** The byte budget: 250 ms at the measured rate, plus any key frame or its draining credit. */
     private fun maxBytesFor(policy: QueuePolicy, budget: BudgetState, rateBps: Int): Int {
         val rateBytes = rateBps.toLong() * policy.maxDurationUs / 8_000_000L
-        return (rateBytes + budget.keyBytes).coerceIn(1L, MAX_QUEUE_BYTES.toLong()).toInt()
+        return (rateBytes + budget.keyBytes + budget.byteCredit)
+            .coerceIn(1L, MAX_QUEUE_BYTES.toLong()).toInt()
     }
 
     /** The duration budget: the base plus the key frame's send-time credit. */
