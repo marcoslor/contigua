@@ -1365,7 +1365,7 @@ check_pairflow() {
     # The fake restarts (the phone's app), armed to deny the next two prompts.
     stop_fakephone
     wait_until 5 no_fakephone
-    FAKE_NAME="Galaxy S25+" FAKE_ARGS="--deny 2 --ctl-file $fake_ctl" start_fake || return 1
+    FAKE_NAME="Galaxy S25+" FAKE_ARGS="--deny 1 --ctl-file $fake_ctl" start_fake || return 1
 
     # P1: Pair Again from the Deck's banner is the control a person presses.
     before="$(pair_commits)"
@@ -1391,13 +1391,19 @@ check_pairflow() {
         && ok "[R3] PF1 Cancel closes the sheet" \
         || bad "[R3] PF1 the sheet stayed after Cancel"
 
-    # P1b: the same again: a second deny, then Cancel.
+    # P1b: a second Pair Again inside the phone's 30 s window is refused with
+    # pair_cooldown (no new prompt, no pair.commit): the sheet says to wait.
+    # Re-arm the window so this step cannot race the 30 s.
+    printf 'cooldown 30\n' > "$fake_ctl"
+    sleep 0.3
     before="$(pair_commits)"
     "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 || true
-    wait_until 20 eval '[ "$(pair_commits)" -gt "$before" ]' \
-        && ok "[R3] PF1 a second Pair Again reaches the phone" \
-        || bad "[R3] PF1 the second Pair Again dead-ended"
-    wait_until 5 eval 'ax_tree | grep -qF "Pairing was denied on the phone."' || true
+    wait_until 15 eval 'ax_tree | grep -qF "Wait a moment, then try again."' \
+        && ok "[R2] PF1 a second Pair Again inside the window says to wait" \
+        || bad "[R2] PF1 the second Pair Again did not meet the cooldown"
+    [ "$(pair_commits)" -le "$before" ] \
+        && ok "[R2] PF1 no prompt followed inside the phone's window" \
+        || bad "[R2] PF1 the phone prompted inside its window"
     "$AXDUMPBIN" "$APP_PID" --press Cancel >/dev/null 2>&1 || true
     wait_until 10 eval '! ax_tree | grep -qF "Pair with Galaxy S25+"' || true
 
@@ -1448,20 +1454,20 @@ check_pairflow() {
         && ok "[R1] PF3 the trust-lost banner clears on the pairing" \
         || bad "[R1] PF3 the trust-lost banner stayed after pairing"
 
-    # R4: the UI actions and the link transitions are greppable.
-    log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
-        | grep -qF "ui: pair-again source=deck" \
+    # R4: the UI actions and the link transitions are greppable. The unified
+    # log can lag a second, so each read retries.
+    app_log_has() {
+        log show --last 6m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -qF "$1"
+    }
+    wait_until 5 app_log_has "ui: pair-again source=deck" \
         && ok "[R4] PF the Deck's Pair Again logs one ui line" \
         || bad "[R4] PF no ui: pair-again source=deck line"
-    log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
-        | grep -qF "ui: pairing-sheet cancel" \
+    wait_until 5 app_log_has "ui: pairing-sheet cancel" \
         && ok "[R4] PF Cancel logs one ui line" \
         || bad "[R4] PF no ui: pairing-sheet cancel line"
-    log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
-        | grep -qE 'link: pairing\(contacting\) --fail:pair_cooldown--> pairing\(coolingDown\)' \
+    wait_until 5 app_log_has "link: pairing(contacting) --fail:pair_cooldown--> pairing(coolingDown)" \
         && ok "[R4] PF the link machine logs the cooldown transition" \
         || bad "[R4] PF no link: ... pair_cooldown ... line"
     stop_app
