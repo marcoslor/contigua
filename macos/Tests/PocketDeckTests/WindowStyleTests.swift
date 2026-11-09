@@ -445,4 +445,90 @@ final class PhoneChromeTests: XCTestCase {
             last = size
         }
     }
+
+    // MARK: Drag edges (ISS-64)
+
+    private let phoneShape = CGSize(width: 1080, height: 2340)
+
+    private func assertPhoneShaped(_ size: CGSize, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let stream = WindowStyle.framed.streamSize(window: size)
+        XCTAssertEqual(stream.width / stream.height,
+                       phoneShape.width / phoneShape.height, accuracy: 0.005,
+                       message, file: file, line: line)
+    }
+
+    /// The person's own frame: the bottom edge dragged from 754 to 600 pt.
+    func testTheBottomEdgeDragShrinksThePhoneWindowToTheHeight() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
+                                     phone: phoneShape, style: .framed, edge: .bottom)
+        XCTAssertEqual(size.height, 600, accuracy: 0.5, "the bottom edge sets the height")
+        assertPhoneShaped(size, "the width follows the phone's aspect")
+    }
+
+    func testTheRightEdgeDragShrinksThePhoneWindowToTheWidth() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
+                                     phone: phoneShape, style: .framed, edge: .right)
+        XCTAssertEqual(size.width, 280, accuracy: 0.5, "the right edge sets the width")
+        assertPhoneShaped(size, "the height follows the phone's aspect")
+    }
+
+    func testTheTopAndLeftEdgesLeadTheSameWay() {
+        let top = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
+                                    phone: phoneShape, style: .framed, edge: .top)
+        XCTAssertEqual(top.height, 600, accuracy: 0.5, "the top edge sets the height")
+        assertPhoneShaped(top, "the width follows the top edge's height")
+
+        let left = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
+                                     phone: phoneShape, style: .framed, edge: .left)
+        XCTAssertEqual(left.width, 280, accuracy: 0.5, "the left edge sets the width")
+        assertPhoneShaped(left, "the height follows the left edge's width")
+    }
+
+    /// A corner keeps the v104 larger-area rule: it may shrink both dimensions.
+    func testACornerDragInwardShrinksBothDimensions() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 600),
+                                     phone: phoneShape, style: .framed, edge: .bottomRight)
+        XCTAssertLessThan(size.width, 335)
+        XCTAssertLessThan(size.height, 754)
+        assertPhoneShaped(size, "the corner drag keeps the phone's aspect")
+    }
+
+    /// The edge version of the v104 test: a bottom-edge drag that asks for a
+    /// smaller height each step gives a smaller window each step.
+    func testAMonotonicBottomEdgeDragGivesAMonotonicPhoneWindow() {
+        let phone = CGSize(width: 1080, height: 2400)
+        var last: CGFloat = 0
+        for step in 0..<10 {
+            let proposed = CGSize(width: 500, height: 1200 - Double(step) * 40)
+            let size = PhoneChrome.frame(proposed: proposed, phone: phone,
+                                         style: .framed, edge: .bottom)
+            if last > 0 {
+                XCTAssertLessThanOrEqual(size.height, last + 0.5,
+                                         "step \(step) must follow the bottom edge in")
+            }
+            last = size.height
+        }
+        XCTAssertEqual(last, 1200 - 9 * 40, accuracy: 0.5,
+                       "the window's height is the bottom edge's last proposal")
+    }
+
+    func testTheEdgeIsReadFromThePointerWithinSixPoints() {
+        let frame = NSRect(x: 300, y: 200, width: 335, height: 754)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 200), in: frame), .bottom)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 205), in: frame), .bottom,
+                       "5 pt inside the bottom edge is still its grab band")
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 212), in: frame), .none)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 577), in: frame), .left)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 630, y: 577), in: frame), .right,
+                       "5 pt inside the right edge is still its grab band")
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 951), in: frame), .top)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 200), in: frame), .bottomLeft)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 635, y: 954), in: frame), .topRight)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 954), in: frame), .topLeft)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 635, y: 200), in: frame), .bottomRight)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 700, y: 577), in: frame), .none,
+                       "10 pt outside the frame is not a grab")
+        XCTAssertEqual(PhoneWindowEdge.at(point: .zero, in: frame), .none)
+    }
 }

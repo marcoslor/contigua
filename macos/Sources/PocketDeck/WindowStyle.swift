@@ -165,6 +165,45 @@ enum RevealDelay: String, CaseIterable {
     }
 }
 
+/// The edge of a phone window's frame a person is dragging. The edge decides
+/// which dimension leads the phone's aspect rule (ISS-64); a resize that is not
+/// a mouse drag keeps today's larger-area rule (the v104 fix).
+enum PhoneWindowEdge: Equatable {
+    case none
+    case left
+    case right
+    case top
+    case bottom
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+
+    /// The edge or corner under `point` (frame coordinates): an edge within
+    /// `tolerance` points of the pointer, a corner where two edges meet there.
+    static func at(point: CGPoint, in frame: NSRect, tolerance: CGFloat = 6) -> PhoneWindowEdge {
+        guard frame.width > 0, frame.height > 0 else { return .none }
+        let nearLeft = abs(point.x - frame.minX) <= tolerance
+        let nearRight = abs(point.x - frame.maxX) <= tolerance
+        let nearTop = abs(point.y - frame.maxY) <= tolerance
+        let nearBottom = abs(point.y - frame.minY) <= tolerance
+        let nearFrame = point.x >= frame.minX - tolerance && point.x <= frame.maxX + tolerance
+            && point.y >= frame.minY - tolerance && point.y <= frame.maxY + tolerance
+        guard nearFrame else { return .none }
+        switch (nearLeft, nearRight, nearTop, nearBottom) {
+        case (true, _, true, _): return .topLeft
+        case (_, true, true, _): return .topRight
+        case (true, _, _, true): return .bottomLeft
+        case (_, true, _, true): return .bottomRight
+        case (true, _, _, _): return .left
+        case (_, true, _, _): return .right
+        case (_, _, true, _): return .top
+        case (_, _, _, true): return .bottom
+        default: return .none
+        }
+    }
+}
+
 /// The phone window's shape rules: the stream keeps the phone's aspect ratio;
 /// the window adds the style's bar above it.
 enum PhoneChrome {
@@ -207,6 +246,11 @@ enum PhoneChrome {
     /// mostly down after one that was mostly across produced a smaller window
     /// than the step before, and the window fought the person's hand.
     static func frame(proposed: CGSize, phone: CGSize, style: WindowStyle) -> CGSize {
+        frame(proposed: proposed, phone: phone, style: style, edge: .none)
+    }
+
+    static func frame(proposed: CGSize, phone: CGSize, style: WindowStyle,
+                      edge: PhoneWindowEdge) -> CGSize {
         guard phone.width > 0, phone.height > 0 else { return proposed }
         let ratio = phone.height / phone.width
         let stream = style.streamSize(window: proposed)
