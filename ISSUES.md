@@ -174,6 +174,12 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - The fake encoder ignores a `window.pause` while it is stalled, so when `--stall-for` ends it streams even if the Mac had paused the window meanwhile (a real phone wouldn't). No check depends on it today. If one does, add a stalled-and-paused state.
 - **ISS-31 The Deck's zoom-drag limit has a thin margin.** DECK-5 allows 21 ms (drag p95). At load < 4, main's runs sit at 18–21 ms and one in ten reaches 22–23 ms; at load 5–6 it was 28 ms twice (2026-11-04, `.agent/deck-perf/`). Every run also has about 6 frames at 33 ms (dropped). Either measure the limit again on a quiet host, or have the check wait for its load gate (as deck-perf did: 5-min load < 4, free memory ≥ 37 %, no swap-outs for 30 s). `_common.md`'s swap < 2 GB gate can't be met on the 8 GB Mac after any e2e.
 
+- **ISS-56 Test builds hide the person's Finder files switch, and K2 touched the person's Finder domain** (2026-11-08 22:32; the person: "two entries, neither asks for File Providers").
+  - **Test builds:** every e2e/variant build is `dev.pocketdeck.mac`, the person's bundle id, without `Files.appex` (`pd-wt/*/macos/build/e2e/PocketDeck.app`). Launch Services registers each one when it's launched, so System Settings › Login Items & Extensions listed two "PocketDeck" rows with Sharing only, and no File Provider switch.
+  - **K2:** an `xctest` run at 20:28:00 logged `domain added … state=on … domain removed` on the real `dev.pocketdeck.mac.files` domain, which belongs to the person.
+  - **Reviewer's cleanup at 22:36:** `lsregister -u` on the test copy, `lsregister -f` and `pluginkit -a` on `/Applications`. Only the installed copy is registered now.
+  - **Fix:** variant builds get their own bundle id (`dev.pocketdeck.mac.<variant>`, with extension ids to match), checking that the e2e TCC grants still apply. K2 never touches the real `NSFileProviderManager`: inject the fake manager everywhere, and add a test that fails if a real one is used in a test host.
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
