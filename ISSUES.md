@@ -180,6 +180,15 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
   - **Reviewer's cleanup at 22:36:** `lsregister -u` on the test copy, `lsregister -f` and `pluginkit -a` on `/Applications`. Only the installed copy is registered now.
   - **Fix:** variant builds get their own bundle id (`dev.pocketdeck.mac.<variant>`, with extension ids to match), checking that the e2e TCC grants still apply. K2 never touches the real `NSFileProviderManager`: inject the fake manager everywhere, and add a test that fails if a real one is used in a test host.
 
+- **ISS-57 Window audio glitches on a good link** (2026-11-08 ~23:00; the person, playing a language-lesson app's window: "audio is very glitchy").
+  - **Evidence:** the stream ran 247 s, 14,724 frames at 59.5 fps, 25 IDRs (about one every 10 s), 73.8 MB. The phone's log was already rotated, so no per-packet audio data survives.
+  - **Suspects, from the code:**
+    - (1) **Head-of-line on the phone:** the send order is JSON > keyframes/config > audio > deltas, so every keyframe goes out ahead of queued audio. Frames are written whole, and the socket holds up to 128 KB (`SEND_BUFFER_BYTES`). Audio can therefore wait well past the Mac's fixed jitter buffer: 60 ms target, 120 ms cap, `AudioEngine`.
+    - (2) **The Mac's pre-buffer is fixed** and has no underrun counter. When packets arrive late, the player runs dry and the listener hears a gap. A burst then overflows the 120 ms cap and drops audio.
+    - (3) The Mac delivers audio on the session queue, which also serves file-provider replies and video.
+    - (4) The capture cadence on the phone.
+  - **Next:** the `audiogap` worker. Measure first (Mac underruns, arrival lateness p95, the phone's enqueue-to-socket delay), reproduce with keyframes plus audio, run a test that must FAIL first, then fix. See `.agent/audiogap/brief.md`.
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
