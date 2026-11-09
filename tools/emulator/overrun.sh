@@ -428,7 +428,7 @@ run_arm() { # run_arm <a|b> <tag> <connect host:port>
 install_apk() { # install_apk <apk> <tag>
     local apk="$1" tag="$2"
     [ -f "$apk" ] || { bad "no APK at $apk"; return 1; }
-    if ! emu install -r -d "$apk" > "$WORK/install-$tag.log" 2>&1; then
+    if ! emu_long install -r -d "$apk" > "$WORK/install-$tag.log" 2>&1; then
         tail -5 "$WORK/install-$tag.log"
         bad "install of $tag failed"
         return 1
@@ -521,7 +521,7 @@ fi
 # is too small to put a key frame near the queue's 256 KB budget. The window
 # frame is remembered per app in the profile's defaults.
 defaults write "dev.pocketdeck.mac.$PROFILE" streamFrames \
-    -dict "app.$BROWSER" "{{20, 20}, {1600, 1260}}" \
+    "{ 'app.$BROWSER' = '{{20, 20}, {1600, 1260}}'; }" \
     && say "the app window will open at 1600x1260" \
     || bad "could not seed the app window frame"
 
@@ -607,6 +607,10 @@ cat "$WORK/check-b.log"
 [ "$B_RC" -eq 0 ] && ok "arm B passes the bar" || bad "arm B fails the bar"
 
 say "artifacts: $WORK, $OUT"
+# The raw lines the reviewer reads: both phases' Mac stats, phone logs, pass
+# checks and the shaper's byte events.
+cp "$WORK"/arm-*-stats.log "$WORK"/arm-*-phone.log "$WORK"/check-*.log \
+    "$WORK"/proxy-*.jsonl "$OUT/" 2>/dev/null || true
 if [ "$FAIL" -eq 0 ]; then
     say "OVERRUN EMULATOR PASS"
 else
