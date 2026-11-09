@@ -403,6 +403,12 @@ internal class WindowStream(
         }
     }
 
+    /** The drop rule's request: the IDR before the dropped deltas answers nothing. */
+    fun requestKeyframeAfterDrop() {
+        keyGate.onDeltasDropped()
+        requestKeyframe()
+    }
+
     fun requestKeyframe() {
         stats.onKeyframeRequested()
         val codec = encoder ?: return
@@ -1381,6 +1387,10 @@ internal class AndroidDisplayLayer(
 
     override fun requestKeyframe(stream: Int) {
         get(stream)?.requestKeyframe()
+    }
+
+    override fun requestKeyframeAfterDrop(stream: Int) {
+        get(stream)?.requestKeyframeAfterDrop()
     }
 
     override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {

@@ -1143,6 +1143,9 @@ class SessionTest {
         session!!.onFrame(1, 0, false, ByteArray(SendQueue.DEFAULT_MAX_DELTA_BYTES + 1))
         await { platform.backpressures.contains(1) }
         assertTrue(platform.keyframeRequests.contains(1))
+        // The drop's own request says so: the duplicate-IDR gate must not
+        // answer it with an IDR that went out before the dropped deltas.
+        assertTrue(platform.keyframesAfterDrop.contains(1))
     }
 
     @Test

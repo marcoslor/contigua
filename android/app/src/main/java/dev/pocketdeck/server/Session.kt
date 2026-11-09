@@ -229,6 +229,9 @@ class Session(
         },
         onOverflow = { stream -> onQueueOverflow(stream) },
         onSuspendChanged = { stream -> applyEncoderSuspend(stream) },
+        // A drop episode still waiting for its key asks again (no new
+        // backpressure step: the bitrate already went down at the drop).
+        onKeyRetry = { stream -> runCatching { display.requestKeyframeAfterDrop(stream) } },
         codecFor = { stream -> streamCodecs[stream] ?: VideoCodec.Avc },
         // The overrun budget follows the measured link when the writer has a
         // sample; without one the queue uses the encoder's own output rate.
@@ -3503,7 +3506,7 @@ class Session(
         log("stream $stream backpressure: dropping deltas, requesting keyframe" +
             (measured?.let { " (measured ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: "") +
             (encoded?.let { " (encoder ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: ""))
-        runCatching { display.requestKeyframe(stream) }
+        runCatching { display.requestKeyframeAfterDrop(stream) }
         runCatching { display.onBackpressure(stream, measured, encoded) }
     }
 
