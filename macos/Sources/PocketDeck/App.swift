@@ -105,6 +105,9 @@ struct LaunchOptions {
     /// `--debug-notify-denied` (e2e): report macOS notifications as denied, as
     /// System Settings would, without touching the person's real permission.
     var debugNotifyDenied = false
+    /// `--debug-no-margin-switch` (e2e): the broken build for `switchpath`; the
+    /// ranking's margin switch never runs, so the planned-switch check must fail.
+    var debugNoMarginSwitch = false
     /// `--mcp-enable` (test builds only): turn the automation server's setting
     /// on for this profile at launch (e2e `mcp`).
     var mcpEnable = false
@@ -175,6 +178,7 @@ struct LaunchOptions {
         "--background": false,
         "--open-requests": true,
         "--debug-notify-denied": false,
+        "--debug-no-margin-switch": false,
         "--mcp-enable": false,
         "--files-domain": true,
         "--files-bridge-dir": true,
@@ -309,6 +313,8 @@ struct LaunchOptions {
                 options.openRequests = next()
             case "--debug-notify-denied":
                 options.debugNotifyDenied = true
+            case "--debug-no-margin-switch":
+                options.debugNoMarginSwitch = true
             case "--mcp-enable":
                 options.mcpEnable = true
             case "--files-domain":

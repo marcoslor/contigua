@@ -456,6 +456,9 @@ final class Session {
 
     private let connectTimeout: TimeInterval
     private let pairingTimeout: TimeInterval
+    /// `--debug-no-margin-switch`: the e2e check's broken build; the ranking's
+    /// margin switch is ignored, every other switch (failover, probe) stays.
+    private let debugNoMarginSwitch: Bool
 
     // MARK: Inits
 
@@ -468,8 +471,10 @@ final class Session {
          onPinEstablished: ((PinnedPhoneV2) -> Void)? = nil,
          group: EventLoopGroup? = nil,
          connectTimeout: TimeInterval = Session.defaultConnectTimeout,
-         pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
+         pairingTimeout: TimeInterval = Session.defaultPairingTimeout,
+         debugNoMarginSwitch: Bool = false) {
         self.endpoint = endpoint
+        self.debugNoMarginSwitch = debugNoMarginSwitch
         self.providers = (endpoints ?? [endpoint]).map { LanPathProvider(endpoint: $0) }
         self.knownDeviceFor = knownDeviceId
         self.strictDeviceId = strictDeviceId
@@ -1206,6 +1211,10 @@ final class Session {
         for action in pathRanking.handle(.tick(now: now), now: now) {
             switch action {
             case .switchTo(let path):
+                if debugNoMarginSwitch {
+                    Log.session.notice("paths: rank switch suppressed (debug)")  // log-ok: a closed debug token
+                    break
+                }
                 Log.session.notice("paths: rank switch to \(path, privacy: .public)")  // log-ok: a path id, not a value from the wire
                 plannedSwitch(to: path)
             case .sessionOrphan:
