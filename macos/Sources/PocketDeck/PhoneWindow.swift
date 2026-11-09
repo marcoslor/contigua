@@ -88,6 +88,10 @@ final class PhoneWindowController: StreamWindowController {
 
     private var rotationObserver: NSObjectProtocol?
     private var blackTimer: Timer?
+    /// The edge a person is dragging (ISS-64), read once at the live resize's
+    /// start and cleared at its end. `none` for a resize AppKit or a tiler did
+    /// without a mouse: those keep the v104 larger-area rule.
+    private(set) var dragEdge = PhoneWindowEdge.none
 
     /// The Mac's memory of the panel edge for this phone (docs/specs/controls.md):
     /// the value the phone received last, so a reconnect or a reopened mirror
@@ -262,17 +266,35 @@ final class PhoneWindowController: StreamWindowController {
     }
 
     override func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        // The phone's aspect first, then the screen: a person's drag, an
-        // Accessibility resize or a tiler can only make it as large as the
-        // screen allows (CONV-MAC-12).
+        // The dragged edge leads the phone's aspect rule (ISS-64), then the
+        // screen: a person's drag, an Accessibility resize or a tiler can only
+        // make it as large as the screen allows (CONV-MAC-12).
         WindowFrameLimit.aspectFitted(
-            PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style), for: sender)
+            PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style, edge: dragEdge),
+            for: sender)
+    }
+
+    override func windowWillStartLiveResize(_ notification: Notification) {
+        // Read the edge before the frame moves: a mouse drag names the side
+        // under the pointer, a resize without a mouse event names none.
+        dragEdge = currentDragEdge()
+        super.windowWillStartLiveResize(notification)
     }
 
     override func windowDidEndLiveResize(_ notification: Notification) {
+        dragEdge = .none
         super.windowDidEndLiveResize(notification)
         // A rotation the phone reported during the drag applies now.
         followRotation()
+    }
+
+    /// The edge under the pointer at this live resize's start, or `none` when
+    /// the resize did not come from the mouse (Accessibility, a tiler, zoom).
+    private func currentDragEdge() -> PhoneWindowEdge {
+        guard let window, let event = NSApp.currentEvent,
+              event.type == .leftMouseDown || event.type == .leftMouseDragged else { return .none }
+        let point = window.convertPoint(toScreen: window.mouseLocationOutsideOfEventStream)
+        return PhoneWindowEdge.at(point: point, in: window.frame)
     }
 
     /// The green button (and a double-click on the bar) zooms to the phone's
