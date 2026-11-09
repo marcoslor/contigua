@@ -445,4 +445,168 @@ final class PhoneChromeTests: XCTestCase {
             last = size
         }
     }
+
+    // MARK: Drag edges (ISS-64)
+
+    private let phoneShape = CGSize(width: 1080, height: 2340)
+
+    private func assertPhoneShaped(_ size: CGSize, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let stream = WindowStyle.framed.streamSize(window: size)
+        XCTAssertEqual(stream.width / stream.height,
+                       phoneShape.width / phoneShape.height, accuracy: 0.005,
+                       message, file: file, line: line)
+    }
+
+    /// The person's own frame: the bottom edge dragged from 754 to 600 pt.
+    func testTheBottomEdgeDragShrinksThePhoneWindowToTheHeight() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
+                                     phone: phoneShape, style: .framed, edge: .bottom)
+        XCTAssertEqual(size.height, 600, accuracy: 0.5, "the bottom edge sets the height")
+        assertPhoneShaped(size, "the width follows the phone's aspect")
+    }
+
+    func testTheRightEdgeDragShrinksThePhoneWindowToTheWidth() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
+                                     phone: phoneShape, style: .framed, edge: .right)
+        XCTAssertEqual(size.width, 280, accuracy: 0.5, "the right edge sets the width")
+        assertPhoneShaped(size, "the height follows the phone's aspect")
+    }
+
+    func testTheTopAndLeftEdgesLeadTheSameWay() {
+        let top = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
+                                    phone: phoneShape, style: .framed, edge: .top)
+        XCTAssertEqual(top.height, 600, accuracy: 0.5, "the top edge sets the height")
+        assertPhoneShaped(top, "the width follows the top edge's height")
+
+        let left = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
+                                     phone: phoneShape, style: .framed, edge: .left)
+        XCTAssertEqual(left.width, 280, accuracy: 0.5, "the left edge sets the width")
+        assertPhoneShaped(left, "the height follows the left edge's width")
+    }
+
+    /// A corner keeps the v104 larger-area rule: it may shrink both dimensions.
+    func testACornerDragInwardShrinksBothDimensions() {
+        let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 600),
+                                     phone: phoneShape, style: .framed, edge: .bottomRight)
+        XCTAssertLessThan(size.width, 335)
+        XCTAssertLessThan(size.height, 754)
+        assertPhoneShaped(size, "the corner drag keeps the phone's aspect")
+    }
+
+    /// The edge version of the v104 test: a bottom-edge drag that asks for a
+    /// smaller height each step gives a smaller window each step.
+    func testAMonotonicBottomEdgeDragGivesAMonotonicPhoneWindow() {
+        let phone = CGSize(width: 1080, height: 2400)
+        var last: CGFloat = 0
+        for step in 0..<10 {
+            let proposed = CGSize(width: 500, height: 1200 - Double(step) * 40)
+            let size = PhoneChrome.frame(proposed: proposed, phone: phone,
+                                         style: .framed, edge: .bottom)
+            if last > 0 {
+                XCTAssertLessThanOrEqual(size.height, last + 0.5,
+                                         "step \(step) must follow the bottom edge in")
+            }
+            last = size.height
+        }
+        XCTAssertEqual(last, 1200 - 9 * 40, accuracy: 0.5,
+                       "the window's height is the bottom edge's last proposal")
+    }
+
+    func testTheEdgeIsReadFromThePointerWithinSixPoints() {
+        let frame = NSRect(x: 300, y: 200, width: 335, height: 754)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 200), in: frame), .bottom)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 205), in: frame), .bottom,
+                       "5 pt inside the bottom edge is still its grab band")
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 212), in: frame), .none)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 577), in: frame), .left)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 630, y: 577), in: frame), .right,
+                       "5 pt inside the right edge is still its grab band")
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 467, y: 951), in: frame), .top)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 200), in: frame), .bottomLeft)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 635, y: 954), in: frame), .topRight)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 300, y: 954), in: frame), .topLeft)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 635, y: 200), in: frame), .bottomRight)
+        XCTAssertEqual(PhoneWindowEdge.at(point: CGPoint(x: 700, y: 577), in: frame), .none,
+                       "10 pt outside the frame is not a grab")
+        XCTAssertEqual(PhoneWindowEdge.at(point: .zero, in: frame), .none)
+    }
+
+    // MARK: The restored shape and the first picture (ISS-63)
+
+    private let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+    private func assertStreamAspect(_ frame: NSRect, _ message: String,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let stream = WindowStyle.framed.streamSize(window: frame.size)
+        XCTAssertEqual(stream.width / stream.height,
+                       phoneShape.width / phoneShape.height, accuracy: 0.005,
+                       message, file: file, line: line)
+    }
+
+    /// The person's own case: a saved frame wider than the phone's shape.
+    func testAWrongShapedSavedFrameOpensInThePhonesShape() {
+        let saved = NSRect(x: 120, y: 300, width: 432, height: 870)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "the saved frame opens at the phone's aspect")
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5, "the left edge stays")
+        XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5, "the top edge stays")
+        XCTAssertEqual(frame.height, saved.height, accuracy: 0.5,
+                       "the remembered height leads")
+    }
+
+    func testASavedLandscapeFrameForAPortraitPhoneOpensPortrait() {
+        let saved = NSRect(x: 200, y: 100, width: 800, height: 400)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "a landscape frame opens in a portrait phone's shape")
+        XCTAssertLessThan(frame.width, frame.height)
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
+        XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5)
+    }
+
+    /// The screen's limit scales the stream as one; it never clamps the width
+    /// and the height apart. `present()` has already clamped the height to the
+    /// visible frame before the phone rule sees the frame.
+    func testASavedFrameTallerThanTheScreenKeepsTheAspect() {
+        let saved = NSRect(x: 100, y: 0, width: 335, height: 900)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "the screen's limit keeps the phone's aspect")
+        XCTAssertLessThanOrEqual(frame.height, visible.height + 0.5)
+        XCTAssertEqual(frame.maxY, visible.maxY, accuracy: 0.5)
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
+    }
+
+    /// The first picture of a stream whose shape disagrees with the window's
+    /// video area refits the window, keeping the top-left and the height.
+    func testTheFirstPictureOfADifferentShapeRefitsTheWindow() {
+        let current = NSRect(x: 120, y: 300, width: 864, height: 1712)
+        let picture = CGSize(width: 1080, height: 2340)
+        let video = WindowStyle.framed.streamSize(window: current.size)
+
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
+                       .refitNow)
+        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .framed)
+        assertStreamAspect(refit, "the refit makes the video area the picture's shape")
+        XCTAssertEqual(refit.minX, current.minX, accuracy: 0.5, "the left edge stays")
+        XCTAssertEqual(refit.maxY, current.maxY, accuracy: 0.5, "the top edge stays")
+        XCTAssertEqual(refit.height, current.height, accuracy: 0.5, "the height stays")
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(
+            video: WindowStyle.framed.streamSize(window: refit.size),
+            picture: picture, isDragging: false), .none,
+            "a picture that matches the window does not refit")
+    }
+
+    func testAPictureArrivingDuringADragRefitsAtTheDragsEnd() {
+        let video = CGSize(width: 864, height: 1684)
+        let picture = CGSize(width: 1080, height: 2340)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: true),
+                       .refitAtDragEnd)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
+                       .refitNow)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: picture, picture: picture, isDragging: false),
+                       .none)
+    }
 }

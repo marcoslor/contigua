@@ -229,6 +229,9 @@ class Session(
         },
         onOverflow = { stream -> onQueueOverflow(stream) },
         onSuspendChanged = { stream -> applyEncoderSuspend(stream) },
+        // A drop episode still waiting for its key asks again (no new
+        // backpressure step: the bitrate already went down at the drop).
+        onKeyRetry = { stream -> runCatching { display.requestKeyframeAfterDrop(stream) } },
         codecFor = { stream -> streamCodecs[stream] ?: VideoCodec.Avc },
         // The overrun budget follows the measured link when the writer has a
         // sample; without one the queue uses the encoder's own output rate.
@@ -275,7 +278,7 @@ class Session(
     /** When each app stream last sent a paste key or offered a drop's SEND (ISS-51). */
     private val shareAt = HashMap<Int, Long>()
     private val shareLock = Any()
-    /** Lets a just-created task reach the task list before its display is read. */
+    /** Runs the arrival watch's re-reads, 16 ms apart, off the listener thread. */
     private val shareArrivalScheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "pocketdeck-share-arrival").apply { isDaemon = true }
     }
@@ -389,6 +392,9 @@ class Session(
     private val sendStats = HashMap<Int, SendStats>()
     /** X0: the system-wide TCP counters, deltas between stats ticks. */
     private val tcpCounters = TCPCounterDeltas()
+    /** R4: the audio path's enqueue → socket wait, one 5 s line. */
+    private val audioWait = AudioWaitStats()
+    @Volatile private var audioStatsNextAtMs = 0L
     /** `stream.stats` messages sent per stream this session, for the field log. */
     private val statsSent = HashMap<Int, Int>()
     private val tickSignal = Object()
@@ -847,6 +853,7 @@ class Session(
     }
 
     private fun tickPaths() {
+        tickAudioStats(now())
         hub.flushAck()
         hub.pingAll(transferRunning())
         // During a switch the phone's sending path is still the old one until
@@ -932,6 +939,8 @@ class Session(
             val statsAt = statsNextAtMs.coerceAtLeast(at + 1)
             if (statsAt < next) next = statsAt
         }
+        // R4: the audio wait line's own deadline.
+        if (audioStatsNextAtMs != 0L && audioStatsNextAtMs < next) next = audioStatsNextAtMs
         if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
         return (next - at).coerceIn(TICK_MIN_MS, TICK_KEEPALIVE_MS)
     }
@@ -1148,20 +1157,33 @@ class Session(
                 // the goodput note runs for every video entry (keyframes
                 // included), because the fallback cap must see all the bytes
                 // the link actually carried.
-                val written = if (entry.stream != 0) {
-                    val enqueued = entry.enqueuedUs
-                    val stream = entry.stream
-                    val size = entry.bytes.size
-                    {
-                        if (statsOn && enqueued > 0) {
-                            val delay = monoUs() - enqueued
-                            synchronized(statsLock) {
-                                sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
-                            }
+                val written = when {
+                    entry.audio -> {
+                        val enqueued = entry.enqueuedUs
+                        {
+                            if (enqueued > 0) audioWait.note(monoUs() - enqueued)
                         }
-                        goodput.note(stream, size, monoUs())
                     }
-                } else null
+                    entry.stream != 0 -> {
+                        val enqueued = entry.enqueuedUs
+                        val stream = entry.stream
+                        val size = entry.bytes.size
+                        {
+                            if (statsOn && enqueued > 0) {
+                                val delay = monoUs() - enqueued
+                                synchronized(statsLock) {
+                                    sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
+                                }
+                            }
+                            val writtenUs = monoUs()
+                            // PATH-43: only bytes that waited for the link measure it.
+                            goodput.note(stream, size, writtenUs,
+                                         limited = enqueued > 0 &&
+                                             writtenUs - enqueued >= GoodputMeter.BACKLOG_WAIT_US)
+                        }
+                    }
+                    else -> null
+                }
                 // Reliable frames are wrapped and kept for a switch; lossy ones
                 // go bare on the current path (docs/design/paths.md §5.5).
                 hub.send(entry.bytes, written)
@@ -1250,6 +1272,9 @@ class Session(
         // WIN-59: the Mac names the codecs it decodes in hardware. Absent means
         // an older Mac and AVC only; a join repeats the list, so read it here.
         display.setMacCodecs(CodecChoice.macCodecs(obj["codecs"]))
+        // R4: a Mac that reassembles VIDEO_CHUNK says so here; an older Mac
+        // keeps whole VIDEO_FRAMEs, which it has always understood.
+        queue.videoChunks = Json.bool(obj["videoChunks"]) == true
         // The iPad named itself by a stable id on the phone's memory; the TLS
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
@@ -3352,16 +3377,24 @@ class Session(
 
     override fun onAudioFrame(ptsUs: Long, data: ByteArray) {
         val payload = Frames.encodeAudioFrame(AudioFramePayload(ptsUs, data))
-        queue.enqueueAudio(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload))
+        queue.enqueueAudio(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload), monoUs())
+        if (audioStatsNextAtMs == 0L) {
+            audioStatsNextAtMs = now() + AUDIO_STATS_INTERVAL_MS
+            wakeTicker()
+        }
     }
 
+    /**
+     * MEDIA-21: the Mac's audio wish, from `audio.start` until `audio.stop`
+     * (its codecs), or null. Two states on the phone's side: not wanted, and
+     * wanted. While wanted, the capture runs whenever a window is open; the
+     * power rule stops it with the last window and the next window starts it
+     * again. The Mac may send `audio.start` a moment before its `window.open`.
+     */
+    private var audioWanted: List<Int>? = null
+    private val audioLock = Any()
+
     private fun onAudioStart(obj: Map<String, Any?>) {
-        val capture = audioCapture ?: return
-        if (capture.isRunning) return
-        if (windowCount() == 0) {
-            log("audio.start with no windows: ignoring")
-            return
-        }
         val codecs = (obj["codecs"] as? List<*>)?.mapNotNull {
             when (it) {
                 is Number -> it.toInt()
@@ -3369,20 +3402,53 @@ class Session(
                 else -> null
             }
         }?.filter { it == Frames.CODEC_OPUS || it == Frames.CODEC_AAC } ?: emptyList()
-        runCatching {
-            capture.start(
-                sink = this,
-                preferredCodecs = codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) },
-                windows = ::captureWindows,
-            )
-        }.onFailure { log("audio start failed: ${it.message}") }
+        synchronized(audioLock) {
+            if (audioWanted == null) log("audio: off --start--> wanted")
+            audioWanted = codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) }
+        }
+        startWantedAudio()
+    }
+
+    /** Starts the capture when the Mac wants audio, a window is open and it is not running. */
+    private fun startWantedAudio() {
+        val capture = audioCapture ?: return
+        synchronized(audioLock) {
+            val codecs = audioWanted ?: return
+            if (capture.isRunning) return
+            if (windowCount() == 0) {
+                log("audio: wanted, waiting for a window")
+                return
+            }
+            runCatching {
+                capture.start(sink = this, preferredCodecs = codecs, windows = ::captureWindows)
+            }.onFailure { log("audio start failed: ${it.message}") }
+        }
     }
 
     private fun onAudioStop() {
+        synchronized(audioLock) {
+            if (audioWanted != null) log("audio: wanted --stop--> off")
+            audioWanted = null
+        }
         runCatching { audioCapture?.stop() }
         lastAudioConfig = null
         queue.clearAudio()
+        tickAudioStats(now(), final = true)
         sendJson(mapOf("t" to "audio.state", "on" to false, "codec" to 0))
+    }
+
+    /**
+     * R4's field log: one line every 5 s while audio runs, from the existing
+     * ticker. p50/p95/max are enqueue → last byte at the socket; dropped is the
+     * realtime budget's own count.
+     */
+    private fun tickAudioStats(at: Long, final: Boolean = false) {
+        if (audioStatsNextAtMs == 0L && !final) return
+        if (!final && at < audioStatsNextAtMs) return
+        audioWait.dropped(queue.takeAudioDropped())
+        log(audioWait.snapshot().line())
+        audioStatsNextAtMs = if (final) 0L else at + AUDIO_STATS_INTERVAL_MS
+        if (!final) wakeTicker()
     }
 
     /** Power rule: no windows left means no audio capture. */
@@ -3434,6 +3500,8 @@ class Session(
     /** Notifies the capture that the open windows changed (uid set / mode). */
     private fun notifyAudioWindowsChanged() {
         audioCapture?.let { runCatching { it.onWindowsChanged(this) } }
+        // A window the Mac's audio wish was waiting for (MEDIA-21).
+        startWantedAudio()
     }
 
     private fun onDeltaDrop(stream: Int) {
@@ -3442,7 +3510,7 @@ class Session(
         log("stream $stream backpressure: dropping deltas, requesting keyframe" +
             (measured?.let { " (measured ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: "") +
             (encoded?.let { " (encoder ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: ""))
-        runCatching { display.requestKeyframe(stream) }
+        runCatching { display.requestKeyframeAfterDrop(stream) }
         runCatching { display.onBackpressure(stream, measured, encoded) }
     }
 
@@ -3860,9 +3928,11 @@ class Session(
      * ISS-51: a share target can start its picker with `FLAG_ACTIVITY_NEW_TASK`
      * from an application context; with no calling activity the system gives
      * the new task the phone's display, so the picker opens on the phone
-     * instead of in the window. Read where the task landed once the task list
-     * has it and move it back when the policy says so (WIN-50: the window
-     * keeps the app either way).
+     * instead of in the window. Act on the task-created event itself: read the
+     * list here, re-read it every [ShareArrivalWatch.RETRY_MS] until the task is
+     * listed, and move it back when the policy says so (WIN-50: the window
+     * keeps the app either way). No fixed settle delay: the landing is visible
+     * only for as long as the list takes.
      */
     private fun scheduleShareArrivalCheck(taskId: Int) {
         val nowMs = now()
@@ -3880,32 +3950,43 @@ class Session(
         }
         if (windows.isEmpty()) return
         val mover = taskMove ?: return
-        // The Created callback can arrive before the task list has the entry;
-        // re-read a few times rather than lose the share's arrival.
-        fun check(tries: Int) {
+        val watch = ShareArrivalWatch(windows)
+        var state = watch.start(nowMs)
+
+        fun step() {
             // The task's package is known here even when the Created callback
             // had none yet, and the list's display is where it really landed.
             val task = runCatching { mover.tasks() }.getOrNull()
                 ?.firstOrNull { it.taskId == taskId }
-            if (task == null) {
-                if (tries > 0) {
-                    shareArrivalScheduler.schedule({ check(tries - 1) },
-                        SHARE_ARRIVAL_RETRY_MS, TimeUnit.MILLISECONDS)
+            val (next, actions) = watch.onRead(
+                state,
+                task?.let { ShareArrivalWatch.ListedTask(it.pkg, it.displayId) },
+                now(),
+            )
+            state = next
+            for (action in actions) {
+                when (action) {
+                    is ShareArrivalWatch.Action.RetryAfter ->
+                        shareArrivalScheduler.schedule({ step() }, action.ms, TimeUnit.MILLISECONDS)
+                    is ShareArrivalWatch.Action.Move -> {
+                        val landed = task?.displayId ?: ShareArrivalPolicy.PHONE_DISPLAY
+                        // moveRootTaskToDisplay is the direct route; a task the
+                        // system will not move is adopted through Recents with a
+                        // launch display, the same fallback WIN-46 uses for an
+                        // app-started task.
+                        var moved = runCatching { mover.move(taskId, action.displayId) }.getOrDefault(false)
+                        if (!moved) moved = runCatching { mover.adopt(taskId, action.displayId) }.getOrDefault(false)
+                        state = watch.onMoved(state, moved)
+                        log("share arrival: task=$taskId display=$landed -> ${action.displayId} " +
+                            "stream=${action.stream} moved=$moved after_ms=${now() - nowMs}")
+                    }
+                    ShareArrivalWatch.Action.LogGaveUp ->
+                        log("share arrival: task=$taskId not listed after_ms=${now() - nowMs}")
                 }
-                return
             }
-            val decision = ShareArrivalPolicy.decide(windows, task.pkg, task.displayId, now())
-            if (decision !is ShareArrivalPolicy.Decision.Move) return
-            // moveRootTaskToDisplay is the direct route; a task the system
-            // will not move is adopted through Recents with a launch display,
-            // the same fallback WIN-46 uses for an app-started task.
-            var moved = runCatching { mover.move(taskId, decision.displayId) }.getOrDefault(false)
-            if (!moved) moved = runCatching { mover.adopt(taskId, decision.displayId) }.getOrDefault(false)
-            log("share arrival: task=$taskId display=${task.displayId} -> ${decision.displayId} " +
-                "stream=${decision.stream} moved=$moved")
         }
-        shareArrivalScheduler.schedule({ check(SHARE_ARRIVAL_TRIES) },
-            SHARE_ARRIVAL_SETTLE_MS, TimeUnit.MILLISECONDS)
+        // Act on the event itself: the first look is here, not on a timer.
+        step()
     }
 
     private fun startTaskListener() {
@@ -4046,17 +4127,6 @@ class Session(
         const val KEYCODE_APP_SWITCH = 187
 
         /**
-         * ISS-51: how long a share's new task may take to appear in the task
-         * list before its display is read. The system dispatches onTaskCreated
-         * before the task is necessarily listed, so the check re-reads the
-         * list a few times ([SHARE_ARRIVAL_TRIES]).
-         */
-        const val SHARE_ARRIVAL_SETTLE_MS = 600L
-        /** Re-reads of the task list while the new task is still being listed. */
-        const val SHARE_ARRIVAL_TRIES = 8
-        const val SHARE_ARRIVAL_RETRY_MS = 100L
-
-        /**
          * The only types a session may send before `welcome` (docs/PROTOCOL.md
          * "Session handshake" and "Pairing"): the handshake, the §4 pairing
          * machine, and the fail-closed `error`. Everything else is post-welcome
@@ -4087,6 +4157,8 @@ class Session(
 
         /** `stream.stats` cadence per streaming window (docs/PROTOCOL.md). */
         const val STATS_INTERVAL_MS = 2_000L
+        /** R4: the audio wait line's cadence. */
+        const val AUDIO_STATS_INTERVAL_MS = 5_000L
         /** Log the running send count every this many `stream.stats` messages. */
         const val STATS_SENT_LOG_EVERY = 10
 

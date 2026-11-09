@@ -458,7 +458,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func showOpeningPhase() {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
-        chrome.openingCover.show(display, icon: openingIcon)
+        // No frame is held before the first one, so the shared cover uses its
+        // last picture's colours (none yet) or black (WIN-65).
+        chrome.openingCover.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
         // The cover's ground takes the bar's haze with it (WIN-40).
         chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
@@ -955,7 +957,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             } else if remembersFrame,
                       let saved = manager.savedFrame(forKey: frameKey),
                       saved.size.width >= 240, saved.size.height >= 160 {
-                window.setFrame(manager.clampedToScreen(saved), display: false)
+                window.setFrame(openingFrame(manager.clampedToScreen(saved)), display: false)
             } else {
                 window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
             }
@@ -983,6 +985,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
     var frameKey: String { "stream" }
+
+    /// The frame a window opens at from its remembered one. A window kind whose
+    /// shape belongs to the phone re-shapes it (the mirror, ISS-63).
+    func openingFrame(_ frame: NSRect) -> NSRect { frame }
 
     /// Whether this window's frame is remembered for its subject. Only an
     /// app's first window is: an added window cascades from it and forgets its
@@ -1754,7 +1760,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         switch action {
         case .present(let kind):
             let display = StallOverlayDisplay(kind: kind, phone: manager.phoneName)
-            chrome.stallOverlay.show(display, icon: openingIcon)
+            // The shared cover blurs the picture held at the moment it comes up.
+            chrome.stallOverlay.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
             chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
         case .dismiss:

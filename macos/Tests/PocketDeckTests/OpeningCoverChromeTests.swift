@@ -53,6 +53,12 @@ final class OpeningCoverChromeTests: XCTestCase {
 
         chrome.openingCover.show(nil, icon: nil)
         chrome.layoutChrome()
+        XCTAssertFalse(chrome.openingCover.isShowing, "the cover is logically gone at once")
+        XCTAssertEqual(chrome.barHeight, ChromeBar.height,
+                       "the first frame brings the framed bar back at once, under the fade")
+        XCTAssertFalse(chrome.openingCover.isHidden, "the old sheet is still fading out")
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        XCTAssertTrue(chrome.openingCover.isHidden, "the 200 ms fade-out ends hidden")
         XCTAssertEqual(chrome.style, .framed, "the first frame does not change the stored style")
         XCTAssertEqual(chrome.barHeight, ChromeBar.height, "the framed bar comes back with the picture")
         XCTAssertEqual(chrome.video.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
