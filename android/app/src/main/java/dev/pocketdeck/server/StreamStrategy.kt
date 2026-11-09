@@ -21,8 +21,8 @@ data class StreamStrategy(
     /** The on-demand link stall: 0 is off, otherwise the pause length in ms. */
     val stallMs: Int = 0,
     val stallEveryMs: Int = DEFAULT_STALL_EVERY_MS,
-    /** The arm's codec request; the choice may still fall back to AVC. */
-    val codec: VideoCodec = VideoCodec.Avc,
+    /** The arm's codec request: HEVC by default, `codec=avc` forces H.264. */
+    val codec: VideoCodec = VideoCodec.Hevc,
     /** P1: the encoder's frame rate and operating-rate hint, 30–120. */
     val fps: Int = DEFAULT_FPS,
     /** P1: the virtual display's requested refresh rate; 0 is off. */
@@ -74,7 +74,8 @@ data class StreamStrategy(
      */
     fun describe(applied: Applied = Applied()): String {
         val parts = ArrayList<String>()
-        if (codec == VideoCodec.Hevc && applied.codec == VideoCodec.Hevc) parts += "codec=hevc"
+        // The line prints what differs from the default: only a forced AVC.
+        if (codec == VideoCodec.Avc) parts += "codec=avc"
         if (rateControl == RateControl.Cbr) {
             parts += if (applied.rateControl == RateControl.Cbr) "rc=cbr" else "rc=cbr unsupported"
         }
@@ -161,7 +162,7 @@ data class StreamStrategy(
                 stallMs = raw("stall_ms").parseStallMs(),
                 stallEveryMs = raw("stall_every_ms")
                     .parseInt(DEFAULT_STALL_EVERY_MS, 1_000..30_000),
-                codec = if (raw("codec") == VideoCodec.Hevc.token) VideoCodec.Hevc else VideoCodec.Avc,
+                codec = if (raw("codec") == VideoCodec.Avc.token) VideoCodec.Avc else VideoCodec.Hevc,
                 fps = raw("fps").parseInt(DEFAULT_FPS, MIN_FPS..MAX_FPS),
                 vdRate = raw("vd_rate").parseVdRate(),
                 lowLatency = raw("low_latency") == "on",
