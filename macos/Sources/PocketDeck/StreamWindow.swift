@@ -363,6 +363,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.onFrameDiscarded = { [weak self] reason in
             self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
         }
+        videoView.onChainFed = { [weak self] in
+            self?.stats.noteChainFed(now: ProcessInfo.processInfo.systemUptime)
+        }
         videoView.onKeyFrame = { [weak self] nalTypes, codec in
             self?.stats.noteKeyFrame(nalTypes: nalTypes, codec: codec)
         }

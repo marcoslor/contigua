@@ -226,8 +226,36 @@ final class StreamStatsTests: XCTestCase {
         window.noteDiscarded(.beforeConfig, now: 0.1)
         window.noteDiscarded(.flush, now: 0.2)
         window.noteDiscarded(.notReady, now: 0.3)
-        XCTAssertEqual(window.snapshot(now: 0.4).macDrop, 3)
+        let snapshot = window.snapshot(now: 0.4)
+        XCTAssertEqual(snapshot.macDrop, 3)
+        XCTAssertEqual(snapshot.macDrops[.beforeConfig], 1)
+        XCTAssertEqual(snapshot.macDrops[.flush], 1)
+        XCTAssertEqual(snapshot.macDrops[.notReady], 1)
+        XCTAssertNil(snapshot.macDrops[.paced])
         XCTAssertEqual(window.snapshot(now: 3.0).macDrop, 0, "older than the window")
+    }
+
+    /// WIN-61: the line splits the drops, so a flush is never read as
+    /// `not_ready`, and counts the deltas that slipped through a broken chain
+    /// (`chain_fed`, zero after the gate).
+    func testTheLineSplitsMacDropsAndCountsChainFed() {
+        var window = StreamStatsWindow()
+        window.noteDiscarded(.flush, now: 0.1)
+        window.noteDiscarded(.flush, now: 0.2)
+        window.noteDiscarded(.paced, now: 0.3)
+        window.noteChainFed(now: 0.4)
+        window.noteChainFed(now: 0.5)
+        let snapshot = window.snapshot(now: 0.6)
+        let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
+                                        place: "fit", stats: snapshot)
+        XCTAssertTrue(line.contains("mac_drop=3"), line)
+        XCTAssertTrue(line.contains("mac_drop_flush=2"), line)
+        XCTAssertTrue(line.contains("mac_drop_not_ready=0"), line)
+        XCTAssertTrue(line.contains("mac_drop_before_config=0"), line)
+        XCTAssertTrue(line.contains("mac_drop_paced=1"), line)
+        XCTAssertTrue(line.contains("chain_fed=2"), line)
+        XCTAssertEqual(window.snapshot(now: 1.0).chainFed, 0,
+                       "the counters belong to one line")
     }
 
     func testCaptureDelayNeedsAnOffset() {
@@ -392,6 +420,9 @@ final class StreamStatsTests: XCTestCase {
                       "place=oneToOne", "rx_fps=", "shown_fps=", "int_p95=",
                       "int_p99=", "freeze_n=0", "freeze_ms=0", "hitch_n=0",
                       "hitch_ms=0", "late_p99=-", "mac_drop=0",
+                      "mac_drop_flush=0", "mac_drop_not_ready=0",
+                      "mac_drop_before_config=0", "mac_drop_paced=0",
+                      "chain_fed=0",
                       "phone_drop=0", "drop_ep=0", "drop_ms=-", "phone_n=1",
                       "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
                       "kf_req=0", "kbps=0", "target_kbps=8000", "qp_p50=-", "qp_p95=-",
