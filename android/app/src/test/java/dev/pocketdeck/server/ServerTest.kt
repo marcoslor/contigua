@@ -149,8 +149,10 @@ class ServerTest {
             repeat(3) { Socket("127.0.0.1", port).close() }
             // An empty connection frees its handshake slot as soon as TLS sees
             // the EOF; give the two workers a moment before the real client so
-            // this asserts quietness, not the busy-slot rejection.
-            Thread.sleep(300)
+            // this asserts quietness, not the busy-slot rejection. The Docker
+            // K1 runs under Rosetta, where a starved worker can need well over
+            // 300 ms to see the EOF and free its slot.
+            Thread.sleep(1_000)
             client(port, macIdentity, phoneIdentity).use { tls ->
                 tls.soTimeout = 3_000
                 val ssl = tls as javax.net.ssl.SSLSocket
