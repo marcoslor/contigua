@@ -2077,6 +2077,7 @@ class WindowStream(object):
         self._reader = None
         self._configured = False
         self._csd = None
+        self._sent = None
         self._config_thread = None
         self._config_stop = threading.Event()
         self._resize_timer = None
@@ -2365,6 +2366,12 @@ class WindowStream(object):
                 continue
             codec = self.codec
             wire = proto.CODEC_HEVC if codec == "hevc" else proto.CODEC_H264
+            # The real phone's onConfig sends the picture rect on the config's
+            # same lane first; the Mac refuses a config without it.
+            x, y, cw, ch = self._picture()
+            self.phone.sender.send_in_order(proto.pack_json(
+                {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
+                self.stream_id))
             self.phone.sender.send_config(self.stream_id, wire, self.w, self.h, self._csd)
             self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
 
@@ -2401,13 +2408,21 @@ class WindowStream(object):
                 return
             self._configured = True
             self._csd = sets
-            # Same lane as the config, so the Mac has the picture rect when the config lands.
-            x, y, cw, ch = self._picture()
-            self.phone.sender.send_in_order(proto.pack_json(
-                {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
-                self.stream_id))
-            self.phone.sender.send_config(self.stream_id, wire_codec, self.w, self.h, sets)
-            self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
+            # An encoder restarted for a keyframe (window.keyframe) emits the
+            # same parameter sets, so the Mac needs no config: the IDR alone
+            # restarts the decoder. A resize's new sets are sent as before.
+            sent = self._sent
+            same = (sent is not None and sets == sent[0] and self.w == sent[1]
+                    and self.h == sent[2] and codec == sent[3])
+            self._sent = (sets, self.w, self.h, codec)
+            if not same:
+                # Same lane as the config, so the Mac has the picture rect when the config lands.
+                x, y, cw, ch = self._picture()
+                self.phone.sender.send_in_order(proto.pack_json(
+                    {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
+                    self.stream_id))
+                self.phone.sender.send_config(self.stream_id, wire_codec, self.w, self.h, sets)
+                self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
             if self.phone.args.config_every > 0 and self._config_thread is None:
                 self._config_thread = threading.Thread(
                     target=self._config_loop, name="fake-config-%d" % self.stream_id,
