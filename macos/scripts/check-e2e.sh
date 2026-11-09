@@ -1456,10 +1456,12 @@ check_pairflow() {
 
     # R4: the UI actions and the link transitions are greppable. The unified
     # log can lag a second, so each read retries.
+    # grep -c, not -q: -q closes the pipe on the first match, log show takes
+    # SIGPIPE, and `set -o pipefail` would read the pipeline as a miss.
     app_log_has() {
-        log show --last 6m --info --style syslog \
+        [ "$(log show --last 6m --info --style syslog \
             --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
-            | grep -qF "$1"
+            | grep -cF "$1")" -gt 0 ]
     }
     wait_until 5 app_log_has "ui: pair-again source=deck" \
         && ok "[R4] PF the Deck's Pair Again logs one ui line" \

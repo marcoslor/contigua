@@ -43,8 +43,15 @@ func walk(_ element: AXUIElement, _ depth: Int) {
     var enabledValue: CFTypeRef?
     let enabled = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &enabledValue) == .success
         ? enabledValue as? Bool : nil
+    // A button's enabled state is the difference the Deck's offline look makes
+    // (PAIR-33/R1) and the cooldown's Try Again (R2), so it is always named
+    // for buttons; a disabled other control is named too.
+    let enabledMark: String
+    if enabled == false { enabledMark = " enabled=[0]" }
+    else if enabled == true, role == (kAXButtonRole as String) { enabledMark = " enabled=[1]" }
+    else { enabledMark = "" }
     if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty || !value.isEmpty {
-        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]\(enabled == false ? " enabled=[0]" : "")")
+        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]\(enabledMark)")
     }
     var children: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
