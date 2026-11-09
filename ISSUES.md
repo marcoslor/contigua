@@ -232,6 +232,12 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
   - **UI toolkit:** open again, since GPUI's web build needs WebGPU (or WebGL2) and cross-origin isolation, which our own origin can serve. It's still experimental (one canvas per page, no menus, canvas text and IME). A DOM app is the safer default. Decide by one prototype round: the Deck and one stream window in each. Nothing needs to move off SwiftUI on the Mac. What's shared regardless is the protocol, the fake-phone conformance checks and the visual language.
   - **First step, a spike:** a Windows or Linux browser opens the site with nothing installed and pairs by QR. It plays one stream both ways (RTP track and data channel with WebCodecs), with keyboard and pointer input, on the LAN and through a TURN relay. It measures latency, CPU and the phone's added size and memory against the Mac app.
 
+- **ISS-55 The Phone Mirror's "screen is off" cover is ugly** (the person, 2026-11-08 21:43: "hideous"). Today:
+  - a flat mid-grey fill under a black titlebar slab;
+  - a centred label;
+  - a dark capsule "Wake Screen" with dark text that barely reads.
+
+  MIRROR-6 promises a blurred, dimmed held frame; with no frame held it falls back to the flat grey. Next: a prototype round with four options, rendered in light and dark, with and without a held frame (brief `.agent/proto-screenoff/brief.md`): A, an OLED-off black; B, the frosted last picture; C, an always-on clock; D, the system's empty state. The reviewer looks first, then the person picks.
 - **ISS-53 Icons look flat next to macOS 26's glass icons (the person, 2026-11-08).** Apple's own Mac and iPhone icons aren't flat: the system draws a glass rim on them, a specular highlight on the edges lit from above, with a little refraction, translucency and a soft shadow. PocketDeck's icons have none of it.
   - **What the platform does:**
     - Icons made with Icon Composer (an `.icon` package: up to four layers in groups, plus an `icon.json` with specular, refraction, translucency, blur and shadow per group, and light, dark, clear and tinted variants) are rendered live by the system. The light comes from above by default, and highlights sit inside or outside each layer.
