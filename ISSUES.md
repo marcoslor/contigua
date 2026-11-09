@@ -187,6 +187,12 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - (2) **The Mac's pre-buffer is fixed** and has no underrun counter. When packets arrive late, the player runs dry and the listener hears a gap. A burst then overflows the 120 ms cap and drops audio.
     - (3) The Mac delivers audio on the session queue, which also serves file-provider replies and video.
     - (4) The capture cadence on the phone.
+  - **The reviewer, from the Mac's unified log for that session (49 stats lines):**
+    - `int_p99` was about 100 ms in almost every 5 s window, `late_p99` 75–255 ms, `freeze_ms` 0.1–2.4 s per 5 s, with `tcp_srtt` 8–51 ms;
+    - packets arrive late and in bursts, the known AWDL pattern (video-feed.md "The link stalls…");
+    - the 60 ms audio pre-buffer cannot ride that out.
+    - The fix is probably an adaptive audio jitter buffer that conceals and time-stretches. Unbroken audio now ranks above the 150 ms budget, and audio may trail the picture by at most 185 ms (ITU-R BT.1359).
+    - Separately, `mac_drop=1` falls in every window with a keyframe (handed to ISS-54/chain).
   - **Next:** the `audiogap` worker. Measure first (Mac underruns, arrival lateness p95, the phone's enqueue-to-socket delay), reproduce with keyframes plus audio, run a test that must FAIL first, then fix. See `.agent/audiogap/brief.md`.
 
 ## 5. Features, in order
