@@ -5666,14 +5666,14 @@ class FakePhone(object):
         # settings): a check can replay Allow connections off and on between
         # pairing attempts, as the person did.
         if command == "connections" and len(parts) >= 2:
-            self.phone.refuse_connections = parts[1] == "off"
+            self.refuse_connections = parts[1] == "off"
             return
         if command == "pairings" and len(parts) >= 2:
-            self.phone.refuse_pairings = parts[1] == "off"
+            self.refuse_pairings = parts[1] == "off"
             return
         if command == "deny" and len(parts) >= 2:
             try:
-                self.phone.deny_remaining = max(0, int(parts[1]))
+                self.deny_remaining = max(0, int(parts[1]))
             except ValueError:
                 pass
             return
@@ -5682,10 +5682,10 @@ class FakePhone(object):
             # re-arms it for N s, `cooldown end` closes it early. The Mac's own
             # 30 s deadline never changes (R2).
             if parts[1] == "end":
-                self.phone.pair_cooldown_until = 0.0
+                self.pair_cooldown_until = 0.0
             else:
                 try:
-                    self.phone.pair_cooldown_until = time.time() + float(parts[1])
+                    self.pair_cooldown_until = time.time() + float(parts[1])
                 except ValueError:
                     pass
             return
