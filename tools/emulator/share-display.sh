@@ -65,6 +65,13 @@ BEFORE_FAILURES=0
 AFTER_FAILURES=0
 BEFORE_BUG_FAILURES=0
 AFTER_BUG_FAILURES=0
+# The paste's landing-to-move time in each phase (ms): main's 600 ms settle
+# against the fix's first-call read. Empty when logcat has no pair.
+BEFORE_PASTE_TIMING=""
+AFTER_PASTE_TIMING=""
+# The last run_state's timing, so run_phase can take the unlocked state's.
+PASTE_LANDING_MS=""
+DROP_LANDING_MS=""
 
 section() { # section <name> PASS|FAIL|INFO <detail...>
   printf 'SECTION %s\n' "$*" | tee -a "$LOG"
@@ -204,6 +211,34 @@ window_tasks() {
 
 picker_lines() { emu logcat -d -s ShareDebug:I 2>/dev/null | tr -d '\r' | grep 'picker origin='; }
 
+# The ms from the picker's own `create` line (its first appearance, with the
+# display it landed on) to the service's `share arrival` move line that follows
+# it. ISS-51: this is how long the share screen was visible on the phone before
+# it came to the window. Both lines come from the same logcat buffer; `-v
+# epoch` gives them one clock. Prints the number; prints nothing when a line is
+# missing (the share never started, or the move did not happen).
+arrival_timing_ms() { # arrival_timing_ms <origin>
+  local origin="$1" create_line create display move
+  create_line="$(emu logcat -d -v epoch -s ShareDebug:I 2>/dev/null | tr -d '\r' \
+    | grep "picker origin=${origin} phase=create" | head -1)"
+  [ -n "$create_line" ] || return 0
+  create="$(printf '%s' "$create_line" | awk '{print $1; exit}')"
+  display="$(printf '%s' "$create_line" | sed -n 's/.*display=\([0-9-]*\).*/\1/p')"
+  move="$(emu logcat -d -v epoch -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
+    | grep 'share arrival:' | head -1 | awk '{print $1; exit}')"
+  [ -n "$move" ] || return 0
+  # A picker that is created on the window's display never showed on the
+  # phone's: the landing lasted 0 ms.
+  if [ -n "$display" ] && [ "$display" != "0" ]; then
+    echo 0
+    return 0
+  fi
+  "$PYTHON" - "$create" "$move" <<'PY'
+import sys
+print(max(0, int(round((float(sys.argv[2]) - float(sys.argv[1])) * 1000))))
+PY
+}
+
 # `adb install -r` does not restart the Shizuku-hosted shell service: it is a
 # uid-2000 app_process, not the app's own process, so it survives the install
 # and keeps serving the old APK. Kill every `:pocketdeck` pid (adb shell is the
@@ -317,6 +352,8 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
   fi
   emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
     > "$OUT/share-display-$label-paste-arrival.log" || true
+  PASTE_LANDING_MS="$(arrival_timing_ms app)"
+  section "$label-paste-timing" INFO "landing_to_move_ms=${PASTE_LANDING_MS:-unknown}"
 
   # --- the drop ------------------------------------------------------------
   # The paste picker lines are cleared so only the drop's pickers are judged.
@@ -342,6 +379,8 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
   fi
   emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
     > "$OUT/share-display-$label-drop-arrival.log" || true
+  DROP_LANDING_MS="$(arrival_timing_ms app)"
+  section "$label-drop-timing" INFO "landing_to_move_ms=${DROP_LANDING_MS:-unknown}"
 
   touch "$board/close"
   wait "$driver_pid" 2>/dev/null
@@ -370,6 +409,11 @@ run_phase() { # run_phase <tag>: both phone states with the APK now installed
   bash tools/emulator/unlock.sh > "$OUT/share-display-$tag-unlock-a.log" 2>&1 \
     || section "$tag-unlock-a" FAIL "unlock.sh (see $OUT/share-display-$tag-unlock-a.log)"
   run_state "$tag-unlocked" 6 22 55 1
+  if [ "$tag" = "before" ]; then
+    BEFORE_PASTE_TIMING="$PASTE_LANDING_MS"
+  else
+    AFTER_PASTE_TIMING="$PASTE_LANDING_MS"
+  fi
 
   step "[$tag] state (b): the phone locked, screen off"
   bash tools/emulator/lock.sh > "$OUT/share-display-$tag-lock.log" 2>&1 \
@@ -449,15 +493,18 @@ if [ -n "$SECOND_APK" ]; then
 
   run_phase after
 
-  # The proof: the bug shows on the first APK (the first APK is main or a
-  # build of it) and is gone on the second (the fix), in the same boot.
-  if [ "$BEFORE_BUG_FAILURES" -ge 1 ] && [ "$AFTER_BUG_FAILURES" -eq 0 ] \
-      && [ "$AFTER_FAILURES" -eq 0 ]; then
-    section proof PASS "before: $BEFORE_BUG_FAILURES share section(s) failed; after: none" \
-      "(before $BEFORE_FAILURES, after $AFTER_FAILURES section(s) overall)"
+  # The proof: the share screen's landing-to-move time falls from main's fixed
+  # settle to the fix's first-call read, and the after's share sections all
+  # pass. The before may already move the task (the earlier fix put it back);
+  # what the reopen changed is how long the landing is visible.
+  if [ -n "$BEFORE_PASTE_TIMING" ] && [ -n "$AFTER_PASTE_TIMING" ] \
+      && [ "$AFTER_PASTE_TIMING" -lt "$BEFORE_PASTE_TIMING" ] \
+      && [ "$AFTER_BUG_FAILURES" -eq 0 ] && [ "$AFTER_FAILURES" -eq 0 ]; then
+    section proof PASS "landing to move (paste): before ${BEFORE_PASTE_TIMING} ms, after ${AFTER_PASTE_TIMING} ms"
   else
-    section proof FAIL "before: $BEFORE_BUG_FAILURES share section(s) failed, $BEFORE_FAILURES overall;" \
-      "after: $AFTER_BUG_FAILURES share section(s), $AFTER_FAILURES overall (want before >= 1, after 0)"
+    section proof FAIL "landing to move (paste): before ${BEFORE_PASTE_TIMING:-unknown} ms," \
+      "after ${AFTER_PASTE_TIMING:-unknown} ms; after sections: $AFTER_BUG_FAILURES share, $AFTER_FAILURES overall" \
+      "(want both times and after < before, with the after's share sections 0)"
   fi
 else
   # A single-APK run is a check of that build alone.

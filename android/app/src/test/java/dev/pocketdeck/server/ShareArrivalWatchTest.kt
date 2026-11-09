@@ -106,6 +106,9 @@ class ShareArrivalWatchTest : SessionFixture() {
 
         assertEquals("one line for one arrival", 1,
             logs.count { it.startsWith("share arrival") })
-        assertTrue("gave up after $elapsedMs ms", elapsedMs <= 1_200)
+        // 63 reads 16 ms apart is the one-second schedule; a loaded host adds
+        // scheduling drift, so the wall-clock bound leaves room for it.
+        assertEquals(ShareArrivalWatch.MAX_TRIES, mover.reads.size)
+        assertTrue("gave up after $elapsedMs ms", elapsedMs <= 1_500)
     }
 }
