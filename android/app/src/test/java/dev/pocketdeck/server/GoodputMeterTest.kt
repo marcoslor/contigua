@@ -13,6 +13,41 @@ import org.junit.Test
  */
 class GoodputMeterTest {
 
+    /**
+     * The person's HEVC window, 2026-11-09 14:23: 0.3 s after the open the
+     * meter read 0.3 Mbps from a few small frames that went out at once, the
+     * drop took it as the link (R4 floor and recovery cap) and the window sat
+     * at 0.3 Mbps for minutes. Bytes that never waited are the app's rate, not
+     * the link's: only a backlogged run measures the link.
+     */
+    @Test
+    fun `an app-limited start is not the link's rate`() {
+        val meter = GoodputMeter()
+        // 300 ms of small frames written the moment they were queued.
+        for (i in 0 until 19) meter.note(1, 2_000, i * 16_667L, limited = false)
+        // Then the launch burst backs the queue up for 200 ms.
+        for (i in 0 until 12) meter.note(1, 60_000, 316_667L + i * 16_667L, limited = true)
+        assertNull(meter.rateBps(1, 516_667L))
+    }
+
+    @Test
+    fun `a backlogged run is measured over its own span`() {
+        val meter = GoodputMeter()
+        for (i in 0 until 19) meter.note(1, 2_000, i * 16_667L, limited = false)
+        // 400 ms backlogged: 25 × 20 000 bytes written from 300 ms to 700 ms.
+        for (i in 0 until 25) meter.note(1, 20_000, 300_000L + i * 16_000L, limited = true)
+        // 500 000 bytes over 400 ms = 10 Mbps; the app-limited start is not in it.
+        assertEquals(10_000_000, meter.rateBps(1, 700_000L))
+    }
+
+    @Test
+    fun `a stream that is app-limited now says nothing`() {
+        val meter = GoodputMeter()
+        for (i in 0 until 25) meter.note(1, 20_000, i * 16_667L, limited = true)
+        meter.note(1, 2_000, 420_000L, limited = false)
+        assertNull(meter.rateBps(1, 430_000L))
+    }
+
     @Test
     fun `a steady writer gives its bit rate`() {
         val meter = GoodputMeter()

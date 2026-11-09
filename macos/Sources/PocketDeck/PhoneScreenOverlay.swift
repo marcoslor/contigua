@@ -1,7 +1,8 @@
-// The phone window's screen state and the overlay a sleeping panel puts over
-// the last frame (docs/design/phone-mirror.md "Screen off and wake"). The model
-// is pure: time and views stay outside, so the tests pin every transition.
-// The view is only pixels and one button; it forwards no input to the phone.
+// The phone window's screen state and the overlay a sleeping panel or a secure
+// surface puts over the last frame (docs/design/phone-mirror.md "Screen off and
+// wake"). The model is pure: time and views stay outside, so the tests pin every
+// transition. The view is the shared frosted cover (FrostedCover.swift, WIN-65)
+// with an optional Wake Screen button; it forwards no input to the phone.
 
 import AppKit
 
@@ -274,105 +275,45 @@ enum BlackFrame {
         return true
     }
 }
-
-/// The blurred, dimmed frame with the centred message and, for a sleeping
-/// panel, its Wake Screen button. A click anywhere on it is the button; on the
-/// secure cover the click is taken and nothing is sent. The view never reaches
-/// the input mapper, and the window suspends input while it is up.
-final class PhoneScreenOverlayView: NSView {
+/// The Phone Mirror's sleeping-panel and secure cover, drawn by the shared
+/// frosted cover (FrostedCover, MIRROR-6/MIRROR-8). A click anywhere on the
+/// sleeping cover wakes; the secure cover takes the click and sends nothing.
+final class PhoneScreenOverlayView: FrostedCoverView {
     /// The person wants the phone's screen back (the window sends `phone.wake`).
     var onWake: (() -> Void)?
 
     /// What is covered right now (nil: live video).
     private(set) var cover: PhoneCover?
 
-    private let blur = NSVisualEffectView()
-    private let dim = NSView()
-    private let message = NSTextField(labelWithString: "The phone's screen is off")
-    private let button = NSButton(title: "Wake Screen", target: nil, action: nil)
-
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        // A strong material over the frozen frame, then a dim layer so white
-        // text keeps its contrast over any picture.
-        blur.material = .hudWindow
-        blur.blendingMode = .withinWindow
-        blur.state = .active
-        blur.autoresizingMask = [.width, .height]
-        addSubview(blur)
-        dim.wantsLayer = true
-        dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.38).cgColor
-        dim.autoresizingMask = [.width, .height]
-        addSubview(dim)
-        message.font = .systemFont(ofSize: 15, weight: .medium)
-        message.textColor = .white
-        message.alignment = .center
-        addSubview(message)
-        button.bezelStyle = .rounded
-        button.controlSize = .large
-        button.target = self
-        button.action = #selector(wakePressed)
-        addSubview(button)
-        isHidden = true
+        onCoverClick = { [weak self] in self?.wake() }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override var isOpaque: Bool { false }
-
     /// Shows the cover for `cover`, or takes it away (nil). The sleeping panel
     /// offers Wake Screen; a secure surface has no button and says why.
-    func show(_ cover: PhoneCover?) {
+    /// `heldFrame` is the picture displayed when the cover arrives.
+    func show(_ cover: PhoneCover?, heldFrame: CVPixelBuffer? = nil) {
         self.cover = cover
-        isHidden = cover == nil
         switch cover {
         case .screenOff:
-            message.stringValue = "The phone's screen is off"
-            button.isHidden = false
+            onPrimary = { [weak self] in self?.wake() }
+            super.show(FrostedCoverContent(title: "The phone's screen is off",
+                                           button: "Wake Screen"), heldFrame: heldFrame)
         case .secure:
-            message.stringValue = "Android doesn't let PocketDeck show this screen."
-            button.isHidden = true
+            onPrimary = nil
+            super.show(FrostedCoverContent(title: "Android doesn't let PocketDeck show this screen."),
+                       heldFrame: heldFrame)
         case nil:
-            break
+            onPrimary = nil
+            super.show(nil)
         }
-        needsLayout = true
     }
 
-    override func layout() {
-        super.layout()
-        blur.frame = bounds
-        dim.frame = bounds
-        let messageSize = message.intrinsicContentSize
-        let showsButton = !button.isHidden
-        let buttonSize = showsButton ? button.intrinsicContentSize : .zero
-        let gap: CGFloat = showsButton ? 14 : 0
-        let total = messageSize.height + gap + buttonSize.height
-        let top = (bounds.height - total) / 2
-        message.frame = NSRect(x: 0, y: top + gap + buttonSize.height,
-                               width: bounds.width, height: messageSize.height)
-        button.frame = NSRect(x: (bounds.width - buttonSize.width) / 2, y: top,
-                              width: buttonSize.width, height: buttonSize.height)
-    }
-
-    /// The button keeps its own click; every other point in the overlay is the
-    /// same Wake Screen action, so the whole blurred frame is clickable.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, let superview else { return nil }
-        guard bounds.contains(convert(point, from: superview)) else { return nil }
-        if cover == .screenOff, let hit = button.hitTest(convert(point, from: superview)) { return hit }
-        return self
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        // The secure cover takes the click and sends nothing: there is no
-        // button, and the phone's PIN pad must never see a stray tap.
-        guard cover == .screenOff else { return }
-        onWake?()
-    }
-
-    @objc private func wakePressed(_ sender: Any?) {
+    private func wake() {
         guard cover == .screenOff else { return }
         onWake?()
     }
