@@ -1069,6 +1069,12 @@ class EventLog(object):
                     "sampleRate": sample_rate, "channels": channels,
                     "ts": time.time()})
 
+    def audio_wait(self, ms, ahead_bytes):
+        """R4: one audio packet's enqueue → socket time and the bytes that
+        were handed to the socket ahead of it (the head-of-line measure)."""
+        self._emit({"ev": "audio_wait", "ms": ms, "bytes": ahead_bytes,
+                    "ts": time.time()})
+
     def quality(self, stream, bitrate, max_fps):
         self._emit({"ev": "quality", "stream": stream, "bitrate": bitrate,
                     "maxFps": max_fps, "ts": time.time()})
@@ -1721,21 +1727,30 @@ class Store(object):
 
 # --- outgoing send queue (priority + per-stream backpressure) --------------
 class Sender(object):
-    def __init__(self, send, on_backlog_cleared):
+    def __init__(self, send, on_backlog_cleared, events=None):
         # `send` routes one framed message through the path layer (reliable
         # frames are wrapped and replayed there); the sender keeps its lanes.
         self._send = send if callable(send) else send.sendall
         self._on_backlog_cleared = on_backlog_cleared
+        self._events = events
         self._json = []
         self._key = []
+        self._audio = []            # (data, enqueued monotonic) — the real phone's audio lane
         self._delta = []
         self._bulk = []             # (stream, data) phone->mac bulk: FS_DATA first-ish
         self._bulk_bytes = 0
         self._bulk_cancelled = set()
         self._pending = {}          # stream -> queued delta count
         self._need_key = set()
+        # The Mac's hello `videoChunks`: only then may a large access unit be
+        # split into VIDEO_CHUNK frames (R4). A Mac that does not ask gets the
+        # whole VIDEO_FRAME it has always understood.
+        self.video_chunks = False
         self._cv = threading.Condition()
         self._closed = False
+        # R4's byte accounting: bytes handed to the socket since start. An
+        # audio packet's wait is the bytes written after it was enqueued.
+        self._written_bytes = 0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -1774,7 +1789,14 @@ class Sender(object):
         return self._put(1, 0, proto.pack_audio_config(codec, sample_rate, channels, frame_ms, setup))
 
     def send_audio_frame(self, pts_us, packet):
-        return self._put(2, 0, proto.pack_audio_frame(pts_us, packet))
+        data = proto.pack_audio_frame(pts_us, packet)
+        with self._cv:
+            if self._closed:
+                return False
+            # R4's clock starts at the enqueue, exactly as the phone's does.
+            self._audio.append((data, time.monotonic(), self._written_bytes))
+            self._cv.notify()
+            return True
 
     def send_bulk(self, stream, data):
         """Phone->mac bulk data (FS_DATA and the JSON closing it): FIFO among
@@ -1812,15 +1834,19 @@ class Sender(object):
     def _run(self):
         while True:
             with self._cv:
-                while not (self._json or self._key or self._bulk or self._delta) \
+                while not (self._json or self._key or self._audio or self._bulk or self._delta) \
                         and not self._closed:
                     self._cv.wait()
                 if self._closed:
                     return
+                audio = None
                 if self._json:
                     stream, data = self._json.pop(0)
                 elif self._key:
                     stream, data = self._key.pop(0)
+                elif self._audio:
+                    audio = self._audio.pop(0)
+                    stream, data = 0, audio[0]
                 elif self._bulk:
                     stream, data = self._bulk.pop(0)
                     self._bulk_bytes -= len(data)
@@ -1837,7 +1863,14 @@ class Sender(object):
                         finally:
                             self._cv.acquire()
             try:
-                self._send(data)
+                if audio is not None:
+                    self._write_audio(audio)
+                elif self.video_chunks and len(data) > 18 \
+                        and (data[4] & 0xFF) == proto.TYPE_VIDEO_FRAME \
+                        and len(data) - 18 > proto.VIDEO_CHUNK_BYTES:
+                    self._write_video_chunks(data)
+                else:
+                    self._write(data)
                 # The e2e cancel rule needs the write, not the enqueue: a frame
                 # dropped from the queue must leave no line behind.
                 if len(data) >= 9 and (data[4] & 0xFF) == proto.TYPE_FS_DATA:
@@ -1848,6 +1881,39 @@ class Sender(object):
                     self._closed = True
                     self._cv.notify_all()
                 return
+
+    def _write_audio(self, audio):
+        data, enqueued, enqueued_bytes = audio
+        # Bytes handed to the socket after this packet was enqueued: the R4
+        # head-of-line measurement, independent of the link's rate.
+        ahead = self._written_bytes - enqueued_bytes
+        self._write(data)
+        if self._events is not None:
+            self._events.audio_wait((time.monotonic() - enqueued) * 1000.0, ahead)
+
+    def _write(self, data):
+        self._written_bytes += len(data)
+        self._send(data)
+
+    def _write_video_chunks(self, data):
+        """One access unit as ≤16 KiB wire chunks, with audio between chunks.
+
+        The real phone's queue gives audio priority over video; chunking lets
+        the writer honour it inside one large frame (R4).
+        """
+        stream = struct.unpack_from(">I", data, 5)[0]
+        pts_us, flags = struct.unpack_from(">QB", data, 9)
+        for chunk in proto.split_video_frame(stream, pts_us, flags, data[18:]):
+            self._write(chunk)
+            self._drain_audio()
+
+    def _drain_audio(self):
+        while True:
+            with self._cv:
+                if not self._audio:
+                    return
+                audio = self._audio.pop(0)
+            self._write_audio(audio)
 
     def close(self):
         with self._cv:
@@ -2205,6 +2271,10 @@ class WindowStream(object):
             cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                     "-bf", "0", "-g", str(FRAME_RATE * 10), "-profile:v", "high",
                     "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
+            if self.phone.args.video_sizes:
+                # Keep the encoder under the padded pattern's sizes; the filler
+                # NALs top each unit up to the requested wire load.
+                cmd[-4:-4] = ["-b:v", "20M", "-maxrate", "20M", "-bufsize", "2M"]
         return cmd
 
     def _handle(self, event, cause, resume=True):
@@ -2400,6 +2470,14 @@ class WindowStream(object):
                 self._stall_timer.daemon = True
                 self._stall_timer.start()
         flags = proto.FRAME_FLAG_KEY if proto.is_idr(nals, wire_codec) else 0
+        # --video-sizes: the audiogap pattern's wire load (300 KB keyframes,
+        # 30–80 KB deltas). Filler NALs only; the picture is unchanged.
+        sizes = self.phone.args.video_sizes
+        if sizes:
+            key_bytes, delta_min, delta_max = sizes
+            target = key_bytes if flags & proto.FRAME_FLAG_KEY \
+                else random.randint(delta_min, delta_max)
+            access_unit = proto.pad_access_unit(access_unit, target)
         # --frame-gap-after/--frame-gap-ms: one forced gap in delivered frames,
         # the freeze the stats e2e counts (no encoder restart, no new config).
         if self._first_frame_at is None:
@@ -2427,12 +2505,17 @@ class AudioTone(object):
     """One 440 Hz sine encoded to AAC-ADTS by ffmpeg, split into raw frames.
 
     Started on `audio.start`, stopped on `audio.stop` or session teardown.
-    The ASC for AAC-LC 48 kHz stereo is 0x1190. pts advances 20 ms per frame.
+    The ASC for AAC-LC 48 kHz stereo is 0x1190. AAC-LC has 1024 samples per
+    frame, so pts and the send clock advance 21.33 ms, not the nominal 20 ms:
+    sending 50 frames/s would put 6.7 % more audio on the wire than real time
+    and the Mac's jitter buffer would grow until it dropped packets.
     """
 
     SAMPLE_RATE = 48000
     CHANNELS = 2
     FRAME_MS = 20
+    FRAME_SAMPLES = 1024
+    FRAME_US = FRAME_SAMPLES * 1_000_000 // SAMPLE_RATE
     CODEC = 3  # AAC-LC
     ASC = b"\x11\x90"
 
@@ -2488,6 +2571,13 @@ class AudioTone(object):
         buf = bytearray()
         pts = 0
         proc = self._proc
+        # Pace against an absolute deadline, not a sleep per frame: a 20 ms
+        # Event.wait under load overshoots, and the error would accumulate into
+        # seconds of lateness that the Mac rightly counts as jitter. If the
+        # sender falls behind, the next frames go immediately until the clock
+        # is caught up (the pipe buffers the encoder's own real-time output).
+        started = None
+        sent = 0
         while not self._stop.is_set():
             if self.phone.sender is not sender:
                 break
@@ -2501,9 +2591,15 @@ class AudioTone(object):
             for frame in self._split_adts(buf):
                 if self._stop.is_set() or self.phone.sender is not sender:
                     break
+                if started is None:
+                    started = time.monotonic()
+                due = started + sent * self.FRAME_US / 1_000_000.0
+                delay = due - time.monotonic()
+                if delay > 0:
+                    self._stop.wait(delay)
                 sender.send_audio_frame(pts, frame)
-                pts += self.FRAME_MS * 1000
-                self._stop.wait(self.FRAME_MS / 1000.0)
+                pts += self.FRAME_US
+                sent += 1
             del buf[:self._consumed]
         try:
             proc.kill()
@@ -2540,6 +2636,8 @@ class Session(object):
         self.sender = None
         self.client_id = None
         self.client_name = None
+        # The hello's R4 capability, read before the Sender exists.
+        self.mac_video_chunks = False
         self.mac_fp_hex = None          # the Mac's point fingerprint (hello `fp`)
         # The Mac's clipboard switch (`clip.enable`): the phone starts with sync
         # off, so a scripted copy sends nothing until the Mac says otherwise
@@ -2683,7 +2781,9 @@ class Session(object):
         self.hub.start(transport)
         self._path_conns[self.path_id] = PathConn(self, self.path_id, transport)
         self._path_conns[self.path_id].start()
-        self.sender = Sender(self.hub.send, self.phone.on_backlog_cleared)
+        self.sender = Sender(self.hub.send, self.phone.on_backlog_cleared,
+                             events=self.phone.events)
+        self.sender.video_chunks = self.mac_video_chunks
         self.phone.sender = self.sender
         self.phone.events.path("up", self.path_id, current=self.path_id, joined=False)
         self._apply_path_flags(self.path_id, 1)
@@ -2935,6 +3035,7 @@ class Session(object):
         fingerprint gets `welcome`; anything else pairs via §4 or the QR."""
         self.client_id = msg.get("clientId")
         self.client_name = msg.get("name", "")
+        self.mac_video_chunks = msg.get("videoChunks") is True
         if self.phone.args.refuse_connections:
             # The phone's master switch: every Mac, paired or not.
             return self._refuse("connections_off", "refused_connections")
@@ -5203,8 +5304,10 @@ class Session(object):
         codecs = msg.get("codecs") or []
         if self.CODEC_CHOICE(codecs) is None:
             return
-        if not self.windows:
-            return
+        # The Mac may send audio.start in the same batch as window.open (the
+        # shared-app open command does), so the window can still be in flight;
+        # the capture follows it. The real phone's AudioCapture tolerates the
+        # same ordering by starting on the next window change.
         self.audio.start()
         self._send({"t": "audio.state", "on": True, "codec": AudioTone.CODEC})
 
@@ -5922,6 +6025,9 @@ def build_parser():
                         "window.content says where the picture is (the Mac must crop it)")
     p.add_argument("--frame-events", action="store_true",
                    help="log each stream's cumulative frame count once a second")
+    p.add_argument("--video-sizes", metavar="KEY:DMIN:DMAX", default=None,
+                   help="pad each access unit to KEY bytes (keyframes) or a random "
+                        "DMIN..DMAX bytes (deltas), the audiogap wire-load pattern")
     p.add_argument("--frame-gap-after", type=float, default=0.0, metavar="SECONDS",
                    help="hold delivered frames once, this long after a stream's first frame")
     p.add_argument("--frame-gap-ms", type=int, default=0, metavar="MS",
@@ -6161,6 +6267,11 @@ def add_duplicate_launcher(no_label_pkg):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.video_sizes:
+        parts = [int(part) for part in args.video_sizes.split(":")]
+        if len(parts) != 3 or min(parts) <= 0:
+            raise SystemExit("--video-sizes needs KEY:DMIN:DMAX, all positive")
+        args.video_sizes = tuple(parts)
     add_demo_apps(args.demo_apps, args.no_icon_every)
     if args.rail_letters:
         add_rail_letters()

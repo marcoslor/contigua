@@ -59,16 +59,53 @@ internal class SendQueue(
     private val log: (String) -> Unit = {},
 ) {
     /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
-    class Entry(val bytes: ByteArray, val stream: Int = 0, val enqueuedUs: Long = 0,
-                val ptsUs: Long = -1, val key: Boolean = false)
+    class Entry(val bytes: ByteArray, override val stream: Int = 0, val enqueuedUs: Long = 0,
+                override val ptsUs: Long = -1, val key: Boolean = false,
+                val audio: Boolean = false) : DeltaItem {
+        override val sizeBytes: Int get() = bytes.size
+    }
+
+    /**
+     * R4: a large video frame yields one ≤16 KiB wire chunk per dequeue. The
+     * first chunk takes the frame's lane; the rest wait behind audio, so an
+     * audio packet never waits behind more than one chunk.
+     */
+    class Chunked(
+        val chunks: List<ByteArray>,
+        override val stream: Int,
+        val originalBytes: Int,
+        override val ptsUs: Long,
+        val key: Boolean,
+        val enqueuedUs: Long,
+        var next: Int,
+    ) : DeltaItem {
+        override val sizeBytes: Int get() = originalBytes
+    }
+
+    /** A per-stream delta queue item: a whole frame or a chunked one. */
+    sealed interface DeltaItem {
+        val stream: Int
+        val ptsUs: Long
+        val sizeBytes: Int
+    }
 
     private val lock = Object()
+
+    /**
+     * R4: the Mac's hello asked for VIDEO_CHUNK fragments. Set once before any
+     * window opens; an older Mac that does not ask keeps whole VIDEO_FRAMEs.
+     */
+    @Volatile
+    var videoChunks: Boolean = false
 
     private val json = ArrayDeque<Entry>()
     private val control = ArrayDeque<Entry>()
     private val audio = ArrayDeque<Entry>()
     private var audioBytes = 0
-    private val deltas = HashMap<Int, ArrayDeque<Entry>>()
+    private var audioDropped = 0
+    /** R4: keyframe remainders, after audio and before the delta lanes. */
+    private val chunked = ArrayDeque<Chunked>()
+    private val deltas = HashMap<Int, ArrayDeque<DeltaItem>>()
     private val deltaOrder = ArrayDeque<Int>()
     private val deltaBytes = HashMap<Int, Int>()
     private val deltaFirstPtsUs = HashMap<Int, Long>()
@@ -100,13 +137,21 @@ internal class SendQueue(
     }
 
     /** Device-wide audio (Opus/AAC packets): after control, before video deltas. */
-    fun enqueueAudio(bytes: ByteArray) = synchronized(lock) {
-        audio.addLast(Entry(bytes))
+    fun enqueueAudio(bytes: ByteArray, enqueuedUs: Long = 0) = synchronized(lock) {
+        audio.addLast(Entry(bytes, enqueuedUs = enqueuedUs, audio = true))
         audioBytes += bytes.size
         while (audioBytes > maxAudioBytes && audio.isNotEmpty()) {
             audioBytes -= audio.removeFirst().bytes.size
+            audioDropped += 1
         }
         lock.notifyAll()
+    }
+
+    /** Audio packets discarded by the realtime budget since the last read. */
+    fun takeAudioDropped(): Int = synchronized(lock) {
+        val dropped = audioDropped
+        audioDropped = 0
+        dropped
     }
 
     fun clearAudio() = synchronized(lock) {
@@ -131,6 +176,7 @@ internal class SendQueue(
             if (stream != 0) {
                 dropping.remove(stream)
                 discardDeltas(stream)
+                discardChunked(stream)
                 val before = overflowStates[stream]
                 if (before != null && before != OverflowState.Flowing) {
                     changed = setOverflowState(
@@ -139,7 +185,16 @@ internal class SendQueue(
             }
             // A video key frame is the only control entry with a pts; config
             // and JSON entries carry -1 and must not close a drop episode.
-            control.addLast(Entry(bytes, stream, ptsUs = ptsUs, key = ptsUs >= 0))
+            val chunks = if (videoChunks && ptsUs >= 0) Frames.chunkVideoFrame(bytes) else null
+            if (chunks != null) {
+                // The first chunk keeps control priority; the rest wait behind
+                // audio, so one large keyframe cannot starve the audio lane.
+                control.addLast(Entry(chunks.first(), stream, ptsUs = ptsUs, key = true))
+                chunked.addLast(Chunked(chunks, stream, bytes.size, ptsUs, key = true,
+                                        enqueuedUs = nowUs(), next = 1))
+            } else {
+                control.addLast(Entry(bytes, stream, ptsUs = ptsUs, key = ptsUs >= 0))
+            }
             lock.notifyAll()
         }
         if (changed) onSuspendChanged(stream)
@@ -160,7 +215,7 @@ internal class SendQueue(
             // actually queued; never per frame.
             val policy = policyOf(stream)
             val existing = deltas[stream]
-            val q: ArrayDeque<Entry>
+            val q: ArrayDeque<DeltaItem>
             if (existing == null) {
                 q = ArrayDeque()
                 deltas[stream] = q
@@ -203,7 +258,13 @@ internal class SendQueue(
                 dropped = stream != 0
                 return@synchronized
             }
-            q.addLast(Entry(bytes, stream, nowUs(), ptsUs))
+            val chunks = if (videoChunks) Frames.chunkVideoFrame(bytes) else null
+            if (chunks != null) {
+                q.addLast(Chunked(chunks, stream, bytes.size, ptsUs, key = false,
+                                  enqueuedUs = nowUs(), next = 0))
+            } else {
+                q.addLast(Entry(bytes, stream, nowUs(), ptsUs))
+            }
             deltaBytes[stream] = used + bytes.size
             deltaFirstPtsUs[stream] = firstPts
             deltaLastPtsUs[stream] = ptsUs
@@ -241,6 +302,7 @@ internal class SendQueue(
 
     /** The stream is gone: no pending episode may pair with a reused id. */
     fun forget(stream: Int) = synchronized(lock) {
+        discardChunked(stream)
         lastSentPtsUs.remove(stream)
         dropStartPtsUs.remove(stream)
         dropGapMs.remove(stream)
@@ -256,6 +318,11 @@ internal class SendQueue(
         deltaFirstPtsUs.remove(stream)
         deltaLastPtsUs.remove(stream)
         return removed
+    }
+
+    /** A new control frame supersedes an older keyframe's remaining chunks. */
+    private fun discardChunked(stream: Int) {
+        chunked.removeAll { it.stream == stream }
     }
 
     /** Non-blocking dequeue; null when nothing is queued. */
@@ -307,19 +374,49 @@ internal class SendQueue(
             audioBytes -= it.bytes.size
             return it
         }
+        // R4: a keyframe's remaining chunks sit behind audio and ahead of the
+        // delta lanes, one chunk per turn so a burst cannot fill the socket.
+        chunked.removeFirstOrNull()?.let { item ->
+            val index = item.next
+            item.next += 1
+            val entry = Entry(item.chunks[index], item.stream, item.enqueuedUs, item.ptsUs,
+                              key = item.key && index == 0)
+            if (item.next < item.chunks.size) chunked.addLast(item)
+            return entry
+        }
         val n = deltaOrder.size
         repeat(n) {
             val stream = deltaOrder.removeFirst()
             val q = deltas[stream] ?: return@repeat
-            val entry = q.removeFirstOrNull()
-            if (entry == null) {
+            val item = q.removeFirstOrNull()
+            if (item == null) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
                 deltaLastPtsUs.remove(stream)
                 return@repeat
             }
-            deltaBytes[stream] = (deltaBytes[stream] ?: entry.bytes.size) - entry.bytes.size
+            var released = 0
+            val entry: Entry = when (item) {
+                is Entry -> {
+                    released = item.bytes.size
+                    item
+                }
+                is Chunked -> {
+                    val index = item.next
+                    item.next += 1
+                    if (item.next < item.chunks.size) {
+                        q.addLast(item)
+                    } else {
+                        released = item.originalBytes
+                    }
+                    Entry(item.chunks[index], stream, item.enqueuedUs, item.ptsUs,
+                          key = item.key && index == 0)
+                }
+            }
+            if (released > 0) {
+                deltaBytes[stream] = (deltaBytes[stream] ?: released) - released
+            }
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)

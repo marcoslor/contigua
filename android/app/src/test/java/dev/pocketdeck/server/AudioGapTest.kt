@@ -32,7 +32,7 @@ class AudioGapTest {
     @Test
     fun audioNeverWaitsBehindMoreThanOneChunkOfAKeyframe() {
         var nowUs = 0L
-        val q = SendQueue(nowUs = { nowUs })
+        val q = SendQueue(nowUs = { nowUs }).also { it.videoChunks = true }
         q.enqueueControl(1, videoFrame(1, 0, key = true, dataBytes = 300 * 1024), ptsUs = 0)
         // A 6 Mbit/s link: one 16 KiB chunk is 21.8 ms; R4 allows two (the
         // in-flight write plus the kernel buffer) = 43.7 ms.
@@ -79,7 +79,7 @@ class AudioGapTest {
 
     @Test
     fun aLargeDeltaIsChunkedToo() {
-        val q = SendQueue()
+        val q = SendQueue().also { it.videoChunks = true }
         q.enqueueDelta(1, 0, videoFrame(1, 0, key = false, dataBytes = 80 * 1024))
         val first = q.pollNow()!!
         assertEquals(Frames.TYPE_VIDEO_CHUNK, first.bytes[4].toInt() and 0xFF)
@@ -94,8 +94,16 @@ class AudioGapTest {
 
     @Test
     fun aSmallFrameGoesWhole() {
-        val q = SendQueue()
+        val q = SendQueue().also { it.videoChunks = true }
         q.enqueueControl(1, videoFrame(1, 0, key = true, dataBytes = 1000), ptsUs = 0)
+        val entry = q.pollNow()!!
+        assertEquals(Frames.TYPE_VIDEO_FRAME, entry.bytes[4].toInt() and 0xFF)
+    }
+
+    @Test
+    fun aMacWithoutTheHelloCapabilityGetsWholeFrames() {
+        val q = SendQueue()
+        q.enqueueControl(1, videoFrame(1, 0, key = true, dataBytes = 300 * 1024), ptsUs = 0)
         val entry = q.pollNow()!!
         assertEquals(Frames.TYPE_VIDEO_FRAME, entry.bytes[4].toInt() and 0xFF)
     }
