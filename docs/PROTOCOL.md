@@ -92,12 +92,17 @@ display id on every injected event.
 - **Large access units may arrive as VIDEO_CHUNKs** when the Mac's hello has
   `videoChunks:true`. One access unit becomes `count` fragments of at most
   16 KiB, each carrying the same `ptsUs` and `flags` and its `index` (0-based).
-  The fragments of one stream are sent in order, but audio may be written
-  between them (MEDIA-16), so the receiver reassembles by `(stream, ptsUs, flags)`
-  and only then hands the decoder one access unit, exactly as a whole
-  `VIDEO_FRAME` would. A missing fragment costs that one frame; the next
-  keyframe restarts cleanly. A phone sends whole `VIDEO_FRAME`s to a Mac
-  without the field.
+  The fragments of one stream go on the wire in index order and contiguous
+  within that stream: audio, JSON and another stream's frames may be written
+  between them (MEDIA-16), but never another frame of the same stream — a
+  partly sent frame keeps the head of its lane. The receiver reassembles by
+  `(stream, ptsUs, flags)` and only then hands the decoder one access unit,
+  exactly as a whole `VIDEO_FRAME` would. A missing fragment (or a stub the
+  phone discarded, e.g. at a drop episode or a new control frame) costs that
+  one frame: the Mac discards the incomplete unit, treats it as a break of the
+  reference chain (no delta reaches the decoder until a keyframe, MEDIA-19),
+  and the next keyframe restarts cleanly. A phone sends whole `VIDEO_FRAME`s
+  to a Mac without the field.
 - **Codec.** H.264 is the default. HEVC is used only when the stream's arm asks
   for it (`codec=hevc`), the Mac's `hello.codecs` listed it as hardware-decodable,
   and the phone's HEVC encoder accepts the size; otherwise the stream stays H.264
