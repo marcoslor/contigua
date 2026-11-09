@@ -754,6 +754,47 @@ installs, kills the exact service pid, launches the app and runs that check.
 The phone was left on the current APK (pid 8394 at the person's 18:12
 reinstall), idle, shaping off at the person's request.
 
+## Overrun (2026-11-08)
+
+The collapse was two loops, not one. The queue's byte budget was 250 ms at the
+**believed** 8 Mbps (256 KB); a VBR key frame at 1166×898 is about 1.2 MB on
+the emulator's software encoder, so the key alone overflowed it, the queue
+dropped the deltas behind it, asked for another key, and repeated on a link
+that carried every byte. With the budget fixed, a second loop remained: a VBR
+encoder whose real output is above the link keeps the queue full even when the
+sender's target sits at its 1 Mbps floor. Emulator arm A put out 11.5 Mbps on
+a ~5 Mbps writer goodput; arm B put out 1.3 Mbps on a 1.10 Mbps measured
+goodput.
+
+The fix has two parts. The queue budget is now 250 ms at the measured rate
+(the link's goodput when known, else the encoder's own output, else the
+target) plus the queued key frame's bytes; the key frame's send time is a
+duration credit, and the phases are one pure machine (Steady/Keyframe/Draining,
+`QueueBudget.kt`). The codec key itself has a closed loop on the encoder's
+**measured output** (`EncoderCap.kt`): on a drop, the key is scaled by
+`0.85 × link / output`, with 5% probes after 30 s without a drop (at most two;
+a drop after a probe holds) and a 250 kbps sanity floor. `QualityAdaptation`'s
+goodput ceiling is unchanged.
+
+| arm | build | drop_ep after 10 s | kf_req | largest key vs budget | kbps vs link | shown/source fps |
+| --- | --- | --- | --- | --- | --- | --- |
+| A, overshoot 16 | main | 10 | 10 | 1,210,666 / 262,144 | 3031 / unshaped | 9.7 / 9.8 |
+| A | queue budget only | 33 | 33 | 1,211,210 / 1,638,234 | 11,567 / ~5 Mbps | 9.1 / 9.6 |
+| B, 3 Mbit/s shaped | main | 29 | — | — | 4613 / 3.09 Mbps | — |
+| B | queue budget only | 22 | — | — | 1323 / 1.10 Mbps | — |
+
+The queue budget moved arm A's key frame from over budget to fitting, but both
+fixed runs still fail: the measured APK predates `EncoderCap`, so the codec
+kept putting out more than the link. The cap simulation is in the same commit
+(without the cap the 16× key keeps the spiral; with it the output settles under
+the link); its K1 run was still queued behind another worktree's K1 when this
+landed. One emulator boot with the cap build, and the real-phone arm, remain;
+the emulator budget was 3 of 3. On arm B the emulator's I-frame is ~1.2 MB
+(about 70 deltas), so at the 1.1 Mbps measured writer goodput the key alone
+takes ~9 s; the cap lowers the average but not the I-frame's size, so that
+arm's pass is still unproven. The real-phone commands are in
+`.agent/overrun/real-phone.md`.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
