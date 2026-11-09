@@ -217,6 +217,9 @@ enum StatsDiscardReason: String, CaseIterable {
     /// M1's paced presenter showed the frame without its own refresh. Every
     /// waiting frame is handed over in order, so the chain stays intact.
     case paced
+    /// The delta was held because the chain was broken: no decoder got it
+    /// until a keyframe (WIN-61).
+    case awaitingKey = "awaiting_key"
 }
 
 /// What a wire-key frame's NAL types say: it cannot restart the decoder
@@ -854,6 +857,7 @@ enum StreamStatsLine {
             "mac_drop_not_ready=\(stats.macDrops[.notReady] ?? 0)",
             "mac_drop_before_config=\(stats.macDrops[.beforeConfig] ?? 0)",
             "mac_drop_paced=\(stats.macDrops[.paced] ?? 0)",
+            "mac_drop_awaiting_key=\(stats.macDrops[.awaitingKey] ?? 0)",
             "chain_fed=\(stats.chainFed)",
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",

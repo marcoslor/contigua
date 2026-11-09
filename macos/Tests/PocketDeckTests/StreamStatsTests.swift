@@ -243,16 +243,18 @@ final class StreamStatsTests: XCTestCase {
         window.noteDiscarded(.flush, now: 0.1)
         window.noteDiscarded(.flush, now: 0.2)
         window.noteDiscarded(.paced, now: 0.3)
+        window.noteDiscarded(.awaitingKey, now: 0.35)
         window.noteChainFed(now: 0.4)
         window.noteChainFed(now: 0.5)
         let snapshot = window.snapshot(now: 0.6)
         let line = StreamStatsLine.text(stream: 1, size: .zero, view: .zero,
                                         place: "fit", stats: snapshot)
-        XCTAssertTrue(line.contains("mac_drop=3"), line)
+        XCTAssertTrue(line.contains("mac_drop=4"), line)
         XCTAssertTrue(line.contains("mac_drop_flush=2"), line)
         XCTAssertTrue(line.contains("mac_drop_not_ready=0"), line)
         XCTAssertTrue(line.contains("mac_drop_before_config=0"), line)
         XCTAssertTrue(line.contains("mac_drop_paced=1"), line)
+        XCTAssertTrue(line.contains("mac_drop_awaiting_key=1"), line)
         XCTAssertTrue(line.contains("chain_fed=2"), line)
         XCTAssertEqual(window.snapshot(now: 1.0).chainFed, 0,
                        "the counters belong to one line")
@@ -422,6 +424,7 @@ final class StreamStatsTests: XCTestCase {
                       "hitch_ms=0", "late_p99=-", "mac_drop=0",
                       "mac_drop_flush=0", "mac_drop_not_ready=0",
                       "mac_drop_before_config=0", "mac_drop_paced=0",
+                      "mac_drop_awaiting_key=0",
                       "chain_fed=0",
                       "phone_drop=0", "drop_ep=0", "drop_ms=-", "phone_n=1",
                       "skip=0", "susp_n=0", "susp_ms=0", "refine_n=0", "kf=0",
