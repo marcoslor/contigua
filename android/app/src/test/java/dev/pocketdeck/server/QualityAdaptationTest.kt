@@ -7,8 +7,10 @@ import org.junit.Test
 
 /**
  * The automatic bitrate policy: backpressure drops take 25% off down to a
- * 1 Mbps floor, recovery adds 10% every 5 s without a drop, and neither ever
- * crosses the target.
+ * floor (1 Mbps, or 85% of a goodput below it), recovery adds 10% every 5 s
+ * without a drop, and neither ever crosses the target. A measured goodput caps
+ * recovery; probes climb the cap back with doubling steps while the link stays
+ * good, and a failed probe pauses for two minutes.
  */
 class QualityAdaptationTest {
 
@@ -63,7 +65,8 @@ class QualityAdaptationTest {
         assertEquals(2_550_000, q.onDrop(0, measuredBps = 3_000_000))
         assertEquals(2_550_000, q.ceilingBps)
         assertNull("already at the measured cap", q.maybeRecover(5_000))
-        // 30 s later the 5% probe lifts the cap, then the normal +10% step.
+        // The first call after the probe interval adds its 5% step, then the
+        // normal +10% recovery reaches the new cap.
         assertEquals(2_677_500, q.maybeRecover(30_000))
         assertEquals(2_677_500, q.ceilingBps)
     }
@@ -127,33 +130,72 @@ class QualityAdaptationTest {
     }
 
     @Test
-    fun `the ceiling probe is bounded to two steps`() {
+    fun `a hard three megabit link keeps one failed probe per two minutes`() {
+        val link = 3_000_000
         q.setTarget(8_000_000)
-        q.onDrop(0, measuredBps = 3_000_000)
-        q.maybeRecover(30_000)
-        assertEquals(2_677_500, q.ceilingBps)
-        q.maybeRecover(60_000)
-        assertEquals(2_811_375, q.ceilingBps)
-        // A hard 3 Mbit/s link: the cap holds below the link instead of walking
-        // 2.55 -> 3.10 Mbit/s after four probes and re-entering the sawtooth.
-        q.maybeRecover(90_000)
-        q.maybeRecover(120_000)
-        assertEquals(2_811_375, q.ceilingBps)
-        assertTrue(q.ceilingBps < 3_000_000)
+        // The link cannot carry the target: the first drop is the baseline,
+        // not a probe, so the probe clock starts from it.
+        q.onDrop(0, measuredBps = link)
+        var now = 1_000L
+        var lastProbeAt = Long.MIN_VALUE
+        var lastFailureAt = Long.MIN_VALUE
+        var failures = 0
+        var minGap = Long.MAX_VALUE
+        var maxBitrate = 0
+        while (now <= 600_000) {
+            val ceilingBefore = q.ceilingBps
+            q.maybeRecover(now)
+            if (q.ceilingBps > ceilingBefore) lastProbeAt = now
+            val reached = q.bitrate
+            maxBitrate = maxOf(maxBitrate, reached)
+            if (reached > link) {
+                q.onDrop(now, measuredBps = link)
+                if (lastProbeAt != Long.MIN_VALUE && now - lastProbeAt <= 10_000) {
+                    failures++
+                    if (lastFailureAt != Long.MIN_VALUE) {
+                        minGap = minOf(minGap, now - lastFailureAt)
+                    }
+                    lastFailureAt = now
+                    lastProbeAt = Long.MIN_VALUE
+                }
+            }
+            now += 1_000
+        }
+        assertTrue("failed probes over ten minutes: $failures", failures >= 2)
+        assertTrue(
+            "probe-induced drops ${minGap}ms apart",
+            minGap == Long.MAX_VALUE || minGap >= 120_000,
+        )
+        assertTrue(
+            "the bitrate reached ${maxBitrate / 1000} kbps on a ${link / 1000} kbps link",
+            maxBitrate <= 3_300_000,
+        )
     }
 
     @Test
-    fun `a drop after a probe stops the walk`() {
+    fun `a drop after a probe pauses probes for two minutes`() {
         q.setTarget(8_000_000)
         q.onDrop(0, measuredBps = 3_000_000)
-        q.maybeRecover(30_000) // one probe spent
+        q.maybeRecover(30_000) // the first 5% probe after the interval
         assertEquals(2_677_500, q.ceilingBps)
         q.onDrop(31_000, measuredBps = 2_900_000)
         assertEquals(2_465_000, q.ceilingBps)
         q.maybeRecover(61_000)
         q.maybeRecover(91_000)
         q.maybeRecover(121_000)
-        assertEquals("no further probes after a probe-induced drop", 2_465_000, q.ceilingBps)
+        assertEquals("still inside the two-minute pause", 2_465_000, q.ceilingBps)
+        q.maybeRecover(151_000) // 120 s after the drop: a fresh 5% step
+        assertEquals(2_588_250, q.ceilingBps)
+    }
+
+    @Test
+    fun `a link below the floor takes the bitrate to eighty five percent of it`() {
+        q.setTarget(1_100_000)
+        // 900 kbps is below the 1 Mbps floor: the floor follows the link, so
+        // the belief may fall to 765 kbps instead of stopping at 1 Mbps.
+        assertEquals(765_000, q.onDrop(0, measuredBps = 900_000))
+        assertNull("the narrow-link floor holds", q.onDrop(1_000, measuredBps = 900_000))
+        assertEquals(765_000, q.bitrate)
     }
 
     @Test

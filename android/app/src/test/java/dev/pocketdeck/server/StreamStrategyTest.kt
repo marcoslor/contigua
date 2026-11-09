@@ -183,6 +183,17 @@ class StreamStrategyTest {
     }
 
     @Test
+    fun `the overrun overshoot is off by default and clamps to 1-32`() {
+        assertEquals(1, StreamStrategy.DEFAULT.overshoot)
+        assertEquals(3, parse("overshoot" to "3").overshoot)
+        assertEquals(32, parse("overshoot" to "999").overshoot)
+        assertEquals(1, parse("overshoot" to "0").overshoot)
+        assertEquals(1, parse("overshoot" to "soon").overshoot)
+        assertEquals("overshoot=3", parse("overshoot" to "3").describe())
+        assertEquals("default", parse("overshoot" to "1").describe())
+    }
+
+    @Test
     fun `vd_rate is off at 0 or junk and clamps to 60-120`() {
         assertEquals(0, parse("vd_rate" to "0").vdRate)
         assertEquals(0, parse("vd_rate" to "soon").vdRate)

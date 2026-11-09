@@ -45,7 +45,16 @@ class PathHubWriteTest {
         override fun write(b: ByteArray, off: Int, len: Int) {
             entered.countDown()
             synchronized(lock) {
-                while (!released) lock.wait()
+                // Bounded: a failed test that never calls release() must not
+                // park this non-daemon writer and stall the whole K1.
+                val deadline = System.currentTimeMillis() + 10_000
+                while (!released) {
+                    val left = deadline - System.currentTimeMillis()
+                    if (left <= 0) {
+                        throw IllegalStateException("ParkingStream was never released")
+                    }
+                    lock.wait(left)
+                }
             }
             chunks.add(b.copyOfRange(off, off + len))
             written.countDown()
