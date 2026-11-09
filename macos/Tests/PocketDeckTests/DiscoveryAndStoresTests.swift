@@ -76,6 +76,36 @@ final class RememberedPhonesTests: XCTestCase {
         XCTAssertEqual(store.active?.id, "aaa")
     }
 
+    func testTrustLostSurvivesARelaunchWithItsKind() {
+        let store = RememberedPhones(defaults: defaults)
+        store.remember(phone, at: Date(timeIntervalSince1970: 100))
+        XCTAssertNil(store.phone(id: "aaa")?.trustLost)
+
+        store.setTrustLost(.inferred, id: "aaa")
+        let relaunched = RememberedPhones(defaults: defaults)
+        XCTAssertEqual(relaunched.phone(id: "aaa")?.trustLost, .inferred,
+                       "an inferred trust loss comes back after a relaunch")
+
+        relaunched.setTrustLost(.told, id: "aaa")
+        XCTAssertEqual(RememberedPhones(defaults: defaults).phone(id: "aaa")?.trustLost, .told)
+
+        relaunched.clearTrustLost(id: "aaa")
+        XCTAssertNil(RememberedPhones(defaults: defaults).phone(id: "aaa")?.trustLost)
+
+        relaunched.setTrustLost(.told, id: "aaa")
+        relaunched.forget(id: "aaa")
+        XCTAssertNil(RememberedPhones(defaults: defaults).phone(id: "aaa"),
+                     "Forget This Phone removes the record and its trust loss")
+    }
+
+    func testRememberingAgainKeepsTheTrustLostKind() {
+        let store = RememberedPhones(defaults: defaults)
+        store.remember(phone, at: Date(timeIntervalSince1970: 100))
+        store.setTrustLost(.told, id: "aaa")
+        store.remember(phone, at: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(store.phone(id: "aaa")?.trustLost, .told)
+    }
+
     func testAPhoneWithoutAPinIsStillRemembered() {
         // The pin lives in the pin store; losing it must not erase the phone.
         let store = RememberedPhones(defaults: defaults)

@@ -69,23 +69,25 @@ class AppLinkTest {
     }
 
     @Test
-    fun `a different identity drops the session and forgets the cached material`() {
+    fun `a different identity tells every Mac it was forgotten before the drop`() {
         val t = AppLink.transition(linked(), push(fp = fpNew))
 
         assertEquals(linked(fp = fpNew), t.state)
-        assertEquals(listOf(Action.DROP_SESSIONS, Action.FORGET_CACHE), t.actions)
+        assertEquals(listOf(Action.NOTIFY_FORGOTTEN(null), Action.DROP_SESSIONS, Action.FORGET_CACHE),
+                     t.actions)
     }
 
     @Test
-    fun `a removed Mac is a different paired set`() {
+    fun `a removed Mac is told it was forgotten before the drop`() {
         val t = AppLink.transition(linked(pairs = listOf(macA, macB)), push(pairs = listOf(macA)))
 
         assertEquals(linked(pairs = listOf(macA)), t.state)
-        assertEquals(listOf(Action.DROP_SESSIONS, Action.FORGET_CACHE), t.actions)
+        assertEquals(listOf(Action.NOTIFY_FORGOTTEN(setOf("b2")), Action.DROP_SESSIONS,
+                            Action.FORGET_CACHE), t.actions)
     }
 
     @Test
-    fun `an added Mac is a different paired set`() {
+    fun `an added Mac is a different paired set but nobody was forgotten`() {
         val t = AppLink.transition(linked(pairs = listOf(macA)), push(pairs = listOf(macA, macB)))
 
         assertEquals(linked(pairs = listOf(macA, macB)), t.state)
@@ -93,12 +95,13 @@ class AppLinkTest {
     }
 
     @Test
-    fun `a Mac with the same client id but a new pin is a different paired set`() {
+    fun `a Mac with the same client id but a new pin is told it was forgotten`() {
         val rotated = macA.copy(macFpHex = "cc".repeat(32))
         val t = AppLink.transition(linked(), push(pairs = listOf(rotated)))
 
         assertEquals(linked(pairs = listOf(rotated)), t.state)
-        assertEquals(listOf(Action.DROP_SESSIONS, Action.FORGET_CACHE), t.actions)
+        assertEquals(listOf(Action.NOTIFY_FORGOTTEN(setOf("a1")), Action.DROP_SESSIONS,
+                            Action.FORGET_CACHE), t.actions)
     }
 
     @Test

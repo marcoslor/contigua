@@ -5663,6 +5663,25 @@ class FakePhone(object):
                 index = self._path_index(session, path_id)
                 if session._path_selector_matches(selector, path_id, index):
                     session._inbound.put(("drop", path_id))
+        elif command == "forget":
+            self.forget_live_session()
+
+    def forget_live_session(self):
+        """PAIR-30: the person forgets this Mac while its session is live. Send
+        the authenticated `forgotten` on it, let the writer drain, then close and
+        drop every pin (a Forget All keeps the identity and id)."""
+        session = self._session
+        if session is None or session.hub is None:
+            return False
+        session._send_error("forgotten", "the person forgot this Mac")
+        # The frame rides the path writer; give it the same drain the phone's
+        # teardown gives a refusal before the socket goes.
+        time.sleep(0.3)
+        session.close()
+        self.store.clients = {}
+        self.store.save()
+        self.events.session("forgotten")
+        return True
 
     @staticmethod
     def _live_path_ids(session):
@@ -5914,7 +5933,8 @@ def build_parser():
                         "(a phone whose route is gone, for the Mac's 30 s grace check)")
     p.add_argument("--ctl-file", metavar="PATH", default=None,
                    help="change a live path at run time: `pong ID on|off|delay [MS]`, "
-                        "`slow ID MS`, `drop ID` (ID = path id, join index, or 'all')")
+                        "`slow ID MS`, `drop ID` (ID = path id, join index, or 'all'), "
+                        "or `forget` (PAIR-30: tell the live Mac it was forgotten, then close)")
     p.add_argument("--name", default="FakePhone", help="device name advertised over mDNS")
     p.add_argument("--no-mdns", action="store_true", help="do not advertise over mDNS")
     p.add_argument("--refuse-connections", action="store_true",
