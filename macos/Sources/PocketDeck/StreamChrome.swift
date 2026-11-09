@@ -617,10 +617,20 @@ final class StreamChromeView: NSView {
         return min(barBottom, contentTop)
     }
 
+    /// True at a point in this view that the chrome owns over the picture: the
+    /// framed band (the 28 pt bar and the titlebar rows above the stream's
+    /// first visible row) and the immersive pill while it is up. Clicks and
+    /// hover share this one rule (ISS-49, WIN-61): a point the chrome owns is
+    /// never the phone's.
+    func ownsPoint(_ point: NSPoint) -> Bool {
+        if barHeight > 0 { return point.y >= inertBandBottom }
+        guard effectiveStyle == .immersive, showsPill, let pillFrame else { return false }
+        return pillFrame.contains(point)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        guard barHeight > 0,
-              convert(point, from: superview).y >= inertBandBottom else { return hit }
+        guard ownsPoint(convert(point, from: superview)) else { return hit }
         guard let hit else { return nil }
         // The bar's mirrored band is the window's own: a click on it is a drag
         // (and counts). The band decides, not which view the mirror's content

@@ -44,6 +44,7 @@ The Phone Mirror shows the phone's own screen — home screen, apps, notificatio
 | MIRROR-20 | THE first frame SHALL arrive within `first_frame_phone_ms`; opening and closing the window SHALL send no write to the phone; and WHEN frames stop without a state change THE window SHALL say so within `stale_picture_ms` (NFR.md). | e2e `nfr` (first frame, read-only open/close, stale picture); K2 `FrameWatchdogTests`, `StreamWindowWatchdogTests` |
 | MIRROR-21 | THE window SHALL log its picture state (screen on/off, secure, cover, panel) and nothing about the picture's content: no app name, notification text, media title or pixel data. | e2e `mirror` `[MIRROR-21]` (the state lines); review of `Log.video` calls |
 | MIRROR-22 | EVERY bar control SHALL have a VoiceOver label and role and a help tag; the cover's sentence and its button SHALL be readable, in reading order; and a bar control SHALL keep at least 3:1 contrast over white, black and busy frames, in light and dark. | K2 `BarChromeTests.testSymbolsKeepThreeToOneOverWhiteBlackAndBusyFrames`, `WindowChromeTests.testThePhoneBarFitsBesideTheLightsAtItsMinimumWidth`, `PhonePanelP3Tests.testTheWindowButtonIsNamedPhoneMirror` (the shared name); e2e `chrome` (the bar's geometry) |
+| MIRROR-23 | THE mirror SHALL use the stream windows' one picture feed, so the reference-chain rule (WIN-62) holds for it too: after any break no delta reaches its decoder until a keyframe, the keyframe is asked for once and again after 500 ms, the lines are `chain broken reason=…` and `chain restored after <ms>`, and a 5 s line's `chain_fed` stays 0. | K2 `ChainGuardTests`; e2e `chain` (the storm runs on the Phone Mirror; `chain_fed=0` and every restore ≤ 600 ms) |
 
 Priority note: MIRROR-1, 2, 3, 6, 7, 13, 15, 17 and 20 are P1 — the window is unusable or dishonest without them. The panel hold, the secure cover and drops are P2.
 
@@ -143,7 +144,7 @@ Ignored events, stated so nobody builds them: a `screen`/`secure`/panel report w
 | CONV-PD-05 | applies: MIRROR-21 |
 | CONV-PD-06 | applies: MIRROR-20 (`first_frame_phone_ms`, `stale_picture_ms`, `panel_glyph_ms`, zero writes) |
 | CONV-PD-07 | applies: "Phone Mirror" everywhere — the menu item, the panel's "Mirror" with VoiceOver "Phone Mirror", the Deck's Phone button help "Open Phone Mirror" (MIRROR-1, MIRROR-4) |
-| CONV-PD-08 | applies: the picture model and the phone's panel-hold machine are the tables above |
+| CONV-PD-08 | applies: the picture model, the phone's panel-hold machine and the shared picture feed's reference chain (MIRROR-23) are the tables above |
 | CONV-PD-09 | applies: MIRROR-11 (the pill says what happened: "The phone didn't turn its screen off"), MIRROR-2 ("Couldn't open your phone."), MIRROR-13 (every bar button's help tag) |
 
 ## Assumptions

@@ -71,4 +71,22 @@ final class WindowFrameLimitTests: XCTestCase {
                             styleMask: [.titled], backing: .buffered, defer: false)
         XCTAssertFalse(WindowFrameLimit.applies(to: panel))
     }
+
+    /// A full-screen window is the system's to size: it takes the screen's
+    /// whole frame, menu-bar band included. The funnel's screen limit would
+    /// cut it to the visible frame, leaving the band uncovered above the Deck
+    /// (DECK-25). The test window reports the mask; a real transition is the
+    /// e2e's, which cannot switch a Space quietly.
+    func testAFullScreenWindowIsTheSystemsToSize() {
+        final class FullScreenWindow: NSWindow {
+            override var styleMask: NSWindow.StyleMask {
+                get { super.styleMask.union(.fullScreen) }
+                set { super.styleMask = newValue }
+            }
+        }
+        let window = FullScreenWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        XCTAssertFalse(WindowFrameLimit.applies(to: window),
+                       "the full-screen frame is the screen's, not the visible frame's")
+    }
 }
