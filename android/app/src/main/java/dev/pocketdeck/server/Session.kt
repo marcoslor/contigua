@@ -216,6 +216,8 @@ class Session(
         var keyDownTime = 0L
     }
 
+    /** P4: the writer's recent goodput, the cap the TCP recovery may not cross. */
+    private val goodput = GoodputMeter()
     private val queue = SendQueue(
         maxDeltaBytesPerStream,
         nowUs = monoUs,
@@ -228,10 +230,11 @@ class Session(
         onOverflow = { stream -> onQueueOverflow(stream) },
         onSuspendChanged = { stream -> applyEncoderSuspend(stream) },
         codecFor = { stream -> streamCodecs[stream] ?: VideoCodec.Avc },
+        // The overrun budget follows the measured link when the writer has a
+        // sample; without one the queue uses the encoder's own output rate.
+        linkBpsFor = { stream -> goodput.rateBps(stream, monoUs()) },
         log = { message -> log(message) },
     )
-    /** P4: the writer's recent goodput, the cap the TCP recovery may not cross. */
-    private val goodput = GoodputMeter()
     /** Q1: one apply lock per stream; the last apply lands the latest state. */
     private val suspendApplies = HashMap<Int, Any>()
     private val pairLock = Object()
