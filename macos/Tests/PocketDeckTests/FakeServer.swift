@@ -273,7 +273,9 @@ final class FakeV2PhoneBrain {
         guard frame.messageType == .json, let message = JSONFrame.decode(payload: frame.payload) else { return false }
         if let errorCode = error {
             if ["pair.request", "pair.nonce"].contains(message.t) {
-                connection.sendJSON(["t": "error", "code": errorCode])
+                // The real phone's `sendError` always writes `stream: 0` for a
+                // session-level error (Session.kt); the Mac must read it (R2).
+                connection.sendJSON(["t": "error", "code": errorCode, "stream": 0])
                 return true
             }
             return false

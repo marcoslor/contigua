@@ -295,6 +295,30 @@ printf 'logger.info("volume \(state.volume, privacy: .public) of \(state.volumeM
 run_check
 silent "ids, counts, codes, states and package names may stay public" "$SRC/Log2.swift" R-PRIV-1
 
+# --- R-KEY-2: no exporter key material in logs ------------------------------
+
+new_repo key2
+printf 'logger.info("v2 exporter sha256: \\(digest)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-KEY-2 flags the exporter's full hash in a log" "$SRC/Log2.swift" R-KEY-2 1
+
+new_repo key2hex
+printf 'logger.info("exporter %s")\n' '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    > "$SRC/Log2.swift"
+run_check
+expect "R-KEY-2 flags 64 hex characters in a log" "$SRC/Log2.swift" R-KEY-2 1
+
+new_repo key2kt
+printf 'Log.d("PD", "v2 exporter sha256: " + hex)\n' > "$KT_MAIN/Log2.kt"
+run_check
+expect "R-KEY-2 flags the exporter hash in a Kotlin log" "$KT_MAIN/Log2.kt" R-KEY-2 1
+
+new_repo key2ok
+printf 'logger.info("v2 exporter ready 1a2b3c4d")\n' > "$SRC/Log2.swift"
+run_check
+silent "an 8-hex exporter prefix is not key material" "$SRC/Log2.swift" R-KEY-2
+exit_is "prefix-only log passes" 0
+
 # --- R-SUPP-1 and R-CHECK-1 are REVIEW lines: exit 0 -------------------------
 
 new_repo supp

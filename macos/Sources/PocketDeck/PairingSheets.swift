@@ -95,11 +95,17 @@ struct CodeSheet: View {
                 ProgressView().controlSize(.small)
                 Text("Pairing…").font(.callout).foregroundStyle(.secondary)
             }
-        case .denied:
-            Text("Pairing was denied on the phone.").font(.callout).foregroundStyle(.red)
-        case .coolingDown:
+        case .denied(let until):
+            VStack(spacing: 4) {
+                Text(PairingCopy.denied).font(.callout).foregroundStyle(.red)
+                countdown(until)
+            }
+        case .coolingDown(let until):
             // The phone's own 30 s window: trying again at once cannot work.
-            Text(PairingCopy.coolingDown).font(.callout).foregroundStyle(.orange)
+            VStack(spacing: 4) {
+                Text(PairingCopy.coolingDown).font(.callout).foregroundStyle(.orange)
+                countdown(until)
+            }
         case .refused(let reason):
             Text(ConnectionFailure.message(for: reason, phoneName: displayName) ?? "Pairing is turned off on the phone.")
                 .font(.callout).foregroundStyle(.red)
@@ -112,10 +118,31 @@ struct CodeSheet: View {
         }
     }
 
+    /// The machine's deadline, drawn as the one number (R2): no new sentence.
+    @ViewBuilder
+    private func countdown(_ until: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = Pairing.remaining(until: until, at: context.date)
+            Text(PairingCopy.countdown(seconds))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder
     private var actions: some View {
         switch state {
-        case .denied, .coolingDown, .timedOut, .unreachable, .refused:
+        case .denied(let until), .coolingDown(let until):
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(spacing: 8) {
+                    Button("Cancel") { controller.sheet = nil }.buttonStyle(.glass)
+                    Button("Try again") { controller.retryPairing() }
+                        .buttonStyle(.glassProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!Pairing.canTryAgain(until: until, at: context.date))
+                }
+            }
+        case .timedOut, .unreachable, .refused:
             HStack(spacing: 8) {
                 Button("Cancel") { controller.sheet = nil }.buttonStyle(.glass)
                 Button("Try again") { controller.retryPairing() }
