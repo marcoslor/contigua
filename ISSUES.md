@@ -226,6 +226,13 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - **Hint integration:** the hint's popover gains a "Pause it while I stream" button.
     - **Order:** after the proof, and only with the person's OK on the helper (a security switch).
 
+- **ISS-59 A second process ran the app's session code and dialed the phone** (the reviewer, 2026-11-09 01:12:58, right after `install.sh` and one `open -a`).
+  - **Seen:** two pids logged `profile …`, `deck placement` and `session` lines from the same build. 75734 is the app RunningBoard tracks. 75735 is not tracked by RunningBoard, yet it dialed the phone (`session failed: tls`, `pin-mismatch`, `dropping cached address` for a stale device id), then exited. The app that stayed never dialed.
+  - **Find:** what 75735 was: a dock shim, the `pocketdeck-mcp` helper, or the app relaunched by the Files extension.
+  - **Fix:** only the app process may run the session and dial. Add a K2 or e2e check that a helper or shim launch never logs `attempt: dialing`.
+- **The Mac says nothing when the phone's "Allow connections" switch is off** (2026-11-09; belongs with ISS-8 point 3). With the switch off, the phone neither advertises `_pocketdeck._tcp` nor accepts the session, so the Mac sits silent with no attempt and no message.
+  - **Fix:** the phone keeps advertising with a TXT flag (`gate=off`) and refuses with its error code. The Mac then shows "Connections are off on <phone>" with a short how-to, not a silent "Connecting…". Hand it to the unpair worker.
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
