@@ -249,6 +249,7 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
   - **Reviewer:** `.agent/audiogap/real-phone.md` has the two-minute window, the Mac log predicate and the phone's `audio] wait` line.
   - **Status:** fixed on the branch, not merged. Next is the reviewer's two-minute real-phone run.
 
+  - **Merged 2026-11-09 13:20** (rounds 1 and 2: the adaptive Mac jitter buffer, VIDEO_CHUNK fragments kept in order per stream, an incomplete unit breaks the chain). The reviewer's full K1 (1553 tests; the `ServerTest` fixed-sleep test failed in the S shard for the third run in a row and passed alone, 19/0) and full K2 (2042, 0 failures). The real-phone check is `.agent/audiogap/real-phone.md`.
 - **ISS-58 Tell the person when their Mac's AirDrop/Handoff radio (AWDL) is making the stream stutter** (2026-11-08; the person: "that should be in our app's UX… without making the user mad").
   - **Proof first:** compare stalls with AWDL active vs idle on the person's Mac. Either the person's test (AirDrop "No One", Handoff and Universal Control unused for a few minutes) or a probe during a stream. If it isn't AWDL, the message would be wrong.
   - **Reviewer's proposal, to prototype (2–3 real-render options, the person picks):**
