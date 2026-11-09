@@ -34,6 +34,41 @@ internal class WindowStream(
 
         const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
 
+        /** The process's one HEVC encoder state (WIN-59), probed at most once. */
+        private val hevcState = HevcCodecState(::probeHevcEncoder)
+
+        /** The one probe behind [hevcState]; its result outlives the codec. */
+        private fun probeHevcEncoder(): HevcCodecState.Probe {
+            val probe = runCatching { MediaCodec.createEncoderByType(VideoCodec.Hevc.mime) }
+                .getOrNull() ?: return HevcCodecState.Probe.Missing
+            return try {
+                val info = probe.codecInfo
+                val caps = runCatching {
+                    info.getCapabilitiesForType(VideoCodec.Hevc.mime).videoCapabilities
+                }.getOrNull()
+                val hardware = runCatching {
+                    EncoderHardware.isHardware(
+                        name = info.name,
+                        sdk = Build.VERSION.SDK_INT,
+                        hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) {
+                            info.isHardwareAccelerated
+                        } else {
+                            null
+                        },
+                    )
+                }.getOrDefault(false)
+                if (!hardware) {
+                    HevcCodecState.Probe.Software
+                } else {
+                    HevcCodecState.Probe.Hardware { w, h ->
+                        caps?.isSizeSupported(w, h) == true
+                    }
+                }
+            } finally {
+                runCatching { probe.release() }
+            }
+        }
+
         /** The encoder type's capabilities, probed once per process (see [probedCapabilities]). */
         @Volatile private var probed: MediaCodecInfo.VideoCapabilities? = null
 
@@ -291,7 +326,7 @@ internal class WindowStream(
         var size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
         var next = prepared!!
         prepared = null
-        if (!next.started && !startOnPersistent(next.codec)) {
+        if (!next.started && !startOnPersistent(next.codec, next.kind)) {
             dropPersistent()
             size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
             next = prepared!!
@@ -576,73 +611,45 @@ internal class WindowStream(
      * size the codec will actually take. Leaves the current stream untouched.
      *
      * The strategy is read once per configure here, and the codec choice is the
-     * pure decision of WIN-59: the arm may ask for HEVC, but a Mac that cannot
+     * pure decision of WIN-59: HEVC is the default, but a Mac that cannot
      * decode it or an encoder that cannot take the size falls back to H.264
-     * with one reason line.
+     * with one reason line. A HEVC encoder that fails to build is retired for
+     * the process and the same stream is rebuilt with H.264 once.
      */
     private fun prepareEncoder(want: IntSize): IntSize? {
         val (w, h) = want
         val strategy = StreamStrategy.read()
         this.strategy = strategy
         val chosenSize = if (mirrorScreen != null) want else fitToEncoder(w, h)
-        val choice = chooseCodec(strategy, chosenSize)
-        choice.fallbackLine?.let { log("stream $stream $it") }
-        val kind = choice.codec
-        val codec = try {
-            MediaCodec.createEncoderByType(kind.mime)
-        } catch (e: Throwable) {
-            log("stream $stream: no ${kind.token} encoder: ${e.message}")
-            return null
-        }
-        try {
-            learnLimits(codec, kind)
-            configure(codec, chosenSize.w, chosenSize.h, strategy, kind)
-            val shared = persistent
-            if (shared != null) {
-                // Started when attached: one codec at a time on the surface.
-                width = chosenSize.w
-                height = chosenSize.h
-                picture = pictureOf(chosenSize)
-                prepared = Prepared(codec, shared, kind, started = false)
-                return chosenSize
-            }
-            val surface = codec.createInputSurface()
-            codec.start()
-            width = chosenSize.w
-            height = chosenSize.h
-            picture = pictureOf(chosenSize)
-            prepared = Prepared(codec, surface, kind)
-            return chosenSize
-        } catch (e: Throwable) {
-            log("stream $stream: encoder for ${w}x$h failed: ${e.message}")
-            runCatching { codec.release() }
-            return null
-        }
-    }
-
-    /** The one codec decision for [size]; probes HEVC only when the arm asks. */
-    private fun chooseCodec(strategy: StreamStrategy, size: IntSize): CodecChoice.Choice {
-        if (strategy.codec != VideoCodec.Hevc) return CodecChoice.Choice(VideoCodec.Avc)
-        val (available, fits) = hevcEncoder(size)
-        return CodecChoice.choose(strategy.codec, macCodecs(), available, fits)
-    }
-
-    /**
-     * Whether this phone has an HEVC encoder and takes [size]. The probe codec is
-     * created and released at once; a missing encoder or capability is a
-     * fallback, never a crash.
-     */
-    private fun hevcEncoder(size: IntSize): Pair<Boolean, Boolean> {
-        val probe = runCatching { MediaCodec.createEncoderByType(VideoCodec.Hevc.mime) }
-            .getOrNull() ?: return false to false
-        return try {
-            val caps = runCatching {
-                probe.codecInfo.getCapabilitiesForType(VideoCodec.Hevc.mime).videoCapabilities
-            }.getOrNull()
-            true to (caps?.isSizeSupported(size.w, size.h) == true)
-        } finally {
-            runCatching { probe.release() }
-        }
+        val ready = CodecPreparation.prepare(
+            strategy = strategy,
+            macCodecs = macCodecs(),
+            size = chosenSize,
+            state = hevcState,
+            label = "${w}x$h",
+            create = { kind -> MediaCodec.createEncoderByType(kind.mime) },
+            build = { codec, kind ->
+                learnLimits(codec, kind)
+                configure(codec, chosenSize.w, chosenSize.h, strategy, kind)
+                val shared = persistent
+                if (shared != null) {
+                    // Started when attached: one codec at a time on the surface.
+                    Prepared(codec, shared, kind, started = false)
+                } else {
+                    val surface = codec.createInputSurface()
+                    codec.start()
+                    Prepared(codec, surface, kind)
+                }
+            },
+            release = { runCatching { it.release() } },
+            log = { log("stream $stream $it") },
+            stateLog = log,
+        ) ?: return null
+        width = chosenSize.w
+        height = chosenSize.h
+        picture = pictureOf(chosenSize)
+        prepared = ready.built
+        return chosenSize
     }
 
     private fun learnLimits(codec: MediaCodec, kind: VideoCodec) {
@@ -718,7 +725,7 @@ internal class WindowStream(
                 runCatching { old.stop() }
                 runCatching { old.release() }
             }
-            if (!startOnPersistent(next.codec)) {
+            if (!startOnPersistent(next.codec, next.kind)) {
                 dropPersistent()
                 if (prepareEncoder(IntSize(width, height)) == null) return
                 next = prepared ?: return
@@ -753,13 +760,18 @@ internal class WindowStream(
     }
 
     /** Attaches a configured codec to [persistent] and starts it; false if the codec refuses. */
-    private fun startOnPersistent(codec: MediaCodec): Boolean {
+    private fun startOnPersistent(codec: MediaCodec, kind: VideoCodec): Boolean {
         val shared = persistent ?: return false
         return try {
             codec.setInputSurface(shared)
             codec.start()
             true
         } catch (e: Throwable) {
+            if (kind == VideoCodec.Hevc) {
+                // The probe said HEVC works; this start says no. Retire it and
+                // let the rebuild below choose H.264, which writes the reason.
+                hevcState.configureFailed(log)
+            }
             log("stream $stream: encoder refused the persistent input surface (${e.message}); swapping encoder surfaces")
             runCatching { codec.release() }
             false
