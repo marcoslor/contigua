@@ -37,6 +37,7 @@ class SessionAudioFollowTest {
 
         override fun start(sink: AudioSink, preferredCodecs: List<Int>, windows: () -> List<CaptureWindow>) {
             provider = windows
+            stopped = false
             started.add(Started(sink, preferredCodecs, windows()))
         }
 
@@ -169,6 +170,60 @@ class SessionAudioFollowTest {
         readUntil("window.closed")
         // No windows left: session power rule stops the capture.
         await { capture.stopCount >= 1 }
+    }
+
+    /**
+     * MEDIA-21: the Mac can send `audio.start` a moment before its
+     * `window.open` (a new window turns key, which re-runs the Mac's audio
+     * sync, before the open goes out). The wish is kept, and the capture
+     * starts with the first window.
+     */
+    @Test
+    fun audioStartBeforeTheWindowStartsTheCaptureWhenTheWindowOpens() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "audio.start", "codecs" to listOf(3)))
+        Thread.sleep(120)
+        assertEquals("no window yet: nothing to capture", 0, capture.started.size)
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        await { capture.started.isNotEmpty() }
+        assertEquals(1, capture.started.size)
+        assertEquals(listOf(3), capture.started[0].codecs)
+        assertEquals(listOf<CaptureWindow>(CaptureWindow.App("com.android.settings")), capture.started[0].windows)
+    }
+
+    @Test
+    fun audioStopBeforeTheWindowCancelsTheWish() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "audio.start", "codecs" to listOf(3)))
+        send(mapOf("t" to "audio.stop"))
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        Thread.sleep(120)
+        assertEquals("the Mac took its wish back", 0, capture.started.size)
+    }
+
+    /**
+     * The phone's power rule stops the capture when its last window closes,
+     * but the Mac still wants audio (it sent no `audio.stop`, its own window
+     * set never emptied): the next window starts the capture again.
+     */
+    @Test
+    fun theWishOutlivesTheLastWindowUntilAudioStop() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        send(mapOf("t" to "audio.start", "codecs" to emptyList<Int>()))
+        await { capture.started.size == 1 }
+        send(mapOf("t" to "window.close", "stream" to 1))
+        readUntil("window.closed")
+        await { capture.stopCount >= 1 }
+        send(mapOf("t" to "window.open", "stream" to 2, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        await { capture.started.size == 2 }
     }
 
     @Test
