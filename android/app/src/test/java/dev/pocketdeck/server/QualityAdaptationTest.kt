@@ -133,7 +133,10 @@ class QualityAdaptationTest {
     fun `a hard three megabit link keeps one failed probe per two minutes`() {
         val link = 3_000_000
         q.setTarget(8_000_000)
-        var now = 0L
+        // The link cannot carry the target: the first drop is the baseline,
+        // not a probe, so the probe clock starts from it.
+        q.onDrop(0, measuredBps = link)
+        var now = 1_000L
         var lastProbeAt = Long.MIN_VALUE
         var lastFailureAt = Long.MIN_VALUE
         var failures = 0

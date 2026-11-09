@@ -155,11 +155,24 @@ internal class WindowStream(
     private val quality = QualityAdaptation()
 
     /**
-     * The cap on the codec's key, closed on the encoder's measured output: a
-     * VBR encoder that puts out more than the link is brought down even when
-     * the sender's believed target is already at its floor.
+     * The inner loop: the codec key follows the believed bitrate through the
+     * encoder's measured gain, so a VBR encoder cannot outrun the link while
+     * the outer loop is already at its floor.
      */
-    private val encoderCap = EncoderCap()
+    private val correction = EncoderCorrection()
+
+    /** The encoder's delta output, measured on this stream's drain thread. */
+    private val encoderOutput = GoodputMeter(
+        windowUs = 1_000_000L,
+        minSpanUs = 500_000L,
+        sampleGapUs = 1_000_000L,
+    )
+
+    private var lastEncoderSampleAtMs = 0L
+    @Volatile private var lastCorrectionState = EncoderCorrection.State.Unmeasured
+
+    /** A fresh encoder's IDR can answer the Mac's first key request. */
+    private val keyGate = KeyRequestGate()
 
     /** `stream.stats` counters (ISS-40); rings fill only while the Mac asked. */
     private val stats = StreamStats(
@@ -393,7 +406,11 @@ internal class WindowStream(
     fun requestKeyframe() {
         stats.onKeyframeRequested()
         val codec = encoder ?: return
-        requestSyncFrame(codec)
+        when (val request = keyGate.onRequest(SystemClock.elapsedRealtime())) {
+            is KeyRequestGate.KeyRequest.Satisfied ->
+                log("stream $stream key request: satisfied by idr ${request.idrAgoMs} ms ago")
+            KeyRequestGate.KeyRequest.Send -> requestSyncFrame(codec)
+        }
     }
 
     /**
@@ -493,6 +510,7 @@ internal class WindowStream(
         if (bitrate != null && bitrate > 0 && bitrate != requestedBitrate) {
             requestedBitrate = bitrate
             val target = quality.setTarget(bitrate)
+            resetCorrection()
             log("stream $stream quality: target bitrate ${mbps(target)} (${bitrate} bps requested)")
             applyBitrate()
         }
@@ -503,7 +521,7 @@ internal class WindowStream(
      * (floor 1 Mbps). Recovery happens in the drain loop, 10% every 5 s without
      * a drop, up to the target. [measuredBps] is the writer's recent goodput; it
      * caps recovery at 85% of what the link actually carried, so a slow TCP
-     * fallback cannot climb back to the encoder cap and refill the queue.
+     * fallback cannot climb back to the target and refill the queue.
      */
     fun onBackpressure(measuredBps: Int? = null, encodedBps: Int? = null) {
         val now = SystemClock.elapsedRealtime()
@@ -511,10 +529,10 @@ internal class WindowStream(
         // with; the quality drop below has not reached the codec yet.
         val keyBefore = appliedBitrate.takeIf { it > 0 } ?: encoderBitrate(quality.bitrate)
         val bps = quality.onDrop(now, measuredBps)
-        val capped = encoderCap.onDrop(now, measuredBps, encodedBps, keyBefore)
-        if (capped != null && measuredBps != null && encodedBps != null) {
-            log("stream $stream encoder cap: key ${mbps(keyBefore)} -> ${mbps(capped)} " +
-                "(output ${mbps(encodedBps)}, link ${mbps(measuredBps)})")
+        if (encodedBps != null && encodedBps > 0) {
+            // The queue's meter spans the key that was running; the next drain
+            // sample comes from this stream's own delta meter.
+            correction.sample(now, encodedBps, keyBefore)
         }
         if (bps != null) {
             log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%, encoder ${mbps(encoderBitrate(bps))})")
@@ -523,7 +541,8 @@ internal class WindowStream(
             log("stream $stream quality: recovery cap ${mbps(quality.ceilingBps)} " +
                 "(measured ${mbps(measuredBps)})")
         }
-        if (bps != null || capped != null) applyBitrate()
+        logCorrectionState("drop")
+        applyBitrate()
     }
 
     @Synchronized
@@ -803,6 +822,8 @@ internal class WindowStream(
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).
         quality.setTarget(requestedBitrate ?: strategy.bitrateFor(w, h))
+        // A new encoder or a resize: no gain measured for this key yet.
+        resetCorrection()
         if (strategy.overshoot != StreamStrategy.DEFAULT_OVERSHOOT) {
             log("stream $stream: encoder overshoot ${strategy.overshoot}x the target")
         }
@@ -964,6 +985,8 @@ internal class WindowStream(
     private fun startDrain(codec: MediaCodec, kind: VideoCodec) {
         videoCodec = kind
         stats.codec = kind
+        // A new encoder's first IDR may already answer the Mac's request.
+        keyGate.reset()
         heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
         // A rebuild while the queue was suspended must not restart a flowing
         // encoder: re-apply the input stop to the new codec.
@@ -1031,6 +1054,9 @@ internal class WindowStream(
     private fun setLiveBitrate(bps: Int, reason: String) {
         val codec = encoder ?: return
         val encoderBps = encoderBitrate(bps)
+        // The refined key is not the correction's key: do not measure it.
+        encoderOutput.forget(stream)
+        lastEncoderSampleAtMs = SystemClock.elapsedRealtime()
         val ok = runCatching {
             val params = Bundle()
             params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, encoderBps)
@@ -1041,13 +1067,48 @@ internal class WindowStream(
     }
 
     /**
-     * What the codec is told: arm A's overshoot times the sender's target,
-     * then the cap the encoder's measured output closed on the link.
+     * What the codec is told: the believed bitrate through the encoder's
+     * measured gain, never above the uncorrected key (arm A's overshoot times
+     * the target).
      */
     private fun encoderBitrate(bps: Int): Int {
         val factor = strategy.overshoot.coerceAtLeast(1).toLong()
-        val key = (bps.toLong() * factor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        return minOf(key, encoderCap.capBps)
+        val uncorrected = (bps.toLong() * factor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return correction.keyFor(SystemClock.elapsedRealtime(), bps, uncorrected)
+    }
+
+    /** A new target, encoder restart or resize: no gain is known for the new key. */
+    private fun resetCorrection() {
+        val before = correction.state
+        correction.reset()
+        encoderOutput.forget(stream)
+        lastEncoderSampleAtMs = 0
+        if (before != correction.state) {
+            log("stream $stream encoder loop: ${before.wire} --reset--> ${correction.state.wire}")
+            lastCorrectionState = correction.state
+        }
+    }
+
+    /** The field log's one line per state change of the inner loop. */
+    private fun logCorrectionState(event: String) {
+        val now = correction.state
+        if (now == lastCorrectionState) return
+        log("stream $stream encoder loop: ${lastCorrectionState.wire} --$event--> ${now.wire}")
+        lastCorrectionState = now
+    }
+
+    /**
+     * One gain sample a second from the encoder's delta output, then the key
+     * follows the believed bitrate. Runs on the drain thread.
+     */
+    private fun maybeTrackEncoder(nowMs: Long) {
+        if (nowMs - lastEncoderSampleAtMs < EncoderCorrection.SAMPLE_INTERVAL_MS) return
+        lastEncoderSampleAtMs = nowMs
+        val output = encoderOutput.rateBps(stream, nowMs * 1_000)
+        if (correction.sample(nowMs, output, appliedBitrate)) {
+            logCorrectionState("sample")
+            applyBitrate()
+        }
     }
 
     private fun drain(codec: MediaCodec, kind: VideoCodec) {
@@ -1087,14 +1148,9 @@ internal class WindowStream(
                 log("stream $stream quality: bitrate recovered to ${mbps(bps)} (+10%)")
                 applyBitrate()
             }
-            // The cap on the codec key probes upward on the same drain clock;
-            // it is independent of the target's recovery, which may be at its
-            // floor while the encoder still overshoots the link.
-            encoderCap.maybeProbe(now)?.let { cap ->
-                log("stream $stream encoder cap: key ${mbps(cap)} (probe, " +
-                    "${encoderCap.probesLeft} left)")
-                applyBitrate()
-            }
+            // The inner loop samples the encoder's own delta output once a
+            // second and re-applies the key when the gain moved.
+            maybeTrackEncoder(now)
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let {
                     lastCsd = it
@@ -1114,6 +1170,9 @@ internal class WindowStream(
                         buf.limit(info.offset + info.size)
                         nalTypes(buf, info.size, kind)
                     } else null
+                    // Delta output only: a periodic key would read as a gain
+                    // spike in the one-second window.
+                    if (!key) encoderOutput.note(stream, info.size, now * 1_000)
                     // The encoder path's clock: Surface input pts are
                     // CLOCK_MONOTONIC microseconds, as System.nanoTime is.
                     val encodeUs = if (statsWanted) {
@@ -1148,6 +1207,9 @@ internal class WindowStream(
                         if (!skipped) {
                             val data = ByteArray(info.size)
                             buf.get(data)
+                            if (key && keyNalTypes != null && isIdrAccessUnit(keyNalTypes, kind)) {
+                                keyGate.onIdr(now)
+                            }
                             sink.onFrame(stream, info.presentationTimeUs, key, data)
                             guard.onFrame(SystemClock.elapsedRealtime())?.let {
                                 log("stream $stream first frame ${it}ms after the encoder attached (nudges=${guard.nudgeCount})")
@@ -1178,6 +1240,7 @@ internal class WindowStream(
     /** Applies the current bitrate through `setParameters`; logs each change once. */
     private fun applyBitrate() {
         val bps = encoderBitrate(quality.bitrate)
+        logCorrectionState("key")
         stats.setTarget(quality.bitrate)
         if (bps == appliedBitrate) return
         val codec = encoder
