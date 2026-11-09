@@ -42,8 +42,8 @@ enum ConnectionFailure {
     /// Whether the session should back off and connect again by itself.
     static func retriesAutomatically(_ reason: String) -> Bool {
         switch reason {
-        case "pair_denied", "pair_timeout", "pair_exporter", "version", identityMismatch,
-             "pin-mismatch", "bad_pin", "not_paired", "forgotten": return false
+        case "pair_denied", "pair_timeout", "pair_cooldown", "pair_exporter", "version",
+             identityMismatch, "pin-mismatch", "bad_pin", "not_paired", "forgotten": return false
         default: return true
         }
     }

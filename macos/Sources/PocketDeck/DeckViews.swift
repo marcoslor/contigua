@@ -307,6 +307,14 @@ struct BannerView: View {
                 if let detail = banner.detail {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
+                if let until = banner.countdownUntil {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let seconds = Pairing.remaining(until: until, at: context.date)
+                        Text(PairingCopy.countdown(seconds))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             Spacer(minLength: 8)
             if let title = banner.actionTitle {
@@ -324,7 +332,7 @@ struct BannerView: View {
     private func perform() {
         switch banner.action {
         case .tryNow: controller.tryNow()
-        case .pairAgain: controller.pairAgain()
+        case .pairAgain: controller.pairAgain(source: .deck)
         case .openSettings: Banner.openLocalNetworkSettings()
         case nil: break
         }
@@ -459,9 +467,10 @@ struct PhoneDeckView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
             AppGrid(apps: filtered, query: query, navigator: navigator)
-                .opacity(controller.link.isOnline ? 1 : 0.5)
-                .allowsHitTesting(controller.link.isOnline)
-                .animation(.smooth(duration: 0.3), value: controller.link.isOnline)
+                .opacity(controller.presentation.deckInteractive ? 1 : 0.5)
+                .allowsHitTesting(controller.presentation.deckInteractive)
+                .disabled(!controller.presentation.deckInteractive)
+                .animation(.smooth(duration: 0.3), value: controller.presentation.deckInteractive)
         }
         .animation(.smooth(duration: 0.3), value: controller.banner)
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
@@ -487,7 +496,7 @@ struct PhoneDeckView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
-                    .disabled(!controller.link.isOnline)
+                    .disabled(!controller.presentation.deckInteractive)
                     .help("Open Phone Mirror")
             }
             ToolbarItem(placement: .primaryAction) {

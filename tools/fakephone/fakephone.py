@@ -3104,10 +3104,10 @@ class Session(object):
         self.client_id = msg.get("clientId")
         self.client_name = msg.get("name", "")
         self.mac_video_chunks = msg.get("videoChunks") is True
-        if self.phone.args.refuse_connections:
+        if self.phone.refuse_connections:
             # The phone's master switch: every Mac, paired or not.
             return self._refuse("connections_off", "refused_connections")
-        if self.phone.args.refuse_pairings and self.phone.store.pinned_for(self.client_id) is None:
+        if self.phone.refuse_pairings and self.phone.store.pinned_for(self.client_id) is None:
             # The pairing switch: unknown Macs only, before any code exists. A
             # Mac that asked to pair is refused in words; one that believes it
             # is paired is closed without a reply (docs/specs/pairing.md PAIR-12).
@@ -3177,12 +3177,12 @@ class Session(object):
         if msg.get("t") != "pair.request":
             self._send_error("protocol", "expected pair.request")
             return False
-        if self.phone.args.pair_cooldown:
-            # A phone inside the 30 s cooldown after a Deny/timeout: its own
-            # code, so the Mac's sheet can say to wait (PAIR-5). The pause lets
-            # the Mac read the error before the close races it.
-            self._send_error("pair_cooldown", "pairing is cooling down")
-            time.sleep(0.2)
+        if time.time() < self.phone.pair_cooldown_until:
+            # A phone inside its post-deny window: Session.kt's onPairRequest
+            # refuses with its own code, so the Mac's sheet says to wait
+            # (PAIR-5). sendError always carries `stream: 0` for a
+            # session-level error; the fake matches that wire shape.
+            self._send_error("pair_cooldown", "pairing is cooling down after a denied prompt", 0)
             return False
         self.np = os.urandom(16)
         phone_fp = bytes.fromhex(self.phone.fp_hex)
@@ -3221,8 +3221,9 @@ class Session(object):
         code = int.from_bytes(preimage[:8], "big") % 1000000
         code = "%06d" % code
         self.phone.report_code(code)
-        if not self.decision():
-            dbg("decision false")
+        answer = self.decision()
+        if answer is not True:
+            self.prompt_ended(answer)
             return False
         dbg("decision true; storing pin")
         self.phone.store.add_pinned_client(self.client_id, self.client_name, self.mac_fp_hex)
@@ -3261,7 +3262,9 @@ class Session(object):
         if not hmac.compare_digest((msg.get("macFP") or "").lower(), self.mac_fp_hex):
             self._send_error("pair_commit", "pair.ok does not match the session")
             return False
-        if not self.decision():
+        answer = self.decision()
+        if answer is not True:
+            self.prompt_ended(answer)
             return False
         self.phone.store.add_pinned_client(self.client_id, self.client_name, self.mac_fp_hex)
         # Same shape the phone always sends (Session.kt completePairing): the
@@ -3289,8 +3292,24 @@ class Session(object):
             return None
         return data
 
+    def prompt_ended(self, answer):
+        """The prompt's outcome on the wire: a Deny is `pair_denied` and opens
+        the 30 s window (Session.kt ReaderWork.PairDenied); a Mac Cancel is
+        silence, as the phone's `onPairingEnded` path is."""
+        if answer is not False:
+            return
+        self.phone.pair_cooldown_until = time.time() + self.phone.cooldown_window
+        self.phone.events.session("denied")
+        self._send_error("pair_denied", "pairing denied", 0)
+
     def decision(self):
         """True = Allow, False = Deny, None = the Mac hung up first (Cancel)."""
+        if self.phone.deny_remaining > 0:
+            # --deny N replays the person dismissing the prompt N times; each
+            # denial starts the real phone's cooldown window.
+            self.phone.deny_remaining -= 1
+            dbg("decision false (deny %d left)" % self.phone.deny_remaining)
+            return False
         if not self.phone.args.auto_allow:
             result = self.phone.ask_allow(self.client_name)
             return result
@@ -5451,6 +5470,16 @@ class FakePhone(object):
         self.apps_list_count = 0
         # --dnd-person-after is one person change, not one per session.
         self.person_dnd_done = False
+        # The two app switches, mutable through the ctl file so a check can
+        # replay the person's off/on sequence (Session.kt reads them per hello).
+        self.refuse_connections = args.refuse_connections
+        self.refuse_pairings = args.refuse_pairings
+        # The real phone's post-deny window: `--deny N` refuses the next N
+        # prompts, and each refusal opens the same 30 s `pair_cooldown`.
+        self.deny_remaining = args.deny
+        self.cooldown_window = args.pair_cooldown_window
+        self.pair_cooldown_until = (time.time() + self.cooldown_window
+                                    if args.pair_cooldown else 0.0)
         tls_guard()
         self.store = Store(args.state)
         if args.forget_macs and self.store.clients:
@@ -5766,10 +5795,37 @@ class FakePhone(object):
         parts = line.split()
         if not parts:
             return
+        command = parts[0]
+        # The two app switches work with no live session (the person's own
+        # settings): a check can replay Allow connections off and on between
+        # pairing attempts, as the person did.
+        if command == "connections" and len(parts) >= 2:
+            self.refuse_connections = parts[1] == "off"
+            return
+        if command == "pairings" and len(parts) >= 2:
+            self.refuse_pairings = parts[1] == "off"
+            return
+        if command == "deny" and len(parts) >= 2:
+            try:
+                self.deny_remaining = max(0, int(parts[1]))
+            except ValueError:
+                pass
+            return
+        if command == "cooldown" and len(parts) >= 2:
+            # The check's seam for the phone's post-deny window: `cooldown N`
+            # re-arms it for N s, `cooldown end` closes it early. The Mac's own
+            # 30 s deadline never changes (R2).
+            if parts[1] == "end":
+                self.pair_cooldown_until = 0.0
+            else:
+                try:
+                    self.pair_cooldown_until = time.time() + float(parts[1])
+                except ValueError:
+                    pass
+            return
         session = self._session
         if session is None or session.hub is None:
             return
-        command = parts[0]
         if command in ("pong", "slow") and len(parts) >= 3:
             selector = parts[1]
             mode = parts[2]
@@ -6194,8 +6250,14 @@ def build_parser():
                    help="answer an app window.open with error CODE (app_disabled, "
                         "app_missing, or a code with no mapped sentence); no window opens")
     p.add_argument("--pair-cooldown", action="store_true", dest="pair_cooldown",
-                   help="refuse any pair.request with error pair_cooldown (the phone's "
-                        "30 s window after a Deny or timeout; PAIR-5)")
+                   help="start inside the phone's post-deny window: refuse any "
+                        "pair.request with error pair_cooldown (PAIR-5)")
+    p.add_argument("--pair-cooldown-window", type=float, default=30.0,
+                   metavar="SECONDS", dest="pair_cooldown_window",
+                   help="the post-deny window (default 30 s, as Session.kt's PairCooldown)")
+    p.add_argument("--deny", type=int, default=0, metavar="N",
+                   help="deny the next N pairing prompts; each sends pair_denied and "
+                        "opens the cooldown window, as the phone does")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "
