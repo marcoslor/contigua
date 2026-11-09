@@ -147,4 +147,23 @@ class OverrunEncoderCapTest {
         )
         assertTrue("the cap never moved", cap.capBps < Int.MAX_VALUE)
     }
+
+    @Test
+    fun `a steady three times overshoot settles within five seconds`() {
+        val sim = Sim(
+            linkBps = 30_000_000,
+            targetBps = 8_000_000,
+            overshoot = 1,
+            vbrRatio = 3.0,
+            cap = EncoderCap(),
+            seconds = 10,
+        )
+        sim.run()
+        val error = kotlin.math.abs(sim.finalOutputBps - 8_000_000).toDouble() / 8_000_000
+        assertTrue(
+            "key ${sim.finalKeyBps / 1000} kbps, output " +
+                "${sim.finalOutputBps / 1000} kbps, believed 8000 kbps: error $error",
+            error <= 0.15,
+        )
+    }
 }
