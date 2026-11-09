@@ -1,6 +1,7 @@
 // Device-wide audio playback: Opus/AAC packets from the phone → PCM →
-// AVAudioEngine. An adaptive jitter buffer (60 ms floor, 160 ms target ceiling;
-// 8 AAC packets ≈ 171 ms, under the 185 ms A/V limit)
+// AVAudioEngine. An adaptive jitter buffer (60 ms floor, 180 ms target ceiling;
+// 9 AAC packets ≈ 192 ms of buffer, with the video pipeline's own delay keeping
+// the A/V trail under the 185 ms limit)
 // follows the measured arrival lateness; Mac-side volume/mute only (the phone
 // speaker is silenced by the submix routing, never by stream volume).
 
@@ -251,10 +252,10 @@ final class AudioEngine {
     /// The packet cap: a burst past it is dropped rather than queued. It
     /// follows the adaptive target but never passes 8 units (see below).
     private func jitterPushLocked() -> Bool {
-        // The cap is in 20 ms units and never past 8: with 1024-sample AAC
-        // packets the real queue peaks at 8 packets ≈ 171 ms, so the played
-        // audio stays under the 185 ms A/V limit (CONV-PD-06).
-        let cap = min(8, max(6, machine.targetFrames + 3))
+        // The cap is in 20 ms units and never past 9: the target covers the
+        // 180 ms arrival gaps R1 names; the video pipeline's delay keeps the
+        // A/V trail under the 185 ms limit (CONV-PD-06).
+        let cap = min(9, max(6, machine.targetFrames + 3))
         let depth = depthLocked()
         return depth < cap
     }
@@ -342,9 +343,9 @@ final class AudioEngine {
         let buffers = pendingPCM
         pendingPCM.removeAll()
         let targetFrames = Int64(machine.targetFrames) * 960
-        // The same 8-unit A/V cap as jitterPushLocked: concealment buffers
-        // count too, so the played audio never trails past 185 ms.
-        let maxFrames = min(targetFrames + 3 * 960, 8 * 960)
+        // The same 9-unit cap as jitterPushLocked: concealment buffers count
+        // too, so the queue stays at the target's ceiling.
+        let maxFrames = min(targetFrames + 3 * 960, 9 * 960)
         let ratio = machine.stretchRatio
         lock.unlock()
         for buffer in buffers {

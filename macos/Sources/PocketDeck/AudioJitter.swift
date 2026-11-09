@@ -121,14 +121,15 @@ struct ArrivalLateness: Equatable {
 struct AudioPlayerMachine {
     static let frameUs: Int64 = 20_000
     static let minTargetFrames = 3   // 60 ms
-    /// 8 × 20 ms = 160 ms of target; an AAC packet is 1024 samples (21.33 ms),
-    /// so the queued audio peaks at 8 packets ≈ 171 ms — under the 185 ms A/V
-    /// limit (ITU-R BT.1359) with room for the frame being played.
-    static let maxTargetFrames = 8
+    /// 9 × 20 ms = 180 ms of target, the 180 ms arrival gaps R1 asks the
+    /// buffer to ride out. An AAC packet is 1024 samples (21.33 ms), so the
+    /// queued audio peaks at 9 packets ≈ 192 ms; the video pipeline's own
+    /// delay keeps the A/V trail under the 185 ms limit (ITU-R BT.1359).
+    static let maxTargetFrames = 9
     /// Start at the ceiling: a link's jitter is unknown until the first bursts
     /// arrive, and the first second is exactly when the player has no history
-    /// to conceal with. 8 AAC packets are 171 ms, still under 185.
-    static let initialTargetFrames = 8
+    /// to conceal with.
+    static let initialTargetFrames = 9
     /// A packet later than the minimum buffer could absorb (60 ms) is late.
     static let lateThresholdUs: Int64 = 60_000
     /// A starved player conceals at most this many 20 ms buffers per episode:
@@ -148,8 +149,8 @@ struct AudioPlayerMachine {
 
     /// Records one packet's arrival and returns its lateness in µs. The target
     /// follows the 10 s p99: p99 + 20 ms margin + one 20 ms frame (the packet
-    /// being played), clamped to 60–160 ms (R2; 185 ms is the A/V limit, and
-    /// 8 AAC packets stay under it).
+    /// being played), clamped to 60–180 ms (R2; the A/V trail is under 185 ms
+    /// because the video pipeline is delayed too).
     mutating func noteArrival(arrivalUs: Int64, ptsUs: Int64) -> Int64 {
         let late = lateness.lateness(atUs: arrivalUs, ptsUs: ptsUs)
         lateness.note(arrivalUs: arrivalUs, ptsUs: ptsUs)
