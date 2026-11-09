@@ -530,6 +530,28 @@ class Session(
     override val isReady: Boolean
         get() = phase == Phase.READY && teardown.get() == SessionTeardown.State.LIVE
 
+    /** The Mac's client id after its hello; null before it. */
+    override val macClientId: String? get() = clientId.ifEmpty { null }
+
+    /**
+     * PAIR-30: the person forgot this Mac (or every Mac). The authenticated
+     * session is told `forgotten` and ends after its own writer drained, so the
+     * notice is not lost to the app push's drop that follows. Runs on the
+     * dropper's own thread, never on the app's UI/binder thread.
+     */
+    override fun forgotten() {
+        if (teardown.get() != SessionTeardown.State.LIVE || phase != Phase.READY) return
+        log("forgotten: the person removed this Mac")
+        finishWithError("forgotten", "the person forgot this Mac")
+        // finishWithError stops the reader and closes the queue; the writer
+        // drains the error before the reader's cleanup cuts the transport.
+        val deadline = System.currentTimeMillis() + 1_000
+        while (teardown.get() != SessionTeardown.State.FINISHED &&
+            System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+    }
+
     override fun shareText(text: String): Int = if (isReady) share.text(text) else ShareStatus.NO_SESSION
 
     override fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =

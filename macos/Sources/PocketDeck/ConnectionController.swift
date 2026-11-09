@@ -160,6 +160,9 @@ final class ConnectionController {
     private(set) var pairingDeviceId: String?
     /// Where a cancelled pairing goes back to.
     private var pairingResumeId: String?
+    /// PAIR-33: a trust-lost phone that is not in range is the target of the
+    /// open add-phone sheet; its row is marked when the phone appears.
+    private(set) var addPhoneTarget: PhoneRef?
 
     /// The LinkMachine of the current phone (previews stage one without a
     /// session). Mutations go through `book`; the setter exists for previews.
@@ -222,7 +225,16 @@ final class ConnectionController {
             ?? ShareInbox.defaultDirectory
         return ShareInbox(directory: directory, actions: shareActions)
     }()
-    var banner: Banner? { transientBanner ?? link.banner(naming: { displayName(for: $0) }) }
+    var banner: Banner? {
+        // PAIR-33: trust lost is sticky and cannot be covered by a transient
+        // notice (a copy result, a launcher error): it is the one truth until
+        // the phone is paired again or forgotten.
+        if case .needsPairing = link,
+           let trustLost = link.banner(naming: { displayName(for: $0) }) {
+            return trustLost
+        }
+        return transientBanner ?? link.banner(naming: { displayName(for: $0) })
+    }
 
     // MARK: Nicknames (docs/ROADMAP.md #1)
 
@@ -749,7 +761,9 @@ final class ConnectionController {
             beginManualLaunch(host: connect.host, port: connect.port)
         } else {
             if let active = remembered.active { resetPhoneData(for: active.ref) }
-            apply(book.start(active: remembered.active?.ref, at: Date()))
+            let saved = remembered.active.flatMap { remembered.trustLost(id: $0.id) }
+            apply(book.start(active: remembered.active?.ref, at: Date(), trustLost: saved))
+            sendReachability()
         }
         // `--connect-phone`: an extra phone connects beside the current one and
         // is kept by the test hook, never by the current choice.
@@ -905,12 +919,23 @@ final class ConnectionController {
     /// "Pair again" on the banner: the remembered phone, if it is in range.
     func pairAgain() {
         guard let ref = link.phone else { return }
+        pairAgain(for: ref)
+    }
+
+    /// PAIR-14/33/34: one route for the banner and the Settings page. A phone in
+    /// range runs the code flow (which forgets the old pin); one out of range
+    /// opens the one add-phone sheet with that phone as its target.
+    func pairAgain(for ref: PhoneRef) {
         if let found = discovered.first(where: { $0.deviceId == ref.id }) {
+            addPhoneTarget = nil
             beginPairing(.discovered(found), ref: ref)
         } else {
+            addPhoneTarget = ref
             sheet = .addPhone
         }
     }
+
+    func pairAgain(for phone: RememberedPhone) { pairAgain(for: phone.ref) }
 
     func connectManually(host: String, port: UInt16) {
         sheet = nil
@@ -943,6 +968,7 @@ final class ConnectionController {
 
     /// A sheet went away (Esc, Cancel, or programmatically): stop what it was running.
     func sheetDismissed() {
+        addPhoneTarget = nil
         cancelPairing()
         if let qr, !qr.succeeded { stopQR() }
     }
@@ -2297,16 +2323,33 @@ final class ConnectionController {
 
     private func discoveryChanged(_ phones: [DiscoveredPhone]) {
         let before = Set(discovered.map(\.deviceId))
+        let endpoints = Dictionary(uniqueKeysWithValues: discovered.map { ($0.deviceId, $0.endpoint) })
         discovered = phones
         searchedLong = false
         scheduleSearchedLong()
         for record in book.all {
-            guard let ref = record.phone, !ref.id.isEmpty,
-                  phones.contains(where: { $0.deviceId == ref.id }),
-                  !before.contains(ref.id) else { continue }
-            send(.reachabilityHint, from: record)
+            let id = record.deviceId
+            let found = phones.first { $0.deviceId == id }
+            let changed = found != nil && (!before.contains(id) || endpoints[id] != found?.endpoint)
+            if changed, let ref = record.phone, !ref.id.isEmpty {
+                send(.reachabilityHint, from: record)
+            }
+            send(.reachability(advertised: found != nil,
+                               hasAddress: cache.address(forDeviceId: id) != nil,
+                               changed: changed), from: record)
         }
         if qr != nil { qrRound() }
+    }
+
+    /// PAIR-31/35: the advertised record and the last welcome address as the
+    /// link machine needs them (a change of schedule, no new dial of its own).
+    private func sendReachability() {
+        for record in book.all {
+            let id = record.deviceId
+            send(.reachability(advertised: discovered.contains { $0.deviceId == id },
+                               hasAddress: cache.address(forDeviceId: id) != nil,
+                               changed: false), from: record)
+        }
     }
 
     private func discoveryDenied(_ denied: Bool) {
@@ -2346,6 +2389,19 @@ final class ConnectionController {
     /// to the new link when that phone is current.
     private func send(_ event: LinkEvent, from record: PhoneSession) {
         apply(book.handle(event, from: record.deviceId, at: Date()))
+        syncTrustLoss(record)
+    }
+
+    /// PAIR-32: the one write point. The machine decides; the remembered record
+    /// keeps the kind so a relaunch starts in it. Welcome and Forget clear it.
+    private func syncTrustLoss(_ record: PhoneSession) {
+        let id = record.deviceId
+        guard !id.isEmpty else { return }
+        if let kind = record.machine.trustLossKind {
+            if remembered.trustLost(id: id) != kind { remembered.setTrustLost(kind, id: id) }
+        } else if remembered.trustLost(id: id) != nil {
+            remembered.clearTrustLost(id: id)
+        }
     }
 
     private func send(_ event: LinkEvent, from id: String) {
@@ -2370,6 +2426,12 @@ final class ConnectionController {
             clipImageBuffer.discard()
         }
         if result.currentLinkRestored { windows.linkRestored() }
+        // PAIR-30/33: a phone that lost trust has no session, so no window may
+        // keep saying Reconnecting; the windows go and the banner is the one
+        // truth. A generic pairing failure (kind nil) keeps today's down window.
+        if result.affectsCurrent, case .needsPairing = link, machine.trustLossKind != nil {
+            windows.closeAll()
+        }
         // A window that was opening during the one-shot transition follows
         // the current Link value too: the zombie-service case left it on
         // "Not responding" while the link was already retrying. A pairing
@@ -2575,6 +2637,7 @@ final class ConnectionController {
     // MARK: Pairing
 
     private func beginPairing(_ target: PairingTarget, ref: PhoneRef) {
+        addPhoneTarget = nil
         pairingTarget = target
         pairingSucceeded = false
         pairingResumeId = book.currentId
@@ -2642,8 +2705,11 @@ final class ConnectionController {
         let record = book.ensureRecord(for: ref.id, phone: ref.id.isEmpty ? nil : ref)
         book.setCurrent(ref.id, phone: ref.id.isEmpty ? nil : ref, connect: false).forEach(perform)
         record.claims.insert(.current)
+        // `--connect` is the test hook: it dials even when the record says trust
+        // was lost (a normal launch is what PAIR-32's relaunch check proves).
         send(.launch(ref), from: record)
         stopAttempts(deviceId: ref.id)
+        sendReachability()
         if qr != nil { return } // the QR probes own the first handshake
         startManual(host: host, port: port, ref: ref, record: record)
     }
@@ -2715,14 +2781,6 @@ final class ConnectionController {
                 shareInbox.connectionLost()
                 nowPlaying.clear()
                 notifyCenter.clearAll()
-                // The TLS pin said the dialed phone is not the one this Mac
-                // pinned (a foreign phone took the cached address): keep the
-                // pin record — re-pair overturns it (§7) — and drop the stale
-                // cache entry, as v1's identity mismatch did (C10).
-                if reason == "pin-mismatch", let id = session?.knownDeviceId, !id.isEmpty {
-                    Log.session.notice("dropping cached address for \(id, privacy: .public) (the TLS pin refuses it)")
-                    cache.forget(deviceId: id)
-                }
             case .closed:
                 clearPathOutage()
                 stopClipboardSync()
@@ -2958,7 +3016,25 @@ final class ConnectionController {
 
     private func attemptEnded(reason: String, from record: PhoneSession) {
         record.lastAttemptFailed = true
-        send(.attemptFailed(reason: reason), from: record)
+        var mapped = reason
+        if reason == "pin-mismatch" {
+            // PAIR-31: a pin mismatch is the same phone with a new identity
+            // when the advertised TXT id says so (the only same-device proof
+            // before TLS), otherwise a foreign phone at a stale address.
+            let advertised = discovered.contains { $0.deviceId == record.deviceId }
+            if TrustLoss.sameDevice(dialedService: record.lastAttemptWasService,
+                                    advertised: advertised) {
+                Log.session.notice("trust lost: inferred for \(record.deviceId, privacy: .public)")
+            } else {
+                mapped = "foreign-pin"
+                if let id = record.phone?.id, !id.isEmpty {
+                    Log.session.notice("dropping cached address for \(id, privacy: .public) (the TLS pin refuses it)")
+                    cache.forget(deviceId: id)
+                    sendReachability()
+                }
+            }
+        }
+        send(.attemptFailed(reason: mapped), from: record)
     }
 
     /// Plain-text clipboard sync for the session that just became ready — plus
@@ -3225,6 +3301,7 @@ final class ConnectionController {
             cache.store(name: info.name, deviceId: info.id)
         }
         send(.welcome(ref), from: record)
+        sendReachability()
         guard isCurrent else { return }
         // A successful connect (a fresh pairing or an enforced reconnect):
         // the §3 mirror is this phone's record from now on.
@@ -4574,6 +4651,16 @@ final class ConnectionController {
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
             DevicesPreview.openMutedList = true
+            settingsSoon()
+        case "devices-trust-lost":
+            // The Settings render (PAIR-32/34): the current phone's record says
+            // trust was lost, so the header offers Pair Again….
+            deck(.needsPairing(ref))
+            stage([phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
+                                          lastSeen: Date().addingTimeInterval(-86_400 * 2))],
+                  active: ref.id)
+            remembered.setTrustLost(.told, id: ref.id)
+            rememberedPhones = remembered.all
             settingsSoon()
         case "devices-rename":
             // The Settings ▸ Phones ▸ Rename dialog, staged for the screenshot.

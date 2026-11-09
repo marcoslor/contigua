@@ -34,12 +34,19 @@ object AppLink {
     }
 
     /** What the host does after a transition; the machine performs no side effects. */
-    enum class Action {
+    sealed interface Action {
+        /**
+         * Tell the live Mac it was forgotten, on its still-authenticated
+         * session, before [DROP_SESSIONS] (PAIR-30). Set of client ids, or null
+         * when the identity rotated and every Mac is gone.
+         */
+        data class NOTIFY_FORGOTTEN(val macClientIds: Set<String>?) : Action
+
         /** Close the live session at once (a new one needs a fresh app push). */
-        DROP_SESSIONS,
+        data object DROP_SESSIONS : Action
 
         /** Drop the cached TLS material built from the old identity. */
-        FORGET_CACHE,
+        data object FORGET_CACHE : Action
     }
 
     sealed interface Event {
@@ -75,7 +82,21 @@ object AppLink {
                 is State.Linked -> if (state.sameVouch(event)) {
                     Transition(linked(event), emptyList())
                 } else {
-                    Transition(linked(event), listOf(Action.DROP_SESSIONS, Action.FORGET_CACHE))
+                    val actions = mutableListOf<Action>()
+                    // PAIR-30: the person's forget reaches the live session
+                    // before the push's drop. A rotated identity forgets every
+                    // Mac; otherwise only the pins this push took away.
+                    if (state.identityFp != event.identityFp.lowercase()) {
+                        actions.add(Action.NOTIFY_FORGOTTEN(null))
+                    } else {
+                        val gone = state.pairs.filter { old ->
+                            event.pairs.none { it.clientId == old.clientId && it.macFpHex == old.macFpHex }
+                        }.map { it.clientId }.toSet()
+                        if (gone.isNotEmpty()) actions.add(Action.NOTIFY_FORGOTTEN(gone))
+                    }
+                    actions.add(Action.DROP_SESSIONS)
+                    actions.add(Action.FORGET_CACHE)
+                    Transition(linked(event), actions)
                 }
             }
         }

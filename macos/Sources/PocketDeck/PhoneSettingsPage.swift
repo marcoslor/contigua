@@ -9,6 +9,32 @@
 import AppKit
 import SwiftUI
 
+/// The page header's one action (SET-DEV-26): nothing for the phone in use,
+/// Pair Again… for a phone that no longer trusts this Mac, Use This Phone
+/// otherwise. Pure, so the three cases are unit-tested.
+enum PhonePageHeaderAction: Equatable {
+    case inUse
+    case useThisPhone
+    case pairAgain
+
+    static func of(presence: DevicePresence, inUse: Bool) -> Self {
+        // Trust lost always offers the way out, even on the phone in use: the
+        // In Use mark says which phone is current, not that it can be reached
+        // (PAIR-34/SET-DEV-26).
+        if presence == .pairAgain { return .pairAgain }
+        if inUse { return .inUse }
+        return .useThisPhone
+    }
+
+    var title: String? {
+        switch self {
+        case .inUse: return nil
+        case .useThisPhone: return "Use This Phone"
+        case .pairAgain: return "Pair Again…"
+        }
+    }
+}
+
 /// The page's section headings, in reading order. Plain on purpose: the page is
 /// already that phone's (K2 asserts none carries the phone's name).
 enum PhonePageSection: String, CaseIterable {
@@ -23,7 +49,6 @@ struct PhoneSettingsPage: View {
     let deviceId: String
     let onRename: (RememberedPhone) -> Void
     let onForget: (RememberedPhone) -> Void
-    let onAdd: () -> Void
 
     @Environment(ConnectionController.self) private var controller
     @State private var shareOn = false
@@ -158,10 +183,14 @@ struct PhoneSettingsPage: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("In use")
-            } else if presence == .pairAgain {
-                Button("Pair Again…", action: onAdd)
-                    .help("Pair this phone again from the add sheet.")
-            } else {
+            }
+            switch PhonePageHeaderAction.of(presence: presence, inUse: inUse) {
+            case .inUse:
+                EmptyView()
+            case .pairAgain:
+                Button("Pair Again…") { controller.pairAgain(for: phone) }
+                    .help("Forget the old pairing and pair this phone again.")
+            case .useThisPhone:
                 Button("Use This Phone") { controller.use(phone) }
                     .help("Show this phone's apps, screen and notifications on this Mac.")
             }
@@ -437,8 +466,6 @@ struct PhoneSettingsPage: View {
     /// The header's one action: nothing for the phone in use, Pair Again… for a
     /// phone whose key is gone, Use This Phone otherwise.
     private func headerAction(presence: DevicePresence, inUse: Bool) -> String {
-        if inUse { return "-" }
-        if presence == .pairAgain { return "Pair Again…" }
-        return "Use This Phone"
+        PhonePageHeaderAction.of(presence: presence, inUse: inUse).title ?? "-"
     }
 }

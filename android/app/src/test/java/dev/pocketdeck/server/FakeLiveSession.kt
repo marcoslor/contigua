@@ -14,7 +14,13 @@ internal class FakeLiveSession(
     private val sessionId: String? = null,
     /** Runs at the end of [close], as a session's shutdown does (ISS-13). */
     private val onClosed: (() -> Unit)? = null,
+    override val macClientId: String? = null,
 ) : LiveSession {
+    /** What happened on this session, in order (for the PAIR-30 notice-before-close rule). */
+    val events = mutableListOf<String>()
+
+    val forgottenNotice = CountDownLatch(1)
+    val forgottenCount: Int get() = events.count { it == "forgotten" }
     val closeStarted = CountDownLatch(1)
 
     @Volatile
@@ -40,7 +46,13 @@ internal class FakeLiveSession(
         return attachResult
     }
 
+    override fun forgotten() {
+        events.add("forgotten")
+        forgottenNotice.countDown()
+    }
+
     override fun close() {
+        events.add("close")
         closeStarted.countDown()
         gate.await(10, TimeUnit.SECONDS)
         onClosed?.invoke()

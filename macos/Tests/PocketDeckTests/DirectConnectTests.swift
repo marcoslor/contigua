@@ -33,6 +33,20 @@ final class DirectConnectTests: XCTestCase {
         XCTAssertNil(cache.address(forDeviceId: "missing"))
     }
 
+    func testTheLastWelcomeAddressSurvivesARelaunch() {
+        store().store(CachedAddress(host: "192.168.1.42", port: 47811), deviceId: "aaa")
+        // A second store is what the next launch reads.
+        XCTAssertEqual(store().address(forDeviceId: "aaa"),
+                       CachedAddress(host: "192.168.1.42", port: 47811))
+    }
+
+    func testAPinMismatchKeepsTheStoredAddress() {
+        // PAIR-31/35: an inferred trust loss must not drop the last address
+        // the session reached; only a foreign phone at a cached address does.
+        XCTAssertTrue(TrustLossKind.inferred.keepsAddress)
+        XCTAssertFalse(TrustLossKind.told.keepsAddress)
+    }
+
     func testLatestAddressOverwritesTheDevice() {
         let cache = store()
         cache.store(CachedAddress(host: "10.0.0.2", port: 1), deviceId: "aaa")

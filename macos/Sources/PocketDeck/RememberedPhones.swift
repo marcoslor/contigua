@@ -48,6 +48,9 @@ struct RememberedPhone: Codable, Equatable, Identifiable {
     var name: String
     var model: String
     var lastSeen: Date
+    /// PAIR-32: the phone no longer trusts this Mac, and which kind of proof
+    /// said so. Optional so a record written before this field still decodes.
+    var trustLost: TrustLossKind? = nil
 
     var ref: PhoneRef { PhoneRef(id: id, name: name, model: model) }
 }
@@ -84,11 +87,31 @@ final class RememberedPhones {
 
     func remember(_ ref: PhoneRef, at date: Date = Date(), makeActive: Bool = true) {
         guard !ref.id.isEmpty else { return }
+        let existing = phone(id: ref.id)
         var phones = all.filter { $0.id != ref.id }
-        let name = ref.name.isEmpty ? (phone(id: ref.id)?.name ?? "Phone") : ref.name
-        phones.append(RememberedPhone(id: ref.id, name: name, model: ref.model, lastSeen: date))
+        let name = ref.name.isEmpty ? (existing?.name ?? "Phone") : ref.name
+        phones.append(RememberedPhone(id: ref.id, name: name, model: ref.model, lastSeen: date,
+                                      trustLost: existing?.trustLost))
         save(phones)
         if makeActive { setActive(id: ref.id) }
+    }
+
+    /// PAIR-32: the phone's stored trust loss, nil when it trusts this Mac.
+    func trustLost(id: String) -> TrustLossKind? { phone(id: id)?.trustLost }
+
+    func setTrustLost(_ kind: TrustLossKind, id: String) {
+        update(id: id) { $0.trustLost = kind }
+    }
+
+    func clearTrustLost(id: String) {
+        update(id: id) { $0.trustLost = nil }
+    }
+
+    private func update(id: String, _ change: (inout RememberedPhone) -> Void) {
+        var phones = all
+        guard let index = phones.firstIndex(where: { $0.id == id }) else { return }
+        change(&phones[index])
+        save(phones)
     }
 
     func touch(id: String, at date: Date = Date()) {

@@ -55,6 +55,43 @@ class SessionDropperTest {
     }
 
     @Test
+    fun aForgottenMacIsToldBeforeTheDropOnTheSameThread() {
+        val session = FakeLiveSession(macClientId = "a1")
+        val dropper = SessionDropper(log = {})
+        dropper.adopting(session)
+
+        assertTrue("the live Mac was not told", dropper.notifyForgotten(setOf("a1")))
+        assertTrue("the drop was not handed over", dropper.drop())
+        assertTrue(session.forgottenNotice.await(1, TimeUnit.SECONDS))
+        assertTrue(session.awaitClosed())
+        assertEquals("forgotten then close", listOf("forgotten", "close"),
+                     session.events.take(2))
+    }
+
+    @Test
+    fun anotherMacsForgetDoesNotTellTheLiveSession() {
+        val session = FakeLiveSession(macClientId = "a1")
+        val dropper = SessionDropper(log = {})
+        dropper.adopting(session)
+
+        assertFalse(dropper.notifyForgotten(setOf("b2")))
+        assertTrue(dropper.drop())
+        assertTrue(session.awaitClosed())
+        assertEquals(0, session.forgottenCount)
+    }
+
+    @Test
+    fun forgetAllTellsTheLiveSession() {
+        val session = FakeLiveSession(macClientId = "a1")
+        val dropper = SessionDropper(log = {})
+        dropper.adopting(session)
+
+        assertTrue(dropper.notifyForgotten(null))
+        assertTrue(session.forgottenNotice.await(1, TimeUnit.SECONDS))
+        session.close()
+    }
+
+    @Test
     fun aSecondMacIsRefusedWhileASessionIsLive() {
         val first = FakeLiveSession()
         val second = FakeLiveSession()
