@@ -1211,7 +1211,7 @@ check_forgot() {
     rm -f "$banner"
     launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 40
     await_app 20 events_have '"state":"paired"'
-    wait_until 10 events_have '"state":"auth_ok"' \
+    wait_until 10 events_have '"t":"apps.list"' \
         && ok "[PAIR-30] F0 the Mac is connected before the phone forgets it" \
         || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
     before="$(sessions_opened)"
