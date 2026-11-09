@@ -1843,6 +1843,52 @@ PY
     else
         bad "AUDIOGAP no first frame: the video chunks were not reassembled"
     fi
+    # R5: the same pattern must have built real backlogs — three or more
+    # >16 KiB deltas queued at once, several times a minute — or fixing the
+    # fragment order would not have been exercised.
+    if python3 - "$WORK/events.jsonl" > "$WORK/audiogap.backlog" <<'PY'
+import json, sys
+episodes = []
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video_backlog" and event.get("over16k", 0) >= 3:
+        episodes.append(event)
+print("episodes=%d max_pending=%d"
+      % (len(episodes), max([int(e.get("pending", 0)) for e in episodes] or [0])))
+sys.exit(0 if len(episodes) >= 3 else 1)
+PY
+    then
+        ok "[MEDIA-18] AUDIOGAP the fake queued 3+ >16 KiB deltas at once: $(cat "$WORK/audiogap.backlog")"
+    else
+        bad "AUDIOGAP no delta backlog: $(cat "$WORK/audiogap.backlog" 2>/dev/null)"
+    fi
+    # R6: on this link (no audio drop in phase A) no chunk stub may be thrown
+    # away, so the split's `incomplete` is on every line and zero, and
+    # chain_fed stays 0. Before round 2 the split did not exist at all.
+    if python3 - "$WORK/audio-a.log" > "$WORK/audiogap.video" <<'PY'
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+stats = [line for line in text.splitlines() if " stats stream=" in line]
+fed = [int(m) for line in stats for m in re.findall(r"chain_fed=(\d+)", line)]
+split = [int(m) for line in stats for m in re.findall(r"mac_drop_incomplete=(\d+)", line)]
+rx = [float(m) for line in stats for m in re.findall(r"rx_fps=([0-9.]+)", line)]
+breaks = set(re.findall(r"chain broken reason=([a-z_]+)", text))
+print("stats=%d fed_max=%d incomplete=%d/%d sum=%d rx_max=%.1f breaks=%s"
+      % (len(stats), max(fed or [0]), len(split), len(stats), sum(split),
+         max(rx or [0]), ",".join(sorted(breaks)) or "none"))
+ok = (len(stats) >= 3 and max(fed or [0]) == 0
+      and len(split) == len(stats) and sum(split) == 0
+      and max(rx or [0]) >= 30 and "incomplete" not in breaks)
+sys.exit(0 if ok else 1)
+PY
+    then
+        ok "[MEDIA-19] AUDIOGAP the video chain held under the backlog: $(cat "$WORK/audiogap.video")"
+    else
+        bad "AUDIOGAP video chain: $(cat "$WORK/audiogap.video" 2>/dev/null)"
+    fi
     # Phase B: one 500 ms silence (R3) must be concealed and resynchronised:
     # the stale part of the burst is dropped at arrival (bounded below).
     if wait_until 35 audiogap_frames 2600; then
