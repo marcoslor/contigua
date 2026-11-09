@@ -12338,8 +12338,9 @@ PY
     say "CHAIN baseline lines with kf>=1: $(cat "$WORK/chain-baseline-summary.txt")"
 
     # Phase B: the phone re-sends its config every 4 s without restarting the
-    # encoder (what a resume does): the deltas after that config reference the
-    # chain the Mac just flushed. The window is resized every 2-4 s for 60 s.
+    # encoder (what a resume does). Those configs are byte for byte the
+    # applied one, so the Mac keeps its decoder and chain (WIN-63); the breaks
+    # come from the resizes, every 2-4 s for 60 s, each a new size.
     clean
     rm -rf "$WORK-control"
     mkdir -p "$WORK-control"

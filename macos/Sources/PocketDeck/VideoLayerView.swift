@@ -26,6 +26,8 @@ final class VideoLayerView: NSView {
     private let videoQueue = DispatchQueue(label: "dev.pocketdeck.video")
     /// Touched only on `videoQueue`.
     private var formatDescription: CMVideoFormatDescription?
+    /// The VIDEO_CONFIG the decoder runs on (videoQueue), for WIN-63.
+    private var appliedConfig: VideoConfig?
     private var currentCodec: VideoCodec = .avc
     private var lastPtsUs: UInt64 = 0
 
@@ -820,12 +822,17 @@ final class VideoLayerView: NSView {
         let size = CGSize(width: CGFloat(config.width), height: CGFloat(config.height))
         videoQueue.async { [weak self] in
             guard let self else { return }
+            let needsFlush = self.formatDescription == nil
+                || Self.configNeedsFlush(applied: self.appliedConfig, next: config)
+            self.appliedConfig = config
             self.formatDescription = format
             self.currentCodec = codec
-            self.lastPtsUs = 0
-            // The flush rides the same ordered hand-off as the samples, so a
-            // drain can never put new-format samples ahead of it.
-            self.handOff(.flush)
+            if needsFlush {
+                self.lastPtsUs = 0
+                // The flush rides the same ordered hand-off as the samples, so a
+                // drain can never put new-format samples ahead of it.
+                self.handOff(.flush)
+            }
             DispatchQueue.main.async {
                 self.frameSize = size
                 self.picture = picture
@@ -1122,6 +1129,14 @@ final class VideoLayerView: NSView {
         } else {
             Log.video.debug("\(line, privacy: .public)")  // log-ok: closed state tokens
         }
+    }
+
+    /// WIN-63: a config byte for byte equal to the applied one (an older
+    /// phone forwards the encoder's per-frame statistics as a new format)
+    /// keeps the decoder and its reference chain: no flush, no chain break,
+    /// no keyframe request. Anything else flushes.
+    static func configNeedsFlush(applied: VideoConfig?, next: VideoConfig) -> Bool {
+        applied != next
     }
 
     static func makeFormatDescription(_ config: VideoConfig) -> CMVideoFormatDescription? {
