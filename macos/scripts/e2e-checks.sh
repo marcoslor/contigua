@@ -5,7 +5,7 @@
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
-            deck deckrail windows multiwin phones zoom render resize dragbar crisp stats netvideo input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
+            deck deckrail windows multiwin phones zoom render resize dragbar crisp stats netvideo input hover mouseback pinch chrome livetext menus density trackpad pause nav audio audiogap drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
             pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
             dnd-edge panel-edge
             files-domain files-thumbs files-thumbs-scale nfr menubar-shots cover-bar-dark cover-bar-light)
@@ -46,19 +46,24 @@ path_log() {
 # and pathfault_stop_all cannot kill the proxy (pathmirror once left 47736/
 # 47737 running; only the next check's pathfault_nuke hid it).
 pathfault_start() {
-    local listen="$1" target="$2" mode="${3:-pass}" delay="${4:-}" rate="${5:-}" ctl rate_arg=()
+    local listen="$1" target="$2" mode="${3:-pass}" delay="${4:-}" rate="${5:-}" ctl rate_arg=() stall=()
     ctl="$WORK/fault-$listen.ctl"
     : > "$ctl"
     [ -z "$rate" ] || rate_arg=(--rate-mbit "$rate")
+    # `stall`: the person's AWDL pattern — a good link that goes off-channel.
+    if [ "$mode" = "stall" ]; then
+        stall=(--stall-ms "${STALL_MS:-100}" --stall-every-ms "${STALL_EVERY_MS:-1000}"
+               --stall-long-ms "${STALL_LONG_MS:-500}" --stall-long-at-ms "${STALL_LONG_AT_MS:-30000}")
+    fi
     if [ -n "$delay" ]; then
         "$FAKE_PY" "$ROOT/tools/pdpathfault/pdpathfault.py" \
             --listen "$listen" --connect "127.0.0.1:$target" --mode "$mode" \
-            --delay-ms "$delay" ${rate_arg[@]+"${rate_arg[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
+            --delay-ms "$delay" ${rate_arg[@]+"${rate_arg[@]}"} ${stall[@]+"${stall[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
             > "$WORK/fault-$listen.log" 2>&1 &
     else
         "$FAKE_PY" "$ROOT/tools/pdpathfault/pdpathfault.py" \
             --listen "$listen" --connect "127.0.0.1:$target" --mode "$mode" \
-            ${rate_arg[@]+"${rate_arg[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
+            ${rate_arg[@]+"${rate_arg[@]}"} ${stall[@]+"${stall[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
             > "$WORK/fault-$listen.log" 2>&1 &
     fi
     PATHFAULT_PIDS+=("$!")
@@ -1754,6 +1759,171 @@ PY
             fi ;;
     esac
     stop_app
+    stop_fakephone
+    pathfault_stop_all
+}
+
+# --- C-AG: audiogap: audio through the real session's arrival pattern -------
+# The fake phone sends 60 fps video (300 KB keyframes every 10 s, 30-80 KB
+# deltas) and 48 kHz audio through a good 60 Mbit/s link that goes off-channel
+# for 100 ms every second (the person's 2026-11-08 session) and once for 500 ms
+# at 50 s (R3's long silence, which the 160 ms target cannot cover). Pass for
+# the 100 ms phase: no underrun, no drop, audio wait within R4, audio depth
+# within the 185 ms A/V limit; the 500 ms phase: one concealed episode, then
+# the stale burst is dropped at arrival so audio resyncs, and the picture
+# decodes (the chunks were reassembled).
+audio_log() {
+    /usr/bin/log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
+}
+
+audiogap_frames() {
+    python3 - "$WORK/audio.json" "$1" <<'PY'
+import json, sys
+try:
+    stats = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if stats.get("frames", 0) >= int(sys.argv[2]) else 1)
+PY
+}
+
+check_audiogap() {
+    clean
+    pathfault_nuke
+    # --no-backlog-restart: the audiogap pattern needs one steady encoder.
+    # Without it the fake's backlog-cleared hook rebuilds the encoder several
+    # times a second, and each fresh ffmpeg emits its first second as a burst
+    # (the `-re` startup) — a wire storm that is a harness artifact, not the
+    # link the person's session had.
+    FAKE_ARGS="--video-sizes 300000:30000:80000 --no-backlog-restart" start_fake || return 1
+    STALL_MS=100 STALL_EVERY_MS=1000 STALL_LONG_MS=500 STALL_LONG_AT_MS=50000 \
+        pathfault_start "$((PORT + 5))" "$PORT" stall "" 60
+    launch --connect "127.0.0.1:$((PORT + 5))" --open com.android.settings \
+        --audio-stats "$WORK/audio.json" --quit-after 80
+    # Warm-up: the fake phone's first second shares the Python GIL with the
+    # encoder spawn (a rig artifact, not the link), so the counters are read
+    # from a baseline after it. AAC-LC frames are 1024 samples (21.33 ms).
+    if wait_until 20 audiogap_frames 400; then
+        cp "$WORK/audio.json" "$WORK/audio-baseline.json"
+    else
+        bad "AUDIOGAP no warm-up stats: $(cat "$WORK/audio.json" 2>/dev/null || echo 'no stats')"
+    fi
+    # Phase A: the 100 ms off-channel pattern alone, 42 s.
+    if wait_until 55 audiogap_frames 1900; then
+        ok "[MEDIA-15] AUDIOGAP 42 s of audio arrived through the 100 ms off-channel pattern"
+    else
+        bad "AUDIOGAP audio did not run 42 s: $(cat "$WORK/audio.json" 2>/dev/null || echo 'no stats')"
+    fi
+    if python3 - "$WORK/audio.json" "$WORK/audio-baseline.json" <<'PY'
+import json, sys
+stats = json.load(open(sys.argv[1]))
+base = json.load(open(sys.argv[2]))
+def delta(key):
+    return stats.get(key, 0) - base.get(key, 0)
+assert delta("underrun") == 0, stats
+assert delta("dropped") == 0, stats
+assert delta("concealed") == 0, stats
+assert stats.get("targetMs", 0) >= 100, stats
+assert stats.get("lateP95Ms", 0) >= 50, stats
+print("underrun=0 dropped=0 (after warm-up) target_ms=%d late_p95=%.1f queued_ms=%d"
+      % (stats.get("targetMs", 0), stats.get("lateP95Ms", 0), stats.get("queuedMs", 0)))
+PY
+    then
+        ok "[MEDIA-15] AUDIOGAP zero underruns and drops under the measured lateness"
+    else
+        bad "AUDIOGAP phase A counters: $(cat "$WORK/audio.json" 2>/dev/null)"
+    fi
+    # The picture proves the chunked access units were reassembled. Read the
+    # log once into a file: `log show | grep -q` under pipefail returns 141
+    # (SIGPIPE) after the match and would report a present line as missing.
+    audio_log > "$WORK/audio-a.log" 2>/dev/null || true
+    if [ "$(grep -c "first frame" "$WORK/audio-a.log")" -ge 1 ]; then
+        ok "[MEDIA-16] AUDIOGAP the chunked video reached the decoder (first frame)"
+    else
+        bad "AUDIOGAP no first frame: the video chunks were not reassembled"
+    fi
+    # Phase B: one 500 ms silence (R3) must be concealed and resynchronised:
+    # the stale part of the burst is dropped at arrival (bounded below).
+    if wait_until 35 audiogap_frames 2600; then
+        ok "[MEDIA-15] AUDIOGAP 57 s of audio arrived (the 500 ms silence included)"
+    else
+        bad "AUDIOGAP audio did not reach 57 s: $(cat "$WORK/audio.json" 2>/dev/null || echo 'no stats')"
+    fi
+    if python3 - "$WORK/audio.json" "$WORK/audio-baseline.json" <<'PY'
+import json, sys
+stats = json.load(open(sys.argv[1]))
+base = json.load(open(sys.argv[2]))
+def delta(key):
+    return stats.get(key, 0) - base.get(key, 0)
+# A 500 ms silence puts ~23 AAC packets in flight at once; the player keeps
+# the newest target's worth and drops the stale head so audio resyncs. That is
+# R3's bad-link case, not R1's good link, so a bounded burst of drops is right.
+assert delta("dropped") <= 30, stats
+assert delta("underrun") <= 1, stats
+assert delta("concealed") >= 1, stats
+print("underrun=+%d concealed=+%d dropped=+%d (one 500 ms burst)"
+      % (delta("underrun"), delta("concealed"), delta("dropped")))
+PY
+    then
+        ok "[MEDIA-17] AUDIOGAP the 500 ms silence was concealed once, then resynchronised"
+    else
+        bad "AUDIOGAP phase B counters: $(cat "$WORK/audio.json" 2>/dev/null)"
+    fi
+    if python3 - "$WORK/events.jsonl" > "$WORK/audiogap.wait" <<'PY'
+import json, sys
+waits = []
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "audio_wait":
+        waits.append(event)
+if len(waits) < 2500:
+    print("n=%d" % len(waits))
+    sys.exit(1)
+ms = sorted(float(w.get("ms", 0)) for w in waits)
+ahead = sorted(int(w.get("bytes", 0)) for w in waits)
+n = len(waits)
+p95_ms = ms[max(0, int(0.95 * n) - 1)]
+p95_bytes = ahead[max(0, int(0.95 * n) - 1)]
+print("n=%d p50=%.1f p95=%.1f max=%.1f ahead_p95=%d ahead_max=%d"
+      % (n, ms[max(0, int(0.50 * n) - 1)], p95_ms, ms[-1], p95_bytes, ahead[-1]))
+# R4: one 16 KiB chunk in flight plus 16 KiB of kernel buffer.
+sys.exit(0 if p95_bytes <= 2 * 16 * 1024 else 1)
+PY
+    then
+        ok "[MEDIA-17] AUDIOGAP audio wait within R4: $(cat "$WORK/audiogap.wait")"
+    else
+        bad "AUDIOGAP audio wait over R4: $(cat "$WORK/audiogap.wait" 2>/dev/null)"
+    fi
+    local lines depth_max
+    audio_log > "$WORK/audio-b.log" 2>/dev/null || true
+    lines="$(grep -c 'audio] stats' "$WORK/audio-b.log" || true)"
+    depth_max="$(grep -o 'depth_ms=[0-9]*' "$WORK/audio-b.log" | cut -d= -f2 | sort -n | tail -1)"
+    if [ "${lines:-0}" -ge 8 ] && [ "${depth_max:-999}" -le 185 ]; then
+        ok "[MEDIA-16] AUDIOGAP ${lines} five-second lines, audio depth max ${depth_max} ms (A/V limit 185)"
+    else
+        bad "AUDIOGAP audio lines=$lines depth_max=${depth_max:-none} (want >= 8 lines and <= 185 ms)"
+    fi
+    # The line's `underrun` is cumulative: one 5 s step may add at most one.
+    if python3 - "$WORK/audio-b.log" <<'PY'
+import re, sys
+values = [int(m) for m in re.findall(r"underrun=(\d+)", open(sys.argv[1], errors="replace").read())]
+steps = [b - a for a, b in zip(values, values[1:])]
+sys.exit(0 if values and all(step <= 1 for step in steps) else 1)
+PY
+    then
+        ok "[MEDIA-15] AUDIOGAP no five-second line counted more than one underrun"
+    else
+        bad "AUDIOGAP a five-second line counted more than one underrun"
+    fi
+    grep -qF "session failed" "$WORK/app.log" \
+        && bad "AUDIOGAP the session ended during the run" \
+        || ok "AUDIOGAP the session stayed live"
+    stop_app
+    wait_app
     stop_fakephone
     pathfault_stop_all
 }
