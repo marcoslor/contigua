@@ -243,6 +243,10 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - If nothing answers for 30 s, it shows "Can't find <name> on this network." instead of an endless Connecting.
     - On `fix/unpair`.
 
+- **ISS-62 The full K1 suite is too slow and flaky to share** (rig, 2026-11-09). Under a loaded Docker VM, a full `:app:testDebugUnitTest` takes about 1 h. It shows 8–24 timing failures ("condition never became true", socket timeouts) in `SessionTest`, `ServerTest`, `WindowCapTest`, `SessionAudioFollowTest` and `TaskAdoptSessionTest`, and those classes pass when run alone. Two runs stalled for 30–40 min, with every thread asleep and others queued behind them.
+  - Found on `fix/overrun` (922c8329): `SessionTest.aReconnectStartsOnlyAfterThePreviousTeardownEnded` parked on an unbounded `teardownMayEnd.await()`, and `PathHubWriteTest.ParkingStream` on a bare `lock.wait()`. Both are now bounded.
+  - **Next:** a rig worker gives every waiting test a bound, finds the slowest classes, and makes the timing tests use an injected clock rather than wall time. `heavy.sh` enforces a maximum runtime per job.
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
