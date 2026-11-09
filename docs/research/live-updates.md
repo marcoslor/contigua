@@ -270,6 +270,23 @@ Live cards carry exactly what makes them useful: a restaurant and a driver's nam
 
 `CONV-PD-05` already forbids content in logs. The live path must also forbid content in the **history** and in **rendered bitmap** filenames, and the Mac's debug dump (`livedump`) already carries lengths and booleans only.
 
+## Pause and actions on the person's phone (2026-11-08)
+
+This ran on an APK of main plus `spike/liveany`, against Samsung's Clock on the person's S25+ (One UI 9). The timer was a silent 300 s one, started with `SET_TIMER` + `SKIP_UI`, and cancelled at the end. The captures read only the timer's own fields.
+
+- **Running:** the classifier said `live:chrono_views`. The deadline came from the `Chronometer` in the extras' `RemoteViews`, `countDown=true`, and landed 0.7 s after the start plus 300 s. `usesChronometer` is false and the standard fields carry no clock.
+- **Paused** (PocketDeck sent the card's second action, by index):
+  - the same `Chronometer` stays visible, but `countDown` turns false and its text is the frozen remaining time (`04:37`);
+  - a second capture 60 s later still read `04:37`, with a base 60 s later;
+  - the classifier kept it live, and the extractor reported no deadline;
+  - the action count stayed at two, with no semantic actions.
+
+  **The brand-neutral pause signal:** a Clock item whose view `Chronometer` was counting down now isn't. The remaining time is that view's text, or elapsed-now minus base.
+- **Resumed** (the same action index): `countDown=true` again, with a deadline 269.7 s ahead, which matches the remaining time minus the seconds since the resume.
+- **Cancelled** (the first action): the card left at once (`livetrack … live->ended removed`).
+- **Actions both ways work** by index through the card's own `PendingIntent`s. No label is read, so it works in any language.
+- **Still open:** a paused Google Clock timer (the emulator run missed it), and a running stopwatch against a paused one, which share `countDown=false`. The action set changing between posts is the only label-free hint there.
+
 ## What this note could not verify
 
 - Whether One UI 9 on the person's S25+ (Android 17) marks any third-party notification `FLAG_PROMOTED_ONGOING`, and whether Samsung Clock's own running timer is promoted. The first probe run found no promoted card.
