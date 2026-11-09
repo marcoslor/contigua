@@ -171,6 +171,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         else Hidden.method(PowerManager::class.java, "newWakeLock", Hidden.T_INT, String::class.java, Hidden.T_INT)
 
     init {
+        policy.logger = log
         log(
             "power: panel power control ${if (panel.available) "ready" else "unavailable"}" +
                 if (policy.isForced) " ($FORCE_PANEL_OFF=1: forcing the panel-dark path)" else "",
