@@ -208,11 +208,14 @@ struct PhoneStreamStats: Equatable {
 enum StatsDiscardReason: String, CaseIterable {
     /// A display-layer flush took the frames it held (a config change).
     case flush
-    /// The layer said it was not ready for another sample.
+    /// The layer said it was not ready for another sample. The sample is
+    /// still enqueued (AVFoundation documents enqueueing while not ready as
+    /// safe), so this alone does not break the reference chain.
     case notReady = "not_ready"
     /// The frame arrived before its VIDEO_CONFIG.
     case beforeConfig = "before_config"
-    /// M1's paced presenter held two already and dropped the oldest.
+    /// M1's paced presenter showed the frame without its own refresh. Every
+    /// waiting frame is handed over in order, so the chain stays intact.
     case paced
 }
 
@@ -257,7 +260,12 @@ struct StreamStatsWindow {
     private var freezeMs = 0.0
     private var hitchCount = 0
     private var hitchMs = 0.0
-    private var macDropCount = 0
+    /// Discards since the previous line, by the path that made them: the 5 s
+    /// line splits `mac_drop` so a flush is never mistaken for `not_ready`.
+    private var macDropCounts: [StatsDiscardReason: Int] = [:]
+    /// Deltas handed to the layer while the chain was known broken. The gate
+    /// makes this zero; a non-zero is the corruption in ISS-54.
+    private var chainFedCount = 0
     /// ISS-40 round 3: key-flagged frames whose units carry no IDR.
     private var keyNotIdr = 0
     private var totalKeyNotIdr = 0
@@ -341,7 +349,8 @@ struct StreamStatsWindow {
         freezeMs = 0
         hitchCount = 0
         hitchMs = 0
-        macDropCount = 0
+        macDropCounts = [:]
+        chainFedCount = 0
         lastEnqueue = nil
         lastEnqueuePtsUs = nil
         firstReceived = nil
@@ -426,7 +435,14 @@ struct StreamStatsWindow {
     }
 
     mutating func noteDiscarded(_ reason: StatsDiscardReason, now: TimeInterval) {
-        macDropCount += 1
+        macDropCounts[reason, default: 0] += 1
+        prune(now)
+    }
+
+    /// A delta reached the layer while the chain was known broken. The gate
+    /// keeps this at zero (WIN-61); the field is the field-log proof.
+    mutating func noteChainFed(now: TimeInterval) {
+        chainFedCount += 1
         prune(now)
     }
 
@@ -550,7 +566,8 @@ struct StreamStatsWindow {
         let frzMs = freezeMs
         let hitches = hitchCount
         let hitchTime = hitchMs
-        let drops = macDropCount
+        let drops = macDropCounts
+        let chainFed = chainFedCount
         let keys = keyNotIdr
         let maxGap = lineMaxGapMs
         let phoneStats = phone
@@ -559,7 +576,8 @@ struct StreamStatsWindow {
         freezeMs = 0
         hitchCount = 0
         hitchMs = 0
-        macDropCount = 0
+        macDropCounts = [:]
+        chainFedCount = 0
         keyNotIdr = 0
         lineMaxGapMs = 0
         phone = nil
@@ -586,7 +604,9 @@ struct StreamStatsWindow {
             hitchCount: hitches,
             hitchMs: hitchTime,
             lateP99Ms: Self.percentile(enq.compactMap(\.lateMs), 0.99),
-            macDrop: drops,
+            macDrop: drops.values.reduce(0, +),
+            macDrops: drops,
+            chainFed: chainFed,
             bytesPerSecond: covered > 0 ? Double(bytes) / covered : 0,
             e2eP50Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.50),
             e2eP95Ms: Self.percentile(enqLat.compactMap(\.latencyMs), 0.95),
@@ -706,6 +726,10 @@ struct StreamStatsSnapshot {
     var hitchMs = 0.0
     var lateP99Ms: Double?
     var macDrop = 0
+    /// The same discards split by the path that made them (WIN-61).
+    var macDrops: [StatsDiscardReason: Int] = [:]
+    /// Deltas fed while the chain was broken; the gate keeps it at 0.
+    var chainFed = 0
     var bytesPerSecond = 0.0
     var e2eP50Ms: Double?
     var e2eP95Ms: Double?
@@ -826,6 +850,11 @@ enum StreamStatsLine {
             "hitch_ms=\(Int(stats.hitchMs.rounded()))",
             "late_p99=\(one(stats.lateP99Ms))",
             "mac_drop=\(stats.macDrop)",
+            "mac_drop_flush=\(stats.macDrops[.flush] ?? 0)",
+            "mac_drop_not_ready=\(stats.macDrops[.notReady] ?? 0)",
+            "mac_drop_before_config=\(stats.macDrops[.beforeConfig] ?? 0)",
+            "mac_drop_paced=\(stats.macDrops[.paced] ?? 0)",
+            "chain_fed=\(stats.chainFed)",
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",
             "drop_ms=\(phone.map { $0.dropGapMs.map(String.init) ?? "-" } ?? "0")",
@@ -1008,6 +1037,10 @@ final class StreamStatsRecorder {
 
     func noteDiscarded(_ reason: StatsDiscardReason, now: TimeInterval) {
         lock.lock(); model.noteDiscarded(reason, now: now); lock.unlock()
+    }
+
+    func noteChainFed(now: TimeInterval) {
+        lock.lock(); model.noteChainFed(now: now); lock.unlock()
     }
 
     func notePhoneStats(_ stats: PhoneStreamStats) {

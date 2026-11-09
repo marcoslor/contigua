@@ -2076,6 +2076,9 @@ class WindowStream(object):
         self._enc = None
         self._reader = None
         self._configured = False
+        self._csd = None
+        self._config_thread = None
+        self._config_stop = threading.Event()
         self._resize_timer = None
         self._au_index = 0
         # Cumulative across encoder restarts (pause/resume, keyframes), so the
@@ -2333,6 +2336,7 @@ class WindowStream(object):
         self._handle(EncoderEvent.STALL_ENDED, "stall-for")
 
     def stop(self):
+        self._config_stop.set()
         self._handle(EncoderEvent.STOP, "stop")
 
     def _stop_locked(self):
@@ -2351,6 +2355,18 @@ class WindowStream(object):
         self._reader = None
         if reader is not None and reader.is_alive() and reader is not threading.current_thread():
             reader.join(timeout=5)
+
+    def _config_loop(self):
+        """--config-every: the phone's config on a resume. The encoder keeps
+        running, so the frames that follow are deltas against the chain the
+        Mac had before this config. Nothing restarts here."""
+        while not self._config_stop.wait(self.phone.args.config_every):
+            if self._enc is None or not self._configured or self._csd is None:
+                continue
+            codec = self.codec
+            wire = proto.CODEC_HEVC if codec == "hevc" else proto.CODEC_H264
+            self.phone.sender.send_config(self.stream_id, wire, self.w, self.h, self._csd)
+            self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
 
     def _read_loop(self, proc):
         wire_codec = proto.CODEC_HEVC if self.codec == "hevc" else proto.CODEC_H264
@@ -2384,6 +2400,7 @@ class WindowStream(object):
             if sets is None:
                 return
             self._configured = True
+            self._csd = sets
             # Same lane as the config, so the Mac has the picture rect when the config lands.
             x, y, cw, ch = self._picture()
             self.phone.sender.send_in_order(proto.pack_json(
@@ -2391,6 +2408,11 @@ class WindowStream(object):
                 self.stream_id))
             self.phone.sender.send_config(self.stream_id, wire_codec, self.w, self.h, sets)
             self.phone.events.video_config(self.stream_id, self.w, self.h, codec)
+            if self.phone.args.config_every > 0 and self._config_thread is None:
+                self._config_thread = threading.Thread(
+                    target=self._config_loop, name="fake-config-%d" % self.stream_id,
+                    daemon=True)
+                self._config_thread.start()
             if (self.phone.args.stall_after and self._stall_timer is None
                     and self._state is EncoderState.RUNNING):
                 # The phone's picture freezes while the session stays up: the
@@ -6118,6 +6140,10 @@ def build_parser():
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
+    p.add_argument("--config-every", type=float, default=0.0, metavar="SECONDS",
+                   help="re-send the stream's last VIDEO_CONFIG every N seconds without "
+                        "restarting the encoder (the real phone's config on a resume); the "
+                        "deltas that follow reference the pre-config chain")
     p.add_argument("--max-windows", type=int, default=4, metavar="N",
                    help="state.maxWindows: the most app windows at once (WIN-32)")
     p.add_argument("--report-task-after", type=float, default=0.0, metavar="SECONDS",
