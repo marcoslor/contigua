@@ -655,7 +655,7 @@ class SessionTest {
      * not; the clipboard's owner-scoped listener (ISS-13) now covers the case
      * the helper cannot order.
      */
-    @Test
+    @Test(timeout = 120_000)
     fun aReconnectStartsOnlyAfterThePreviousTeardownEnded() {
         // A listening session: its shutdown reaches the clipboard stop.
         addAndAuthenticate()
@@ -663,7 +663,10 @@ class SessionTest {
         val teardownMayEnd = CountDownLatch(1)
         platform.onClipStop = {
             teardownStarted.countDown()
-            teardownMayEnd.await()
+            // Bounded: if the test fails before it releases this, the session
+            // thread must still leave the teardown, or the whole K1 hangs on a
+            // parked non-daemon thread.
+            teardownMayEnd.await(10, TimeUnit.SECONDS)
         }
         session!!.close()
         assertTrue("the old session never started its teardown",
