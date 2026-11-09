@@ -595,8 +595,17 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             var wasInteractive = pm.isInteractive
             while (darkEpisode || hold.holdsPanel || synchronized(lock) { episode.state.active }) {
                 val interactive = pm.isInteractive
-                if (wasInteractive && !interactive) onPowerEdge()
-                wasInteractive = interactive
+                if (wasInteractive && !interactive) {
+                    onPowerEdge()
+                    // A relight or a hand back lights the group before this
+                    // iteration ends. Re-read the state: a press that lands a
+                    // few ms after the step returned must still read as a
+                    // true -> false edge, not be lost against the stale sample
+                    // (ISS-24).
+                    wasInteractive = pm.isInteractive
+                } else {
+                    wasInteractive = interactive
+                }
                 gaps.closeIfDue(SystemClock.uptimeMillis())?.let { gap ->
                     log("power: display ${gapDisplay.coerceAtLeast(0)} max frame gap ${gap}ms " +
                         "around the screen-off edge (frames=${gaps.framesSeen})")
@@ -666,7 +675,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         relight.wakeReturned(returned)
         onPowerLocked?.invoke()
         relight.panelOffStarted(SystemClock.uptimeMillis())
-        applyPanelOff(transitional = true)
+        applyPanelOff(transitional = true, relight = relight)
         val offReturned = SystemClock.uptimeMillis()
         relight.done(offReturned)
         // One line per step: the gap that matters is what the VD drew, not when
@@ -757,7 +766,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     }
 
     /** Forces the panel dark; [PanelPower] logs the mode transitions. */
-    private fun applyPanelOff(transitional: Boolean) {
+    private fun applyPanelOff(transitional: Boolean, relight: PanelRelight? = null) {
         if (!darkEpisode) return
         // Arm the crash guard *before* the override goes live. The start is
         // asynchronous, so the panel-off is never delayed, and a crash between
@@ -780,11 +789,55 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // The platform's display power controller writes its own power mode while
         // it processes the wake and does not know about ours, so two bounded
         // re-applies make sure a transitional wake cannot leave the panel lit.
+        // A relight's re-applies keep sampling the platform's interactive state:
+        // the watch is the caller and must not miss a press inside them
+        // (ISS-24). Any other caller runs them on the keep-alive thread, whose
+        // watch is still free to decide the press.
         for (delay in REAPPLY_DELAYS_MS) {
-            runCatching { Thread.sleep(delay) }
+            val stopped = if (relight != null) waitThroughRelight(delay, relight) else {
+                runCatching { Thread.sleep(delay) }
+                false
+            }
+            if (stopped) return
             if (synchronized(lock) { episode.state.displays.isEmpty() }) return
             val stillDark = synchronized(panelWrites) { if (darkEpisode) { panel.panelOff(); true } else false }
             if (!stillDark) return
+        }
+    }
+
+    /**
+     * Sleeps one re-apply delay while sampling the platform's interactive state
+     * for a press (ISS-24). True when the caller must stop the re-applies: the
+     * person pressed, the panel is no longer ours, or the relight ended.
+     */
+    private fun waitThroughRelight(delayMs: Long, relight: PanelRelight): Boolean {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val deadline = SystemClock.uptimeMillis() + delayMs
+        while (true) {
+            val left = deadline - SystemClock.uptimeMillis()
+            if (left <= 0) return false
+            runCatching { Thread.sleep(left.coerceAtMost(REAPPLY_POLL_MS)) }
+            if (!darkEpisode) return true
+            if (pm == null) continue
+            val actions = relight.sample(SystemClock.uptimeMillis(), pm.isInteractive)
+            if (RelightAction.HandBack in actions) {
+                relightHandBack()
+                return true
+            }
+            if (RelightAction.StopReapplies in actions) return true
+        }
+    }
+
+    /**
+     * The person pressed power inside the relight's own panel-off: give the
+     * panel back once, exactly as the power watch does for a press while dark,
+     * and stop the re-applies before their next write sleeps the screen again.
+     */
+    private fun relightHandBack() {
+        log("power: press during relight -> hand back")
+        wakeOwner.dispatch(WakeEvent.PersonUsed)
+        if (synchronized(policyLock) { policy.personUsed(PanelYieldReason.POWER) }) {
+            panelYielded(PanelYieldReason.POWER, wake = true)
         }
     }
 
@@ -1141,6 +1194,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
         /** Power-press watch cadence while the panel is held dark. */
         const val POWER_WATCH_MS = 20L
+
+        /**
+         * How often a relight's re-apply sleep samples the platform's
+         * interactive state for the person's press (ISS-24). The power watch
+         * polls at [POWER_WATCH_MS]; the re-apply loop runs on the watch's own
+         * thread, so it must poll at the same pace.
+         */
+        const val REAPPLY_POLL_MS = POWER_WATCH_MS
 
         /** Bound on the wait for the platform's own screen-off after a power press. */
         const val PANEL_OFF_WAIT_MS = 1_500L
