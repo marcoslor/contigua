@@ -60,7 +60,9 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
      search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
-     line with at most one button (Try now / Pair again).
+     line with at most one button (Try now / Pair again). A phone that no longer trusts this Mac, or whose connections
+     switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
+     connections-off banner adds one line naming the switch on the phone.
 2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
    Style), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
    above it — the stream's own top rows mirrored there, blurred progressively and with no tint, the traffic lights on that line; **Immersive** is only the
@@ -93,7 +95,9 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
    **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
    apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
-   **Install APK…**), and a **gear** at the card's top-right. **Ringer** opens
+   **Install APK…**), and a **gear** at the card's top-right. When the phone no longer trusts this Mac (or its
+   connections switch is off) one banner row sits under the header with the same sentence the Deck shows and its
+   **Pair again** action; it cannot be closed. **Ringer** opens
    Ring / Vibrate / Silent with the current mode checked; the volume follows the pointer while it is dragged. A
    control that cannot work is dimmed as a whole (icon, title and its short second line, e.g. "Open Mirror first"),
    never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). The
@@ -114,8 +118,8 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    you copy here reach the phone while it is connected, and what you copy there lands here — show phone apps in
    the Dock, **glass app icons**, default window density, **reveal controls
    after**), **Input** (**hover over Android apps**) and **Automation**. A phone opens its page in the detail:
-   a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when its key is
-   gone), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
+   a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when it no longer
+   trusts this Mac), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
    and Now Playing**, **When I click a notification** with **Open on this Mac** / **Open on the phone** / **Do
    nothing**, and **Muted apps** with its count, a search field and a **Muted** checkbox column), **Applications**
    (**Save all apps as shortcuts**, with the sentence that it gives every app of that phone a real Mac app in
