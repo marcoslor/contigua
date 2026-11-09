@@ -314,3 +314,74 @@ private extension NSColor {
             + 0.0722 * Double(rgb.blueComponent)
     }
 }
+
+/// The shared cover's one motion machine: every transition, including the
+/// events each state must ignore (AGENTS.md state machines).
+final class CoverFadeTests: XCTestCase {
+    private func renderAlpha(_ actions: [CoverFade.Action]) -> Double? {
+        for case .render(let alpha) in actions { return alpha }
+        return nil
+    }
+
+    func testAShowFadesInOverTwoHundredMilliseconds() {
+        var fade = CoverFade()
+        XCTAssertEqual(fade.state, .hidden)
+        let start = fade.handle(.show, at: 10)
+        XCTAssertEqual(start.first, .showView)
+        XCTAssertEqual(renderAlpha(start) ?? -1, 0, accuracy: 0.0001)
+        XCTAssertEqual(fade.state, .fadingIn)
+        let half = fade.handle(.tick(10.1), at: 10.1)
+        XCTAssertEqual(renderAlpha(half) ?? -1, 0.5, accuracy: 0.0001)
+        let done = fade.handle(.tick(10.3), at: 10.3)
+        XCTAssertEqual(renderAlpha(done) ?? -1, 1, accuracy: 0.0001)
+        XCTAssertEqual(fade.state, .shown)
+        XCTAssertEqual(fade.handle(.tick(11), at: 11), [], "a shown cover has no tick")
+    }
+
+    func testAHideFadesOutAndHidesTheView() {
+        var fade = CoverFade()
+        _ = fade.handle(.show, at: 0)
+        _ = fade.handle(.tick(0.3), at: 0.3)
+        XCTAssertEqual(fade.state, .shown)
+        XCTAssertEqual(fade.handle(.hide, at: 1), [.render(1)])
+        XCTAssertEqual(fade.state, .fadingOut)
+        let half = fade.handle(.tick(1.1), at: 1.1)
+        XCTAssertEqual(renderAlpha(half) ?? -1, 0.5, accuracy: 0.0001)
+        let done = fade.handle(.tick(1.3), at: 1.3)
+        XCTAssertEqual(renderAlpha(done) ?? -1, 0, accuracy: 0.0001)
+        XCTAssertEqual(done.last, .hideView)
+        XCTAssertEqual(fade.state, .hidden)
+    }
+
+    func testEveryStateIgnoresTheEventsItCannotTake() {
+        // Hidden: a hide and a tick say nothing.
+        var fade = CoverFade()
+        XCTAssertEqual(fade.handle(.hide, at: 0), [])
+        XCTAssertEqual(fade.handle(.tick(1), at: 1), [])
+        // Fading in: a second show does not restart the fade.
+        _ = fade.handle(.show, at: 2)
+        XCTAssertEqual(fade.handle(.show, at: 2.05), [])
+        // Shown: a show and a tick say nothing.
+        _ = fade.handle(.tick(2.3), at: 2.3)
+        XCTAssertEqual(fade.handle(.show, at: 3), [])
+        XCTAssertEqual(fade.handle(.tick(4), at: 4), [])
+        // Fading out: a second hide says nothing; a show reverses it.
+        _ = fade.handle(.hide, at: 5)
+        XCTAssertEqual(fade.handle(.hide, at: 5.05), [])
+        XCTAssertEqual(fade.handle(.show, at: 5.1), [.render(1)])
+        XCTAssertEqual(fade.state, .fadingIn)
+    }
+
+    func testAReversedFadeComesBackFromItsCurrentAlpha() {
+        var fade = CoverFade()
+        _ = fade.handle(.show, at: 0)
+        _ = fade.handle(.tick(0.1), at: 0.1)
+        let alpha = fade.alpha
+        XCTAssertEqual(alpha, 0.5, accuracy: 0.0001)
+        _ = fade.handle(.hide, at: 0.2)
+        let back = fade.handle(.show, at: 0.3)
+        XCTAssertEqual(renderAlpha(back) ?? -1, alpha, accuracy: 0.0001)
+        XCTAssertEqual(fade.fromAlpha, alpha, accuracy: 0.0001)
+        XCTAssertEqual(fade.state, .fadingIn)
+    }
+}

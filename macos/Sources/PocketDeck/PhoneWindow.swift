@@ -351,7 +351,9 @@ final class PhoneWindowController: StreamWindowController {
     private func applyCover() {
         let cover = screenModel.cover
         if cover != nil { videoView.inputMapper?.dropPendingInput() }
-        chrome.phoneOverlay.show(cover)
+        // The sleeping picture is what the shared cover blurs; on the way down
+        // the held picture is already gone, so no frame is passed.
+        chrome.phoneOverlay.show(cover, heldFrame: cover == nil ? nil : videoView.copyDisplayedFrame())
         chrome.needsLayout = true
         updateFrozen()
         switch cover {

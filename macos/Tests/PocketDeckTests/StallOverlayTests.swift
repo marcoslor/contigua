@@ -317,7 +317,9 @@ final class StallOverlayTests: XCTestCase {
         controller.frameClock.note(at: t0 + 2.1)
         controller.tickFrameWatchdog(at: t0 + 2.1)
         XCTAssertFalse(chrome.barMirrorCovered, "a frame brings the bar's live mirror back")
-        XCTAssertTrue(chrome.stallOverlay.isHidden)
+        XCTAssertFalse(chrome.stallOverlay.isShowing, "the overlay is logically gone at once")
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        XCTAssertTrue(chrome.stallOverlay.isHidden, "the 200 ms fade-out ends hidden")
     }
 
     /// WIN-39: no bar (immersive or full screen) means the overlay is the

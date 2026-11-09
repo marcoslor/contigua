@@ -274,9 +274,10 @@ final class StreamChromeView: NSView {
     /// The style the chrome lays out with right now: while the opening cover is
     /// up a framed window wears the immersive geometry, so the cover is one
     /// sheet over the whole window and no empty bar shows behind it (WIN-11).
-    /// The stored style is untouched; the first frame brings the bar back.
+    /// The stored style is untouched; the first frame brings the bar back at
+    /// once, under the cover's 200 ms fade-out.
     var effectiveStyle: WindowStyle {
-        style == .framed && !openingCover.isHidden ? .immersive : style
+        style == .framed && openingCover.isShowing ? .immersive : style
     }
 
     override func layout() {
@@ -338,7 +339,10 @@ final class StreamChromeView: NSView {
         // The dots sit exactly over the stream, in its own coordinates, but on
         // this view's layer: no animation while the bar comes and goes.
         touchDots.frame = video.frame
-        phoneOverlay.frame = video.frame
+        // The phone cover is one sheet over the whole window (WIN-63): the
+        // held picture runs under the titlebar and the bar band, so no band of
+        // another colour sits on top while the screen sleeps or is secure.
+        phoneOverlay.frame = bounds
         // The cover is one sheet over the whole window in either style, the
         // bar's band included (WIN-11).
         openingCover.frame = bounds
@@ -387,7 +391,8 @@ final class StreamChromeView: NSView {
         CATransaction.setDisableActions(true)
         hazeLayer.colors = [top, NSColor(white: 1, alpha: 0).cgColor]
         hazeLayer.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
-        hazeLayer.isHidden = !(bar > 0 && openingCover.isHidden && !stallOverlay.isShowing)
+        hazeLayer.isHidden = !(bar > 0 && !openingCover.isShowing && !stallOverlay.isShowing
+                               && !phoneOverlay.isShowing)
         CATransaction.commit()
     }
 
@@ -407,9 +412,10 @@ final class StreamChromeView: NSView {
     var hazeVisible: Bool { !hazeLayer.isHidden }
 
     /// True when the framed bar's mirror band would show. The opening cover is
-    /// one opaque sheet over it until the first frame (WIN-11); the stall
+    /// one opaque sheet over it until the first frame (WIN-11), and the phone
+    /// cover is one sheet from the window's top edge (WIN-63); the stall
     /// overlay reports its own covering separately (`barMirrorCovered`).
-    var barMirrorVisible: Bool { barHeight > 0 && openingCover.isHidden }
+    var barMirrorVisible: Bool { barHeight > 0 && !openingCover.isShowing && !phoneOverlay.isShowing }
 
     /// The kind's actions over the framed bar or, while the pill shows, inside
     /// it. Positions only: show/hide is the style's and the dwell's business
@@ -525,14 +531,18 @@ final class StreamChromeView: NSView {
     var showsPanelStatus: Bool { !panelStatus.isHidden }
 
     /// The overlay covers the bar's mirror (WIN-39): it spans the bar's band and
-    /// sits above the extension view, so the bar shows the same acrylic as the
-    /// body instead of the bright stream. False once the overlay is down.
+    /// sits above the extension view, so the bar shows the same cover as the
+    /// body instead of the bright stream. The phone cover does the same for
+    /// the sleeping panel and a secure surface (WIN-63). False once it is down.
     var barMirrorCovered: Bool {
-        guard barHeight > 0, !stallOverlay.isHidden else { return false }
+        guard barHeight > 0 else { return false }
         let band = NSRect(x: 0, y: video.frame.maxY, width: bounds.width,
                           height: bounds.height - video.frame.maxY)
-        return stallOverlay.frame.contains(band)
-            && (stallOverlay.layer?.zPosition ?? 0) > (ext.layer?.zPosition ?? 0)
+        let cover: NSView? = stallOverlay.isShowing ? stallOverlay
+            : (phoneOverlay.isShowing ? phoneOverlay : nil)
+        guard let cover else { return false }
+        return cover.frame.contains(band)
+            && (cover.layer?.zPosition ?? 0) > (ext.layer?.zPosition ?? 0)
     }
 
     private func layoutPanelStatus(bar: Bool) {
