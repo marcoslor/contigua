@@ -1060,6 +1060,12 @@ class EventLog(object):
         """--frame-events: the stream's cumulative frame count, once a second."""
         self._emit({"ev": "frames", "stream": stream, "n": n, "ts": time.time()})
 
+    def video_backlog(self, stream, pending, over16k):
+        """A delta backlog began: [pending] frames of the stream were queued at
+        once, [over16k] of them larger than one VIDEO_CHUNK. Counts only."""
+        self._emit({"ev": "video_backlog", "stream": stream, "pending": pending,
+                    "over16k": over16k, "ts": time.time()})
+
     def video_config(self, stream, w, h, codec="avc"):
         self._emit({"ev": "video", "stream": stream, "config": True,
                     "codec": codec, "w": w, "h": h, "ts": time.time()})
@@ -1742,6 +1748,8 @@ class Sender(object):
         self._bulk_cancelled = set()
         self._pending = {}          # stream -> queued delta count
         self._need_key = set()
+        # Streams whose queued delta depth was already reported as a backlog.
+        self._backlog_streams = set()
         # The Mac's hello `videoChunks`: only then may a large access unit be
         # split into VIDEO_CHUNK frames (R4). A Mac that does not ask gets the
         # whole VIDEO_FRAME it has always understood.
@@ -1770,6 +1778,25 @@ class Sender(object):
                 self._json.append((stream, data))
             self._cv.notify()
             return True
+
+    def _backlog_sample(self, stream, current):
+        """One sample of the delta backlog, taken under the queue's lock.
+
+        Called as a delta leaves for the socket: the depth includes that frame,
+        so a link stall that builds a queue of three or more >16 KiB deltas is
+        reported once per episode. The check counts those episodes; it is the
+        pattern R5 has to keep in order, not a wire event."""
+        queued = [data for queued_stream, data in self._delta if queued_stream == stream]
+        depth = len(queued) + 1
+        if depth < 3:
+            self._backlog_streams.discard(stream)
+            return None
+        if stream in self._backlog_streams:
+            return None
+        self._backlog_streams.add(stream)
+        large = 1 if len(current) - 18 > proto.VIDEO_CHUNK_BYTES else 0
+        large += sum(1 for data in queued if len(data) - 18 > proto.VIDEO_CHUNK_BYTES)
+        return stream, depth, large
 
     def send_json(self, obj):
         return self._put(0, obj.get("stream", 0) or 0, proto.pack_json(obj, obj.get("stream", 0) or 0))
@@ -1833,6 +1860,7 @@ class Sender(object):
 
     def _run(self):
         while True:
+            backlog = None
             with self._cv:
                 while not (self._json or self._key or self._audio or self._bulk or self._delta) \
                         and not self._closed:
@@ -1855,6 +1883,7 @@ class Sender(object):
                     stream, data = self._delta.pop(0)
                     remaining = self._pending.get(stream, 1) - 1
                     self._pending[stream] = remaining
+                    backlog = self._backlog_sample(stream, data)
                     if remaining <= LOW_PENDING_DELTA and stream in self._need_key:
                         self._need_key.discard(stream)
                         self._cv.release()
@@ -1862,6 +1891,8 @@ class Sender(object):
                             self._on_backlog_cleared(stream)
                         finally:
                             self._cv.acquire()
+            if backlog is not None and self._events is not None:
+                self._events.video_backlog(*backlog)
             try:
                 if audio is not None:
                     self._write_audio(audio)
