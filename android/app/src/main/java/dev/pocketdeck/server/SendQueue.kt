@@ -63,7 +63,16 @@ internal class SendQueue(
      */
     private val onSuspendChanged: (stream: Int) -> Unit = { _ -> },
     private val log: (String) -> Unit = {},
+    /**
+     * A drop episode is still waiting for its key [KEY_RETRY_MS] after the
+     * last request: ask again (the first request can be lost or answered by
+     * nothing, and without a key the window stays frozen).
+     */
+    private val onKeyRetry: (stream: Int) -> Unit = {},
 ) {
+    /** When each dropping stream last asked for its key (the drop or a retry). */
+    private val keyAskedAtMs = HashMap<Int, Long>()
+
     /** One queued frame: the bytes plus the stream, enqueue clock and capture pts. */
     class Entry(val bytes: ByteArray, override val stream: Int = 0, val enqueuedUs: Long = 0,
                 override val ptsUs: Long = -1, val key: Boolean = false,
@@ -197,6 +206,7 @@ internal class SendQueue(
         synchronized(lock) {
             if (stream != 0) {
                 dropping.remove(stream)
+                keyAskedAtMs.remove(stream)
                 discardDeltas(stream)
                 discardChunked(stream)
                 // The discarded deltas were the ones the old key's credit was
@@ -251,6 +261,7 @@ internal class SendQueue(
         var dropped = false
         var overflow = false
         var suspendChanged = false
+        var retry = false
         synchronized(lock) {
             // The encoder produced this frame whatever the queue does with it.
             encodedRate.note(stream, bytes.size, nowUs())
@@ -258,7 +269,15 @@ internal class SendQueue(
                 // Still waiting for the keyframe: this delta is discarded too.
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + 1
                 advanceDrop(stream, DropEvent.DeltasDropped(1, nowMs()))
-                return
+                val now = nowMs()
+                val asked = keyAskedAtMs[stream]
+                if (stream != 0 && (asked == null || now - asked >= KEY_RETRY_MS)) {
+                    keyAskedAtMs[stream] = now
+                    retry = true
+                    log("stream $stream drop episode: waiting --retry--> waiting" +
+                        (asked?.let { " (no key ${now - it} ms after the last request)" } ?: ""))
+                }
+                return@synchronized
             }
             // Read the queue switch only when this stream's first delta is
             // actually queued; never per frame.
@@ -331,7 +350,11 @@ internal class SendQueue(
         // take seconds. Under this lock it stopped the writer and every other
         // stream with it; run it free.
         if (suspendChanged) onSuspendChanged(stream)
-        if (dropped) onDeltaDrop(stream)
+        if (dropped) {
+            synchronized(lock) { keyAskedAtMs[stream] = nowMs() }
+            onDeltaDrop(stream)
+        }
+        if (retry) onKeyRetry(stream)
         if (overflow) onOverflow(stream)
     }
 
@@ -685,6 +708,9 @@ internal class SendQueue(
 
     companion object {
         const val DEFAULT_MAX_DELTA_BYTES = 256 * 1024 // ~250 ms at 8 Mbps
+
+        /** How long a waiting drop episode goes before it asks for its key again. */
+        const val KEY_RETRY_MS = 500L
 
         /** The protocol's ~250 ms of queued video, independent of the bitrate. */
         const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L

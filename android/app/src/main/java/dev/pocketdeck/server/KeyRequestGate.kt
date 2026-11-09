@@ -17,6 +17,15 @@ internal class KeyRequestGate(private val dedupeMs: Long = DEDUPE_MS) {
         lastIdrAtMs = Long.MIN_VALUE
     }
 
+    /**
+     * Deltas after the last IDR were dropped (the drop rule): the decoder now
+     * needs a key after them, so that IDR answers no request any more.
+     */
+    @Synchronized
+    fun onDeltasDropped() {
+        lastIdrAtMs = Long.MIN_VALUE
+    }
+
     /** The encoder produced an IDR at [nowMs] and the frame went to the queue. */
     @Synchronized
     fun onIdr(nowMs: Long) {

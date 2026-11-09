@@ -157,6 +157,13 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         onKeyframeRequest?.invoke(stream)
     }
 
+    val keyframesAfterDrop = CopyOnWriteArrayList<Int>()
+
+    override fun requestKeyframeAfterDrop(stream: Int) {
+        keyframesAfterDrop.add(stream)
+        requestKeyframe(stream)
+    }
+
     override fun setStatsEnabled(on: Boolean) {
         statsSettings.add(on)
     }
