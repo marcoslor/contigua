@@ -333,6 +333,11 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
 7. Then: the phone as a key, Shortcuts both ways, the phone as a Mac remote, Mac-to-phone notifications, Focus modes and the Batteries widget, Wi-Fi password sharing and last-seen location.
 
 - **ISS-48 pmaxx: the best stream the link allows, chosen automatically (the person, 2026-11-06; long epic, DS lead).** Several transports (TLS/TCP plus a datagram transport for media), a policy machine that probes, chooses and switches live, and a delay-based controller. The person never picks a protocol. Axes: ping (input-to-photon, capture-to-display), fps (the Mac's refresh in motion, a proven 120 path up to decode), human feeling (a blind test with the person), backpressure; plus everything else measurable (per-stage times, thermal, battery, Wi-Fi stats, head-of-line delay of control messages). The wire must be reusable by the web client (ISS-41). Brief `.agent/pmaxx/brief.md`, live state `.agent/pmaxx/STATUS.md`, branch `epic/pmaxx`. The lead may use the person's phone and quit/relaunch the installed app when no window is open (PAIR-21: one Mac at a time).
+  - **The person, 2026-11-09:** "ensure smooth switching, prove it all works in the e2e test suite (find ways to throttle the virtual network connection)". Added as P3.6 in `.agent/pmaxx/plan.md`, required before the blind test:
+    - **What must be smooth:** every automatic switch mid-stream: transport (TCP ↔ UDP), path, quality steps, and the link's own stalls, throttles and blackouts with their recovery.
+    - **Smooth means measured:** bounded frame gaps, no garbage, the link stays online, audio without underruns, and input that keeps arriving in order.
+    - **Throttling without root:** the existing TCP fault proxy (`tools/pdpathfault`), a new UDP twin, the emulator console's `network delay` and `network speed`, and possibly `tc netem` inside the Docker VM.
+    - **Proof:** one e2e check per switch kind on the fake phone, plus emulator arms for the phone's real adaptation.
 - **ISS-41 A web client: PocketDeck for Windows and Linux (a very big epic; the person, 2026-11-04).** macOS stays the first-class, native app. Windows and Linux get a web client, and no native app.
   - **The person's constraints:**
     - **No install:** open a URL and it works; no helper app and no extension.
