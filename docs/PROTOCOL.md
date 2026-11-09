@@ -15,7 +15,9 @@ exactly this. Change it here first, then in code.
   or other tracking identifier rides in the TXT. While the phone's "Allow
   connections" switch is off it stops advertising and keeps the listener up:
   a Mac that already has the address is refused (see "Error codes"), and
-  turning the switch back on advertises the same port again.
+  turning the switch back on advertises the same port again. A Mac remembers
+  the last address where a session reached `welcome`, so it can still reach a
+  phone whose advertisement it cannot see.
 - **TLS 1.3, mutual, pinned — no plaintext, no v1.** The phone wraps every
   accepted connection in a platform `SSLSocket` (Conscrypt) and the Mac dials
   with NIOSSL/BoringSSL (docs/design/e2ee.md §1/§2). Both ends: TLS 1.3 only,
@@ -1462,12 +1464,17 @@ PocketDeck),
 `no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
 the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
 window still opening is refused on its cover, a live one closes as on `window.closed`),
-`launch_failed`, `bad_url` (a `link.open` URL that is
+`forgotten` (the person forgot this Mac, or every Mac, in the phone app while
+this session was live: the Mac enters the trust-lost state, makes no further
+attempt and shows "<phone name> no longer trusts this Mac." with Pair again; the
+phone sends it on the authenticated session and then ends it within the PAIR-20
+bound), `launch_failed`, `bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
 (the phone would not write the ringer setting or the music volume), `connections_off` (the phone's
 "Allow connections" switch is off: the Mac shows "Connections are turned off on
-<phone name>."), `pairing_off` (the phone's "Allow new pairings" switch is off and
+<phone name>." with the line "Turn on Allow connections in PocketDeck on your
+phone." and slows to one attempt per 30 s), `pairing_off` (the phone's "Allow new pairings" switch is off and
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
 `not_available` (the phone can't
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
