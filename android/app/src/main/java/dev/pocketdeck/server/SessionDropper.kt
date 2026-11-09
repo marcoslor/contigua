@@ -29,6 +29,12 @@ interface LiveSession {
 
     fun close()
 
+    /** The authenticated Mac's client id; null before its hello/welcome. */
+    val macClientId: String?
+
+    /** PAIR-30: send `forgotten` on this still-authenticated session and end it. */
+    fun forgotten()
+
     fun shareText(text: String): Int
 
     fun shareFile(name: String, mime: String, input: InputStream): Int
@@ -105,6 +111,26 @@ class SessionDropper(
             SlotAction.NO_SESSION -> AttachResult.NO_SESSION
             else -> AttachResult.BUSY
         }
+    }
+
+    /**
+     * PAIR-30: tell the live session it was forgotten, then let its own
+     * teardown drain the frame. Runs on the one drop daemon, so a [drop] queued
+     * after it cannot cut the transport first. [macClientIds] null means every
+     * Mac (an identity rotation); the live Mac hears it only when it is named.
+     */
+    fun notifyForgotten(macClientIds: Set<String>?): Boolean {
+        val live = lock.withLock {
+            (slot as? SlotState.Live)?.session?.takeIf { it.isReady }
+        } ?: return false
+        val liveMac = live.macClientId
+        if (macClientIds != null && (liveMac == null || liveMac !in macClientIds)) return false
+        closer.execute {
+            runCatching { live.forgotten() }.onFailure {
+                log("session forgotten failed: ${it.javaClass.simpleName}")
+            }
+        }
+        return true
     }
 
     /** The live session, if one is neither closed nor already dropped. */

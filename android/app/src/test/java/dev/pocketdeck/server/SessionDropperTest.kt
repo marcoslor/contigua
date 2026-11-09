@@ -62,7 +62,7 @@ class SessionDropperTest {
 
         assertTrue("the live Mac was not told", dropper.notifyForgotten(setOf("a1")))
         assertTrue("the drop was not handed over", dropper.drop())
-        assertTrue(session.forgotten.await(1, TimeUnit.SECONDS))
+        assertTrue(session.forgottenNotice.await(1, TimeUnit.SECONDS))
         assertTrue(session.awaitClosed())
         assertEquals("forgotten then close", listOf("forgotten", "close"),
                      session.events.take(2))
@@ -87,7 +87,7 @@ class SessionDropperTest {
         dropper.adopting(session)
 
         assertTrue(dropper.notifyForgotten(null))
-        assertTrue(session.forgotten.await(1, TimeUnit.SECONDS))
+        assertTrue(session.forgottenNotice.await(1, TimeUnit.SECONDS))
         session.close()
     }
 
