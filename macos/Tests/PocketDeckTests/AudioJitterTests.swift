@@ -130,6 +130,6 @@ final class AudioJitterTests: XCTestCase {
     func testTargetStaysInRange() {
         XCTAssertEqual(AudioPlayerMachine.targetFrames(lateP99Us: 0), 3)
         XCTAssertEqual(AudioPlayerMachine.targetFrames(lateP99Us: 79_000), 6)
-        XCTAssertEqual(AudioPlayerMachine.targetFrames(lateP99Us: 500_000), 10)
+        XCTAssertEqual(AudioPlayerMachine.targetFrames(lateP99Us: 500_000), 8)
     }
 }

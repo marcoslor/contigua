@@ -1,6 +1,7 @@
 // Device-wide audio playback: Opus/AAC packets from the phone → PCM →
-// AVAudioEngine. A small jitter buffer (target 60 ms, max 120 ms) keeps the
-// added latency under the 150 ms budget; Mac-side volume/mute only (the phone
+// AVAudioEngine. An adaptive jitter buffer (60 ms floor, 160 ms target ceiling;
+// 8 AAC packets ≈ 171 ms, under the 185 ms A/V limit)
+// follows the measured arrival lateness; Mac-side volume/mute only (the phone
 // speaker is silenced by the submix routing, never by stream volume).
 
 import AVFoundation
@@ -10,34 +11,6 @@ import Foundation
 enum AudioEvent {
     case config(AudioConfig)
     case frame(AudioFrameData)
-}
-
-/// Pure jitter accounting, unit-tested without audio hardware.
-struct AudioJitter {
-    /// Target and max depth in frames (20 ms each).
-    var targetFrames = 3
-    var maxFrames = 6
-    private var queued = 0
-
-    var depth: Int { queued }
-
-    mutating func push() -> Bool {
-        queued += 1
-        if queued > maxFrames {
-            queued = maxFrames
-            return false
-        }
-        return true
-    }
-
-    mutating func pop() {
-        if queued > 0 { queued -= 1 }
-    }
-
-    mutating func reset() { queued = 0 }
-
-    /// True once enough is buffered to start playing.
-    var ready: Bool { queued >= targetFrames }
 }
 
 struct AudioStats: Equatable {
@@ -50,6 +23,18 @@ struct AudioStats: Equatable {
     var decodeErrors = 0
     /// Silent buffers skipped to bring the queue back to target.
     var trimmed = 0
+    /// Starvation episodes: the player ran dry while it was playing.
+    var underrun = 0
+    /// Packets later than the 60 ms minimum buffer could absorb.
+    var late = 0
+    /// p95 of arrival lateness against the phone's pts, over the last 10 s.
+    var lateP95Ms = 0.0
+    /// 20 ms concealment buffers scheduled during starvation episodes.
+    var concealed = 0
+    /// The player's phase (`prebuffering`, `playing`, `starved`).
+    var state = "prebuffering"
+    /// The adaptive target the player is using, in ms.
+    var targetMs = 60
     var firstPts: UInt64?
     var lastPts: UInt64?
     /// Wall clock (ms) when the first audible buffer was scheduled, and how much
@@ -71,21 +56,33 @@ final class AudioEngine {
     private var inputASBD = AudioStreamBasicDescription()
     private var hasConverter = false
 
-    private var jitter = AudioJitter()
+    private var machine = AudioPlayerMachine()
     private let lock = NSLock()
     private var pendingPCM: [AVAudioPCMBuffer] = []
     private var started = false
     /// Frames scheduled on the player whose playback has not completed yet.
     private var queuedFrames: Int64 = 0
-    /// Player queue target (60 ms) and cap (120 ms) at 48 kHz: past them audio is
-    /// shed so bursts and clock drift cannot build up latency.
-    private static let targetQueuedFrames: Int64 = 2880
-    private static let maxQueuedFrames: Int64 = 5760
+    /// The last real PCM, the source of concealment while starved.
+    private var lastPCM: AVAudioPCMBuffer?
+    /// How far the concealment copy has decayed in this starvation episode.
+    private var concealGain: Float = 1.0
+    private var lastStatsLog: TimeInterval = 0
+    /// The previous packet's arrival: a long gap means the radio went
+    /// off-channel and the burst after it is one delayed span.
+    private var lastArrivalUs: Int64?
+    /// Packets older than this pts are the stale head of such a burst.
+    private var skipBeforePtsUs: UInt64 = 0
+    /// A gap longer than this is a stall, not jitter (the 100 ms AWDL pauses
+    /// and a keyframe behind one stay below it).
+    private static let reanchorGapUs: Int64 = 400_000
 
     private(set) var stats = AudioStats()
     /// A new file starts from zero counts (e2e: one file per check).
     var statsFile: String? {
-        didSet { stats = AudioStats() }
+        didSet {
+            stats = AudioStats()
+            machine = AudioPlayerMachine()
+        }
     }
     var volume: Float = 1.0 {
         didSet { player.volume = muted ? 0 : volume }
@@ -128,9 +125,13 @@ final class AudioEngine {
         engine.stop()
         lock.lock()
         pendingPCM.removeAll()
-        jitter.reset()
+        lastPCM = nil
+        concealGain = 1
+        skipBeforePtsUs = 0
+        lastArrivalUs = nil
         queuedFrames = 0
         started = false
+        machine.handle(.stop)
         lock.unlock()
     }
 
@@ -138,7 +139,6 @@ final class AudioEngine {
     private func dropPending() {
         lock.lock()
         pendingPCM.removeAll()
-        jitter.reset()
         lock.unlock()
     }
 
@@ -148,8 +148,12 @@ final class AudioEngine {
         stats.codec = config.codec
         stats.sampleRate = config.sampleRate
         stats.channels = config.channels
-        jitter.reset()
         pendingPCM.removeAll()
+        lastPCM = nil
+        concealGain = 1
+        skipBeforePtsUs = 0
+        lastArrivalUs = nil
+        if !started { machine.handle(.configure) }
         lock.unlock()
         setupConverter(config)
         writeStats()
@@ -157,43 +161,162 @@ final class AudioEngine {
     }
 
     func receive(_ frame: AudioFrameData) {
+        let arrivalUs = Self.nowUs()
+        let gapUs = lastArrivalUs.map { arrivalUs - $0 } ?? 0
+        lastArrivalUs = arrivalUs
         lock.lock()
         stats.frames += 1
         stats.bytes += frame.packet.count
         if stats.firstPts == nil { stats.firstPts = frame.ptsUs }
         stats.lastPts = frame.ptsUs
-        let keep = jitter.push()
+        _ = machine.noteArrival(arrivalUs: arrivalUs,
+                                ptsUs: Int64(clamping: frame.ptsUs))
+        // A burst after a long stall carries the stale head first. Keep only
+        // its newest target's worth, so audio resumes with the picture instead
+        // of replaying the whole stalled span; the 500 ms burst's first ~15
+        // packets go here, not into the buffer.
+        if gapUs > Self.reanchorGapUs {
+            let targetUs = Int64(machine.targetFrames) * 20_000
+            skipBeforePtsUs = frame.ptsUs &+ UInt64(max(0, gapUs - targetUs))
+        }
+        let staleBurst = frame.ptsUs < skipBeforePtsUs
+        let keep = !staleBurst && jitterPushLocked()
         if !keep { stats.dropped += 1 }
         lock.unlock()
-        if !keep { writeStats(); return }
+        if !keep {
+            refreshStatsLocked()
+            writeStats()
+            return
+        }
         if let pcm = decode(frame.packet) {
             lock.lock()
             stats.decodedFrames += 1
+            let actions = machine.handle(.frame(depthFrames: depthLocked() + 1))
+            if actions.contains(.resume) {
+                concealGain = 1
+                applyFadeIn(pcm)
+            }
             pendingPCM.append(pcm)
-            // Pre-buffer only before playback starts; after that the player's
-            // own queue is the jitter buffer and every packet goes straight in.
-            let ready = started || jitter.ready
+            lastPCM = pcm
             lock.unlock()
-            if ready { flush() }
+            perform(actions)
+            flush()
         }
+        refreshStatsLocked()
         writeStats()
     }
 
     func stop() {
         lock.lock()
-        jitter.reset()
         pendingPCM.removeAll()
+        lastPCM = nil
+        concealGain = 1
+        skipBeforePtsUs = 0
+        lastArrivalUs = nil
+        started = false
+        queuedFrames = 0
+        machine.handle(.stop)
         lock.unlock()
         player.stop()
-        started = false
-        lock.lock()
-        queuedFrames = 0
-        lock.unlock()
+        refreshStatsLocked()
         writeStats()
         onStateChange?(false)
     }
 
+    /// One 5 s numbers-only line while audio runs (R3): the field log a person
+    /// can read back. Closed tokens, counts and timings only.
+    func logStatsIfDue(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        lock.lock()
+        let due = now - lastStatsLog >= 5 && stats.frames > 0
+        if due { lastStatsLog = now }
+        let snapshot = stats
+        lock.unlock()
+        guard due else { return }
+        let line = "audio] stats state=\(snapshot.state) target_ms=\(snapshot.targetMs)" +
+            " depth_ms=\(snapshot.queuedMs) underrun=\(snapshot.underrun)" +
+            " late=\(snapshot.late) late_p95=\(String(format: "%.1f", snapshot.lateP95Ms))" +
+            " concealed=\(snapshot.concealed) dropped=\(snapshot.dropped)" +
+            " trimmed=\(snapshot.trimmed) frames=\(snapshot.frames)" +
+            " decode_err=\(snapshot.decodeErrors)"
+        Log.audio.notice("\(line, privacy: .public)")  // log-ok: states, counts and timings only
+    }
+
+    /// The 20 ms depth the machine counts: decoded-but-unscheduled plus
+    /// scheduled-but-unplayed.
+    private func depthLocked() -> Int {
+        let pending = pendingPCM.reduce(Int64(0)) { $0 + Int64($1.frameLength) }
+        return Int((pending + queuedFrames) / 960)
+    }
+
+    /// The packet cap: a burst past it is dropped rather than queued. It
+    /// follows the adaptive target but never passes 8 units (see below).
+    private func jitterPushLocked() -> Bool {
+        // The cap is in 20 ms units and never past 8: with 1024-sample AAC
+        // packets the real queue peaks at 8 packets ≈ 171 ms, so the played
+        // audio stays under the 185 ms A/V limit (CONV-PD-06).
+        let cap = min(8, max(6, machine.targetFrames + 3))
+        let depth = depthLocked()
+        return depth < cap
+    }
+
+    private func perform(_ actions: [AudioPlayerAction]) {
+        for action in actions {
+            switch action {
+            case .startPlayback, .resume:
+                // The flush starts the player and schedules the queue; the
+                // resume fade-in is applied to the arriving buffer.
+                break
+            case .conceal:
+                conceal()
+            }
+        }
+    }
+
+    /// One 20 ms concealment buffer built from the last real PCM: a short
+    /// crossfade, decaying a little more each time, so a starved player keeps
+    /// the clock running without a hard edge.
+    private func conceal() {
+        lock.lock()
+        guard let source = lastPCM, source.frameLength > 0, let format = format48kStereo,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: source.frameLength)
+        else {
+            lock.unlock()
+            return
+        }
+        let n = Int(source.frameLength)
+        buffer.frameLength = source.frameLength
+        concealGain *= 0.7
+        for channel in 0..<Int(format.channelCount) {
+            guard let src = source.floatChannelData?[channel],
+                  let dst = buffer.floatChannelData?[channel] else { continue }
+            for i in 0..<n {
+                dst[i] = src[i] * concealGain * Float(n - i) / Float(n)
+            }
+        }
+        pendingPCM.append(buffer)
+        lock.unlock()
+        flush()
+    }
+
+    /// A short fade-in on the first real buffer after starvation: the other
+    /// half of the crossfade that hides the hole (R3).
+    private func applyFadeIn(_ buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData else { return }
+        let n = Int(buffer.frameLength)
+        let fade = min(n, 240)  // 5 ms at 48 kHz
+        guard fade > 0 else { return }
+        for channel in 0..<Int(buffer.format.channelCount) {
+            for i in 0..<fade {
+                data[channel][i] *= Float(i) / Float(fade)
+            }
+        }
+    }
+
     private func flush() {
+        lock.lock()
+        let playing = started || machine.state == .playing
+        lock.unlock()
+        guard playing else { return }
         if !started {
             if !engine.isRunning {
                 do {
@@ -218,31 +341,52 @@ final class AudioEngine {
         lock.lock()
         let buffers = pendingPCM
         pendingPCM.removeAll()
-        for _ in buffers { jitter.pop() }
+        let targetFrames = Int64(machine.targetFrames) * 960
+        // The same 8-unit A/V cap as jitterPushLocked: concealment buffers
+        // count too, so the played audio never trails past 185 ms.
+        let maxFrames = min(targetFrames + 3 * 960, 8 * 960)
+        let ratio = machine.stretchRatio
         lock.unlock()
         for buffer in buffers {
-            let frames = Int64(buffer.frameLength)
+            // R2: a backlog is drained by playing slightly faster, never by
+            // cutting audio. The compressed buffer keeps the format.
+            let scheduled = ratio < 0.999
+                ? (AudioStretch.compress(buffer, ratio: ratio) ?? buffer)
+                : buffer
+            let frames = Int64(scheduled.frameLength)
             lock.lock()
             // Over target, shed silent buffers first (inaudible); over max, shed anything.
-            let trim = queuedFrames > Self.targetQueuedFrames && isSilent(buffer)
-            let full = trim || queuedFrames > Self.maxQueuedFrames
+            let trim = queuedFrames > targetFrames && isSilent(scheduled)
+            let full = trim || queuedFrames > maxFrames
             if trim { stats.trimmed += 1 } else if full { stats.dropped += 1 }
             if !full { queuedFrames += frames }
             let ahead = queuedFrames
             let needOnset = stats.onsetMs == nil
             lock.unlock()
             if full { continue }
-            if needOnset, isAudible(buffer) { markOnset(queuedFrames: ahead - frames) }
-            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                guard let self else { return }
-                self.lock.lock()
-                self.queuedFrames = max(0, self.queuedFrames - frames)
-                self.lock.unlock()
+            if needOnset, isAudible(scheduled) { markOnset(queuedFrames: ahead - frames) }
+            player.scheduleBuffer(scheduled, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                self?.rendered(frames: frames)
             }
         }
         lock.lock()
         stats.queuedMs = Int(queuedFrames * 1000 / 48000)
         lock.unlock()
+    }
+
+    /// One buffer finished playing: feed the machine and conceal a dry queue.
+    private func rendered(frames: Int64) {
+        lock.lock()
+        guard started else {
+            lock.unlock()
+            return
+        }
+        queuedFrames = max(0, queuedFrames - frames)
+        let actions = machine.handle(.rendered(depthFrames: depthLocked()))
+        lock.unlock()
+        perform(actions)
+        refreshStatsLocked()
+        writeStats()
     }
 
     private func setupConverter(_ config: AudioConfig) {
@@ -335,22 +479,45 @@ final class AudioEngine {
         return 960
     }
 
+    private func refreshStatsLocked() {
+        lock.lock()
+        stats.underrun = machine.underruns
+        stats.late = machine.latePackets
+        stats.lateP95Ms = Double(machine.lateP95Us) / 1000
+        stats.concealed = machine.concealed
+        stats.state = machine.state.rawValue
+        stats.targetMs = machine.targetFrames * 20
+        stats.queuedMs = Int(queuedFrames * 1000 / 48000)
+        lock.unlock()
+    }
+
     private func writeStats() {
+        refreshStatsLocked()
         guard let path = statsFile else { return }
+        lock.lock()
+        let snapshot = stats
+        lock.unlock()
         let obj: [String: Any] = [
-            "configs": stats.configs, "frames": stats.frames, "bytes": stats.bytes,
-            "decoded": stats.decodedFrames, "dropped": stats.dropped,
-            "decodeErrors": stats.decodeErrors, "trimmed": stats.trimmed,
-            "codec": Int(stats.codec), "sampleRate": Int(stats.sampleRate),
-            "channels": Int(stats.channels),
-            "firstPts": stats.firstPts.map { Int($0) } as Any? ?? 0,
-            "lastPts": stats.lastPts.map { Int($0) } as Any? ?? 0,
-            "onsetMs": stats.onsetMs ?? 0, "onsetQueuedMs": stats.onsetQueuedMs ?? 0,
-            "queuedMs": stats.queuedMs,
+            "configs": snapshot.configs, "frames": snapshot.frames, "bytes": snapshot.bytes,
+            "decoded": snapshot.decodedFrames, "dropped": snapshot.dropped,
+            "decodeErrors": snapshot.decodeErrors, "trimmed": snapshot.trimmed,
+            "underrun": snapshot.underrun, "late": snapshot.late,
+            "lateP95Ms": snapshot.lateP95Ms, "concealed": snapshot.concealed,
+            "state": snapshot.state, "targetMs": snapshot.targetMs,
+            "codec": Int(snapshot.codec), "sampleRate": Int(snapshot.sampleRate),
+            "channels": Int(snapshot.channels),
+            "firstPts": snapshot.firstPts.map { Int($0) } as Any? ?? 0,
+            "lastPts": snapshot.lastPts.map { Int($0) } as Any? ?? 0,
+            "onsetMs": snapshot.onsetMs ?? 0, "onsetQueuedMs": snapshot.onsetQueuedMs ?? 0,
+            "queuedMs": snapshot.queuedMs,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: obj) {
             try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         }
+    }
+
+    private static func nowUs() -> Int64 {
+        Int64(ProcessInfo.processInfo.systemUptime * 1_000_000)
     }
 }
 
