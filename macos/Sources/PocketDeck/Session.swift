@@ -1977,23 +1977,26 @@ final class Session {
         pinSessionEstablished?(record)
     }
 
-    /// Dev and e2e bundles log the exporter hash for K4/e2e evidence; the
-    /// release bundle (PDBuildVariant=release, as bundle.sh stamps it) logs
-    /// neither the hash nor anything else derived from handshake secrets.
+    /// Dev and e2e bundles log an 8-hex prefix of the exporter's SHA-256 for
+    /// K4/e2e evidence (two sessions must not look resumed); the release
+    /// bundle (PDBuildVariant=release, as bundle.sh stamps it) logs neither
+    /// the prefix nor anything else derived from handshake secrets.
     static func logsExporterHash(variant: String?) -> Bool {
         variant != "release"
     }
 
-    /// The 32 exporter's SHA-256, logged once per session (K4/e2e compare the
-    /// two ends' hashes; the exporter itself and its keylog secret never leave
-    /// memory). Nil-safe: a failed handshake logs nothing.
+    /// The 32 exporter's SHA-256 prefix, logged once per session (K4/e2e
+    /// compare the two ends; R5: a prefix is not key material, and the full
+    /// hash and the exporter itself never leave memory). Nil-safe: a failed
+    /// handshake logs nothing.
     private func logExporterOnce() {
         guard Self.logsExporterHash(variant: Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String) else { return }
         guard !loggedExporterSha else { return }
         guard let exporter = exporterProvider?() else { return }
         loggedExporterSha = true
         let digest = SHA256.hash(data: Data(exporter))
-        Log.session.notice("v2 exporter sha256: \(digest.map { String(format: "%02x", $0) }.joined(), privacy: .public)")
+        let hashTag = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        Log.session.notice("v2 exporter ready \(hashTag, privacy: .public)")
     }
 
     /// 76-char PEM body strip for the record's cert (base64 → lines).
