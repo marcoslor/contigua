@@ -531,4 +531,82 @@ final class PhoneChromeTests: XCTestCase {
                        "10 pt outside the frame is not a grab")
         XCTAssertEqual(PhoneWindowEdge.at(point: .zero, in: frame), .none)
     }
+
+    // MARK: The restored shape and the first picture (ISS-63)
+
+    private let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+    private func assertStreamAspect(_ frame: NSRect, _ message: String,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let stream = WindowStyle.framed.streamSize(window: frame.size)
+        XCTAssertEqual(stream.width / stream.height,
+                       phoneShape.width / phoneShape.height, accuracy: 0.005,
+                       message, file: file, line: line)
+    }
+
+    /// The person's own case: a saved frame wider than the phone's shape.
+    func testAWrongShapedSavedFrameOpensInThePhonesShape() {
+        let saved = NSRect(x: 120, y: 300, width: 432, height: 870)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "the saved frame opens at the phone's aspect")
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5, "the left edge stays")
+        XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5, "the top edge stays")
+        XCTAssertEqual(frame.height, saved.height, accuracy: 0.5,
+                       "the remembered height leads")
+    }
+
+    func testASavedLandscapeFrameForAPortraitPhoneOpensPortrait() {
+        let saved = NSRect(x: 200, y: 100, width: 800, height: 400)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "a landscape frame opens in a portrait phone's shape")
+        XCTAssertLessThan(frame.width, frame.height)
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
+        XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5)
+    }
+
+    /// The screen's limit scales the stream as one; it never clamps the width
+    /// and the height apart. `present()` has already clamped the height to the
+    /// visible frame before the phone rule sees the frame.
+    func testASavedFrameTallerThanTheScreenKeepsTheAspect() {
+        let saved = NSRect(x: 100, y: 0, width: 335, height: 900)
+        let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
+                                              style: .framed, visible: visible)
+        assertStreamAspect(frame, "the screen's limit keeps the phone's aspect")
+        XCTAssertLessThanOrEqual(frame.height, visible.height + 0.5)
+        XCTAssertEqual(frame.maxY, visible.maxY, accuracy: 0.5)
+        XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
+    }
+
+    /// The first picture of a stream whose shape disagrees with the window's
+    /// video area refits the window, keeping the top-left and the height.
+    func testTheFirstPictureOfADifferentShapeRefitsTheWindow() {
+        let current = NSRect(x: 120, y: 300, width: 864, height: 1712)
+        let picture = CGSize(width: 1080, height: 2340)
+        let video = WindowStyle.framed.streamSize(window: current.size)
+
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
+                       .refitNow)
+        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .framed)
+        assertStreamAspect(refit, "the refit makes the video area the picture's shape")
+        XCTAssertEqual(refit.minX, current.minX, accuracy: 0.5, "the left edge stays")
+        XCTAssertEqual(refit.maxY, current.maxY, accuracy: 0.5, "the top edge stays")
+        XCTAssertEqual(refit.height, current.height, accuracy: 0.5, "the height stays")
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(
+            video: WindowStyle.framed.streamSize(window: refit.size),
+            picture: picture, isDragging: false), .none,
+            "a picture that matches the window does not refit")
+    }
+
+    func testAPictureArrivingDuringADragRefitsAtTheDragsEnd() {
+        let video = CGSize(width: 864, height: 1684)
+        let picture = CGSize(width: 1080, height: 2340)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: true),
+                       .refitAtDragEnd)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
+                       .refitNow)
+        XCTAssertEqual(PhoneChrome.PictureFit.decide(video: picture, picture: picture, isDragging: false),
+                       .none)
+    }
 }

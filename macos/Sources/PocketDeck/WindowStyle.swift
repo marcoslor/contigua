@@ -275,6 +275,38 @@ enum PhoneChrome {
         }
         return style.windowSize(stream: chosen)
     }
+
+    /// The frame a phone window opens at when it has a remembered one: the
+    /// remembered height leads, the window takes the phone's shape, and the
+    /// screen's limit keeps that shape (ISS-63). The top-left stays put.
+    static func restoredFrame(saved: NSRect, phone: CGSize, style: WindowStyle,
+                              visible: NSRect, minimum: NSSize = .zero) -> NSRect {
+        var size = NSSize(width: min(saved.width, visible.width),
+                          height: min(saved.height, visible.height))
+        size.width = max(size.width, min(minimum.width, visible.width))
+        size.height = max(size.height, min(minimum.height, visible.height))
+        return NSRect(x: saved.minX, y: saved.maxY - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    /// Whether the mirror's picture needs the window refitted to its shape: a
+    /// difference of more than `tolerance` (a fraction). A picture that arrives
+    /// under the person's hand waits for the drag's end (ISS-63).
+    enum PictureFit: Equatable {
+        case none
+        case refitNow
+        case refitAtDragEnd
+
+        static func decide(video: CGSize, picture: CGSize, isDragging: Bool) -> PictureFit {
+            .none
+        }
+    }
+
+    /// The frame the window takes when it refits to the picture's shape: the
+    /// top-left and the height stay, the width follows (ISS-63).
+    static func refitFrame(current: NSRect, picture: CGSize, style: WindowStyle) -> NSRect {
+        current
+    }
 }
 
 /// Where each window's style is remembered: one key per app package, one for
