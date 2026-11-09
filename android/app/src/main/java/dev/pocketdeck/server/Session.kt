@@ -275,7 +275,7 @@ class Session(
     /** When each app stream last sent a paste key or offered a drop's SEND (ISS-51). */
     private val shareAt = HashMap<Int, Long>()
     private val shareLock = Any()
-    /** Lets a just-created task reach the task list before its display is read. */
+    /** Runs the arrival watch's re-reads, 16 ms apart, off the listener thread. */
     private val shareArrivalScheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "pocketdeck-share-arrival").apply { isDaemon = true }
     }
@@ -3921,9 +3921,11 @@ class Session(
      * ISS-51: a share target can start its picker with `FLAG_ACTIVITY_NEW_TASK`
      * from an application context; with no calling activity the system gives
      * the new task the phone's display, so the picker opens on the phone
-     * instead of in the window. Read where the task landed once the task list
-     * has it and move it back when the policy says so (WIN-50: the window
-     * keeps the app either way).
+     * instead of in the window. Act on the task-created event itself: read the
+     * list here, re-read it every [ShareArrivalWatch.RETRY_MS] until the task is
+     * listed, and move it back when the policy says so (WIN-50: the window
+     * keeps the app either way). No fixed settle delay: the landing is visible
+     * only for as long as the list takes.
      */
     private fun scheduleShareArrivalCheck(taskId: Int) {
         val nowMs = now()
@@ -3941,32 +3943,43 @@ class Session(
         }
         if (windows.isEmpty()) return
         val mover = taskMove ?: return
-        // The Created callback can arrive before the task list has the entry;
-        // re-read a few times rather than lose the share's arrival.
-        fun check(tries: Int) {
+        val watch = ShareArrivalWatch(windows)
+        var state = watch.start(nowMs)
+
+        fun step() {
             // The task's package is known here even when the Created callback
             // had none yet, and the list's display is where it really landed.
             val task = runCatching { mover.tasks() }.getOrNull()
                 ?.firstOrNull { it.taskId == taskId }
-            if (task == null) {
-                if (tries > 0) {
-                    shareArrivalScheduler.schedule({ check(tries - 1) },
-                        SHARE_ARRIVAL_RETRY_MS, TimeUnit.MILLISECONDS)
+            val (next, actions) = watch.onRead(
+                state,
+                task?.let { ShareArrivalWatch.ListedTask(it.pkg, it.displayId) },
+                now(),
+            )
+            state = next
+            for (action in actions) {
+                when (action) {
+                    is ShareArrivalWatch.Action.RetryAfter ->
+                        shareArrivalScheduler.schedule({ step() }, action.ms, TimeUnit.MILLISECONDS)
+                    is ShareArrivalWatch.Action.Move -> {
+                        val landed = task?.displayId ?: ShareArrivalPolicy.PHONE_DISPLAY
+                        // moveRootTaskToDisplay is the direct route; a task the
+                        // system will not move is adopted through Recents with a
+                        // launch display, the same fallback WIN-46 uses for an
+                        // app-started task.
+                        var moved = runCatching { mover.move(taskId, action.displayId) }.getOrDefault(false)
+                        if (!moved) moved = runCatching { mover.adopt(taskId, action.displayId) }.getOrDefault(false)
+                        state = watch.onMoved(state, moved)
+                        log("share arrival: task=$taskId display=$landed -> ${action.displayId} " +
+                            "stream=${action.stream} moved=$moved after_ms=${now() - nowMs}")
+                    }
+                    ShareArrivalWatch.Action.LogGaveUp ->
+                        log("share arrival: task=$taskId not listed after_ms=${now() - nowMs}")
                 }
-                return
             }
-            val decision = ShareArrivalPolicy.decide(windows, task.pkg, task.displayId, now())
-            if (decision !is ShareArrivalPolicy.Decision.Move) return
-            // moveRootTaskToDisplay is the direct route; a task the system
-            // will not move is adopted through Recents with a launch display,
-            // the same fallback WIN-46 uses for an app-started task.
-            var moved = runCatching { mover.move(taskId, decision.displayId) }.getOrDefault(false)
-            if (!moved) moved = runCatching { mover.adopt(taskId, decision.displayId) }.getOrDefault(false)
-            log("share arrival: task=$taskId display=${task.displayId} -> ${decision.displayId} " +
-                "stream=${decision.stream} moved=$moved")
         }
-        shareArrivalScheduler.schedule({ check(SHARE_ARRIVAL_TRIES) },
-            SHARE_ARRIVAL_SETTLE_MS, TimeUnit.MILLISECONDS)
+        // Act on the event itself: the first look is here, not on a timer.
+        step()
     }
 
     private fun startTaskListener() {
@@ -4105,17 +4118,6 @@ class Session(
         const val KEYCODE_HOME = 3
         const val KEYCODE_PASTE = 279
         const val KEYCODE_APP_SWITCH = 187
-
-        /**
-         * ISS-51: how long a share's new task may take to appear in the task
-         * list before its display is read. The system dispatches onTaskCreated
-         * before the task is necessarily listed, so the check re-reads the
-         * list a few times ([SHARE_ARRIVAL_TRIES]).
-         */
-        const val SHARE_ARRIVAL_SETTLE_MS = 600L
-        /** Re-reads of the task list while the new task is still being listed. */
-        const val SHARE_ARRIVAL_TRIES = 8
-        const val SHARE_ARRIVAL_RETRY_MS = 100L
 
         /**
          * The only types a session may send before `welcome` (docs/PROTOCOL.md

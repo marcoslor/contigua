@@ -955,7 +955,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             } else if remembersFrame,
                       let saved = manager.savedFrame(forKey: frameKey),
                       saved.size.width >= 240, saved.size.height >= 160 {
-                window.setFrame(manager.clampedToScreen(saved), display: false)
+                window.setFrame(openingFrame(manager.clampedToScreen(saved)), display: false)
             } else {
                 window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
             }
@@ -983,6 +983,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
     var frameKey: String { "stream" }
+
+    /// The frame a window opens at from its remembered one. A window kind whose
+    /// shape belongs to the phone re-shapes it (the mirror, ISS-63).
+    func openingFrame(_ frame: NSRect) -> NSRect { frame }
 
     /// Whether this window's frame is remembered for its subject. Only an
     /// app's first window is: an added window cascades from it and forgets its
