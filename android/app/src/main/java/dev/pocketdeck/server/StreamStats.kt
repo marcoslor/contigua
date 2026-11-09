@@ -276,6 +276,53 @@ internal data class SendSnapshot(
 )
 
 /**
+ * The audio path's realtime measurement (R4): how long an encoded packet waits
+ * from `enqueueAudio` until its last byte is handed to the socket, plus the
+ * packets the realtime budget discarded. One ring of 20 ms packets covers 5 s.
+ */
+internal class AudioWaitStats {
+    private val lock = Any()
+    private val waits = LongRing(256)
+    private var dropped = 0
+
+    fun note(us: Long) = synchronized(lock) {
+        if (us in 0..MAX_WAIT_US) waits.add(us)
+    }
+
+    fun dropped(count: Int) = synchronized(lock) {
+        dropped += count
+    }
+
+    fun snapshot(): AudioWaitSnapshot = synchronized(lock) {
+        val out = AudioWaitSnapshot(waits.percentile(0.50), waits.percentile(0.95),
+                                    waits.max(), waits.samples, dropped)
+        waits.clear()
+        dropped = 0
+        out
+    }
+
+    private companion object {
+        /** A wait over this is a stalled clock or a stalled link, not a sample. */
+        const val MAX_WAIT_US = 30_000_000L
+    }
+}
+
+internal data class AudioWaitSnapshot(
+    val p50Us: Long?,
+    val p95Us: Long?,
+    val maxUs: Long?,
+    val samples: Int,
+    val dropped: Int,
+) {
+    /** One closed-token field log line; numbers only. */
+    fun line(): String = "audio] wait_p50=${ms(p50Us)} wait_p95=${ms(p95Us)}" +
+        " wait_max=${ms(maxUs)} n=$samples dropped=$dropped"
+
+    private fun ms(us: Long?): String =
+        if (us == null) "-" else String.format(java.util.Locale.ROOT, "%.1f", us / 1000.0)
+}
+
+/**
  * The `stream.stats` message body. Keys are documented in PROTOCOL.md; a
  * value with no measurement is omitted (`-` on the Mac's log line).
  */
@@ -363,6 +410,9 @@ internal class LongRing(private val capacity: Int) {
     private var head = 0
     private var size = 0
 
+    /** Samples currently held (0..capacity). */
+    val samples: Int get() = size
+
     fun add(value: Long) {
         values[head] = value
         head = (head + 1) % capacity
@@ -384,6 +434,17 @@ internal class LongRing(private val capacity: Int) {
         copy.sort()
         val rank = maxOf(0, minOf(size - 1, Math.ceil(fraction * size).toInt() - 1))
         return copy[rank]
+    }
+
+    /** The largest sample, or nil when empty. */
+    fun max(): Long? {
+        if (size == 0) return null
+        var largest = Long.MIN_VALUE
+        for (index in 0 until size) {
+            val value = values[(head - size + index + capacity) % capacity]
+            if (value > largest) largest = value
+        }
+        return largest
     }
 }
 

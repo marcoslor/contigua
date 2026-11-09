@@ -20,6 +20,10 @@ struct ChainGuard {
         case beforeConfig = "before_config"
         /// The layer failed after a sample was enqueued.
         case layerFailed = "layer_failed"
+        /// The VIDEO_CHUNK assembler threw an incomplete access unit away
+        /// (a different pts arrived, a bad payload, or the stream closed):
+        /// the next delta references a picture the decoder will never get.
+        case incomplete
     }
 
     enum State: Equatable {
