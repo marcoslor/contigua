@@ -84,6 +84,34 @@ class SendQueueTest {
         assertEquals(10, q.pollNow()!!.bytes.size)
     }
 
+    /**
+     * A drop episode waits for the next key with no deadline: one lost key
+     * request (the person's YouTube launch, 2026-11-09 14:19) froze the window
+     * for good. While it waits, the queue asks again every 500 ms, never faster.
+     */
+    @Test
+    fun aWaitingDropEpisodeAsksForTheKeyAgainEveryHalfSecond() {
+        var clockMs = 1_000L
+        val dropped = CopyOnWriteArrayList<Int>()
+        val retries = CopyOnWriteArrayList<Long>()
+        val q = SendQueue(maxDeltaBytesPerStream = 100, nowMs = { clockMs },
+                          onDeltaDrop = { dropped.add(it) }, onKeyRetry = { retries.add(clockMs) })
+        q.enqueueDelta(1, pts(0), ByteArray(60))
+        q.enqueueDelta(1, pts(1), ByteArray(60)) // the drop: the first request
+        assertEquals(listOf(1), dropped.toList())
+        for (at in listOf(1_100L, 1_300L, 1_499L, 1_500L, 1_700L, 1_999L, 2_000L, 2_016L)) {
+            clockMs = at
+            q.enqueueDelta(1, pts(at.toInt()), ByteArray(10)) // still waiting: discarded
+        }
+        assertEquals(listOf(1_500L, 2_000L), retries.toList())
+        assertEquals("the retry is not a new drop", listOf(1), dropped.toList())
+        q.enqueueControl(1, bytes(0xC1)) // the key ends the episode
+        assertEquals(0xC1, q.pollNow()!!.bytes[0].toInt() and 0xFF)
+        clockMs = 3_000L
+        q.enqueueDelta(1, pts(3_000), ByteArray(10))
+        assertEquals(listOf(1_500L, 2_000L), retries.toList())
+    }
+
     @Test
     fun deltaDropsAndEpisodesAreCountedAcrossTheWholeDrop() {
         val q = SendQueue(maxDeltaBytesPerStream = 10)

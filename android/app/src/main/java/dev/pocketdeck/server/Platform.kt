@@ -313,6 +313,13 @@ interface DisplayLayer {
     fun pause(stream: Int)
     fun resume(stream: Int)
     fun requestKeyframe(stream: Int)
+
+    /**
+     * The send queue dropped this stream's deltas and waits for its next key
+     * (the drop rule): an IDR that went out before the drop cannot start the
+     * decoder, so the duplicate-IDR gate must not answer this request with it.
+     */
+    fun requestKeyframeAfterDrop(stream: Int) = requestKeyframe(stream)
     fun close(stream: Int)
 
     /**
