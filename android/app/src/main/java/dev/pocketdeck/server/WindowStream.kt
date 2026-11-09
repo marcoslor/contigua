@@ -824,6 +824,7 @@ internal class WindowStream(
         // rebuild): a bench sets the properties and then opens a window. Never
         // per frame. The caller read it before choosing the codec.
         this.strategy = strategy
+        quality.enabled = strategy.quality
         this.videoCodec = kind
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).

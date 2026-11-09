@@ -36,6 +36,10 @@ internal class QualityAdaptation(
     private val dropFactor: Double = 0.75,
     private val recoverFactor: Double = 1.10,
     private val recoverIntervalMs: Long = RECOVER_INTERVAL_MS,
+    /** `debug.pocketdeck.stream.quality=off`: the check's broken build; the
+     *  policy never moves the bitrate, so each drop repeats the drop/key cycle.
+     *  Set from the stream's strategy at configure time. */
+    var enabled: Boolean = true
 ) {
 
     private var target = 0
@@ -96,6 +100,7 @@ internal class QualityAdaptation(
      */
     @Synchronized
     fun onDrop(nowMs: Long, measuredBps: Int? = null): Int? {
+        if (!enabled) return null
         nextRecoverAtMs = nowMs + recoverIntervalMs
         // "Two in a row" means inside one recovery interval. A non-drop
         // window since the last drop starts a new row, even if the bitrate
@@ -140,6 +145,7 @@ internal class QualityAdaptation(
      */
     @Synchronized
     fun maybeRecover(nowMs: Long): Int? {
+        if (!enabled) return null
         if (current >= target) return null
         // A probe that survived its whole interval found usable capacity:
         // refund it and double the step for the next one.

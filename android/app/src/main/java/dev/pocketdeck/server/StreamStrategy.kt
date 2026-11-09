@@ -31,6 +31,8 @@ data class StreamStrategy(
     val lowLatency: Boolean = false,
     /** P3: the media plane. `tcp` is the shipped default until P5. */
     val transport: Transport = Transport.Tcp,
+    /** `quality=off`: the switchquality check's broken build. */
+    val quality: Boolean = true,
     /**
      * Overrun arm A: the encoder's bitrate key is this many times the target
      * the sender believes (a VBR encoder that overshoots its target). 1 is
@@ -98,6 +100,7 @@ data class StreamStrategy(
         if (queueMs != DEFAULT_QUEUE_MS) parts += "queue_ms=$queueMs"
         if (overflow == Overflow.Suspend) parts += "overflow=suspend"
         if (overshoot != DEFAULT_OVERSHOOT) parts += "overshoot=$overshoot"
+        if (!quality) parts += "quality=off"
         if (refine) parts += "refine=on"
         if (trafficClass != 0) parts += "tos=0x%02x".format(trafficClass)
         if (stallMs > 0) parts += "stall=$stallMs/$stallEveryMs"
@@ -172,6 +175,7 @@ data class StreamStrategy(
                 },
                 overshoot = raw("overshoot")
                     .parseInt(DEFAULT_OVERSHOOT, 1..MAX_OVERSHOOT),
+                quality = raw("quality") != "off",
             )
         }
 
