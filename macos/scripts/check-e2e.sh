@@ -1210,7 +1210,10 @@ check_forgot() {
     FAKE_ARGS="--ctl-file $WORK/fake-ctl" start_fake || return 1
     rm -f "$banner"
     launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 40
-    await_app 20 events_have '"state":"paired"'
+    # The app has to stay up to receive the forget (`await_app` would stop it
+    # the moment it paired); the launch's --quit-after is the phase's bound.
+    wait_until 20 events_have '"state":"paired"' \
+        || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
     wait_until 10 events_have '"t":"apps.list"' \
         && ok "[PAIR-30] F0 the Mac is connected before the phone forgets it" \
         || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
@@ -1242,6 +1245,11 @@ check_forgot() {
         && ok "[PAIR-30] F0 the relaunch made no attempt" \
         || bad "[PAIR-30] F0 the relaunch dialed the phone"
     stop_app
+
+    # Reset: phase 0 left this profile pinned to a phone whose fake store is
+    # empty (the forget cleared it). The existing phases start from a clean
+    # slate so the next `--connect` pairs instead of meeting a stale pin.
+    clean
 
     # 1. Pair, so the Mac holds this phone's pin.
     start_fake || return 1
