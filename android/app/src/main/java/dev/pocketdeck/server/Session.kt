@@ -3377,13 +3377,17 @@ class Session(
         }
     }
 
+    /**
+     * MEDIA-21: the Mac's audio wish, from `audio.start` until `audio.stop`
+     * (its codecs), or null. Two states on the phone's side: not wanted, and
+     * wanted. While wanted, the capture runs whenever a window is open; the
+     * power rule stops it with the last window and the next window starts it
+     * again. The Mac may send `audio.start` a moment before its `window.open`.
+     */
+    private var audioWanted: List<Int>? = null
+    private val audioLock = Any()
+
     private fun onAudioStart(obj: Map<String, Any?>) {
-        val capture = audioCapture ?: return
-        if (capture.isRunning) return
-        if (windowCount() == 0) {
-            log("audio.start with no windows: ignoring")
-            return
-        }
         val codecs = (obj["codecs"] as? List<*>)?.mapNotNull {
             when (it) {
                 is Number -> it.toInt()
@@ -3391,16 +3395,34 @@ class Session(
                 else -> null
             }
         }?.filter { it == Frames.CODEC_OPUS || it == Frames.CODEC_AAC } ?: emptyList()
-        runCatching {
-            capture.start(
-                sink = this,
-                preferredCodecs = codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) },
-                windows = ::captureWindows,
-            )
-        }.onFailure { log("audio start failed: ${it.message}") }
+        synchronized(audioLock) {
+            if (audioWanted == null) log("audio: off --start--> wanted")
+            audioWanted = codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) }
+        }
+        startWantedAudio()
+    }
+
+    /** Starts the capture when the Mac wants audio, a window is open and it is not running. */
+    private fun startWantedAudio() {
+        val capture = audioCapture ?: return
+        synchronized(audioLock) {
+            val codecs = audioWanted ?: return
+            if (capture.isRunning) return
+            if (windowCount() == 0) {
+                log("audio: wanted, waiting for a window")
+                return
+            }
+            runCatching {
+                capture.start(sink = this, preferredCodecs = codecs, windows = ::captureWindows)
+            }.onFailure { log("audio start failed: ${it.message}") }
+        }
     }
 
     private fun onAudioStop() {
+        synchronized(audioLock) {
+            if (audioWanted != null) log("audio: wanted --stop--> off")
+            audioWanted = null
+        }
         runCatching { audioCapture?.stop() }
         lastAudioConfig = null
         queue.clearAudio()
@@ -3471,6 +3493,8 @@ class Session(
     /** Notifies the capture that the open windows changed (uid set / mode). */
     private fun notifyAudioWindowsChanged() {
         audioCapture?.let { runCatching { it.onWindowsChanged(this) } }
+        // A window the Mac's audio wish was waiting for (MEDIA-21).
+        startWantedAudio()
     }
 
     private fun onDeltaDrop(stream: Int) {
