@@ -147,6 +147,9 @@ class Client(object):
         self._last_ack = 0.0
         self.peer_switch = None
         self.hello_v = None
+        # VIDEO_CHUNK fragments are reassembled here so every command keeps
+        # seeing one VIDEO_FRAME per access unit, as the Mac does.
+        self._video = proto.VideoAssembler()
 
     # -- framing --
     def _bare(self, obj):
@@ -275,6 +278,17 @@ class Client(object):
                 return None
             inner = self._path_frame(frame)
             if inner is not None:
+                if inner.type == proto.TYPE_VIDEO_CHUNK:
+                    done = self._video.add(inner)
+                    if done is None:
+                        # A partial unit is not a message yet; keep reading
+                        # until the unit completes or the caller's time is up.
+                        if deadline is not None and time.time() >= deadline:
+                            return TIMEOUT
+                        continue
+                    stream, pts, flags, au = done
+                    return proto.Frame(proto.TYPE_VIDEO_FRAME, stream,
+                                       struct.pack(">QB", pts, flags) + au)
                 return inner
 
     def close(self):
@@ -290,6 +304,7 @@ class Client(object):
         # hello carries only the display identity and this path's id (§4).
         self.hello_v = 4
         hello = {"t": "hello", "v": 4, "clientId": client_id, "name": name,
+                 "videoChunks": True,
                  "path": self.path_id}
         # A user-driven pairing says so in its hello (PROTOCOL "Session
         # handshake" step 2): without it the phone answers an unknown Mac

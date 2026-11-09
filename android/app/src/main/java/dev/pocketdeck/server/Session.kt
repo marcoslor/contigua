@@ -389,6 +389,9 @@ class Session(
     private val sendStats = HashMap<Int, SendStats>()
     /** X0: the system-wide TCP counters, deltas between stats ticks. */
     private val tcpCounters = TCPCounterDeltas()
+    /** R4: the audio path's enqueue → socket wait, one 5 s line. */
+    private val audioWait = AudioWaitStats()
+    @Volatile private var audioStatsNextAtMs = 0L
     /** `stream.stats` messages sent per stream this session, for the field log. */
     private val statsSent = HashMap<Int, Int>()
     private val tickSignal = Object()
@@ -847,6 +850,7 @@ class Session(
     }
 
     private fun tickPaths() {
+        tickAudioStats(now())
         hub.flushAck()
         hub.pingAll(transferRunning())
         // During a switch the phone's sending path is still the old one until
@@ -932,6 +936,8 @@ class Session(
             val statsAt = statsNextAtMs.coerceAtLeast(at + 1)
             if (statsAt < next) next = statsAt
         }
+        // R4: the audio wait line's own deadline.
+        if (audioStatsNextAtMs != 0L && audioStatsNextAtMs < next) next = audioStatsNextAtMs
         if (next == Long.MAX_VALUE) return TICK_KEEPALIVE_MS
         return (next - at).coerceIn(TICK_MIN_MS, TICK_KEEPALIVE_MS)
     }
@@ -1148,20 +1154,29 @@ class Session(
                 // the goodput note runs for every video entry (keyframes
                 // included), because the fallback cap must see all the bytes
                 // the link actually carried.
-                val written = if (entry.stream != 0) {
-                    val enqueued = entry.enqueuedUs
-                    val stream = entry.stream
-                    val size = entry.bytes.size
-                    {
-                        if (statsOn && enqueued > 0) {
-                            val delay = monoUs() - enqueued
-                            synchronized(statsLock) {
-                                sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
-                            }
+                val written = when {
+                    entry.audio -> {
+                        val enqueued = entry.enqueuedUs
+                        {
+                            if (enqueued > 0) audioWait.note(monoUs() - enqueued)
                         }
-                        goodput.note(stream, size, monoUs())
                     }
-                } else null
+                    entry.stream != 0 -> {
+                        val enqueued = entry.enqueuedUs
+                        val stream = entry.stream
+                        val size = entry.bytes.size
+                        {
+                            if (statsOn && enqueued > 0) {
+                                val delay = monoUs() - enqueued
+                                synchronized(statsLock) {
+                                    sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
+                                }
+                            }
+                            goodput.note(stream, size, monoUs())
+                        }
+                    }
+                    else -> null
+                }
                 // Reliable frames are wrapped and kept for a switch; lossy ones
                 // go bare on the current path (docs/design/paths.md §5.5).
                 hub.send(entry.bytes, written)
@@ -1250,6 +1265,9 @@ class Session(
         // WIN-59: the Mac names the codecs it decodes in hardware. Absent means
         // an older Mac and AVC only; a join repeats the list, so read it here.
         display.setMacCodecs(CodecChoice.macCodecs(obj["codecs"]))
+        // R4: a Mac that reassembles VIDEO_CHUNK says so here; an older Mac
+        // keeps whole VIDEO_FRAMEs, which it has always understood.
+        queue.videoChunks = Json.bool(obj["videoChunks"]) == true
         // The iPad named itself by a stable id on the phone's memory; the TLS
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
@@ -3352,7 +3370,11 @@ class Session(
 
     override fun onAudioFrame(ptsUs: Long, data: ByteArray) {
         val payload = Frames.encodeAudioFrame(AudioFramePayload(ptsUs, data))
-        queue.enqueueAudio(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload))
+        queue.enqueueAudio(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload), monoUs())
+        if (audioStatsNextAtMs == 0L) {
+            audioStatsNextAtMs = now() + AUDIO_STATS_INTERVAL_MS
+            wakeTicker()
+        }
     }
 
     private fun onAudioStart(obj: Map<String, Any?>) {
@@ -3382,7 +3404,22 @@ class Session(
         runCatching { audioCapture?.stop() }
         lastAudioConfig = null
         queue.clearAudio()
+        tickAudioStats(now(), final = true)
         sendJson(mapOf("t" to "audio.state", "on" to false, "codec" to 0))
+    }
+
+    /**
+     * R4's field log: one line every 5 s while audio runs, from the existing
+     * ticker. p50/p95/max are enqueue → last byte at the socket; dropped is the
+     * realtime budget's own count.
+     */
+    private fun tickAudioStats(at: Long, final: Boolean = false) {
+        if (audioStatsNextAtMs == 0L && !final) return
+        if (!final && at < audioStatsNextAtMs) return
+        audioWait.dropped(queue.takeAudioDropped())
+        log(audioWait.snapshot().line())
+        audioStatsNextAtMs = if (final) 0L else at + AUDIO_STATS_INTERVAL_MS
+        if (!final) wakeTicker()
     }
 
     /** Power rule: no windows left means no audio capture. */
@@ -4087,6 +4124,8 @@ class Session(
 
         /** `stream.stats` cadence per streaming window (docs/PROTOCOL.md). */
         const val STATS_INTERVAL_MS = 2_000L
+        /** R4: the audio wait line's cadence. */
+        const val AUDIO_STATS_INTERVAL_MS = 5_000L
         /** Log the running send count every this many `stream.stats` messages. */
         const val STATS_SENT_LOG_EVERY = 10
 

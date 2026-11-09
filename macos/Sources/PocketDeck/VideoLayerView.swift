@@ -858,6 +858,18 @@ final class VideoLayerView: NSView {
         }
     }
 
+    /// R6: the session's chunk assembler threw an incomplete access unit away
+    /// (a different pts arrived, a bad payload, or the stream closed). Those
+    /// bytes never reached this view, so the feed breaks here and holds every
+    /// delta until a keyframe — the discarded sample is one the decoder needed.
+    func incompleteChunkedUnit() {
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            self.onFrameDiscarded?(.incomplete)
+            self.handOff(.chainBreak(.incomplete))
+        }
+    }
+
     func enqueue(_ frame: VideoFrameData) {
         videoQueue.async { [weak self] in
             guard let self else { return }
@@ -946,7 +958,12 @@ final class VideoLayerView: NSView {
                 renderer.flush()
                 if framesDrained > 0 { runChain(.breakChain(.config, now: now())) }
             case .chainBreak(let reason):
-                if framesDrained > 0 { runChain(.breakChain(reason, now: now())) }
+                // R6: an incomplete chunked unit breaks the chain even before
+                // the first frame is drained: the unit was to be the next
+                // picture's reference, and only a keyframe can restart it.
+                if framesDrained > 0 || reason == .incomplete {
+                    runChain(.breakChain(reason, now: now()))
+                }
             case .sample(let sample, let ptsUs, let keyframe):
                 let paced = PacedSample(sample: sample, ptsUs: ptsUs, keyframe: keyframe)
                 if strategy.present == .paced, !isPaused {

@@ -10,6 +10,7 @@ enum MessageType: UInt8 {
     case videoFrame = 0x03
     case audioConfig = 0x04
     case audioFrame = 0x05
+    case videoChunk = 0x06
     case touch = 0x10
     case scroll = 0x11
     case key = 0x12

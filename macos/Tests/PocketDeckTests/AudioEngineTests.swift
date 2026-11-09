@@ -2,18 +2,17 @@ import XCTest
 @testable import PocketDeck
 
 final class AudioEngineTests: XCTestCase {
-    func testJitterStartsAfterTargetAndCapsAtMax() {
-        var jitter = AudioJitter()
-        XCTAssertFalse(jitter.ready)
-        XCTAssertTrue(jitter.push())
-        XCTAssertTrue(jitter.push())
-        XCTAssertFalse(jitter.ready)
-        XCTAssertTrue(jitter.push())
-        XCTAssertTrue(jitter.ready)
-        for _ in 0..<3 { XCTAssertTrue(jitter.push()) }
-        XCTAssertEqual(jitter.depth, 6)
-        XCTAssertFalse(jitter.push())
-        XCTAssertEqual(jitter.depth, 6)
+    func testPrebufferStartsAtTheInitialTarget() {
+        var machine = AudioPlayerMachine()
+        _ = machine.handle(.configure)
+        XCTAssertEqual(machine.state, .prebuffering)
+        for depth in 1..<AudioPlayerMachine.initialTargetFrames {
+            XCTAssertEqual(machine.handle(.frame(depthFrames: depth)), [])
+            XCTAssertEqual(machine.state, .prebuffering)
+        }
+        XCTAssertEqual(machine.handle(.frame(depthFrames: AudioPlayerMachine.initialTargetFrames)),
+                       [.startPlayback])
+        XCTAssertEqual(machine.state, .playing)
     }
 
     func testStatsCountConfigsFramesAndPts() {
