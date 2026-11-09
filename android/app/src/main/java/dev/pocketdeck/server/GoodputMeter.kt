@@ -20,6 +20,8 @@ package dev.pocketdeck.server
  */
 internal class GoodputMeter(
     private val windowUs: Long = WINDOW_US,
+    private val minSpanUs: Long = MIN_SPAN_US,
+    private val sampleGapUs: Long = SAMPLE_GAP_US,
 ) {
     private class Sample(val atUs: Long, val bytes: Int)
 
@@ -32,7 +34,7 @@ internal class GoodputMeter(
         val queue = streams.getOrPut(stream) { ArrayDeque() }
         val last = queue.lastOrNull()
         // A backwards clock, or a gap long enough to be idle, starts a new run.
-        if (last != null && (nowUs < last.atUs || nowUs - last.atUs > SAMPLE_GAP_US)) {
+        if (last != null && (nowUs < last.atUs || nowUs - last.atUs > sampleGapUs)) {
             queue.clear()
         }
         queue.addLast(Sample(nowUs, bytes))
@@ -49,9 +51,9 @@ internal class GoodputMeter(
         val queue = streams[stream] ?: return null
         prune(queue, nowUs)
         if (queue.isEmpty()) return null
-        if (nowUs - queue.last().atUs > SAMPLE_GAP_US) return null
+        if (nowUs - queue.last().atUs > sampleGapUs) return null
         val spanUs = nowUs - queue.first().atUs
-        if (spanUs < MIN_SPAN_US) return null
+        if (spanUs < minSpanUs) return null
         var bytes = 0L
         for (sample in queue) bytes += sample.bytes
         val bps = bytes * 8_000_000L / spanUs

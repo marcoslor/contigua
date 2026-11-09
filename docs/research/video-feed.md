@@ -754,6 +754,79 @@ installs, kills the exact service pid, launches the app and runs that check.
 The phone was left on the current APK (pid 8394 at the person's 18:12
 reinstall), idle, shaping off at the person's request.
 
+## Overrun (2026-11-08)
+
+The collapse was two loops, not one. The queue's byte budget was 250 ms at the
+**believed** 8 Mbps (256 KB); a VBR key frame at 1166×898 is about 1.2 MB on
+the emulator's software encoder, so the key alone overflowed it, the queue
+dropped the deltas behind it, asked for another key, and repeated on a link
+that carried every byte. With the budget fixed, a second loop remained: a VBR
+encoder whose real output is above the link keeps the queue full even when the
+sender's target sits at its 1 Mbps floor. Emulator arm A put out 11.5 Mbps on
+a ~5 Mbps writer goodput; arm B put out 1.3 Mbps on a 1.10 Mbps measured
+goodput.
+
+The queue budget is now 250 ms at the measured rate (the link's goodput when
+known, else the encoder's own output, else the target) plus the queued key
+frame's bytes; the key frame's send time is a duration credit, and the phases
+are one pure machine (Steady/Keyframe/Draining, `QueueBudget.kt`).
+
+Round 1 then capped the codec key directly (`EncoderCap`). That was an
+absolute clamp on one knob, and it was a ratchet: `reset()` was never called,
+so a 10 s Wi-Fi dip pinned the key at the dip's rate for the rest of the
+window, through resizes and `window.quality` changes. The recovery cap on the
+believed bitrate held forever for the same reason. Round 2 replaces both with
+one cascade:
+
+- The outer loop (`QualityAdaptation.kt`) moves the believed bitrate: a drop
+  takes 25% off; a measured drop caps recovery at 85% of the goodput; a
+  goodput below 1 Mbps takes the down-step floor to 85% of it (never below
+  250 kbps, R4); and the cap probes upward while the link keeps carrying it.
+  A probe that survives 10 s doubles the next step (5% → 10% → 20% → 25%); a
+  probe followed by a drop sets the cap from the measured goodput, resets the
+  step to 5% and waits 120 s; the budget refills after 120 s without a drop.
+  On a hard 3 Mbps link that is at most one failed probe per two minutes, and
+  the belief never runs more than 8% over the link in the model. A 30 Mbps
+  link that dipped for 10 s is back within 10% of its pre-dip key about
+  2¼ minutes after the link returns.
+- The inner loop (`EncoderCorrection.kt`) makes the encoder follow the belief:
+  the gain is the encoder's measured delta output over the key it ran with,
+  smoothed once a second; the key is `believed / gain`, never above the
+  uncorrected key (target × overshoot), never below 250 kbps, and never
+  climbing more than 10% a second. It resets on a new target, an encoder
+  restart and a resize. A key request that arrives within 250 ms after a fresh
+  IDR is answered by that IDR (`KeyRequestGate`), so a config no longer costs
+  two key frames.
+
+| arm | build | drop_ep after 10 s | kf_req | largest key vs budget | kbps vs link | shown/source fps |
+| --- | --- | --- | --- | --- | --- | --- |
+| A, overshoot 16 | main | 10 | 10 | 1,210,666 / 262,144 | 3031 / unshaped | 9.7 / 9.8 |
+| A | queue budget only | 33 | 33 | 1,211,210 / 1,638,234 | 11,567 / ~5 Mbps | 9.1 / 9.6 |
+| B, 3 Mbit/s shaped | main | 29 | — | — | 4613 / 3.09 Mbps | — |
+| B | queue budget only | 22 | — | — | 1323 / 1.10 Mbps | — |
+
+The queue budget moved arm A's key frame from over budget to fitting, but both
+fixed runs still fail: the measured APK predates the correction, so the codec
+kept putting out more than the link. The K1 model (`OverrunEncoderLoopTest`:
+the queue, the adaptation and the correction on a virtual clock) keeps arm A's
+output under 5 Mbps and arm B's under 1.10 Mbps; the model's key frame is one
+second of output (about 112 KB at 1 Mbps, 0.8 s at 1.10 Mbps). The emulator's
+measured I-frame is much larger: 1,211,210 bytes in arm A, about 70 deltas.
+Scaled to arm B's corrected key it is still roughly 0.8–1.2 MB, so at the
+1.10 Mbps writer goodput the key alone takes about 6–9 s. The model also still
+shows the periodic key frame outrunning the 1.10 Mbps link even when the
+average output fits: a 0.8 s key at a 0.9 Mbps source leaves a multi-second
+backlog the 250 ms duration budget drops. That is the I-frame size, not the
+rate loop. The decision (2026-11-09) is to defer it: the emulator's 1.2 MB key
+comes from a noise canvas, a synthetic worst case, and the person's real use is
+a good home link. The candidates, in order: (A) lower the key just before a
+forced IDR — cheapest, but the encoder may not shrink the IDR in proportion;
+(B) intra refresh — no single burst, but `ChainGuard` on main now holds every
+delta after a break until a real keyframe, so GDR recovery points would be
+needed first. The real-phone arm decides. One emulator boot with the
+correction build, and the real-phone arm, remain; the emulator budget was 3 of
+3. The real-phone commands are in `.agent/overrun/real-phone.md`.
+
 ## Presets, later
 
 Once the numbers are in, two presets fall out of the winners. Neither is exposed until the person picks:
