@@ -91,9 +91,13 @@ extension WindowFrameLimit {
     }
 
     /// Whether the rule applies: a window a person reaches, not the app's own
-    /// picture-sized windows, panels, sheets or child windows.
+    /// picture-sized windows, panels, sheets or child windows, and never a
+    /// full-screen window: the system sizes that one to the screen's whole
+    /// frame, menu-bar band included, and this limit would cut it to the
+    /// visible frame and leave the band uncovered (DECK-25).
     static func applies(to window: NSWindow) -> Bool {
-        !own.contains(window) && !(window is NSPanel) && window.level == .normal
+        !window.styleMask.contains(.fullScreen)
+            && !own.contains(window) && !(window is NSPanel) && window.level == .normal
             && window.sheetParent == nil && window.parent == nil
     }
 }
