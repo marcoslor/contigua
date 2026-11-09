@@ -1,7 +1,7 @@
 // The window's picture state and its one presentation (docs/specs/app-windows.md
 // WIN-39): a live picture, a stall (WIN-17), and the link's two down steps
 // (WIN-16). The overlay is what a stalled picture or a dropped link looks like —
-// the shared frosted cover (WIN-63) over the last frame, the window's icon, the
+// the shared frosted cover (WIN-64) over the last frame, the window's icon, the
 // title and "Waiting for <phone>…" — so there are no parallel flags: the
 // machine's state is the truth, and the controller runs its actions. Time stays
 // outside (the window's 0.25 s tick feeds it), so every edge is pinned by a test

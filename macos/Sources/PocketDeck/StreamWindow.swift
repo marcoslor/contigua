@@ -459,7 +459,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
         // No frame is held before the first one, so the shared cover uses its
-        // last picture's colours (none yet) or black (WIN-63).
+        // last picture's colours (none yet) or black (WIN-64).
         chrome.openingCover.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
         // The cover's ground takes the bar's haze with it (WIN-40).
         chrome.updateBarHaze()

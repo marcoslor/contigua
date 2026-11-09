@@ -339,7 +339,7 @@ final class StreamChromeView: NSView {
         // The dots sit exactly over the stream, in its own coordinates, but on
         // this view's layer: no animation while the bar comes and goes.
         touchDots.frame = video.frame
-        // The phone cover is one sheet over the whole window (WIN-63): the
+        // The phone cover is one sheet over the whole window (WIN-64): the
         // held picture runs under the titlebar and the bar band, so no band of
         // another colour sits on top while the screen sleeps or is secure.
         phoneOverlay.frame = bounds
@@ -413,7 +413,7 @@ final class StreamChromeView: NSView {
 
     /// True when the framed bar's mirror band would show. The opening cover is
     /// one opaque sheet over it until the first frame (WIN-11), and the phone
-    /// cover is one sheet from the window's top edge (WIN-63); the stall
+    /// cover is one sheet from the window's top edge (WIN-64); the stall
     /// overlay reports its own covering separately (`barMirrorCovered`).
     var barMirrorVisible: Bool { barHeight > 0 && !openingCover.isShowing && !phoneOverlay.isShowing }
 
@@ -533,7 +533,7 @@ final class StreamChromeView: NSView {
     /// The overlay covers the bar's mirror (WIN-39): it spans the bar's band and
     /// sits above the extension view, so the bar shows the same cover as the
     /// body instead of the bright stream. The phone cover does the same for
-    /// the sleeping panel and a secure surface (WIN-63). False once it is down.
+    /// the sleeping panel and a secure surface (WIN-64). False once it is down.
     var barMirrorCovered: Bool {
         guard barHeight > 0 else { return false }
         let band = NSRect(x: 0, y: video.frame.maxY, width: bounds.width,

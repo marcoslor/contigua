@@ -153,6 +153,24 @@ struct CoverFade: Equatable {
 
     static let duration: TimeInterval = FrostedCoverStyle.fadeSeconds
 
+    /// Closed names for the transition log (`cover fade: hidden --show--> fadingIn`).
+    static func name(_ state: State) -> String {
+        switch state {
+        case .hidden: return "hidden"
+        case .fadingIn: return "fadingIn"
+        case .shown: return "shown"
+        case .fadingOut: return "fadingOut"
+        }
+    }
+
+    static func name(_ event: Event) -> String {
+        switch event {
+        case .show: return "show"
+        case .hide: return "hide"
+        case .tick: return "tick"
+        }
+    }
+
     private(set) var state: State = .hidden
     private(set) var startedAt: TimeInterval?
     private(set) var alpha: Double = 0
@@ -330,6 +348,12 @@ class FrostedCoverView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }  // unrecoverable: NSCoder is never used
 
+    deinit {
+        // A window can close mid-fade: an orphaned 60 Hz timer would keep the
+        // run loop busy for the rest of the app's life.
+        fadeTimer?.invalidate()
+    }
+
     override var isOpaque: Bool { false }
 
     /// Shows `content` (the fade starts on the first show) or takes the cover
@@ -364,9 +388,14 @@ class FrostedCoverView: NSView {
     /// The fade reached its end or a new one started: render it. Reduce Motion
     /// takes the cover in or out at once (CONV-MAC-22).
     private func run(_ event: CoverFade.Event, at now: TimeInterval) {
+        let before = fade.state
         var actions = fade.handle(event, at: now)
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, fade.isAnimating {
             actions += fade.handle(.tick(now + CoverFade.duration), at: now + CoverFade.duration)
+        }
+        if fade.state != before {
+            // Closed tokens only: the fade's path in a field log (AGENTS.md).
+            Log.app.debug("cover fade: \(CoverFade.name(before), privacy: .public) --\(CoverFade.name(event), privacy: .public)--> \(CoverFade.name(self.fade.state), privacy: .public)")  // log-ok: closed fade state tokens, never a person's value
         }
         for action in actions {
             switch action {
