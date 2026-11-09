@@ -1771,7 +1771,10 @@ PY
 # the 100 ms phase: no underrun, no drop, audio wait within R4, audio depth
 # within the 185 ms A/V limit; the 500 ms phase: one concealed episode, then
 # the stale burst is dropped at arrival so audio resyncs, and the picture
-# decodes (the chunks were reassembled).
+# decodes (the chunks were reassembled). The video half: the fake counted
+# backlogs of 3+ >16 KiB deltas, and the Mac's chain held over them — no
+# incomplete unit discarded, `mac_drop_incomplete=0` on every line,
+# `chain_fed=0`, and the picture kept arriving at realtime.
 audio_log() {
     /usr/bin/log show --last 6m --info --style syslog \
         --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null

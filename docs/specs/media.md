@@ -46,8 +46,11 @@ The media volume row is the **phone's music stream** (`phone.volume`, panel.md `
 | MEDIA-15 | WHILE audio plays THE Mac SHALL buffer decoded audio to an adaptive target of the last 10 s p99 arrival lateness + 20 ms margin + one 20 ms frame, clamped to 60–180 ms (9 × 20 ms frames) so the played audio never trails the picture by more than the 185 ms A/V limit; the AAC fallback's 1024-sample packets make its queue 192 ms, within the codec's frame granularity and still under the video pipeline's delay, SHALL start playback only when that target is filled, SHALL count one underrun per dry spell and conceal it from the last real PCM with a decaying crossfade (at most 160 ms), SHALL drain a backlog above the target by time-compressing with a crossfade rather than cutting audio, and SHALL count underrun, late, concealed and dropped packets. | K2 `AudioJitterTests` (`testTargetFollowsTheMeasuredLateness`, `testTargetStaysInRange`, `testStarvationCountsOneUnderrunAndConceals`, `testConcealmentIsBounded`, `testStretchDrainsABacklogAndStopsAtTheTarget`, `testStretchKeepsPitchAndLength`, `testTheMeasuredArrivalPatternNeverStarves`); e2e `audiogap` `[MEDIA-15]` |
 | MEDIA-16 | THE phone SHALL send audio ahead of video deltas and SHALL split a video access unit larger than 16 KiB into `VIDEO_CHUNK` fragments of at most 16 KiB only when the Mac's hello says `videoChunks`, keeping the first fragment at the frame's priority and the rest behind audio so no audio packet waits behind more than one fragment; it SHALL bound unsent socket bytes with `TCP_NOTSENT_LOWAT` 16 KiB; the Mac SHALL reassemble one access unit per stream and hand the decoder the same Annex-B bytes it would have received as a whole `VIDEO_FRAME`. | K1 `AudioGapTest` (the audio lane overtakes deltas and interleaves between chunks; the chunk wire shape); e2e `audiogap` `[MEDIA-16]` (the chunked picture reaches the decoder; audio wait `ahead_p95 ≤ 32 KiB`) |
 | MEDIA-17 | WHILE a stream window plays over a link that goes off-channel for 100 ms every second THE Mac SHALL play audio with zero underruns and zero drops, and WHEN one 500 ms off-channel episode hits THE Mac SHALL conceal it as one starvation episode (one underrun, at most 160 ms of concealment), discard the stale head of the burst that follows, and resynchronise with the picture; the queued audio depth SHALL stay at or under 200 ms (the AAC fallback's 192 ms; the A/V trail stays under 185 ms, ITU-R BT.1359) and the picture SHALL keep decoding. | e2e `audiogap` `[MEDIA-17]` (phase A counters, phase B counters, depth max, audio wait) |
+| MEDIA-18 | THE phone SHALL put every fragment of an access unit on the wire in index order, contiguous within its stream: audio and JSON may go between fragments, and so may another stream's frames, but another frame of the same stream SHALL NOT; a partly sent frame SHALL keep the head of its stream's lane, and the keyframe lane SHALL hold at most one keyframe per stream. | K1 `SendQueueTest` (`aPartlySentChunkedDeltaKeepsTheHeadOfItsLane`, `twoStreamsKeyframesRotateAcrossStreamsAndStayInOrderPerStream`, `aNewControlFrameReplacesTheOlderKeyframesRemainder`); e2e `audiogap` `[MEDIA-18]` (the fake queued 3+ >16 KiB deltas at once, several times a minute) |
+| MEDIA-19 | WHEN the Mac discards an incomplete chunked unit (a fragment of a different pts arrives, a bad payload, or a stream close) THE Mac SHALL treat it as a chain break (WIN-62 reason `incomplete`), count it as `mac_drop_incomplete`, and feed no delta to the decoder until a keyframe arrives. | K2 `VideoChunksTests` (`testADifferentPtsDiscardsTheStubAndBreaksTheChain`, `testADuplicateFragmentIsABadPayload`, `testForgetReportsOnlyAStubItThrowsAway`), `ChainGuardTests.testTheReasonTokensAreTheClosedSet`, `StreamStatsTests.testTheLineSplitsMacDropsAndCountsChainFed`; e2e `audiogap` `[MEDIA-19]` (`mac_drop_incomplete=0`, no `incomplete` break, `chain_fed=0` while the backlog ran) |
+| MEDIA-20 | WHEN the phone discards a partly sent chunked delta (a drop episode or a new control frame) THE phone SHALL drop every later delta of that stream until the next keyframe (the drop rule), and the Mac's MEDIA-19 covers the stub left on the wire. | K1 `SendQueueTest` (`aDropEpisodeDiscardsThePartlySentDeltaAndEveryLaterOne`); e2e `audiogap` `[MEDIA-19]` (the drop-free phase A) |
 
-Priority note: MEDIA-1, 2, 5, 6, 8, 12, 13, 15, 16 and 17 are P1; seek, artwork, the picker, the volume wire and the older-phone rules are P2.
+Priority note: MEDIA-1, 2, 5, 6, 8, 12, 13, 15, 16, 17, 18, 19 and 20 are P1; seek, artwork, the picker, the volume wire and the older-phone rules are P2.
 
 ## States and events
 
@@ -85,6 +88,18 @@ Audio is a second, small machine (the phone's `AudioFollow` and the Mac's `Audio
 | Streaming | the output device changes | Stop, then Start on the next frame (no crash) |
 | any | a frame with no config | ignored until a config arrives |
 | any | a codec the Mac cannot decode | silence for that packet, counted; transport stays up |
+
+The reassembler is a second, per-stream machine (`VideoChunkAssembler`):
+
+| State | Event | Result |
+|---|---|---|
+| Idle | a `VIDEO_CHUNK` fragment | Assembling(pts, flags, count); a complete count-1 unit is handed over at once |
+| Assembling | a fragment of the same unit | stored; on the last index one access unit is handed over, Idle |
+| Assembling | a fragment of another pts/flags/count | the stub is discarded, `incomplete` (MEDIA-19), then Assembling(the new unit) |
+| Assembling | a duplicate index | the stub is discarded, `incomplete` (a bad payload), Idle |
+| Assembling | `window.closed` (or a bad payload from the session) | the stub is discarded, `incomplete`, Idle |
+
+Ignored events: a retransmission of a unit already handed over (chunks are lossy, never replayed), and another stream's fragments (each stream owns one stub).
 
 ## Phone count and connection
 

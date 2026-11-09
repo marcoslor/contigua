@@ -129,7 +129,10 @@ match UIDs, not windows).
 - Send order: JSON > keyframes/config > audio > video deltas. The writer
   interleaves audio between a keyframe's `VIDEO_CHUNK` fragments and keeps at
   most 16 KiB unsent in the socket (`TCP_NOTSENT_LOWAT`), so an audio packet
-  never waits behind more than one fragment (R4).
+  never waits behind more than one fragment (R4). A partly sent frame keeps
+  the head of its stream's lane: its fragments stay contiguous on the wire even
+  with two more deltas queued behind it, so the Mac never throws D1 away and
+  decodes D2 without its reference (MEDIA-18).
 
 ## Alternatives rejected
 
