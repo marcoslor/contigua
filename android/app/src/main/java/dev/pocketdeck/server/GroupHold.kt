@@ -22,8 +22,11 @@ internal data class GroupHold(
  * The one pure decision: the wake owner, whether the streaming displays share
  * the panel's group, and whether any stream is open.
  *
- * Today the owner and the group change nothing: the episode holds every open
- * stream's display lock until its close, and every step pokes.
+ * While the person owns a shared group neither the lock nor the poke may keep
+ * group 0 awake, so the phone's own screen timeout runs (PHONE-13). Its off
+ * edge then re-lights the window displays exactly as a power press does
+ * (`PowerWatchAction.RELIGHT`). An own group is never the panel's, so it keeps
+ * today's answer in every state.
  */
 internal fun groupHold(
     owner: WakeOwner,
@@ -31,5 +34,6 @@ internal fun groupHold(
     streamsUp: Boolean,
 ): GroupHold = when {
     !streamsUp -> GroupHold(displayLock = false, poke = false)
+    sharedGroup && owner == WakeOwner.PERSON_TOOK_OVER -> GroupHold(displayLock = false, poke = false)
     else -> GroupHold(displayLock = true, poke = true)
 }
