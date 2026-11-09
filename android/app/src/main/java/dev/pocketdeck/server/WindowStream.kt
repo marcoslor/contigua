@@ -403,6 +403,12 @@ internal class WindowStream(
         }
     }
 
+    /** The drop rule's request: the IDR before the dropped deltas answers nothing. */
+    fun requestKeyframeAfterDrop() {
+        keyGate.onDeltasDropped()
+        requestKeyframe()
+    }
+
     fun requestKeyframe() {
         stats.onKeyframeRequested()
         val codec = encoder ?: return
@@ -1113,6 +1119,8 @@ internal class WindowStream(
 
     private fun drain(codec: MediaCodec, kind: VideoCodec) {
         val info = MediaCodec.BufferInfo()
+        // WIN-63: one per encoder, so its first format always goes out.
+        val configChange = ConfigChange()
         var nextFreezeCheckMs = 0L
         var frozen = false
         while (!released && encoder === codec) {
@@ -1154,7 +1162,12 @@ internal class WindowStream(
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let {
                     lastCsd = it
-                    sink.onConfig(stream, kind.wire, width, height, it, picture)
+                    // Per-frame statistics change the format with the same
+                    // parameter sets: only a real change reaches the Mac.
+                    val rect = picture
+                    if (configChange.shouldSend(kind.wire, width, height, rect, it)) {
+                        sink.onConfig(stream, kind.wire, width, height, it, rect)
+                    }
                 }
                 continue
             }
@@ -1374,6 +1387,10 @@ internal class AndroidDisplayLayer(
 
     override fun requestKeyframe(stream: Int) {
         get(stream)?.requestKeyframe()
+    }
+
+    override fun requestKeyframeAfterDrop(stream: Int) {
+        get(stream)?.requestKeyframeAfterDrop()
     }
 
     override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {

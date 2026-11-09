@@ -20,6 +20,7 @@ enum Log {
     static let app = Logger(subsystem: subsystem, category: "app")
     static let session = Logger(subsystem: subsystem, category: "session")
     static let video = Logger(subsystem: subsystem, category: "video")
+    static let audio = Logger(subsystem: subsystem, category: "audio")
     static let input = Logger(subsystem: subsystem, category: "input")
     static let files = Logger(subsystem: subsystem, category: "files")
 }

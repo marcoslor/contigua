@@ -28,6 +28,7 @@ TYPE_VIDEO_CONFIG = 0x02
 TYPE_VIDEO_FRAME = 0x03
 TYPE_AUDIO_CONFIG = 0x04
 TYPE_AUDIO_FRAME = 0x05
+TYPE_VIDEO_CHUNK = 0x06
 TYPE_TOUCH = 0x10
 TYPE_SCROLL = 0x11
 TYPE_KEY = 0x12
@@ -46,6 +47,7 @@ TYPE_NAMES = {
     TYPE_VIDEO_FRAME: "VIDEO_FRAME",
     TYPE_AUDIO_CONFIG: "AUDIO_CONFIG",
     TYPE_AUDIO_FRAME: "AUDIO_FRAME",
+    TYPE_VIDEO_CHUNK: "VIDEO_CHUNK",
     TYPE_TOUCH: "TOUCH",
     TYPE_SCROLL: "SCROLL",
     TYPE_KEY: "KEY",
@@ -293,6 +295,81 @@ def unpack_video_frame(frame):
 
 
 FRAME_FLAG_KEY = 0x01
+
+# --- VIDEO_CHUNK -----------------------------------------------------------
+VIDEO_CHUNK_BYTES = 16 * 1024
+
+
+def pack_video_chunk(stream, pts_us, flags, index, count, data):
+    payload = struct.pack(">QBHH", pts_us, flags, index, count) + data
+    return pack_frame(TYPE_VIDEO_CHUNK, stream, payload)
+
+
+def split_video_frame(stream, pts_us, flags, access_unit,
+                      max_bytes=VIDEO_CHUNK_BYTES):
+    """The wire frames for one access unit: whole when small, else chunks."""
+    if len(access_unit) <= max_bytes:
+        return [pack_video_frame(stream, pts_us, flags, access_unit)]
+    pieces = [access_unit[i:i + max_bytes]
+              for i in range(0, len(access_unit), max_bytes)]
+    return [pack_video_chunk(stream, pts_us, flags, index, len(pieces), piece)
+            for index, piece in enumerate(pieces)]
+
+
+def unpack_video_chunk(frame):
+    if frame.type != TYPE_VIDEO_CHUNK:
+        raise ProtocolError("expected VIDEO_CHUNK, got %s" % frame.name)
+    if len(frame.payload) < 13:
+        raise ProtocolError("VIDEO_CHUNK payload too short")
+    pts_us, flags, index, count = struct.unpack_from(">QBHH", frame.payload, 0)
+    data = frame.payload[13:]
+    if count < 1 or index >= count or len(data) > VIDEO_CHUNK_BYTES:
+        raise ProtocolError("bad VIDEO_CHUNK index %d/%d, %d bytes"
+                            % (index, count, len(data)))
+    return pts_us, flags, index, count, data
+
+
+class VideoAssembler(object):
+    """Reassemble VIDEO_CHUNK fragments per stream (the Mac's assembler)."""
+
+    def __init__(self):
+        self._units = {}
+
+    def add(self, frame):
+        """Feed a VIDEO_CHUNK; return (stream, pts_us, flags, au) or None."""
+        pts_us, flags, index, count, data = unpack_video_chunk(frame)
+        unit = self._units.get(frame.stream)
+        if (unit is None or unit["pts"] != pts_us or unit["flags"] != flags
+                or unit["count"] != count):
+            unit = {"pts": pts_us, "flags": flags, "count": count,
+                    "parts": {}, "bytes": 0}
+            self._units[frame.stream] = unit
+        if index in unit["parts"]:
+            return None
+        unit["parts"][index] = data
+        unit["bytes"] += len(data)
+        if len(unit["parts"]) != count:
+            return None
+        del self._units[frame.stream]
+        return (frame.stream, pts_us, flags,
+                b"".join(unit["parts"][i] for i in range(count)))
+
+    def forget(self, stream):
+        self._units.pop(stream, None)
+
+
+def pad_access_unit(access_unit, target_bytes):
+    """Append an H.264 filler NAL (type 12) until the unit reaches a size.
+
+    The e2e pattern needs a fixed wire load; the picture is unchanged because
+    every decoder ignores filler data. Never shrinks a unit.
+    """
+    need = target_bytes - len(access_unit)
+    if need <= 8:
+        return access_unit
+    # 4-byte start code + 1-byte NAL header + payload + 0x80 trailing bits.
+    payload = b"\xff" * (need - 6)
+    return access_unit + b"\x00\x00\x00\x01\x0c" + payload + b"\x80"
 
 
 # --- AUDIO_CONFIG ----------------------------------------------------------

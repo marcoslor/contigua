@@ -19,6 +19,9 @@ Modes (docs/design/paths.md §10.3):
     rst        closes both sides with a reset at once
     throttle   caps each direction at --rate-mbit
     delay-throttle  both at once (a 100 ms, 3 Mbit/s link)
+    stall      a good link at --rate-mbit that goes off-channel: delivery
+               pauses --stall-ms every --stall-every-ms, and --stall-long-ms
+               once at --stall-long-at-ms, then bursts (the AWDL pattern)
 
 The mode can be changed at run time by writing one line to --ctl-file
 (`mode blackhole`), so a check can kill a path at a precise byte of a transfer.
@@ -39,7 +42,7 @@ import sys
 import threading
 import time
 
-MODES = ("pass", "delay", "blackhole", "pass-new", "rst", "throttle", "delay-throttle")
+MODES = ("pass", "delay", "blackhole", "pass-new", "rst", "throttle", "delay-throttle", "stall")
 CHUNK = 65536
 # Read at most this much ahead of the forwarder per direction: a real socket's
 # receive buffer is bounded, and a proxy with an unbounded queue would hide the
@@ -62,6 +65,8 @@ class Proxy(object):
         # open when the lift happened and keep the black hole (a stale socket).
         self.split_at = 0
         self._ctl_mtime = None
+        # `stall`: the off-channel clock starts with the proxy.
+        self.started_at = time.monotonic()
 
     # -- events --
     def event(self, obj):
@@ -289,7 +294,7 @@ class Connection(object):
             # Only a throttled link models a bounded buffer: `pass` is a wire,
             # and capping it would throttle the checks that stream video and
             # file data through it side by side.
-            if self.proxy.get_mode() in ("throttle", "delay-throttle"):
+            if self.proxy.get_mode() in ("throttle", "delay-throttle", "stall"):
                 with self.queue_cv:
                     while self.queued[direction] >= QUEUE_CAP and not self.stop.is_set():
                         self.queue_cv.wait(0.02)
@@ -329,8 +334,10 @@ class Connection(object):
                 left = due - time.time()
                 if left > 0 and self.stop.wait(min(left, 1.0)):
                     return
-            if mode in ("throttle", "delay-throttle"):
+            if mode in ("throttle", "delay-throttle", "stall"):
                 self._throttle(direction, len(data))
+            if mode == "stall":
+                self._stall_wait()
             try:
                 dst.sendall(data)
             except OSError:
@@ -356,6 +363,27 @@ class Connection(object):
         if sleep_for > 0:
             self.stop.wait(min(sleep_for, 1.0))
 
+    def _stall_wait(self):
+        """Hold delivery while the radio is off-channel, then burst (AWDL).
+
+        The schedule is fixed from the proxy's start: a short pause every
+        `--stall-every-ms` and one long pause at `--stall-long-at-ms`. Bytes
+        are read and queued throughout, exactly as the access point buffers
+        them while the Mac's radio is on another channel.
+        """
+        args = self.proxy.args
+        elapsed = time.monotonic() - self.proxy.started_at
+        long_at = args.stall_long_at_ms / 1000.0
+        if args.stall_long_ms > 0 and long_at <= elapsed < long_at + args.stall_long_ms / 1000.0:
+            self.stop.wait(long_at + args.stall_long_ms / 1000.0 - elapsed)
+            return
+        every = args.stall_every_ms / 1000.0
+        if every <= 0 or args.stall_ms <= 0:
+            return
+        phase = elapsed % every
+        if phase < args.stall_ms / 1000.0:
+            self.stop.wait(args.stall_ms / 1000.0 - phase)
+
     def _control(self):
         while not self.stop.wait(0.1):
             if self.proxy.get_mode() == "rst":
@@ -371,6 +399,14 @@ def build_parser():
     p.add_argument("--mode", choices=MODES, default="pass")
     p.add_argument("--delay-ms", type=int, default=120)
     p.add_argument("--rate-mbit", type=float, default=2.0)
+    p.add_argument("--stall-ms", type=int, default=100,
+                   help="stall mode: delivery pause length")
+    p.add_argument("--stall-every-ms", type=int, default=1000,
+                   help="stall mode: pause cadence")
+    p.add_argument("--stall-long-ms", type=int, default=0,
+                   help="stall mode: one longer pause")
+    p.add_argument("--stall-long-at-ms", type=int, default=0,
+                   help="stall mode: when the long pause starts")
     p.add_argument("--ctl-file", default=None,
                    help="write `mode blackhole` here to change the mode")
     p.add_argument("--events", default=None, help="JSON Lines events here")

@@ -29,6 +29,8 @@ data class AudioFramePayload(val ptsUs: Long, val data: ByteArray)
 object Frames {
 
     const val MAX_FRAME = 8 * 1024 * 1024
+    /** R4: the largest video access-unit fragment on the wire. */
+    const val VIDEO_CHUNK_BYTES = 16 * 1024
     private const val HEADER = 5 // type(1) + stream(4)
 
     /**
@@ -42,6 +44,7 @@ object Frames {
     const val TYPE_VIDEO_FRAME = 0x03
     const val TYPE_AUDIO_CONFIG = 0x04
     const val TYPE_AUDIO_FRAME = 0x05
+    const val TYPE_VIDEO_CHUNK = 0x06
     const val TYPE_TOUCH = 0x10
     const val TYPE_SCROLL = 0x11
     const val TYPE_KEY = 0x12
@@ -79,6 +82,38 @@ object Frames {
     }
 
     fun encodeJson(stream: Int, json: String): ByteArray = encode(TYPE_JSON, stream, json.toByteArray(Charsets.UTF_8))
+
+    /**
+     * R4: one framed VIDEO_FRAME split into VIDEO_CHUNK frames of at most
+     * [maxBytes] of access unit, or null when the frame is small enough to go
+     * whole. The chunks carry the frame's pts and flags, so the Mac can
+     * reassemble without any other state.
+     */
+    fun chunkVideoFrame(frame: ByteArray, maxBytes: Int = VIDEO_CHUNK_BYTES): List<ByteArray>? {
+        if (frame.size <= VIDEO_FRAME_DATA_OFFSET) return null
+        if ((frame[4].toInt() and 0xFF) != TYPE_VIDEO_FRAME) return null
+        val dataLen = frame.size - VIDEO_FRAME_DATA_OFFSET
+        if (dataLen <= maxBytes) return null
+        val count = (dataLen + maxBytes - 1) / maxBytes
+        if (count > 512) return null
+        val bb = ByteBuffer.wrap(frame).order(ByteOrder.BIG_ENDIAN)
+        val stream = bb.getInt(5)
+        val ptsUs = bb.getLong(9)
+        val flags = frame[17]
+        val out = ArrayList<ByteArray>(count)
+        for (index in 0 until count) {
+            val start = VIDEO_FRAME_DATA_OFFSET + index * maxBytes
+            val end = minOf(start + maxBytes, frame.size)
+            val payload = ByteBuffer.allocate(8 + 1 + 2 + 2 + (end - start)).order(ByteOrder.BIG_ENDIAN)
+            payload.putLong(ptsUs)
+            payload.put(flags)
+            payload.putShort(index.toShort())
+            payload.putShort(count.toShort())
+            payload.put(frame, start, end - start)
+            out.add(encode(TYPE_VIDEO_CHUNK, stream, payload.array()))
+        }
+        return out
+    }
 
     // ---- payload codecs -------------------------------------------------
 

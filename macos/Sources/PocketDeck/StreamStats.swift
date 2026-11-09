@@ -220,6 +220,9 @@ enum StatsDiscardReason: String, CaseIterable {
     /// The delta was held because the chain was broken: no decoder got it
     /// until a keyframe (WIN-61).
     case awaitingKey = "awaiting_key"
+    /// R6: the chunk assembler threw an incomplete access unit away. The feed
+    /// breaks (WIN-62's `incomplete`) and holds deltas until a keyframe.
+    case incomplete
 }
 
 /// What a wire-key frame's NAL types say: it cannot restart the decoder
@@ -858,6 +861,7 @@ enum StreamStatsLine {
             "mac_drop_before_config=\(stats.macDrops[.beforeConfig] ?? 0)",
             "mac_drop_paced=\(stats.macDrops[.paced] ?? 0)",
             "mac_drop_awaiting_key=\(stats.macDrops[.awaitingKey] ?? 0)",
+            "mac_drop_incomplete=\(stats.macDrops[.incomplete] ?? 0)",
             "chain_fed=\(stats.chainFed)",
             "phone_drop=\(phone?.deltasDropped ?? 0)",
             "drop_ep=\(phone?.dropEpisodes ?? 0)",
