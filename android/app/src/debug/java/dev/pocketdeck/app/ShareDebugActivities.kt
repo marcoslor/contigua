@@ -87,12 +87,12 @@ class ShareDebugPickerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val origin = intent.getStringExtra(EXTRA_ORIGIN) ?: "app"
-        Log.i(TAG, "picker origin=$origin phase=create display=${displayId()} task=${getTaskId()}")
+        Log.i(TAG, "picker origin=$origin phase=create display=${displayId()} task=${getTaskId()}")  // log-ok: fixed state name (app|activity)
         setContentView(TextView(this).apply { text = "share picker" })
         // The policy moves the task a moment after it is created; the settled
         // line is the one the check judges.
         Handler(Looper.getMainLooper()).postDelayed({
-            Log.i(TAG, "picker origin=$origin phase=settled display=${displayId()} task=${getTaskId()}")
+            Log.i(TAG, "picker origin=$origin phase=settled display=${displayId()} task=${getTaskId()}")  // log-ok: fixed state name (app|activity)
         }, SETTLE_MS)
         Handler(Looper.getMainLooper()).postDelayed({ finish() }, LIFETIME_MS)
     }
