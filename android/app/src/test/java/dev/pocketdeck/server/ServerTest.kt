@@ -769,6 +769,64 @@ class ServerTest {
         preReadHello = hello,
     )
 
+    @Test
+    fun aForgottenMacHearsForgottenOnTheLiveSessionBeforeTheClose() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (forget)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (forget)")
+        val server = Server(
+            { socket, plain, hello ->
+                Session(
+                    socket = socket,
+                    plainSocket = plain,
+                    display = platform,
+                    catalog = platform,
+                    launcher = platform,
+                    injector = platform,
+                    power = platform,
+                    device = platform,
+                    store = platform,
+                    callback = platform,
+                    now = { 1_000 },
+                    log = {},
+                    handshakeTimeoutMs = 3_000,
+                    preReadHello = hello,
+                    tlsView = TlsV2Fixture.view,
+                    gateProvider = { GateSettings(true, true) },
+                )
+            },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { mac ->
+                val reader = FrameReader(mac.getInputStream())
+                val out = mac.getOutputStream()
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 4,
+                    "path" to "a1b2c3d4", "clientId" to "c1", "name" to "MacBook"))))
+                out.flush()
+                assertEquals("welcome", readJson(reader)["t"])
+
+                // A Mac the live session does not belong to hears nothing.
+                assertEquals(0, server.notifyForgotten(setOf("other")))
+
+                assertEquals(1, server.notifyForgotten(setOf("c1")))
+                var told: Map<String, Any?>? = null
+                for (i in 0 until 20) {
+                    val message = try { readJson(reader) } catch (e: Throwable) { break }
+                    if (message["t"] == "error") { told = message; break }
+                }
+                assertEquals("forgotten", told?.get("code"))
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     private fun client(port: Int, macIdentity: TestTls.Identity, phoneIdentity: TestTls.Identity): Socket =
         TestTls.clientSocket(macIdentity, phoneIdentity.certPem, "127.0.0.1", port)
 }

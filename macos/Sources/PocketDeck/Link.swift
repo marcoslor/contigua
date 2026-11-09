@@ -23,6 +23,33 @@ enum Cause: Equatable {
     case connectionsOff
     /// The phone accepts paired Macs but not new pairings.
     case pairingsOff
+    /// 30 s with neither an advertisement nor a last welcome address: the Mac
+    /// has nothing to dial and says so instead of showing Connecting forever.
+    case notFound
+}
+
+/// Which kind of trust loss a phone is in (PAIR-31/32). *Told* is the phone's
+/// own authenticated word (`forgotten`, or its certificate rejection twice):
+/// attempts stop. *Inferred* is the Mac's own pin check with the id advertised:
+/// the TXT id is unauthenticated, so it only quiets the retries, never stops
+/// them, and a passing pin clears it.
+enum TrustLossKind: String, Codable, Equatable {
+    case told
+    case inferred
+
+    var keepsRechecking: Bool { self == .inferred }
+    var keepsAddress: Bool { self == .inferred }
+}
+
+/// A pin mismatch is the same phone with a new identity, or a foreign phone at
+/// a stale address. Before TLS verifies anything the only same-device proof the
+/// protocol carries is the advertised record's TXT `id` (a pin mismatch aborts
+/// the handshake before `welcome`): a dial to that phone's own discovery record,
+/// or the pinned id advertised when the attempt fails.
+enum TrustLoss {
+    static func sameDevice(dialedService: Bool, advertised: Bool) -> Bool {
+        dialedService || advertised
+    }
 }
 
 enum Pairing: Equatable {
@@ -110,7 +137,8 @@ enum Link: Equatable {
     var isRecovering: Bool {
         switch self {
         case .connecting, .reconnecting, .offline(_, .unreachable), .offline(_, .busy),
-             .offline(_, .connectionsOff), .offline(_, .pairingsOff): return true
+             .offline(_, .pairingsOff), .offline(_, .notFound): return true
+        case .offline(_, .connectionsOff): return true
         default: return false
         }
     }
@@ -122,6 +150,8 @@ struct Banner: Equatable {
     enum Action: Equatable { case tryNow, pairAgain, openSettings }
     var text: String
     var action: Action?
+    /// One line under the text, for the step that fixes the state (PAIR-35).
+    var detail: String? = nil
 
     var actionTitle: String? {
         switch action {
@@ -148,7 +178,11 @@ extension Link {
         case .offline(let p, .busy):
             return Banner(text: "Another Mac is connected to \(naming(p)).", action: .tryNow)
         case .offline(let p, .connectionsOff):
-            return Banner(text: "Connections are turned off on \(naming(p)).", action: nil)
+            return Banner(text: "Connections are turned off on \(naming(p)).", action: nil,
+                          detail: "Turn on Allow connections in PocketDeck on your phone.")
+        case .offline(let p, .notFound):
+            return Banner(text: "Can't find \(naming(p)) on this network.", action: nil,
+                          detail: "Check that the phone is on the same Wi-Fi and PocketDeck is running.")
         case .offline(let p, .pairingsOff):
             return Banner(text: "\(naming(p)) isn't accepting new pairings.", action: nil)
         case .offline(let p, .versionMismatch):
@@ -212,6 +246,12 @@ enum LinkEvent: Equatable {
     case attemptFailed(reason: String)
     /// The remembered phone was (re)discovered, the network changed, the Mac woke.
     case reachabilityHint
+    /// The advertised record for this phone now (PAIR-31/35): whether it is on
+    /// the air, whether a last welcome address is dialable, and whether the
+    /// record appeared or changed since the last report.
+    case reachability(advertised: Bool, hasAddress: Bool, changed: Bool)
+    /// Launch a phone whose record already says trust was lost (PAIR-32).
+    case restoreTrustLost(PhoneRef, TrustLossKind)
     case tryNow
     case beginPairing(PhoneRef)
     /// The phone showed a code (`pair.code_shown`) in a session that is allowed to pair.
@@ -235,6 +275,12 @@ enum LinkAction: Equatable {
 
 struct LinkMachine {
     static let offlineAfter: TimeInterval = 15
+    /// The inferred trust loss's quiet re-check (PAIR-31).
+    static let trustRecheck: TimeInterval = 60
+    /// Nothing advertised and no last address: say so instead of Connecting (PAIR-35).
+    static let notFoundAfter: TimeInterval = 30
+    /// The connections-off refusal's own cadence (PAIR-35).
+    static let connectionsOffRetry: TimeInterval = 30
 
     private(set) var link: Link = .idle
     private var outageStart: Date?
@@ -242,6 +288,18 @@ struct LinkMachine {
     /// Consecutive closes right after TLS, before any `welcome` (PAIR-23): one
     /// may be a phone restarting, two in a row mean it refuses this Mac.
     private var earlyCloses = 0
+    /// The phone rejected this Mac's certificate after our pin passed (PAIR-31),
+    /// two in a row mean trust lost rather than a blip.
+    private var certRejections = 0
+    /// The trust-lost kind and when the inferred kind last rechecked.
+    private(set) var trustLossKind: TrustLossKind?
+    private var trustLastAttempt: Date?
+    /// True from a trust re-check's attempt until its failure or welcome: the
+    /// inferred state must never start a second dial over one in flight.
+    private var trustAttemptPending = false
+    /// What the controller last said about the advertised record (PAIR-31/35).
+    private var advertised = false
+    private var hasAddress = false
     /// Where to go back to when a pairing is cancelled.
     private var resume: Link = .idle
 
@@ -258,24 +316,83 @@ struct LinkMachine {
             outageStart = now
             failures = 0
             earlyCloses = 0
+            certRejections = 0
+            trustLossKind = nil
+            trustAttemptPending = false
+            advertised = false
+            hasAddress = false
             return [.attempt(after: 0)]
 
         case .activate(let phone):
+            // A trust-lost phone keeps its state when it becomes the phone in
+            // use: only a pairing or a passing pin ends it (PAIR-32).
+            if case .needsPairing = link, link.phone?.id == phone.id {
+                if trustLossKind == .inferred {
+                    trustLastAttempt = now
+                    trustAttemptPending = true
+                    return [.attempt(after: 0)]
+                }
+                return [.stopAttempts]
+            }
             link = .connecting(phone)
             outageStart = now
             failures = 0
             earlyCloses = 0
+            certRejections = 0
+            trustLossKind = nil
+            trustAttemptPending = false
+            advertised = false
+            hasAddress = false
             return [.attempt(after: 0)]
+
+        case .restoreTrustLost(let phone, let kind):
+            link = .needsPairing(phone)
+            trustLossKind = kind
+            trustLastAttempt = now
+            trustAttemptPending = false
+            outageStart = now
+            failures = 0
+            earlyCloses = 0
+            certRejections = 0
+            return kind == .told ? [.stopAttempts] : []
 
         case .welcome(let phone):
             link = .online(phone)
             outageStart = nil
             failures = 0
             earlyCloses = 0
+            certRejections = 0
+            trustLossKind = nil
+            trustAttemptPending = false
             return []
 
         case .attemptFailed(let reason):
             return failed(reason, at: now)
+
+        case .reachability(let advertised, let hasAddress, let changed):
+            self.advertised = advertised
+            self.hasAddress = hasAddress
+            if trustLossKind == .inferred, case .needsPairing = link,
+               advertised, changed, !trustAttemptPending {
+                trustLastAttempt = now
+                trustAttemptPending = true
+                return [.attempt(after: 0)]
+            }
+            if case .offline(_, .connectionsOff) = link, advertised, changed {
+                failures = 0
+                return [.attempt(after: 0)]
+            }
+            if case .offline(_, .notFound) = link, advertised {
+                // The phone is back on the air: the "Can't find" sentence is no
+                // longer true, so the attempt starts from a connecting link and
+                // a failure follows the usual 15 s sentence.
+                if case .offline(let p, _) = link { link = .connecting(p) }
+                outageStart = now
+                failures = 0
+                trustLastAttempt = now
+                return [.attempt(after: 0)]
+            }
+            return []
 
         case .reachabilityHint, .tryNow:
             guard link.isRecovering || isRetryable(event) else { return [] }
@@ -284,6 +401,12 @@ struct LinkMachine {
             return [.attempt(after: 0)]
 
         case .beginPairing(let phone):
+            trustAttemptPending = false
+            // A re-pair forgets the old pin, so the inferred premise (our pin
+            // did not match) is gone: the person is now in control, and a
+            // cancelled sheet must not leave a quiet dial that could re-pin
+            // without the code flow. Keep the state as the sticky kind.
+            if trustLossKind == .inferred { trustLossKind = .told }
             resume = pairingIsActive ? resume : link
             link = .pairing(phone, .contacting)
             return [.stopAttempts, .startPairing(phone)]
@@ -311,6 +434,8 @@ struct LinkMachine {
             guard link.phone?.id == deviceId else { return [] }
             link = .idle
             outageStart = nil
+            trustLossKind = nil
+            trustAttemptPending = false
             return [.stopAttempts]
 
         case .localNetworkDenied:
@@ -319,9 +444,40 @@ struct LinkMachine {
             return [.stopAttempts]
 
         case .tick:
+            // The inferred kind's quiet re-check (PAIR-31): the advertisement
+            // may be a spoof, so this never becomes a permanent stop. While it
+            // is advertised, one attempt per 60 s; while it is not, the kept
+            // last address gets the normal backoff, and with neither there is
+            // nothing to dial until the record appears.
+            if trustLossKind == .inferred, case .needsPairing = link {
+                let last = trustLastAttempt ?? outageStart
+                if advertised {
+                    if !trustAttemptPending, let last,
+                       now.timeIntervalSince(last) >= Self.trustRecheck {
+                        trustLastAttempt = now
+                        trustAttemptPending = true
+                        return [.attempt(after: 0)]
+                    }
+                } else if hasAddress {
+                    let delay = ReconnectPolicy.delay(afterFailures: failures)
+                    if !trustAttemptPending, let last, now.timeIntervalSince(last) >= delay {
+                        trustLastAttempt = now
+                        trustAttemptPending = true
+                        return [.attempt(after: 0)]
+                    }
+                } else {
+                    return []
+                }
+            }
             switch link {
-            case .connecting(let p), .reconnecting(let p):
-                if let start = outageStart, now.timeIntervalSince(start) >= Self.offlineAfter {
+            case .connecting(let p), .reconnecting(let p), .offline(let p, .unreachable):
+                if let start = outageStart, now.timeIntervalSince(start) >= Self.notFoundAfter,
+                   !advertised, !hasAddress {
+                    link = .offline(p, .notFound)
+                } else if let start = outageStart, now.timeIntervalSince(start) >= Self.offlineAfter,
+                          advertised || hasAddress {
+                    // With neither an advertisement nor an address there is
+                    // nothing to reach yet; PAIR-35 says so at 30 s instead.
                     link = .offline(p, .unreachable)
                 }
             default:
@@ -356,6 +512,7 @@ struct LinkMachine {
             return []
         }
         guard let phone = link.phone else { return [] }
+        trustAttemptPending = false
         switch reason {
         case "pair_cooldown":
             // A launch that meets a phone inside its 30 s window: the person
@@ -363,7 +520,29 @@ struct LinkMachine {
             // than leaving a silent offline link (PAIR-5).
             link = .pairing(phone, .coolingDown)
             return [.stopAttempts]
-        case "pin-mismatch", "bad_pin", "no-pin", "not_paired":
+        case "forgotten":
+            // The phone's own authenticated word (PAIR-30): no attempt can fix
+            // it and the person must re-pair.
+            trustLossKind = .told
+            link = .needsPairing(phone)
+            return [.stopAttempts]
+        case "pin-mismatch":
+            // Our pin did not match a phone that is the same device (the
+            // controller resolved the advertisement): inferred trust lost. The
+            // TXT id is unauthenticated, so quiet re-checks continue (PAIR-31).
+            trustLossKind = .inferred
+            trustLastAttempt = now
+            link = .needsPairing(phone)
+            // While the record is advertised the 60 s tick is the re-check;
+            // with no advertisement the kept last address still gets the
+            // normal backoff (PAIR-31/35), never a tight loop.
+            if !advertised, hasAddress {
+                failures += 1
+                trustAttemptPending = true
+                return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
+            }
+            return []
+        case "bad_pin", "no-pin", "not_paired":
             // v2: the TLS-level pairing state died, or the phone no longer pins
             // this Mac at all (PAIR-23); retries never fix it, the re-pair hint
             // handles the person's next step.
@@ -375,8 +554,25 @@ struct LinkMachine {
                 failures += 1
                 return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
             }
+            trustLossKind = .told
             link = .needsPairing(phone)
             return [.stopAttempts]
+        case "certificate_unknown", "bad_certificate":
+            // The phone rejected this Mac's certificate after our own pin
+            // passed (a Mac identity it does not know): one may be a restart,
+            // two in a row is a refusal (PAIR-31, PAIR-23's rule).
+            certRejections += 1
+            if certRejections >= 2 {
+                trustLossKind = .told
+                link = .needsPairing(phone)
+                return [.stopAttempts]
+            }
+            failures += 1
+            if case .online = link {
+                link = .reconnecting(phone)
+                outageStart = now
+            }
+            return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
         case "closed-early":
             // A phone that pins nothing for this Mac closes right after TLS
             // without a word when its pairings are off (PAIR-23). One such
@@ -402,11 +598,11 @@ struct LinkMachine {
             link = .offline(phone, .busy)
             return [.attempt(after: max(ReconnectPolicy.delay(afterFailures: failures), 15))]
         case "connections_off":
-            // The phone's switch may come back: retry on the normal backoff,
-            // never in a tight loop.
+            // The phone's switch may come back: one attempt per 30 s (plus one
+            // on a new advertisement, in `.reachability`), never a loop.
             failures += 1
             link = .offline(phone, .connectionsOff)
-            return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
+            return [.attempt(after: Self.connectionsOffRetry)]
         case "pairing_off":
             failures += 1
             link = .offline(phone, .pairingsOff)

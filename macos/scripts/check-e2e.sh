@@ -1159,7 +1159,7 @@ check_gates() {
     : > "$WORK/events.jsonl"
     rm -f "$banner"
     FAKE_ARGS="--refuse-connections" start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 45
     wait_until 20 events_have '"state":"refused_connections"' \
         && ok "[PAIR-12] B3 connections off: paired Mac refused at the handshake" \
         || bad "[PAIR-12] B3 connections off: no refusal event"
@@ -1169,12 +1169,20 @@ check_gates() {
     wait_until 10 grep -qF "Connections are turned off on FakePhone." "$banner" \
         && ok "[PAIR-13] B3 connections off: Mac shows \"$(cat "$banner")\"" \
         || bad "[PAIR-13] B3 connections off: banner '$(cat "$banner" 2>/dev/null)'"
-    # Six seconds is several backoff slots (1, 2, 4 s), never a storm.
+    grep -qF "Turn on Allow connections in PocketDeck on your phone." "$banner" \
+        && ok "[PAIR-35] B3 connections off: the banner names the phone's switch" \
+        || bad "[PAIR-35] B3 connections off: no switch line in '$(cat "$banner" 2>/dev/null)'"
+    # PAIR-35: one attempt per 30 s, never the 1/2/4 s loop.
     sleep 6
     attempts="$(count_events '"state":"refused_connections"')"
-    [ "$attempts" -ge 2 ] && [ "$attempts" -le 6 ] \
-        && ok "[PAIR-13] B3 connections off: $attempts attempts in the backoff window" \
-        || bad "[PAIR-13] B3 connections off: $attempts attempts in the backoff window (tight loop or gave up)"
+    [ "$attempts" -ge 1 ] && [ "$attempts" -le 2 ] \
+        && ok "[PAIR-35] B3 connections off: $attempts attempt(s) in the first 6 s" \
+        || bad "[PAIR-35] B3 connections off: $attempts attempts in the first 6 s (tight loop)"
+    sleep 26
+    attempts="$(count_events '"state":"refused_connections"')"
+    [ "$attempts" -ge 2 ] && [ "$attempts" -le 3 ] \
+        && ok "[PAIR-35] B3 connections off: $attempts attempt(s) by 32 s (one per 30 s)" \
+        || bad "[PAIR-35] B3 connections off: $attempts attempts by 32 s"
     stop_app
     stop_fakephone
 }
@@ -1194,6 +1202,54 @@ sessions_opened() {
 check_forgot() {
     clean
     local banner="$WORK/banner.txt" before after
+
+    # 0. Forget while connected (PAIR-30/32/33): the phone tells the live Mac it
+    # was forgotten; the banner is up at once, it stays, no attempt follows, and
+    # a relaunch starts in the stored state without a dial.
+    : > "$WORK/fake-ctl"
+    FAKE_ARGS="--ctl-file $WORK/fake-ctl" start_fake || return 1
+    rm -f "$banner"
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 40
+    # The app has to stay up to receive the forget (`await_app` would stop it
+    # the moment it paired); the launch's --quit-after is the phase's bound.
+    wait_until 20 events_have '"state":"paired"' \
+        || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
+    wait_until 10 events_have '"t":"apps.list"' \
+        && ok "[PAIR-30] F0 the Mac is connected before the phone forgets it" \
+        || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
+    before="$(sessions_opened)"
+    printf 'forget\n' > "$WORK/fake-ctl"
+    wait_until 2 grep -qF "no longer trusts this Mac." "$banner" \
+        && ok "[PAIR-30] F0 the forgotten connected Mac shows the banner within 2 s" \
+        || bad "[PAIR-30] F0 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
+    sleep 4
+    grep -qF "no longer trusts this Mac." "$banner" \
+        && ok "[PAIR-33] F0 the banner is still there after 4 s (no dismiss)" \
+        || bad "[PAIR-33] F0 the banner went away"
+    sleep 16
+    after="$(sessions_opened)"
+    [ "$after" -le "$before" ] \
+        && ok "[PAIR-30] F0 no further attempt for 20 s ($before -> $after)" \
+        || bad "[PAIR-30] F0 the Mac kept connecting ($before -> $after)"
+    stop_app
+    stop_fakephone
+
+    # 0b. Relaunch: the stored trust loss starts the Deck in it with no dial.
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    launch --debug-banner "$banner" --quit-after 8
+    wait_until 2 grep -qF "no longer trusts this Mac." "$banner" \
+        && ok "[PAIR-32] F0 a relaunch starts in trust lost" \
+        || bad "[PAIR-32] F0 no banner on the relaunch: '$(cat "$banner" 2>/dev/null)'"
+    [ "$(sessions_opened)" -eq 0 ] \
+        && ok "[PAIR-30] F0 the relaunch made no attempt" \
+        || bad "[PAIR-30] F0 the relaunch dialed the phone"
+    stop_app
+
+    # Reset: phase 0 left this profile pinned to a phone whose fake store is
+    # empty (the forget cleared it). The existing phases start from a clean
+    # slate so the next `--connect` pairs instead of meeting a stale pin.
+    clean
 
     # 1. Pair, so the Mac holds this phone's pin.
     start_fake || return 1
@@ -12755,6 +12811,23 @@ check_settings() {
         || bad "SET [SET-DEV-16] share=$(report_value share)"
     [ "$(report_value mutedCount)" = "None" ] && ok "SET [SET-DEV-12] no muted apps reads None" \
         || bad "SET [SET-DEV-12] mutedCount=$(report_value mutedCount)"
+
+    # --- trust lost: row and header read Pair again (PAIR-34, SET-DEV-17/26) ---
+    state devices-trust-lost || return 1
+    [ "$(report_value selection)" = "Galaxy S25+" ] \
+        && [ "$(report_value header.state)" = "Pair again" ] \
+        && [ "$(report_value header.inUse)" = "1" ] \
+        && ok "[SET-DEV-17] a trust-lost phone's page header reads Pair again and In Use" \
+        || bad "[SET-DEV-17] selection=$(report_value selection) state=$(report_value header.state) inUse=$(report_value header.inUse)"
+    [ "$(report_value header.action)" = "Pair Again…" ] \
+        && ok "[PAIR-34] [SET-DEV-26] a trust-lost phone's header offers Pair Again… as its action" \
+        || bad "[PAIR-34] [SET-DEV-26] header.action=$(report_value header.action)"
+    dump_has "row|Galaxy S25+|SM-S936B|Pair again|" \
+        && ok "[SET-DEV-17] its sidebar row reads Pair again" \
+        || bad "[SET-DEV-17] row: $(grep '^row|' "$dump" | tr '\n' '|')"
+    awk -F'|' '$1=="row" && $2=="Galaxy S25+" && $7=="1" && $8=="0" { found=1 } END { exit !found }' "$dump" \
+        && ok "[SET-DEV-17] the row marks Pair again and does not pretend it can be used" \
+        || bad "[SET-DEV-17] row flags: $(grep '^row|Galaxy S25+' "$dump" | head -1)"
 
     # --- missing listener access: the page says how to fix it --------------
     stop_app

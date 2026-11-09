@@ -147,6 +147,14 @@ class Server(
         if (sessions.drop()) log("app link changed: live session dropped")
     }
 
+    /**
+     * PAIR-30: the app's push took away these Macs' pins (null = every Mac,
+     * an identity rotation). The live Mac, if it is one of them, hears
+     * `forgotten` on its authenticated session before its own end.
+     */
+    fun notifyForgotten(macClientIds: Set<String>?): Int =
+        if (sessions.notifyForgotten(macClientIds)) 1 else 0
+
     /** The cached TLS material was built from an identity the app no longer holds. */
     fun forgetCachedIdentity() {
         synchronized(contextLock) {

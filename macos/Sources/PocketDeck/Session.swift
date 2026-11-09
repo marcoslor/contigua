@@ -649,8 +649,19 @@ final class Session {
         } catch {
             let message = String(describing: error)
             // A mid-handshake verify failure IS the stale-pin refusal (§7).
-            let reason = (message.contains("certificate_verify_failed") || message.contains("certificate verify"))
-                ? "pin-mismatch" : "tls"
+            // A server alert means the PHONE refused this Mac's certificate
+            // after our own pin passed (PAIR-31): its own token, counted twice.
+            let lowered = message.lowercased()
+            let reason: String
+            if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify") {
+                reason = "pin-mismatch"
+            } else if lowered.contains("certificate unknown") || lowered.contains("certificate_unknown") {
+                reason = "certificate_unknown"
+            } else if lowered.contains("bad certificate") || lowered.contains("bad_certificate") {
+                reason = "bad_certificate"
+            } else {
+                reason = "tls"
+            }
             queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
         }
     }
@@ -919,6 +930,10 @@ final class Session {
             if !everReady && phoneErrorCode == nil { reason = "closed-early" }
         } else if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
             reason = "pin-mismatch"
+        } else if lowered.contains("certificate unknown") || lowered.contains("certificate_unknown") {
+            reason = "certificate_unknown"
+        } else if lowered.contains("bad certificate") || lowered.contains("bad_certificate") {
+            reason = "bad_certificate"
         }
         attemptEvent(id, .failed(reason: reason))
         closeAttempt(id)
@@ -1881,6 +1896,16 @@ final class Session {
                 phoneErrorCode = "version"
                 emit(.versionRefused(PathVersion.macSentence(peer: message.int("v"))))
                 fail("version")
+                return
+            }
+            // PAIR-30: the phone's authenticated word that it forgot this Mac.
+            // It ends the session on its own too, but the Mac must enter the
+            // trust-lost state at once, not wait out a path grace. The phone's
+            // live-session errors carry `stream: 0` (or omit it) when the error
+            // is the session's, not a stream request's.
+            if code == "forgotten", (message.int("stream") ?? 0) == 0 {
+                phoneErrorCode = code
+                fail(code)
                 return
             }
             // An fs failure names the request it answers; it is not the

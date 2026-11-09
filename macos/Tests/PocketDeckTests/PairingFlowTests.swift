@@ -76,6 +76,20 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertEqual(controller.link, .idle)
     }
 
+    func testPairAgainOnAnAbsentPhoneTargetsItInTheAddSheet() throws {
+        // PAIR-33/34: a trust-lost phone that is not in range opens the one
+        // add-phone sheet with that phone as its target.
+        let absent = PhoneRef(id: "absent-1", name: "Pixel 8", model: "G9S9B")
+        controller.remembered.remember(absent)
+        XCTAssertTrue(controller.discovered.isEmpty)
+        controller.pairAgain(for: controller.remembered.phone(id: "absent-1")!)
+        XCTAssertEqual(controller.sheet, .addPhone)
+        XCTAssertEqual(controller.addPhoneTarget?.id, "absent-1")
+        controller.sheet = nil
+        controller.sheetDismissed()
+        XCTAssertNil(controller.addPhoneTarget, "the target ends with the sheet")
+    }
+
     func testDeniedAndTimedOutReachTheSheet() throws {
         controller.connectManually(host: "127.0.0.1", port: server.port)
         XCTAssertTrue(spin { comparing })
