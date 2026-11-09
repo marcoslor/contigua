@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|chain|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -12124,7 +12124,10 @@ PY
     line="$(tail -1 "$WORK/stats.txt")"
     case "$line" in *"stats stream="*) ;; *) missing=" stats" ;; esac
     for field in stream size view place rx_fps shown_fps int_p95 int_p99 \
-                 freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop phone_drop \
+                 freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop \
+                 mac_drop_flush mac_drop_not_ready mac_drop_before_config \
+                 mac_drop_paced mac_drop_awaiting_key chain_fed \
+                 phone_drop \
                  drop_ep drop_ms skip kf kf_req key_not_idr ph_key_not_idr \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
                  e2e_p50 e2e_p95 max_gap_ms tcp_srtt tcp_rttvar tcp_ooo_kb \
@@ -12226,6 +12229,126 @@ PY
         || bad "STATS totals key_not_idr=$total_keys, expected 0"
     stop_app
     stop_fakephone
+}
+
+# --- C18: chain (WIN-61) ----------------------------------------------------
+
+# check_chain — the reference chain across config changes and resize storms.
+# The fake phone re-sends its VIDEO_CONFIG every 4 s WITHOUT restarting the
+# encoder (what the phone's resume does): the deltas that follow reference the
+# frames the Mac just flushed, so a Mac that feeds them shows garbage until the
+# next IDR. On top of that the phone mirror is resized every 2-4 s for 60 s.
+# Pass: every break is restored by a keyframe within 600 ms, no delta reaches
+# the layer while the chain is broken (`chain_fed=0`), and no display-layer
+# failure. The reasons are printed for the report.
+check_chain() {
+    clean
+    # Phase A: no storm, just the fake encoder's own 10 s GOP. The reviewer's
+    # real-phone session showed one mac_drop in every 5 s line with kf=1; the
+    # split names the path that discards at a keyframe.
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows
+    if ! wait_until 30 events_have '"ev":"video","stream":1,"config":true'; then
+        bad "[WIN-61] CHAIN the phone mirror never showed its first frame"
+        stop_app; stop_fakephone; return 1
+    fi
+    sleep 35
+    stop_app
+    stop_fakephone
+    /usr/bin/log show --last 4m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        > "$WORK/chain-baseline.txt"
+    python3 - "$WORK/chain-baseline.txt" > "$WORK/chain-baseline-summary.txt" <<'PY'
+import sys
+rows = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    if " stats stream=" not in line:
+        continue
+    fields = {}
+    for word in line.split():
+        if "=" in word:
+            key, value = word.split("=", 1)
+            fields[key] = value
+    try:
+        kf = int(fields.get("kf", "0"))
+    except ValueError:
+        continue
+    if kf >= 1:
+        keys = ("mac_drop", "mac_drop_flush", "mac_drop_not_ready",
+                "mac_drop_before_config", "mac_drop_paced", "chain_fed")
+        rows.append("kf=%d %s" % (kf, " ".join("%s=%s" % (k, fields.get(k, "-")) for k in keys)))
+print(" | ".join(rows[-4:]) if rows else "none")
+PY
+    say "CHAIN baseline lines with kf>=1: $(cat "$WORK/chain-baseline-summary.txt")"
+
+    # Phase B: the phone re-sends its config every 4 s without restarting the
+    # encoder (what a resume does): the deltas after that config reference the
+    # chain the Mac just flushed. The window is resized every 2-4 s for 60 s.
+    clean
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--config-every 4" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK-control"
+    if ! wait_until 30 chrome_has "loading=0"; then
+        bad "[WIN-61] CHAIN the phone mirror never showed its first frame (state: $(chrome_state))"
+        stop_app; stop_fakephone; return 1
+    fi
+    # 60 s: a resize every 2-4 s through the window's own windowWillResize
+    # path, while the phone's configs land every 4 s on their own.
+    local deadline=$(( $(now_ms) + 60000 )) step=0 w h
+    while [ "$(now_ms)" -lt "$deadline" ]; do
+        w=$((480 + (step % 5) * 28))
+        h=$((860 + (step % 4) * 40))
+        control resize-step "$w" "$h" || bad "[WIN-61] CHAIN resize-step $w $h: $CONTROL_REPLY"
+        step=$((step + 1))
+        if [ $((step % 3)) -eq 0 ]; then sleep 4; else sleep 2; fi
+    done
+    # The last break may still be waiting for its keyframe; give it the same
+    # 600 ms the rule gives the phone, then read the whole run's lines.
+    sleep 1
+    stop_app
+    stop_fakephone
+    /usr/bin/log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        > "$WORK/chain-log.txt"
+    python3 - "$WORK/chain-log.txt" > "$WORK/chain-summary.txt" <<'PY'
+import re
+import sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+reasons = re.findall(r"chain broken reason=([a-z_]+)", text)
+restored = [int(ms) for ms in re.findall(r"chain restored after (\d+)", text)]
+stats = [line for line in text.splitlines() if " stats stream=" in line]
+fed = []
+for line in stats:
+    match = re.search(r"chain_fed=(\d+)", line)
+    if match:
+        fed.append(int(match.group(1)))
+failed = len(re.findall(r"display layer failed", text))
+print(len(reasons), len(restored), max(restored or [0]), max(fed or [0]),
+      min(fed or [0]), len(fed), failed,
+      ",".join(sorted(set(reasons))) or "none")
+PY
+    read -r breaks restores longest fed_max fed_min stat_lines layer_failures reason_tokens \
+        < "$WORK/chain-summary.txt"
+    say "CHAIN breaks=$breaks restored=$restores longest_ms=$longest chain_fed_max=$fed_max lines=$stat_lines failures=$layer_failures reasons=$reason_tokens"
+    [ "$breaks" -ge 10 ] \
+        && ok "[WIN-61] CHAIN the storm broke the chain $breaks times (reasons: $reason_tokens)" \
+        || bad "[WIN-61] CHAIN only $breaks chain breaks in 60 s of config and resize storms"
+    [ "$restores" -ge 1 ] && [ "$longest" -le 600 ] \
+        && ok "[WIN-61] CHAIN every restore (${restores} of them) came within ${longest} ms" \
+        || bad "[WIN-61] CHAIN restore took ${longest} ms over ${restores} restores (limit 600)"
+    [ "$fed_max" = "0" ] && [ "$stat_lines" -ge 3 ] \
+        && ok "[WIN-61] CHAIN no delta reached the layer while awaiting a key (chain_fed=0 on $stat_lines lines)" \
+        || bad "[WIN-61] CHAIN chain_fed reached $fed_max: deltas were fed after a break (${stat_lines} lines)"
+    [ "$layer_failures" = "0" ] \
+        && ok "[WIN-61] CHAIN no display layer failed" \
+        || bad "[WIN-61] CHAIN $layer_failures display layer failures"
+    case ",$reason_tokens," in
+        *,config,*) ok "[WIN-61] CHAIN the reason tokens are closed ($reason_tokens)" ;;
+        *) bad "[WIN-61] CHAIN no config break was logged (reasons: $reason_tokens)" ;;
+    esac
 }
 
 # --- Phone nickname (docs/ROADMAP.md #1, #2) --------------------------------
