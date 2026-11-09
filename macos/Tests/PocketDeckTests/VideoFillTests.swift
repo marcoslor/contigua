@@ -110,6 +110,42 @@ final class VideoFillTests: XCTestCase {
                        .fit)
     }
 
+    /// ISS-65: the person saw a black line at the mirror's edge in the glass
+    /// style on an even/odd window width. The window's stream area is snapped
+    /// to whole points, so at 2x its aspect is up to half a pixel off the
+    /// phone's; a phone-mode fit of that mismatch leaves that row or column
+    /// unfilled. For every width from the minimum to 600 pt, in both styles,
+    /// the picture drawn must leave no uncovered half pixel.
+    func testThePhoneMirrorsPictureCoversEveryWidthAtTwoX() {
+        let phone = CGSize(width: 1080, height: 2340)
+        var width: CGFloat = 240
+        while width <= 600 {
+            for style in WindowStyle.allCases {
+                let window = PhoneChrome.frame(proposed: CGSize(width: width, height: 754),
+                                               phone: phone, style: style, edge: .left)
+                let area = style.streamSize(window: window)
+                // The phone's mirror frame is the window's box floored to
+                // 16 px; its picture is the screen fitted into it, at whole
+                // pixels (WindowStream's mirror content rect).
+                let box = VideoSize.displayPixels(bounds: area, backingScale: 2)
+                let scale = min(box.width / phone.width, box.height / phone.height)
+                let picture = CGSize(width: (phone.width * scale).rounded(),
+                                     height: (phone.height * scale).rounded())
+                let bounds = CGRect(origin: .zero, size: area)
+                let placement = Letterbox.placement(video: picture, bounds: area, backingScale: 2,
+                                                    resizePending: false, phoneMode: true)
+                let rect = Letterbox.videoRect(video: picture, in: bounds, placement: placement,
+                                               backingScale: 2)
+                let uncovered = [rect.minX - bounds.minX, bounds.maxX - rect.maxX,
+                                 rect.minY - bounds.minY, bounds.maxY - rect.maxY]
+                    .map { max(0, $0) * 2 }
+                XCTAssertLessThanOrEqual(uncovered.max() ?? 0, 0.5,
+                    "\(style.rawValue) at \(width) pt: the picture leaves \(uncovered) px uncovered")
+            }
+            width += 0.5
+        }
+    }
+
     func testTheTimeoutFallsBackToAspectFit() {
         // The pending flag is gone (2 s after the last ask): today's fit.
         XCTAssertEqual(Letterbox.placement(video: tall, bounds: CGSize(width: 900, height: 400),
