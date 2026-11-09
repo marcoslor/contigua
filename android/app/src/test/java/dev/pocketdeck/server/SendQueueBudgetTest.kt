@@ -78,6 +78,31 @@ class SendQueueBudgetTest {
     }
 
     @Test
+    fun `a sent key frame's bytes still cover the deltas behind it`() {
+        val drops = AtomicInteger()
+        val q = queue(linkBps = 3_000_000, drops = drops)
+        // A 600 KB key frame at 3 Mbps takes 1.6 s; 96 x 6 KB deltas arrive
+        // behind it (the encoder's output is the link's rate).
+        nowUs += frameUs
+        q.enqueueControl(1, ByteArray(600_000), nowUs)
+        repeat(96) {
+            nowUs += frameUs
+            q.enqueueDelta(1, nowUs, ByteArray(6_000))
+        }
+        assertEquals("the key frame's bytes admit its own send window", 0, drops.get())
+        val key = q.pollNow()!!
+        assertTrue("the key frame is first", key.key)
+        // The key is on the socket now. The queued deltas were admitted
+        // against its bytes, so a few more that arrive while it is written
+        // must still fit; dropping the key's credit here starts the cycle.
+        repeat(10) {
+            nowUs += frameUs
+            q.enqueueDelta(1, nowUs, ByteArray(6_000))
+        }
+        assertEquals("no drop behind the sent key frame", 0, drops.get())
+    }
+
+    @Test
     fun `the encoder output scales the budget when the link has no sample`() {
         val drops = AtomicInteger()
         val q = queue(linkBps = null, drops = drops)

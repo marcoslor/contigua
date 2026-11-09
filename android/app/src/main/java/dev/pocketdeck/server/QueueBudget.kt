@@ -19,7 +19,10 @@ package dev.pocketdeck.server
  * - Keyframe: at least one key frame is queued; its bytes extend the byte
  *   budget and its send time extends the duration budget.
  * - Draining: the key frames left, but deltas that arrived behind them are
- *   still queued; the credit stays until they drain, then Steady.
+ *   still queued; their bytes and wait stay as credit until they drain, then
+ *   Steady. The byte credit is what admits the video that arrived while the
+ *   key was being written; dropping it when the writer dequeues the key makes
+ *   the queue drop those deltas and ask for another key.
  */
 internal enum class BudgetPhase(val wire: String) {
     Steady("steady"),
@@ -31,6 +34,13 @@ internal data class BudgetState(
     val phase: BudgetPhase = BudgetPhase.Steady,
     /** Key frame bytes queued but not yet handed to the socket. */
     val keyBytes: Long = 0,
+    /**
+     * Bytes of key frames already handed to the socket whose deltas are still
+     * draining. They extend the byte budget until the deltas that arrived
+     * while the key was being written have left, then [BudgetEvent.Drained]
+     * clears them.
+     */
+    val byteCredit: Long = 0,
     /** Extra wait the deltas behind a key frame may have, in µs. */
     val creditUs: Long = 0,
 )
@@ -68,6 +78,9 @@ internal fun budgetStep(state: BudgetState, event: BudgetEvent): BudgetStep = wh
             BudgetState(
                 phase = BudgetPhase.Keyframe,
                 keyBytes = state.keyBytes + event.bytes,
+                // A key frame queued while an earlier key's deltas are still
+                // draining must not throw away that earlier key's bytes.
+                byteCredit = state.byteCredit,
                 creditUs = maxOf(state.creditUs, credit),
             ),
             "key(${event.bytes})",
@@ -85,6 +98,10 @@ internal fun budgetStep(state: BudgetState, event: BudgetEvent): BudgetStep = wh
                 state.copy(
                     phase = if (left > 0) BudgetPhase.Keyframe else BudgetPhase.Draining,
                     keyBytes = left,
+                    // The key is on the socket but its send still occupies the
+                    // link; the deltas that arrived behind it keep its bytes as
+                    // credit until they drain.
+                    byteCredit = state.byteCredit + event.bytes,
                 ),
                 "key-sent",
                 true,

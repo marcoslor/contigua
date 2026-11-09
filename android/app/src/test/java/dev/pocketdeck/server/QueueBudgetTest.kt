@@ -37,6 +37,7 @@ class QueueBudgetTest {
         val sent = budgetStep(queued, BudgetEvent.KeySent(500_000))
         assertEquals(BudgetPhase.Draining, sent.state.phase)
         assertEquals(0L, sent.state.keyBytes)
+        assertEquals("its bytes still cover the deltas behind it", 500_000L, sent.state.byteCredit)
         assertEquals(queued.creditUs, sent.state.creditUs)
         assertTrue(sent.transition)
     }
@@ -48,6 +49,17 @@ class QueueBudgetTest {
         val sent = budgetStep(state, BudgetEvent.KeySent(500_000))
         assertEquals(BudgetPhase.Keyframe, sent.state.phase)
         assertEquals(200_000L, sent.state.keyBytes)
+        assertEquals(500_000L, sent.state.byteCredit)
+    }
+
+    @Test
+    fun `a new key frame keeps the bytes of the one still draining`() {
+        var state = budgetStep(BudgetState(), BudgetEvent.KeyQueued(500_000, 30_000_000)).state
+        state = budgetStep(state, BudgetEvent.KeySent(500_000)).state
+        val again = budgetStep(state, BudgetEvent.KeyQueued(300_000, 30_000_000)).state
+        assertEquals(BudgetPhase.Keyframe, again.phase)
+        assertEquals(300_000L, again.keyBytes)
+        assertEquals("the earlier key's deltas are still draining", 500_000L, again.byteCredit)
     }
 
     @Test
@@ -57,6 +69,7 @@ class QueueBudgetTest {
         val drained = budgetStep(state, BudgetEvent.Drained)
         assertEquals(BudgetPhase.Steady, drained.state.phase)
         assertEquals(0L, drained.state.keyBytes)
+        assertEquals(0L, drained.state.byteCredit)
         assertEquals(0L, drained.state.creditUs)
         assertTrue(drained.transition)
     }

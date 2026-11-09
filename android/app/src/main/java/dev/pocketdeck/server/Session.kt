@@ -3394,10 +3394,12 @@ class Session(
 
     private fun onDeltaDrop(stream: Int) {
         val measured = goodput.rateBps(stream, monoUs())
+        val encoded = queue.encoderBps(stream)
         log("stream $stream backpressure: dropping deltas, requesting keyframe" +
-            (measured?.let { " (measured ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: ""))
+            (measured?.let { " (measured ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: "") +
+            (encoded?.let { " (encoder ${"%.1f".format(it / 1_000_000.0)} Mbps)" } ?: ""))
         runCatching { display.requestKeyframe(stream) }
-        runCatching { display.onBackpressure(stream, measured) }
+        runCatching { display.onBackpressure(stream, measured, encoded) }
     }
 
     /**
@@ -3421,7 +3423,9 @@ class Session(
     /** Q1: the suspend policy passed its budget; lower the bitrate, no keyframe. */
     private fun onQueueOverflow(stream: Int) {
         log("stream $stream backpressure: queue over budget, lowering bitrate")
-        runCatching { display.onBackpressure(stream, goodput.rateBps(stream, monoUs())) }
+        runCatching {
+            display.onBackpressure(stream, goodput.rateBps(stream, monoUs()), queue.encoderBps(stream))
+        }
     }
 
     /**
