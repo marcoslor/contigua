@@ -1164,9 +1164,11 @@ Mac + phone pass stays with the reviewer).
   PocketDeck was built without Finder files."; the controller never tries to
   add a domain and logs one line. Real failures say to turn the switch off and
   on again instead of promising that a restart helps. `scripts/install.sh`
-  forwards extra arguments to `bundle.sh`, so `./scripts/install.sh --with-files`
-  installs the extension, and (only for a bundle that carries it) registers the
-  installed copy and its `Files.appex`.
+  builds the extension by default (`bundle.sh --with-files`), refuses to replace
+  an installed copy whose stage has no `Contents/PlugIns/Files.appex`, asserts
+  the extension after the move, and registers the installed copy and its
+  `Files.appex`. `--without-files` is the explicit opt-out and prints what the
+  copy will miss.
 
 ## Sync integrity (ISS-37, 2026-11-04)
 

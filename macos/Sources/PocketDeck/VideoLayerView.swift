@@ -263,18 +263,19 @@ final class VideoLayerView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         guard !hoverFeedActive() else { return }
-        hoverPointerMoved(toWindowPoint: convert(event.locationInWindow, from: nil))
+        hoverPointerMoved(toWindowPoint: event.locationInWindow)
     }
 
     override func mouseExited(with event: NSEvent) { inputMapper?.hoverExit() }
 
     /// The scripted driver's `hover`/`hoverout` and the immersive dwell feed
-    /// reach the same decision: the pill is Mac UI, the rest is the phone.
+    /// reach the same decision: the chrome's own points are Mac UI, the rest is
+    /// the phone. The point is in the window's base coordinates.
     func hoverPointerMoved(toWindowPoint point: CGPoint) {
         if macUIAtWindowPoint?(point) == true {
             inputMapper?.hoverExit()
         } else {
-            inputMapper?.hoverMove(at: point)
+            inputMapper?.hoverMove(at: convert(point, from: nil))
         }
     }
 
