@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# netshape — the Android emulator console's own network shaper, for the S3
-# quality check (the phone's real QualityAdaptation and EncoderCorrection must
-# see a slower link, not a proxy that only changes TCP's pace at a distance).
+# netshape — the Android emulator console's own network shaper.
 #
 #   bash tools/emulator/netshape.sh show            # current speed and delay
 #   bash tools/emulator/netshape.sh speed 3         # 3 Mbit/s each way
@@ -13,7 +11,11 @@
 # One serial, always named: POCKETDECK_SERIAL (default emulator-5554). A
 # serial that is not an emulator is refused, so the person's phone can never be
 # shaped by a test. No root, no host network change: the console shapes the
-# emulator's own virtual NIC.
+# emulator's own virtual NIC. Measured 2026-11-09: the Mac's e2e reaches the
+# phone through an `adb forward`, which is an adb pipe rather than the guest's
+# NIC, so this shaper does not touch that leg (S3 shapes it with pdpathfault
+# and uses `show` to prove the console is unshaped); it remains useful for
+# traffic the guest originates on its own NIC.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,7 +40,9 @@ run() {
         printf 'netshape: would run: adb -s %s emu network %s\n' "$SERIAL" "$*"
         return 0
     fi
-    emu network "$@"
+    # `emu` is lib.sh's adb -s SERIAL wrapper; the console verb is its own
+    # `emu network`.
+    emu emu network "$@"
 }
 
 usage() {
