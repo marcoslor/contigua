@@ -8,13 +8,18 @@
 
     <application>
         <!-- ISS-51: a share target's picker started from an application
-             context. Debug builds only; the emulator check drives them. -->
+             context. Debug builds only; the emulator check drives them.
+             Disabled by default: the person's phone runs debug builds, and an
+             enabled SEND filter would put a test target in every share sheet.
+             tools/emulator/share-display.sh runs `pm enable` on them. -->
         <activity
             android:name="dev.pocketdeck.app.ShareDebugActivity"
+            android:enabled="false"
             android:exported="true"
             android:theme="@style/Theme.PocketDeck" />
         <activity
             android:name="dev.pocketdeck.app.ShareDebugSendActivity"
+            android:enabled="false"
             android:exported="true"
             android:theme="@style/Theme.PocketDeck">
             <intent-filter android:priority="1000">
@@ -28,6 +33,7 @@
              system has to choose a display for it. -->
         <activity
             android:name="dev.pocketdeck.app.ShareDebugPickerActivity"
+            android:enabled="false"
             android:exported="false"
             android:taskAffinity=""
             android:theme="@style/Theme.PocketDeck" />

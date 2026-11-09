@@ -348,10 +348,23 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
   printf '  %s: driver says %s\n' "$label" "$(tail -2 "$OUT/share-display-$label-driver.log" | tr '\n' ' ')" | tee -a "$LOG"
 }
 
+# The stand-ins ship disabled (the person's phone runs debug builds; an enabled
+# SEND filter would show a test target in every share sheet). Enable them on the
+# emulator only, after every install.
+enable_stand_ins() {
+  local activity
+  for activity in ShareDebugActivity ShareDebugSendActivity ShareDebugPickerActivity; do
+    emu shell pm enable "dev.pocketdeck/dev.pocketdeck.app.$activity" >/dev/null 2>&1 \
+      || { section stand-ins FAIL "pm enable $activity"; return 1; }
+  done
+  section stand-ins PASS "the three debug activities are enabled on the emulator"
+}
+
 run_phase() { # run_phase <tag>: both phone states with the APK now installed
   local tag="$1"
   PHASE_FAILURES=0
   PHASE_BUG_FAILURES=0
+  enable_stand_ins || return 1
 
   step "[$tag] state (a): the phone unlocked, screen on"
   bash tools/emulator/unlock.sh > "$OUT/share-display-$tag-unlock-a.log" 2>&1 \
