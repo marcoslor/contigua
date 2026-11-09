@@ -195,6 +195,16 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - Separately, `mac_drop=1` falls in every window with a keyframe (handed to ISS-54/chain).
   - **Next:** the `audiogap` worker. Measure first (Mac underruns, arrival lateness p95, the phone's enqueue-to-socket delay), reproduce with keyframes plus audio, run a test that must FAIL first, then fix. See `.agent/audiogap/brief.md`.
 
+- **ISS-58 Tell the person when their Mac's AirDrop/Handoff radio (AWDL) is making the stream stutter** (2026-11-08; the person: "that should be in our app's UX… without making the user mad").
+  - **Proof first:** compare stalls with AWDL active vs idle on the person's Mac. Either the person's test (AirDrop "No One", Handoff and Universal Control unused for a few minutes) or a probe during a stream. If it isn't AWDL, the message would be wrong.
+  - **Reviewer's proposal, to prototype (2–3 real-render options, the person picks):**
+    - Not the top warning bar. That bar is for states where something is broken and the person must act.
+    - A small Wi-Fi status icon in the stream window's titlebar. It appears only while the stalls are measured (for example, at least 3 stalls over 150 ms per minute for 2 minutes, `awdl0` active, low srtt and no loss) and goes away by itself about 1 minute after they stop.
+    - Clicking it opens a popover with one sentence on what's happening, which of AirDrop, Handoff, Universal Control and AirPlay Receiver are on (read-only), an "Open AirDrop & Handoff Settings" button, and "Don't suggest this again".
+    - The app never opens the popover itself and never changes those settings.
+    - Settings › Connection keeps a "Network health" line with the same information and the switch.
+  - **Research question:** does any public mechanism (Game Mode, `NWParameters` service class) reduce AWDL's off-channel time for our connection?
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
