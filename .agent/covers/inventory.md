@@ -37,8 +37,10 @@ shared.
 ## Today's renders
 
 The `.agent/covers/today/` set (not committed) has one PNG per state and
-appearance at these sizes: the phone window's own opening size (~268×628), its
-minimum 300×650 stream, 430×935, an app window at 320×650, and an app window at
-1000×700. The script is `.agent/covers/shoot.sh`; the contact sheet is
+appearance at these sizes: the narrowest phone window (300×650), a phone window
+at 430×935, an app window at 320×650, and an app window at 1000×700 (the wide
+app window). The script is `.agent/covers/shoot.sh`; the contact sheet is
 `.agent/covers/today.html` (and `before-after.html` after the change). Shots are
-taken from the e2e bundle with the fake phone on the run's own virtual display.
+taken from the e2e bundle with the fake phone on the run's own virtual display;
+the fake holds its first frame for 90 s in the opening runs, so the 20 s failure
+cover stays up for its shots.
