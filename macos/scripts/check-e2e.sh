@@ -1538,7 +1538,7 @@ check_tls() {
         && ok "TLS7 the second session completed" || bad "TLS7 no second session"
     exporters="$(log show --last 6m --info --style syslog \
         --predicate "subsystem == \"dev.pocketdeck.mac\" AND (processID == $pidA OR processID == $pidB)" 2>/dev/null \
-        | grep -o 'v2 exporter sha256: [0-9a-f]*' | sort -u | wc -l | tr -d ' ')"
+        | grep -oE 'v2 exporter ready [0-9a-f]{8}' | sort -u | wc -l | tr -d ' ')"
     [ "$exporters" -ge 2 ] \
         && ok "TLS7 $exporters distinct exporters over 2 sessions (full handshakes, no resumption)" \
         || bad "TLS7 exporters repeat like a resumed session would ($exporters distinct)"
