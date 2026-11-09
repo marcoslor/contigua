@@ -458,7 +458,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func showOpeningPhase() {
         let display = OpeningCover.display(openingPhase, name: openingName,
                                            phone: openingPhone, phoneMode: openingIsPhone)
-        chrome.openingCover.show(display, icon: openingIcon)
+        // No frame is held before the first one, so the shared cover uses its
+        // last picture's colours (none yet) or black (WIN-65).
+        chrome.openingCover.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
         // The cover's ground takes the bar's haze with it (WIN-40).
         chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
@@ -1758,7 +1760,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         switch action {
         case .present(let kind):
             let display = StallOverlayDisplay(kind: kind, phone: manager.phoneName)
-            chrome.stallOverlay.show(display, icon: openingIcon)
+            // The shared cover blurs the picture held at the moment it comes up.
+            chrome.stallOverlay.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
             chrome.layoutChrome()
             Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
         case .dismiss:
