@@ -47,7 +47,10 @@ STATS="$ROOT/tools/emulator/overrun_stats.py"
 FAULT="$ROOT/tools/pdpathfault/pdpathfault.py"
 BROWSER="${POCKETDECK_BROWSER:-acr.browser.lightning}"
 SECONDS_RUN="${PD_OVERRUN_SECONDS:-120}"
-OVERSHOOT="${PD_OVERRUN_A_OVERSHOOT:-3}"
+# The emulator's software encoder and page reach far less than the phone's
+# 24 Mbps at 3x, so the emulator's arm A needs a larger factor to put a key
+# frame over the 256 KB budget. The phone arm uses 3.
+OVERSHOOT="${PD_OVERRUN_A_OVERSHOOT:-16}"
 LINK_MBIT="${PD_OVERRUN_LINK_MBIT:-3}"
 DELAY_MS="${PD_OVERRUN_DELAY_MS:-100}"
 PROFILE="overrun$$"
@@ -85,32 +88,52 @@ write_page() {
     cat > "$WORK/overrun.html" <<'HTML'
 <!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<title>overrun</title>
 <style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden}
 canvas{display:block;width:100vw;height:100vh}
 </style>
 <canvas id="c"></canvas>
 <script>
+// A scrolling noise pattern: one patterned fill per frame, so the software
+// GPU keeps a high frame rate while every pixel changes every frame (the
+// bitrate arm needs motion, not detail a person would read).
 const c = document.getElementById('c');
 const x = c.getContext('2d');
+const tile = document.createElement('canvas');
+tile.width = tile.height = 128;
+const tx = tile.getContext('2d');
+const img = tx.createImageData(128, 128);
+for (let i = 0; i < img.data.length; i += 4) {
+  img.data[i] = Math.random() * 255;
+  img.data[i + 1] = Math.random() * 255;
+  img.data[i + 2] = Math.random() * 255;
+  img.data[i + 3] = 255;
+}
+tx.putImageData(img, 0, 0);
+let pattern = null;
 let t = 0;
+let frames = 0;
+function fit() {
+  c.width = innerWidth;
+  c.height = innerHeight;
+  pattern = x.createPattern(tile, 'repeat');
+}
+addEventListener('resize', fit);
+fit();
 function draw() {
-  const w = c.width = innerWidth;
-  const h = c.height = innerHeight;
-  const g = x.createLinearGradient(0, 0, w, h);
-  g.addColorStop(0, 'hsl(' + ((t * 60) % 360) + ',80%,50%)');
-  g.addColorStop(0.5, 'hsl(' + ((t * 60 + 120) % 360) + ',80%,45%)');
-  g.addColorStop(1, 'hsl(' + ((t * 60 + 240) % 360) + ',80%,40%)');
-  x.fillStyle = g;
-  x.fillRect(0, 0, w, h);
-  for (let i = 0; i < 400; i++) {
-    const px = Math.random() * w;
-    const py = Math.random() * h;
-    const s = 8 + Math.random() * 28;
-    x.fillStyle = 'hsl(' + (Math.random() * 360) + ',90%,' + (30 + Math.random() * 50) + '%)';
-    x.fillRect(px, py, s, s);
-  }
+  const w = c.width;
+  const h = c.height;
+  x.save();
+  x.translate(-((t * 240) % 128), -((t * 160) % 128));
+  x.fillStyle = pattern;
+  x.fillRect(0, 0, w + 128, h + 128);
+  x.restore();
+  x.fillStyle = 'hsl(' + ((t * 90) % 360) + ',90%,50%)';
+  x.fillRect((t * 300) % w, 0, 80, h);
   t += 0.016;
+  frames++;
+  if (frames % 60 === 0) document.title = 'overrun ' + frames;
   requestAnimationFrame(draw);
 }
 draw();
@@ -152,6 +175,10 @@ if [ "$MODE" = check ]; then
     if [ -f "$APK" ]; then
         stale="$(find "$ROOT/android/app/src/main" -type f -newer "$APK" -print -quit 2>/dev/null)"
         [ -z "$stale" ] || cfail "the APK is older than $stale (rebuild :app:assembleDebug)"
+    fi
+    if [ -n "${PD_OVERRUN_MAIN_APK:-}" ]; then
+        [ -f "$PD_OVERRUN_MAIN_APK" ] ||
+            cfail "PD_OVERRUN_MAIN_APK=$PD_OVERRUN_MAIN_APK does not exist"
     fi
     mkdir -p "$WORK"
     write_page
@@ -292,9 +319,34 @@ app_connected() {
         grep -q "hello --welcome--> welcomed"
 }
 
+# The Mac app resolves `open_app` against the phone's app list; a fresh
+# session can race the first `apps` reply (arm A once failed with "No phone
+# app matches" while arm B, minutes later, found it). Ask for the list until
+# the browser is in it, before the bench's first call.
+warm_catalog() {
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+import importlib.util, sys, time
+shim, profile, browser, driver = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+mcp = module.MCP(shim, profile)
+try:
+    for _ in range(30):
+        apps = mcp.text("list_apps").get("apps", [])
+        if any(app.get("package") == browser for app in apps):
+            sys.exit(0)
+        time.sleep(1)
+    sys.exit(1)
+finally:
+    mcp.close()
+PY
+}
+
 # Loads the animated page on the stream's own virtual display once the window
 # exists: the app launch may restore a blank tab, and the display id is in the
-# phone's own `stream N vd=ID` line.
+# phone's own `stream N vd=ID` line. A new task is required: without it the
+# intent is delivered to the browser instance already on display 0.
 motion_watch() {
     local arm="$1" i line id
     for i in $(seq 1 90); do
@@ -309,50 +361,125 @@ motion_watch() {
     fi
     id="${line##*=}"
     for i in 1 2; do
-        emu shell am start --display "$id" -a android.intent.action.VIEW \
+        emu shell am start --display "$id" -f 0x10000000 \
+            -a android.intent.action.VIEW \
             -d "http://10.0.2.2:$HTTP_PORT/overrun.html" -p "$BROWSER" \
             >> "$WORK/motion-$arm.log" 2>&1 || true
         sleep 3
     done
+    emu shell dumpsys activity activities 2>/dev/null | tr -d '\r' |
+        grep -E "Display #$id|topResumedActivity" | head -8 >> "$WORK/motion-$arm.log" || true
 }
 
-run_arm() { # run_arm <a|b> <connect host:port>
-    local arm="$1" addr="$2" rc
-    section "arm $arm"
+run_arm() { # run_arm <a|b> <tag> <connect host:port>
+    local arm="$1" tag="$2" addr="$3" rc
+    section "arm $arm ($tag)"
     emu logcat -c >/dev/null 2>&1 || true
     "$APP" --profile "$PROFILE" --background --mcp-enable --connect "$addr" \
-        --quit-after $((SECONDS_RUN + 240)) > "$WORK/app-$arm.log" 2>&1 &
+        --quit-after $((SECONDS_RUN + 240)) > "$WORK/app-$tag.log" 2>&1 &
     APP_PID=$!
     if wait_for 90 app_connected; then
-        ok "the Mac app session is ready on arm $arm"
+        ok "the Mac app session is ready on arm $arm ($tag)"
     else
-        bad "the Mac app never welcomed the phone on arm $arm"
+        bad "the Mac app never welcomed the phone on arm $arm ($tag)"
         stop_app
         return 1
     fi
-    motion_watch "$arm" &
+    if warm_catalog; then
+        ok "the browser is in the phone's app list"
+    else
+        say "the browser never appeared in the app list; the bench will say so"
+    fi
+    motion_watch "$tag" &
     WATCH_PID=$!
-    "$PYTHON" "$BENCH" --profile "$PROFILE" --serial "$SERIAL" --adb "$ADB" \
-        --repeats 1 --out "$OUT/arm-$arm.csv" --shim "$SHIM" \
-        --arms "$WORK/arm-$arm.json" --package "$BROWSER" \
-        --script still --still-seconds "$SECONDS_RUN" \
-        > "$WORK/bench-$arm.log" 2>&1
-    rc=$?
+    for attempt in 1 2; do
+        "$PYTHON" "$BENCH" --profile "$PROFILE" --serial "$SERIAL" --adb "$ADB" \
+            --repeats 1 --out "$OUT/arm-$tag.csv" --shim "$SHIM" \
+            --arms "$WORK/arm-$arm.json" --package "$BROWSER" \
+            --script still --still-seconds "$SECONDS_RUN" \
+            > "$WORK/bench-$tag-$attempt.log" 2>&1
+        rc=$?
+        [ "$rc" -eq 0 ] && break
+        grep -q "No phone app matches" "$WORK/bench-$tag-$attempt.log" || break
+        say "arm $arm: the app list raced the first open; retrying"
+        sleep 3
+        warm_catalog || true
+    done
+    cp "$WORK/bench-$tag-$attempt.log" "$WORK/bench-$tag.log" 2>/dev/null || true
     sleep 2
     kill "$WATCH_PID" 2>/dev/null || true
     WATCH_PID=""
     /usr/bin/log show --last 12m --info --style syslog \
         --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" \
-        2>/dev/null | grep -E " stats (total )?stream=" > "$WORK/arm-$arm-stats.log" || true
-    emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/arm-$arm-phone.log" 2>&1 || true
-    cat "$WORK/bench-$arm.log"
+        2>/dev/null | grep -E " stats (total )?stream=" > "$WORK/arm-$tag-stats.log" || true
+    emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/arm-$tag-phone.log" 2>&1 || true
+    cat "$WORK/bench-$tag.log"
     stop_app
-    [ "$rc" -eq 0 ] && ok "the bench run completed on arm $arm" \
-        || bad "the bench run failed on arm $arm (rc=$rc)"
-    grep -q ' stats total stream=' "$WORK/arm-$arm-stats.log" \
-        && ok "arm $arm wrote its totals line" \
-        || bad "arm $arm wrote no totals line"
+    [ "$rc" -eq 0 ] && ok "the bench run completed on arm $arm ($tag)" \
+        || bad "the bench run failed on arm $arm ($tag) (rc=$rc)"
+    grep -q ' stats total stream=' "$WORK/arm-$tag-stats.log" \
+        && ok "arm $arm ($tag) wrote its totals line" \
+        || bad "arm $arm ($tag) wrote no totals line"
     [ "$rc" -eq 0 ]
+}
+
+# Installs another build of the same versionCode and restarts the shell server,
+# so one boot can measure the pre-fix APK and the fixed one.
+install_apk() { # install_apk <apk> <tag>
+    local apk="$1" tag="$2"
+    [ -f "$apk" ] || { bad "no APK at $apk"; return 1; }
+    if ! emu install -r -d "$apk" > "$WORK/install-$tag.log" 2>&1; then
+        tail -5 "$WORK/install-$tag.log"
+        bad "install of $tag failed"
+        return 1
+    fi
+    # The Shizuku user service keeps the deleted APK until it is killed.
+    emu shell pkill -f dev.pocketdeck:pocketdeck >/dev/null 2>&1 || true
+    sleep 1
+    if ! restart_server > "$WORK/restart-$tag.log" 2>&1; then
+        tail -10 "$WORK/restart-$tag.log"
+        bad "the server did not restart on $tag"
+        return 1
+    fi
+    ensure_forward >/dev/null || { bad "the forward did not come back on $tag"; return 1; }
+    ok "installed $tag (versionCode $(apk_version_code "$apk")) and restarted the server"
+}
+
+start_proxy() { # start_proxy <tag>
+    local tag="$1"
+    PROXY_PORT="$(free_port)"
+    "$PYTHON" "$FAULT" --listen "$PROXY_PORT" --connect "127.0.0.1:$PORT" \
+        --mode delay-throttle --delay-ms "$DELAY_MS" --rate-mbit "$LINK_MBIT" \
+        --events "$WORK/proxy-$tag.jsonl" > "$WORK/proxy-$tag.log" 2>&1 &
+    PROXY_PID=$!
+    if "$PYTHON" - "$PROXY_PORT" <<'PY'
+import socket, sys, time
+for _ in range(40):
+    try:
+        socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.5).close()
+        sys.exit(0)
+    except OSError:
+        time.sleep(0.25)
+sys.exit(1)
+PY
+    then
+        ok "the shaper listens on 127.0.0.1:$PROXY_PORT ($DELAY_MS ms, $LINK_MBIT Mbit/s)"
+        return 0
+    fi
+    bad "the shaper never listened"
+    return 1
+}
+
+stop_proxy() {
+    kill "$PROXY_PID" 2>/dev/null || true
+    PROXY_PID=""
+}
+
+run_shaped_arm() { # run_shaped_arm <tag>
+    local tag="$1"
+    start_proxy "$tag" || return 1
+    run_arm b "$tag" "127.0.0.1:$PROXY_PORT" || true
+    stop_proxy
 }
 
 # --- boot -------------------------------------------------------------------
@@ -390,6 +517,13 @@ else
     bad "the Mac app did not pair/store a pin"
     exit 1
 fi
+# The phone's report is a ~1800x1200 app window; the Mac's default 900x600
+# is too small to put a key frame near the queue's 256 KB budget. The window
+# frame is remembered per app in the profile's defaults.
+defaults write "dev.pocketdeck.mac.$PROFILE" streamFrames \
+    -dict "app.$BROWSER" "{{20, 20}, {1600, 1260}}" \
+    && say "the app window will open at 1600x1260" \
+    || bad "could not seed the app window frame"
 
 # --- the motion source: a local page the emulator's browser can reach --------
 section motion
@@ -419,40 +553,44 @@ TOP="$(emu shell dumpsys activity activities 2>/dev/null | tr -d '\r' |
     grep -m1 -E 'topResumedActivity|ResumedActivity' || true)"
 say "top activity: ${TOP:-unknown}"
 
-# --- arm A: the encoder overshoots on a fast link ---------------------------
+# --- the arms ---------------------------------------------------------------
 cat > "$WORK/arm-a.json" <<JSON
 {"arms": [{"name": "overrun-a", "phone": {"overshoot": "$OVERSHOOT"}, "mac": {}}]}
 JSON
 cat > "$WORK/arm-b.json" <<JSON
 {"arms": [{"name": "overrun-b", "phone": {}, "mac": {}}]}
 JSON
-run_arm a "127.0.0.1:$PORT" || true
+
+# One boot measures the pre-fix APK first (its arm A must fail the bar: the
+# repro), then installs the worktree's fixed APK and runs the same arms.
+MAIN_APK="${PD_OVERRUN_MAIN_APK:-}"
+if [ -n "$MAIN_APK" ] && [ -f "$MAIN_APK" ]; then
+    section "main phase (pre-fix APK)"
+    install_apk "$MAIN_APK" main || exit 1
+    run_arm a a-main "127.0.0.1:$PORT" || true
+    run_shaped_arm b-main
+    section "main phase numbers"
+    "$PYTHON" "$STATS" --arm a --stats "$WORK/arm-a-main-stats.log" \
+        --logcat "$WORK/arm-a-main-phone.log" --seconds "$SECONDS_RUN" \
+        > "$WORK/check-a-main.log" 2>&1
+    cat "$WORK/check-a-main.log"
+    "$PYTHON" "$STATS" --arm b --stats "$WORK/arm-b-main-stats.log" \
+        --logcat "$WORK/arm-b-main-phone.log" --proxy "$WORK/proxy-b-main.jsonl" \
+        --seconds "$SECONDS_RUN" --link-mbit "$LINK_MBIT" \
+        > "$WORK/check-b-main.log" 2>&1
+    cat "$WORK/check-b-main.log"
+    grep -q "^FAIL arm-a" "$WORK/check-a-main.log" \
+        && ok "the pre-fix arm A fails the bar (the repro)" \
+        || bad "the pre-fix arm A did not reproduce the spiral"
+    section "fixed phase (worktree APK)"
+    install_apk "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk" fixed || exit 1
+fi
+
+# --- arm A: the encoder overshoots on a fast link ---------------------------
+run_arm a a "127.0.0.1:$PORT" || true
 
 # --- arm B: the normal encoder on a 3 Mbit/s, 100 ms shaped link ------------
-section proxy
-PROXY_PORT="$(free_port)"
-"$PYTHON" "$FAULT" --listen "$PROXY_PORT" --connect "127.0.0.1:$PORT" \
-    --mode delay-throttle --delay-ms "$DELAY_MS" --rate-mbit "$LINK_MBIT" \
-    --events "$WORK/proxy-b.jsonl" > "$WORK/proxy-b.log" 2>&1 &
-PROXY_PID=$!
-if "$PYTHON" - "$PROXY_PORT" <<'PY'
-import socket, sys, time
-for _ in range(40):
-    try:
-        socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.5).close()
-        sys.exit(0)
-    except OSError:
-        time.sleep(0.25)
-sys.exit(1)
-PY
-then
-    ok "the shaper listens on 127.0.0.1:$PROXY_PORT ($DELAY_MS ms, $LINK_MBIT Mbit/s)"
-else
-    bad "the shaper never listened"
-fi
-run_arm b "127.0.0.1:$PROXY_PORT" || true
-kill "$PROXY_PID" 2>/dev/null || true
-PROXY_PID=""
+run_shaped_arm b
 
 # --- the pass bar -----------------------------------------------------------
 section pass

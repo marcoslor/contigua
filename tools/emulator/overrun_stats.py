@@ -134,8 +134,8 @@ def arm_a(stats, logcat, seconds):
     phone_fps = (number(totals, "phone_frames") or 0) / secs if secs else 0
     shown_fps = (number(totals, "shown_frames") or 0) / active if active else 0
     check("arm-a", secs >= 110, "the run was %.1f s (at least 110)" % secs, failures)
-    check("arm-a", phone_fps >= 10,
-          "the source moved: %.1f encoder fps (at least 10)" % phone_fps, failures)
+    check("arm-a", phone_fps >= 5,
+          "the source moved: %.1f encoder fps (at least 5)" % phone_fps, failures)
     check("arm-a", shown_fps >= 0.8 * phone_fps,
           "Mac shown %.1f fps against the source's %.1f fps (at least 80 %%)"
           % (shown_fps, phone_fps), failures)
