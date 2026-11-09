@@ -9,6 +9,7 @@
 // returned actions, so every rule is unit-tested with a fake clock.
 
 import Foundation
+import Observation
 
 /// What keeps a phone's session alive. Slice 1 has the current phone and the
 /// test hook; later slices add feature claims (notifications, Finder).
@@ -34,6 +35,14 @@ enum PhoneBookAction: Equatable {
     case startPairing(deviceId: String, phone: PhoneRef)
 }
 
+/// One machine step, kept for the R4 link log: the states are closed tokens,
+/// never a person's words or a reason string the phone chose.
+struct LinkTransition: Equatable {
+    var from: Link
+    var to: Link
+    var event: LinkEvent
+}
+
 struct PhoneBookEventResult: Equatable {
     var actions: [PhoneBookAction] = []
     /// True only for the current phone: the controller may touch the Deck,
@@ -41,9 +50,12 @@ struct PhoneBookEventResult: Equatable {
     var affectsCurrent = false
     var currentLinkLost = false
     var currentLinkRestored = false
+    /// Set when this step changed the phone's link (R4's one log line).
+    var transition: LinkTransition? = nil
 }
 
 @MainActor
+@Observable
 final class PhoneSession {
     private(set) var deviceId: String
     var phone: PhoneRef?
@@ -83,6 +95,7 @@ final class PhoneSession {
 }
 
 @MainActor
+@Observable
 final class PhoneBook {
     private(set) var records: [String: PhoneSession] = [:]
     private(set) var currentId: String?
@@ -211,7 +224,8 @@ final class PhoneBook {
             actions: actions,
             affectsCurrent: affectsCurrent,
             currentLinkLost: affectsCurrent && before.isOnline && !after.isOnline,
-            currentLinkRestored: affectsCurrent && !before.isOnline && after.isOnline)
+            currentLinkRestored: affectsCurrent && !before.isOnline && after.isOnline,
+            transition: before == after ? nil : LinkTransition(from: before, to: after, event: event))
     }
 
     /// Shutdown: every phone loses every claim and every session closes.

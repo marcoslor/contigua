@@ -225,6 +225,11 @@ final class ConnectionController {
             ?? ShareInbox.defaultDirectory
         return ShareInbox(directory: directory, actions: shareActions)
     }()
+    /// R1: one derivation for the Deck, the menu-bar panel and Settings.
+    var presentation: LinkPresentation {
+        LinkPresentation(link: link, naming: { self.displayName(for: $0) })
+    }
+
     var banner: Banner? {
         // PAIR-33: trust lost is sticky and cannot be covered by a transient
         // notice (a copy result, a launcher error): it is the one truth until
@@ -233,6 +238,9 @@ final class ConnectionController {
            let trustLost = link.banner(naming: { displayName(for: $0) }) {
             return trustLost
         }
+        // R2: a pairing sheet says the cooldown itself; the Deck behind it does
+        // not repeat the sentence. With no sheet the banner carries it.
+        if sheet != nil, case .pairing = link { return transientBanner }
         return transientBanner ?? link.banner(naming: { displayName(for: $0) })
     }
 
@@ -855,7 +863,7 @@ final class ConnectionController {
             case .reconnecting: state = "reconnecting"
             case .offline(_, let cause): state = "offline:\(cause)"
             case .needsPairing: state = "needsPairing"
-            case .pairing(_, let pairing): state = "pairing:\(pairing)"
+            case .pairing(_, let pairing): state = "pairing:\(pairing.token)"
             }
             lines.append("id=\(record.deviceId) state=\(state) current=\(record.deviceId == book.currentId ? 1 : 0)")
         }
@@ -916,26 +924,46 @@ final class ConnectionController {
         beginPairing(PairingTarget.discovered(found), ref: found.ref)
     }
 
+    /// R4: where a Pair Again came from, for the one ui log line.
+    enum PairAgainSource: String { case deck, settings, menubar }
+
     /// "Pair again" on the banner: the remembered phone, if it is in range.
-    func pairAgain() {
+    func pairAgain(source: PairAgainSource = .deck) {
         guard let ref = link.phone else { return }
-        pairAgain(for: ref)
+        pairAgain(for: ref, source: source)
     }
 
-    /// PAIR-14/33/34: one route for the banner and the Settings page. A phone in
-    /// range runs the code flow (which forgets the old pin); one out of range
-    /// opens the one add-phone sheet with that phone as its target.
-    func pairAgain(for ref: PhoneRef) {
+    /// PAIR-14/33/34: one route for the banner, the panel and the Settings page.
+    /// A discovered phone runs the code flow (which forgets the old pin); a
+    /// phone at its last welcome address is dialled there (R3: a trust-lost
+    /// phone must be reachable again without a dead end); with neither, the one
+    /// add-phone sheet opens with that phone as its target.
+    func pairAgain(for ref: PhoneRef, source: PairAgainSource = .deck) {
+        Log.app.notice("ui: pair-again source=\(source.rawValue, privacy: .public)")
         if let found = discovered.first(where: { $0.deviceId == ref.id }) {
             addPhoneTarget = nil
             beginPairing(.discovered(found), ref: ref)
+        } else if let cached = cache.address(forDeviceId: ref.id) {
+            forgetPinForPairAgain(ref)
+            addPhoneTarget = nil
+            beginPairing(.manual(host: cached.host, port: cached.port), ref: ref)
         } else {
             addPhoneTarget = ref
             sheet = .addPhone
         }
     }
 
-    func pairAgain(for phone: RememberedPhone) { pairAgain(for: phone.ref) }
+    /// PAIR-14: a re-pair forgets the old pin, whether the phone was discovered
+    /// or dialled at its last address.
+    private func forgetPinForPairAgain(_ ref: PhoneRef) {
+        guard !ref.id.isEmpty else { return }
+        pins.forget(deviceId: ref.id)
+        syncIdentityPinMirrorAfterForget(deviceId: ref.id)
+    }
+
+    func pairAgain(for phone: RememberedPhone, source: PairAgainSource = .settings) {
+        pairAgain(for: phone.ref, source: source)
+    }
 
     func connectManually(host: String, port: UInt16) {
         sheet = nil
@@ -951,6 +979,9 @@ final class ConnectionController {
     func cancelPairing() {
         guard isPairing, let id = pairingDeviceId ?? book.currentId,
               let record = book.record(for: id) else { return }
+        // R4: the one ui line for a sheet the person closed (Cancel or Esc);
+        // `sheetDismissed` re-enters here, and the guard makes it once.
+        Log.app.notice("ui: pairing-sheet cancel")
         pairingTarget = nil
         pairingSucceeded = false
         if sheet == .code { sheet = nil }
@@ -2411,6 +2442,16 @@ final class ConnectionController {
 
     func apply(_ result: PhoneBookEventResult) {
         for action in result.actions { perform(action) }
+        // R4: one line per machine step, closed tokens only. The pairing
+        // record is current while its sheet is up, so a cooldown step logs.
+        if result.affectsCurrent, let step = result.transition {
+            // Closed state tokens, never a person's value (R-PRIV-1 reads the
+            // names: `state`/`tag` are the lint's own safe words).
+            let fromState = step.from.token
+            let eventTag = step.event.token
+            let toState = step.to.token
+            Log.app.notice("link: \(fromState, privacy: .public) --\(eventTag, privacy: .public)--> \(toState, privacy: .public)")
+        }
         guard result.affectsCurrent else { return }
         if case .pairing = link, qr == nil { sheet = .code }
         if isPairing {
@@ -2640,7 +2681,11 @@ final class ConnectionController {
         addPhoneTarget = nil
         pairingTarget = target
         pairingSucceeded = false
-        pairingResumeId = book.currentId
+        // A retry runs from the previous attempt's provisional record; the
+        // phone to go back to on Cancel is the one before the first attempt.
+        if book.currentId?.hasPrefix("hook:pair-") != true {
+            pairingResumeId = book.currentId
+        }
         windows.closeAll()
         stopClipboardSync()
         // A person re-running the pairing revokes the old pin here (§7): the
@@ -4584,7 +4629,8 @@ final class ConnectionController {
         case "code-contacting": pairingSheet(.contacting)
         case "code": pairingSheet(.comparing(code: "482913"))
         case "code-verifying": pairingSheet(.verifying)
-        case "code-denied": pairingSheet(.denied)
+        case "code-denied": pairingSheet(.denied(until: Date().addingTimeInterval(30)))
+        case "code-cooling": pairingSheet(.coolingDown(until: Date().addingTimeInterval(23)))
         case "code-timedout": pairingSheet(.timedOut)
         case "qr", "qr-success", "qr-expired":
             rememberedPhones = []

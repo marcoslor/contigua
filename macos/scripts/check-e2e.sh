@@ -206,10 +206,13 @@ sweep_test_registrations() {
 # line and its receive diagnostics on stderr): grep both when a line may be
 # either. Starts fakephone with FAKE_PY — it needs a TLS 1.3 python.
 start_fake() {
-    local state="${1:-$WORK/state.json}" name_args=()
-    [ -n "${FAKE_NAME:-}" ] && name_args=(--name "$FAKE_NAME")
+    local state="${1:-$WORK/state.json}"
+    # The phone's name may carry a space, so it cannot ride the word-split
+    # FAKE_ARGS; it is one quoted element of a non-empty array.
+    local args=(--port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}")
+    [ -n "${FAKE_NAME:-}" ] && args+=(--name "$FAKE_NAME")
     # shellcheck disable=SC2086
-    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" "${name_args[@]}" ${FAKE_ARGS:-} \
+    "$FAKE_PY" "$FAKEPHONE" "${args[@]}" ${FAKE_ARGS:-} \
         --events "$WORK/events.jsonl" \
         --state "$state" > "$WORK/fake.log" 2> "$WORK/fake.err" &
     FAKE_PID=$!
@@ -1323,6 +1326,7 @@ check_pairflow() {
     local ctl="$WORK-control" banner="$WORK/banner.txt" dump="$WORK/settings.txt"
     local fake_ctl="$WORK/fake-ctl" before
     pair_commits() { grep -c '"t":"pair.commit"' "$WORK/events.jsonl" 2>/dev/null || true; }
+    paired_events() { grep -c '"state":"paired"' "$WORK/events.jsonl" 2>/dev/null || true; }
     rm -rf "$ctl"; mkdir -p "$ctl"; : > "$fake_ctl"
     # Fixture name only (the phone's own name is what the Mac shows).
     FAKE_NAME="Galaxy S25+" FAKE_ARGS="--ctl-file $fake_ctl" start_fake || return 1
@@ -1377,7 +1381,7 @@ check_pairflow() {
     ax_tree | grep -qE 'value=\[[0-9]+ s\]' \
         && ok "[R2] PF1 the denial shows the cooldown countdown" \
         || bad "[R2] PF1 no countdown under the denial"
-    ax_tree | grep -qE 'title=\[Try again\].*enabled=\[0\]' \
+    ax_tree | grep -qE 'desc=\[Try again\].*enabled=\[0\]' \
         && ok "[R2] PF1 Try again waits for the countdown" \
         || bad "[R2] PF1 Try again was enabled inside the phone's window"
     "$AXDUMPBIN" "$APP_PID" --press Cancel >/dev/null 2>&1 \
@@ -1410,6 +1414,10 @@ check_pairflow() {
     printf 'connections on\n' > "$fake_ctl"
     sleep 0.5
 
+    # Re-arm the phone's window so this step is deterministic whatever the
+    # earlier steps cost; the Mac's own 30 s deadline starts at the refusal.
+    printf 'cooldown 30\n' > "$fake_ctl"
+    sleep 0.3
     "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 || true
     wait_until 15 eval 'ax_tree | grep -qF "Wait a moment, then try again."' \
         && ok "[R2] PF3 inside the phone's window the sheet says to wait" \
@@ -1420,17 +1428,20 @@ check_pairflow() {
     wait_until 3 eval '[ "$(mac_failed_line)" = "session failed: pair_cooldown" ]' \
         && ok "[R2] PF3 the Mac read pair_cooldown, not tls" \
         || bad "[R2] PF3 the Mac read '$(mac_failed_line)'"
+    # The phone's window closes; the Mac's own countdown still runs to 0.
+    printf 'cooldown end\n' > "$fake_ctl"
     # R3: the countdown ends, Try again becomes available, and the person's
     # click gets a prompt (the third one is allowed by the fake).
-    wait_until 40 eval 'ax_tree | grep -qE "title=\[Try again\].*enabled=\[1\]"' \
+    wait_until 40 eval 'ax_tree | grep -qE "desc=\[Try again\].*enabled=\[1\]"' \
         && ok "[R2] PF3 Try again is offered when the countdown ends" \
         || bad "[R2] PF3 Try again never came back"
     before="$(pair_commits)"
+    paired_before="$(paired_events)"
     "$AXDUMPBIN" "$APP_PID" --press "Try again" >/dev/null 2>&1 || true
     wait_until 20 eval '[ "$(pair_commits)" -gt "$before" ]' \
         && ok "[R3] PF3 Try again after the window reaches the phone's prompt" \
         || bad "[R3] PF3 Try again after the window dead-ended"
-    wait_until 15 eval 'ax_tree | grep -qF "Paired."' \
+    wait_until 20 eval '[ "$(paired_events)" -gt "$paired_before" ]' \
         && ok "[R3] PF3 the pairing completes after the window" \
         || bad "[R3] PF3 the pairing did not complete"
     wait_until 15 eval '! ax_tree | grep -qF "no longer trusts this Mac."' \
@@ -1521,7 +1532,8 @@ check_tls() {
     sleep 1
 
     # (7) two sessions, never resumed: every accept is a full TLS 1.3
-    # handshake, so each session's exporter hash differs (R3). --connect on
+    # handshake, so each session's 8-hex exporter prefix differs (R3; R5
+    # keeps the full hash out of the log). --connect on
     # both: mDNS discovery could otherwise answer for a phone this rig no
     # longer controls, and the claim is about the two handshakes below.
     start_fake || return 1

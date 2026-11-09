@@ -262,7 +262,7 @@ struct PhoneControlsActions {
         installApk = { [weak controller] in controller?.chooseApk() }
         turnOffScreen = { [weak controller] in controller?.windows.togglePhonePanelOff() }
         disconnectAgent = { [weak controller] in controller?.mcp.disconnectAgents() }
-        pairAgain = { [weak controller] in controller?.pairAgain() }
+        pairAgain = { [weak controller] in controller?.pairAgain(source: .menubar) }
     }
 }
 
@@ -307,7 +307,7 @@ extension PhoneControlsState {
         } ?? "your phone"
         connection = .resolve(link: controller.link, pathsDown: controller.pathsDown,
                               pathsOffline: controller.pathsOffline)
-        notice = PhonePanelNotice.banner(for: controller.link) { controller.displayName(for: $0) }
+        notice = controller.presentation.panelNotice
         battery = controller.status?.battery
         charging = controller.status?.charging ?? false
         agentCount = controller.mcp.clientCount
