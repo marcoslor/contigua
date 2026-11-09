@@ -278,13 +278,27 @@ enum PhoneChrome {
 
     /// The frame a phone window opens at when it has a remembered one: the
     /// remembered height leads, the window takes the phone's shape, and the
-    /// screen's limit keeps that shape (ISS-63). The top-left stays put.
+    /// screen's limit scales the stream as one (ISS-63). The top-left stays.
     static func restoredFrame(saved: NSRect, phone: CGSize, style: WindowStyle,
                               visible: NSRect, minimum: NSSize = .zero) -> NSRect {
-        var size = NSSize(width: min(saved.width, visible.width),
-                          height: min(saved.height, visible.height))
-        size.width = max(size.width, min(minimum.width, visible.width))
-        size.height = max(size.height, min(minimum.height, visible.height))
+        guard phone.width > 0, phone.height > 0, saved.width > 0, saved.height > 0 else { return saved }
+        let ratio = phone.width / phone.height
+        let bar = style.insets(fullScreen: false).top
+        var streamHeight = max(saved.height - bar, 1)
+        var streamWidth = streamHeight * ratio
+        let maxStreamHeight = max(visible.height - bar, 1)
+        let scale = min(1, min(visible.width / streamWidth, maxStreamHeight / streamHeight))
+        streamWidth *= scale
+        streamHeight *= scale
+        // The minimum is the phone's shape too (PhoneWindowController's
+        // minSize): a narrow window grows both axes, never one.
+        let minStreamWidth = max(minimum.width, max(minimum.height - bar, 0) * ratio)
+        if streamWidth < minStreamWidth {
+            streamWidth = min(minStreamWidth, visible.width)
+            streamHeight = streamWidth / ratio
+        }
+        let size = style.windowSize(stream: CGSize(width: streamWidth.rounded(),
+                                                   height: streamHeight.rounded()))
         return NSRect(x: saved.minX, y: saved.maxY - size.height,
                       width: size.width, height: size.height)
     }
@@ -297,15 +311,31 @@ enum PhoneChrome {
         case refitNow
         case refitAtDragEnd
 
-        static func decide(video: CGSize, picture: CGSize, isDragging: Bool) -> PictureFit {
-            .none
+        static func decide(video: CGSize, picture: CGSize, isDragging: Bool,
+                           tolerance: CGFloat = 0.01) -> PictureFit {
+            guard video.width > 0, video.height > 0,
+                  picture.width > 0, picture.height > 0 else { return .none }
+            let videoRatio = video.width / video.height
+            let pictureRatio = picture.width / picture.height
+            guard abs(videoRatio - pictureRatio) > tolerance * max(videoRatio, pictureRatio) else {
+                return .none
+            }
+            return isDragging ? .refitAtDragEnd : .refitNow
         }
     }
 
     /// The frame the window takes when it refits to the picture's shape: the
     /// top-left and the height stay, the width follows (ISS-63).
     static func refitFrame(current: NSRect, picture: CGSize, style: WindowStyle) -> NSRect {
-        current
+        guard picture.width > 0, picture.height > 0, current.width > 0, current.height > 0 else {
+            return current
+        }
+        let stream = style.streamSize(window: current.size)
+        let height = max(stream.height, 1)
+        let width = (height * picture.width / picture.height).rounded()
+        let size = style.windowSize(stream: CGSize(width: width, height: height))
+        return NSRect(x: current.minX, y: current.maxY - size.height,
+                      width: size.width, height: size.height)
     }
 }
 
