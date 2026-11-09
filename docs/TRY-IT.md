@@ -8,9 +8,10 @@ cd android && export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/L
 ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 # Mac: build a release copy and install it to /Applications (quits a running copy first).
 cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
-# Phone files in Finder (opt-in): the same install with the File Provider extension; the
-# installer registers the installed copy and its extension.
-cd macos && ./scripts/install.sh --with-files && open /Applications/PocketDeck.app
+# Phone files in Finder are part of the install: it carries the File Provider
+# extension and registers the installed copy and its extension. For a copy
+# without them, with a warning saying what is missing:
+# cd macos && ./scripts/install.sh --without-files && open /Applications/PocketDeck.app
 ```
 
 0. **Upgrading from a plaintext build? Pair once more.** Sessions are now TLS 1.3
