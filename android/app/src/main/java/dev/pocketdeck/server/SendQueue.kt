@@ -406,7 +406,11 @@ internal class SendQueue(
                     val index = item.next
                     item.next += 1
                     if (item.next < item.chunks.size) {
-                        q.addLast(item)
+                        // R5: the rest of a partly sent frame keeps the head of
+                        // its lane, so a queued D2 can never go between D1's
+                        // fragments (the Mac would throw D1 away and decode D2
+                        // without its reference).
+                        q.addFirst(item)
                     } else {
                         released = item.originalBytes
                     }

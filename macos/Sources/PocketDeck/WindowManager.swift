@@ -1078,6 +1078,10 @@ final class WindowManager {
                     self?.onChange?()
                 }
             }
+        case .chunkIncomplete(let stream):
+            // R6: the session's assembler threw a stub away; the picture's
+            // feed must break until a keyframe or the next delta corrupts.
+            controller(for: stream)?.videoView.incompleteChunkedUnit()
         }
     }
 
