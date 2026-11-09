@@ -269,7 +269,22 @@ class Session(
     internal val clipboardGateOn: Boolean get() = clipGateState == ClipGate.ON
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
-    private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
+    /** When each app stream last sent a paste key or offered a drop's SEND (ISS-51). */
+    private val shareAt = HashMap<Int, Long>()
+    private val shareLock = Any()
+    /** Lets a just-created task reach the task list before its display is read. */
+    private val shareArrivalScheduler = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "pocketdeck-share-arrival").apply { isDaemon = true }
+    }
+    private val drop = dropLanding?.let { landing ->
+        DropReceiver({ file, mime, target, index, count ->
+            // The share screen follows the batch's last file (SHARE-17), and
+            // the trigger is noted before the SEND starts: the target's task
+            // can be listed before land() returns.
+            if (index >= count) noteShareTrigger(target)
+            landing.land(file, mime, target, index, count)
+        }, ::sendJson, log)
+    }
     /** Read-only phone files; absent on a platform without shared storage. */
     private val files = filesRoot?.let { root ->
         runCatching { FsView(FsPaths(root, fsStats)) }.getOrElse {
@@ -1053,6 +1068,7 @@ class Session(
         stopStreamWatch()
         runCatching { taskEvents?.stop() }
         hoverExecutor.shutdownNow()
+        shareArrivalScheduler.shutdownNow()
         // A removal already running finishes; no close can arrive now.
         closeTasks.shutdown()
         runCatching { audioCapture?.stop() }
@@ -2045,6 +2061,7 @@ class Session(
             sendError("no_stream", "unknown stream $stream", stream)
             return
         }
+        forgetShareTrigger(stream)
         // ISS-40 round 2: one final line for the stream's whole life, before the
         // display forgets its counters (the CBR freeze is diagnosed from it).
         display.totalsLine(stream)?.let { log(it) }
@@ -3210,6 +3227,11 @@ class Session(
                 val t = bumpTime(state)
                 val downTime = if (p.action == Frames.ACTION_DOWN) t else state.keyDownTime
                 if (p.action == Frames.ACTION_DOWN) state.keyDownTime = t
+                // ISS-51: the Mac's paste key is what makes an app start its
+                // share screen; the arrival it causes is this window's.
+                if (p.action == Frames.ACTION_DOWN && p.keycode == KEYCODE_PASTE) {
+                    noteShareTrigger(frame.stream)
+                }
                 injector.key(state.displayId, p.action, p.keycode, p.metaState, downTime, t)
                 if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
@@ -3732,6 +3754,7 @@ class Session(
      */
     private fun closePhoneClosed(stream: Int, reason: String) {
         val state = synchronized(streams) { streams.remove(stream) } ?: return
+        forgetShareTrigger(stream)
         display.close(stream)
         streamCodecs.remove(stream)
         gate.forget(stream)
@@ -3762,12 +3785,98 @@ class Session(
     }
 
     private fun onTaskStackEvent(event: TaskStackEvent) {
+        if (event is TaskStackEvent.Created) scheduleShareArrivalCheck(event.taskId)
         val mapped = when (event) {
             is TaskStackEvent.Created -> TaskArrivalEvent.Created(event.taskId, event.pkg, now())
             is TaskStackEvent.DisplayChanged -> TaskArrivalEvent.DisplayChanged(event.taskId, event.displayId, now())
             is TaskStackEvent.Removed -> TaskArrivalEvent.Removed(event.taskId)
         }
         dispatchArrival(arrival.on(mapped))
+    }
+
+    // ------------------------------------------------------------------
+    // share arrivals (ISS-51)
+    // ------------------------------------------------------------------
+
+    /** The app window that pasted or offered a drop's SEND for this stream. */
+    private fun noteShareTrigger(stream: Int) {
+        val state = synchronized(streams) { streams[stream] } ?: return
+        if (state.content !is WindowContent.App) return
+        synchronized(shareLock) { shareAt[stream] = now() }
+    }
+
+    /**
+     * A finished drop names the window's package, not its stream: every app
+     * window of that package shares the trigger, and the policy picks the one
+     * whose display the task should return to.
+     */
+    private fun noteShareTrigger(target: String?) {
+        target ?: return
+        val at = now()
+        val matching = synchronized(streams) {
+            streams.values.filter { state ->
+                (state.content as? WindowContent.App)?.pkg == target &&
+                    state.displayId > ShareArrivalPolicy.PHONE_DISPLAY
+            }
+        }
+        if (matching.isEmpty()) return
+        synchronized(shareLock) { matching.forEach { shareAt[it.stream] = at } }
+    }
+
+    private fun forgetShareTrigger(stream: Int) {
+        synchronized(shareLock) { shareAt.remove(stream) }
+    }
+
+    /**
+     * ISS-51: a share target can start its picker with `FLAG_ACTIVITY_NEW_TASK`
+     * from an application context; with no calling activity the system gives
+     * the new task the phone's display, so the picker opens on the phone
+     * instead of in the window. Read where the task landed once the task list
+     * has it and move it back when the policy says so (WIN-50: the window
+     * keeps the app either way).
+     */
+    private fun scheduleShareArrivalCheck(taskId: Int) {
+        val nowMs = now()
+        val triggers = synchronized(shareLock) { HashMap(shareAt) }
+        if (triggers.isEmpty()) return
+        val windows = synchronized(streams) {
+            streams.values.mapNotNull { state ->
+                val content = state.content as? WindowContent.App ?: return@mapNotNull null
+                val at = triggers[state.stream] ?: return@mapNotNull null
+                val age = nowMs - at
+                if (state.displayId <= ShareArrivalPolicy.PHONE_DISPLAY ||
+                    age !in 0..ShareArrivalPolicy.WINDOW_MS) return@mapNotNull null
+                ShareArrivalPolicy.Window(state.stream, content.pkg, state.displayId, at)
+            }
+        }
+        if (windows.isEmpty()) return
+        val mover = taskMove ?: return
+        // The Created callback can arrive before the task list has the entry;
+        // re-read a few times rather than lose the share's arrival.
+        fun check(tries: Int) {
+            // The task's package is known here even when the Created callback
+            // had none yet, and the list's display is where it really landed.
+            val task = runCatching { mover.tasks() }.getOrNull()
+                ?.firstOrNull { it.taskId == taskId }
+            if (task == null) {
+                if (tries > 0) {
+                    shareArrivalScheduler.schedule({ check(tries - 1) },
+                        SHARE_ARRIVAL_RETRY_MS, TimeUnit.MILLISECONDS)
+                }
+                return
+            }
+            val decision = ShareArrivalPolicy.decide(windows, task.pkg, task.displayId, now())
+            if (decision !is ShareArrivalPolicy.Decision.Move) return
+            // moveRootTaskToDisplay is the direct route; a task the system
+            // will not move is adopted through Recents with a launch display,
+            // the same fallback WIN-46 uses for an app-started task.
+            var moved = runCatching { mover.move(taskId, decision.displayId) }.getOrDefault(false)
+            if (!moved) moved = runCatching { mover.adopt(taskId, decision.displayId) }.getOrDefault(false)
+            log("share arrival: task=$taskId display=${task.displayId} -> ${decision.displayId} " +
+                "stream=${decision.stream} moved=$moved")
+        }
+        shareArrivalScheduler.schedule({ check(SHARE_ARRIVAL_TRIES) },
+            SHARE_ARRIVAL_SETTLE_MS, TimeUnit.MILLISECONDS)
     }
 
     private fun startTaskListener() {
@@ -3904,7 +4013,19 @@ class Session(
         const val PHONE_DISPLAY = 0
         const val KEYCODE_BACK = 4
         const val KEYCODE_HOME = 3
+        const val KEYCODE_PASTE = 279
         const val KEYCODE_APP_SWITCH = 187
+
+        /**
+         * ISS-51: how long a share's new task may take to appear in the task
+         * list before its display is read. The system dispatches onTaskCreated
+         * before the task is necessarily listed, so the check re-reads the
+         * list a few times ([SHARE_ARRIVAL_TRIES]).
+         */
+        const val SHARE_ARRIVAL_SETTLE_MS = 600L
+        /** Re-reads of the task list while the new task is still being listed. */
+        const val SHARE_ARRIVAL_TRIES = 8
+        const val SHARE_ARRIVAL_RETRY_MS = 100L
 
         /**
          * The only types a session may send before `welcome` (docs/PROTOCOL.md

@@ -7,6 +7,31 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application>
+        <!-- ISS-51: a share target's picker started from an application
+             context. Debug builds only; the emulator check drives them. -->
+        <activity
+            android:name="dev.pocketdeck.app.ShareDebugActivity"
+            android:exported="true"
+            android:theme="@style/Theme.PocketDeck" />
+        <activity
+            android:name="dev.pocketdeck.app.ShareDebugSendActivity"
+            android:exported="true"
+            android:theme="@style/Theme.PocketDeck">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
+        </activity>
+        <!-- Empty affinity: a share target's picker gets its own task, so a
+             launch with no calling activity has no task to reuse and the
+             system has to choose a display for it. -->
+        <activity
+            android:name="dev.pocketdeck.app.ShareDebugPickerActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/Theme.PocketDeck" />
+
         <!-- A2's two fields (SHARE-16): a plain EditText and one whose
              OnReceiveContentListener takes image/*. Debug builds only; the
              checks drive it from adb, so it is exported. -->
