@@ -1,7 +1,7 @@
 // The phone window's screen state and the overlay a sleeping panel or a secure
 // surface puts over the last frame (docs/design/phone-mirror.md "Screen off and
 // wake"). The model is pure: time and views stay outside, so the tests pin every
-// transition. The view is the shared frosted cover (FrostedCover.swift, WIN-63)
+// transition. The view is the shared frosted cover (FrostedCover.swift, WIN-64)
 // with an optional Wake Screen button; it forwards no input to the phone.
 
 import AppKit

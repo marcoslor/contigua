@@ -1,6 +1,6 @@
 // The cover a stream window shows from the moment it opens until its first
 // frame (docs/UX.md "Opening a window", the L1 design): a large app icon on the
-// shared frosted cover (WIN-63), a 2 pt accent line sweeping under the title bar
+// shared frosted cover (WIN-64), a 2 pt accent line sweeping under the title bar
 // and the title "<App> — opening on <phone>". At 5 s a secondary line and a
 // glass capsule Cancel join it; the phone's refusal or 20 s brings the grey
 // icon, one sentence and a reason line, with Close alone. The phone window wears
@@ -203,7 +203,7 @@ struct OpeningCover: Equatable {
         }
     }
 }
-/// The L1 cover drawn by the shared cover (FrostedCover, WIN-63): the app's
+/// The L1 cover drawn by the shared cover (FrostedCover, WIN-64): the app's
 /// icon, the accent sweep, the title and the slow or refused words. A click
 /// that is not a button is swallowed: the phone sees nothing while it is up.
 final class OpeningCoverView: FrostedCoverView {
