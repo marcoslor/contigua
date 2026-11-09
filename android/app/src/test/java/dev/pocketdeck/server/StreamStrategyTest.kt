@@ -114,6 +114,13 @@ class StreamStrategyTest {
     }
 
     @Test
+    fun `quality off is a debug switch that disables adaptation`() {
+        val strategy = parse("quality" to "off")
+        assertFalse(strategy.quality)
+        assertEquals("quality=off", strategy.describe())
+    }
+
+    @Test
     fun `the line says default with nothing set`() {
         assertEquals("default", StreamStrategy.DEFAULT.describe())
     }
