@@ -48,6 +48,12 @@ internal class SendQueue(
         { QueuePolicy.today(maxDeltaBytesPerStream, maxDeltaDurationUs) },
     /** Q1: the queue overflowed under `overflow=suspend`; lower the bitrate. */
     private val onOverflow: (stream: Int) -> Unit = {},
+    /**
+     * The measured link rate for this stream (the writer's goodput), or null
+     * when it is not known. The overrun budget scales with it; without it the
+     * encoder's own measured output is used, then the believed target.
+     */
+    private val linkBpsFor: (stream: Int) -> Int? = { null },
     /** The stream's codec for the drop line's NAL types (AVC unless HEVC is on). */
     private val codecFor: (stream: Int) -> VideoCodec = { VideoCodec.Avc },
     /**
@@ -84,6 +90,10 @@ internal class SendQueue(
     private val dropEpisodes = HashMap<Int, Int>()
     /** The largest key frame's size against the byte budget, one line per new max. */
     private val keyMaxBytes = HashMap<Int, Int>()
+    /** The overrun budget per stream; see [BudgetState]. */
+    private val budgets = HashMap<Int, BudgetState>()
+    /** The encoder's own output rate, measured from the frames it enqueues. */
+    private val encodedRate = GoodputMeter(windowUs = 1_000_000L, minSpanUs = 50_000L)
     /** The pts of the last frame the writer sent, per stream. */
     private val lastSentPtsUs = HashMap<Int, Long>()
     /** The last sent pts before the open drop episode's first discarded delta. */
@@ -130,6 +140,7 @@ internal class SendQueue(
     fun enqueueControl(stream: Int, bytes: ByteArray, ptsUs: Long = -1) {
         var changed = false
         var keyLog: String? = null
+        var budgetLog: String? = null
         synchronized(lock) {
             if (stream != 0) {
                 dropping.remove(stream)
@@ -143,15 +154,28 @@ internal class SendQueue(
             // A video key frame is the only control entry with a pts; config
             // and JSON entries carry -1 and must not close a drop episode.
             control.addLast(Entry(bytes, stream, ptsUs = ptsUs, key = ptsUs >= 0))
-            if (stream != 0 && ptsUs >= 0 && bytes.size > (keyMaxBytes[stream] ?: 0)) {
-                keyMaxBytes[stream] = bytes.size
-                // The overrun arm needs a key frame's size against the budget
-                // it must fit in; sizes and rates only.
-                keyLog = "stream $stream key frame: bytes=${bytes.size} " +
-                    "budget=${policyOf(stream).maxBytes}"
+            if (stream != 0 && ptsUs >= 0) {
+                encodedRate.note(stream, bytes.size, nowUs())
+                val policy = policyOf(stream)
+                val rate = rateBpsFor(stream, policy)
+                val before = budgetOf(stream)
+                val step = budgetStep(before, BudgetEvent.KeyQueued(bytes.size, rate))
+                budgets[stream] = step.state
+                if (step.transition) {
+                    budgetLog = "stream $stream queue budget: ${before.phase.wire} " +
+                        "--${step.event}--> ${step.state.phase.wire}"
+                }
+                if (bytes.size > (keyMaxBytes[stream] ?: 0)) {
+                    keyMaxBytes[stream] = bytes.size
+                    // The overrun arm needs a key frame's size against the
+                    // budget it must fit in; sizes and rates only.
+                    keyLog = "stream $stream key frame: bytes=${bytes.size} " +
+                        "budget=${maxBytesFor(policy, step.state, rate)}"
+                }
             }
             lock.notifyAll()
         }
+        budgetLog?.let(log)
         keyLog?.let(log)
         if (changed) onSuspendChanged(stream)
     }
@@ -161,6 +185,8 @@ internal class SendQueue(
         var overflow = false
         var suspendChanged = false
         synchronized(lock) {
+            // The encoder produced this frame whatever the queue does with it.
+            encodedRate.note(stream, bytes.size, nowUs())
             if (stream in dropping) {
                 // Still waiting for the keyframe: this delta is discarded too.
                 dropCounts[stream] = (dropCounts[stream] ?: 0) + 1
@@ -170,6 +196,10 @@ internal class SendQueue(
             // Read the queue switch only when this stream's first delta is
             // actually queued; never per frame.
             val policy = policyOf(stream)
+            val budget = budgetOf(stream)
+            val rate = rateBpsFor(stream, policy)
+            val maxBytes = maxBytesFor(policy, budget, rate)
+            val maxDurationUs = maxDurationFor(policy, budget)
             val existing = deltas[stream]
             val q: ArrayDeque<Entry>
             if (existing == null) {
@@ -181,11 +211,14 @@ internal class SendQueue(
             }
             val used = deltaBytes[stream] ?: 0
             val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
-            val overBytes = used + bytes.size > policy.maxBytes
-            val overDuration = ptsUs - firstPts > policy.maxDurationUs
+            val overBytes = used + bytes.size > maxBytes
+            val overDuration = ptsUs - firstPts > maxDurationUs
             if ((overBytes || overDuration) && policy.overflow == StreamStrategy.Overflow.Suspend) {
                 val before = overflowStates[stream] ?: OverflowState.Flowing
-                val step = overflowStep(before, OverflowEvent.Pressure(used + bytes.size > policy.hardBytes))
+                val step = overflowStep(
+                    before,
+                    OverflowEvent.Pressure(used.toLong() + bytes.size > maxBytes.toLong() * 4),
+                )
                 suspendChanged = setOverflowState(stream, step)
                 for (action in step.actions) {
                     when (action) {
@@ -259,6 +292,8 @@ internal class SendQueue(
         suspendSinceMs.remove(stream)
         dropStates.remove(stream)
         keyMaxBytes.remove(stream)
+        budgets.remove(stream)
+        encodedRate.forget(stream)
     }
 
     private fun discardDeltas(stream: Int): Int {
@@ -267,6 +302,7 @@ internal class SendQueue(
         deltaBytes[stream] = 0
         deltaFirstPtsUs.remove(stream)
         deltaLastPtsUs.remove(stream)
+        noteDrainedIfEmpty(stream)
         return removed
     }
 
@@ -314,7 +350,11 @@ internal class SendQueue(
 
     private fun takeLockedEntry(): Entry? {
         json.removeFirstOrNull()?.let { return it }
-        control.removeFirstOrNull()?.let { return it }
+        val controlEntry = control.removeFirstOrNull()
+        if (controlEntry != null) {
+            if (controlEntry.key && controlEntry.stream != 0) noteKeySent(controlEntry)
+            return controlEntry
+        }
         audio.removeFirstOrNull()?.let {
             audioBytes -= it.bytes.size
             return it
@@ -337,6 +377,7 @@ internal class SendQueue(
                 deltaBytes.remove(stream)
                 deltaFirstPtsUs.remove(stream)
                 deltaLastPtsUs.remove(stream)
+                noteDrainedIfEmpty(stream)
             } else {
                 // The oldest queued frame is now this one: the duration rule
                 // must not keep measuring from a frame that already left.
@@ -396,6 +437,56 @@ internal class SendQueue(
     /** The budget and policy for [stream], read once at its first delta. */
     private fun policyOf(stream: Int): QueuePolicy =
         policies.getOrPut(stream) { policyFor(stream) }
+
+    private fun budgetOf(stream: Int): BudgetState =
+        budgets.getOrPut(stream) { BudgetState() }
+
+    /**
+     * The rate the byte budget follows: the link's measured goodput when the
+     * writer has one, else the encoder's own output, else the believed target.
+     * A budget in bytes at this rate is the same 250 ms of *real* video, so a
+     * VBR encoder at 3x its target and a 30 Mbps path both fit their bursts.
+     */
+    private fun rateBpsFor(stream: Int, policy: QueuePolicy): Int {
+        linkBpsFor(stream)?.takeIf { it > 0 }?.let { return it }
+        encodedRate.rateBps(stream, nowUs())?.takeIf { it > 0 }?.let { return it }
+        return (policy.maxBytes.toLong() * 8_000_000L / policy.maxDurationUs)
+            .coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** The byte budget: 250 ms at the measured rate, plus any key frame. */
+    private fun maxBytesFor(policy: QueuePolicy, budget: BudgetState, rateBps: Int): Int {
+        val rateBytes = rateBps.toLong() * policy.maxDurationUs / 8_000_000L
+        return (rateBytes + budget.keyBytes).coerceIn(1L, MAX_QUEUE_BYTES.toLong()).toInt()
+    }
+
+    /** The duration budget: the base plus the key frame's send-time credit. */
+    private fun maxDurationFor(policy: QueuePolicy, budget: BudgetState): Long =
+        policy.maxDurationUs + budget.creditUs
+
+    /** One queued key frame left for the socket: it stops extending the bytes. */
+    private fun noteKeySent(entry: Entry) {
+        val stream = entry.stream
+        val before = budgetOf(stream)
+        val step = budgetStep(before, BudgetEvent.KeySent(entry.bytes.size))
+        if (!step.transition) return
+        budgets[stream] = step.state
+        log("stream $stream queue budget: ${before.phase.wire} --${step.event}--> " +
+            "${step.state.phase.wire}")
+        noteDrainedIfEmpty(stream)
+    }
+
+    /** The delta queue is empty: a key frame's credit ends once nothing is behind it. */
+    private fun noteDrainedIfEmpty(stream: Int) {
+        if (deltas[stream]?.isNotEmpty() == true) return
+        val before = budgets[stream] ?: return
+        if (before.phase == BudgetPhase.Steady) return
+        val step = budgetStep(before, BudgetEvent.Drained)
+        if (!step.transition) return
+        budgets[stream] = step.state
+        log("stream $stream queue budget: ${before.phase.wire} --${step.event}--> " +
+            "${step.state.phase.wire}")
+    }
 
     /** Applies [step]; true when the state, not just the event, changed. */
     private fun setOverflowState(stream: Int, step: OverflowStep): Boolean {
@@ -467,12 +558,15 @@ internal class SendQueue(
      */
     private fun backlogUnderHalf(stream: Int): Boolean {
         val policy = policyOf(stream)
+        val budget = budgetOf(stream)
+        val maxBytes = maxBytesFor(policy, budget, rateBpsFor(stream, policy))
+        val maxDuration = maxDurationFor(policy, budget)
         val queued = deltas[stream]
         val empty = queued == null || queued.isEmpty()
         val used = if (empty) 0 else deltaBytes[stream] ?: 0
         val first = if (empty) 0L else deltaFirstPtsUs[stream] ?: 0L
         val last = if (empty) 0L else deltaLastPtsUs[stream] ?: 0L
-        return used <= policy.maxBytes / 2 && last - first <= policy.maxDurationUs / 2
+        return used <= maxBytes / 2 && last - first <= maxDuration / 2
     }
 
     companion object {
@@ -480,6 +574,9 @@ internal class SendQueue(
 
         /** The protocol's ~250 ms of queued video, independent of the bitrate. */
         const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L
+
+        /** The overrun budget's memory guard: one 4K key frame and its burst fit. */
+        const val MAX_QUEUE_BYTES = 4 * 1024 * 1024
 
         /** One frame at 60 fps: the drop gap is a span of missing frames, not of time. */
         const val FRAME_INTERVAL_US = 16_667L
