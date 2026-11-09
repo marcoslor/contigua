@@ -110,6 +110,15 @@ final class VideoLayerView: NSView {
     /// A frame did not reach the layer, and why. `beforeConfig` also covers a
     /// payload with no access unit; the line only carries the count.
     var onFrameDiscarded: ((StatsDiscardReason) -> Void)?
+    /// A delta reached the layer while the chain was known broken (WIN-61):
+    /// the gate makes this impossible, and the stats line prints it as
+    /// `chain_fed` so a field log would show a gate bug.
+    var onChainFed: (() -> Void)?
+    /// WIN-61's feed state: `flowing`, or waiting for a keyframe after a
+    /// break. Main-thread state, like every layer call.
+    private var chain = ChainGuard()
+    /// The one follow-up keyframe request; cancelled by a restore or a close.
+    private var chainRetry: Task<Void, Never>?
     /// A frame the phone flagged key: its NAL types and the stream's codec, for
     /// the IDR check.
     var onKeyFrame: (([UInt8], VideoCodec) -> Void)?
@@ -223,6 +232,7 @@ final class VideoLayerView: NSView {
     /// here rather than when the window object finally goes (WIN-33).
     func releasePicture() {
         runPresenter(.close)
+        runChain(.reset)
         display?.flushAndRemoveImage()
         display?.removeFromSuperlayer()
         display = nil
@@ -854,6 +864,7 @@ final class VideoLayerView: NSView {
             // there is nothing to decode.
             guard let format = self.formatDescription else {
                 self.onFrameDiscarded?(.beforeConfig)
+                self.handOff(.chainBreak(.beforeConfig))
                 return
             }
             let units = AnnexB.units(frame.annexB)
@@ -861,6 +872,7 @@ final class VideoLayerView: NSView {
             let avcc = AnnexB.avcc(from: units, codec: codec)
             guard !avcc.isEmpty else {
                 self.onFrameDiscarded?(.beforeConfig)
+                self.handOff(.chainBreak(.beforeConfig))
                 return
             }
             // The presenter must not drop a keyframe while a delta can go:
@@ -888,6 +900,10 @@ final class VideoLayerView: NSView {
     private enum PendingVideo {
         case flush
         case sample(CMSampleBuffer, ptsUs: UInt64, keyframe: Bool)
+        /// The frame path dropped a sample before the layer saw it (no
+        /// config, or an empty access unit): the chain is broken until the
+        /// next keyframe.
+        case chainBreak(ChainGuard.Reason)
     }
 
     /// Filled on `videoQueue`, drained on main; guarded by `pendingLock`.
@@ -927,6 +943,9 @@ final class VideoLayerView: NSView {
                 samplesSinceFlush = 0
                 runPresenter(.flush)
                 renderer.flush()
+                if framesDrained > 0 { runChain(.breakChain(.config, now: now())) }
+            case .chainBreak(let reason):
+                if framesDrained > 0 { runChain(.breakChain(reason, now: now())) }
             case .sample(let sample, let ptsUs, let keyframe):
                 let paced = PacedSample(sample: sample, ptsUs: ptsUs, keyframe: keyframe)
                 if strategy.present == .paced, !isPaused {
@@ -945,7 +964,26 @@ final class VideoLayerView: NSView {
             if samplesSinceFlush > 0 { onFrameDiscarded?(.flush) }
             samplesSinceFlush = 0
             renderer.flush()
+            if framesDrained > 0 { runChain(.breakChain(.flush, now: now())) }
         }
+        let wasAwaiting = chain.isAwaitingKey
+        for action in chain.handle(.sample(isKeyframe: item.keyframe, now: now())) {
+            switch action {
+            case .feed:
+                // A delta in a broken chain is the ISS-54 corruption; the
+                // guard never returns one, so a count here is a gate bug.
+                if wasAwaiting && !item.keyframe { onChainFed?() }
+                feedToLayer(item, renderer: renderer)
+            case .drop:
+                // Held: the last good picture stays up (a freeze, no garbage).
+                onFrameDiscarded?(.awaitingKey)
+            default:
+                perform(action)
+            }
+        }
+    }
+
+    private func feedToLayer(_ item: PacedSample, renderer: AVSampleBufferVideoRenderer) {
         if !renderer.isReadyForMoreMediaData { onFrameDiscarded?(.notReady) }
         renderer.enqueue(item.sample)
         samplesSinceFlush += 1
@@ -954,7 +992,45 @@ final class VideoLayerView: NSView {
         if renderer.status == .failed {
             Log.video.error("display layer failed; flush + keyframe")
             renderer.flush()
+            runChain(.breakChain(.layerFailed, now: now()))
+        }
+    }
+
+    private func now() -> TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Feeds the chain machine and performs its actions. Main-thread only,
+    /// like every display-layer call.
+    private func runChain(_ event: ChainGuard.Event) {
+        for action in chain.handle(event) { perform(action) }
+    }
+
+    private func perform(_ action: ChainGuard.Action) {
+        switch action {
+        case .logBroken(let reason):
+            Log.video.notice("chain broken reason=\(reason.rawValue, privacy: .public)")  // log-ok: a closed token
+        case .logRestored(let ms):
+            Log.video.notice("chain restored after \(ms, privacy: .public)")  // log-ok: a duration
+        case .requestKeyframe:
             onRequestKeyframe?()
+        case .scheduleRetry:
+            scheduleChainRetry()
+        case .cancelRetry:
+            chainRetry?.cancel()
+            chainRetry = nil
+        case .feed, .drop:
+            break
+        }
+    }
+
+    private func scheduleChainRetry() {
+        chainRetry?.cancel()
+        chainRetry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(ChainGuard.retryDelay))
+            guard !Task.isCancelled, let self else { return }
+            self.chainRetry = nil
+            self.runChain(.retryDue)
         }
     }
 

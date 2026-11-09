@@ -6,6 +6,27 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 - **Closing:** the reviewer deletes an item once the fix is merged and verified, and names its ID in the merge commit. Numbers are never reused.
 - **Re-check** means the item may already be fixed by later work. Confirm it before working on it.
 
+## Order now (the person, 2026-11-08: stability, then performance)
+
+Stability:
+0. Blocky corruption on a good link (ISS-54): next free worker slot.
+1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
+2. The phone's own screen never times out while a window is open (ISS-52), then the fade to black and the two-press wake (ISS-3, ISS-24): the virtual-device display move, requirements first.
+3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
+4. Finder still showing phone files that are gone (ISS-37): slices 2–4.
+5. Re-check the older connection items and the untested requirements: ISS-8, ISS-9, ISS-12, ISS-7, ISS-14.
+
+Performance:
+1. Scrolling looks like low fps: find where a trackpad or mouse scroll loses motion (Mac input, phone injection, app frames). In progress: `probe/motionfps`.
+2. Tap to screen in 182 ms: split it into input, app reaction and first draw.
+3. The first connect after an install takes 3.2 s (ISS-46, left open).
+4. The real-phone sharpness check (ISS-39).
+5. The UDP media plane (ISS-50) waits until a measurement shows TCP is the limit.
+6. The battery cost of keep-alive pings (ISS-11).
+7. The Deck zoom-drag margin (ISS-31, rig only).
+
+Then the features: Live Updates (in progress: `spike/liveany`), the Stock style (ISS-45, `feat/stock`), several phones (with ISS-38). The test-setup items (§ 4) go to whichever worker next touches that check.
+
 ## 1. High QoL, next up
 
 - **ISS-37 Finder keeps phone files that are gone.** On the person's phone (2026-11-04), Finder listed 568 entries in DCIM/Camera; the phone had 109. The other 459 were photos moved off or deleted on the phone since June (and 15 of Android's `.trashed-…` files), so Finder showed them, asked thumbnails for them, and got `fs_not_found` (334 of 446 asks).
@@ -13,6 +34,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
   - **Why (architectural):** the Mac tells the system only what it sees happen. A folder's first listing in each app run is a silent baseline, the system deletes only when told, and the anchor log is in memory, so every app start, reconnect or phone update loses the changes made meanwhile: deletions for good, and additions until a push.
   - **Design and spec (2026-11-04):** `docs/design/files.md` § Sync integrity; FILES-31…36. A durable replica record; every complete listing diffs (with guards so a diff never deletes a real file); a durable change log; a reconnect resync through a new `fs.digest`; not-found repair; Android's `.trashed-*`/`.pending-*` left out. Four slices; slice 1 (Mac only) fixes the person's case on the next visit. Next free worker.
   - **Slice 1 on main (2026-11-04, merge e88879d5; Mac app installed 15:11):** the record outlives the app, every complete listing diffs it with FILES-31's guards, a folder is listed once when its watch starts, a not-found repairs it, and the change log keeps its epoch. The id format moved to 3, so the app replaces the Finder location once on its first start (the 459 stale entries go; downloaded copies are fetched again). Waiting on the person's check: Camera shows the phone's count. Next: slice 2 (`.trashed-*`/`.pending-*`), slice 3 (`fs.digest` resync), slice 4.
+  - **Reviewer check 2026-11-08 (counts only):** no stale entries are left: Finder's Camera has 114 entries and the phone has 117, and every Finder entry exists on the phone. **Still open:** the 3 photos the phone took at 2026-11-07 23:27 weren't in Finder about 19 h later, but the installed copy has had no Finder files extension since a 2026-11-07 install without `--with-files` (no `Files.appex`), so nothing could update Finder. Re-check after the reinstall; only if photos still lag is that the rest of this item (stability #4).
   - **Slices 2 and 3 on main (2026-11-04, merge af32a306; Mac app installed 19:25, phone v138 built, not yet installed: the phone was off the network):** the phone leaves `.trashed-*`/`.pending-*` out of every listing; `fs.digest` answers up to 64 folders, and on every session ready the Mac asks the root and the 63 most recently touched folders once and re-lists only the ones whose digest moved. A folder the phone answers `not_found` for is deleted only when the root answered a digest in the same reply, so a phone that rebooted and isn't unlocked yet never empties Finder (review fix ec9a5952). K2 1829/0, K1 1289/0, host `files-watch` 46/0 (`[FILES-33]`: B is the phone's 2.07 s after a reconnect, without the extension asking). Waiting on the person's check (after installing v138 on the phone): Camera shows the phone's count, and no `.trashed-…` files. Next: slice 4.
   - Left for a later slice: a phone-side move between two watched folders lists both, and if the old folder's walk lands last, its deletion wins in the replay (identifiers are domain-wide). Guard: a listing never deletes an identifier the id map now places in another folder.
   - Also seen: the extension opens a new bridge connection per thumbnail ask (419 `bridge: hello` in 8 minutes). Check whether that's meant to be.
@@ -21,6 +43,29 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 
 ## 2. Bugs you can see
 
+- **ISS-54 Blocky corruption on a good link** (the person, 2026-11-08 21:41: "on great conditions, some packets seem to be dropping, causing artifacts"). The Phone Mirror showed smeared macroblocks over the recents screen.
+  - **The evidence:**
+    - the link was healthy: `tcp_srtt` 16–28 ms, `ph_retrans=1`;
+    - the phone dropped nothing (`phone_drop=0`, `drop_ep=0`);
+    - the Mac counted `mac_drop=1`, then `2`, in the same 5 s lines, around a burst at `rx_fps=109.6` and a resize at 21:41:29.
+    - the Mac fed deltas after a break in their reference chain;
+    - `PacedPresenter`'s comment says a backlog is never dropped, but the `paced` discard reason says "dropped the oldest";
+    - `handToLayer` flushes without waiting for a keyframe.
+  - **Fix:** never feed a delta after a chain break; hold the last good picture and ask for a keyframe (brief `.agent/chain/brief.md`). **Merged 2026-11-09; the real-phone check is still open** (`.agent/chain/real-phone.md`).
+  - The phone's own self-made drop (`drop episode … measured 32.6 Mbps`, 21:42:26) is the overrun case, ISS-40.
+  - **The mechanism, found on `fix/chain` (merged 2026-11-09): the Mac fed deltas to a decoder whose references it had just thrown away.**
+    - **Evidence:**
+      - The feed's only gate was `handToLayer`: after the display layer asked for a flush, after a VIDEO_CONFIG flush, and after a layer failure, the next sample was enqueued immediately, delta or not. AVFoundation's header says the frame after `flush()` must be an IDR.
+      - A second real-phone session (2026-11-08 23:00–23:05, the person's phone, 1800×1200, 60 fps, avc) has 49 five-second lines; `mac_drop=1` (once 2) is in **every** line with `kf=1` (24 of 24) and in none with `kf=0`, so one discard follows each 10 s IDR. On the fake phone the same correlation does not reproduce (`kf=1`, `mac_drop=0`), so the per-IDR path is the real phone's layer being at its preferred queue depth at the big IDR: `not_ready`, which still enqueues the frame and does not break the chain. The split (`mac_drop_not_ready`) will confirm it on the next real session.
+      - The chain-breaking path is the config flush: the e2e `chain` on the diagnostics-only change shows 17 breaks, only 7 restored within 600 ms (longest 2,635 ms) and **232 deltas fed after a break**; the fix gives 17/17 restored within 60 ms and 0.
+      - `PacedPresenter` never drops: its catch-up hands every waiting frame over, so the `paced` reason's "dropped the oldest" comment was wrong.
+      - A frame enqueued while `isReadyForMoreMediaData == false` is safe (AVFoundation queues it), so `not_ready` is counted, not a break.
+    - **Fixed on `fix/chain`:** one feed state machine (`ChainGuard`: Flowing → AwaitingKey(reason, since, retried) → Flowing) at the single hand-off; after any break no delta reaches the decoder until a keyframe, the phone is asked once and again after 500 ms, `chain broken reason=…` / `chain restored after <ms>` are logged, the 5 s line splits `mac_drop` by reason and keeps `chain_fed=0`. WIN-62, MIRROR-23. K2 `ChainGuardTests` 10/0, whole K2 1994/0; e2e `chain` PASS (17 breaks, 17 restores ≤ 60 ms, no `display layer failed`). The Phone Mirror uses the same feed. Real-phone steps: `.agent/chain/real-phone.md`.
+- **ISS-52 The phone's own screen never times out while an app window is open** (the person, 2026-11-08 20:10: "something is keeping the phone on the lock screen, awake"). This breaks PHONE-13 (PocketDeck shall not change a screen timeout).
+  - **Seen on the person's phone (S936B, v149):** after a wake press to the lock screen, the panel stayed on with the keyguard showing for more than 80 s with no touch (`mLastWakeTime` 81 s ago, keyguard showing, timeout 30 s). After an unlock it stayed on from 20:01:59 to the person's press at 20:06:08. `dumpsys power` shows `SCREEN_BRIGHT_WAKE_LOCK 'pocketdeck:vd'` on `displayId=257` but **`powerGroupId=0`**, plus `PARTIAL 'pocketdeck:streams'`, `mWakeLockSummary=0x23`, and the keep-alive at `interval=2000ms` poking `userActivity` on the same group.
+  - **Cause:** One UI puts our virtual displays in group 0 (ISS-3), so the display-scoped wake lock and the keep-alive pokes meant for the window's display keep the phone's own panel awake as well. While the person owns the panel (`WakeOwner.PERSON_TOOK_OVER`), nothing lets Android's timeout run. The relight path only starts on an off edge, and with these held none comes except a power press.
+  - **Fix direction:** while the person owns the panel, hold neither the group-0 bright lock nor the pokes, so the phone's own timeout runs. Its off edge then relights the windows as a power press does today. Test first (K1 on the pure policy), then a real-phone check: wake to the lock screen, then hands off; the panel goes dark at the phone's own timeout and the windows keep streaming. Retires with the virtual-device move (stability #2) if that lands first.
+  - **Fix on `fix/screen-timeout` (2026-11-08, not merged):** `GroupHold` (PHONE-22) decides per display group, never per brand. While `WakeOwner.PERSON_TOOK_OVER` owns the panel and a streaming display's group is the panel's group 0, `AndroidPower` releases the display-scoped `pocketdeck:vd` lock and sends no keep-alive `userActivity` poke, so the phone's own screen timeout runs; its off edge goes through the existing `PowerWatchAction.RELIGHT`, which wakes the window displays, keeps the panel dark and tells the Mac (`power.locked`), and takes the lock and the pokes again. Own-group builds are unchanged. Test first: the test-first commit's K1 `GroupHoldTest` failed 1/6 (the person-owned shared-group case) and passes 6/0 with the fix; `DarkPanelPolicyTest` 55/0. The emulator's displays have their own group, so the emulator can only prove that path is unchanged; the reviewer approved a second boot, and it kept the display lock held and the window drew frames across the phone's sleep (`mWakefulness=Asleep`, `mWakeLockSummary=0x1`) with no `displaylock released` line, though two scratch-harness assertions misfired (a stale `dumpsys display` state and the probe's output spacing), so the check is formally unverified. The shared-group path is K1's and the reviewer's real-phone check (`.agent/timeout/real-phone.md`). Logs: `displaylock released reason=person_owns`, `displaylock held reason=relight`.
 - **ISS-49 A click on the glass window's app bar is forwarded to the phone** (the person, 2026-11-06 ~13:57). In the glass style the bar that carries the traffic lights and window controls is drawn over the picture; a click on that bar hit-tests as a picture click, so the phone receives a TOUCH at the mapped point (the person's words: "inputs on the glass mirror app bar are recognized; app bar should be input dead"). The bar's own hit area must consume the event: only the picture below the chrome forwards input. Evidence: the person's screenshot 2026-11-06 13:57:53 (shows their tabs, not committed): a click on the bar activated a phone-side control under it. Reproduce: reveal the bar on a glass stream window, click a bar point that lies over the picture, watch the phone receive TOUCH. Fix: the input hit test (the `macUIAtWindowPoint` / chrome claim path in `VideoLayerView`/`StreamChrome`) must claim the bar before `InputMapper` maps the point. **Fixed on `fix/bar-inert` (2026-11-06, not merged):** `StreamChromeView.hitTest` decides from the band, not view identity, and takes the band from the bar or the window's content-layout top, whichever is lower; a real click 30 pt below the window's top (the 32 pt titlebar against the 28 pt bar) was a touch (0 → 2) and now counts as the bar's press with no touch. K2 `BarInertTests` (3/0; the titlebar row failed before the fix), e2e `chrome` `[WIN-61]` in a visible run (real CGEvents, clicks 0 → 2, no touch; quiet runs skip it), whole K2 1967/0. First commits `87940e06` (tests) and `a7e989c0` (fix, merged); this round `cba277d5` (tests) and `e01923fd` (fix). The requirement is WIN-61.
 
 - **ISS-39 App windows are drawn slightly scaled, so text is soft.** The virtual display is the window's pixel size floored to 16 px and capped at 2560 px on the long side (`VideoSize.displayPixels`), and the Mac stretches the frame over the whole window (`Letterbox` `.stretch`). So unless both sides are exact multiples of 16, every frame is resampled by up to 15 px, and a window wider than 2560 px is upscaled. The person's WhatsApp window came at 2560×1488.
@@ -112,6 +157,8 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
     - **The person picked B (2026-11-04).** Being built on `fix/fsmenu` (`.agent/fsmenu/`): ⌃⌘F proven in the VM first, kept as a hidden alternate if macOS drops it.
 - **ISS-7 A shared app stops responding after ⌘K under load.** The shared app's control channel stalls after a ⌘K launch while WindowServer is busy. Seen in 3 of about 10 e2e runs on 2026-11-01, none since.
 - **ISS-8 A revoked Mac fails silently.** A Mac whose pairing was removed on the phone waits through a 16 s handshake timeout instead of being told. Re-check.
+  - **Seen again 2026-11-08 20:16 (person's phone, v149; Mac at main 9b54cf6f):** the phone's paired list went from 2 to 0 after a menu item and a dialog in the phone app. At the Mac's next dial the phone sent the TLS alert `CERTIFICATE_UNKNOWN`. The Mac logged `session failed: pin-mismatch` and `dropping cached address … (the TLS pin refuses it)`, then made no further attempt and showed no "pair again". Two things to fix: name the case (the phone no longer knows this Mac, not a pin mismatch) and offer pairing again.
+  - **The person's points (2026-11-08):** (1) the trust-lost alert isn't always shown; it must not be dismissable and must persist across a relaunch; (2) Settings ▸ the phone's entry needs Pair Again (today only Add Phone, which is unclear); (3) the phone doesn't tell a connected Mac it was forgotten, so the Mac sits on trying-to-connect. Brief `.agent/unpair/brief.md`, queued after ISS-52.
 - **ISS-9 "Busy" sticks after a network drop.** The phone kept reporting a busy session after a drop. Re-check: the paths layer (E-10, 2026-11-02) frees the slot.
 - **ISS-10 Slow app opens.** Re-check: with the phone locked, the first frame went from 23 s to 0.16–0.6 s on 2026-11-01. **Seen again 2026-11-05 15:54 (v146, phone locked and dozing, Settings, bench round 2):** a window got no picture for its whole 22 s life: the phone sent 11 stats messages with 0 frames, and the Mac's first frame came as the window closed (`stream 7: first frame, opening cover off` 37 ms before `closed`). 1 of 18 windows; the phone's log of that minute had rotated out.
 
@@ -139,6 +186,56 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
     - The fake encoder ignores a `window.pause` while it is stalled, so when `--stall-for` ends it streams even if the Mac had paused the window meanwhile (a real phone wouldn't). No check depends on it today. If one does, add a stalled-and-paused state.
 - **ISS-31 The Deck's zoom-drag limit has a thin margin.** DECK-5 allows 21 ms (drag p95). At load < 4, main's runs sit at 18–21 ms and one in ten reaches 22–23 ms; at load 5–6 it was 28 ms twice (2026-11-04, `.agent/deck-perf/`). Every run also has about 6 frames at 33 ms (dropped). Either measure the limit again on a quiet host, or have the check wait for its load gate (as deck-perf did: 5-min load < 4, free memory ≥ 37 %, no swap-outs for 30 s). `_common.md`'s swap < 2 GB gate can't be met on the 8 GB Mac after any e2e.
 
+- **ISS-56 Test builds hide the person's Finder files switch, and K2 touched the person's Finder domain** (2026-11-08 22:32; the person: "two entries, neither asks for File Providers").
+  - **Test builds:** every e2e/variant build is `dev.pocketdeck.mac`, the person's bundle id, without `Files.appex` (`pd-wt/*/macos/build/e2e/PocketDeck.app`). Launch Services registers each one when it's launched, so System Settings › Login Items & Extensions listed two "PocketDeck" rows with Sharing only, and no File Provider switch.
+  - **K2:** an `xctest` run at 20:28:00 logged `domain added … state=on … domain removed` on the real `dev.pocketdeck.mac.files` domain, which belongs to the person.
+  - **Reviewer's cleanup at 22:36:** `lsregister -u` on the test copy, `lsregister -f` and `pluginkit -a` on `/Applications`. Only the installed copy is registered now.
+  - **Fix:** variant builds get their own bundle id (`dev.pocketdeck.mac.<variant>`, with extension ids to match), checking that the e2e TCC grants still apply. K2 never touches the real `NSFileProviderManager`: inject the fake manager everywhere, and add a test that fails if a real one is used in a test host.
+
+- **ISS-57 Window audio glitches on a good link** (2026-11-08 ~23:00; the person, playing a language-lesson app's window: "audio is very glitchy").
+  - **Evidence:** the stream ran 247 s, 14,724 frames at 59.5 fps, 25 IDRs (about one every 10 s), 73.8 MB. The phone's log was already rotated, so no per-packet audio data survives.
+  - **Suspects, from the code:**
+    - (1) **Head-of-line on the phone:** the send order is JSON > keyframes/config > audio > deltas, so every keyframe goes out ahead of queued audio. Frames are written whole, and the socket holds up to 128 KB (`SEND_BUFFER_BYTES`). Audio can therefore wait well past the Mac's fixed jitter buffer: 60 ms target, 120 ms cap, `AudioEngine`.
+    - (2) **The Mac's pre-buffer is fixed** and has no underrun counter. When packets arrive late, the player runs dry and the listener hears a gap. A burst then overflows the 120 ms cap and drops audio.
+    - (3) The Mac delivers audio on the session queue, which also serves file-provider replies and video.
+    - (4) The capture cadence on the phone.
+  - **The reviewer, from the Mac's unified log for that session (49 stats lines):**
+    - `int_p99` was about 100 ms in almost every 5 s window, `late_p99` 75–255 ms, `freeze_ms` 0.1–2.4 s per 5 s, with `tcp_srtt` 8–51 ms;
+    - packets arrive late and in bursts, the known AWDL pattern (video-feed.md "The link stalls…");
+    - the 60 ms audio pre-buffer cannot ride that out.
+    - The fix is probably an adaptive audio jitter buffer that conceals and time-stretches. Unbroken audio now ranks above the 150 ms budget, and audio may trail the picture by at most 185 ms (ITU-R BT.1359).
+    - Separately, `mac_drop=1` falls in every window with a keyframe (handed to ISS-54/chain).
+  - **Next:** the `audiogap` worker. Measure first (Mac underruns, arrival lateness p95, the phone's enqueue-to-socket delay), reproduce with keyframes plus audio, run a test that must FAIL first, then fix. See `.agent/audiogap/brief.md`.
+
+- **ISS-58 Tell the person when their Mac's AirDrop/Handoff radio (AWDL) is making the stream stutter** (2026-11-08; the person: "that should be in our app's UX… without making the user mad").
+  - **Proof first:** compare stalls with AWDL active vs idle on the person's Mac. Either the person's test (AirDrop "No One", Handoff and Universal Control unused for a few minutes) or a probe during a stream. If it isn't AWDL, the message would be wrong.
+  - **Reviewer's proposal, to prototype (2–3 real-render options, the person picks):**
+    - Not the top warning bar. That bar is for states where something is broken and the person must act.
+    - A small Wi-Fi status icon in the stream window's titlebar. It appears only while the stalls are measured (for example, at least 3 stalls over 150 ms per minute for 2 minutes, `awdl0` active, low srtt and no loss) and goes away by itself about 1 minute after they stop.
+    - Clicking it opens a popover with one sentence on what's happening, which of AirDrop, Handoff, Universal Control and AirPlay Receiver are on (read-only), an "Open AirDrop & Handoff Settings" button, and "Don't suggest this again".
+    - The app never opens the popover itself and never changes those settings.
+    - Settings › Connection keeps a "Network health" line with the same information and the switch.
+  - **Research (2026-11-08):**
+    - Game Mode only touches Bluetooth.
+    - Apple's DTS says Wi-Fi Aware, the API that could ask for AWDL's low-jitter mode, exists on iOS and iPadOS only.
+    - Game-streaming and screen-sharing tools (Moonlight, GeForce NOW, Tuple) report the same Wi-Fi-only stutter. Paid utilities exist only to hold `awdl0` down during play.
+    - Reports are mixed on macOS 26.3: for some people, `awdl0` down no longer helps.
+    - Matching the router's 5 GHz channel to AWDL's is a claimed fix (unverified).
+  - **The person's idea (2026-11-08): a "smart toggle" setting that pauses AWDL while a stream is open.**
+    - **Shape:** advanced tier, off by default.
+    - **Privilege:** a root helper installed once with an admin password, since `ifconfig awdl0 down` needs root and macOS brings AWDL back on wake and on demand.
+    - **Restore:** AWDL comes back when the last stream closes, when the app quits, and when the helper sees the app gone.
+    - **Cost:** AirDrop, Handoff, Universal Control, Sidecar and AirPlay-to-Mac are off during a stream.
+    - **Hint integration:** the hint's popover gains a "Pause it while I stream" button.
+    - **Order:** after the proof, and only with the person's OK on the helper (a security switch).
+
+- **ISS-59 A second process ran the app's session code and dialed the phone** (the reviewer, 2026-11-09 01:12:58, right after `install.sh` and one `open -a`).
+  - **Seen:** two pids logged `profile …`, `deck placement` and `session` lines from the same build. 75734 is the app RunningBoard tracks. 75735 is not tracked by RunningBoard, yet it dialed the phone (`session failed: tls`, `pin-mismatch`, `dropping cached address` for a stale device id), then exited. The app that stayed never dialed.
+  - **Find:** what 75735 was: a dock shim, the `pocketdeck-mcp` helper, or the app relaunched by the Files extension.
+  - **Fix:** only the app process may run the session and dial. Add a K2 or e2e check that a helper or shim launch never logs `attempt: dialing`.
+- **The Mac says nothing when the phone's "Allow connections" switch is off** (2026-11-09; belongs with ISS-8 point 3). With the switch off, the phone neither advertises `_pocketdeck._tcp` nor accepts the session, so the Mac sits silent with no attempt and no message.
+  - **Fix:** the phone keeps advertising with a TXT flag (`gate=off`) and refuses with its error code. The Mac then shows "Connections are off on <phone>" with a short how-to, not a silent "Connecting…". Hand it to the unpair worker.
+
 ## 5. Features, in order
 
 Each goes through the requirements gate first: a surface spec, the conventions, prototypes for anything visual, and opt-in for personal data.
@@ -155,6 +252,13 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
    - **Requirements gate:** research note (Android 16/17 Live Updates, One UI's Now Bar, what disqualifies promotion), surface spec, then a visual prototype round with 3–4 real renders (menu-bar items per update; one menu-bar item with a stack; an island around the notch; a desktop widget), the person picks.
    - **Scope refined 2026-11-08 (the person):** persistent notifications are a first-class source and on by default; the source rules are brand-neutral, so any Android phone works and a brand's extras only enrich (LIVE-3, LIVE-23); timers and alarms (next alarm, ringing with Dismiss/Snooze; LIVE-24, LIVE-25) and deliveries and rides come first. Proof on the emulator with Google Clock; no second real phone.
    - **PoC step 1 (2026-11-07, `spike/livecap`, the person's phone):** a countdown's deadline reads brand-neutrally from the `Chronometer` in a card's views (under 1 s on One UI 9 Clock, +2.1 s on Google Clock on the emulator); a Mac redraw from fields matches the phone card; a third-party app's Android 16 promoted notification works on One UI 9. Next: step 1b, the generic view extractor, the classifier, a debug survey of card shapes, delivery and ride shapes, next alarm and ringing.
+   - **PoC step 1b (2026-11-08, `spike/liveany`, emulator):**
+     - The classifier gave the expected verdict for every stand-in shape: delivery, ride (deadline read from the card's own views), navigation, download, a VPN-like card waiting forever, and the service, media, call and group-summary refusals.
+     - A Google Clock timer's deadline came within 1 s, read from its views.
+     - The next alarm reads, and changes after a snooze. A ringing alarm is detected through its full-screen intent.
+     - A ringing Google timer keeps its card with a past deadline, so LIVE-25 now covers that.
+     - `DISMISS_TIMER` works from the shell, not from the app process.
+     - Unverified: the paused-timer signal and the advertised Stop/Dismiss actions. They go to the reviewer's real-phone pass on an APK of main plus the spike (`spike/liveany-main`).
    - **Status 2026-11-06:** research (`docs/research/live-updates.md`) and spec (`docs/specs/live.md`, LIVE-1..22) merged; prototype round done (`proto/live` 61dd193e, sheets in `.agent/proto/live/`; no widget option, an ad-hoc WidgetKit extension is unproven). Waiting on the person's pick: A (one menu-bar item per update, folding into one item at 3+; recommended), B (one item with a stack) or C (a floating pill).
 2. **Several phones at once.** An audit and a plan come first; the session layer holds one session today.
    - **Audit and plan:** `docs/design/multi-phone.md` (merged 2026-11-06).
@@ -190,6 +294,27 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
   - **UI toolkit:** open again, since GPUI's web build needs WebGPU (or WebGL2) and cross-origin isolation, which our own origin can serve. It's still experimental (one canvas per page, no menus, canvas text and IME). A DOM app is the safer default. Decide by one prototype round: the Deck and one stream window in each. Nothing needs to move off SwiftUI on the Mac. What's shared regardless is the protocol, the fake-phone conformance checks and the visual language.
   - **First step, a spike:** a Windows or Linux browser opens the site with nothing installed and pairs by QR. It plays one stream both ways (RTP track and data channel with WebCodecs), with keyboard and pointer input, on the LAN and through a TURN relay. It measures latency, CPU and the phone's added size and memory against the Mac app.
 
+- **ISS-55 The Phone Mirror's "screen is off" cover is ugly** (the person, 2026-11-08 21:43: "hideous"). Today:
+  - a flat mid-grey fill under a black titlebar slab;
+  - a centred label;
+  - a dark capsule "Wake Screen" with dark text that barely reads.
+
+  MIRROR-6 promises a blurred, dimmed held frame; with no frame held it falls back to the flat grey. **The person picked B, the frosted last picture (2026-11-08), from four described options:** the held frame blurred hard and darkened, under the titlebar too. With no frame held, a gradient of the last frame's colours, else black. A glass Wake Screen capsule that reads in both appearances. MIRROR-6 is amended to match. Brief `.agent/proto-screenoff/brief.md`, a build, not a prototype; the reviewer checks the renders before the person.
+- **ISS-53 Icons look flat next to macOS 26's glass icons (the person, 2026-11-08).** Apple's own Mac and iPhone icons aren't flat: the system draws a glass rim on them, a specular highlight on the edges lit from above, with a little refraction, translucency and a soft shadow. PocketDeck's icons have none of it.
+  - **What the platform does:**
+    - Icons made with Icon Composer (an `.icon` package: up to four layers in groups, plus an `icon.json` with specular, refraction, translucency, blur and shadow per group, and light, dark, clear and tinted variants) are rendered live by the system. The light comes from above by default, and highlights sit inside or outside each layer.
+    - A plain bitmap or `.icns` gets none of that.
+    - The `.icon` package is compiled by `actool` (Xcode). Apple documents no other way to build one, and the format is known only from a third-party write-up.
+  - **Two cases:**
+    - **PocketDeck's own app icon:** rebuild it as an `.icon` in Icon Composer and compile it into the bundle at build time (Xcode is on the build machine). The system then draws the glass and the appearance variants.
+    - **Android app icons on the Mac** (the Deck grid, the Dock shims, Spotlight, the Finder location): they're made at run time on the person's Mac, where there's no Xcode. So bake one preset into the bitmap: macOS's continuous-corner squircle mask, a rim highlight from the top, a faint inner edge band for the refraction, and a soft drop shadow, at every size the system uses. Check whether a shim app could carry a prebuilt `.icon` with the Android icon as its only layer instead; that would let the system do the glass.
+  - **Plan (a visual change, so prototypes come first):**
+    - research the exact look: measure native icons from Dock and Finder captures, light and dark;
+    - make 3–4 preset options, rendered on real Android icons (flat, adaptive with a background, a photo-like one, a white one) next to native icons;
+    - the reviewer looks first, then the person picks;
+    - only then build it, with a pixel check against the chosen render.
+
+  Queued after the stability items.
 - **ISS-45 A third window style, "Stock" (or "Default"), whose frame mirrors macOS Quick Look's preview window 1:1 (the person, 2026-11-05).** It joins today's two styles, Framed (which the person calls "compact") and Immersive (WIN-7); the name and whether it becomes the default are the person's call.
   - **Scope (the person):** mirror the frame exactly, meaning its borders, paddings, corners and material. Everything inside the bar is PocketDeck's own UI: the traffic lights, the title and our controls. Nothing of Quick Look's own buttons carries over.
   - **The reference:** Finder's Quick Look preview of a landscape picture, dark appearance, measured from the person's 2× screenshot (not kept in the repo: it shows a personal photo).
