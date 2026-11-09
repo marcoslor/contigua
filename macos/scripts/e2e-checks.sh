@@ -7,6 +7,7 @@
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
             deck deckrail windows multiwin phones zoom render resize dragbar crisp stats chain netvideo input hover mouseback pinch chrome livetext menus density trackpad pause nav audio audiogap drop drop-sources paste files files-bridge files-write files-watch intents mcp focus controls
             pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
+            switchpath switchlink
             dnd-edge panel-edge
             files-domain files-thumbs files-thumbs-scale nfr menubar-shots cover-bar-dark cover-bar-light)
 
@@ -1978,4 +1979,575 @@ PY
     wait_app
     stop_fakephone
     pathfault_stop_all
+}
+
+# --- smooth switching, P3.6 (ISS-48): S2 path and S4 link -------------------
+# One probe per half second, numbered by x: the fake phone's input log carries
+# the same normalized point back, so an event that was dropped or reordered
+# across a switch shows in the count and the sequence.
+switch_probe_script() { # switch_probe_script FILE COUNT
+    python3 - "$1" "$2" <<'PY'
+import sys
+path, count = sys.argv[1], int(sys.argv[2])
+with open(path, "w") as fp:
+    for k in range(1, count + 1):
+        fp.write("click %.3f 0.500\n" % (0.04 + k * 0.010))
+        fp.write("wait 0.5\n")
+PY
+}
+
+switch_log() {
+    /usr/bin/log show --last 8m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
+}
+
+switch_metrics() { # <frames> <start> <end> <audio> <base> <chrome-ticks> <log> <events> <app-log>
+    python3 - "$@" <<'PY'
+import json, re, sys
+frames_path, start, end, audio_path, base_path, chrome_path, log_path, events_path, app_path = sys.argv[1:10]
+start, end = float(start), float(end)
+
+frames = []
+for line in open(frames_path, errors="replace"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 3:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if start <= ts <= end:
+        frames.append(ts)
+frames.sort()
+gaps = [(b - a) * 1000.0 for a, b in zip(frames, frames[1:])]
+gap_max = max(gaps) if gaps else 0.0
+gap_at = 0.0
+for a, b in zip(frames, frames[1:]):
+    if (b - a) * 1000.0 == gap_max:
+        gap_at = (a - start) * 1000.0
+        break
+
+def load(path):
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return {}
+audio, base = load(audio_path), load(base_path)
+def delta(key):
+    return audio.get(key, 0) - base.get(key, 0)
+
+offline = 0
+try:
+    text = open(chrome_path, errors="replace").read()
+    offline = 1 if "bar_offline=1" in text else 0
+except OSError:
+    pass
+
+probes = []
+for line in open(events_path, errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "input" or event.get("kind") != "touch" or event.get("action") != 0:
+        continue
+    ts = float(event.get("ts", 0))
+    if not (start <= ts <= end):
+        continue
+    k = int(round((float(event.get("nx", 0)) - 0.04) / 0.010))
+    probes.append(k)
+ordered = probes == list(range(probes[0], probes[0] + len(probes))) if probes else False
+missing = (max(probes) - min(probes) + 1 - len(probes)) if probes else 0
+
+text = ""
+try:
+    text = open(log_path, errors="replace").read()
+except OSError:
+    pass
+breaks = re.findall(r"chain broken reason=([a-z_]+)", text)
+restores = [int(ms) for ms in re.findall(r"chain restored after (\d+)", text)]
+stats = [line for line in text.splitlines() if " stats stream=" in line]
+fed = [int(m) for line in stats for m in re.findall(r"chain_fed=(\d+)", line)]
+
+welcomes, sessions = 0, set()
+for line in open(events_path, errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "welcome" and event.get("session"):
+        welcomes += 1
+        sessions.add(event["session"])
+failed = 0
+try:
+    failed = 1 if "session failed" in open(app_path, errors="replace").read() else 0
+except OSError:
+    pass
+
+print("frames=%d gap_max_ms=%.0f gap_at_ms=%.0f gaps_over_100=%d"
+      % (len(frames), gap_max, gap_at, sum(1 for gap in gaps if gap > 100)))
+print("audio_underrun=%+d audio_concealed=%+d audio_dropped=%+d"
+      % (delta("underrun"), delta("concealed"), delta("dropped")))
+print("welcomes=%d sessions=%d session_failed=%d offline=%d"
+      % (welcomes, len(sessions), failed, offline))
+print("input_n=%d input_range=%s input_missing=%d input_order=%s"
+      % (len(probes), ("%d..%d" % (probes[0], probes[-1])) if probes else "none",
+         missing, "ok" if ordered else "bad"))
+print("chain_breaks=%d chain_reasons=%s chain_restore_max_ms=%d chain_fed_max=%d stats_lines=%d"
+      % (len(breaks), ",".join(sorted(set(breaks))) or "none", max(restores or [0]),
+         max(fed or [0]), len(stats)))
+PY
+}
+# switchpath (S2, PATH-44): two live paths; the margin rule moves the session
+# while one window streams with audio and numbered probes. The broken build for
+# the check's red run is `--debug-no-margin-switch` (PD_SWITCH_BREAK=no-margin).
+check_switchpath() {
+    clean
+    pathfault_nuke
+    local ctl session t_switch ticks_pid="" break_args=()
+    [ "${PD_SWITCH_BREAK:-}" = "no-margin" ] && break_args=(--debug-no-margin-switch)
+    switch_probe_script "$WORK/probes.txt" 60
+    FAKE_ARGS="--paths 2 --slow-pong 1 1000" start_fake || return 1
+    pathfault_start "$((PORT + 3))" "$PORT"
+    # The second provider is held 800 ms behind the first so exactly one plain
+    # hello goes out (PATH-20); it joins that session, then its path passes.
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))" delay 800
+    # Pair through the proxy the launch will use: the pin is cached against
+    # that endpoint, so both providers dial pinned and a late join is allowed.
+    path_pair_once "$((PORT + 3))"
+    t_switch="$(path_now)"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open com.android.settings --debug-input-script "$WORK/probes.txt" \
+        --debug-frame-log "$WORK/frames.tsv" --debug-chrome-state "$WORK/chrome.txt" \
+        --audio-stats "$WORK/audio.json" ${break_args[@]+"${break_args[@]}"} --quit-after 35
+    : > "$WORK/switch-stop"
+    (
+        while [ ! -e "$WORK/switch-stop" ]; do
+            [ -s "$WORK/chrome.txt" ] && cat "$WORK/chrome.txt" 2>/dev/null
+            sleep 0.1
+        done
+    ) > "$WORK/chrome-ticks.txt" &
+    ticks_pid=$!
+    wait_until 25 path_upto 2 || bad "[PATH-44] SWITCHPATH the second path never joined"
+    pathfault_mode "$WORK/fault-$((PORT + 4)).ctl" pass
+    wait_until 20 events_have '"ev":"video"' \
+        && ok "[PATH-44] SWITCHPATH the window streams before the switch" \
+        || bad "[PATH-44] SWITCHPATH no video before the switch"
+    wait_until 20 switch_audio_frames 200 \
+        && ok "[PATH-44] SWITCHPATH audio plays before the switch" \
+        || bad "[PATH-44] SWITCHPATH no audio before the switch"
+    cp "$WORK/audio.json" "$WORK/audio-base.json" 2>/dev/null || true
+    session="$(path_welcome_session)"
+    if wait_until 25 events_have '"kind":"switch"'; then
+        t_switch="$(python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "path" and event.get("kind") == "switch":
+        print("%.3f" % float(event["ts"]))
+        break
+PY
+)"
+        ok "[PATH-44] SWITCHPATH the Mac switched by margin to the better path"
+    else
+        bad "[PATH-44] SWITCHPATH no margin switch: $(grep '"kind":"' "$WORK/events.jsonl" | tail -3)"
+    fi
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_switch') + 5.0 else 1)"; do
+        sleep 0.1
+    done
+    : > "$WORK/switch-stop"
+    [ -n "$ticks_pid" ] && kill "$ticks_pid" 2>/dev/null || true
+    wait "$ticks_pid" 2>/dev/null || true
+    stop_app
+    wait_app
+    switch_log > "$WORK/switch.log" 2>/dev/null || true
+    switch_metrics "$WORK/frames.tsv" "$(python3 -c "print(float('$t_switch') - 2.0)")" \
+        "$(python3 -c "print(float('$t_switch') + 5.0)")" \
+        "$WORK/audio.json" "$WORK/audio-base.json" "$WORK/chrome-ticks.txt" "$WORK/switch.log" \
+        "$WORK/events.jsonl" "$WORK/app.log" > "$WORK/metrics.txt"
+    say "SWITCHPATH $(tr '\n' ' ' < "$WORK/metrics.txt")"
+    switch_assertions 44 switchpath
+    [ -n "$session" ] && [ "$(grep -c '"ev":"welcome"' "$WORK/events.jsonl")" -eq 1 ] \
+        && ok "[PATH-44] SWITCHPATH one session, one welcome" \
+        || bad "[PATH-44] SWITCHPATH the switch founded a second session"
+    stop_fakephone
+    pathfault_stop_all
+}
+
+switch_audio_frames() { # switch_audio_frames N — audio frames arrived
+    python3 - "$WORK/audio.json" "$1" <<'PY'
+import json, sys
+try:
+    stats = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if stats.get("frames", 0) >= int(sys.argv[2]) else 1)
+PY
+}
+
+switch_value() { # switch_value FILE KEY — one `key=value` token from the metrics
+    awk -v key="$2" '{
+        for (i = 1; i <= NF; i++) {
+            split($i, a, "=")
+            if (a[1] == key) { print a[2]; exit }
+        }
+    }' "$1"
+}
+
+switch_le() { python3 -c "import sys; sys.exit(0 if float('$1') <= float('$2') else 1)"; }
+
+# switch_assertions ROW s2|s4 — the common PATH-44/45 bounds over metrics.txt.
+switch_assertions() {
+    local row="$1"
+    local gap fed breaks restores underrun concealed dropped welcomes sessions failed offline
+    local missing order probes
+    gap="$(switch_value "$WORK/metrics.txt" gap_max_ms)"
+    fed="$(switch_value "$WORK/metrics.txt" chain_fed_max)"
+    breaks="$(switch_value "$WORK/metrics.txt" chain_breaks)"
+    restores="$(switch_value "$WORK/metrics.txt" chain_restore_max_ms)"
+    underrun="$(switch_value "$WORK/metrics.txt" audio_underrun | tr -d '+')"
+    concealed="$(switch_value "$WORK/metrics.txt" audio_concealed | tr -d '+')"
+    dropped="$(switch_value "$WORK/metrics.txt" audio_dropped | tr -d '+')"
+    welcomes="$(switch_value "$WORK/metrics.txt" welcomes)"
+    sessions="$(switch_value "$WORK/metrics.txt" sessions)"
+    failed="$(switch_value "$WORK/metrics.txt" session_failed)"
+    offline="$(switch_value "$WORK/metrics.txt" offline)"
+    missing="$(switch_value "$WORK/metrics.txt" input_missing)"
+    order="$(switch_value "$WORK/metrics.txt" input_order)"
+    probes="$(switch_value "$WORK/metrics.txt" input_n)"
+    if [ "$2" = "switchpath" ]; then
+        switch_le "$gap" 150 \
+            && ok "[PATH-44] SWITCHPATH the longest gap around the switch was ${gap} ms (limit 150)" \
+            || bad "[PATH-44] SWITCHPATH a frame gap of ${gap} ms around the switch (limit 150)"
+        [ "${underrun:-1}" = "0" ] && [ "${concealed:-1}" = "0" ] && [ "${dropped:-1}" = "0" ] \
+            && ok "[PATH-44] SWITCHPATH audio underrun=0 concealed=0 dropped=0 across the switch" \
+            || bad "[PATH-44] SWITCHPATH audio underrun=$underrun concealed=$concealed dropped=$dropped"
+        [ "${missing:-1}" = "0" ] && [ "$order" = "ok" ] && [ "${probes:-0}" -ge 10 ] \
+            && ok "[PATH-44] SWITCHPATH $probes numbered probes, all once and in order" \
+            || bad "[PATH-44] SWITCHPATH probes=$probes missing=$missing order=$order"
+        [ "${breaks:-1}" = "0" ] \
+            && ok "[PATH-44] SWITCHPATH no chain break across the switch" \
+            || bad "[PATH-44] SWITCHPATH chain breaks=$breaks"
+    else
+        [ "${breaks:-1}" = "0" ] && [ "${fed:-1}" = "0" ] && switch_le "$restores" 600 \
+            && ok "[PATH-45] SWITCHLINK no chain break, chain_fed=0, restores=${restores} ms" \
+            || bad "[PATH-45] SWITCHLINK chain breaks=$breaks chain_fed=$fed restores=${restores} ms"
+    fi
+    [ "${welcomes:-0}" = "1" ] && [ "${sessions:-0}" = "1" ] && [ "${failed:-1}" = "0" ] \
+        && ok "[PATH-$row] one welcome, one session, no session failed" \
+        || bad "[PATH-$row] the session changed: welcomes=$welcomes sessions=$sessions failed=$failed"
+    [ "${offline:-1}" = "0" ] \
+        && ok "[PATH-$row] the window never said Reconnecting or Offline" \
+        || bad "[PATH-$row] the window said Reconnecting or Offline"
+}
+
+switch_phases() { # <work> <frames> <events> <label:start:end>...
+    python3 - "$@" <<'PY'
+import json, sys
+work, frames_path, events_path = sys.argv[1], sys.argv[2], sys.argv[3]
+phases = []
+for spec in sys.argv[4:]:
+    label, start, end = spec.split(":")
+    phases.append((label, float(start), float(end)))
+
+frames = []
+for line in open(frames_path, errors="replace"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 3:
+        continue
+    try:
+        frames.append(float(parts[0]))
+    except ValueError:
+        pass
+frames.sort()
+
+probes = []
+for line in open(events_path, errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "input" and event.get("kind") == "touch" and event.get("action") == 0:
+        k = int(round((float(event.get("nx", 0)) - 0.04) / 0.010))
+        probes.append((float(event.get("ts", 0)), k))
+
+def audio(path):
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return {}
+
+for label, start, end in phases:
+    inside = [ts for ts in frames if start <= ts <= end]
+    gaps = [(b - a) * 1000.0 for a, b in zip(inside, inside[1:])]
+    gap = max(gaps) if gaps else 0.0
+    ordered = [k for ts, k in probes if start <= ts <= end]
+    missing = (max(ordered) - min(ordered) + 1 - len(ordered)) if ordered else 0
+    in_order = ordered == list(range(ordered[0], ordered[0] + len(ordered))) if ordered else False
+    base = audio("%s/audio-%s-a.json" % (work, label))
+    last = audio("%s/audio-%s-b.json" % (work, label))
+    def delta(key):
+        return last.get(key, 0) - base.get(key, 0)
+    print("phase=%s frames=%d gap_max_ms=%.0f over_100=%d input=%d..%s missing=%d order=%s"
+          " audio_underrun=%+d concealed=%+d dropped=%+d"
+          % (label, len(inside), gap, sum(1 for g in gaps if g > 100),
+             min(ordered) if ordered else 0, max(ordered) if ordered else 0,
+             missing, "ok" if in_order else "bad",
+             delta("underrun"), delta("concealed"), delta("dropped")))
+PY
+}
+
+# switchlink (S4, PATH-45): one path through the fault proxy follows the
+# person's link: 10 s pass, 10 s at 3 Mbit/s, 10 s of the AWDL off-channel
+# pattern, a 3 s black hole, then pass again — with the numbered probes
+# running throughout and the audio snapshots at each boundary.
+check_switchlink() {
+    clean
+    pathfault_nuke
+    local ctl t0 t_throttle t_stall t_blackhole t_pass t_recovery t_end ticks_pid=""
+    switch_probe_script "$WORK/probes.txt" 90
+    FAKE_ARGS="--paths 1" start_fake || return 1
+    STALL_MS=100 STALL_EVERY_MS=1000 STALL_LONG_MS=0 \
+        pathfault_start "$((PORT + 3))" "$PORT" pass "" 3
+    ctl="$PATHFAULT_CTL"
+    path_pair_once "$((PORT + 3))"
+    launch --connect "127.0.0.1:$((PORT + 3))" --open com.android.settings \
+        --debug-input-script "$WORK/probes.txt" --debug-frame-log "$WORK/frames.tsv" \
+        --debug-chrome-state "$WORK/chrome.txt" --audio-stats "$WORK/audio.json" --quit-after 75
+    : > "$WORK/switch-stop"
+    (
+        while [ ! -e "$WORK/switch-stop" ]; do
+            [ -s "$WORK/chrome.txt" ] && cat "$WORK/chrome.txt" 2>/dev/null
+            sleep 0.1
+        done
+    ) > "$WORK/chrome-ticks.txt" &
+    ticks_pid=$!
+    wait_until 20 events_have '"ev":"video"' \
+        && ok "[PATH-45] SWITCHLINK the window streams before the timeline" \
+        || bad "[PATH-45] SWITCHLINK no video before the timeline"
+    wait_until 20 switch_audio_frames 300 \
+        && ok "[PATH-45] SWITCHLINK audio plays before the timeline" \
+        || bad "[PATH-45] SWITCHLINK no audio before the timeline"
+    cp "$WORK/audio.json" "$WORK/audio-base.json" 2>/dev/null || true
+    t0="$(path_now)"
+    cp "$WORK/audio.json" "$WORK/audio-pass-a.json" 2>/dev/null || true
+    sleep 10
+    t_throttle="$(path_now)"
+    pathfault_mode "$ctl" throttle
+    cp "$WORK/audio.json" "$WORK/audio-pass-b.json" 2>/dev/null || true
+    cp "$WORK/audio.json" "$WORK/audio-throttle-a.json" 2>/dev/null || true
+    sleep 10
+    t_stall="$(path_now)"
+    pathfault_mode "$ctl" stall
+    cp "$WORK/audio.json" "$WORK/audio-throttle-b.json" 2>/dev/null || true
+    cp "$WORK/audio.json" "$WORK/audio-stall-a.json" 2>/dev/null || true
+    sleep 10
+    t_blackhole="$(path_now)"
+    pathfault_mode "$ctl" blackhole
+    cp "$WORK/audio.json" "$WORK/audio-stall-b.json" 2>/dev/null || true
+    cp "$WORK/audio.json" "$WORK/audio-blackhole-a.json" 2>/dev/null || true
+    sleep 3
+    t_pass="$(path_now)"
+    pathfault_mode "$ctl" pass
+    cp "$WORK/audio.json" "$WORK/audio-blackhole-b.json" 2>/dev/null || true
+    cp "$WORK/audio.json" "$WORK/audio-recovery-a.json" 2>/dev/null || true
+    # The allowance is the first second after the picture is back, not after
+    # the proxy's mode flip: the queued burst needs a moment to arrive.
+    for _ in $(seq 1 50); do
+        switch_frame_since "$WORK/frames.tsv" "$t_pass" && break
+        sleep 0.1
+    done
+    sleep 1
+    t_recovery="$(path_now)"
+    cp "$WORK/audio.json" "$WORK/audio-recovery-early-b.json" 2>/dev/null || true
+    while python3 -c "import sys, time; sys.exit(0 if time.time() < float('$t_pass') + 5.0 else 1)"; do
+        sleep 0.1
+    done
+    t_end="$(path_now)"
+    cp "$WORK/audio.json" "$WORK/audio-recovery-b.json" 2>/dev/null || true
+    : > "$WORK/switch-stop"
+    [ -n "$ticks_pid" ] && kill "$ticks_pid" 2>/dev/null || true
+    wait "$ticks_pid" 2>/dev/null || true
+    stop_app
+    wait_app
+    switch_log > "$WORK/switch.log" 2>/dev/null || true
+    switch_metrics "$WORK/frames.tsv" "$(python3 -c "print(float('$t0') - 2.0)")" "$t_end" \
+        "$WORK/audio.json" "$WORK/audio-base.json" "$WORK/chrome-ticks.txt" "$WORK/switch.log" \
+        "$WORK/events.jsonl" "$WORK/app.log" > "$WORK/metrics.txt"
+    say "SWITCHLINK $(tr '\n' ' ' < "$WORK/metrics.txt")"
+    switch_phases "$WORK" "$WORK/frames.tsv" "$WORK/events.jsonl" \
+        "pass:$t0:$t_throttle" "throttle:$t_throttle:$t_stall" \
+        "stall:$t_stall:$t_blackhole" "blackhole:$t_blackhole:$t_pass" \
+        "recovery:$t_pass:$t_end" > "$WORK/switch-phases.txt" 2>/dev/null || true
+    while IFS= read -r line; do
+        [ -n "$line" ] && say "SWITCHLINK $line"
+    done < "$WORK/switch-phases.txt"
+    # PATH-45: in the pass and recovery windows the link carries the offered
+    # rate, so the picture and audio bounds apply there.
+    local gap underrun concealed missing order
+    for phase in pass recovery; do
+        gap="$(switch_phase_value "$WORK/switch-phases.txt" "$phase" gap_max_ms)"
+        underrun="$(switch_phase_value "$WORK/switch-phases.txt" "$phase" audio_underrun | tr -d '+')"
+        concealed="$(switch_phase_value "$WORK/switch-phases.txt" "$phase" concealed | tr -d '+')"
+        missing="$(switch_phase_value "$WORK/switch-phases.txt" "$phase" missing)"
+        order="$(switch_phase_value "$WORK/switch-phases.txt" "$phase" order)"
+        switch_le "${gap:-9999}" 150 \
+            && ok "[PATH-45] SWITCHLINK($phase) the longest gap was ${gap} ms (limit 150)" \
+            || bad "[PATH-45] SWITCHLINK($phase) a frame gap of ${gap} ms (limit 150)"
+        [ "${underrun:-1}" = "0" ] && [ "${concealed:-1}" = "0" ] \
+            && ok "[PATH-45] SWITCHLINK($phase) audio underrun=0 concealed=0" \
+            || bad "[PATH-45] SWITCHLINK($phase) audio underrun=$underrun concealed=$concealed"
+        # Recovery may drop the stale head of the burst for one second; sent
+        # probes may have been black-holed, so only the order of what arrived
+        # after the first frame is required there (checked below).
+        if [ "$phase" = "pass" ]; then
+            [ "${missing:-1}" = "0" ] && [ "$order" = "ok" ] \
+                && ok "[PATH-45] SWITCHLINK(pass) the numbered probes all arrived in order" \
+                || bad "[PATH-45] SWITCHLINK(pass) probes missing=$missing order=$order"
+        fi
+    done
+    switch_audio_recovery "$WORK" \
+        && ok "[PATH-45] SWITCHLINK(recovery) up to 20 stale packets in the first second, none after; no underrun or concealment" \
+        || bad "[PATH-45] SWITCHLINK(recovery) audio counters: $(switch_audio_recovery_text "$WORK")"
+    gap="$(switch_value "$WORK/metrics.txt" gap_max_ms)"
+    switch_le "${gap:-99999}" 4500 \
+        && ok "[PATH-45] SWITCHLINK the black hole withheld only its 3 s (longest gap ${gap} ms, limit 4500)" \
+        || bad "[PATH-45] SWITCHLINK the longest gap was ${gap} ms (limit 4500)"
+    local first="$(switch_first_frame_after "$WORK/frames.tsv" "$t_pass")"
+    if [ "$first" = "none" ]; then
+        bad "[PATH-45] SWITCHLINK no frame arrived after the link returned"
+    elif switch_le "$first" 1000; then
+        ok "[PATH-45] SWITCHLINK the first frame after the link returned came ${first} ms later (limit 1000)"
+    else
+        bad "[PATH-45] SWITCHLINK the first frame after the link returned took ${first} ms (limit 1000)"
+    fi
+    switch_input_after "$WORK/frames.tsv" "$WORK/events.jsonl" "$t_pass" \
+        && ok "[PATH-45] SWITCHLINK every probe after the first recovery frame arrived once and in order" \
+        || bad "[PATH-45] SWITCHLINK the probes after the first recovery frame were not consecutive"
+    switch_assertions 45 switchlink
+    stop_fakephone
+    pathfault_stop_all
+}
+
+switch_frame_since() { # switch_frame_since FRAMES EPOCH — a frame arrived after
+    python3 - "$1" "$2" <<'PY'
+import sys
+start = float(sys.argv[2])
+for line in open(sys.argv[1], errors="replace"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 2:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if ts >= start:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+switch_phase_value() { # switch_phase_value FILE PHASE KEY
+    awk -v phase="$2" -v key="$3" '{
+        if ($1 == "phase=" phase) {
+            for (i = 2; i <= NF; i++) {
+                split($i, a, "=")
+                if (a[1] == key) print a[2]
+            }
+        }
+    }' "$1"
+}
+
+switch_first_frame_after() { # switch_first_frame_after FRAMES EPOCH — ms, or none
+    python3 - "$1" "$2" <<'PY'
+import sys
+start = float(sys.argv[2])
+first = None
+for line in open(sys.argv[1], errors="replace"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 2:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if ts >= start:
+        first = ts
+        break
+print("none" if first is None else "%.0f" % ((first - start) * 1000.0))
+PY
+}
+
+switch_input_after() { # switch_input_after FRAMES EVENTS EPOCH — consecutive probes
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+first = None
+for line in open(sys.argv[1], errors="replace"):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 2:
+        continue
+    try:
+        ts = float(parts[0])
+    except ValueError:
+        continue
+    if ts >= float(sys.argv[3]):
+        first = ts
+        break
+if first is None:
+    sys.exit(1)
+probes = []
+for line in open(sys.argv[2], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "input" or event.get("kind") != "touch" or event.get("action") != 0:
+        continue
+    if float(event.get("ts", 0)) < first:
+        continue
+    probes.append(int(round((float(event.get("nx", 0)) - 0.04) / 0.010)))
+sys.exit(0 if probes and probes == list(range(probes[0], probes[0] + len(probes))) else 1)
+PY
+}
+
+switch_audio_recovery() { # switch_audio_recovery WORK — the recovery audio rule
+    python3 - "$1" <<'PY'
+import json, sys
+work = sys.argv[1]
+def load(name):
+    try:
+        return json.load(open("%s/audio-%s.json" % (work, name)))
+    except (OSError, ValueError):
+        return {}
+base, early, last = load("recovery-a"), load("recovery-early-b"), load("recovery-b")
+def delta(a, b, key):
+    return b.get(key, 0) - a.get(key, 0)
+ok = (delta(base, early, "underrun") == 0 and delta(base, early, "concealed") == 0
+      and delta(base, early, "dropped") <= 20
+      and delta(early, last, "underrun") == 0 and delta(early, last, "concealed") == 0
+      and delta(early, last, "dropped") == 0)
+sys.exit(0 if ok else 1)
+PY
+}
+
+switch_audio_recovery_text() { # switch_audio_recovery_text WORK — the rule's numbers
+    python3 - "$1" <<'PY'
+import json, sys
+work = sys.argv[1]
+def load(name):
+    try:
+        return json.load(open("%s/audio-%s.json" % (work, name)))
+    except (OSError, ValueError):
+        return {}
+base, early, last = load("recovery-a"), load("recovery-early-b"), load("recovery-b")
+def delta(a, b, key):
+    return b.get(key, 0) - a.get(key, 0)
+print("first_s underrun=%+d concealed=%+d dropped=%+d; after underrun=%+d concealed=%+d dropped=%+d"
+      % (delta(base, early, "underrun"), delta(base, early, "concealed"),
+         delta(base, early, "dropped"), delta(early, last, "underrun"),
+         delta(early, last, "concealed"), delta(early, last, "dropped")))
+PY
 }
