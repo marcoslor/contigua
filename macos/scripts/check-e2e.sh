@@ -832,6 +832,15 @@ last_video_size() {
         | grep -o '"w":[0-9]*,"h":[0-9]*' | tail -1
 }
 
+# video_config_have W H — a VIDEO_CONFIG of stream 1 at exactly W x H. The
+# event carries `codec` between `config` and `w` (HEVC), so a raw contiguous
+# text match cannot be used.
+video_config_have() {
+    grep -F '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null \
+        | grep -F '"stream":1' | grep -F '"config":true' \
+        | grep -qF "\"w\":$1,\"h\":$2"
+}
+
 # await_app <seconds> <command...> — a positive step's end: the app has done what
 # the step needs once the command succeeds, so it is stopped then instead of
 # running out its --quit-after (which stays the step's upper bound).
@@ -1546,7 +1555,7 @@ check_resize() {
     w=$((1600 / scale)); h=$((1200 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     # The window is wxh pt and the video is all of it.
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
+    wait_until 30 video_config_have 1600 1200 \
         && ok "[WIN-5] C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "[WIN-5] C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "[WIN-6] C6 window.resize sent" || bad "[WIN-6] C6 no window.resize"
@@ -1563,7 +1572,7 @@ check_resize() {
         skip "C6 the tall shape" "no 2x mode on this screen has 952 pt of visible height, so a ${w}x${h} pt window would be clamped"
     else
         open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1800'; then
+        if wait_until 30 video_config_have 1200 1800; then
             ok "[WIN-5] C6 tall shape resized to 1200x1800 (${w}x${h} pt at ${scale}x, the encoder's 2 px alignment)"
         else
             bad "[WIN-5] C6 no tall config (last video $(last_video_size))"
@@ -1574,7 +1583,7 @@ check_resize() {
 
     w=$((3200 / scale)); h=$((1000 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
+    wait_until 30 video_config_have 2560 800 \
         && ok "[WIN-5] C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "[WIN-5] C6 no capped config"
     # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
     # capped 2560 px across the window's w pt.
@@ -1617,7 +1626,7 @@ check_resize() {
     else
         bad "C6 live resize: no window ${fw} pt wide to capture"
     fi
-    wait_until 30 events_have "\"ev\":\"video\",\"stream\":1,\"config\":true,\"w\":${ew},\"h\":${eh}" \
+    wait_until 30 video_config_have "$ew" "$eh" \
         || bad "C6 live resize: no answer at ${ew}x${eh} (last video $(last_video_size))"
     local tries=12
     while [ "$tries" -gt 0 ]; do
