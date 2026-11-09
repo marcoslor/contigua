@@ -991,6 +991,13 @@ final class ConnectionController {
             book.removeRecord(id)
             if let resume = pairingResumeId {
                 book.setCurrent(resume, phone: remembered.phone(id: resume)?.ref).forEach(perform)
+                // R3: taking `current` for the pairing reset the resumed
+                // phone's machine (it had no other claim). A trust-lost phone
+                // must read Pair again again, not Idle (PAIR-32/33).
+                if let ref = remembered.phone(id: resume)?.ref,
+                   let kind = remembered.trustLost(id: resume) {
+                    send(.restoreTrustLost(ref, kind), from: resume)
+                }
             }
         }
         pairingDeviceId = nil
