@@ -112,6 +112,7 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - Tests: K2 1871/0; `resize` 18/0, `zoom` p95 21 ms (limit 40), `chrome` 36/0.
     - Waiting on the person: a fast drag on a real window shows no strip.
 - **ISS-40 Crispness beyond 1:1** (the person asked, 2026-11-04). Today: H.264, 4:2:0, VBR, 60 fps, capped at 8 Mbps; the code's own formula wants about 27 Mbps for a 2560×1488 window. A still screen keeps the quality of the frame it last changed in, because the repeated frames don't refine it. The person's link already shows backpressure at 8 Mbps (`stream 7 backpressure: dropping deltas`), so more bits alone may not help.
+  - **HEVC default (feat/hevcdef).**
   - Options for one prototype round on the real phone, side by side on the same text screen, with ISS-39's metric and the bitrate each costs:
     - (a) today;
     - (b) a higher cap, about 25 Mbps;
