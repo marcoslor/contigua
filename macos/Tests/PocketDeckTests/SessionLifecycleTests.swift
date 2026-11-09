@@ -377,7 +377,7 @@ final class SessionLifecycleTests: XCTestCase {
         XCTAssertNil(Session.tcpParameters(for: .hostPort(host: "127.0.0.1", port: 47000)).requiredInterface)
     }
 
-    func testExporterHashIsLoggedByDevAndE2EBundlesButNotRelease() {
+    func testExporterPrefixIsLoggedByDevAndE2EBundlesButNotRelease() {
         XCTAssertTrue(Session.logsExporterHash(variant: "dev"))
         XCTAssertTrue(Session.logsExporterHash(variant: "e2e"))
         XCTAssertTrue(Session.logsExporterHash(variant: nil), "a bare swift-build binary is a dev build")

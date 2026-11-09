@@ -105,14 +105,20 @@ display id on every injected event.
   reference chain (no delta reaches the decoder until a keyframe, MEDIA-19),
   and the next keyframe restarts cleanly. A phone sends whole `VIDEO_FRAME`s
   to a Mac without the field.
-- **Codec.** H.264 is the default. HEVC is used only when the stream's arm asks
-  for it (`codec=hevc`), the Mac's `hello.codecs` listed it as hardware-decodable,
-  and the phone's HEVC encoder accepts the size; otherwise the stream stays H.264
-  and the phone writes one line, `codec=hevc unsupported: <mac|encoder|size>`,
-  naming the first condition that failed. `VIDEO_CONFIG`'s codec byte names every
-  stream's codec (1 = avc, 2 = hevc). A hello with no `codecs` (an older Mac)
-  means AVC only, and a phone that predates the field sends 1 in every config, so
-  an older phone's stream reads as AVC.
+- **Codec.** HEVC is the default when the Mac's `hello.codecs` listed it as
+  hardware-decodable, the phone has a hardware HEVC encoder
+  (`MediaCodecInfo.isHardwareAccelerated` on API 29+, a name without the
+  platform software prefixes below it), and that encoder accepts the size.
+  The bench's `codec=avc` forces H.264; no value, `codec=hevc` and junk mean
+  "HEVC when possible". Otherwise the stream stays H.264 and the phone writes
+  one line, `codec=hevc unsupported: <mac|encoder|size>`, naming the first
+  condition that failed. IF the chosen HEVC encoder fails to create, configure
+  or start THEN the phone retries the same stream once with H.264, writes
+  `codec=hevc unsupported: configure`, and keeps HEVC off for the rest of the
+  process. `VIDEO_CONFIG`'s codec byte names every stream's codec (1 = avc,
+  2 = hevc). A hello with no `codecs` (an older Mac) means AVC only, and a
+  phone that predates the field sends 1 in every config, so an older phone's
+  stream reads as AVC.
 - **NAL types are codec-aware.** H.264's type is `byte & 0x1F`; HEVC's is
   `(byte >> 1) & 0x3F`. HEVC parameter sets are VPS 32, SPS 33 and PPS 34; IDR
   slices are 19 and 20, CRA 21 is a key frame that is **not** an IDR, and slices

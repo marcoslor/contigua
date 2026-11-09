@@ -14,7 +14,6 @@ import dev.pocketdeck.IDeckService
 import dev.pocketdeck.drop.ShareStaging
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.e2ee.IdentityPin
-import dev.pocketdeck.e2ee.TlsExporter
 import dev.pocketdeck.proto.Json
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -233,16 +232,14 @@ class DeckService(private val appContext: Context?) :
                 secureProbe = AndroidSecureProbe(base, ::log),
                 preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
-                    // K4/e2e evidence, hashes only, debug builds only: the
-                    // platform stack really backs the v2 pairing
-                    // (isSupportedSocket gates the exporter) and both ends
-                    // compare this hash, not the bytes. Release builds log
-                    // neither line.
+                    // K4/e2e evidence, debug builds only: the platform stack
+                    // really backs the v2 pairing (isSupportedSocket gates the
+                    // exporter). R5: the exporter's hash never goes to a log,
+                    // not even a prefix; only its state does. Release builds
+                    // log neither line.
                     if (dev.pocketdeck.BuildConfig.DEBUG) {
                         if (socket is SSLSocket) log("v2 ssl socket supported: ${SSLSockets.isSupportedSocket(socket)}")
-                        val exporter = view.exporter()
-                        log(if (exporter == null) "v2 exporter unavailable"
-                            else "v2 exporter sha256: " + TlsExporter.toHex(TlsExporter.sha256(exporter)))
+                        log(if (view.exporter() == null) "v2 exporter unavailable" else "v2 exporter ready")
                     }
                 },
             )

@@ -305,6 +305,9 @@ class Client(object):
         self.hello_v = 4
         hello = {"t": "hello", "v": 4, "clientId": client_id, "name": name,
                  "videoChunks": True,
+                 # A current Mac decodes HEVC in hardware; without this the
+                 # phone can never exercise the WIN-59 default on the rig.
+                 "codecs": ["avc", "hevc"],
                  "path": self.path_id}
         # A user-driven pairing says so in its hello (PROTOCOL "Session
         # handshake" step 2): without it the phone answers an unknown Mac

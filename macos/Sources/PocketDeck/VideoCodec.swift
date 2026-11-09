@@ -1,6 +1,6 @@
 // The stream codecs the wire and the Mac's decoders speak (docs/PROTOCOL.md
-// "Video rules"). H.264 is the default; HEVC is the bench arm's opt-in, sent
-// only when this Mac says it decodes HEVC in hardware.
+// "Video rules"). HEVC is the phone's default when this Mac decodes it in
+// hardware and the phone has a hardware encoder for the size.
 
 import CoreMedia
 import VideoToolbox

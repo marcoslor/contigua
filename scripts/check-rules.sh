@@ -27,7 +27,7 @@ import sys
 
 REVIEW_RULES = {"R-SUPP-1", "R-CHECK-1"}
 RULE_ORDER = ["R-SWIFT-1", "R-SWIFT-2", "R-SWIFT-3", "R-SWIFT-4", "R-SWIFT-5",
-              "R-TEST-1", "R-KEY-1", "R-PRIV-1", "R-SUPP-1", "R-CHECK-1"]
+              "R-TEST-1", "R-KEY-1", "R-KEY-2", "R-PRIV-1", "R-SUPP-1", "R-CHECK-1"]
 TEXT_EXT = (".swift", ".kt", ".kts", ".java", ".sh", ".json", ".md", ".py")
 MISSING = object()
 
@@ -517,6 +517,32 @@ def check_shortcuts(path, added, lines):
                 % display(shortcut))
 
 
+# --- R-KEY-2: no exporter key material in logs --------------------------------
+
+EXPORTER_HASH = re.compile(r"exporter\s+sha256", re.IGNORECASE)
+HEX64 = re.compile(r"\b[0-9a-fA-F]{64}\b")
+
+
+def check_key_material(path, added):
+    """A log may name the exporter's state and an 8-hex hash prefix, never its
+    full hash (AGENTS.md: key material, nonces, exporters and secrets stay out
+    of logs; hash prefixes only). R5: the exporter hash used to be logged."""
+    if not path.endswith((".swift", ".kt", ".java")):
+        return
+    for n, text in sorted(added.items()):
+        code, comment = split_code(text)
+        if not LOG_CALL.search(code) or escaped(comment, "log-ok:"):
+            continue
+        if EXPORTER_HASH.search(code):
+            add(path, n, "R-KEY-2",
+                "log names the exporter's full sha256; log `v2 exporter ready` "
+                "or an 8-hex prefix")
+        elif HEX64.search(code):
+            add(path, n, "R-KEY-2",
+                "log carries 64 hex characters (key material); log an 8-hex "
+                "prefix or a state")
+
+
 # --- R-CHECK-1: weakened checks (REVIEW) -------------------------------------
 
 LIMITS = "macos/scripts/nfr-limits.json"
@@ -645,6 +671,7 @@ def main():
         check_swift_tests(path, added)
         check_kotlin_tests(path, added, lines)
         check_privacy(path, added)
+        check_key_material(path, added)
         check_suppressions(path, added)
         check_shortcuts(path, added, lines)
         check_weakened(path, info, lines, base,

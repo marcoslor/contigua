@@ -454,6 +454,18 @@ final class Session {
     static let defaultConnectTimeout: TimeInterval = 6
     static let defaultPairingTimeout: TimeInterval = 125
 
+    /// The phone's session-level error codes (docs/PROTOCOL.md "Error codes"):
+    /// an `error` naming one of these is the session's, and the phone closes
+    /// after it. `Session.sendError` always writes `stream: 0` for them, so the
+    /// classification must accept stream 0 as well as a missing field (R2:
+    /// `pair_cooldown` was read as a TLS failure because it carried stream 0).
+    static let sessionErrorCodes: Set<String> = [
+        "version", "bad_pin", "connections_off", "pairing_off", "not_paired",
+        "no_session", "busy", "too_many_paths", "protocol", "forgotten",
+        "pair_denied", "pair_timeout", "pair_cooldown", "pair_exporter",
+        "pair_commit",
+    ]
+
     private let connectTimeout: TimeInterval
     private let pairingTimeout: TimeInterval
     /// `--debug-no-margin-switch`: the e2e check's broken build; the ranking's
@@ -1939,7 +1951,35 @@ final class Session {
             // trust-lost state at once, not wait out a path grace. The phone's
             // live-session errors carry `stream: 0` (or omit it) when the error
             // is the session's, not a stream request's.
-            if code == "forgotten", (message.int("stream") ?? 0) == 0 {
+            //
+            // R2: the real phone's `sendError` ALWAYS writes `stream: 0` for a
+            // session-level error (Session.kt: `stream: Int = 0`), so "no
+            // stream field" is not the test — a `pair_cooldown` used to reach
+            // the Mac and be read as a TLS failure. A known session code with
+            // stream 0 (or absent) ends the session and names the reason.
+            let stream = message.int("stream") ?? 0
+            if stream == 0, Self.sessionErrorCodes.contains(code) {
+                // An fs failure names the request it answers; it is not the
+                // session-level error a stream-0 `error` otherwise is.
+                if let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 {
+                    emit(.fsError(id: id, code: code, message: message.string("message")))
+                    return
+                }
+                // RR-12: a rejoin refused because the session is gone (the
+                // phone's server restarted, or its grace ended first) ends the
+                // orphan at once, so the controller's reconnect starts exactly
+                // one new session instead of dialing a dead id for the grace.
+                // RRR-9: for a join, `busy` means that same thing (the session
+                // is ending), never "another Mac is connected": it fails as
+                // `no_session` so the person reads the right sentence.
+                if let attemptId = lastFramePath,
+                   attempts[attemptId]?.machine.phase.joinSession != nil,
+                   code == "no_session" || code == "busy" {
+                    let refusal = code == "busy" ? "no_session" : code
+                    phoneErrorCode = refusal
+                    fail(refusal)
+                    return
+                }
                 phoneErrorCode = code
                 fail(code)
                 return
@@ -1948,21 +1988,6 @@ final class Session {
             // session-level error a stream-less `error` otherwise is.
             if let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 {
                 emit(.fsError(id: id, code: code, message: message.string("message")))
-                return
-            }
-            // RR-12: a rejoin refused because the session is gone (the phone's
-            // server restarted, or its grace ended first) ends the orphan at
-            // once, so the controller's reconnect starts exactly one new
-            // session instead of dialing a dead id for the whole grace.
-            // RRR-9: for a join, `busy` means that same thing (the session is
-            // ending), never "another Mac is connected": it fails as
-            // `no_session` so the person reads the right sentence.
-            if message.int("stream") == nil, let attemptId = lastFramePath,
-               attempts[attemptId]?.machine.phase.joinSession != nil,
-               code == "no_session" || code == "busy" {
-                let refusal = code == "busy" ? "no_session" : code
-                phoneErrorCode = refusal
-                fail(refusal)
                 return
             }
             if message.int("stream") == nil { phoneErrorCode = code }
@@ -2013,23 +2038,26 @@ final class Session {
         pinSessionEstablished?(record)
     }
 
-    /// Dev and e2e bundles log the exporter hash for K4/e2e evidence; the
-    /// release bundle (PDBuildVariant=release, as bundle.sh stamps it) logs
-    /// neither the hash nor anything else derived from handshake secrets.
+    /// Dev and e2e bundles log an 8-hex prefix of the exporter's SHA-256 for
+    /// K4/e2e evidence (two sessions must not look resumed); the release
+    /// bundle (PDBuildVariant=release, as bundle.sh stamps it) logs neither
+    /// the prefix nor anything else derived from handshake secrets.
     static func logsExporterHash(variant: String?) -> Bool {
         variant != "release"
     }
 
-    /// The 32 exporter's SHA-256, logged once per session (K4/e2e compare the
-    /// two ends' hashes; the exporter itself and its keylog secret never leave
-    /// memory). Nil-safe: a failed handshake logs nothing.
+    /// The 32 exporter's SHA-256 prefix, logged once per session (K4/e2e
+    /// compare the two ends; R5: a prefix is not key material, and the full
+    /// hash and the exporter itself never leave memory). Nil-safe: a failed
+    /// handshake logs nothing.
     private func logExporterOnce() {
         guard Self.logsExporterHash(variant: Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String) else { return }
         guard !loggedExporterSha else { return }
         guard let exporter = exporterProvider?() else { return }
         loggedExporterSha = true
         let digest = SHA256.hash(data: Data(exporter))
-        Log.session.notice("v2 exporter sha256: \(digest.map { String(format: "%02x", $0) }.joined(), privacy: .public)")
+        let hashTag = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        Log.session.notice("v2 exporter ready \(hashTag, privacy: .public)")
     }
 
     /// 76-char PEM body strip for the record's cert (base64 → lines).
