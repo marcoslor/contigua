@@ -12124,7 +12124,10 @@ PY
     line="$(tail -1 "$WORK/stats.txt")"
     case "$line" in *"stats stream="*) ;; *) missing=" stats" ;; esac
     for field in stream size view place rx_fps shown_fps int_p95 int_p99 \
-                 freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop phone_drop \
+                 freeze_n freeze_ms hitch_n hitch_ms late_p99 mac_drop \
+                 mac_drop_flush mac_drop_not_ready mac_drop_before_config \
+                 mac_drop_paced mac_drop_awaiting_key chain_fed \
+                 phone_drop \
                  drop_ep drop_ms skip kf kf_req key_not_idr ph_key_not_idr \
                  kbps target_kbps qp_p50 qp_p95 enc_p50 enc_p95 queue_p95 \
                  e2e_p50 e2e_p95 max_gap_ms tcp_srtt tcp_rttvar tcp_ooo_kb \
