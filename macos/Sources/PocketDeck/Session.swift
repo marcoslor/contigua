@@ -1898,6 +1898,16 @@ final class Session {
                 fail("version")
                 return
             }
+            // PAIR-30: the phone's authenticated word that it forgot this Mac.
+            // It ends the session on its own too, but the Mac must enter the
+            // trust-lost state at once, not wait out a path grace. The phone's
+            // live-session errors carry `stream: 0` (or omit it) when the error
+            // is the session's, not a stream request's.
+            if code == "forgotten", (message.int("stream") ?? 0) == 0 {
+                phoneErrorCode = code
+                fail(code)
+                return
+            }
             // An fs failure names the request it answers; it is not the
             // session-level error a stream-less `error` otherwise is.
             if let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 {

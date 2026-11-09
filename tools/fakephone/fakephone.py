@@ -5673,7 +5673,9 @@ class FakePhone(object):
         session = self._session
         if session is None or session.hub is None:
             return False
-        session._send_error("forgotten", "the person forgot this Mac")
+        # The phone's live-session errors carry `stream: 0` for a session-level
+        # error (Session.sendError in the app); the fake matches that wire shape.
+        session._send_error("forgotten", "the person forgot this Mac", 0)
         # The frame rides the path writer; give it the same drain the phone's
         # teardown gives a refusal before the socket goes.
         time.sleep(0.3)
