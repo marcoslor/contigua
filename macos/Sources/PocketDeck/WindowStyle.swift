@@ -165,6 +165,45 @@ enum RevealDelay: String, CaseIterable {
     }
 }
 
+/// The edge of a phone window's frame a person is dragging. The edge decides
+/// which dimension leads the phone's aspect rule (ISS-64); a resize that is not
+/// a mouse drag keeps today's larger-area rule (the v104 fix).
+enum PhoneWindowEdge: Equatable {
+    case none
+    case left
+    case right
+    case top
+    case bottom
+    case topLeft
+    case topRight
+    case bottomLeft
+    case bottomRight
+
+    /// The edge or corner under `point` (frame coordinates): an edge within
+    /// `tolerance` points of the pointer, a corner where two edges meet there.
+    static func at(point: CGPoint, in frame: NSRect, tolerance: CGFloat = 6) -> PhoneWindowEdge {
+        guard frame.width > 0, frame.height > 0 else { return .none }
+        let nearLeft = abs(point.x - frame.minX) <= tolerance
+        let nearRight = abs(point.x - frame.maxX) <= tolerance
+        let nearTop = abs(point.y - frame.maxY) <= tolerance
+        let nearBottom = abs(point.y - frame.minY) <= tolerance
+        let nearFrame = point.x >= frame.minX - tolerance && point.x <= frame.maxX + tolerance
+            && point.y >= frame.minY - tolerance && point.y <= frame.maxY + tolerance
+        guard nearFrame else { return .none }
+        switch (nearLeft, nearRight, nearTop, nearBottom) {
+        case (true, _, true, _): return .topLeft
+        case (_, true, true, _): return .topRight
+        case (true, _, _, true): return .bottomLeft
+        case (_, true, _, true): return .bottomRight
+        case (true, _, _, _): return .left
+        case (_, true, _, _): return .right
+        case (_, _, true, _): return .top
+        case (_, _, _, true): return .bottom
+        default: return .none
+        }
+    }
+}
+
 /// The phone window's shape rules: the stream keeps the phone's aspect ratio;
 /// the window adds the style's bar above it.
 enum PhoneChrome {
@@ -200,21 +239,103 @@ enum PhoneChrome {
     /// A phone window keeps its phone's aspect ratio in the stream, not in the
     /// frame (the bar is not part of the picture). Sizes are window frames.
     ///
-    /// The proposed size is projected onto the aspect line: of the two
-    /// candidates, the one that reaches further past the proposal on the other
-    /// axis wins. Nothing here looks at the last snapped frame. Measuring the
-    /// drag against it made the leading axis flip mid-drag: a proposal that was
-    /// mostly down after one that was mostly across produced a smaller window
-    /// than the step before, and the window fought the person's hand.
+    /// A dragged edge leads: a top or bottom drag sets the height and the width
+    /// follows, a side drag sets the width and the height follows. A corner, or
+    /// a resize with no mouse edge (Accessibility, a tiler, the zoom button),
+    /// projects the proposal onto the aspect line and takes the candidate that
+    /// reaches further past the proposal on the other axis. Nothing here looks
+    /// at the last snapped frame: measuring the drag against it made the
+    /// leading axis flip mid-drag, so a mostly-down move after a mostly-across
+    /// one produced a smaller window than the step before and the window
+    /// fought the person's hand.
     static func frame(proposed: CGSize, phone: CGSize, style: WindowStyle) -> CGSize {
+        frame(proposed: proposed, phone: phone, style: style, edge: .none)
+    }
+
+    static func frame(proposed: CGSize, phone: CGSize, style: WindowStyle,
+                      edge: PhoneWindowEdge) -> CGSize {
         guard phone.width > 0, phone.height > 0 else { return proposed }
         let ratio = phone.height / phone.width
         let stream = style.streamSize(window: proposed)
         let widthLed = CGSize(width: stream.width, height: (stream.width * ratio).rounded())
         let heightLed = CGSize(width: (stream.height / ratio).rounded(), height: stream.height)
-        let chosen = widthLed.width * widthLed.height >= heightLed.width * heightLed.height
-            ? widthLed : heightLed
+        let chosen: CGSize
+        switch edge {
+        case .top, .bottom:
+            // The dragged edge is a horizontal one: the height leads and the
+            // width follows, so a single-edge drag can shrink the window.
+            chosen = heightLed
+        case .left, .right:
+            chosen = widthLed
+        case .none, .topLeft, .topRight, .bottomLeft, .bottomRight:
+            // A corner moves both axes; an unattributed resize keeps the v104
+            // larger-area rule.
+            chosen = widthLed.width * widthLed.height >= heightLed.width * heightLed.height
+                ? widthLed : heightLed
+        }
         return style.windowSize(stream: chosen)
+    }
+
+    /// The frame a phone window opens at when it has a remembered one: the
+    /// remembered height leads, the window takes the phone's shape, and the
+    /// screen's limit scales the stream as one (ISS-63). The top-left stays.
+    static func restoredFrame(saved: NSRect, phone: CGSize, style: WindowStyle,
+                              visible: NSRect, minimum: NSSize = .zero) -> NSRect {
+        guard phone.width > 0, phone.height > 0, saved.width > 0, saved.height > 0 else { return saved }
+        let ratio = phone.width / phone.height
+        let bar = style.insets(fullScreen: false).top
+        var streamHeight = max(saved.height - bar, 1)
+        var streamWidth = streamHeight * ratio
+        let maxStreamHeight = max(visible.height - bar, 1)
+        let scale = min(1, min(visible.width / streamWidth, maxStreamHeight / streamHeight))
+        streamWidth *= scale
+        streamHeight *= scale
+        // The minimum is the phone's shape too (PhoneWindowController's
+        // minSize): a narrow window grows both axes, never one.
+        let minStreamWidth = max(minimum.width, max(minimum.height - bar, 0) * ratio)
+        if streamWidth < minStreamWidth {
+            streamWidth = min(minStreamWidth, visible.width)
+            streamHeight = streamWidth / ratio
+        }
+        let size = style.windowSize(stream: CGSize(width: streamWidth.rounded(),
+                                                   height: streamHeight.rounded()))
+        return NSRect(x: saved.minX, y: saved.maxY - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    /// Whether the mirror's picture needs the window refitted to its shape: a
+    /// difference of more than `tolerance` (a fraction). A picture that arrives
+    /// under the person's hand waits for the drag's end (ISS-63).
+    enum PictureFit: Equatable {
+        case none
+        case refitNow
+        case refitAtDragEnd
+
+        static func decide(video: CGSize, picture: CGSize, isDragging: Bool,
+                           tolerance: CGFloat = 0.01) -> PictureFit {
+            guard video.width > 0, video.height > 0,
+                  picture.width > 0, picture.height > 0 else { return .none }
+            let videoRatio = video.width / video.height
+            let pictureRatio = picture.width / picture.height
+            guard abs(videoRatio - pictureRatio) > tolerance * max(videoRatio, pictureRatio) else {
+                return .none
+            }
+            return isDragging ? .refitAtDragEnd : .refitNow
+        }
+    }
+
+    /// The frame the window takes when it refits to the picture's shape: the
+    /// top-left and the height stay, the width follows (ISS-63).
+    static func refitFrame(current: NSRect, picture: CGSize, style: WindowStyle) -> NSRect {
+        guard picture.width > 0, picture.height > 0, current.width > 0, current.height > 0 else {
+            return current
+        }
+        let stream = style.streamSize(window: current.size)
+        let height = max(stream.height, 1)
+        let width = (height * picture.width / picture.height).rounded()
+        let size = style.windowSize(stream: CGSize(width: width, height: height))
+        return NSRect(x: current.minX, y: current.maxY - size.height,
+                      width: size.width, height: size.height)
     }
 }
 

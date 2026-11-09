@@ -832,6 +832,15 @@ last_video_size() {
         | grep -o '"w":[0-9]*,"h":[0-9]*' | tail -1
 }
 
+# video_config_have W H — a VIDEO_CONFIG of stream 1 at exactly W x H. The
+# event carries `codec` between `config` and `w` (HEVC), so a raw contiguous
+# text match cannot be used.
+video_config_have() {
+    grep -F '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null \
+        | grep -F '"stream":1' | grep -F '"config":true' \
+        | grep -qF "\"w\":$1,\"h\":$2"
+}
+
 # await_app <seconds> <command...> — a positive step's end: the app has done what
 # the step needs once the command succeeds, so it is stopped then instead of
 # running out its --quit-after (which stays the step's upper bound).
@@ -1602,7 +1611,7 @@ check_resize() {
     w=$((1600 / scale)); h=$((1200 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     # The window is wxh pt and the video is all of it.
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
+    wait_until 30 video_config_have 1600 1200 \
         && ok "[WIN-5] C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "[WIN-5] C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "[WIN-6] C6 window.resize sent" || bad "[WIN-6] C6 no window.resize"
@@ -1619,7 +1628,7 @@ check_resize() {
         skip "C6 the tall shape" "no 2x mode on this screen has 952 pt of visible height, so a ${w}x${h} pt window would be clamped"
     else
         open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1800'; then
+        if wait_until 30 video_config_have 1200 1800; then
             ok "[WIN-5] C6 tall shape resized to 1200x1800 (${w}x${h} pt at ${scale}x, the encoder's 2 px alignment)"
         else
             bad "[WIN-5] C6 no tall config (last video $(last_video_size))"
@@ -1630,7 +1639,7 @@ check_resize() {
 
     w=$((3200 / scale)); h=$((1000 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
+    wait_until 30 video_config_have 2560 800 \
         && ok "[WIN-5] C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "[WIN-5] C6 no capped config"
     # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
     # capped 2560 px across the window's w pt.
@@ -1673,7 +1682,7 @@ check_resize() {
     else
         bad "C6 live resize: no window ${fw} pt wide to capture"
     fi
-    wait_until 30 events_have "\"ev\":\"video\",\"stream\":1,\"config\":true,\"w\":${ew},\"h\":${eh}" \
+    wait_until 30 video_config_have "$ew" "$eh" \
         || bad "C6 live resize: no answer at ${ew}x${eh} (last video $(last_video_size))"
     local tries=12
     while [ "$tries" -gt 0 ]; do
@@ -4812,6 +4821,53 @@ for line in open(sys.argv[1]):
 PY
 }
 
+# The latest VIDEO_CONFIG's picture size for the mirror (WxH), or nothing.
+last_video_shape() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+w = h = None
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "video" and e.get("stream") == 1 and e.get("config"):
+        w, h = e["w"], e["h"]
+if w and h:
+    print("%dx%d" % (w, h))
+PY
+}
+
+# frame_video_ratio W H [BAR] — the video area (window minus the style's bar)
+# as width/height. ISS-63: the mirror's area must match the picture's shape.
+frame_video_ratio() {
+    python3 -c 'import sys; w, h, bar = map(float, sys.argv[1:]); print("%.6f" % (w / max(h - bar, 1)))' \
+        "$1" "$2" "${3:-28}"
+}
+
+# The window's video area (frame minus the style's bar) as width/height, from
+# the chrome state.
+window_video_ratio() {
+    local state frame style bar w h
+    state="$(chrome_state)"
+    frame="$(printf '%s' "$state" | grep -oE 'frame=[0-9]+x[0-9]+' | head -1 | cut -d= -f2)"
+    style="$(printf '%s' "$state" | grep -oE 'style=[a-z]+' | head -1 | cut -d= -f2)"
+    [ -n "$frame" ] || return 1
+    w="${frame%x*}"
+    h="${frame#*x}"
+    bar=28
+    [ "$style" = "immersive" ] && bar=0
+    frame_video_ratio "$w" "$h" "$bar"
+}
+
+# aspect_ok RATIO W H — true when RATIO is W/H within 1%.
+aspect_ok() {
+    python3 -c 'import sys
+r, w, h = map(float, sys.argv[1:])
+want = w / h
+sys.exit(0 if abs(r - want) <= 0.01 * want else 1)' "$1" "$2" "$3"
+}
+
 # check_mirror — the phone window shows display 0 at the screen's aspect; when
 # the phone turns to landscape the stream and the window turn with it.
 # mirror_control CMD... — one command to the mirror check's own control host
@@ -4838,6 +4894,9 @@ check_mirror() {
     # can see both ends.
     clean
     rm -f "$WORK/chrome.txt"
+    # ISS-63: a remembered frame from another phone, style or screen (432×870
+    # for this 1080×2340 phone) must not open the mirror wider than its picture.
+    defaults write "$DEFAULTS_SUITE" streamFrames -dict phone -string '{{120, 30}, {432, 870}}'
     FAKE_ARGS="--first-frame-delay 25" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
@@ -4845,6 +4904,18 @@ check_mirror() {
         ok "[MIRROR-2] opening cover: loading=1 right after the window opened"
     else
         bad "[MIRROR-2] opening cover: no loading cover (state: $(chrome_state))"
+    fi
+    local opening_id opening_ratio opening_w opening_h
+    if opening_id="$(await_window '$5 > $4 * 1.5')"; then
+        read -r opening_w opening_h <<<"$(windows | awk -v i="$opening_id" '$1 == i {print $4, $5}')"
+        opening_ratio="$(frame_video_ratio "$opening_w" "$opening_h")"
+        if aspect_ok "$opening_ratio" 1080 2340; then
+            ok "[MIRROR-24] a wrong-shaped saved frame opens in the phone's shape (${opening_w}x${opening_h}, video area ${opening_ratio})"
+        else
+            bad "[MIRROR-24] the mirror opened wrong-shaped from the saved frame (${opening_w}x${opening_h}, video area ${opening_ratio})"
+        fi
+    else
+        bad "[MIRROR-24] no phone window to measure after the saved-frame open"
     fi
     if wait_until 25 chrome_has "loading=failed"; then
         ok "[MIRROR-2] opening cover: after 20 s without a frame it says it could not open"
@@ -4856,6 +4927,10 @@ check_mirror() {
 
     clean
     rm -f "$WORK/chrome.txt"
+    # ISS-63 again, now with a picture: the first VIDEO_CONFIG's shape must
+    # agree with the window's video area, even though the saved frame was not
+    # the phone's shape.
+    defaults write "$DEFAULTS_SUITE" streamFrames -dict phone -string '{{120, 30}, {432, 870}}'
     # The first frame 3 s in: long enough for the cover to be seen, short
     # enough for the aspect and rotation steps below.
     # --frame-events: one `frames` event a second per stream, so the panel-off
@@ -4886,6 +4961,14 @@ check_mirror() {
         ok "[MIRROR-2] opening cover: the first frame took the cover away"
     else
         bad "[MIRROR-2] opening cover: the cover stayed after the first frame (state: $(chrome_state))"
+    fi
+    local picture_shape picture_ratio
+    if picture_shape="$(last_video_shape)" && [ -n "$picture_shape" ] \
+        && picture_ratio="$(window_video_ratio)" \
+        && aspect_ok "$picture_ratio" "${picture_shape%x*}" "${picture_shape#*x}"; then
+        ok "[MIRROR-24] the first picture's shape matches the window's video area (${picture_shape}, area ${picture_ratio})"
+    else
+        bad "[MIRROR-24] the window's video area does not match the picture ($(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+'), picture ${picture_shape:-none})"
     fi
     # repro wake-on-open: opening the window sends one phone.wake.
     if wait_until 15 events_have '"t":"phone.wake"'; then
@@ -4990,10 +5073,13 @@ PY
     else
         say "MIRROR the unified log has no screen-off line on this Mac (empty log store); the chrome state is the evidence"
     fi
-    local configs_before
-    configs_before="$(count_events '"ev":"video"')"
+    local frames_before_wake
+    frames_before_wake="$(last_frame_event)"
     # The Wake Screen route (the button is unit-tested; a scripted click needs
     # real input): one more phone.wake, the fake sends screen on, frames resume.
+    # A resumed encoder with the same picture needs no new VIDEO_CONFIG (a sync
+    # frame carries no new parameter sets), so the frames themselves are the
+    # evidence, not a second identical config.
     printf 'wake-phone\n' > "$WORK/control/wake.cmd"
     if wait_until 10 wake_done_ok; then
         ok "[MIRROR-7] Wake Screen ran"
@@ -5012,10 +5098,10 @@ PY
     else
         bad "[MIRROR-7] the cover stayed up after the wake ($(chrome_state))"
     fi
-    if wait_until 10 more_video_configs "$configs_before"; then
-        ok "[MIRROR-7] frames resumed after the wake (new VIDEO_CONFIG)"
+    if wait_until 10 more_frame_events "$frames_before_wake"; then
+        ok "[MIRROR-7] frames resumed after the wake (frame events to $(last_frame_event))"
     else
-        bad "[MIRROR-7] frames did not resume after the wake"
+        bad "[MIRROR-7] frames did not resume after the wake (frame events $(last_frame_event))"
     fi
     # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Phone ▸ the item's
     # own action, the phone hears phone.panel off, the mirror keeps sending
@@ -5566,8 +5652,6 @@ FRAMES
 }
 
 more_frame_events() { [ "$(last_frame_event)" -gt "$1" ]; }
-
-more_video_configs() { [ "$(count_events '"ev":"video"')" -gt "$1" ]; }
 
 # landscape_config — stream 1 has had a VIDEO_CONFIG wider than tall.
 landscape_config() {

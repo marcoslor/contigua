@@ -100,6 +100,14 @@ abstract class SessionFixture {
     private fun frameOf(encoded: ByteArray): Frame =
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5), encoded.copyOfRange(9, encoded.size))
 
+    /** One binary frame (KEY, TOUCH, ...) on the reliable path, as a real Mac sends it. */
+    protected fun sendFrame(type: Int, stream: Int, payload: ByteArray) {
+        val encoded = Frames.encode(type, stream, payload)
+        val out = client.getOutputStream()
+        out.write(PathCodec.encodeReliable(outSeq++, frameOf(encoded)))
+        out.flush()
+    }
+
     /** Best-effort: a peer that answered and closed may reset before the ACK. */
     private fun sendAck(ack: Long) = runCatching {
         val out = client.getOutputStream()

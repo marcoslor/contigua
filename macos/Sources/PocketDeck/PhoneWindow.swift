@@ -53,7 +53,10 @@ final class PhoneWindowController: StreamWindowController {
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.followRotation() }
+            MainActor.assumeIsolated {
+                self?.followRotation()
+                self?.refitToPicture()
+            }
         }
         // The black-frame fallback for phones that do not report `state.secure`
         // yet: a look at the displayed frame five times a second.
@@ -88,6 +91,10 @@ final class PhoneWindowController: StreamWindowController {
 
     private var rotationObserver: NSObjectProtocol?
     private var blackTimer: Timer?
+    /// The edge a person is dragging (ISS-64), read once at the live resize's
+    /// start and cleared at its end. `none` for a resize AppKit or a tiler did
+    /// without a mouse: those keep the v104 larger-area rule.
+    private(set) var dragEdge = PhoneWindowEdge.none
 
     /// The Mac's memory of the panel edge for this phone (docs/specs/controls.md):
     /// the value the phone received last, so a reconnect or a reopened mirror
@@ -132,6 +139,42 @@ final class PhoneWindowController: StreamWindowController {
             : CGSize(width: minWidth * turned.width / turned.height, height: minWidth))
         window.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height),
                         display: true, animate: false)
+    }
+
+    /// The first picture of a stream, or any picture whose shape no longer
+    /// matches the window's video area: refit the window to the picture, keeping
+    /// its top-left and height (ISS-63). A picture that arrives under the
+    /// person's hand waits for `windowDidEndLiveResize`.
+    func refitToPicture() {
+        guard let window else { return }
+        let video = style.streamSize(window: window.frame.size)
+        let picture = videoView.videoSize
+        switch PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: isLiveResizing) {
+        case .none:
+            return
+        case .refitAtDragEnd:
+            return
+        case .refitNow:
+            window.setFrame(PhoneChrome.refitFrame(current: window.frame, picture: picture, style: style),
+                            display: true, animate: false)
+        }
+    }
+
+    /// The visible frame of the screen the remembered frame sat on: the mirror
+    /// restores onto that screen, not always the main one (CONV-MAC-12).
+    private func visibleFrame(containing frame: NSRect) -> NSRect {
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        return screens.first { $0.intersects(frame) } ?? screens.first
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    /// A remembered frame is fitted to the phone's shape before the window
+    /// opens: `clampedToScreen` sizes width and height apart, so it can leave a
+    /// mirror too wide (ISS-63).
+    override func openingFrame(_ frame: NSRect) -> NSRect {
+        PhoneChrome.restoredFrame(saved: frame, phone: phoneScreen, style: style,
+                                  visible: visibleFrame(containing: frame),
+                                  minimum: window?.minSize ?? .zero)
     }
 
     /// The display name, or the remembered phone name while unknown.
@@ -262,17 +305,37 @@ final class PhoneWindowController: StreamWindowController {
     }
 
     override func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        // The phone's aspect first, then the screen: a person's drag, an
-        // Accessibility resize or a tiler can only make it as large as the
-        // screen allows (CONV-MAC-12).
+        // The dragged edge leads the phone's aspect rule (ISS-64), then the
+        // screen: a person's drag, an Accessibility resize or a tiler can only
+        // make it as large as the screen allows (CONV-MAC-12).
         WindowFrameLimit.aspectFitted(
-            PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style), for: sender)
+            PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style, edge: dragEdge),
+            for: sender)
+    }
+
+    override func windowWillStartLiveResize(_ notification: Notification) {
+        // Read the edge before the frame moves: a mouse drag names the side
+        // under the pointer, a resize without a mouse event names none.
+        dragEdge = currentDragEdge()
+        super.windowWillStartLiveResize(notification)
     }
 
     override func windowDidEndLiveResize(_ notification: Notification) {
+        dragEdge = .none
         super.windowDidEndLiveResize(notification)
-        // A rotation the phone reported during the drag applies now.
+        // A rotation the phone reported during the drag applies now, and a
+        // picture that arrived under the hand refits now.
         followRotation()
+        refitToPicture()
+    }
+
+    /// The edge under the pointer at this live resize's start, or `none` when
+    /// the resize did not come from the mouse (Accessibility, a tiler, zoom).
+    private func currentDragEdge() -> PhoneWindowEdge {
+        guard let window, let event = NSApp.currentEvent,
+              event.type == .leftMouseDown || event.type == .leftMouseDragged else { return .none }
+        let point = window.convertPoint(toScreen: window.mouseLocationOutsideOfEventStream)
+        return PhoneWindowEdge.at(point: point, in: window.frame)
     }
 
     /// The green button (and a double-click on the bar) zooms to the phone's
