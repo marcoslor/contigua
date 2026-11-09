@@ -349,6 +349,7 @@ class DeckService(private val appContext: Context?) :
         )
         transition.actions.forEach { action ->
             when (action) {
+                is AppLink.Action.NOTIFY_FORGOTTEN -> server?.notifyForgotten(action.macClientIds)
                 AppLink.Action.DROP_SESSIONS -> server?.dropSessions()
                 AppLink.Action.FORGET_CACHE -> server?.forgetCachedIdentity()
             }

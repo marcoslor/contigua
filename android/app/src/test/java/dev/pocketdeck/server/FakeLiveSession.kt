@@ -19,7 +19,7 @@ internal class FakeLiveSession(
     /** What happened on this session, in order (for the PAIR-30 notice-before-close rule). */
     val events = mutableListOf<String>()
 
-    val forgotten = CountDownLatch(1)
+    val forgottenNotice = CountDownLatch(1)
     val forgottenCount: Int get() = events.count { it == "forgotten" }
     val closeStarted = CountDownLatch(1)
 
@@ -48,7 +48,7 @@ internal class FakeLiveSession(
 
     override fun forgotten() {
         events.add("forgotten")
-        forgotten.countDown()
+        forgottenNotice.countDown()
     }
 
     override fun close() {
