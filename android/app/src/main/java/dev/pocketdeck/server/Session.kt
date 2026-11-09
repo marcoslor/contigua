@@ -1175,7 +1175,11 @@ class Session(
                                     sendStats.getOrPut(stream) { SendStats() }.onWritten(delay)
                                 }
                             }
-                            goodput.note(stream, size, monoUs())
+                            val writtenUs = monoUs()
+                            // PATH-43: only bytes that waited for the link measure it.
+                            goodput.note(stream, size, writtenUs,
+                                         limited = enqueued > 0 &&
+                                             writtenUs - enqueued >= GoodputMeter.BACKLOG_WAIT_US)
                         }
                     }
                     else -> null
