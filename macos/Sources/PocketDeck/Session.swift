@@ -305,6 +305,8 @@ final class Session {
     private var decoder = FrameDecoder()
     /// window.content for each stream, waiting for the VIDEO_CONFIG it precedes (read on the reader).
     private var pendingPictures: [UInt32: PictureRect] = [:]
+    /// R4: one incomplete chunked access unit per stream.
+    private var videoChunks = VideoChunkAssembler()
     /// The dialed host:port of the current/most recent attempt (§2): welcome
     /// turns it into the cached address the planner falls back on (C10).
     private var dialedAddress: CachedAddress?
@@ -739,6 +741,9 @@ final class Session {
             "t": "hello", "v": PathVersion.current, "path": id,
             "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId,
             "codecs": Self.helloCodecs(),
+            // R4: this Mac reassembles VIDEO_CHUNK fragments, so a phone may
+            // split a large access unit and let audio pass between the pieces.
+            "videoChunks": true,
         ]
         if let join { hello["join"] = join }
         if pairingAttempt, join == nil { hello["pair"] = true }
@@ -1428,6 +1433,15 @@ final class Session {
                 Log.session.error("bad VIDEO_FRAME payload")
                 return
             }
+            LatencyLog.shared.noteVideoFrame(stream: frame.stream)
+            onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
+        case .videoChunk:
+            guard let chunk = try? VideoChunkData(payload: frame.payload) else {
+                Log.session.error("bad VIDEO_CHUNK payload, stream \(frame.stream, privacy: .public)")
+                videoChunks.forget(stream: frame.stream)
+                return
+            }
+            guard let data = videoChunks.add(stream: frame.stream, chunk: chunk) else { return }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
             onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
         case .shareData:

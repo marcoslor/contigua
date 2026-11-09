@@ -235,6 +235,10 @@ class Server(
                 rawSocket.sendBufferSize
             }.getOrDefault(0)
             log("send buffer $sendBuffer bytes")
+            // R4: keep the kernel's unsent queue at one 16 KiB chunk, so the
+            // app's audio-before-video order reaches the wire.
+            val notSentLowat = TcpNotSentLowat.apply(rawSocket)
+            log(if (notSentLowat == 0) "notsent lowat on" else "notsent lowat failed errno=$notSentLowat")
             val peerMac = peerMacHex(socket)
             val pinned = isPinned(peerMac)
             // The hello decides a join (PATH-3): TLS is the only authentication,
