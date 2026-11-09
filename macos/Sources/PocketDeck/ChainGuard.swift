@@ -3,9 +3,9 @@
 // refers to pictures the decoder no longer has. The states and the transition
 // are pure; the view performs the returned actions.
 //
-// RED (item 2): today's feed records the break and still hands every sample
-// over, which is the corruption the brief names. The transitions the tests
-// expect are the fix's; this body exists so the failing run names the rule.
+// `not_ready` and the pacer's catch-up are not breaks: AVFoundation accepts an
+// enqueue while the layer is not ready (it queues it), and the catch-up hands
+// every waiting sample over in order, so neither loses a reference.
 
 import Foundation
 
@@ -23,7 +23,10 @@ struct ChainGuard {
     }
 
     enum State: Equatable {
+        /// Every sample may be fed; the decoder has its references.
         case flowing
+        /// A break: only a keyframe may reach the decoder. `retried` says the
+        /// one follow-up request has gone out.
         case awaitingKey(Reason, since: TimeInterval, retried: Bool)
     }
 
@@ -44,7 +47,7 @@ struct ChainGuard {
         case logRestored(afterMs: Int)
     }
 
-    /// One retry, half a second after the first request.
+    /// One follow-up request, half a second after the first.
     static let retryDelay: TimeInterval = 0.5
 
     private(set) var state: State = .flowing
@@ -57,12 +60,25 @@ struct ChainGuard {
     mutating func handle(_ event: Event) -> [Action] {
         switch event {
         case .breakChain(let reason, let now):
+            // A second break restarts the clock: the restore is timed from the
+            // last flush the picture actually saw.
             state = .awaitingKey(reason, since: now, retried: false)
-            return [.logBroken(reason)]
-        case .sample:
-            return [.feed]
-        case .retryDue, .reset:
-            return []
+            return [.logBroken(reason), .requestKeyframe, .scheduleRetry]
+        case .retryDue:
+            guard case .awaitingKey(let reason, let since, let retried) = state,
+                  !retried else { return [] }
+            state = .awaitingKey(reason, since: since, retried: true)
+            return [.requestKeyframe]
+        case .sample(let isKeyframe, let now):
+            guard case .awaitingKey(_, let since, _) = state else { return [.feed] }
+            guard isKeyframe else { return [.drop] }
+            state = .flowing
+            let ms = max(0, (now - since) * 1000)
+            return [.feed, .logRestored(afterMs: Int(ms.rounded())), .cancelRetry]
+        case .reset:
+            guard isAwaitingKey else { return [] }
+            state = .flowing
+            return [.cancelRetry]
         }
     }
 }
