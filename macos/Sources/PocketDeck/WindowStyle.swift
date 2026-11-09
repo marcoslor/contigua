@@ -239,12 +239,15 @@ enum PhoneChrome {
     /// A phone window keeps its phone's aspect ratio in the stream, not in the
     /// frame (the bar is not part of the picture). Sizes are window frames.
     ///
-    /// The proposed size is projected onto the aspect line: of the two
-    /// candidates, the one that reaches further past the proposal on the other
-    /// axis wins. Nothing here looks at the last snapped frame. Measuring the
-    /// drag against it made the leading axis flip mid-drag: a proposal that was
-    /// mostly down after one that was mostly across produced a smaller window
-    /// than the step before, and the window fought the person's hand.
+    /// A dragged edge leads: a top or bottom drag sets the height and the width
+    /// follows, a side drag sets the width and the height follows. A corner, or
+    /// a resize with no mouse edge (Accessibility, a tiler, the zoom button),
+    /// projects the proposal onto the aspect line and takes the candidate that
+    /// reaches further past the proposal on the other axis. Nothing here looks
+    /// at the last snapped frame: measuring the drag against it made the
+    /// leading axis flip mid-drag, so a mostly-down move after a mostly-across
+    /// one produced a smaller window than the step before and the window
+    /// fought the person's hand.
     static func frame(proposed: CGSize, phone: CGSize, style: WindowStyle) -> CGSize {
         frame(proposed: proposed, phone: phone, style: style, edge: .none)
     }
@@ -256,8 +259,20 @@ enum PhoneChrome {
         let stream = style.streamSize(window: proposed)
         let widthLed = CGSize(width: stream.width, height: (stream.width * ratio).rounded())
         let heightLed = CGSize(width: (stream.height / ratio).rounded(), height: stream.height)
-        let chosen = widthLed.width * widthLed.height >= heightLed.width * heightLed.height
-            ? widthLed : heightLed
+        let chosen: CGSize
+        switch edge {
+        case .top, .bottom:
+            // The dragged edge is a horizontal one: the height leads and the
+            // width follows, so a single-edge drag can shrink the window.
+            chosen = heightLed
+        case .left, .right:
+            chosen = widthLed
+        case .none, .topLeft, .topRight, .bottomLeft, .bottomRight:
+            // A corner moves both axes; an unattributed resize keeps the v104
+            // larger-area rule.
+            chosen = widthLed.width * widthLed.height >= heightLed.width * heightLed.height
+                ? widthLed : heightLed
+        }
         return style.windowSize(stream: chosen)
     }
 }
