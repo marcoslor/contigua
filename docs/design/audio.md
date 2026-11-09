@@ -57,8 +57,16 @@ Phone (shell service, `dev.pocketdeck:…`):
 
 Mac (`PocketDeck`):
 
-- New `AudioEngine`: `AVAudioEngine` + `AVAudioPlayerNode` with a jitter
-  buffer (target 60ms, max 120ms). Opus → PCM decode then schedule.
+- New `AudioEngine`: `AVAudioEngine` + `AVAudioPlayerNode` with an adaptive
+  jitter buffer. The target is the last 10 s p99 arrival lateness + 20 ms
+  margin + one 20 ms frame, clamped 60–160 ms (8 AAC packets ≈ 171 ms, under the 185 ms
+  A/V limit, ITU-R BT.1359); it starts at the 160 ms ceiling and follows the
+  measured link. A dry
+  queue is one underrun episode, concealed from the last real PCM with a
+  decaying crossfade (at most 160 ms); a backlog above the target is drained
+  by time-compressing with a crossfade, never by cutting audio; underrun,
+  late, concealed and dropped are counted and logged every 5 s. Opus/AAC →
+  PCM decode then schedule.
   Opus decode via system `AudioToolbox` (`kAudioFormatOpus` where available);
   if the running SDK lacks a system Opus decoder, fall back to requesting AAC
   from the phone (see negotiation). No new third-party deps (system only).
@@ -103,7 +111,10 @@ match UIDs, not windows).
 
 ## Protocol changes (docs/PROTOCOL.md v1 + audio)
 
-- New types: `0x04 AUDIO_CONFIG`, `0x05 AUDIO_FRAME` (next free after video).
+- New types: `0x04 AUDIO_CONFIG`, `0x05 AUDIO_FRAME`, and `0x06 VIDEO_CHUNK`
+  (a large access unit as ≤16 KiB fragments so audio can pass between them;
+  the Mac reassembles one unit per stream). A phone sends chunks only to a Mac
+  whose hello carries `videoChunks:true`.
 - `AUDIO_CONFIG` phone→mac, stream 0: `u8 codec` (2 = Opus, 3 = AAC-LC)
   · `u32 sampleRate` · `u8 channels` · `u16 frameMs` · codec-specific setup
   (Opus: empty; AAC: ASC). Sent once after `audio.start`, and after any
@@ -114,6 +125,10 @@ match UIDs, not windows).
   `audio.state {on:bool, codec:int}` (phone→mac, optional, for UI dot).
 - Rules: audio frames never sent with no windows; none while all paused;
   same backpressure/drop semantics as video deltas; unknown types ignored.
+- Send order: JSON > keyframes/config > audio > video deltas. The writer
+  interleaves audio between a keyframe's `VIDEO_CHUNK` fragments and keeps at
+  most 16 KiB unsent in the socket (`TCP_NOTSENT_LOWAT`), so an audio packet
+  never waits behind more than one fragment (R4).
 
 ## Alternatives rejected
 
@@ -141,5 +156,8 @@ match UIDs, not windows).
   no audio until the first stops.
 - Speaker silence depends on routing actually muting speaker for routed usages
   on Samsung One UI (AOSP behavior; verify on S25 when available).
-- Jitter tuning: 60ms target keeps budget (<20 opus + <30 net + 60 jitter +
-  ~20 render ≈ 130ms) but lossy LAN may need adaptive growth; counters first.
+- Jitter tuning: the buffer is adaptive (10 s p99 + 40 ms, clamped 60–160 ms).
+  On the e2e rig the 100 ms off-channel pattern gives late_p95 ≈ 92 ms with
+  zero underruns and drops; one 500 ms stall is one concealed episode. The
+  185 ms A/V limit caps the target; a link whose p99 is worse than ~120 ms
+  cannot be both unbroken and in sync.

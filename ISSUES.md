@@ -193,7 +193,17 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - the 60 ms audio pre-buffer cannot ride that out.
     - The fix is probably an adaptive audio jitter buffer that conceals and time-stretches. Unbroken audio now ranks above the 150 ms budget, and audio may trail the picture by at most 185 ms (ITU-R BT.1359).
     - Separately, `mac_drop=1` falls in every window with a keyframe (handed to ISS-54/chain).
-  - **Next:** the `audiogap` worker. Measure first (Mac underruns, arrival lateness p95, the phone's enqueue-to-socket delay), reproduce with keyframes plus audio, run a test that must FAIL first, then fix. See `.agent/audiogap/brief.md`.
+  - **Measured (2026-11-09, `audiogap` worker):**
+    - The Mac's fixed player (60 ms target, 120 ms cap) on the e2e pattern (60 fps, 300 KB keyframes every 10 s, 30–80 KB deltas, 100 ms off-channel every 1 s): **60 underruns in 6 s**, state `starved`, p95 arrival lateness 2.5 s. It is suspect 2, not a guess.
+    - The phone's writer: a 300 KB keyframe went on the wire whole ahead of queued audio; the socket held up to 128 KB more (suspect 1). The audio lane only got a turn between frames, not inside one.
+    - Two harness facts found on the way: AAC-LC frames are 1024 samples (21.33 ms), so 50 frames/s is 6.7 % more audio than real time; and the fake phone's backlog-cleared hook rebuilt its encoder several times a second, each fresh ffmpeg emitting its `-re` startup as a burst. Both are rig artifacts, fixed in `tools/fakephone`.
+  - **Fix on `fix/audiogap`:**
+    - Mac: adaptive jitter buffer, target = 10 s p99 arrival lateness + 40 ms, 60–160 ms (8 AAC packets ≈ 171 ms, under the 185 ms limit); `prebuffering → playing → starved`; concealment from the last PCM (≤ 160 ms); crossfade time-compression to drain a backlog; `underrun/late/concealed/dropped` and a 5 s `audio] stats` line.
+    - Phone: audio lane ahead of video deltas; `0x06 VIDEO_CHUNK` splits a large access unit into ≤ 16 KiB fragments with audio between them (only when the Mac's hello has `videoChunks`); `TCP_NOTSENT_LOWAT` 16 KiB.
+    - e2e `audiogap`: the 100 ms pattern gives zero underruns and drops, `late_p95` ≈ 92 ms, target 160 ms; one 500 ms silence gives one underrun and one concealed episode; the chunked picture decodes.
+  - **Tests:** K2 `AudioJitterTests` + `AudioEngineTests` 12/12; K1 `AudioGapTest` (send order, chunk shape, the hello gate) plus the full suite. K1's 17 failures on the loaded host all passed isolated; rerun pending.
+  - **Reviewer:** `.agent/audiogap/real-phone.md` has the two-minute window, the Mac log predicate and the phone's `audio] wait` line.
+  - **Status:** fixed on the branch, not merged. Next is the reviewer's two-minute real-phone run.
 
 - **ISS-58 Tell the person when their Mac's AirDrop/Handoff radio (AWDL) is making the stream stutter** (2026-11-08; the person: "that should be in our app's UX… without making the user mad").
   - **Proof first:** compare stalls with AWDL active vs idle on the person's Mac. Either the person's test (AirDrop "No One", Handoff and Universal Control unused for a few minutes) or a probe during a stream. If it isn't AWDL, the message would be wrong.
