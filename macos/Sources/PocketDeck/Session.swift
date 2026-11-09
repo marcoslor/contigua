@@ -649,8 +649,19 @@ final class Session {
         } catch {
             let message = String(describing: error)
             // A mid-handshake verify failure IS the stale-pin refusal (§7).
-            let reason = (message.contains("certificate_verify_failed") || message.contains("certificate verify"))
-                ? "pin-mismatch" : "tls"
+            // A server alert means the PHONE refused this Mac's certificate
+            // after our own pin passed (PAIR-31): its own token, counted twice.
+            let lowered = message.lowercased()
+            let reason: String
+            if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify") {
+                reason = "pin-mismatch"
+            } else if lowered.contains("certificate unknown") || lowered.contains("certificate_unknown") {
+                reason = "certificate_unknown"
+            } else if lowered.contains("bad certificate") || lowered.contains("bad_certificate") {
+                reason = "bad_certificate"
+            } else {
+                reason = "tls"
+            }
             queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
         }
     }
@@ -919,6 +930,10 @@ final class Session {
             if !everReady && phoneErrorCode == nil { reason = "closed-early" }
         } else if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
             reason = "pin-mismatch"
+        } else if lowered.contains("certificate unknown") || lowered.contains("certificate_unknown") {
+            reason = "certificate_unknown"
+        } else if lowered.contains("bad certificate") || lowered.contains("bad_certificate") {
+            reason = "bad_certificate"
         }
         attemptEvent(id, .failed(reason: reason))
         closeAttempt(id)

@@ -87,9 +87,12 @@ final class PhoneBook {
     private(set) var records: [String: PhoneSession] = [:]
     private(set) var currentId: String?
 
-    /// Launch: the remembered active phone is the only claim.
+    /// Launch: the remembered active phone is the only claim. A record that
+    /// already says trust was lost starts in that state, not with a dial
+    /// (PAIR-32).
     @discardableResult
-    func start(active: PhoneRef?, at now: Date) -> PhoneBookEventResult {
+    func start(active: PhoneRef?, at now: Date,
+               trustLost: TrustLossKind? = nil) -> PhoneBookEventResult {
         guard let active else {
             currentId = nil
             return PhoneBookEventResult()
@@ -97,6 +100,9 @@ final class PhoneBook {
         currentId = active.id
         let record = ensureRecord(for: active.id, phone: active)
         record.claims.insert(.current)
+        if let trustLost {
+            return handle(.restoreTrustLost(active, trustLost), from: active.id, at: now)
+        }
         return handle(.launch(active), from: active.id, at: now)
     }
 

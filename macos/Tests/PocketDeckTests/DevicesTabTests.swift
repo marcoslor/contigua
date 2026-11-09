@@ -52,12 +52,13 @@ final class DevicesTabTests: XCTestCase {
 
     func testTheTrustLostPageHeaderOffersPairAgainAsItsOneAction() {
         // SET-DEV-26: the trust-lost page's primary action is Pair Again…;
-        // in use has no action, and any other phone gets Use This Phone.
+        // In Use marks the current phone but never hides the way out.
         XCTAssertEqual(PhonePageHeaderAction.of(presence: .pairAgain, inUse: false), .pairAgain)
         XCTAssertEqual(PhonePageHeaderAction.pairAgain.title, "Pair Again…")
         XCTAssertEqual(PhonePageHeaderAction.of(presence: .offline(nil), inUse: false), .useThisPhone)
         XCTAssertEqual(PhonePageHeaderAction.useThisPhone.title, "Use This Phone")
-        XCTAssertEqual(PhonePageHeaderAction.of(presence: .pairAgain, inUse: true), .inUse)
+        XCTAssertEqual(PhonePageHeaderAction.of(presence: .pairAgain, inUse: true), .pairAgain)
+        XCTAssertEqual(PhonePageHeaderAction.of(presence: .connected, inUse: true), .inUse)
         XCTAssertNil(PhonePageHeaderAction.inUse.title)
     }
 

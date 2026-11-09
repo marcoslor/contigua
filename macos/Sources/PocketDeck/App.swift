@@ -505,7 +505,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
-                controller.banner?.text
+                // First line the sentence; a second line, when present, is the
+                // one step that fixes it (PAIR-35's switch line).
+                guard let banner = controller.banner else { return nil }
+                if let detail = banner.detail { return banner.text + "\n" + detail }
+                return banner.text
             }
             probe.start()
             debugBanner = probe

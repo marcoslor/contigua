@@ -161,6 +161,16 @@ struct NearbyView: View {
     @ViewBuilder
     private var content: some View {
         let phones = controller.nearby
+        if let target = controller.addPhoneTarget {
+            // PAIR-33: Pair Again for a phone that is not in range opens this
+            // sheet already pointed at it; its row is marked when it appears.
+            Text("Pairing again with \(controller.displayName(for: target)).")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
         if phones.isEmpty {
             VStack(spacing: 8) {
                 if controller.browseDenied {
@@ -210,6 +220,7 @@ struct NearbyRow: View {
     let phone: NearbyPhone
 
     private var pairable: Bool { !phone.remembered || phone.needsPairing }
+    private var targeted: Bool { controller.addPhoneTarget?.id == phone.id }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -231,7 +242,9 @@ struct NearbyRow: View {
         .padding(12)
         .frame(minHeight: 52)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .strokeBorder(targeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator),
+                          lineWidth: targeted ? 2 : 1))
         .contentShape(.rect(cornerRadius: 14))
         .onTapGesture { if pairable { controller.pair(phone) } }
         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -289,7 +302,12 @@ struct BannerView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-            Text(banner.text).font(.callout)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(banner.text).font(.callout)
+                if let detail = banner.detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 8)
             if let title = banner.actionTitle {
                 if banner.action == .pairAgain {

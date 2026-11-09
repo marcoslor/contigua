@@ -24,6 +24,8 @@ enum ConnectionFailure {
             return "This phone's identity changed. Pair again."
         case "no-pin":
             return "Pairing was removed on the phone, pair again"
+        case "forgotten":
+            return "This phone no longer trusts this Mac. Pair again."
         case "pair_denied": return "Pairing was denied"
         case "version": return "This phone runs an incompatible version of PocketDeck"
         case "protocol": return "The phone rejected a message from this Mac"
@@ -41,7 +43,7 @@ enum ConnectionFailure {
     static func retriesAutomatically(_ reason: String) -> Bool {
         switch reason {
         case "pair_denied", "pair_timeout", "pair_exporter", "version", identityMismatch,
-             "pin-mismatch", "bad_pin", "not_paired": return false
+             "pin-mismatch", "bad_pin", "not_paired", "forgotten": return false
         default: return true
         }
     }

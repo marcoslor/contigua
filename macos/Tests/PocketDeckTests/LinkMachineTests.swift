@@ -95,6 +95,9 @@ final class LinkMachineTests: XCTestCase {
 
     func testOfflineOnlyAfterFifteenSecondsWithoutASession() {
         var machine = online()
+        // The last welcome address is known: the 15 s sentence is the one that
+        // fits, not PAIR-35's "Can't find" (no address and no advertisement).
+        machine.handle(.reachability(advertised: false, hasAddress: true, changed: false), at: at(2))
         machine.handle(.attemptFailed(reason: "closed-by-peer"), at: at(10))
         machine.handle(.tick, at: at(24.9))
         XCTAssertEqual(machine.link, .reconnecting(phone))
@@ -107,6 +110,7 @@ final class LinkMachineTests: XCTestCase {
     func testOfflineAtLaunchUsesTheSameFifteenSeconds() {
         var machine = LinkMachine()
         machine.handle(.launch(phone), at: t0)
+        machine.handle(.reachability(advertised: false, hasAddress: true, changed: false), at: t0)
         machine.handle(.tick, at: at(14))
         XCTAssertEqual(machine.link, .connecting(phone))
         machine.handle(.tick, at: at(15))
@@ -116,6 +120,7 @@ final class LinkMachineTests: XCTestCase {
     func testOfflineRetriesKeepTheFifteenSecondCadenceAndRecoverSilently() {
         var machine = LinkMachine()
         machine.handle(.launch(phone), at: t0)
+        machine.handle(.reachability(advertised: false, hasAddress: true, changed: false), at: t0)
         machine.handle(.tick, at: at(15))
         let actions = machine.handle(.attemptFailed(reason: "timeout"), at: at(16))
         XCTAssertEqual(actions, [.attempt(after: 1)])
@@ -151,7 +156,7 @@ final class LinkMachineTests: XCTestCase {
 
     func testRejectedKeyNeedsPairingAndStopsRetrying() {
         var machine = online()
-        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5)), [.stopAttempts])
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "bad_pin"), at: at(5)), [.stopAttempts])
         XCTAssertEqual(machine.link, .needsPairing(phone))
         XCTAssertEqual(machine.link.banner, Banner(text: "Pixel 9 no longer trusts this Mac.", action: .pairAgain))
         XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
@@ -222,16 +227,17 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(machine.link, .offline(phone, .unreachable))
     }
 
-    func testConnectionsOffNamesThePhoneAndKeepsTheBackoff() {
+    func testConnectionsOffRetriesEveryThirtySeconds() {
         var machine = online()
         XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(5)),
-                       [.attempt(after: 1)])
+                       [.attempt(after: 30)])
         XCTAssertEqual(machine.link, .offline(phone, .connectionsOff))
         XCTAssertEqual(machine.link.banner?.text, "Connections are turned off on Pixel 9.")
         XCTAssertNil(machine.link.banner?.action)
-        // The next retry waits longer: the same schedule as every other drop.
-        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(6)),
-                       [.attempt(after: 2)])
+        // PAIR-35: the switch may come back, but a failing attempt never spins
+        // faster than once per 30 s.
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(35)),
+                       [.attempt(after: 30)])
     }
 
     func testPairingsOffNamesThePhoneAndKeepsTheBackoff() {
@@ -522,6 +528,24 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(inferred.trustLossKind, .inferred)
         XCTAssertEqual(inferred.handle(.reachability(advertised: true, hasAddress: true, changed: true),
                                        at: at(1)), [.attempt(after: 0)])
+    }
+
+    func testInferredWithNoAdvertisementKeepsTheLastAddressOnTheBackoff() {
+        // PAIR-31/35: with the record off the air and a last welcome address,
+        // the quiet state still dials that address on the normal backoff.
+        var machine = LinkMachine()
+        _ = machine.handle(.restoreTrustLost(phone, .inferred), at: t0)
+        XCTAssertEqual(machine.handle(.reachability(advertised: false, hasAddress: true, changed: false),
+                                      at: at(1)), [])
+        XCTAssertEqual(machine.handle(.tick, at: at(2)), [.attempt(after: 0)])
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(3)),
+                       [.attempt(after: 1)])
+        XCTAssertEqual(machine.trustLossKind, .inferred)
+        // With neither the record nor an address there is nothing to dial.
+        var nowhere = LinkMachine()
+        _ = nowhere.handle(.restoreTrustLost(phone, .inferred), at: t0)
+        _ = nowhere.handle(.reachability(advertised: false, hasAddress: false, changed: false), at: at(1))
+        XCTAssertEqual(nowhere.handle(.tick, at: at(70)), [])
     }
 
     func testWelcomeOrForgetEndsTrustLost() {
