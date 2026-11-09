@@ -44,7 +44,15 @@ class Transport(object):
         if self.closed:
             raise OSError("path closed")
         with self.lock:
-            self.sock.sendall(data)
+            try:
+                self.sock.sendall(data)
+            except OSError:
+                raise
+            except Exception as exc:
+                # pyOpenSSL reports a reset path with its own Error, not
+                # OSError. The hub's contract is one exception type: a write
+                # that cannot happen is a failed path, never a dead writer.
+                raise OSError("path send failed (%s)" % type(exc).__name__)
 
     def close(self):
         self.closed = True
