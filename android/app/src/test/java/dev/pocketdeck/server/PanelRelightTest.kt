@@ -7,8 +7,8 @@ import org.junit.Test
 
 /**
  * The relight's one transition (SM-P-3): every stage/event pair, including the
- * events a stage must ignore. A press is only an event while the panel-off's
- * re-applies run; ISS-24's hand back is its own behaviour step.
+ * events a stage must ignore. A press only matters while the panel-off's
+ * re-applies run; there it hands the panel back once (ISS-24).
  */
 class PanelRelightTest {
 
@@ -71,11 +71,37 @@ class PanelRelightTest {
     }
 
     @Test
-    fun `a press during the panel-off is recorded`() {
+    fun `a press during the panel-off hands the panel back once`() {
         val result = step(state(RelightStage.PANEL_OFF), RelightEvent.Press(nowMs = 2_500L))
         assertEquals(RelightStage.PANEL_OFF, result.state.stage)
         assertEquals(2_500L, result.state.pressAtMs)
-        assertTrue("the hand back is the named behaviour step (ISS-24)", result.actions.isEmpty())
+        assertEquals(
+            "the press is the person's: hand back and stop the re-applies (ISS-24)",
+            listOf(RelightAction.HandBack, RelightAction.StopReapplies),
+            result.actions,
+        )
+    }
+
+    @Test
+    fun `a second press during the same panel-off hands back nothing`() {
+        val first = step(state(RelightStage.PANEL_OFF), RelightEvent.Press(nowMs = 2_500L))
+        assertIgnored(first.state, RelightEvent.Press(nowMs = 2_600L))
+    }
+
+    @Test
+    fun `a press 2 s into the panel-off hands back while its re-applies run`() {
+        // The runtime sequence in the field: the lock press opened the relight,
+        // its wake returned, the panel-off's re-applies are running, and the
+        // person presses power 2 s in. One hand back, and the loop must stop.
+        val relight = PanelRelight()
+        relight.start(1_000L)
+        relight.wakeReturned(1_003L)
+        relight.panelOffStarted(1_003L)
+        assertEquals(
+            listOf(RelightAction.HandBack, RelightAction.StopReapplies),
+            relight.press(3_000L),
+        )
+        assertEquals("one press, one hand back", emptyList<RelightAction>(), relight.press(3_050L))
     }
 
     @Test
@@ -112,6 +138,35 @@ class PanelRelightTest {
     @Test
     fun `done with no relight changes nothing`() {
         assertIgnored(state(null), RelightEvent.Done(nowMs = 4_000L))
+    }
+
+    @Test
+    fun `the sampler hands back on a falling edge inside the panel-off`() {
+        val relight = PanelRelight()
+        relight.start(1_000L)
+        relight.wakeReturned(1_003L)
+        relight.panelOffStarted(1_003L)
+        assertEquals("the wake has not landed yet", emptyList<RelightAction>(), relight.sample(1_100L, interactive = false))
+        assertEquals("the wake landing is not a press", emptyList<RelightAction>(), relight.sample(1_200L, interactive = true))
+        assertEquals("a steady on is not a press", emptyList<RelightAction>(), relight.sample(2_900L, interactive = true))
+        assertEquals(
+            listOf(RelightAction.HandBack, RelightAction.StopReapplies),
+            relight.sample(3_000L, interactive = false),
+        )
+        assertEquals("one press, one hand back", emptyList<RelightAction>(), relight.sample(3_020L, interactive = false))
+        assertEquals("a later wake is not another press", emptyList<RelightAction>(), relight.sample(3_100L, interactive = true))
+    }
+
+    @Test
+    fun `the sampler samples a press before the panel-off not as a press`() {
+        val relight = PanelRelight()
+        relight.start(1_000L)
+        relight.sample(1_200L, interactive = true)
+        assertEquals(
+            "the wake's own off edge belongs to the start",
+            emptyList<RelightAction>(),
+            relight.sample(1_250L, interactive = false),
+        )
     }
 
     @Test

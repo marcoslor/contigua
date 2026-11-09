@@ -106,9 +106,17 @@ internal fun relightStep(state: RelightState, event: RelightEvent): RelightStep 
     }
 
     is RelightEvent.Press -> when (state.stage) {
-        // A press during the panel-off is recorded; the press's hand back is
-        // the named behaviour step (ISS-24).
-        RelightStage.PANEL_OFF -> RelightStep(state.copy(pressAtMs = event.nowMs))
+        // The panel-off's re-applies are ours; an off edge while they run is
+        // the person's press, and it ends the relight at once. The first press
+        // is the one hand back; a repeat is dropped.
+        RelightStage.PANEL_OFF -> if (state.pressAtMs != null) {
+            RelightStep(state)
+        } else {
+            RelightStep(
+                state.copy(pressAtMs = event.nowMs),
+                listOf(RelightAction.HandBack, RelightAction.StopReapplies),
+            )
+        }
 
         RelightStage.WAKE_ISSUED, RelightStage.WAKE_RETURNED, null -> RelightStep(state)
     }
@@ -140,11 +148,19 @@ internal class PanelRelight(private val log: (String) -> Unit = {}) {
     private val lock = Object()
     private var state = RelightState()
 
+    /**
+     * The last `PowerManager.isInteractive` sample, for [sample]. Our own
+     * panel-off writes never touch it (they go through SurfaceFlinger), so a
+     * true -> false sample while the panel-off runs is the person's press.
+     */
+    private var wasInteractive = false
+
     val stage: RelightStage? get() = synchronized(lock) { state.stage }
     val sinceMs: Long get() = synchronized(lock) { state.sinceMs }
     val pressAtMs: Long? get() = synchronized(lock) { state.pressAtMs }
 
     fun start(nowMs: Long) {
+        synchronized(lock) { wasInteractive = false }
         dispatch(RelightEvent.Start(nowMs))
     }
 
@@ -164,6 +180,21 @@ internal class PanelRelight(private val log: (String) -> Unit = {}) {
 
     /** One press seen by the caller; returns the actions to perform. */
     fun press(nowMs: Long): List<RelightAction> = dispatch(RelightEvent.Press(nowMs))
+
+    /**
+     * One sample of the platform's interactive state while the panel-off's
+     * re-applies run. Returns the hand-back actions on the person's press and
+     * nothing otherwise.
+     */
+    fun sample(nowMs: Long, interactive: Boolean): List<RelightAction> {
+        val pressed = synchronized(lock) {
+            val edge = wasInteractive && !interactive
+            wasInteractive = interactive
+            edge
+        }
+        if (!pressed) return emptyList()
+        return press(nowMs)
+    }
 
     private fun dispatch(event: RelightEvent): List<RelightAction> {
         synchronized(lock) {
