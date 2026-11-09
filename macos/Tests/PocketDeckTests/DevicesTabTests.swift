@@ -50,6 +50,17 @@ final class DevicesTabTests: XCTestCase {
         XCTAssertFalse(row.canUseThisPhone, "nothing pretends a keyless phone can be reached")
     }
 
+    func testTheTrustLostPageHeaderOffersPairAgainAsItsOneAction() {
+        // SET-DEV-26: the trust-lost page's primary action is Pair Again…;
+        // in use has no action, and any other phone gets Use This Phone.
+        XCTAssertEqual(PhonePageHeaderAction.of(presence: .pairAgain, inUse: false), .pairAgain)
+        XCTAssertEqual(PhonePageHeaderAction.pairAgain.title, "Pair Again…")
+        XCTAssertEqual(PhonePageHeaderAction.of(presence: .offline(nil), inUse: false), .useThisPhone)
+        XCTAssertEqual(PhonePageHeaderAction.useThisPhone.title, "Use This Phone")
+        XCTAssertEqual(PhonePageHeaderAction.of(presence: .pairAgain, inUse: true), .inUse)
+        XCTAssertNil(PhonePageHeaderAction.inUse.title)
+    }
+
     func testALivePhoneShowsNoLastSeen() {
         let row = DevicesTabModel.phoneRow(
             id: "p1", name: "Galaxy S25+", model: "SM-S936B",

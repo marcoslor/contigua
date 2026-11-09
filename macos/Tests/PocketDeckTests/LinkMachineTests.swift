@@ -414,6 +414,179 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual((1...8).map { ReconnectPolicy.delay(afterFailures: $0) }, [1, 2, 4, 8, 15, 15, 15, 15])
     }
 
+
+    // MARK: Trust lost (PAIR-30..33)
+
+    func testForgottenIsTrustLostAtOnce() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "forgotten"), at: at(5)), [.stopAttempts])
+        XCTAssertEqual(machine.link, .needsPairing(phone))
+        XCTAssertEqual(machine.trustLossKind, .told)
+        XCTAssertEqual(machine.link.banner, Banner(text: "Pixel 9 no longer trusts this Mac.",
+                                                   action: .pairAgain))
+        XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
+    }
+
+    func testACertificateUnknownTwiceIsTrustLost() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "certificate_unknown"), at: at(5)),
+                       [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .reconnecting(phone))
+        XCTAssertNil(machine.trustLossKind)
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "certificate_unknown"), at: at(6)),
+                       [.stopAttempts])
+        XCTAssertEqual(machine.link, .needsPairing(phone))
+        XCTAssertEqual(machine.trustLossKind, .told)
+    }
+
+    func testABadCertificateCountsLikeACertificateUnknown() {
+        var machine = online()
+        _ = machine.handle(.attemptFailed(reason: "bad_certificate"), at: at(5))
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "bad_certificate"), at: at(6)), [.stopAttempts])
+        XCTAssertEqual(machine.trustLossKind, .told)
+    }
+
+    func testOneCertificateUnknownRetries() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "certificate_unknown"), at: at(5)),
+                       [.attempt(after: 1)])
+        XCTAssertEqual(machine.handle(.welcome(phone), at: at(6)).count, 0)
+        XCTAssertEqual(machine.link, .online(phone))
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "certificate_unknown"), at: at(7)),
+                       [.attempt(after: 1)], "a session in between starts the count over")
+    }
+
+    func testAPinMismatchForAForeignPhoneKeepsRetrying() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "foreign-pin"), at: at(5)), [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .reconnecting(phone))
+        XCTAssertNil(machine.trustLossKind)
+    }
+
+    func testInferredTrustLostRechecksQuietlyAndClearsOnPinPass() {
+        var machine = online()
+        _ = machine.handle(.reachability(advertised: true, hasAddress: true, changed: false), at: at(4))
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5)), [])
+        XCTAssertEqual(machine.link, .needsPairing(phone))
+        XCTAssertEqual(machine.trustLossKind, .inferred)
+        // The next re-check is the 60 s tick, not the 1/2/4 s reconnect loop.
+        for second in 6...63 {
+            XCTAssertEqual(machine.handle(.tick, at: at(Double(second))), [], "tick \(second)")
+        }
+        XCTAssertEqual(machine.handle(.tick, at: at(65)), [.attempt(after: 0)])
+        // A passing pin ends it at once.
+        _ = machine.handle(.welcome(phone), at: at(66))
+        XCTAssertEqual(machine.link, .online(phone))
+        XCTAssertNil(machine.trustLossKind)
+    }
+
+    func testAnAdvertisementChangeRechecksAnInferredPhoneAtOnce() {
+        var machine = online()
+        _ = machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5))
+        XCTAssertEqual(machine.trustLossKind, .inferred)
+        XCTAssertEqual(machine.handle(.reachability(advertised: true, hasAddress: true, changed: true),
+                                      at: at(6)), [.attempt(after: 0)])
+        XCTAssertEqual(machine.handle(.reachability(advertised: true, hasAddress: true, changed: false),
+                                      at: at(7)), [])
+    }
+
+    func testASpoofedAdvertisementCannotStopTheRealPhone() {
+        var machine = online()
+        _ = machine.handle(.reachability(advertised: true, hasAddress: true, changed: true), at: at(4))
+        _ = machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5))
+        XCTAssertEqual(machine.trustLossKind, .inferred)
+        // The real phone answers with the pinned certificate on a later re-check.
+        _ = machine.handle(.tick, at: at(65))
+        _ = machine.handle(.welcome(phone), at: at(66))
+        XCTAssertEqual(machine.link, .online(phone))
+        XCTAssertNil(machine.trustLossKind)
+    }
+
+    func testTheTrustLostBannerOffersPairAgainOnly() {
+        let banner = Link.needsPairing(phone).banner
+        XCTAssertEqual(banner?.text, "Pixel 9 no longer trusts this Mac.")
+        XCTAssertEqual(banner?.action, .pairAgain)
+        XCTAssertEqual(banner?.actionTitle, "Pair again")
+        XCTAssertNil(Link.needsPairing(phone).windowDesiredDown, "no close leaves the windows down")
+    }
+
+    func testLaunchRestoresTrustLostWithoutAnAttempt() {
+        var told = LinkMachine()
+        XCTAssertEqual(told.handle(.restoreTrustLost(phone, .told), at: t0), [.stopAttempts])
+        XCTAssertEqual(told.link, .needsPairing(phone))
+        XCTAssertEqual(told.trustLossKind, .told)
+
+        var inferred = LinkMachine()
+        XCTAssertEqual(inferred.handle(.restoreTrustLost(phone, .inferred), at: t0), [])
+        XCTAssertEqual(inferred.link, .needsPairing(phone))
+        XCTAssertEqual(inferred.trustLossKind, .inferred)
+        XCTAssertEqual(inferred.handle(.reachability(advertised: true, hasAddress: true, changed: true),
+                                       at: at(1)), [.attempt(after: 0)])
+    }
+
+    func testWelcomeOrForgetEndsTrustLost() {
+        var paid = LinkMachine()
+        _ = paid.handle(.restoreTrustLost(phone, .told), at: t0)
+        _ = paid.handle(.welcome(phone), at: at(1))
+        XCTAssertNil(paid.trustLossKind)
+        XCTAssertEqual(paid.link, .online(phone))
+
+        var forgotten = LinkMachine()
+        _ = forgotten.handle(.restoreTrustLost(phone, .inferred), at: t0)
+        XCTAssertEqual(forgotten.handle(.forget(deviceId: "aaa"), at: at(1)), [.stopAttempts])
+        XCTAssertNil(forgotten.trustLossKind)
+        XCTAssertEqual(forgotten.link, .idle)
+    }
+
+    // MARK: Connections off and not found (PAIR-35)
+
+    func testConnectionsOffShowsTheHintAndSlowsToThirtySeconds() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(5)),
+                       [.attempt(after: 30)])
+        XCTAssertEqual(machine.link, .offline(phone, .connectionsOff))
+        XCTAssertEqual(machine.link.banner,
+                       Banner(text: "Connections are turned off on Pixel 9.", action: nil,
+                              detail: "Turn on Allow connections in PocketDeck on your phone."))
+        // A new advertisement retries now, then the next failure waits again.
+        XCTAssertEqual(machine.handle(.reachability(advertised: true, hasAddress: true, changed: true),
+                                      at: at(6)), [.attempt(after: 0)])
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(7)),
+                       [.attempt(after: 30)])
+    }
+
+    func testWelcomeClearsTheConnectionsOffBanner() {
+        var machine = online()
+        _ = machine.handle(.attemptFailed(reason: "connections_off"), at: at(5))
+        XCTAssertNotNil(machine.link.banner)
+        _ = machine.handle(.welcome(phone), at: at(6))
+        XCTAssertNil(machine.link.banner)
+    }
+
+    func testNotFoundAfterThirtySecondsWithNoAdvertisementOrAddress() {
+        var machine = LinkMachine()
+        _ = machine.handle(.launch(phone), at: t0)
+        _ = machine.handle(.reachability(advertised: false, hasAddress: false, changed: false), at: t0)
+        for second in 1...29 { XCTAssertEqual(machine.handle(.tick, at: at(Double(second))), []) }
+        XCTAssertEqual(machine.link, .connecting(phone))
+        _ = machine.handle(.tick, at: at(30))
+        XCTAssertEqual(machine.link, .offline(phone, .notFound))
+        XCTAssertEqual(machine.link.banner,
+                       Banner(text: "Can't find Pixel 9 on this network.",
+                              action: nil,
+                              detail: "Check that the phone is on the same Wi-Fi and PocketDeck is running."))
+        XCTAssertEqual(machine.handle(.reachability(advertised: true, hasAddress: false, changed: true),
+                                      at: at(31)), [.attempt(after: 0)])
+    }
+
+    func testANotFoundPhoneWithALastAddressOnlyEverSaysUnreachable() {
+        var machine = LinkMachine()
+        _ = machine.handle(.launch(phone), at: t0)
+        _ = machine.handle(.reachability(advertised: false, hasAddress: true, changed: false), at: t0)
+        _ = machine.handle(.tick, at: at(30))
+        XCTAssertEqual(machine.link, .offline(phone, .unreachable))
+    }
+
     func testBannersNeverMentionReasonCodes() {
         let links: [Link] = [.offline(phone, .unreachable), .offline(phone, .busy), .offline(phone, .versionMismatch),
                              .offline(phone, .localNetworkDenied), .needsPairing(phone)]
