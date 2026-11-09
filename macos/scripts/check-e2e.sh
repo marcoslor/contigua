@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|chain|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|pairflow|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|chain|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -206,9 +206,10 @@ sweep_test_registrations() {
 # line and its receive diagnostics on stderr): grep both when a line may be
 # either. Starts fakephone with FAKE_PY — it needs a TLS 1.3 python.
 start_fake() {
-    local state="${1:-$WORK/state.json}"
+    local state="${1:-$WORK/state.json}" name_args=()
+    [ -n "${FAKE_NAME:-}" ] && name_args=(--name "$FAKE_NAME")
     # shellcheck disable=SC2086
-    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" ${FAKE_ARGS:-} \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" "${name_args[@]}" ${FAKE_ARGS:-} \
         --events "$WORK/events.jsonl" \
         --state "$state" > "$WORK/fake.log" 2> "$WORK/fake.err" &
     FAKE_PID=$!
@@ -1201,15 +1202,19 @@ sessions_opened() {
 # waiting out its 15 s handshake timeout and looping on the backoff.
 check_forgot() {
     clean
-    local banner="$WORK/banner.txt" before after
+    local banner="$WORK/banner.txt" before after ctl="$WORK-control" dump="$WORK/settings.txt"
+    rm -rf "$ctl"; mkdir -p "$ctl"
 
     # 0. Forget while connected (PAIR-30/32/33): the phone tells the live Mac it
     # was forgotten; the banner is up at once, it stays, no attempt follows, and
-    # a relaunch starts in the stored state without a dial.
+    # a relaunch starts in the stored state without a dial. R1 asserts the
+    # rendered Deck (its AX tree, not only controller.banner) and the Settings
+    # row at the same moment.
     : > "$WORK/fake-ctl"
     FAKE_ARGS="--ctl-file $WORK/fake-ctl" start_fake || return 1
-    rm -f "$banner"
-    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 40
+    rm -f "$banner" "$dump"
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" \
+        --debug-banner "$banner" --quit-after 60
     # The app has to stay up to receive the forget (`await_app` would stop it
     # the moment it paired); the launch's --quit-after is the phase's bound.
     wait_until 20 events_have '"state":"paired"' \
@@ -1217,15 +1222,40 @@ check_forgot() {
     wait_until 10 events_have '"t":"apps.list"' \
         && ok "[PAIR-30] F0 the Mac is connected before the phone forgets it" \
         || { bad "[PAIR-30] F0 could not connect"; stop_app; stop_fakephone; return 1; }
+    # Settings open and live before the forget, so its row is read at the same
+    # moment as the Deck's (R1: one value, not two clocks). The pairing sheet
+    # closes 0.6 s after welcome; a sheet up would swallow the Settings scene.
+    sleep 2
+    control settings-open >/dev/null 2>&1
+    wait_until 25 windows_at_least 2 || { bad "[R1] F0 the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    sleep 2
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] && control settings-select "phone:$device" >/dev/null 2>&1
+    connected_shown() { control settings-report "$dump" >/dev/null 2>&1; sleep 0.4; grep -q 'header.state=Connected' "$dump" 2>/dev/null; }
+    wait_until 20 connected_shown \
+        || { control settings-dump "$WORK/geom.txt" >/dev/null 2>&1; say "DEBUG geom: $(cat "$WORK/geom.txt" 2>/dev/null | tr '\n' ' ')"; say "DEBUG dump: $(cat "$dump" 2>/dev/null | tr '\n' '|')"; say "DEBUG windows: $(windows | tr '\n' ' ')"; bad "[R1] F0 Settings never showed the connected state"; stop_app; stop_fakephone; return 1; }
     before="$(sessions_opened)"
     printf 'forget\n' > "$WORK/fake-ctl"
-    wait_until 2 grep -qF "no longer trusts this Mac." "$banner" \
-        && ok "[PAIR-30] F0 the forgotten connected Mac shows the banner within 2 s" \
-        || bad "[PAIR-30] F0 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
-    sleep 4
+    wait_until 2 eval 'ax_tree | grep -qF "no longer trusts this Mac."' \
+        && ok "[R1] F0 the rendered Deck shows the trust-lost banner within 2 s" \
+        || bad "[R1] F0 no rendered banner within 2 s ($(ax_tree | tr '\n' '|' | cut -c1-220))"
+    wait_until 2 eval 'ax_tree | grep -qE "(title|desc)=\[Settings\].*enabled=\[0\]"' \
+        && ok "[R1] F0 the Deck's app tiles are disabled within 2 s" \
+        || bad "[R1] F0 the app tiles stayed enabled ($(ax_tree | grep -c 'enabled=\[0\]' | tr -d ' ') disabled)"
+    pair_again_shown() { control settings-report "$dump" >/dev/null 2>&1; sleep 0.4; grep -q 'header.state=Pair again' "$dump" 2>/dev/null; }
+    wait_until 2 pair_again_shown \
+        && ok "[R1] F0 Settings reads Pair again at the same moment" \
+        || bad "[R1] F0 Settings header.state=$(sed -n 's/^header.state=//p' "$dump" 2>/dev/null | head -1)"
+    wait_until 2 grep -q 'header.action=Pair Again…' "$dump" \
+        && ok "[PAIR-34] F0 Settings offers Pair Again…" \
+        || bad "[PAIR-34] F0 Settings action=$(sed -n 's/^header.action=//p' "$dump" 2>/dev/null | head -1)"
     grep -qF "no longer trusts this Mac." "$banner" \
-        && ok "[PAIR-33] F0 the banner is still there after 4 s (no dismiss)" \
-        || bad "[PAIR-33] F0 the banner went away"
+        && ok "[PAIR-30] F0 the model banner is up too" \
+        || bad "[PAIR-30] F0 no model banner: '$(cat "$banner" 2>/dev/null)'"
+    sleep 4
+    ax_tree | grep -qF "no longer trusts this Mac." \
+        && ok "[PAIR-33] F0 the rendered banner is still there after 4 s (no dismiss)" \
+        || bad "[PAIR-33] F0 the rendered banner went away"
     sleep 16
     after="$(sessions_opened)"
     [ "$after" -le "$before" ] \
@@ -1279,6 +1309,150 @@ check_forgot() {
     [ "$after" -le "$((before + 1))" ] \
         && ok "[PAIR-23] F3 no further connect attempts for 20 s ($before -> $after)" \
         || bad "[PAIR-23] F3 the Mac kept connecting ($before -> $after)"
+    stop_app
+    stop_fakephone
+}
+
+# check_pairflow — ISS-8/R1–R3: the person's sequence after a forget on the
+# phone, replayed on the fake. The Deck (rendered AX), Settings and the sheet
+# read one link; a deny, a Cancel and Allow connections off/on never dead-end;
+# the phone's post-deny cooldown is told as `pair_cooldown`, counted down, and
+# ends in a new prompt when the person asks for one.
+check_pairflow() {
+    clean
+    local ctl="$WORK-control" banner="$WORK/banner.txt" dump="$WORK/settings.txt"
+    local fake_ctl="$WORK/fake-ctl" before
+    pair_commits() { grep -c '"t":"pair.commit"' "$WORK/events.jsonl" 2>/dev/null || true; }
+    rm -rf "$ctl"; mkdir -p "$ctl"; : > "$fake_ctl"
+    # Fixture name only (the phone's own name is what the Mac shows).
+    FAKE_NAME="Galaxy S25+" FAKE_ARGS="--ctl-file $fake_ctl" start_fake || return 1
+    rm -f "$banner" "$dump"
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" \
+        --debug-banner "$banner" --quit-after 240
+    wait_until 20 events_have '"state":"paired"' \
+        || { bad "[R3] PF0 could not pair"; stop_app; stop_fakephone; return 1; }
+    wait_until 10 events_have '"t":"apps.list"' \
+        || { bad "[R3] PF0 no app list"; stop_app; stop_fakephone; return 1; }
+
+    # R1: the phone forgets while connected; the rendered Deck and the open
+    # Settings page show the same state at the same moment. The pairing sheet
+    # closes 0.6 s after welcome; a sheet up would swallow the Settings scene.
+    sleep 2
+    control settings-open >/dev/null 2>&1
+    wait_until 25 windows_at_least 2 || { bad "[R1] PF0 the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    sleep 2
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] && control settings-select "phone:$device" >/dev/null 2>&1
+    connected_shown() { control settings-report "$dump" >/dev/null 2>&1; sleep 0.4; grep -q 'header.state=Connected' "$dump" 2>/dev/null; }
+    wait_until 20 connected_shown \
+        || { bad "[R1] PF0 Settings never showed Connected"; stop_app; stop_fakephone; return 1; }
+    printf 'forget\n' > "$fake_ctl"
+    wait_until 2 eval 'ax_tree | grep -qF "no longer trusts this Mac."' \
+        && ok "[R1] PF0 the rendered Deck shows the banner within 2 s" \
+        || bad "[R1] PF0 no rendered banner within 2 s"
+    wait_until 2 eval 'ax_tree | grep -qE "(title|desc)=\[Settings\].*enabled=\[0\]"' \
+        && ok "[R1] PF0 the rendered app tiles are disabled within 2 s" \
+        || bad "[R1] PF0 the rendered app tiles stayed enabled"
+    pair_again_shown() { control settings-report "$dump" >/dev/null 2>&1; sleep 0.4; grep -q 'header.state=Pair again' "$dump" 2>/dev/null; }
+    wait_until 2 pair_again_shown \
+        && ok "[R1] PF0 Settings reads Pair again at the same moment" \
+        || bad "[R1] PF0 Settings header.state=$(sed -n 's/^header.state=//p' "$dump" 2>/dev/null | head -1)"
+
+    # The fake restarts (the phone's app), armed to deny the next two prompts.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_NAME="Galaxy S25+" FAKE_ARGS="--deny 2 --ctl-file $fake_ctl" start_fake || return 1
+
+    # P1: Pair Again from the Deck's banner is the control a person presses.
+    before="$(pair_commits)"
+    "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 \
+        && ok "[R3] PF1 the Deck banner offers Pair again" \
+        || bad "[R3] PF1 no Pair again button in the Deck's AX tree"
+    wait_until 20 eval '[ "$(pair_commits)" -gt "$before" ]' \
+        && ok "[R3] PF1 Pair Again reaches the phone's prompt" \
+        || bad "[R3] PF1 Pair Again never reached the phone"
+    wait_until 5 eval 'ax_tree | grep -qF "Pairing was denied on the phone."' \
+        && ok "[R2] PF1 the phone's denial reaches the sheet" \
+        || bad "[R2] PF1 no denial sentence"
+    ax_tree | grep -qE 'value=\[[0-9]+ s\]' \
+        && ok "[R2] PF1 the denial shows the cooldown countdown" \
+        || bad "[R2] PF1 no countdown under the denial"
+    ax_tree | grep -qE 'title=\[Try again\].*enabled=\[0\]' \
+        && ok "[R2] PF1 Try again waits for the countdown" \
+        || bad "[R2] PF1 Try again was enabled inside the phone's window"
+    "$AXDUMPBIN" "$APP_PID" --press Cancel >/dev/null 2>&1 \
+        && ok "[R3] PF1 Cancel is the sheet's own button" \
+        || bad "[R3] PF1 no Cancel button"
+    wait_until 10 eval '! ax_tree | grep -qF "Pair with Galaxy S25+"' \
+        && ok "[R3] PF1 Cancel closes the sheet" \
+        || bad "[R3] PF1 the sheet stayed after Cancel"
+
+    # P1b: the same again: a second deny, then Cancel.
+    before="$(pair_commits)"
+    "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 || true
+    wait_until 20 eval '[ "$(pair_commits)" -gt "$before" ]' \
+        && ok "[R3] PF1 a second Pair Again reaches the phone" \
+        || bad "[R3] PF1 the second Pair Again dead-ended"
+    wait_until 5 eval 'ax_tree | grep -qF "Pairing was denied on the phone."' || true
+    "$AXDUMPBIN" "$APP_PID" --press Cancel >/dev/null 2>&1 || true
+    wait_until 10 eval '! ax_tree | grep -qF "Pair with Galaxy S25+"' || true
+
+    # P2: Allow connections off says why; back on, the phone's window is still
+    # running, so Pair Again meets `pair_cooldown` (not a TLS failure).
+    printf 'connections off\n' > "$fake_ctl"
+    sleep 0.5
+    "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 || true
+    wait_until 15 eval 'ax_tree | grep -qF "Connections are turned off on Galaxy S25+."' \
+        && ok "[PAIR-13] PF2 connections off is named in the sheet" \
+        || bad "[PAIR-13] PF2 the connections-off refusal was not shown"
+    "$AXDUMPBIN" "$APP_PID" --press Cancel >/dev/null 2>&1 || true
+    wait_until 10 eval '! ax_tree | grep -qF "Pair with Galaxy S25+"' || true
+    printf 'connections on\n' > "$fake_ctl"
+    sleep 0.5
+
+    "$AXDUMPBIN" "$APP_PID" --press "Pair again" >/dev/null 2>&1 || true
+    wait_until 15 eval 'ax_tree | grep -qF "Wait a moment, then try again."' \
+        && ok "[R2] PF3 inside the phone's window the sheet says to wait" \
+        || bad "[R2] PF3 no cooldown sentence"
+    ! ax_tree | grep -qF "Pairing was denied on the phone." \
+        && ok "[R2] PF3 the cooldown is not shown as a fresh denial" \
+        || bad "[R2] PF3 the cooldown repeated the denial sentence"
+    wait_until 3 eval '[ "$(mac_failed_line)" = "session failed: pair_cooldown" ]' \
+        && ok "[R2] PF3 the Mac read pair_cooldown, not tls" \
+        || bad "[R2] PF3 the Mac read '$(mac_failed_line)'"
+    # R3: the countdown ends, Try again becomes available, and the person's
+    # click gets a prompt (the third one is allowed by the fake).
+    wait_until 40 eval 'ax_tree | grep -qE "title=\[Try again\].*enabled=\[1\]"' \
+        && ok "[R2] PF3 Try again is offered when the countdown ends" \
+        || bad "[R2] PF3 Try again never came back"
+    before="$(pair_commits)"
+    "$AXDUMPBIN" "$APP_PID" --press "Try again" >/dev/null 2>&1 || true
+    wait_until 20 eval '[ "$(pair_commits)" -gt "$before" ]' \
+        && ok "[R3] PF3 Try again after the window reaches the phone's prompt" \
+        || bad "[R3] PF3 Try again after the window dead-ended"
+    wait_until 15 eval 'ax_tree | grep -qF "Paired."' \
+        && ok "[R3] PF3 the pairing completes after the window" \
+        || bad "[R3] PF3 the pairing did not complete"
+    wait_until 15 eval '! ax_tree | grep -qF "no longer trusts this Mac."' \
+        && ok "[R1] PF3 the trust-lost banner clears on the pairing" \
+        || bad "[R1] PF3 the trust-lost banner stayed after pairing"
+
+    # R4: the UI actions and the link transitions are greppable.
+    log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -qF "ui: pair-again source=deck" \
+        && ok "[R4] PF the Deck's Pair Again logs one ui line" \
+        || bad "[R4] PF no ui: pair-again source=deck line"
+    log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -qF "ui: pairing-sheet cancel" \
+        && ok "[R4] PF Cancel logs one ui line" \
+        || bad "[R4] PF no ui: pairing-sheet cancel line"
+    log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -qE 'link: pairing\(contacting\) --fail:pair_cooldown--> pairing\(coolingDown\)' \
+        && ok "[R4] PF the link machine logs the cooldown transition" \
+        || bad "[R4] PF no link: ... pair_cooldown ... line"
     stop_app
     stop_fakephone
 }

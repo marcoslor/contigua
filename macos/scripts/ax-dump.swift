@@ -38,8 +38,13 @@ func walk(_ element: AXUIElement, _ depth: Int) {
     // A label's words ride AXValue (a static text has no title); including it
     // lets a check read what the cover says, not only what a button is called.
     let value = text(element, kAXValueAttribute)
+    // A disabled control is the difference the Deck's offline state makes
+    // (PAIR-33/R1): read it, never infer it from opacity.
+    var enabledValue: CFTypeRef?
+    let enabled = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &enabledValue) == .success
+        ? enabledValue as? Bool : nil
     if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty || !value.isEmpty {
-        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]")
+        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]\(enabled == false ? " enabled=[0]" : "")")
     }
     var children: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,

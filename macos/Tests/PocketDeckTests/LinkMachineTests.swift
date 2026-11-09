@@ -308,7 +308,7 @@ final class LinkMachineTests: XCTestCase {
         machine.handle(.beginPairing(phone), at: t0)
         machine.handle(.codeShown(phone, code: "123456"), at: at(1))
         machine.handle(.attemptFailed(reason: "pair_cooldown"), at: at(2))
-        XCTAssertEqual(machine.link, .pairing(phone, .coolingDown))
+        XCTAssertEqual(machine.link, .pairing(phone, .coolingDown(until: at(32))))
         XCTAssertEqual(PairingCopy.coolingDown, "Wait a moment, then try again.")
         // PAIR-6: the 20 s hint appears exactly at the mark, not before.
         XCTAssertNil(PairingCopy.slowHint(after: 19.9))
@@ -320,7 +320,7 @@ final class LinkMachineTests: XCTestCase {
         var launch = LinkMachine()
         launch.handle(.launch(phone), at: t0)
         XCTAssertEqual(launch.handle(.attemptFailed(reason: "pair_cooldown"), at: at(1)), [.stopAttempts])
-        XCTAssertEqual(launch.link, .pairing(phone, .coolingDown))
+        XCTAssertEqual(launch.link, .pairing(phone, .coolingDown(until: at(31))))
     }
 
     func testDeniedTimedOutAndLostAreInlineStates() {
@@ -328,7 +328,7 @@ final class LinkMachineTests: XCTestCase {
         machine.handle(.beginPairing(phone), at: t0)
         machine.handle(.codeShown(phone, code: "123456"), at: at(1))
         machine.handle(.attemptFailed(reason: "pair_denied"), at: at(2))
-        XCTAssertEqual(machine.link, .pairing(phone, .denied))
+        XCTAssertEqual(machine.link, .pairing(phone, .denied(until: at(32))))
 
         var timedOut = LinkMachine()
         timedOut.handle(.beginPairing(phone), at: t0)
