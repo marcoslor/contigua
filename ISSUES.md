@@ -203,7 +203,19 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - Clicking it opens a popover with one sentence on what's happening, which of AirDrop, Handoff, Universal Control and AirPlay Receiver are on (read-only), an "Open AirDrop & Handoff Settings" button, and "Don't suggest this again".
     - The app never opens the popover itself and never changes those settings.
     - Settings › Connection keeps a "Network health" line with the same information and the switch.
-  - **Research question:** does any public mechanism (Game Mode, `NWParameters` service class) reduce AWDL's off-channel time for our connection?
+  - **Research (2026-11-08):**
+    - Game Mode only touches Bluetooth.
+    - Apple's DTS says Wi-Fi Aware, the API that could ask for AWDL's low-jitter mode, exists on iOS and iPadOS only.
+    - Game-streaming and screen-sharing tools (Moonlight, GeForce NOW, Tuple) report the same Wi-Fi-only stutter. Paid utilities exist only to hold `awdl0` down during play.
+    - Reports are mixed on macOS 26.3: for some people, `awdl0` down no longer helps.
+    - Matching the router's 5 GHz channel to AWDL's is a claimed fix (unverified).
+  - **The person's idea (2026-11-08): a "smart toggle" setting that pauses AWDL while a stream is open.**
+    - **Shape:** advanced tier, off by default.
+    - **Privilege:** a root helper installed once with an admin password, since `ifconfig awdl0 down` needs root and macOS brings AWDL back on wake and on demand.
+    - **Restore:** AWDL comes back when the last stream closes, when the app quits, and when the helper sees the app gone.
+    - **Cost:** AirDrop, Handoff, Universal Control, Sidecar and AirPlay-to-Mac are off during a stream.
+    - **Hint integration:** the hint's popover gains a "Pause it while I stream" button.
+    - **Order:** after the proof, and only with the person's OK on the helper (a security switch).
 
 ## 5. Features, in order
 
