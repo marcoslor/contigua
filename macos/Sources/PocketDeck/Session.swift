@@ -123,6 +123,8 @@ enum VideoEvent {
     case config(stream: UInt32, config: VideoConfig, picture: PictureRect)
     /// `path` is the path the frame arrived on, for the e2e frame log.
     case frame(stream: UInt32, frame: VideoFrameData, path: String)
+    /// R6: the VIDEO_CHUNK assembler threw an incomplete access unit away.
+    case chunkIncomplete(stream: UInt32)
 }
 
 enum SessionEvent {
@@ -1438,10 +1440,17 @@ final class Session {
         case .videoChunk:
             guard let chunk = try? VideoChunkData(payload: frame.payload) else {
                 Log.session.error("bad VIDEO_CHUNK payload, stream \(frame.stream, privacy: .public)")
-                videoChunks.forget(stream: frame.stream)
+                if videoChunks.forget(stream: frame.stream) {
+                    onVideoEvent?(.chunkIncomplete(stream: frame.stream))
+                }
                 return
             }
-            guard let data = videoChunks.add(stream: frame.stream, chunk: chunk) else { return }
+            let result = videoChunks.add(stream: frame.stream, chunk: chunk)
+            if result.discardedIncomplete {
+                // R6: the stub it discarded was a picture the decoder needed.
+                onVideoEvent?(.chunkIncomplete(stream: frame.stream))
+            }
+            guard let data = result.frame else { return }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
             onVideoEvent?(.frame(stream: frame.stream, frame: data, path: path ?? "-"))
         case .shareData:
@@ -1703,6 +1712,10 @@ final class Session {
             // (D-1's active test); a Mac close skips sendClose, so this is the
             // only place the id is forgotten.
             forgetStream(closed)
+            // R6: an incomplete chunked unit dies with its stream.
+            if videoChunks.forget(stream: closed) {
+                onVideoEvent?(.chunkIncomplete(stream: closed))
+            }
             emit(.windowClosed(stream: closed,
                                reason: message.string("reason") ?? ""))
         case "window.title":

@@ -40,10 +40,13 @@ struct VideoChunkData: Equatable {
     }
 }
 
-/// Reassembles one access unit per stream. A fragment for a different
-/// (ptsUs, flags) discards the incomplete unit, so a dropped fragment costs
-/// one frame and the next keyframe restarts cleanly. Memory is bounded by one
-/// 8 MiB unit per stream.
+/// Reassembles one access unit per stream. Each stream is either idle or
+/// holding one incomplete unit; a fragment that cannot belong to it (a
+/// different pts/flags/count, or a duplicate index) throws the stub away.
+/// Throwing a stub away is a break of the reference chain (WIN-62's
+/// `incomplete`), so [Result.discardedIncomplete] travels back to the caller
+/// instead of the unit vanishing silently. Memory is bounded by one 8 MiB unit
+/// per stream.
 struct VideoChunkAssembler {
     private struct Unit {
         var ptsUs: UInt64
@@ -53,35 +56,59 @@ struct VideoChunkAssembler {
         var bytes: Int
     }
 
+    /// What one fragment did.
+    struct Result: Equatable {
+        /// An incomplete unit was thrown away instead of being decoded.
+        var discardedIncomplete = false
+        /// The access unit this fragment completed, if any.
+        var frame: VideoFrameData?
+    }
+
     private var units: [UInt32: Unit] = [:]
 
-    /// Adds one fragment; returns the whole access unit when it is complete.
-    mutating func add(stream: UInt32, chunk: VideoChunkData) -> VideoFrameData? {
+    /// Adds one fragment and reports both a completed unit and any stub it
+    /// had to discard. A discarded stub and a completed unit can arrive
+    /// together (the fragment of a new single-fragment unit).
+    mutating func add(stream: UInt32, chunk: VideoChunkData) -> Result {
         let count = Int(chunk.count)
+        var discarded = false
         if var unit = units[stream],
            unit.ptsUs == chunk.ptsUs, unit.flags == chunk.flags, unit.count == count {
-            guard unit.parts[Int(chunk.index)] == nil else { return nil }
+            guard unit.parts[Int(chunk.index)] == nil else {
+                // A duplicate index is a malformed payload: the unit it
+                // belongs to can no longer be trusted.
+                units[stream] = nil
+                return Result(discardedIncomplete: true)
+            }
             unit.parts[Int(chunk.index)] = chunk.data
             unit.bytes += chunk.data.count
             units[stream] = unit
         } else {
+            discarded = units[stream] != nil
             units[stream] = Unit(ptsUs: chunk.ptsUs, flags: chunk.flags, count: count,
                                  parts: [Int(chunk.index): chunk.data],
                                  bytes: chunk.data.count)
         }
-        guard let unit = units[stream], unit.parts.count == unit.count else { return nil }
+        guard let unit = units[stream], unit.parts.count == unit.count else {
+            return Result(discardedIncomplete: discarded)
+        }
         var annexB: [UInt8] = []
         annexB.reserveCapacity(unit.bytes)
         for index in 0..<unit.count {
-            guard let part = unit.parts[index] else { return nil }
+            guard let part = unit.parts[index] else {
+                return Result(discardedIncomplete: discarded)
+            }
             annexB.append(contentsOf: part)
         }
         units[stream] = nil
-        return VideoFrameData(ptsUs: unit.ptsUs, flags: unit.flags, annexB: annexB)
+        return Result(discardedIncomplete: discarded,
+                      frame: VideoFrameData(ptsUs: unit.ptsUs, flags: unit.flags, annexB: annexB))
     }
 
-    mutating func forget(stream: UInt32) {
-        units[stream] = nil
+    /// The stream ended: reports whether an incomplete unit was thrown away.
+    @discardableResult
+    mutating func forget(stream: UInt32) -> Bool {
+        units.removeValue(forKey: stream) != nil
     }
 
     mutating func reset() {
