@@ -113,6 +113,7 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - (e) lossless still frames: the exact pixels the phone drew, colour included, with no 4:2:0 fringes.
   - After ISS-39.
   - **The person, 2026-11-04 (after 1:1):** scrolling feels smoother, but the video "sometimes drops frames, feeling janky", and moving content is more pixelated. They want strategies logged and tested, with a performance/quality preset later (not exposed yet), like game streaming.
+  - **The person, 2026-11-09 14:00:** "a fast moving 60fps video has visible artefacts". The numbers (stream 4, 2880×1684, YouTube 60 fps): the encoder ran 8–11 Mbps against the 8 Mbps target (about 0.03 bits per pixel per frame), the send queue's p95 reached 340–564 ms, 5 deltas were dropped, the target fell to 5.9 Mbps, QP p95 rose to 29–32 and the Mac showed 12–36 fps. Options (b) higher cap and (c) HEVC are still unshipped; (c) is the cheapest lever, since it adds no link load. Measure the link's real capacity first (AWDL active).
   - **Research and plan: [docs/research/video-feed.md](docs/research/video-feed.md).** Both symptoms come from one loop, seen 5 times in 78 s on the person's link:
     - the link stalls (Mac→phone pings: 7 % over 50 ms at idle; the Mac's radio sometimes goes quiet for 0.3–0.7 s, router included);
     - the queue passes 250 ms, every delta is dropped and a keyframe asked for (it overflowed again twice);
@@ -282,6 +283,8 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
     - The Mac persists, per pinned phone, the last address where a session reached `welcome`, and dials it while the phone isn't advertised. The authenticated `connections_off` refusal then shows PAIR-13's "Connections are turned off on <name>." plus "Turn on Allow connections in PocketDeck on your phone.".
     - If nothing answers for 30 s, it shows "Can't find <name> on this network." instead of an endless Connecting.
     - On `fix/unpair`.
+
+- **ISS-69 Input to picture feels slow** (the person, 2026-11-09 14:00: "some noticeable input-rerender ping delay"). pmaxx P0a/P2 (2026-11-06) measured a tap to the changed picture at 180–260 ms p50 (244–390 ms for taps), of which the video path (capture → Mac present) was about 24 ms p50; the rest is input delivery, the app's reaction and its first draw on the phone. No change was made. Next: a per-stage breakdown on the person's phone (Mac event → phone inject → app draw → encoder output → Mac present), then fix the largest stage.
 
 - **ISS-68 A playing video froze a window at ~0 fps: a VIDEO_CONFIG storm** (the person, 2026-11-09 13:20: "that made streaming very low fps", a YouTube window). **Fixed on main (WIN-63).**
   - **Seen:** the Mac logged ~35 `chain broken reason=config` a second, `rx_fps=0.0`, `kf` ≈ 30 and `kf_req` ≈ 180 per 5 s. The phone logged `key request: satisfied by idr` many times a second, keyframe pairs every ~300 ms, and the inner loop walked the key down to 0.3 Mbps on a goodput the keyframes had choked.
