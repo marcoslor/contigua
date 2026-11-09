@@ -231,7 +231,11 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
   - **Find:** what 75735 was: a dock shim, the `pocketdeck-mcp` helper, or the app relaunched by the Files extension.
   - **Fix:** only the app process may run the session and dial. Add a K2 or e2e check that a helper or shim launch never logs `attempt: dialing`.
 - **The Mac says nothing when the phone's "Allow connections" switch is off** (2026-11-09; belongs with ISS-8 point 3). With the switch off, the phone neither advertises `_pocketdeck._tcp` nor accepts the session, so the Mac sits silent with no attempt and no message.
-  - **Fix:** the phone keeps advertising with a TXT flag (`gate=off`) and refuses with its error code. The Mac then shows "Connections are off on <phone>" with a short how-to, not a silent "Connecting…". Hand it to the unpair worker.
+  - **Fix (revised 2026-11-09 at the spec gate, for privacy):**
+    - No TXT flag: a phone whose person turned connections off must not keep announcing itself.
+    - The Mac persists, per pinned phone, the last address where a session reached `welcome`, and dials it while the phone isn't advertised. The authenticated `connections_off` refusal then shows PAIR-13's "Connections are turned off on <name>." plus "Turn on Allow connections in PocketDeck on your phone.".
+    - If nothing answers for 30 s, it shows "Can't find <name> on this network." instead of an endless Connecting.
+    - On `fix/unpair`.
 
 ## 5. Features, in order
 
