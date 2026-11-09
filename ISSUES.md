@@ -9,7 +9,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## Order now (the person, 2026-11-08: stability, then performance)
 
 Stability:
-0. Blocky corruption on a good link (ISS-54): next free worker slot.
+0. Next free worker slot: the Phone Mirror's shape at open and its edge drag (ISS-63, ISS-64), and the share screen's visible landing on the phone (ISS-51), brief `.agent/mirrorfit/brief.md`. ISS-54 (corruption) is merged; its real-phone check is open.
 1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
 2. The phone's own screen never times out while a window is open (ISS-52), then the fade to black and the two-press wake (ISS-3, ISS-24): the virtual-device display move, requirements first.
 3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
