@@ -3,6 +3,7 @@
 // at the person's zoom, 60 pt a side at that zoom, and the rail's 44 pt — and
 // the screen's visible height, never wider than the screen.
 
+import AppKit
 import XCTest
 @testable import PocketDeck
 
@@ -22,7 +23,7 @@ final class DeckWideTests: XCTestCase {
             XCTAssertEqual(frame.midX, screen.midX, accuracy: 0.001, "centred on the screen")
             XCTAssertEqual(frame.minY, screen.minY, "standing on the visible frame")
             // The grid at that width still fits beside the rail.
-            let metrics = DeckGridSize(zoom: zoom, width: frame.width)
+            let metrics = DeckGridSize(zoom: zoom)
             let block = DeckWide.block(width: frame.width, metrics: metrics)
             XCTAssertGreaterThanOrEqual(block.originX, 0, "zoom \(zoom)")
             XCTAssertLessThanOrEqual(block.railLeading + DeckWide.railWidth, frame.width + 0.001,
@@ -46,5 +47,31 @@ final class DeckWideTests: XCTestCase {
                                             preferredWidth: DeckWide.preferredWidth(zoom: 1))
         XCTAssertEqual(normal.width, 1044, "1280 pt holds the intrinsic width at 100 %")
         XCTAssertLessThanOrEqual(normal.width, smallest.width)
+    }
+
+    /// DECK-24, pinned 2026-11-10 before the standard-zoom change: the window
+    /// delegate answers the standard-frame question with the Deck's intrinsic
+    /// frame, which is what a title-bar double-click and the green button take
+    /// today. The change to the system's own zoom fails this test first.
+    @MainActor
+    func testTheZoomDelegateAnswersTheDecksIntrinsicFrameToday() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let proxy = DeckZoomDelegate()
+        proxy.preferredWidth = { DeckWide.preferredWidth(zoom: 1) }
+        let selector = #selector(NSWindowDelegate.windowWillUseStandardFrame(_:defaultFrame:))
+        XCTAssertTrue(proxy.responds(to: selector),
+                      "today the Deck answers the standard frame with its own intrinsic width")
+        let answer = proxy.windowWillUseStandardFrame(
+            window, defaultFrame: CGRect(x: 0, y: 0, width: 1200, height: 900))
+        // An unattached window has no screen: the delegate answers for the
+        // main screen, the same one the window would open on.
+        let visible = NSScreen.main?.visibleFrame ?? .zero
+        XCTAssertEqual(answer.width, 1044, accuracy: 0.001)
+        XCTAssertEqual(answer.height, visible.height)
+        XCTAssertEqual(answer.minY, visible.minY)
+        XCTAssertEqual(DeckWide.standardFrame(visible: visible,
+                                              preferredWidth: DeckWide.preferredWidth(zoom: 1)),
+                       answer)
     }
 }
