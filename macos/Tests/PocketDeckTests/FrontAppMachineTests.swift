@@ -16,6 +16,32 @@ final class FrontAppMachineTests: XCTestCase {
         XCTAssertEqual(machine.state, .idle)
     }
 
+    /// The card asks again every 2 s while it is open: the row must not
+    /// blink out between the question and the answer (PANEL-26).
+    func testAskingAgainKeepsTheAnswerOnShowUntilTheReply() {
+        var machine = FrontAppMachine()
+        machine.ask(seq: 1)
+        XCTAssertNil(machine.pkg, "nothing to show before the first answer")
+        XCTAssertTrue(machine.reply(seq: 1, pkg: "com.example.maps"))
+        machine.ask(seq: 2)
+        XCTAssertEqual(machine.pkg, "com.example.maps",
+                       "[PANEL-26] the last answer stays on show while the next is asked")
+        machine.ask(seq: 3)
+        XCTAssertEqual(machine.pkg, "com.example.maps", "and across an unanswered ask")
+        XCTAssertTrue(machine.reply(seq: 3, pkg: "com.example.chat"))
+        XCTAssertEqual(machine.pkg, "com.example.chat")
+        machine.ask(seq: 4)
+        XCTAssertTrue(machine.reply(seq: 4, pkg: nil))
+        XCTAssertNil(machine.pkg, "a null answer takes the row away")
+        XCTAssertTrue(machine.isNone)
+        machine.ask(seq: 5)
+        XCTAssertNil(machine.pkg)
+        XCTAssertTrue(machine.isNone, "asking after None still reads as nothing in front")
+        machine.ask(seq: 6)
+        machine.reset()
+        XCTAssertNil(machine.pkg, "a reset forgets the answer on show")
+    }
+
     func testAnAskedReplyMovesToKnownOrNone() {
         var known = FrontAppMachine()
         known.ask(seq: 4)
