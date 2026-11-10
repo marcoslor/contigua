@@ -4479,6 +4479,13 @@ final class ConnectionController {
             text += "\n"
             return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
                 ? "deckrailslots failed" : nil
+        case "deckrailemph":
+            // [DECK-32] The machine's emphasis and every page tile's drawn
+            // emphasis (the views' own values), after `deckrailenter`/`move`.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckrailemph needs PATH"
+            }
+            return RailEmphasisProbe.dump(to: path) ? nil : "deckrailemph failed"
         case "deckrailsweep":
             // N pointer moves in one command, the body-count proof's moves: the
             // first enters at A and the rest sweep down the rail, one runloop

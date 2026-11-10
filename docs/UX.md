@@ -73,7 +73,10 @@ work is disabled, never hidden.
      columns and its header starts at the grid's edge; an empty section is not shown, so with nothing pinned and no
      window the page is the plain grid. **Single click opens, arrows move across the sections as one page, ↩ opens,
      esc clears; typing filters and the first match is selected; ⌘1–⌘9 open the first nine visible tiles in reading
-     order; ⌘F puts the keyboard in the search field.** While searching, only the results are shown.
+     order; ⌘F puts the keyboard in the search field.** While searching, only the results are shown. Pointing at or
+     dragging along the A–Z rail lights that letter's All Apps tiles — a slight lift and a semibold name — while the
+     other All Apps tiles fade back; the Open on this Mac and Pinned rows stay as they are, and leaving the rail puts
+     the grid back. An empty letter lights the letter it would jump to.
      The grid is there at launch from the last session and is dimmed — the sections with it, as one page — while the phone is away. A problem is one banner
      line with at most one button (Try now / Pair again); while the phone is away the banner and the chip's help tag say
      when it was last seen. A phone that no longer trusts this Mac, or whose connections
