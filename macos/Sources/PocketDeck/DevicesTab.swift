@@ -30,7 +30,7 @@ enum DevicePresence: Equatable {
         case .connecting: return "Connecting…"
         case .reconnecting: return "Reconnecting…"
         case .offline: return "Offline"
-        case .pairAgain: return "Pair again"
+        case .pairAgain: return PairAgainCopy.banner
         }
     }
 

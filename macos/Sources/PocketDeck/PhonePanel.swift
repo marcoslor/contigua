@@ -25,7 +25,7 @@ struct PhoneControlsState: Equatable {
             case .connecting: return "Connecting…"
             case .reconnecting: return "Reconnecting…"
             case .offline: return "Offline"
-            case .needsPairing: return "Pair again"
+            case .needsPairing: return PairAgainCopy.banner
             case .idle: return "No phone paired"
             }
         }
@@ -632,10 +632,10 @@ struct PhonePanelView: View {
             }
             Spacer(minLength: 6)
             if notice.action == .pairAgain {
-                Button("Pair again", action: actions.pairAgain)
+                Button(PairAgainCopy.banner, action: actions.pairAgain)
                     .buttonStyle(.glassProminent)
                     .controlSize(.small)
-                    .accessibilityLabel("Pair again")
+                    .accessibilityLabel(PairAgainCopy.banner)
             }
         }
         .padding(10)

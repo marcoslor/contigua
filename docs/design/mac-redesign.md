@@ -78,7 +78,8 @@ size 480×460) from Settings ▸ Phones ▸ **Add Phone…** and ⇧⌘N when a 
 - Row (`glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`, ≥ 52 pt): `iphone.gen3`
   22 pt · VStack(name `.body`, model `.subheadline .secondary`) · Spacer · **Pair** `.glassProminent
   .controlSize(.small)`. A phone that is already remembered shows "Paired" (`.secondary`) instead of the button
-  and is not pairable here (a rejected one shows **Pair again** `.orange` text + button).
+  and is not pairable here (a rejected one shows **Pair again** `.orange` text, with a
+  **Pair Again…** button that opens the pairing sheet).
   Whole row is also clickable (= Pair). No device ids.
 - Footer (`GlassEffectContainer`): **Pair with QR** (`qrcode`) · **Connect manually…** (`network`), `.glass`.
 - **Empty/searching:** centered `ProgressView().controlSize(.small)`, "Looking for phones on this

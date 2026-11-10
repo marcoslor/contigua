@@ -231,8 +231,8 @@ struct NearbyRow: View {
             }
             Spacer()
             if pairable {
-                if phone.needsPairing { Text("Pair again").font(.subheadline).foregroundStyle(.orange) }
-                Button(phone.needsPairing ? "Pair again" : "Pair") { controller.pair(phone) }
+                if phone.needsPairing { Text(PairAgainCopy.banner).font(.subheadline).foregroundStyle(.orange) }
+                Button(PairAgainCopy.sheetButton(needsPairing: phone.needsPairing)) { controller.pair(phone) }
                     .buttonStyle(.glassProminent)
                     .controlSize(.small)
             } else {
