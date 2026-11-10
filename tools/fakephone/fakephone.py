@@ -2279,7 +2279,7 @@ class WindowStream(object):
         # -re paces the source to real time; without it ffmpeg encodes as fast
         # as the CPU allows (thousands of fps for cheap patterns).
         crisp = self.phone.args.crisp_pattern and self.mode == "app" and not self._black
-        image = getattr(self.phone.args, "image_frame", None) and not self._black
+        image = getattr(self.phone.args, "image_frame", None) if not self._black else None
         if image:
             # A fixture picture is the whole stream, cover-cropped to the
             # stream's shape: no label or word sits on top of it.
