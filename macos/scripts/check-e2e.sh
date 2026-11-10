@@ -11860,8 +11860,10 @@ check_phones() {
     start_phone_fake "$port_b" b || { kill "$pid_a" 2>/dev/null; return 1; }
     local pid_b="$PHONE_FAKE_PID"
     : > "$ev_a"; : > "$ev_b"
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$port_b" --connect-phone "127.0.0.1:$port_a" \
-        --phones-report "$report" --quit-after 90
+        --phones-report "$report" --debug-control "$WORK-control" --quit-after 90
     wait_until 35 grep -qF -- '"state":"paired"' "$ev_b" \
         && ok "[PAIR-24] phones B paired while A was live" \
         || bad "[PAIR-24] phones B did not pair"
@@ -11884,6 +11886,25 @@ check_phones() {
     grep -qF -- "id=$id_b state=online current=1" "$report" \
         && ok "[PAIR-25] phones B is the current online row" \
         || bad "[PAIR-25] phones B is not the current online row"
+
+    # [PANEL-27] With two phones remembered the card names the phone in use and
+    # the name is a checkmark pop-up; the card keeps its 300 pt width.
+    control panelopen || bad "PHONES panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/phones-panel.json" || bad "PHONES paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/phones-panel.json" <<'PY' \
+        && ok "[PANEL-27] with two phones the card names the phone in use from its pop-up" \
+        || bad "[PANEL-27] the two-phone card does not name the current phone"
+import json, sys
+root = json.load(open(sys.argv[1]))
+kinds = [row["kind"] for row in root["items"]]
+if kinds.count("phonePicker") != 1:
+    print("phone pop-up items:", kinds); sys.exit(1)
+if root["phone"] != "Fake b":
+    print("card phone:", repr(root["phone"])); sys.exit(1)
+if root["width"] != 300 or not root["mapped"]:
+    print("width/mapped:", root["width"], root["mapped"]); sys.exit(1)
+PY
+    control panelclose >/dev/null 2>&1 || true
 
     # Both sessions answer the Mac's app-level ping for 20 s. The log is
     # cleared at the start of the window so each pong is inside it.
@@ -14060,9 +14081,9 @@ if len(rows) != len(live):
     print("panel live rows:", len(rows), "live items:", len(live)); sys.exit(1)
 if not panel["mapped"] and len(panel["controls"]) < 4:
     print("controls:", len(panel["controls"])); sys.exit(1)
-# A live row's id is panel.live (one item, one row per notification); every
-# other row is unique.
-ids = [row["id"] for row in panel["items"] if row["kind"] != "live"]
+# A live row's id is panel.live and its Dismiss is panel.liveDismiss (one
+# item per row); every other row's id is unique.
+ids = [row["id"] for row in panel["items"] if row["kind"] not in ("live", "liveDismiss")]
 if len(ids) != len(set(ids)):
     print("duplicate ids:", ids); sys.exit(1)
 PY
