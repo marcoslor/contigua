@@ -90,8 +90,8 @@ final class FrontAppFlowTests: XCTestCase {
         XCTAssertNotEqual(firstSeq, secondSeq)
         phone(["t": "task.front", "seq": firstSeq, "pkg": "com.example.stale"])
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
-        XCTAssertEqual(controller.frontApp.pkg, nil,
-                       "the stale reply moved the row: \(controller.frontApp)")
+        XCTAssertEqual(controller.frontApp.pkg, "com.example.maps",
+                       "the stale reply moved the row, or the row blinked out while asking: \(controller.frontApp)")
 
         phone(["t": "task.front", "seq": secondSeq, "pkg": nil])
         XCTAssertTrue(spin { controller.frontAppNone }, "pkg null did not become None")

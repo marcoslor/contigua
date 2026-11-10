@@ -711,14 +711,15 @@ struct PhonePanelView: View {
             if let handoff = state.handoff, state.connection.isOnline {
                 handoffModule(handoff)
                     .padding(.top, PhonePanelMetrics.sectionGap)
-                    .transition(.opacity)
             }
             windowsRow.padding(.top, PhonePanelMetrics.sectionGap)
         }
         .padding(inset)
         .frame(width: Self.width)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: state.handoff)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: visibleLive.map(\.id))
+        // PANEL-29: a row that comes or goes (the handoff row after the
+        // phone's answer, a Live row) changes the card at once. Nothing in
+        // the card slides or fades, so the buttons under it never drift.
+        .transaction { $0.animation = nil }
     }
 
     /// The Deck's sticky banner in the panel (PAIR-33/35): text, the one line

@@ -717,7 +717,7 @@ final class StreamChromeView: NSView {
     }
 
     /// The Framed bar's own label: the same name, in the system label colour,
-    /// between the lights and our controls (WIN-70). No tone machine here.
+    /// between the lights and our controls (WIN-71). No tone machine here.
     private func updateFramedTitle() {
         let row = HeaderBar.row(actions.actions, rightEdge: bounds.width,
                                 rightInset: FramedChrome.controlsRightInset)
@@ -869,7 +869,7 @@ final class StreamChromeView: NSView {
     /// The e2e's view of the title: shown, its rect in this view, its ink, and
     /// the bar's tint. The text itself is never written to the state. Framed
     /// and the full-screen bar use the system label colour, so their tone
-    /// reads `none` (WIN-70: no tone machine there).
+    /// reads `none` (WIN-71: no tone machine there).
     var barTitleVisible: Bool {
         if immersiveBar { return titleVisible }
         if framedGeometry { return !framedView.titleIsHidden }

@@ -79,7 +79,7 @@ enum WindowStyle: String, CaseIterable {
     }
 }
 
-/// The Framed style's own geometry, in points (ISS-45, WIN-70): a 0.5 pt outer
+/// The Framed style's own geometry, in points (ISS-45, WIN-71): a 0.5 pt outer
 /// hairline, a 1 pt inner rim, a 22 pt window radius and an 11.5 pt picture
 /// radius (deliberately not concentric: 22 - 5.5 is 16.5, not 11.5), 38.5 pt
 /// above the picture and 5.5 pt on the other three sides, and a white top
@@ -96,7 +96,7 @@ enum FramedChrome {
     static let rim: CGFloat = 1
     static let highlightHeight: CGFloat = 10
     /// The title's ink: the system label colour; the material and the window's
-    /// appearance own the contrast, so Framed needs no tone machine (WIN-70).
+    /// appearance own the contrast, so Framed needs no tone machine (WIN-71).
     static let titleColor: NSColor = .labelColor
 
     /// The traffic lights in the taller bar: 14 pt square, 12.25 pt in from the

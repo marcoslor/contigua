@@ -662,7 +662,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         style = next
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
-        StreamMenuState.shared.style = style
+        refreshMenuState()
         chrome.setStyle(style)
         writeChromeState()
     }
@@ -1097,6 +1097,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if let videoSizeObserver { NotificationCenter.default.removeObserver(videoSizeObserver) }
         videoSizeObserver = nil
         manager.noteKeyLost(stream)
+        // A closed window is not a key window, whether or not AppKit sent a
+        // resign first.
+        performMenuKey(.streamResigned(stream: stream))
         if !closingFromRemote { sendClose() }
         let count = stills
         Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
@@ -1407,26 +1410,34 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Focus
 
+    /// The values the stream-only menu items show for this window (MENU-4,
+    /// MENU-6, MENU-9).
+    var menuValues: StreamMenuValues {
+        StreamMenuValues(stream: stream, style: style, liveText: liveText.isActive,
+                         frozen: frozen, phoneOffline: phoneControlsOffline,
+                         phoneWindow: self is PhoneWindowController,
+                         panelOff: (self as? PhoneWindowController)?.panelOffShown ?? false,
+                         densityPackage: densityPackage, densityOverride: densityOverride)
+    }
+
+    /// Publishes this window's values after one of them moved. The machine
+    /// ignores them unless this is the key stream window, so a change in a
+    /// window behind the Deck cannot reach the menu.
+    func refreshMenuState() {
+        performMenuKey(.streamValuesChanged(menuValues))
+    }
+
+    private func performMenuKey(_ event: StreamMenuKeyMachine.Event) {
+        let actions = StreamMenuState.shared.handle(event)
+        if actions.contains(.correctMenu) { MenuMarks.apply(to: NSApp.mainMenu) }
+    }
+
     func windowDidBecomeKey(_ notification: Notification) {
         manager.noteFront(stream)
         manager.noteKey(stream)
-        let state = StreamMenuState.shared
-        state.hasStream = true
-        state.showTouches = manager.showTouches
-        state.style = style
-        state.densityPackage = densityPackage
-        state.densityOverride = densityOverride
-        state.settingsDensity = manager.defaultDensity
-        state.liveText = liveText.isActive
-        state.frozen = frozen
-        state.phoneOffline = phoneControlsOffline
-        state.phoneWindow = self is PhoneWindowController
-        state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
-        state.revealDelay = manager.revealDelay
-        // The View menu's pair is enabled from here on. It is corrected when
-        // the menu opens too, but a disabled menu item eats its key equivalent:
-        // ⌥⌘F is on the pair and must work without the menu being opened.
-        MenuMarks.apply(to: NSApp.mainMenu)
+        // The key window changed: its values replace whatever the last stream
+        // window left, whole.
+        performMenuKey(.streamBecameKey(menuValues))
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -1434,17 +1445,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // keys are the phone's again when the window comes back.
         manager.noteKeyLost(stream)
         resetBarFocus()
-        let state = StreamMenuState.shared
-        state.hasStream = false
-        state.densityPackage = nil
-        state.densityOverride = nil
-        state.liveText = false
-        state.frozen = false
-        state.phoneWindow = false
-        state.panelOff = false
+        // No stream window is key now (the Deck or another window took it):
+        // every stream-only item is off and disabled until one is.
+        performMenuKey(.streamResigned(stream: stream))
         videoView.windowResignedKey()
-        // The pair acts on the key stream window: disabled again once none is.
-        MenuMarks.apply(to: NSApp.mainMenu)
     }
 
     // MARK: View menu
@@ -1498,7 +1502,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         liveTextWasActive = active
         chrome.setLiveText(active: active)
-        StreamMenuState.shared.liveText = active
+        refreshMenuState()
         updateFrozen()
     }
 
@@ -1508,8 +1512,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func updateFrozen() {
         chrome.setFrozen(frozen)
         if window?.isKeyWindow ?? false {
-            StreamMenuState.shared.frozen = frozen
-            StreamMenuState.shared.phoneOffline = phoneControlsOffline
+            refreshMenuState()
         }
         writeChromeState()
     }

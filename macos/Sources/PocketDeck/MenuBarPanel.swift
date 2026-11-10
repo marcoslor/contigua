@@ -719,7 +719,7 @@ final class MenuBarController: NSObject {
     }
 
     /// PANEL-4: the card grew or shrank while open. Keep its top edge under
-    /// the status item and animate to the new height, clamped to the visible
+    /// the status item at the new height, at once (PANEL-29), clamped to the visible
     /// frame's bottom edge.
     private func panelContentHeightChanged(_ height: CGFloat) {
         guard let panel, panel.isVisible else { return }
@@ -738,9 +738,8 @@ final class MenuBarController: NSObject {
             // future taller one from crossing the Dock.
             frame.origin.y = max(frame.origin.y, visible.minY + 8)
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            panel.animator().setFrame(frame, display: true)
-        }
+        // PANEL-29: at once, with the content (no 0.12 s slide of the rows
+        // under a row that came or went).
+        panel.setFrame(frame, display: true)
     }
 }
