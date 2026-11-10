@@ -77,6 +77,19 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`,
   height 120; a phone with no launchable apps: "No apps on this phone." in the same place.
+- **Start page (D1 two rows, ISS-74):** above the grid, in reading order: **Open on this Mac**, **Pinned**, **All Apps**.
+  Every section is laid out in the same column grid as All Apps — one `DeckPageLayout` computes the block once, and a
+  section is a range of cells in it, so a Pinned tile in column 3 sits exactly above the All Apps tile in column 3.
+  Section headers are `.system(size: 11, weight: .semibold)` `.secondary`, at the grid's leading edge (never the
+  window's): 10 pt above the first header, 6 pt from a header to its row, 10 pt between sections; the grid keeps its
+  own 24 pt inset when no section is above it, so a page with nothing pinned and no window is the plain grid. A
+  section starts a new row; no row holds more tiles than the grid has columns (Open and Pinned wrap). An empty
+  section is not drawn (no header, no gap). A tile in Open carries a 14 pt accent circle with a 7 pt white
+  `macwindow` at the icon's bottom-trailing corner; the row's order is the windows' front-to-back order. The pins are
+  at most eight, in pin order, from the tile's context menu (**Pin** / **Unpin**; the ninth is disabled with the help
+  tag "You can pin up to eight apps."). While the search field has text the sections collapse to the results.
+  With 2+ phones the title is a menu of the remembered phones (the one in use checked; **Phone Settings…** opens
+  Settings) and the window's own title is empty; with one phone it is the phone's name as before.
 - **A–Z rail (D):** a 26 pt column beside the grid's last column, 18 pt to its right (the grid block and the rail are
   centred together, so the margin past the rail grows with a wider window); A–Z + `#` at 9 pt in an 11 pt rest box on a
   rest pitch of at most 20 pt, giving way down to 18 pt (and then to every other or every third letter) before the rail

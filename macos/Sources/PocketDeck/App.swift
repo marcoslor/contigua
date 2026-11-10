@@ -59,6 +59,9 @@ struct LaunchOptions {
     var debugBanner: String?
     /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
     var debugDeckGrid: String?
+    /// `--debug-deck-sections FILE`: the start page's drawn headers and cells,
+    /// section by section (e2e `deckstart`).
+    var debugDeckSections: String?
     /// `--debug-deck-zoom FILE`: the Deck's double-click zoom, measured (e2e `deck`).
     var debugDeckZoom: String?
     /// `--debug-stream-zoom FILE`: a live stream window's double-click zoom,
@@ -163,6 +166,7 @@ struct LaunchOptions {
         "--debug-chrome-state": true,
         "--debug-frame-log": true,
         "--debug-banner": true,
+        "--debug-deck-sections": true,
         "--audio-stats": true,
         "--share-log": true,
         "--preview": true,
@@ -275,6 +279,8 @@ struct LaunchOptions {
                 options.debugBanner = next()
             case "--debug-deck-grid":
                 options.debugDeckGrid = next()
+            case "--debug-deck-sections":
+                options.debugDeckSections = next()
             case "--debug-deck-zoom":
                 options.debugDeckZoom = next()
             case "--debug-stream-zoom":

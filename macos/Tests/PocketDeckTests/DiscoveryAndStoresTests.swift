@@ -182,19 +182,39 @@ final class QRProbePlannerTests: XCTestCase {
 }
 
 final class GridNavigationTests: XCTestCase {
+    /// The grid as the page model sees it with no sections: ten apps, four
+    /// columns, one All Apps row set. The page does the movement now, across
+    /// its sections; this pins the uniform grid's old arrows (DECK-11/29).
+    private func page(count: Int = 10, columns: Int = 4) -> (cells: [DeckPageCell], rows: [[DeckPageCell]]) {
+        let apps = (0..<count).compactMap {
+            AppInfo(json: ["pkg": "com.example.app\($0)", "label": "App \($0)"])
+        }
+        let sections = DeckPage.sections(apps: apps, query: "", openPkgs: [], pinnedPkgs: [])
+        return (DeckPage.cells(sections), DeckPage.rows(sections, columns: columns))
+    }
+
+    private func move(_ index: Int?, _ direction: GridDirection,
+                      count: Int = 10, columns: Int = 4) -> Int? {
+        let page = page(count: count, columns: columns)
+        let selection = index.flatMap { page.cells.indices.contains($0) ? page.cells[$0].id : nil }
+        return DeckPage.move(selection: selection, cells: page.cells,
+                             rows: page.rows, direction)
+            .flatMap { key in page.cells.firstIndex { $0.id == key } }
+    }
+
     func testFirstArrowSelectsTheFirstCell() {
-        XCTAssertEqual(GridNavigation.move(nil, count: 10, columns: 4, .down), 0)
-        XCTAssertNil(GridNavigation.move(nil, count: 0, columns: 4, .down))
+        XCTAssertEqual(move(nil, .down), 0)
+        XCTAssertNil(move(nil, .down, count: 0))
     }
 
     func testMovesWithinTheGridAndStopsAtTheEdges() {
-        XCTAssertEqual(GridNavigation.move(0, count: 10, columns: 4, .right), 1)
-        XCTAssertEqual(GridNavigation.move(0, count: 10, columns: 4, .left), 0)
-        XCTAssertEqual(GridNavigation.move(1, count: 10, columns: 4, .down), 5)
-        XCTAssertEqual(GridNavigation.move(5, count: 10, columns: 4, .up), 1)
-        XCTAssertEqual(GridNavigation.move(1, count: 10, columns: 4, .up), 1)
-        XCTAssertEqual(GridNavigation.move(9, count: 10, columns: 4, .right), 9)
-        XCTAssertEqual(GridNavigation.move(7, count: 10, columns: 4, .down), 7)
+        XCTAssertEqual(move(0, .right), 1)
+        XCTAssertEqual(move(0, .left), 0)
+        XCTAssertEqual(move(1, .down), 5)
+        XCTAssertEqual(move(5, .up), 1)
+        XCTAssertEqual(move(1, .up), 1)
+        XCTAssertEqual(move(9, .right), 9)
+        XCTAssertEqual(move(7, .down), 7)
     }
 
     func testFilterMatchesLabelsCaseInsensitively() {

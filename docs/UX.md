@@ -61,10 +61,17 @@ work is disabled, never hidden.
      (countdown, success check).
    - **Phone** (a phone is paired, including while it is away): toolbar with one group packed at the left — the traffic
      lights, the connection chip (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline /
-     Pair again) and the phone's name (its nickname when one is set) — and one at the right: **Phone** button, the Settings gear (⌘,), then the
+     Pair again) and the phone's name (its nickname when one is set; with 2+ phones that name is a menu of the
+     remembered phones, the one in use checked, and **Phone Settings…** opens Settings) — and one at the right: **Phone** button, the Settings gear (⌘,), then the
      search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
-     The app grid (single click opens, arrows move, ↩ opens, esc clears).
-     The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
+     The start page, top to bottom: **Open on this Mac** (the apps with a Mac window, front window first; a click
+     raises it; a small Mac-window mark on the tile), **Pinned** (up to eight, kept on this Mac per phone, from the
+     tile's context menu **Pin** / **Unpin**), then **All Apps** sorted by name. Every section sits on All Apps'
+     columns and its header starts at the grid's edge; an empty section is not shown, so with nothing pinned and no
+     window the page is the plain grid. **Single click opens, arrows move across the sections as one page, ↩ opens,
+     esc clears; typing filters and the first match is selected; ⌘1–⌘9 open the first nine visible tiles in reading
+     order; ⌘F puts the keyboard in the search field.** While searching, only the results are shown.
+     The grid is there at launch from the last session and is dimmed — the sections with it, as one page — while the phone is away. A problem is one banner
      line with at most one button (Try now / Pair again); while the phone is away the banner and the chip's help tag say
      when it was last seen. A phone that no longer trusts this Mac, or whose connections
      switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
@@ -331,6 +338,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘N | New <App> Window: one more window of the key window's app | File |
 | ⌘` | Next Window: the next window of the key window's app, wrapping | Window |
 | ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
+| ⌘1–⌘9 | Open the first nine visible tiles in reading order (the sections included) | Deck |
 | ⌘, | Settings | Icon menu, Deck |
 | ⌘Q | Quit PocketDeck | Icon menu, app menu |
 | ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |
