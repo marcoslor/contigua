@@ -27,6 +27,8 @@ struct MenuSnapshot: Equatable {
     struct Phone: Equatable {
         var mirrorEnabled = false
         var continueEnabled = false
+        var continueTitle = FrontAppRow.fallbackTitle
+        var continueHelp: String?
         var dndEnabled = false
         var dndOn = false
         var ringEnabled = false
@@ -41,7 +43,9 @@ struct MenuSnapshot: Equatable {
         /// the agent count are not among them, so they never rebuild the bar.
         init(_ state: PhoneControlsState) {
             mirrorEnabled = PhonePanelItem.phoneScreen.isEnabled(in: state)
-            continueEnabled = PhonePanelItem.continueOnMac.isEnabled(in: state)
+            continueEnabled = state.continueEnabled
+            continueTitle = state.continueTitle
+            continueHelp = state.continueReason
             dndEnabled = PhonePanelItem.dnd.isEnabled(in: state)
             dndOn = state.dnd?.isOn ?? false
             ringEnabled = PhonePanelItem.ring.isEnabled(in: state)

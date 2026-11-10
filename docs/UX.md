@@ -43,7 +43,7 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
 Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
 125 %, 150 %, the current one checked) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
-system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
+system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
 Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. The Dock icon's own menu (a right-click on it)
@@ -106,18 +106,25 @@ work is disabled, never hidden.
    The same menu's **Add to Applications** puts that one app in Applications as a real Mac app — Launchpad, Spotlight
    and other launchers list it — and **Remove from Applications** takes only that shortcut away; the phone's page can do it for
    every app at once (**Save all apps as shortcuts**).
-3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's name and state,
-   its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
-   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now playing: <app>** when several
-   apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
-   **Install APK…**), and a **gear** at the card's top-right. When the phone no longer trusts this Mac (or its
-   connections switch is off) one banner row sits under the header with the same sentence the Deck shows and its
-   **Pair again** action; it cannot be closed. **Ringer** opens
+3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's symbol, its
+   name (with two or more phones the name is a checkmark pop-up and the card keeps its width), the link as a dot plus
+   words, a lock while it is locked and the battery; away from the phone, the last-seen line. Below: one full-width
+   **Sound** module (speaker, "Sound", the phone's %, the volume slider), the 2×2 modules **Focus** (Do Not Disturb /
+   Off), **Ringer**, **Ring Phone** / **Stop Ringing** (Plays a sound / Ringing), **Turn Off Screen** (Screen on /
+   Screen off), **Now playing** with the chosen app when several apps play, one **Live** row per notification each
+   with its own **Dismiss** (it hides that row on the Mac only), **Open <App> on Mac** ⇧⌘C only while the phone
+   reports an app in front ("Open Current App on Mac" with a generic icon when the app list does not know it), and one
+   **WINDOWS** row (**Phone Mirror** ⌘P · **Apps** ⌘K). **Install APK…** is not on the card: it stays in the Phone
+   menu, the Deck's drop and Finder's Open With. A **gear** at the card's top-right opens the icon's own menu.
+   When the phone no longer trusts this Mac (or its connections switch is off) one banner row sits under the header
+   with the same sentence the Deck shows and its **Pair again** action; it cannot be closed. **Ringer** opens
    Ring / Vibrate / Silent with the current mode checked; the volume follows the pointer while it is dragged. A
    control that cannot work is dimmed as a whole (icon, title and its short second line, e.g. "Open Mirror first"),
-   never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). The
-   card opens with its focus ring on the first tile, **Do Not Disturb**, with or without an AI agent connected,
-   and never on the gear or on **Disconnect**. The Deck's status pill opens the same card in a popover, without the gear.
+   never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). While the
+   phone is away the Sound module shows the one group reason "Connect your phone to use these." and the four modules
+   dim with no line of their own. The card opens with its focus ring on **Focus**, with or without an AI agent
+   connected, and never on the gear, the phone pop-up or **Disconnect**. The Deck's status pill opens the same card
+   in a popover, without the gear.
 
    The status item's **secondary click** (a right-click, or ⌃-click) opens the app's command menu under the icon:
    **Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q, with a separator before Quit. The card closes
@@ -332,7 +339,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘− | Smaller: the Deck's icon size, or the window's density | View, Deck |
 | ⌘0 | Actual Size: the Deck's icon size (100%), or the window's density | View, Deck |
 | ⌘P | Phone Mirror | Phone |
-| ⇧⌘C | Move Phone App to Mac | Phone |
+| ⇧⌘C | Open <App> on Mac | Phone |
 | ⌘[ | Back | Navigate |
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |

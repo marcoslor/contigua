@@ -3457,7 +3457,7 @@ PY
 menu_dump_ok() {
     python3 - "$1" <<'PY'
 import json, re, sys
-APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
+APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Open Current App on Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
              "Back", "Home", "Recents"]
@@ -3480,7 +3480,7 @@ if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window
 WANT = {
     "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
              "Show Touches", "Live Text", "—", "Icon Size", "—", "Density"],
-    "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
+    "Phone": ["Phone Mirror", "Open … on Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
     # File's New item names the key window's app ("New Chrome Window") and
@@ -3498,6 +3498,11 @@ for title, want in WANT.items():
            if not item.get("hidden")]
     if title == "File":
         seq = ["—" if row == "—" else ("New … Window" if row.startswith("New ") and row.endswith(" Window") else row)
+               for row in seq]
+    if title == "Phone":
+        # The handoff item names the app a fresh foreground reply reports; the
+        # dump may carry any "Open <app> on Mac" (PANEL-28).
+        seq = ["Open … on Mac" if row.startswith("Open ") and row.endswith(" on Mac") else row
                for row in seq]
     if title == "View" and seq and seq[-1] in ("Enter Full Screen", "Exit Full Screen"):
         # AppKit appends its own item (fn-F) to the app's View NSMenu; the
@@ -3517,7 +3522,8 @@ if view is not None:
     if sorted(states) != ["off", "on"]:
         problems.append("style radios: %r" % (states,))
 installed = [(i["title"], i.get("targetClass")) for i in walk(root["items"])
-             if i["title"] in APP_ITEMS and i.get("targetClass") not in SYSTEM_OWNERS]
+             if (i["title"] in APP_ITEMS or re.fullmatch(r"Open .+ on Mac", i["title"]))
+             and i.get("targetClass") not in SYSTEM_OWNERS]
 if installed:
     problems.append("items the app installed with AppKit: %r" % (installed,))
 # Full screen is AppKit's own, last in View: the app shows no item for it
@@ -4234,15 +4240,19 @@ by_title = {i["title"]: i for i in phone["submenu"] if not i["isSeparator"]}
 if by_title["Phone Mirror"]["keyEquivalent"] != "p" or by_title["Phone Mirror"]["modifiers"] != ["command"]:
     print("Phone Mirror shortcut:", repr(by_title["Phone Mirror"]["keyEquivalent"]),
           by_title["Phone Mirror"]["modifiers"]); sys.exit(1)
-if by_title["Move Phone App to Mac"]["keyEquivalent"] != "c" or \
-        by_title["Move Phone App to Mac"]["modifiers"] != ["command", "shift"]:
-    print("Move Phone App to Mac shortcut:", repr(by_title["Move Phone App to Mac"]["keyEquivalent"]),
-          by_title["Move Phone App to Mac"]["modifiers"]); sys.exit(1)
+handoff = next((i for i in phone["submenu"]
+                 if i["keyEquivalent"] == "c" and "shift" in i["modifiers"]), None)
+if handoff is None:
+    print("no ⇧⌘C handoff item:", [i["title"] for i in phone["submenu"]]); sys.exit(1)
+if not (handoff["title"].startswith("Open ") and handoff["title"].endswith(" on Mac")):
+    print("handoff title:", handoff["title"]); sys.exit(1)
 if by_title["Turn Off Phone Screen"]["enabled"]:
     print("Turn Off Phone Screen is enabled with no phone window"); sys.exit(1)
-for title in ("Phone Mirror", "Move Phone App to Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
+for title in ("Phone Mirror", "Do Not Disturb", "Ring Phone", "Install APK…"):
     if not by_title[title]["enabled"]:
         print(title, "is disabled while the phone is online"); sys.exit(1)
+if not handoff["enabled"]:
+    print("the handoff item is disabled while the phone is online"); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
@@ -4318,7 +4328,7 @@ def walk(items):
 root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
-for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
+for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Open Current App on Mac", "Show Touches",
               "Live Text", "Icon Size", "Density", "Larger", "Smaller", "Actual Size", "Back",
               "Home", "Recents"]:
     found = next((i for i in items if i["title"] == title), None)
@@ -4364,15 +4374,23 @@ root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
     print("width:", root["width"]); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-for kind in ["gear", "dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
-             "continueOnMac", "installApk"]:
+for kind in ["gear", "volume", "dnd", "ringer", "ring", "screen", "phoneScreen", "findApps"]:
     if kind not in kinds:
         print("missing", kind, kinds); sys.exit(1)
+if "installApk" in kinds:
+    print("Install APK… is a card row again:", kinds); sys.exit(1)
+if "continueOnMac" in kinds:
+    print("the handoff row appeared with no foreground reply:", kinds); sys.exit(1)
 for footed in ["settings", "quit"]:
     if footed in kinds:
         print(footed, "is a row; it belongs to the icon's menu", kinds); sys.exit(1)
+if kinds.index("volume") > kinds.index("dnd"):
+    print("Sound is not above the modules:", kinds); sys.exit(1)
 if kinds.index("dnd") > kinds.index("ringer") or kinds.index("ringer") > kinds.index("ring"):
-    print("tiles out of order:", kinds); sys.exit(1)
+    print("modules out of order:", kinds); sys.exit(1)
+focus = next(row["label"] for row in root["items"] if row["kind"] == "dnd")
+if focus != "Focus":
+    print("the Focus module is named", repr(focus)); sys.exit(1)
 labels = [row["label"] for row in root["items"]]
 for gone in ["Open PocketDeck", "Phone screen"]:
     if gone in labels:
@@ -6609,7 +6627,7 @@ ring_received() {
 check_controls() {
     # (1) the snapshot the extension reads, and DND from a control.
     clean
-    start_fake || return 1
+    FAKE_ARGS="--foreground-pkg com.example.maps --ignore-task-front" start_fake || return 1
     rm -rf "$WORK-control"
     mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" \
@@ -6659,14 +6677,14 @@ check_controls() {
         && bad "CONTROLS a bad ringer mode was accepted" \
         || ok "CONTROLS a bad ringer mode is refused"
 
-    # (2b) Panel P3: the Ringer tile's menu chooses Vibrate, the volume slider
+    # (2b) Panel P2: the Ringer module's menu chooses Vibrate, the volume slider
     # sends the phone's music stream, and the menu bar panel's gear opens the
     # icon's menu. The Settings…/Quit footer rows are gone: the icon's menu has
     # them (CONV-MAC-10).
     control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P3 with the gear first and the Ringer tile enabled" \
-        || bad "[PANEL-5] the panel is not P3"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P2 with the gear first and Sound above the modules; [PANEL-26] no handoff row before the phone answers task.front" \
+        || bad "[PANEL-5] the panel is not P2"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -6674,8 +6692,10 @@ if root["width"] != 300:
 if not root["mapped"]:
     print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-if kinds[:6] != ["gear", "dnd", "ringer", "ring", "screen", "volume"]:
+if kinds[:6] != ["gear", "volume", "dnd", "ringer", "ring", "screen"]:
     print("items:", kinds); sys.exit(1)
+if "installApk" in kinds:
+    print("Install APK… is a card row again:", kinds); sys.exit(1)
 rows = {row["kind"]: row for row in root["items"]}
 if not rows["ringer"]["enabled"]:
     print("ringer:", rows["ringer"]); sys.exit(1)
@@ -6760,7 +6780,7 @@ PY
         control paneldump deck "$WORK/controls-deck-panel.json" >/dev/null 2>&1 && break
         tries=$((tries - 1)); sleep 0.5
     done
-    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "[PANEL-18] the Deck popover has P3's tiles and no Settings/Quit footer" \
+    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "[PANEL-18] the Deck popover has P2's modules and no Settings/Quit footer" \
         || bad "[PANEL-18] the Deck popover kept the menu bar footer"
 import json, sys
 try:
@@ -6768,8 +6788,7 @@ try:
 except (OSError, ValueError) as error:
     print("no dump:", error); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-want = ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
-        "continueOnMac", "installApk"]
+want = ["volume", "dnd", "ringer", "ring", "screen", "phoneScreen", "findApps"]
 if kinds != want:
     print("items:", kinds); sys.exit(1)
 if "settings" in kinds or "quit" in kinds:
@@ -11842,8 +11861,10 @@ check_phones() {
     start_phone_fake "$port_b" b || { kill "$pid_a" 2>/dev/null; return 1; }
     local pid_b="$PHONE_FAKE_PID"
     : > "$ev_a"; : > "$ev_b"
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$port_b" --connect-phone "127.0.0.1:$port_a" \
-        --phones-report "$report" --quit-after 90
+        --phones-report "$report" --debug-control "$WORK-control" --quit-after 90
     wait_until 35 grep -qF -- '"state":"paired"' "$ev_b" \
         && ok "[PAIR-24] phones B paired while A was live" \
         || bad "[PAIR-24] phones B did not pair"
@@ -11873,6 +11894,25 @@ check_phones() {
     else
         bad "[DECK-30] the Deck has no phone menu with two phones ($(ax_tree | tr '\n' '|' | cut -c1-300))"
     fi
+
+    # [PANEL-27] With two phones remembered the card names the phone in use and
+    # the name is a checkmark pop-up; the card keeps its 300 pt width.
+    control panelopen || bad "PHONES panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/phones-panel.json" || bad "PHONES paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/phones-panel.json" <<'PY' \
+        && ok "[PANEL-27] with two phones the card names the phone in use from its pop-up" \
+        || bad "[PANEL-27] the two-phone card does not name the current phone"
+import json, sys
+root = json.load(open(sys.argv[1]))
+kinds = [row["kind"] for row in root["items"]]
+if kinds.count("phonePicker") != 1:
+    print("phone pop-up items:", kinds); sys.exit(1)
+if root["phone"] != "Fake b":
+    print("card phone:", repr(root["phone"])); sys.exit(1)
+if root["width"] != 300 or not root["mapped"]:
+    print("width/mapped:", root["width"], root["mapped"]); sys.exit(1)
+PY
+    control panelclose >/dev/null 2>&1 || true
 
     # Both sessions answer the Mac's app-level ping for 20 s. The log is
     # cleared at the start of the window so each pong is inside it.
@@ -13347,7 +13387,7 @@ check_settings() {
     wait_until 5 no_fakephone
 }
 
-# --- Move Phone App to Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
+# --- Open Current App on Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
 
 # check_handoff — the --continue-on-mac hook runs the menu command (the same
 # ConnectionController.continueOnMac the ⌘⇧C/menu items call) once the session
@@ -14153,9 +14193,9 @@ if len(rows) != len(live):
     print("panel live rows:", len(rows), "live items:", len(live)); sys.exit(1)
 if not panel["mapped"] and len(panel["controls"]) < 4:
     print("controls:", len(panel["controls"])); sys.exit(1)
-# A live row's id is panel.live (one item, one row per notification); every
-# other row is unique.
-ids = [row["id"] for row in panel["items"] if row["kind"] != "live"]
+# A live row's id is panel.live and its Dismiss is panel.liveDismiss (one
+# item per row); every other row's id is unique.
+ids = [row["id"] for row in panel["items"] if row["kind"] not in ("live", "liveDismiss")]
 if len(ids) != len(set(ids)):
     print("duplicate ids:", ids); sys.exit(1)
 PY
@@ -14256,7 +14296,7 @@ PY
     }
 
     # (a) two playing apps: the list, the state, the artwork.
-    FAKE_ARGS="--media --volume 15" start_fake '' || return 1
+    FAKE_ARGS="--media --volume 15 --foreground-pkg none" start_fake '' || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
     [ -n "$device" ] || { bad "MEDIA no device id in the fakephone listening line"; stop_fakephone; return 1; }
     defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
@@ -14363,8 +14403,8 @@ if not root["mapped"]:
 kinds = [row["kind"] for row in root["items"]]
 # The merged phone card (PANEL-5, UX.md §3): the gear heads it and the
 # Settings…/Quit rows live in the icon's own menu, not on the card.
-want = ["gear", "dnd", "ringer", "ring", "screen", "volume", "sessions", "phoneScreen",
-        "findApps", "continueOnMac", "installApk"]
+want = ["gear", "volume", "dnd", "ringer", "ring", "screen", "sessions", "phoneScreen",
+        "findApps"]
 if kinds != want:
     print("items:", kinds); sys.exit(1)
 enabled = [row for row in root["items"] if row["enabled"]]
@@ -15827,7 +15867,7 @@ check_deck() {
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters --foreground-pkg none" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -16449,8 +16489,7 @@ if root["width"] != 300:
 if not root["mapped"]:
     print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-want = ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
-        "continueOnMac", "installApk"]
+want = ["volume", "dnd", "ringer", "ring", "screen", "phoneScreen", "findApps"]
 if kinds != want:
     print("the Deck popover items:", kinds); sys.exit(1)
 if "settings" in kinds or "quit" in kinds:
@@ -16959,6 +16998,24 @@ check_menubar_shots() {
         || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
         || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
+    # [PANEL-28] The fake phone reports an app in front; the card asks
+    # task.front when it opens and draws the handoff row only after the reply.
+    local handoff=0
+    for _ in $(seq 1 20); do
+        if control paneldump panel "$WORK/menubar-shots/panel.json" >/dev/null 2>&1 \
+            && python3 - "$WORK/menubar-shots/panel.json" <<'PY'
+import json, sys
+root = json.load(open(sys.argv[1]))
+rows = [row for row in root["items"] if row["kind"] == "continueOnMac"]
+sys.exit(0 if rows and rows[0]["label"].startswith("Open ")
+         and rows[0]["label"].endswith(" on Mac") else 1)
+PY
+        then handoff=1; break; fi
+        sleep 0.25
+    done
+    [ "$handoff" = 1 ] \
+        && ok "[PANEL-28] the card shows the foreground app row (Open <app> on Mac)" \
+        || bad "[PANEL-28] no handoff row after the foreground reply"
     sleep 1
     shot_panel "panel-online-light.png"
 
@@ -17131,8 +17188,8 @@ OSA
         && say "shot: $shots/deck-popover-light.png" \
         || bad "MENUBAR-SHOTS no Deck popover window"
 
-    # Offline: away, the card stays, its disabled controls each carrying their
-    # reason (the tile's short line, the full sentence in its help tag).
+    # Offline: away, the card stays and its controls dim as one group with the
+    # Sound module's one reason (PANEL-19).
     stop_fakephone
     wait_until 10 no_fakephone
     sleep 18
@@ -17234,11 +17291,11 @@ PY
 }
 
 # shoot_panel_states — the panel's states in both appearances, for the review:
-# the rest state (Turn Off Screen is disabled: no Phone Mirror is open), the
-# same panel with the pointer forced onto the DND tile, a WINDOWS button, the
-# footer's Settings row and the disabled Turn Off Screen tile (a disabled tile
-# does not light), and with Do Not Disturb on. Each appearance and phone state
-# is its own launch, so no hover or menu state carries over.
+# the rest state (Sound above the modules, Turn Off Screen disabled because no
+# Phone Mirror is open), the same panel with the pointer forced onto the Focus
+# module, an Apps button and the gear, and with Do Not Disturb on. Each
+# appearance and phone state is its own launch, so no hover or menu state
+# carries over.
 shoot_panel_states() {
     local shots="$WORK/menubar-shots" app id
     mkdir -p "$shots"

@@ -323,13 +323,44 @@ final class MenuMarksTests: XCTestCase {
     /// whatever SwiftUI last wrote on the item.
     @MainActor
     func testPhoneMirrorIsEnabledOnlyWhileThePhoneIsOnline() {
-        let items = [MenuMarks.Item(title: "Phone Mirror"), MenuMarks.Item(title: "Move Phone App to Mac")]
+        let items = [MenuMarks.Item(title: "Phone Mirror"),
+                     MenuMarks.Item(title: "Open Current App on Mac")]
         var phone = PhoneControlsState()
         phone.connection = .online
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], true)])
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+                       [.enable(["Phone Mirror"], true),
+                        .handoff(title: "Open Current App on Mac", enabled: true, help: nil)])
         phone.connection = .idle
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], false)])
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+                       [.enable(["Phone Mirror"], false),
+                        .handoff(title: "Open Current App on Mac", enabled: false,
+                                 help: "Connect your phone to use these.")])
         phone.connection = .reconnecting
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], false)])
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+                       [.enable(["Phone Mirror"], false),
+                        .handoff(title: "Open Current App on Mac", enabled: false,
+                                 help: "Connect your phone to use these.")])
+    }
+
+    /// The handoff item names the app a fresh reply reports, falls back when
+    /// there is none, and says why when a fresh reply says there is nothing to
+    /// open (PANEL-28).
+    @MainActor
+    func testTheHandoffItemFollowsThePhonesSubject() {
+        var phone = PhoneControlsState()
+        phone.connection = .online
+        let fallback = MenuMarks.Edit.handoff(title: "Open Current App on Mac", enabled: true, help: nil)
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last, fallback)
+
+        phone.handoff = FrontAppRow(pkg: "p.maps", label: "Maps", icon: nil)
+        phone.frontFresh = true
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last,
+                       .handoff(title: "Open Maps on Mac", enabled: true, help: nil))
+
+        phone.handoff = nil
+        phone.frontNone = true
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last,
+                       .handoff(title: "Open Current App on Mac", enabled: false,
+                                help: FrontAppRow.nothingToOpen))
     }
 }

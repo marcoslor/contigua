@@ -645,6 +645,10 @@ final class MenuBarController: NSObject {
             // The gear is the same request as the right-click, anchored to the
             // gear's own button (PANEL-3).
             self?.gearClicked()
+        }, onSizeChange: { [weak self] height in
+            // A foreground row or a live row arrived/left: keep the card's top
+            // under the item and follow the new height (PANEL-4).
+            self?.panelContentHeightChanged(height)
         }).environment(controller))
         host.layoutSubtreeIfNeeded()
         let content = host.fittingSize
@@ -676,6 +680,7 @@ final class MenuBarController: NSObject {
         }
         panel.setFrameOrigin(origin)
         panel.alphaValue = 0
+        controller.beginPanelFrontWatch()
         panel.orderFrontRegardless()
         panel.makeKey()
         panel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
@@ -699,6 +704,7 @@ final class MenuBarController: NSObject {
                 guard let self else { return }
                 self.panel?.orderOut(nil)
                 self.panel?.alphaValue = 1
+                self.controller.endPanelFrontWatch()
                 self.handle(.hideFinished)
             }
         })
@@ -709,5 +715,32 @@ final class MenuBarController: NSObject {
     private func hidePanelNow() {
         panel?.orderOut(nil)
         panel?.alphaValue = 1
+        controller.endPanelFrontWatch()
+    }
+
+    /// PANEL-4: the card grew or shrank while open. Keep its top edge under
+    /// the status item and animate to the new height, clamped to the visible
+    /// frame's bottom edge.
+    private func panelContentHeightChanged(_ height: CGFloat) {
+        guard let panel, panel.isVisible else { return }
+        let size = NSSize(width: panel.frame.width, height: height + 20)
+        guard abs(size.height - panel.frame.height) > 0.5 else { return }
+        var frame = panel.frame
+        let top = frame.maxY
+        frame.size = size
+        frame.origin.y = top - size.height
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: frame.midX, y: top)) })
+            ?? NSScreen.main {
+            let visible = screen.visibleFrame
+            frame.origin.x = min(max(frame.origin.x, visible.minX + 8),
+                                 visible.maxX - size.width - 8)
+            // The card is short enough for any screen; the clamp only keeps a
+            // future taller one from crossing the Dock.
+            frame.origin.y = max(frame.origin.y, visible.minY + 8)
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 }

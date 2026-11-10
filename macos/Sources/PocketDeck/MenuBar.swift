@@ -137,10 +137,15 @@ struct MenuBarContent: View {
     /// function, so they cannot drift apart.
     var onSecondaryMenu: (() -> Void)?
 
+    /// The card's height changed (a row arrived or left): the AppKit panel
+    /// follows it from its top edge (PANEL-4).
+    var onSizeChange: ((CGFloat) -> Void)?
+
     var body: some View {
         PhonePanelView(state: PhoneControlsState(controller: controller),
                        actions: actions,
-                       onGear: onSecondaryMenu)
+                       onGear: onSecondaryMenu,
+                       onSizeChange: onSizeChange)
     }
 
     private var actions: PhoneControlsActions {
@@ -364,9 +369,11 @@ struct AppCommands: Commands {
             Button {
                 actions.continueOnMac()
             } label: {
-                Label("Move Phone App to Mac", systemImage: "arrow.up.forward.app")
+                Label(phone.continueTitle, systemImage: "arrow.up.forward.app")
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
+            .help(phone.continueHelp ?? "")
+            .accessibilityHint(phone.continueHelp ?? "")
             .disabled(!phone.continueEnabled)
             Divider()
             // The phone holds its own panel's power off while the mirror keeps
@@ -382,7 +389,9 @@ struct AppCommands: Commands {
             Toggle(isOn: Binding(
                 get: { MenuBarModel.shared.snapshot.phone.dndOn },
                 set: { actions.setDnd($0) })) {
-                Label(PhonePanelItem.dnd.label, systemImage: "moon.fill")
+                // The menu keeps the phone control's word (MENU-5/MENU-13);
+                // the card's module title is "Focus" (PANEL-8).
+                Label("Do Not Disturb", systemImage: "moon.fill")
             }
             .disabled(!phone.dndEnabled)
             Button {

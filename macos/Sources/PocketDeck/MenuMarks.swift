@@ -42,6 +42,9 @@ enum MenuMarks {
         case mark([String], Bool)
         case enable([String], Bool)
         case retitle([String], String)
+        /// The handoff item, addressed by its ⇧⌘C key because its title is one
+        /// of the values that follows the phone (PANEL-28).
+        case handoff(title: String, enabled: Bool, help: String?)
         /// Hide the app's ⌃⌘F alternate but keep its key equivalent.
         case hide
     }
@@ -222,6 +225,10 @@ extension MenuMarks {
         if items.contains(where: { !$0.isSeparator && $0.title == "Turn Off Phone Screen" }) {
             edits.append(.mark(["Turn Off Phone Screen"], phone.panelOff))
         }
+        // The item's title, enablement and reason follow the foreground reply,
+        // which SwiftUI built once at launch (PANEL-28).
+        edits.append(.handoff(title: phone.continueTitle, enabled: phone.continueEnabled,
+                              help: phone.continueReason))
         return edits
     }
 
@@ -244,6 +251,15 @@ extension MenuMarks {
             resolve(path, in: menu)?.isEnabled = on
         case .retitle(let path, let title):
             resolve(path, in: menu)?.title = title
+        case .handoff(let title, let enabled, let help):
+            // By the shortcut, never by title: the title is what changes.
+            guard let item = menu.items.first(where: {
+                $0.keyEquivalent == "c"
+                    && $0.keyEquivalentModifierMask.isSuperset(of: [.command, .shift])
+            }) else { return }
+            item.title = title
+            item.isEnabled = enabled
+            item.toolTip = help
         case .hide:
             // By the shortcut, never by title alone: AppKit's own item shares
             // the title and must stay visible (MENU-11).

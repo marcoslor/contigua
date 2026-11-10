@@ -1,14 +1,15 @@
 // The phone controls the menu bar panel and the Deck popover share
 // (docs/design/mac-redesign.md §3.8, docs/DESIGN.md "Deck"): one view, one
 // item model, one copy. The panel is a fixed-width Control Center-style card:
-// a header with the gear that opens the icon's menu, the PHONE section (volume,
-// Do Not Disturb, Ring/Stop Ringing, the Now Playing picker), LIVE and WINDOWS.
-// It never reads the track
-// title, performer or artwork: the Mac's own Now Playing already shows those.
+// a header with the gear that opens the icon's menu, one full-width Sound
+// module, the 2×2 modules Focus / Ringer / Ring Phone / Turn Off Screen, what
+// the phone plays, its live notifications, the app in front as one read and
+// the two window buttons. It never reads the track title, performer or
+// artwork: the Mac's own Now Playing already shows those.
 //
-// The layout is fixed (300 pt wide, 28 pt rows) so the e2e can drive the real
-// controls at their own frames: `PhonePanelProbe` (PanelProbe.swift) walks the
-// hosting view's key-view proxies, which follow this view's focus order.
+// The layout is fixed (300 pt wide, 134×62 pt modules) so the e2e can drive the
+// real controls at their own frames: `PhonePanelProbe` (PanelProbe.swift) walks
+// the hosting view's key-view proxies, which follow this view's focus order.
 
 import AppKit
 import SwiftUI
@@ -33,6 +34,13 @@ struct PhoneControlsState: Equatable {
         var isOnline: Bool { self == .online }
     }
 
+    /// One remembered phone in the header's pop-up (PANEL-27).
+    struct PanelPhone: Equatable, Identifiable {
+        var id: String
+        var name: String
+        var active: Bool
+    }
+
     var phoneName = "your phone"
     var connection: Connection = .idle
     /// The sticky problem the Deck's banner also shows (PAIR-33/35). A
@@ -40,6 +48,20 @@ struct PhoneControlsState: Equatable {
     var notice: Banner?
     var battery: Int?
     var charging = false
+    /// The phone is locked (the header's lock glyph while online).
+    var locked = false
+    /// When the phone was last reached, for the header's line while away.
+    var lastSeen: Date?
+    /// Every remembered phone, most recently used first; the header shows a
+    /// pop-up only with two or more (PANEL-27).
+    var phones: [PanelPhone] = []
+    /// The app in front on the phone, from the pulled `task.front` reply; nil
+    /// while the phone is away or nothing continuable is in front (PANEL-28).
+    var handoff: FrontAppRow?
+    /// A fresh foreground reply said the phone's screen has nothing to open;
+    /// the Phone menu's always-present item is disabled with that reason.
+    var frontFresh = false
+    var frontNone = false
 
     /// The battery the header draws: none while the phone is away. The last
     /// reading belongs to a phone that isn't there any more, and a stale level
@@ -69,6 +91,25 @@ struct PhoneControlsState: Equatable {
     var dndOn: Bool { dnd?.isOn == true }
     var ringerTitle: String { ringer?.displayName ?? "—" }
     var screenTitle: String { panelOff ? "Screen off" : "Screen on" }
+    var showsPhonePicker: Bool { phones.count > 1 }
+
+    /// The handoff row and the Phone menu's item: the fresh app while one is
+    /// known, else the words the menu must always have (PANEL-28).
+    var continueTitle: String {
+        if frontFresh, let handoff { return handoff.title }
+        return FrontAppRow.fallbackTitle
+    }
+
+    var continueEnabled: Bool {
+        connection.isOnline && !(frontFresh && frontNone)
+    }
+
+    var continueReason: String? {
+        guard connection.isOnline else { return PanelUnavailable.offline.sentence }
+        return frontFresh && frontNone ? FrontAppRow.nothingToOpen : nil
+    }
+
+    var showsHandoff: Bool { connection.isOnline && handoff != nil }
 
     /// The Ringer menu's rows in one place: the mode, its word and whether it is
     /// the phone's current mode (the menu's checkmark).
@@ -83,7 +124,7 @@ struct PhoneControlsState: Equatable {
         PhoneRingerMode.allCases.map { RingerMenuRow(mode: $0, checked: ringer == $0) }
     }
 
-    /// The volume's own line (the tiles have their own, per control).
+    /// The volume's own line (the modules have their own, per control).
     var reason: String? { PhonePanelItem.volume.reason(in: self) }
 
     var volumeFraction: Double? {
@@ -93,16 +134,15 @@ struct PhoneControlsState: Equatable {
 
     var showsPicker: Bool { MediaMenu.showsSessionPicker(sessions) }
 
-    var pickerTitle: String {
-        "Now playing: \(MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone")"
-    }
+    var pickerApp: String { MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone" }
+    var pickerTitle: String { "Now playing: \(pickerApp)" }
 
     var ringTitle: String { ringing ? "Stop Ringing" : "Ring Phone" }
 
-    /// [PANEL-8] The Ring Phone tile's second line. A timeout is not a state,
-    /// so the tile says nothing under its title at rest; while the phone rings
-    /// the line names the ring.
-    var ringSubtitle: String { ringing ? "Ringing" : "" }
+    /// [PANEL-8/PANEL-11] The Ring Phone module's second line: the design's
+    /// "Plays a sound" at rest, "Ringing" while the phone rings. A timeout is
+    /// not a state, so it never appears here.
+    var ringSubtitle: String { ringing ? "Ringing" : "Plays a sound" }
 }
 
 /// The volume slider's small machine (docs/design/mac-redesign.md §3.8):
@@ -246,6 +286,7 @@ struct PhoneControlsActions {
     var turnOffScreen: () -> Void = {}
     var disconnectAgent: () -> Void = {}
     var pairAgain: () -> Void = {}
+    var usePhone: (String) -> Void = { _ in }
 
     init() {}
 
@@ -268,6 +309,7 @@ struct PhoneControlsActions {
         turnOffScreen = { [weak controller] in controller?.windows.togglePhonePanelOff() }
         disconnectAgent = { [weak controller] in controller?.mcp.disconnectAgents() }
         pairAgain = { [weak controller] in controller?.pairAgain(source: .menubar) }
+        usePhone = { [weak controller] id in controller?.usePhone(id: id) }
     }
 }
 
@@ -316,6 +358,17 @@ extension PhoneControlsState {
         notice = controller.presentation.panelNotice
         battery = controller.status?.battery
         charging = controller.status?.charging ?? false
+        locked = controller.status?.locked ?? false
+        lastSeen = controller.lastSeen
+        phones = controller.rememberedPhones.map { phone in
+            PhoneControlsState.PanelPhone(
+                id: phone.id,
+                name: controller.displayName(for: phone.ref, fallback: phone.name),
+                active: phone.id == controller.currentId)
+        }
+        handoff = controller.frontAppRow
+        frontFresh = controller.frontAppFresh
+        frontNone = controller.frontAppNone
         agentCount = controller.mcp.clientCount
         media = controller.mediaNow
         sessions = controller.mediaSessions
@@ -346,23 +399,26 @@ extension PhoneControlsState {
 /// The panel's rows in focus order, top to bottom: what the keyboard tabs
 /// through and what `PhonePanelProbe` maps the hosting view's key views to.
 enum PhonePanelItem: String, CaseIterable {
-    case dnd, ringer, ring, screen, volume, sessions, live, phoneScreen, findApps,
-         continueOnMac, installApk, disconnectAgent, gear
+    case phonePicker, volume, dnd, ringer, ring, screen, sessions, live, liveDismiss,
+         continueOnMac, phoneScreen, findApps, installApk, disconnectAgent, gear
 
     var id: String { "panel.\(rawValue)" }
 
     var label: String {
         switch self {
-        case .dnd: return "Do Not Disturb"
+        case .phonePicker: return "Phone"
+        case .volume: return "Phone volume"
+        case .dnd: return "Focus"
         case .ringer: return "Ringer"
         case .ring: return "Ring Phone"
         case .screen: return "Turn Off Screen"
-        case .volume: return "Phone volume"
         case .sessions: return "Now Playing follows"
         case .live: return "Live notification"
+        case .liveDismiss: return "Dismiss notification"
+        case .continueOnMac: return "Open Current App on Mac"
         case .phoneScreen: return "Phone Mirror"
         case .findApps: return "Find Apps"
-        case .continueOnMac: return "Move to Mac"
+        /// Kept for the Phone menu's item; the card does not draw it (PANEL-16).
         case .installApk: return "Install APK…"
         case .disconnectAgent: return "Disconnect the AI agent"
         /// The gear: an icon-only button that opens the icon's menu, named for
@@ -373,26 +429,33 @@ enum PhonePanelItem: String, CaseIterable {
 
     /// One entry per focusable control the state renders, in Tab order: the
     /// header's gear first (it is the card's first control, top-right), then
-    /// the agent row's Disconnect button while an agent is connected, the four
-    /// tiles, the volume, the picker, the live rows and the window buttons.
-    /// The panel opens one step past the gear — see `openingFocus` — so the
-    /// ring lands on the first tile and not on a secondary command.
+    /// the phone pop-up with 2+ phones, the agent row's Disconnect while an
+    /// agent is connected, the Sound slider, the four modules, the picker, the
+    /// live rows (each with its Dismiss), the handoff row when shown, and the
+    /// two window buttons (PANEL-20). Install APK… is the Phone menu's, never
+    /// a card row.
     static func focusOrder(for state: PhoneControlsState, showsGear: Bool = false) -> [PhonePanelItem] {
         var items: [PhonePanelItem] = []
         if showsGear { items.append(.gear) }
+        if state.showsPhonePicker { items.append(.phonePicker) }
         if state.agentCount > 0 { items.append(.disconnectAgent) }
-        items += [.dnd, .ringer, .ring, .screen, .volume]
+        items.append(.volume)
+        items += [.dnd, .ringer, .ring, .screen]
         if state.showsPicker { items.append(.sessions) }
-        items += Array(repeating: .live, count: state.live.count)
-        items += [.phoneScreen, .findApps, .continueOnMac, .installApk]
+        for _ in state.live {
+            items.append(.live)
+            items.append(.liveDismiss)
+        }
+        if state.showsHandoff { items.append(.continueOnMac) }
+        items += [.phoneScreen, .findApps]
         return items
     }
 
-    /// Where the opening focus lands: the first phone control below the header,
-    /// never the gear above it (the person's ask, 2026-10-27) and never a
-    /// destructive action (ISS-75). The agent row's Disconnect sits above the
-    /// tiles, so the card steps past it too: the ring lands on the same control
-    /// with and without an agent.
+    /// Where the opening focus lands: the first phone module below the header,
+    /// never the gear or the phone pop-up above it (the person's ask,
+    /// 2026-10-27) and never a destructive action (ISS-75). The agent row's
+    /// Disconnect and the Sound slider sit above the modules, so the card
+    /// steps past them too: the ring lands on Focus with and without an agent.
     static func openingFocus(for state: PhoneControlsState) -> PhonePanelItem {
         .dnd
     }
@@ -411,40 +474,44 @@ enum PhonePanelItem: String, CaseIterable {
 /// probe and the geometry tests read these numbers instead of their own.
 enum PhonePanelMetrics {
     static let width: CGFloat = 300
-    /// The one side inset every section shares: header, tiles, rows, buttons
+    /// The one side inset every section shares: header, modules, rows, buttons
     /// and the gear. Nothing is indented past it (CONV-MAC-26).
     static let inset: CGFloat = 12
-    /// How far a row's hover highlight reaches past the inset, so its content
-    /// stays on the grid while the highlight sits just outside it.
-    static let hoverBleed: CGFloat = 8
     static let headerHeight: CGFloat = 44
+
     /// The gear's button and its top offset from the card's top edge. The
     /// controller reads these to anchor the gear's menu at the button, so the
     /// two never disagree (MenuBarMenuAnchor.gearRect).
     static let gearSize: CGFloat = 22
     static let gearTop: CGFloat = 21
+    /// The header's phone name while it is a pop-up: long names truncate
+    /// rather than widen the card or run under the battery and the gear
+    /// (PANEL-6/PANEL-27).
+    static let pickerNameWidth: CGFloat = 150
     static let rowHeight: CGFloat = 28
     static let rowCorner: CGFloat = 6
     static let iconColumn: CGFloat = 18
-    static let iconTextSpace: CGFloat = 8
-    /// The rhythm, one scale for the panel: 8 inside a group (one tile row to
+    /// The rhythm, one scale for the panel: 8 inside a group (one module row to
     /// the next), 12 between sections.
     static let groupGap: CGFloat = 8
     static let sectionGap: CGFloat = 12
     static let sectionHeight: CGFloat = 16
-    /// P3's 2×2 control tiles: two 134 pt tiles with 8 pt between them.
+    /// P2's modules: two 134 pt modules with 8 pt between them, 62 pt tall.
     static let tileGap: CGFloat = 8
     static let tileWidth = (rowWidth - tileGap) / 2
     static let tileMinHeight: CGFloat = 62
     static let tileCorner: CGFloat = 12
     static let tilePadding: CGFloat = 10
-    /// The WINDOWS row: four icon buttons, 6 pt apart, 46 pt tall.
-    static let windowGap: CGFloat = 6
-    static let windowMinHeight: CGFloat = 46
+    /// The full-width modules: Sound (label row + slider), Now Playing and the
+    /// handoff row.
+    static let soundMinHeight: CGFloat = 54
+    static let nowPlayingMinHeight: CGFloat = 46
+    static let handoffMinHeight: CGFloat = 42
+    /// The WINDOWS row: two normal-text buttons, 8 pt apart, 32 pt tall.
+    static let windowGap: CGFloat = 8
+    static let windowMinHeight: CGFloat = 32
     static let windowCorner: CGFloat = 10
 
-    /// The text inset every row's title shares, from the panel's left edge.
-    static let textInset = inset + iconColumn + iconTextSpace
     /// One row's width inside the panel's inset.
     static let rowWidth = width - inset * 2
 }
@@ -455,9 +522,9 @@ enum PhonePanelMetrics {
 extension PhonePanelItem {
     func isEnabled(in state: PhoneControlsState) -> Bool { reason(in: state) == nil }
 
-    /// Whether a tile draws as on (accent): the phone's own state, but only
-    /// while the tile can act. A disabled tile is dimmed neutral, never accent,
-    /// so it cannot read as a control that is on (CONV-MAC-25).
+    /// Whether a module draws as on (accent): the phone's own state, but only
+    /// while the module can act. A disabled module is dimmed neutral, never
+    /// accent, so it cannot read as a control that is on (CONV-MAC-25).
     func isOn(in state: PhoneControlsState) -> Bool {
         guard isEnabled(in: state) else { return false }
         switch self {
@@ -496,7 +563,7 @@ extension PhonePanelItem {
         case .installApk:
             guard state.connection.isOnline else { return .offline }
             return state.installBusy ? .installBusy : nil
-        case .sessions, .live, .findApps, .disconnectAgent, .gear:
+        case .phonePicker, .sessions, .live, .liveDismiss, .findApps, .disconnectAgent, .gear:
             return nil
         }
     }
@@ -507,10 +574,31 @@ extension PhonePanelItem {
         unavailable(in: state)?.sentence
     }
 
-    /// The line a disabled tile shows in place of its state. The full sentence
-    /// is its help tag and hint.
+    /// A help tag with a disabled module's reason after it, while online. While
+    /// the link is down no module repeats the group's reason; the Screen
+    /// module's help tag is its short reason itself (PANEL-12/PANEL-19). The
+    /// view, the tooltip and VoiceOver read this one string.
+    func help(in state: PhoneControlsState) -> String {
+        let base: String
+        switch self {
+        case .dnd: base = "\(label) — \(state.dndOn ? "Do Not Disturb" : "Off")"
+        case .ringer: base = "\(label) — \(state.ringerTitle)"
+        case .ring: base = "\(state.ringTitle) — \(state.ringSubtitle)"
+        case .screen: base = "\(label) — \(state.screenTitle)"
+        default: base = label
+        }
+        guard state.connection.isOnline, let reason = reason(in: state) else { return base }
+        if self == .screen, let short = shortReason(in: state) { return short }
+        return "\(base) — \(reason)"
+    }
+
+    /// The line a disabled module shows in place of its state. The full
+    /// sentence is its VoiceOver hint. While the link is down the four modules
+    /// show no line at all: the Sound module carries the group's one reason
+    /// (PANEL-19).
     func shortReason(in state: PhoneControlsState) -> String? {
-        unavailable(in: state)?.shortLine
+        guard state.connection.isOnline else { return nil }
+        return unavailable(in: state)?.shortLine
     }
 }
 
@@ -555,29 +643,37 @@ struct PhonePanelView: View {
     /// menu. The Deck's popover passes none — the Deck has its own gear and the
     /// app menu has the same commands.
     let onGear: (() -> Void)?
+    /// The menu bar panel reports its card height so the window can follow a
+    /// row that arrives or leaves (PANEL-4). The Deck popover and the tests
+    /// pass none: their host sizes itself.
+    let onSizeChange: ((CGFloat) -> Void)?
 
     static let width: CGFloat = PhonePanelMetrics.width
 
-    /// The long sentence for the handoff button's help tag and VoiceOver label:
+    /// The long sentence for the handoff module's help tag and VoiceOver label:
     /// what it does, not "continue" (CONV-PD-09).
-    static let moveToMacHelp = "Moves the app on your phone's screen into its own Mac window, where you left off (⇧⌘C)"
+    static let handoffHelp = FrontAppRow.genericHelp
 
     private let inset: CGFloat = PhonePanelMetrics.inset
     @State private var volume: PhoneVolumeControl
     @State private var settleTimeout: Task<Void, Never>?
+    @State private var dismissed: Set<String> = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(state: PhoneControlsState, actions: PhoneControlsActions,
-         onGear: (() -> Void)? = nil) {
+         onGear: (() -> Void)? = nil,
+         onSizeChange: ((CGFloat) -> Void)? = nil) {
         self.state = state
         self.actions = actions
         self.onGear = onGear
+        self.onSizeChange = onSizeChange
         _volume = State(initialValue: PhoneVolumeControl(display: state.volumeFraction ?? 0))
     }
 
     var body: some View {
-        // The gear is the ZStack's second child, so SwiftUI adds it after the
-        // card and the key view loop reaches it last: it must not take the
-        // opening focus (focusOrder ends with it too).
+        // The gear is drawn over the card, after it, so the key view loop
+        // reaches it in the header's own order and it never takes the opening
+        // focus (focusOrder puts it first; openingFocus steps past it).
         ZStack(alignment: .topTrailing) {
             if let onGear {
                 gearButton(onGear)
@@ -585,9 +681,17 @@ struct PhonePanelView: View {
                     .zIndex(1)
             }
             card
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    onSizeChange?(height)
+                }
         }
         .onAppear { syncVolume() }
         .onChange(of: state.volumeFraction) { _, _ in syncVolume() }
+        .onChange(of: state.live.map(\.id)) { _, ids in
+            dismissed.formIntersection(Set(ids))
+        }
         .onDisappear { settleTimeout?.cancel() }
     }
 
@@ -600,21 +704,21 @@ struct PhonePanelView: View {
                 noticeRow(notice).padding(.top, PhonePanelMetrics.sectionGap)
             }
             if state.agentCount > 0 { agentRow.padding(.top, PhonePanelMetrics.sectionGap) }
-            tiles
-            volumeRow.padding(.top, PhonePanelMetrics.sectionGap)
-            if state.showsPicker { pickerRow.padding(.top, PhonePanelMetrics.sectionGap) }
-            if !state.live.isEmpty {
-                sectionLabel("LIVE")
-                ForEach(state.live) { item in
-                    PanelRow(symbol: "bell.badge", title: NotifyLiveText.menuTitle(item, now: state.liveTick),
-                             enabled: true) { actions.openLive(item.id) }
-                        .accessibilityLabel(NotifyLiveText.menuTitle(item, now: state.liveTick))
-                }
+            soundModule.padding(.top, PhonePanelMetrics.sectionGap)
+            modules.padding(.top, PhonePanelMetrics.sectionGap)
+            if state.showsPicker { nowPlaying.padding(.top, PhonePanelMetrics.sectionGap) }
+            if !visibleLive.isEmpty { liveSection.padding(.top, PhonePanelMetrics.sectionGap) }
+            if let handoff = state.handoff, state.connection.isOnline {
+                handoffModule(handoff)
+                    .padding(.top, PhonePanelMetrics.sectionGap)
+                    .transition(.opacity)
             }
-            windowsRow
+            windowsRow.padding(.top, PhonePanelMetrics.sectionGap)
         }
         .padding(inset)
         .frame(width: Self.width)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: state.handoff)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: visibleLive.map(\.id))
     }
 
     /// The Deck's sticky banner in the panel (PAIR-33/35): text, the one line
@@ -689,8 +793,9 @@ struct PhonePanelView: View {
         .frame(height: PhonePanelMetrics.headerHeight)
     }
 
-    /// The phone and its connection, the battery: one VoiceOver element, so the
-    /// gear beside it stays a control of its own.
+    /// The phone and its connection, the battery. With two or more phones the
+    /// name is its own pop-up (PANEL-27); the link/lock/battery line is one
+    /// VoiceOver element, so the name and the gear stay controls of their own.
     private var headerIdentity: some View {
         HStack(spacing: 10) {
             Image(systemName: state.connection.isOnline ? "iphone.gen3" : "iphone.slash")
@@ -698,16 +803,13 @@ struct PhonePanelView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 2) {
-                Text(state.phoneName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
-                    Text(state.connection.text)
-                        .font(.caption)
+                nameLine
+                statusLine
+                if !state.connection.isOnline, let lastSeen = state.lastSeen {
+                    Text(LastSeen.line(lastSeen))
+                        .font(.system(size: 9))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             Spacer(minLength: 6)
@@ -719,10 +821,81 @@ struct PhonePanelView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(low ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                .accessibilityHidden(true)
+            }
+        }
+    }
+
+    /// One phone: the name, plain. Two or more: a short checkmark pop-up that
+    /// switches the phone in use through the app's one route (SET-DEV-03), the
+    /// macOS way to pick the device the card speaks for.
+    @ViewBuilder
+    private var nameLine: some View {
+        if state.showsPhonePicker {
+            Menu {
+                ForEach(state.phones) { phone in
+                    Button {
+                        actions.usePhone(phone.id)
+                    } label: {
+                        if phone.active {
+                            Label(phone.name, systemImage: "checkmark")
+                        } else {
+                            Text(phone.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(state.phoneName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .accessibilityLabel("\(state.phoneName), phone in use")
+            .accessibilityIdentifier(PhonePanelItem.phonePicker.id)
+            .help("Choose the phone the panel acts on.")
+        } else {
+            Text(state.phoneName)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .accessibilityLabel(state.phoneName)
+        }
+    }
+
+    /// The dot plus the link's words, the lock while the phone is locked, and
+    /// the last-seen line while it is away: one VoiceOver element.
+    private var statusLine: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+            Text(state.connection.text)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            if state.connection.isOnline, state.locked {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(state.phoneName), \(state.connection.text)")
+        .accessibilityLabel(headerLabel)
+    }
+
+    private var headerLabel: String {
+        var parts = [state.connection.text]
+        if state.connection.isOnline, state.locked { parts.append("locked") }
+        if let battery = state.shownBattery { parts.append("\(battery)% battery") }
+        if !state.connection.isOnline, let lastSeen = state.lastSeen {
+            parts.append(LastSeen.line(lastSeen))
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// The gear, at the panel's top-right: an icon-only button whose help tag
@@ -756,58 +929,57 @@ struct PhonePanelView: View {
         .frame(height: 24)
     }
 
-    // MARK: - The tiles
+    // MARK: - The Sound module and the 2×2 modules
 
-    /// A tile's second line: its state while the tile can act, else why it
-    /// cannot (the full sentence is the tile's help tag and hint).
-    private func tileLine(_ item: PhonePanelItem, _ text: String) -> String {
-        item.isEnabled(in: state) ? text : (item.shortReason(in: state) ?? text)
+    /// A module's second line: its state while it can act, else why it cannot
+    /// while online. While the link is down the four modules show no line: the
+    /// Sound module carries the group's one reason (PANEL-19).
+    private func moduleLine(_ item: PhonePanelItem, _ text: String) -> String {
+        guard item.isEnabled(in: state) else { return item.shortReason(in: state) ?? "" }
+        return text
     }
 
-    /// A help tag with a disabled control's full reason after it.
-    private func helpTag(_ base: String, for item: PhonePanelItem) -> String {
-        guard let reason = item.reason(in: state) else { return base }
-        return "\(base) — \(reason)"
-    }
-
-    private var tiles: some View {
+    private var modules: some View {
         VStack(spacing: PhonePanelMetrics.tileGap) {
             HStack(spacing: PhonePanelMetrics.tileGap) {
-                dndTile
-                ringerTile
+                dndModule
+                ringerModule
             }
             HStack(spacing: PhonePanelMetrics.tileGap) {
-                ringTile
-                screenTile
+                ringModule
+                screenModule
             }
         }
-        .padding(.top, PhonePanelMetrics.sectionGap)
     }
 
-    private var dndTile: some View {
+    private var dndModule: some View {
         let item = PhonePanelItem.dnd
         let enabled = item.isEnabled(in: state)
+        let stateText = state.dndOn ? "Do Not Disturb" : "Off"
+        let line = moduleLine(item, stateText)
         return Button {
             actions.setDnd(!state.dndOn)
         } label: {
-            tileLabel(symbol: state.dndOn ? "moon.fill" : "moon",
-                      title: item.label,
-                      subtitle: tileLine(item, state.dndOn ? "On" : "Off"),
-                      lit: item.isOn(in: state), enabled: enabled)
+            moduleLabel(symbol: state.dndOn ? "moon.fill" : "moon",
+                        title: item.label,
+                        subtitle: line,
+                        lit: item.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
         .disabled(!enabled)
-        .accessibilityLabel("\(item.label), \(state.dndOn ? "On" : "Off")")
+        .accessibilityLabel(item.label)
+        .accessibilityValue(enabled ? stateText : (line.isEmpty ? "" : line))
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
-        .help(helpTag("\(item.label) — \(state.dndOn ? "On" : "Off")", for: item))
+        .help(item.help(in: state))
     }
 
-    /// The Ringer tile opens a menu; its own click never cycles the mode. The
+    /// The Ringer module opens a menu; its own click never cycles the mode. The
     /// current mode is checked and named under the bell.
-    private var ringerTile: some View {
+    private var ringerModule: some View {
         let item = PhonePanelItem.ringer
         let enabled = item.isEnabled(in: state)
+        let line = moduleLine(item, state.ringerTitle)
         return Menu {
             ForEach(state.ringerMenu) { row in
                 Button {
@@ -821,59 +993,64 @@ struct PhonePanelView: View {
                 }
             }
         } label: {
-            tileLabel(symbol: ringerSymbol,
-                      title: item.label,
-                      subtitle: tileLine(item, state.ringerTitle),
-                      lit: item.isOn(in: state), enabled: enabled)
+            moduleLabel(symbol: ringerSymbol,
+                        title: item.label,
+                        subtitle: line,
+                        lit: item.isOn(in: state), enabled: enabled)
         }
         .menuStyle(.button)
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
         .menuIndicator(.hidden)
         .disabled(!enabled)
-        .accessibilityLabel("\(item.label), \(state.ringerTitle)")
+        .accessibilityLabel(item.label)
+        .accessibilityValue(enabled ? state.ringerTitle : (line.isEmpty ? "" : line))
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
-        .help(helpTag("Ringer — \(state.ringerTitle)", for: item))
+        .help(item.help(in: state))
     }
 
-    private var ringTile: some View {
+    private var ringModule: some View {
         let item = PhonePanelItem.ring
         let enabled = item.isEnabled(in: state)
+        let line = moduleLine(item, state.ringSubtitle)
         return Button {
             state.ringing ? actions.stopRing() : actions.ring()
         } label: {
-            tileLabel(symbol: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right",
-                      title: state.ringTitle,
-                      subtitle: tileLine(item, state.ringSubtitle),
-                      lit: item.isOn(in: state), enabled: enabled)
+            moduleLabel(symbol: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right",
+                        title: state.ringTitle,
+                        subtitle: line,
+                        lit: item.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
         .disabled(!enabled)
         .accessibilityLabel(state.ringTitle)
+        .accessibilityValue(enabled ? state.ringSubtitle : (line.isEmpty ? "" : line))
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
-        .help(helpTag(state.ringTitle, for: item))
+        .help(item.help(in: state))
     }
 
-    /// Turn Off Screen follows the phone window's held panel: the subtitle is
-    /// the phone's own state, and the tile is lit while it is off.
-    private var screenTile: some View {
+    /// Turn Off Screen follows the phone window's held panel: the second line
+    /// is the phone's own state, and the module is lit while it is off.
+    private var screenModule: some View {
         let item = PhonePanelItem.screen
         let enabled = item.isEnabled(in: state)
+        let line = moduleLine(item, state.screenTitle)
         return Button {
             actions.turnOffScreen()
         } label: {
-            tileLabel(symbol: state.panelOff ? "iphone.slash" : "iphone",
-                      title: item.label,
-                      subtitle: tileLine(item, state.screenTitle),
-                      lit: item.isOn(in: state), enabled: enabled)
+            moduleLabel(symbol: state.panelOff ? "iphone.slash" : "iphone",
+                        title: item.label,
+                        subtitle: line,
+                        lit: item.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
         .disabled(!enabled)
-        .accessibilityLabel("\(item.label), \(state.screenTitle)")
+        .accessibilityLabel(item.label)
+        .accessibilityValue(enabled ? state.screenTitle : (line.isEmpty ? "" : line))
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
-        .help(helpTag("\(item.label) — \(state.screenTitle)", for: item))
+        .help(item.help(in: state))
     }
 
     private var ringerSymbol: String {
@@ -884,16 +1061,17 @@ struct PhonePanelView: View {
         }
     }
 
-    /// One tile's content: symbol, title and its second line. Lit, the type is
-    /// white on the accent. Disabled, all three lines are neutral grey, so the
-    /// tile reads as off and not operable (CONV-MAC-25); its fill and hover come
-    /// from PanelControlStyle.
-    private func tileLabel(symbol: String, title: String, subtitle: String,
-                           lit: Bool, enabled: Bool) -> some View {
+    /// One module's content: symbol, title and its second line. Lit, the type
+    /// is white on the accent. Disabled, all three lines are neutral grey, so
+    /// the module reads as off and not operable (CONV-MAC-25); its fill and
+    /// hover come from PanelControlStyle.
+    private func moduleLabel(symbol: String, title: String, subtitle: String,
+                             lit: Bool, enabled: Bool) -> some View {
         // `.secondary` still reads near-primary on the panel material. A
-        // disabled tile draws every line at a fixed low opacity (35 %), so its
-        // title contrast is under half an enabled title's on both appearances
-        // (reviewer round 2, fix 1c). The fill comes from PanelControlStyle.
+        // disabled module draws every line at a fixed low opacity (35 %), so
+        // its title contrast is under half an enabled title's on both
+        // appearances (reviewer round 2, fix 1c). The fill comes from
+        // PanelControlStyle.
         let muted = AnyShapeStyle(Color.primary.opacity(0.35))
         let strong: AnyShapeStyle = lit ? AnyShapeStyle(.white)
             : enabled ? AnyShapeStyle(.primary) : muted
@@ -909,9 +1087,8 @@ struct PhonePanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .foregroundStyle(strong)
-            // A tile with no state to name (Ring Phone at rest) keeps its
-            // second line's box: the card's height is the same online and
-            // away (PANEL-19), so a blank line, never a shorter tile.
+            // A module with no state line (offline) keeps its second line's
+            // box, so the group's height never changes with the link.
             Text(subtitle.isEmpty ? " " : subtitle)
                 .font(.system(size: 9))
                 .lineLimit(1)
@@ -923,58 +1100,67 @@ struct PhonePanelView: View {
         .contentShape(.rect(cornerRadius: PhonePanelMetrics.tileCorner))
     }
 
-    // MARK: - Volume and windows
+    // MARK: - Sound, Now Playing, Live, handoff, windows
 
-    /// The volume row. Where the slider would be, a disabled row says why, so
-    /// the reason sits on the control it disables and not in a line of its own.
-    private var volumeRow: some View {
-        let enabled = PhonePanelItem.volume.isEnabled(in: state)
-        return PanelRowShell(enabled: enabled,
-                             icon: { Image(systemName: "speaker.fill").font(.system(size: 12)) }) {
-            if let reason = PhonePanelItem.volume.reason(in: state) {
+    /// The full-width Sound module: the speaker, the word "Sound" and the
+    /// phone's percentage on one line, the volume slider under it. Where the
+    /// slider would be, a disabled module says why, so the reason sits on the
+    /// control it disables and not in a line of its own (PANEL-13/PANEL-19).
+    private var soundModule: some View {
+        let item = PhonePanelItem.volume
+        let enabled = item.isEnabled(in: state)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.fill")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Sound")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer(minLength: 4)
+                Text(volumeText)
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(enabled ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.primary.opacity(0.35)))
+            if let reason = item.reason(in: state) {
                 Text(reason)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.9)
+                    .accessibilityIdentifier("panel.volumeReason")
             } else {
-                HStack(spacing: PhonePanelMetrics.iconTextSpace) {
-                    Slider(value: Binding(
-                        get: {
-                            PhoneVolumeDebug.update(volume)
-                            return volume.display
-                        },
-                        set: { fraction in
-                            let now = Date()
-                            if !volume.isDragging { volume.begin(at: now) }
-                            if volume.drag(to: fraction, at: now) { actions.setVolume(fraction) }
-                            PhoneVolumeDebug.update(volume)
-                        },
-                    ), in: 0...1, onEditingChanged: { editing in
-                        if editing {
-                            volume.begin(at: Date())
-                            PhoneVolumeDebug.update(volume)
-                        } else {
-                            finishVolumeDrag()
-                        }
-                    })
-                    .controlSize(.small)
-                    .accessibilityLabel(PhonePanelItem.volume.label)
-                    .accessibilityValue(volumeText)
-                    .accessibilityIdentifier(PhonePanelItem.volume.id)
-                    Text(volumeText)
-                        .font(.system(size: 11))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32, alignment: .trailing)
-                    Image(systemName: "speaker.wave.3.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(width: PhonePanelMetrics.iconColumn)
-                }
+                Slider(value: Binding(
+                    get: {
+                        PhoneVolumeDebug.update(volume)
+                        return volume.display
+                    },
+                    set: { fraction in
+                        let now = Date()
+                        if !volume.isDragging { volume.begin(at: now) }
+                        if volume.drag(to: fraction, at: now) { actions.setVolume(fraction) }
+                        PhoneVolumeDebug.update(volume)
+                    },
+                ), in: 0...1, onEditingChanged: { editing in
+                    if editing {
+                        volume.begin(at: Date())
+                        PhoneVolumeDebug.update(volume)
+                    } else {
+                        finishVolumeDrag()
+                    }
+                })
+                .controlSize(.small)
+                .accessibilityLabel(item.label)
+                .accessibilityValue(volumeText)
+                .accessibilityIdentifier(item.id)
             }
         }
-        .disabled(!enabled)
+        .padding(PhonePanelMetrics.tilePadding)
+        .frame(maxWidth: .infinity, minHeight: PhonePanelMetrics.soundMinHeight, alignment: .leading)
+        .background(Color.primary.opacity(enabled ? PanelFill.filledRest : PanelFill.filledDisabled),
+                    in: RoundedRectangle(cornerRadius: PhonePanelMetrics.tileCorner))
+        .contentShape(.rect(cornerRadius: PhonePanelMetrics.tileCorner))
+        .accessibilityElement(children: .contain)
     }
 
     private var volumeText: String {
@@ -982,7 +1168,10 @@ struct PhonePanelView: View {
         return "\(Int((volume.display * 100).rounded()))%"
     }
 
-    private var pickerRow: some View {
+    /// The Now Playing module: the caption and the chosen app on two lines, the
+    /// session picker behind the chevron (PANEL-14). Only with two or more
+    /// sessions, unchanged in behaviour.
+    private var nowPlaying: some View {
         Menu {
             ForEach(state.sessions) { row in
                 Button {
@@ -992,55 +1181,166 @@ struct PhonePanelView: View {
                 }
             }
         } label: {
-            PanelRowShell(icon: { Image(systemName: "music.note").font(.system(size: 12)) }) {
-                HStack(spacing: 6) {
-                    Text(state.pickerTitle)
-                        .font(.system(size: 13))
+            HStack(spacing: 9) {
+                Image(systemName: "music.note")
+                    .font(.system(size: 13))
+                    .frame(width: 20)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Now playing")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text(state.pickerApp)
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
-                    Spacer(minLength: 6)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
                 }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
             }
-            .contentShape(.rect(cornerRadius: PhonePanelMetrics.rowCorner))
+            .padding(PhonePanelMetrics.tilePadding)
+            .frame(maxWidth: .infinity, minHeight: PhonePanelMetrics.nowPlayingMinHeight,
+                   alignment: .leading)
+            .contentShape(.rect(cornerRadius: PhonePanelMetrics.tileCorner))
         }
         .menuStyle(.button)
-        .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
-                                       bleed: PhonePanelMetrics.hoverBleed,
+        .buttonStyle(PanelControlStyle(kind: .filled, corner: PhonePanelMetrics.tileCorner,
                                        hoverID: PhonePanelItem.sessions.id))
         .menuIndicator(.hidden)
         .accessibilityLabel(state.pickerTitle)
         .accessibilityIdentifier(PhonePanelItem.sessions.id)
+        .help(state.pickerTitle)
     }
 
-    /// P3's WINDOWS: one compact row of icon buttons, each with its shortcut in
-    /// the tooltip. The visual label may be short ("Mirror"); VoiceOver hears
-    /// the full name ("Phone Mirror").
+    private var visibleLive: [NotifyLiveItem] {
+        PhonePanelLiveRows.visible(state.live, dismissed: dismissed)
+    }
+
+    private var liveSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("Live")
+            ForEach(visibleLive) { item in
+                liveRow(item)
+            }
+        }
+    }
+
+    /// One Live row: the notification's click action, and its own Dismiss
+    /// button. Dismissing hides the row on the Mac only; it sends nothing to
+    /// the phone and leaves the other rows (PANEL-15).
+    private func liveRow(_ item: NotifyLiveItem) -> some View {
+        let title = NotifyLiveText.menuTitle(item, now: state.liveTick)
+        return HStack(spacing: 0) {
+            Button {
+                actions.openLive(item.id)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 12))
+                        .frame(width: PhonePanelMetrics.iconColumn)
+                        .foregroundStyle(.secondary)
+                    Text(title)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                }
+                .frame(height: PhonePanelMetrics.rowHeight)
+                .contentShape(.rect)
+            }
+            .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
+                                           hoverID: PhonePanelItem.live.id))
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(PhonePanelItem.live.id)
+            Button {
+                dismissLive(item.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Color.primary.opacity(0.08), in: .circle)
+            }
+            .buttonStyle(PanelControlStyle(kind: .row, corner: 9,
+                                           hoverID: PhonePanelItem.liveDismiss.id))
+            .accessibilityLabel(PhonePanelItem.liveDismiss.label)
+            .accessibilityIdentifier(PhonePanelItem.liveDismiss.id)
+            .help("Dismiss")
+        }
+    }
+
+    private func dismissLive(_ id: String) {
+        dismissed.insert(id)
+    }
+
+    /// The handoff module: the app's icon, "Open <App> on Mac", the arrow. It
+    /// exists only while the phone reports an app in front (PANEL-28); a click
+    /// opens the handoff window, the same function as the Phone menu's item.
+    private func handoffModule(_ handoff: FrontAppRow) -> some View {
+        let item = PhonePanelItem.continueOnMac
+        return Button {
+            actions.continueOnMac()
+        } label: {
+            HStack(spacing: 9) {
+                if let icon = handoff.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 18, height: 18)
+                        .clipShape(.rect(cornerRadius: 4, style: .continuous))
+                } else {
+                    Image(systemName: "app.fill")
+                        .font(.system(size: 13))
+                        .frame(width: 18, height: 18)
+                        .foregroundStyle(.secondary)
+                }
+                Text(handoff.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(PhonePanelMetrics.tilePadding)
+            .frame(maxWidth: .infinity, minHeight: PhonePanelMetrics.handoffMinHeight,
+                   alignment: .leading)
+            .contentShape(.rect(cornerRadius: PhonePanelMetrics.tileCorner))
+        }
+        .buttonStyle(PanelControlStyle(kind: .filled, corner: PhonePanelMetrics.tileCorner,
+                                       hoverID: item.id))
+        .accessibilityLabel(handoff.help)
+        .accessibilityHint(handoff.help)
+        .accessibilityIdentifier(item.id)
+        .help(handoff.help)
+    }
+
+    /// The two normal-text window buttons, Phone Mirror and Apps, each with its
+    /// shortcut in the tooltip and the full name to VoiceOver (PANEL-16).
     private var windowsRow: some View {
         HStack(spacing: PhonePanelMetrics.windowGap) {
-            windowButton(.phoneScreen, visual: "Mirror", symbol: "iphone.gen3",
-                         help: "Phone Mirror (⌘P)", action: actions.openPhoneScreen)
-            windowButton(.findApps, visual: "Find Apps", symbol: "magnifyingglass",
-                         help: "Find Apps (⌘K)", action: actions.findApps)
-            windowButton(.continueOnMac, visual: "Move to Mac", symbol: "arrow.up.forward.app",
-                         help: Self.moveToMacHelp, action: actions.continueOnMac)
-            windowButton(.installApk, visual: "Install APK", symbol: "arrow.down.app",
-                         help: state.installTitle, action: actions.installApk)
+            windowButton(.phoneScreen, title: "Phone Mirror", symbol: "iphone.gen3",
+                         voiceOver: "Phone Mirror", help: "Phone Mirror (⌘P)",
+                         action: actions.openPhoneScreen)
+            windowButton(.findApps, title: "Apps", symbol: "square.grid.2x2",
+                         voiceOver: "Find Apps", help: "Find Apps (⌘K)",
+                         action: actions.findApps)
         }
-        .padding(.top, PhonePanelMetrics.sectionGap)
     }
 
-    private func windowButton(_ item: PhonePanelItem, visual: String, symbol: String,
-                              help: String, action: @escaping () -> Void) -> some View {
+    private func windowButton(_ item: PhonePanelItem, title: String, symbol: String,
+                              voiceOver: String, help: String,
+                              action: @escaping () -> Void) -> some View {
         let enabled = item.isEnabled(in: state)
         return Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 15))
-                Text(visual)
-                    .font(.system(size: 9))
+            Label {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.85)
+            } icon: {
+                Image(systemName: symbol)
+                    .font(.system(size: 13))
             }
             .foregroundStyle(enabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
             .frame(maxWidth: .infinity, minHeight: PhonePanelMetrics.windowMinHeight)
@@ -1049,19 +1349,22 @@ struct PhonePanelView: View {
         .buttonStyle(PanelControlStyle(enabled: enabled, corner: PhonePanelMetrics.windowCorner,
                                        hoverID: item.id))
         .disabled(!enabled)
-        .accessibilityLabel(item == .continueOnMac ? Self.moveToMacHelp : item.label)
+        .accessibilityLabel(voiceOver)
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
-        .help(helpTag(help, for: item))
+        .help(windowHelp(help, for: item))
+    }
+
+    private func windowHelp(_ base: String, for item: PhonePanelItem) -> String {
+        guard state.connection.isOnline, let reason = item.reason(in: state) else { return base }
+        return "\(base) — \(reason)"
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .semibold))
-            .tracking(0.8)
             .foregroundStyle(.secondary)
             .frame(height: PhonePanelMetrics.sectionHeight, alignment: .leading)
-            .padding(.top, PhonePanelMetrics.sectionGap)
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -1074,26 +1377,11 @@ struct PhonePanelView: View {
     }
 }
 
-/// One panel row's content on the shared grid: the 28 pt height and the 18 pt
-/// icon column every row's symbol sits in, so icons and titles line up from row
-/// to row. The row starts on the panel's inset, like the tiles. A row that can't
-/// act is dimmed here once, the same way for a button, a switch and a slider.
-struct PanelRowShell<Icon: View, Content: View>: View {
-    var enabled = true
-    @ViewBuilder var icon: Icon
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        HStack(spacing: PhonePanelMetrics.iconTextSpace) {
-            icon
-                .frame(width: PhonePanelMetrics.iconColumn)
-                .foregroundStyle(.secondary)
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: PhonePanelMetrics.rowHeight)
-        .contentShape(.rect(cornerRadius: PhonePanelMetrics.rowCorner))
-        .opacity(enabled ? 1 : 0.6)
+/// PANEL-15: a Live row's local dismissal. The filter is the card's own: the
+/// phone learns nothing, and the row leaves only this open card.
+enum PhonePanelLiveRows {
+    static func visible(_ rows: [NotifyLiveItem], dismissed: Set<String>) -> [NotifyLiveItem] {
+        rows.filter { !dismissed.contains($0.id) }
     }
 }
 
@@ -1128,8 +1416,6 @@ struct PanelControlStyle: ButtonStyle {
     /// The tile is on (accent fill). Only an enabled control can be on.
     var active = false
     var corner: CGFloat = PhonePanelMetrics.tileCorner
-    /// How far the highlight reaches past the content (a row's hover bleed).
-    var bleed: CGFloat = 0
     /// The item this control is, for the e2e's forced hover (PanelHoverDebug).
     var hoverID: String?
 
@@ -1182,45 +1468,10 @@ private struct PanelControlSurface<Content: View>: View {
                     RoundedRectangle(cornerRadius: style.corner)
                         .fill(Color.white.opacity(onLevel))
                 }
-                .padding(.horizontal, -style.bleed)
             }
             .scaleEffect(isPressed && style.enabled && !reduceMotion ? 0.98 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isHovered)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: isPressed)
             .onHover { hovering = $0 }
-    }
-}
-
-/// One 28 pt row: symbol, title, an optional shortcut hint. A person's click is
-/// the button's action; the hover highlight is the Control Center cue.
-struct PanelRow: View {
-    let symbol: String
-    let title: String
-    var shortcut: String?
-    var enabled = true
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            PanelRowShell(enabled: enabled,
-                          icon: { Image(systemName: symbol).font(.system(size: 12)) }) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    if let shortcut {
-                        Text(shortcut)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }
-        .buttonStyle(PanelControlStyle(kind: .row, enabled: enabled,
-                                       corner: PhonePanelMetrics.rowCorner,
-                                       bleed: PhonePanelMetrics.hoverBleed))
-        .disabled(!enabled)
-        .accessibilityLabel(title)
     }
 }

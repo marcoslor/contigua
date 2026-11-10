@@ -1564,6 +1564,53 @@ class SessionTest {
         assertEquals("an app stream names its task, with the app's label as the fallback", "Reader", title["title"])
     }
 
+    // ---- task.front --------------------------------------------------------
+
+    @Test
+    fun taskFrontReportsTheForegroundPackageWithoutOpeningAnything() {
+        val mover = FakeTaskMove(
+            listOf(
+                SystemTask(21, "com.android.systemui", null, 0, false, true),
+                SystemTask(30, "com.example.reader", "com.example.reader.Reader", 0, false, false),
+            ),
+        )
+        reconnectWith(mover)
+        send(mapOf("t" to "task.front", "seq" to 7))
+        val reply = readUntil("task.front")
+        assertEquals(7L, reply["seq"])
+        assertEquals("com.example.reader", reply["pkg"])
+        // A read: no display, no move, no HOME key, no stream.
+        assertTrue(platform.opens.isEmpty())
+        assertTrue(mover.moves.isEmpty())
+        assertTrue(platform.keys.isEmpty())
+    }
+
+    @Test
+    fun taskFrontAnswersNullWhenNothingIsContinuable() {
+        val mover = FakeTaskMove(
+            listOf(
+                SystemTask(21, "com.android.systemui", null, 0, false, true),
+                SystemTask(22, Session.OWN_PACKAGE, null, 0, false, false),
+                SystemTask(23, "com.android.launcher3", null, 0, true, false),
+            ),
+        )
+        reconnectWith(mover)
+        send(mapOf("t" to "task.front", "seq" to 9))
+        val reply = readUntil("task.front")
+        assertEquals(9L, reply["seq"])
+        assertTrue(reply.containsKey("pkg"))
+        assertEquals(null, reply["pkg"])
+        assertTrue(platform.keys.isEmpty())
+    }
+
+    @Test
+    fun taskFrontWithoutTheSeamAnswersNotAvailable() {
+        reconnectWith(null)
+        send(mapOf("t" to "task.front", "seq" to 3))
+        val error = readUntil("error")
+        assertEquals("not_available", error["code"])
+    }
+
     // ------------------------------------------------------------------
     // connection gates
     // ------------------------------------------------------------------
