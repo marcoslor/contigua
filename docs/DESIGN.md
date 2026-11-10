@@ -65,7 +65,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   reserves the rail's 44 pt on its trailing side (5 columns at 640, 6 at 760, 8 at 1000+). A cell and its icon keep
   one size at every window width: a resize only changes the column count, and past the 880 pt cap the block keeps its
   eight columns and grows its margins instead of scaling a tile. A title-bar double-click or the green button takes
-  the intrinsic width (the 880 pt grid plus 60 pt a side at the person's zoom, plus the rail).
+  the system's standard frame (the screen's visible frame); a second zoom returns the frame it came from.
   Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
   (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come

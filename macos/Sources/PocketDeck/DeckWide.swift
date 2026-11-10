@@ -18,9 +18,6 @@ enum DeckWide {
     /// The block's cap at 100 %. A wider window keeps the eight-column block
     /// and grows its margins; it never scales a cell.
     static let cap: CGFloat = 880
-    /// The margin today's 1000 pt window leaves beside the 880 pt block; the
-    /// standard zoom keeps it at the person's zoom.
-    static let sideMargin: CGFloat = 60
 
     /// Where the grid and its rail sit in a container `width` wide.
     struct Block: Equatable {
@@ -69,20 +66,5 @@ enum DeckWide {
         let rows = (count + block.columns - 1) / block.columns
         return 2 * metrics.verticalInset + CGFloat(rows) * metrics.cellHeight
             + CGFloat(max(rows - 1, 0)) * metrics.rowSpacing
-    }
-
-    /// The Deck's intrinsic width at a zoom (DECK-24): the 880 pt grid, the
-    /// 60 pt a side today's 1000 pt window leaves, and the rail, all at the
-    /// person's zoom.
-    static func preferredWidth(zoom: CGFloat) -> CGFloat {
-        (cap + 2 * sideMargin) * DeckZoom.clamped(zoom) + railSpace
-    }
-
-    /// The standard zoom's frame: the intrinsic width, centred on the screen,
-    /// at the screen's visible height — never wider than the screen.
-    static func standardFrame(visible: CGRect, preferredWidth: CGFloat) -> CGRect {
-        let width = min(preferredWidth, visible.width)
-        return CGRect(x: (visible.midX - width / 2).rounded(), y: visible.minY,
-                      width: width, height: visible.height)
     }
 }

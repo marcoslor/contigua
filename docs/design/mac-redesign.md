@@ -131,8 +131,8 @@ backgrounds), window background default.
   `RoundedRectangle(cornerRadius: 16)`. **Single click opens** (↩ opens the selected one, or the first match when none
   is selected). **⌘+ / ⌘− / ⌘0** scale the whole grid (cell, icon, gaps, insets and the 880 pt cap) through
   0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window. A **title-bar
-  double-click or the green button** takes the Deck's intrinsic width — the 880 pt grid plus 60 pt a side at the
-  person's zoom, plus the rail — and the screen's visible height, never wider than the screen (DECK-24).
+  double-click or the green button** takes the system's standard frame — the screen's visible frame — and a second
+  zoom returns the frame it came from (DECK-24); the zoom never changes the icon size.
 - **A–Z rail (D):** the Deck's trailing edge carries one 16 pt column, 8 pt from the edge: A–Z then `#`, 9 pt letters
   on a 12 pt pitch, the current letter accent and semibold, empty letters dimmed at 35 %. It appears only when the
   search field is empty and there are at least 30 apps. Clicking or dragging a letter scrolls to its first app; an
