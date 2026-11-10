@@ -162,39 +162,90 @@ final class NextWindowAction: NSObject {
 
 @MainActor
 extension MenuMarks {
-    private static var observer: NSObjectProtocol?
+    private static var observers: [NSObjectProtocol] = []
+    /// One correction is waiting for the run loop (see `correctAfterTheOpen`).
+    private static var correction: Timer?
+    /// True while a pass writes the items: the change notifications its own
+    /// writes post must not schedule another pass.
+    private static var applying = false
 
-    /// Corrects the bar's View and Window menus whenever a menu starts
+    /// Corrects the bar's View, Navigate and Phone menus whenever a menu starts
     /// tracking, so the person reads the window's state, not the launch's.
-    /// The notification is AppKit's own: SwiftUI keeps its menu delegate.
+    /// The notifications are AppKit's own: SwiftUI keeps its menu delegate.
     static func start() {
-        observer = NotificationCenter.default.addObserver(
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
             forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main
         ) { _ in
-            MainActor.assumeIsolated { apply(to: NSApp.mainMenu) }
+            MainActor.assumeIsolated { correctAfterTheOpen() }
+        })
+        // AppKit posts a menu's item changes; while a menu tracks, a change
+        // is SwiftUI installing the command items it rebuilt since the last
+        // open, so the pass runs once more after that install.
+        for name in [NSMenu.didAddItemNotification, NSMenu.didChangeItemNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    guard MenuTracking.isTracking, !applying else { return }
+                    correctAfterTheOpen()
+                }
+            })
         }
     }
 
-    /// Corrects both menus now: on open, and for the debug routes that stand
-    /// for what a person reads in an open menu (the e2e's dump and pick).
-    static func apply(to mainMenu: NSMenu?) {
-        guard let mainMenu else { return }
+    /// Corrects once this run loop turn ends. AppKit posts `didBeginTracking`
+    /// before SwiftUI installs the command items it rebuilt since the last
+    /// open: a pass run inside the notification is replaced by those items
+    /// while the menu is already on screen (measured, ISS-93). The deferred
+    /// pass reads the values the person really sees from the menu that is open.
+    static func correctAfterTheOpen() {
+        guard correction == nil else { return }
+        let timer = Timer(timeInterval: 0, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                correction = nil
+                apply(to: NSApplication.shared.mainMenu)
+            }
+        }
+        // The same two modes MenuTrack uses: a menu tracks in
+        // `.eventTracking`, which is not one of the common modes.
+        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        correction = timer
+    }
+
+    /// Corrects both menus now: on a key-window change, and for the debug
+    /// routes that stand for what a person reads in an open menu (the e2e's
+    /// dump and pick). Returns the items an edit could not find, as
+    /// "View ▸ Framed"; each is logged once and the rest of the pass still
+    /// runs.
+    @discardableResult
+    static func apply(to mainMenu: NSMenu?) -> [String] {
+        guard let mainMenu, !applying else { return [] }
+        applying = true
+        defer { applying = false }
+        var missing: [String] = []
         // The Deck's icon size is a stored choice, and its checkmark must follow
         // a ⌘+ pressed a moment before the menu opened: read it now, not from
         // the last poll.
         StreamMenuState.shared.deckZoom = DeckZoom.stored(in: Profile.active.defaults)
         for title in menus {
-            guard let menu = mainMenu.items.first(where: { $0.title == title })?.submenu else { continue }
+            guard let menu = mainMenu.items.first(where: { $0.title == title })?.submenu else {
+                continue
+            }
             for edit in edits(menu: title, items: snapshot(of: menu), state: StreamMenuState.shared) {
-                apply(edit, in: menu)
+                if let path = apply(edit, in: menu, named: title) { missing.append(path) }
             }
         }
         if let phone = mainMenu.items.first(where: { $0.title == "Phone" })?.submenu {
             let state = PhoneControlsState(controller: AppEnvironment.shared.controller)
             for edit in phoneEdits(items: snapshot(of: phone), phone: state,
                                    stream: StreamMenuState.shared) {
-                apply(edit, in: phone)
+                if let path = apply(edit, in: phone, named: "Phone") { missing.append(path) }
             }
+        }
+        var logged = Set<String>()
+        for path in missing where logged.insert(path).inserted {
+            Log.app.notice("menu marks: missing \(path, privacy: .public)") // log-ok: menu and item titles from the app's own closed copy
         }
         // Window ▸ Next Window follows how many windows the key app has, which
         // this value does not carry: the running window set decides (WIN-29).
@@ -225,6 +276,7 @@ extension MenuMarks {
                 new.toolTip = wanted.help
             }
         }
+        return missing
     }
 
     /// Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online, read when
@@ -262,20 +314,29 @@ extension MenuMarks {
         }
     }
 
-    private static func apply(_ edit: Edit, in menu: NSMenu) {
+    /// Writes one edit onto the item it names. Returns the item's path when the
+    /// item is missing — "View ▸ Framed" — so the pass can log it and go on;
+    /// a menu that changed its shape must never stop the rest of the marks.
+    static func apply(_ edit: Edit, in menu: NSMenu, named menuName: String) -> String? {
+        func missing(_ path: [String]) -> String {
+            ([menuName] + path).joined(separator: " ▸ ")
+        }
         switch edit {
         case .mark(let path, let on):
-            resolve(path, in: menu)?.state = on ? .on : .off
+            guard let item = resolve(path, in: menu) else { return missing(path) }
+            item.state = on ? .on : .off
         case .enable(let path, let on):
-            resolve(path, in: menu)?.isEnabled = on
+            guard let item = resolve(path, in: menu) else { return missing(path) }
+            item.isEnabled = on
         case .retitle(let path, let title):
-            resolve(path, in: menu)?.title = title
+            guard let item = resolve(path, in: menu) else { return missing(path) }
+            item.title = title
         case .handoff(let title, let enabled, let help):
             // By the shortcut, never by title: the title is what changes.
             guard let item = menu.items.first(where: {
                 $0.keyEquivalent == "c"
                     && $0.keyEquivalentModifierMask.isSuperset(of: [.command, .shift])
-            }) else { return }
+            }) else { return missing(["⇧⌘C"]) }
             item.title = title
             item.isEnabled = enabled
             item.toolTip = help
@@ -285,12 +346,13 @@ extension MenuMarks {
             guard let item = menu.items.first(where: {
                 $0.keyEquivalent == "f"
                     && $0.keyEquivalentModifierMask.isSuperset(of: [.control, .command])
-            }) else { return }
+            }) else { return missing(["Enter Full Screen (⌃⌘F)"]) }
             item.isHidden = true
             // A hidden item normally gives up its key; this one is the app's
             // ⌃⌘F route while the person reads macOS's own fn-F item.
             item.allowsKeyEquivalentWhenHidden = true
         }
+        return nil
     }
 
     /// The item at `path`, by title; the Density default is found by its
