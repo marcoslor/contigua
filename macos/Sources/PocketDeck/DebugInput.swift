@@ -23,8 +23,9 @@
 //   showtouches on|off             View > Show Touches
 //   windowstyle framed|immersive|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
-//   immersive instantly|short|long|always   View > Immersive's pick: the reveal
-//                                  choice (stored globally) and the immersive style
+//   hidecontrols instantly|short|long|always
+//                                  View > Hide Controls' pick: the full-screen
+//                                  reveal choice (stored globally)
 //   nav back|home|recents          the Navigate menu's own action for the window
 //                                  (what a bar button and the shortcut run)
 //   opensettings                   open the Settings window (⌘,)
@@ -134,7 +135,7 @@ enum DebugInputAction: Equatable {
     /// for the phone in use, through the same write-then-apply path (e2e).
     case shortcutsAll(Bool)
     case windowStyle(String)
-    /// View ▸ Immersive's pick (the reveal choice and the immersive style).
+    /// View ▸ Hide Controls' pick: the full-screen reveal choice.
     case hideControls(FullScreenMenuItem)
     /// The Navigate menu's action: back, home or recents.
     case nav(String)
