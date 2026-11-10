@@ -4643,10 +4643,11 @@ final class ConnectionController {
         let ref = PhoneRef(id: "preview", name: "Galaxy S25+", model: "SM-S936B")
         let phone = RememberedPhone(id: ref.id, name: ref.name, model: ref.model, lastSeen: Date())
         let other = PhoneRef(id: "preview-2", name: "Pixel 9", model: "Pixel 9")
-        func deck(_ link: Link, loaded: Bool = true, battery: Int = 87, charging: Bool = false, locked: Bool = true) {
+        func deck(_ link: Link, loaded: Bool = true, noApps: Bool = false, battery: Int = 87,
+                  charging: Bool = false, locked: Bool = true) {
             rememberedPhones = [phone]
             welcomeSeen = true
-            apps = loaded ? PreviewData.apps : []
+            apps = noApps ? [] : (loaded ? PreviewData.apps : [])
             appsLoaded = loaded
             icons = PreviewData.icons
             missingIcons = PreviewData.iconless
@@ -4692,6 +4693,7 @@ final class ConnectionController {
             welcomeSeen = true
             pendingSheet = .manual
         case "loading": deck(.online(ref), loaded: false)
+        case "no-apps": deck(.online(ref), noApps: true)
         case "deck": deck(.online(ref))
         case "deck-5": deck(.online(ref), battery: 5)
         case "deck-24": deck(.online(ref), battery: 24, locked: false)
