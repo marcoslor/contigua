@@ -33,7 +33,9 @@ import sys
 from datetime import datetime
 
 MAC_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+[+-]\d{4})\s")
-PHONE_LINE = re.compile(r"^(\d+\.\d+)\s")
+# `adb logcat -v epoch` right-aligns the timestamp in columns, so the line
+# starts with spaces; the old regex only matched a zero-indented fixture.
+PHONE_LINE = re.compile(r"^\s*(\d+\.\d+)\s")
 EPISODE = re.compile(r"drop episode: flowing --dropped\(\d+\)--> waiting")
 RESTORE = re.compile(r"chain restored after (\d+) ms")
 BROKEN = re.compile(r"chain broken")
@@ -328,7 +330,8 @@ def self_test():
             handle.write("".join(lines))
         with open(phone, "w") as handle:
             for at, _ in episodes:
-                handle.write("%.3f  1 1 I PocketDeckSvc: stream 1 drop episode: "
+                # The real `adb logcat -v epoch` line is right-aligned.
+                handle.write("         %.3f  1 1 I PocketDeckSvc: stream 1 drop episode: "
                              "flowing --dropped(3)--> waiting\n" % at)
         phase = {"base_start": 100, "base_end": 110, "step_start": 111,
                  "step_end": 171, "back_start": 172, "back_end": 190,
