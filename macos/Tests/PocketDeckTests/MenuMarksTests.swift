@@ -231,6 +231,39 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertTrue(noWindow.contains(.mark(["Icon Size", "100 %"], false)))
     }
 
+    /// [DECK-6] A profile with no stored choice marks the default, 125 %, when
+    /// the menu opens: the mark is read from the profile at that moment, not
+    /// from a launch-time value.
+    @MainActor
+    func testAFreshProfilesIconSizeMarkIsTheDefault() {
+        let defaults = Profile.active.defaults
+        let saved = defaults.object(forKey: DeckZoom.key)
+        defer {
+            if let saved { defaults.set(saved, forKey: DeckZoom.key) }
+            else { defaults.removeObject(forKey: DeckZoom.key) }
+        }
+        defaults.removeObject(forKey: DeckZoom.key)
+
+        let main = NSMenu(title: "main")
+        let view = NSMenu(title: "View")
+        let icon = NSMenu(title: "Icon Size")
+        for option in DeckZoom.options {
+            icon.addItem(withTitle: MenuModel.iconSizeTitle(option), action: nil, keyEquivalent: "")
+        }
+        let iconItem = NSMenuItem(title: "Icon Size", action: nil, keyEquivalent: "")
+        iconItem.submenu = icon
+        view.addItem(iconItem)
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewItem.submenu = view
+        main.addItem(viewItem)
+
+        MenuMarks.apply(to: main)
+
+        let checked = icon.items.filter { $0.state == .on }.map(\.title)
+        XCTAssertEqual(checked, [MenuModel.iconSizeTitle(DeckZoom.defaultValue)],
+                       "a fresh profile checks the default, 125 %")
+    }
+
     func testTheDefaultDensityItemNamesTheSettingsDefault() {
         let key = state()
         key.settingsDensity = 1.5
