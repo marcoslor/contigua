@@ -15496,7 +15496,7 @@ check_deckrail() {
     # The VM guest keeps its own Reduce Motion; the test hook makes the app's
     # effective setting full so the fisheye (the proof) works here.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
-        --debug-motion full
+        --debug-deck-emphasis --debug-motion full
     wait_until 30 events_have '"t":"apps.list"' \
         && ok "DECKRAIL the app list was requested" || bad "DECKRAIL no apps.list"
     wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
@@ -15984,6 +15984,66 @@ PY
     wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
         && ok "[DECK-7] the click through the overlay opened the app" \
         || bad "[DECK-7] the click through the overlay opened nothing"
+
+    # [DECK-32] The rail's letter on the tiles. Build the start page first: one
+    # open window and two pinned C apps, so a pinned tile of the emphasised
+    # letter proves the sections never lift, while All Apps' C tiles do.
+    control deckrailleave
+    sleep 0.3
+    control open --open com.android.settings \
+        || bad "DECKRAIL deckopen (DECK-32): $CONTROL_REPLY"
+    control deckpin com.android.chrome \
+        || bad "DECKRAIL deckpin chrome (DECK-32): $CONTROL_REPLY"
+    control deckpin com.android.camera2 \
+        || bad "DECKRAIL deckpin camera (DECK-32): $CONTROL_REPLY"
+    sleep 3
+    local emphasis="$WORK/rail-emphasis.json" emphasis_error
+    emphasis_check() {  # emphasis_check LETTER [source:POINTER]
+        sleep 0.5
+        if ! control deckrailemph "$emphasis"; then
+            emphasis_error="deckrailemph: $CONTROL_REPLY"
+            return 1
+        fi
+        if ! emphasis_error="$(python3 "$MACOS/scripts/deck-rail-emphasis.py" "$emphasis" "$@" 2>&1)"; then
+            return 1
+        fi
+        return 0
+    }
+    control deckrailenter C || bad "DECKRAIL deckrailenter C (DECK-32): $CONTROL_REPLY"
+    if emphasis_check letter:C; then
+        ok "[DECK-32] C lights its All Apps tiles (1.08, semibold) and dims the rest; the sections stay at rest ($emphasis_error)"
+    else
+        bad "[DECK-32] the C emphasis is wrong ($emphasis_error)"
+    fi
+    control deckrailmove D || bad "DECKRAIL deckrailmove D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check letter:D; then
+        ok "[DECK-32] moving to D cross-fades to D's tiles ($emphasis_error)"
+    else
+        bad "[DECK-32] the move to D did not light D ($emphasis_error)"
+    fi
+    # B is empty in the fixture: its jump lands on C, so the grid follows the
+    # accent rather than dimming the whole page.
+    control deckrailmove B || bad "DECKRAIL deckrailmove B (DECK-32): $CONTROL_REPLY"
+    if emphasis_check letter:C source:B; then
+        ok "[DECK-32] the empty B lights the C its jump lands on ($emphasis_error)"
+    else
+        bad "[DECK-32] the empty B did not light its landing letter ($emphasis_error)"
+    fi
+    control deckrailleave
+    if emphasis_check away; then
+        ok "[DECK-32] leaving the rail puts every tile back at rest ($emphasis_error)"
+    else
+        bad "[DECK-32] the grid did not return to rest after the rail ($emphasis_error)"
+    fi
+    # The rail is hidden while searching: the results are never drawn dimmed.
+    control deckquery "a" || bad "DECKRAIL deckquery (DECK-32): $CONTROL_REPLY"
+    if emphasis_check away; then
+        ok "[DECK-32] searching hides the rail and lights nothing ($emphasis_error)"
+    else
+        bad "[DECK-32] the search results took the rail's emphasis ($emphasis_error)"
+    fi
+    control deckquery "" || bad "DECKRAIL deckquery clear (DECK-32): $CONTROL_REPLY"
+
     stop_app
 }
 

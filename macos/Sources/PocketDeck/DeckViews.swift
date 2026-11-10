@@ -743,6 +743,15 @@ enum DeckRail {
         return Pick(letter: self.letter(for: apps[index].displayLabel), index: index)
     }
 
+    /// The letter a pointer on `letter` lights in All Apps (DECK-32): its own,
+    /// or the next letter with apps — the same letter its jump lands on, so an
+    /// empty letter never lights nothing while the accent moves forward. nil
+    /// when no letter from here on has an app (the jump goes nowhere).
+    static func landedLetter(for letter: String, in entries: [Entry]) -> String? {
+        guard let start = entries.firstIndex(where: { $0.letter == letter }) else { return nil }
+        return entries[start...].first { $0.index != nil }?.letter
+    }
+
     struct Pick: Equatable {
         /// The letter the jump lands on; an empty click forwards to this one.
         let letter: String
@@ -1269,7 +1278,7 @@ struct AppGrid: View {
                 follow(scroll)
             }
             .overlay {
-                if DeckRail.shows(count: cells.count, query: query) {
+                if railShown {
                     // R1 sits inside the content inset, left of the scroller,
                     // beside the grid's right edge: the block's own place, from
                     // the width this pass draws (a stored one would lag a
@@ -1291,6 +1300,12 @@ struct AppGrid: View {
             // zone covers the grid plus the rail. Tracking only: the zone never
             // takes a click or a hover from the last icon column.
             .onContinuousHover { phase in trackRail(phase) }
+            // [DECK-32] The rail disappearing (a search, a short grid) ends the
+            // emphasis even if the pointer's leave never arrives; the results
+            // are never drawn dimmed.
+            .onChange(of: railShown) { _, shown in
+                if !shown { RailEmphasisModel.shared.leave(reduceMotion: reduceMotion) }
+            }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
             }
@@ -1313,10 +1328,15 @@ struct AppGrid: View {
             }
             ForEach(section.apps, id: \.id) { app in
                 DeckPageCellView(section: section.kind, app: app, zoom: zoom,
-                                 selection: navigator.selection)
+                                 selection: navigator.selection,
+                                 railShown: railShown)
             }
         }
     }
+
+    /// The rail's own condition (DECK-7): empty search and a full grid. The
+    /// emphasis follows it, so a search never shows a dimmed result (DECK-32).
+    private var railShown: Bool { DeckRail.shows(count: cells.count, query: query) }
 
     /// What All Apps draws: one cell per launch target, never two cells with
     /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
@@ -1689,6 +1709,16 @@ private struct DeckIndexRail: View {
             // its band with the layout the rail is actually drawing.
             RailPointerModel.shared.slots = slots
         }
+        // [DECK-32] The drawn letter under the pointer lights its All Apps
+        // tiles. An empty letter forwards to the letter its jump lands on, so
+        // the grid and the accent agree; leaving the rail or hiding it (search)
+        // returns the grid to rest.
+        .onChange(of: hovered?.letter, initial: true) { _, letter in
+            updateEmphasis(letter)
+        }
+        .onDisappear {
+            RailEmphasisModel.shared.leave(reduceMotion: reduceMotion)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
         .accessibilityValue(currentLetter ?? "")
@@ -1697,6 +1727,19 @@ private struct DeckIndexRail: View {
 
     private func slotIndex(containing letterIndex: Int) -> Int? {
         slots.firstIndex { letterIndex >= $0.first && letterIndex < $0.first + $0.count }
+    }
+
+    /// Feed the emphasis machine the letter a pointer on `letter` lights: the
+    /// letter itself, or the next one with apps. No letter here to land on
+    /// (an empty tail) lights nothing.
+    private func updateEmphasis(_ letter: String?) {
+        let model = RailEmphasisModel.shared
+        guard let letter,
+              let landed = DeckRail.landedLetter(for: letter, in: entries) else {
+            model.leave(reduceMotion: reduceMotion)
+            return
+        }
+        model.point(pointer: letter, landed: landed, reduceMotion: reduceMotion)
     }
 
     private func slotView(index: Int, slot: DeckRail.Slot, box: RailLayout.Slot,
@@ -1932,29 +1975,75 @@ private extension View {
     func deckCellGeometry(_ id: String) -> some View { modifier(DeckCellGeometry(id: id)) }
 }
 
+/// [DECK-32] The rail's emphasis on one tile: the lift is a transform (the
+/// neighbours and the layout never move), the dim is one opacity, and both
+/// animate with the one duration the emphasis machine chose. Reduce Motion
+/// draws no scale and no animation: the opacity changes at once.
+private struct DeckCellEmphasisModifier: ViewModifier {
+    let emphasis: DeckCellEmphasis
+    let duration: TimeInterval
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(emphasis.scale(reduceMotion: reduceMotion))
+            .opacity(emphasis.opacity)
+            .animation(duration > 0 ? .easeOut(duration: duration) : nil, value: emphasis)
+    }
+}
+
 /// One tile of the start page: the same `AppCell` All Apps draws, keyed by its
 /// section so a pinned app and its All Apps copy are two tiles, never two that
 /// light together (DECK-26/28). Only All Apps reports to the zoom probe.
 private struct DeckPageCellView: View {
     @Environment(ConnectionController.self) private var controller
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     let section: DeckSection.Kind
     let app: AppInfo
     let zoom: CGFloat
     let selection: String?
+    /// [DECK-32] The rail's own condition: while it is hidden (searching, a
+    /// short grid) the tiles never take the emphasis, so a result is never
+    /// drawn faded.
+    let railShown: Bool
 
     private var cell: DeckPageCell { DeckPageCell(section: section, app: app) }
+    private var reduceMotion: Bool { Motion.reduce(system: systemReduceMotion) }
+
+    /// [DECK-32] Only All Apps reads the rail's emphasis: the sections and the
+    /// headers above them never dim or lift, and while the page is not
+    /// interactive its one dim (DECK-31) is left alone.
+    private var emphasis: DeckCellEmphasis {
+        guard section == .allApps, railShown else { return .rest }
+        return RailEmphasisModel.shared.emphasis(
+            for: app.displayLabel,
+            interactive: controller.presentation.deckInteractive)
+    }
+
+    /// The one duration the emphasis machine chose; the sections never read it.
+    private var emphasisDuration: TimeInterval {
+        section == .allApps && railShown ? RailEmphasisModel.shared.duration : 0
+    }
 
     var body: some View {
+        let emphasis = self.emphasis
+        // What this tile drew, for e2e `deckrail` `[DECK-32]` (a no-op unless
+        // the launch carried `--debug-deck-emphasis`).
+        let _ = RailEmphasisProbe.note(cell, emphasis: emphasis, reduceMotion: reduceMotion)
         AppCell(app: app,
                 rendered: controller.deckIcons[app.pkg],
                 iconIsMissing: controller.missingIcons.contains(app.pkg) || !controller.link.isOnline,
                 zoom: zoom,
                 selected: selection == cell.id,
-                openMark: section == .openWindows) {
+                openMark: section == .openWindows,
+                emphasis: emphasis) {
             controller.openApp(app)
         }
         .id(cell.id)
         .modifier(DeckGridGeometry(cell: cell))
+        .modifier(DeckCellEmphasisModifier(emphasis: emphasis,
+                                           duration: emphasisDuration,
+                                           reduceMotion: reduceMotion))
         .contextMenu { DockMenuItems(app: app) }
     }
 }
@@ -1971,6 +2060,9 @@ struct AppCell: View {
     /// [DECK-27] The small Mac-window mark: this app has a window open on this
     /// Mac, drawn by the "Open on this Mac" row.
     var openMark = false
+    /// [DECK-32] The rail's emphasis on this tile: `.rest` for the sections and
+    /// for an All Apps tile the rail is not naming.
+    var emphasis: DeckCellEmphasis = .rest
     let open: () -> Void
     @State private var hovering = false
 
@@ -1980,6 +2072,7 @@ struct AppCell: View {
                 icon
                 Text(app.displayLabel)
                     .font(.caption)
+                    .fontWeight(emphasis.labelWeight)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .padding(.horizontal, 6)
