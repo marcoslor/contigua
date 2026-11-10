@@ -26,7 +26,7 @@ final class PairCooldownTests: XCTestCase {
         controller.shutdown()
         server.stop()
         if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
-        try? FileManager.default.removeItem(at: profile.pairKeysFileUrl.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
     }
 
     private func spin(until condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {
