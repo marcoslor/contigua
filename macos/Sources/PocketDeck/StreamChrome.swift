@@ -622,7 +622,11 @@ final class StreamChromeView: NSView {
     /// The e2e's view of the title: shown, its rect in this view, its tone,
     /// and the bar's tint. The text itself is never written to the state.
     var barTitleVisible: Bool { titleVisible }
-    var barTitleToneName: String { toneMachine.tone.rawValue }
+    /// The ink drawn now; none until the first sample decides it (the fields
+    /// are transparent before that).
+    var barTitleToneName: String {
+        toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
+    }
     var barTitleRect: NSRect? { titleVisible ? titleFrame : nil }
     var barTintVisible: Bool { !tintLayer.isHidden }
 
