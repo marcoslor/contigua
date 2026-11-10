@@ -93,10 +93,11 @@ struct FolderJob: Equatable {
         case page(token: Int, items: [FileItem], next: String)
         /// The walk's last page: the whole listing and its digest.
         case lastPage(token: Int, items: [FileItem], digest: String?,
-                      record: [String: FileItem],
+                      record: [String: FileItem], idMap: FilesIdMap,
                       uploading: Set<String>, uploadNames: Set<String>)
         /// A page failed (an error or a cancel): the walk is incomplete.
         case failedPage(token: Int, record: [String: FileItem], recordDigest: String?,
+                        idMap: FilesIdMap,
                         uploading: Set<String>, uploadNames: Set<String>)
     }
 
@@ -240,41 +241,42 @@ struct FolderJob: Equatable {
 
         // MARK: The last page of a walk
         case (.walking(let walk, let after), .lastPage(let token, let items, let digest,
-                                                       let record, let uploading, let uploadNames)):
+                                                       let record, let idMap, let uploading,
+                                                       let uploadNames)):
             guard walk.token == token else { return .none }
-            return finish(walk, items: items, digest: digest, record: record,
+            return finish(walk, items: items, digest: digest, record: record, idMap: idMap,
                           uploading: uploading, uploadNames: uploadNames,
                           refreshAfter: after, phase: .walking)
         case (.confirming(let walk, let after, _), .lastPage(let token, let items, let digest,
-                                                             let record, let uploading,
+                                                             let record, let idMap, let uploading,
                                                              let uploadNames)):
             guard walk.token == token else { return .none }
-            return finish(walk, items: items, digest: digest, record: record,
+            return finish(walk, items: items, digest: digest, record: record, idMap: idMap,
                           uploading: uploading, uploadNames: uploadNames,
                           refreshAfter: after, phase: .confirming)
         case (.repairing(let walk, let after), .lastPage(let token, let items, let digest,
-                                                         let record, let uploading,
+                                                         let record, let idMap, let uploading,
                                                          let uploadNames)):
             guard walk.token == token else { return .none }
-            return finish(walk, items: items, digest: digest, record: record,
+            return finish(walk, items: items, digest: digest, record: record, idMap: idMap,
                           uploading: uploading, uploadNames: uploadNames,
                           refreshAfter: after, phase: .repairing)
 
         // MARK: A walk that ends early
         case (.walking(let walk, let after), .failedPage(let token, let record,
-                                                         let recordDigest, _, _)):
+                                                         let recordDigest, let idMap, _, _)):
             guard walk.token == token else { return .none }
-            return fail(walk, record: record, recordDigest: recordDigest,
+            return fail(walk, record: record, recordDigest: recordDigest, idMap: idMap,
                         refreshAfter: after, phase: .walking)
         case (.confirming(let walk, let after, _), .failedPage(let token, let record,
-                                                               let recordDigest, _, _)):
+                                                               let recordDigest, let idMap, _, _)):
             guard walk.token == token else { return .none }
-            return fail(walk, record: record, recordDigest: recordDigest,
+            return fail(walk, record: record, recordDigest: recordDigest, idMap: idMap,
                         refreshAfter: after, phase: .confirming)
         case (.repairing(let walk, let after), .failedPage(let token, let record,
-                                                           let recordDigest, _, _)):
+                                                           let recordDigest, let idMap, _, _)):
             guard walk.token == token else { return .none }
-            return fail(walk, record: record, recordDigest: recordDigest,
+            return fail(walk, record: record, recordDigest: recordDigest, idMap: idMap,
                         refreshAfter: after, phase: .repairing)
 
         // MARK: The run ends
@@ -297,13 +299,17 @@ struct FolderJob: Equatable {
     // MARK: The report
 
     private mutating func finish(_ walk: Walk, items: [FileItem], digest: String?,
-                                 record: [String: FileItem], uploading: Set<String>,
-                                 uploadNames: Set<String>, refreshAfter: Bool,
-                                 phase: Phase) -> Action {
+                                 record: [String: FileItem], idMap: FilesIdMap,
+                                 uploading: Set<String>, uploadNames: Set<String>,
+                                 refreshAfter: Bool, phase: Phase) -> Action {
         var finished = walk
         merge(items, into: &finished.pages)
         let listing = Array(finished.pages.values)
-        var delta = FilesDiff.delta(old: record, new: listing)
+        // An item the id map now places in another folder was moved on the
+        // phone, not deleted: it leaves this folder's record with no deletion.
+        let moved = movedAway(record, idMap: idMap)
+        var delta = FilesDiff.delta(old: record.filter { !moved.contains($0.key) },
+                                    new: listing)
         delta.deleted = delta.deleted.filter { identifier in
             guard let now = record[identifier], let then = walk.start[identifier] else {
                 return false
@@ -318,16 +324,17 @@ struct FolderJob: Equatable {
         let event: FilesWalk.Event = finished.machine.isConfirming
             ? .confirmed(delta: delta, listing: listing)
             : .finished(delta: delta, listing: listing)
-        return report(finished.machine.apply(event), walk: finished,
-                      digest: digest, refreshAfter: refreshAfter, phase: phase)
+        return report(finished.machine.apply(event), walk: finished, digest: digest,
+                      refreshAfter: refreshAfter, phase: phase, dropped: moved)
     }
 
     private mutating func fail(_ walk: Walk, record: [String: FileItem],
-                               recordDigest: String?, refreshAfter: Bool,
-                               phase: Phase) -> Action {
+                               recordDigest: String?, idMap: FilesIdMap,
+                               refreshAfter: Bool, phase: Phase) -> Action {
         // An incomplete walk reports additions and changes only; the record
-        // keeps every item the walk never saw.
-        var merged = record
+        // keeps every item the walk never saw, except those the id map moved.
+        let moved = movedAway(record, idMap: idMap)
+        var merged = record.filter { !moved.contains($0.key) }
         for (identifier, item) in walk.pages { merged[identifier] = item }
         let listing = Array(merged.values)
         var delta = FilesDiff.delta(old: record, new: listing)
@@ -336,24 +343,33 @@ struct FolderJob: Equatable {
             ? .confirmFailed(delta: delta, listing: listing)
             : .failed(delta: delta, listing: listing)
         var next = walk
-        return report(next.machine.apply(event), walk: next,
-                      digest: recordDigest, refreshAfter: refreshAfter, phase: phase)
+        return report(next.machine.apply(event), walk: next, digest: recordDigest,
+                      refreshAfter: refreshAfter, phase: phase, dropped: moved)
     }
 
     private mutating func report(_ action: FilesWalk.Action, walk: Walk,
                                  digest: String?, refreshAfter: Bool,
-                                 phase: Phase) -> Action {
+                                 phase: Phase, dropped: Set<String>) -> Action {
         switch action {
         case .confirm:
             state = .confirming(walk, refreshAfter: refreshAfter, waiting: true)
             return .scheduleConfirm
         case .report(let delta, let listing):
             state = refreshAfter ? .refreshing(again: true, token: walk.token) : .idle
-            return .report(delta, listing: listing, digest: digest, dropped: [])
+            return .report(delta, listing: listing, digest: digest, dropped: dropped)
         case .none:
             state = phase.state(for: walk, refreshAfter: refreshAfter)
             return .none
         }
+    }
+
+    /// The record's items the id map now places in another folder: the phone
+    /// moved them, so this listing must not report them deleted.
+    private func movedAway(_ record: [String: FileItem], idMap: FilesIdMap) -> Set<String> {
+        Set(record.keys.filter { identifier in
+            guard let parent = idMap.parent(for: identifier) else { return false }
+            return parent != folder
+        })
     }
 
     /// A walk that started a confirm walk: the same walk, its pages cleared.

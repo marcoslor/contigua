@@ -46,7 +46,7 @@ final class FolderJobTests: XCTestCase {
             let record = bigRecord()
             _ = job.apply(.systemStart(recorded: record.count, start: record, token: walk.token))
             _ = job.apply(.lastPage(token: walk.token, items: [], digest: nil, record: record,
-                                    uploading: [], uploadNames: []))
+                                    idMap: FilesIdMap(), uploading: [], uploadNames: []))
             if !waiting { _ = job.apply(.confirmDue(token: walk.token)) }
             if after { _ = job.apply(.refresh(token: walk.token)) }
             return job
@@ -143,7 +143,7 @@ final class FolderJobTests: XCTestCase {
         let listing = [item("a.txt", ino: 6)]
         let record = byID([item("a.txt", ino: 6), item("b.txt", ino: 7)])
         let action = job.apply(.lastPage(token: 1, items: listing, digest: "d2",
-                                         record: record, uploading: [], uploadNames: []))
+                                         record: record, idMap: FilesIdMap(), uploading: [], uploadNames: []))
         guard case .report(_, _, let digest, let dropped) = action else {
             return XCTFail("expected a report, got \(action)")
         }
@@ -161,7 +161,7 @@ final class FolderJobTests: XCTestCase {
         _ = job.apply(.systemStart(recorded: record.count, start: record, token: 1))
         let first = (125..<130).map { item("f\($0).txt", ino: $0) }
         XCTAssertEqual(job.apply(.lastPage(token: 1, items: first, digest: "d1",
-                                           record: record, uploading: [], uploadNames: [])),
+                                           record: record, idMap: FilesIdMap(), uploading: [], uploadNames: [])),
                        .scheduleConfirm)
         guard case .confirming(let walk, _, true) = job.state else {
             return XCTFail("expected a waiting confirmation, got \(job.state)")
@@ -178,7 +178,7 @@ final class FolderJobTests: XCTestCase {
         // The confirm sees 6: the 25 agreed deletions plus f124 which came back.
         let second = (124..<130).map { item("f\($0).txt", ino: $0) }
         let action = job.apply(.lastPage(token: 1, items: second, digest: "d2",
-                                         record: record, uploading: [], uploadNames: []))
+                                         record: record, idMap: FilesIdMap(), uploading: [], uploadNames: []))
         guard case .report(let delta, _, let digest, _) = action else {
             return XCTFail("expected a report, got \(action)")
         }
@@ -196,11 +196,11 @@ final class FolderJobTests: XCTestCase {
         _ = job.apply(.systemStart(recorded: record.count, start: start, token: 1))
         let first = (125..<130).map { item("f\($0).txt", ino: $0) }
         XCTAssertEqual(job.apply(.lastPage(token: 1, items: first, digest: nil,
-                                           record: record, uploading: [], uploadNames: [])),
+                                           record: record, idMap: FilesIdMap(), uploading: [], uploadNames: [])),
                        .scheduleConfirm)
         _ = job.apply(.confirmDue(token: 1))
         let action = job.apply(.lastPage(token: 1, items: first, digest: nil,
-                                         record: record, uploading: [], uploadNames: []))
+                                         record: record, idMap: FilesIdMap(), uploading: [], uploadNames: []))
         guard case .report(let delta, _, _, _) = action else {
             return XCTFail("expected a report, got \(action)")
         }
@@ -213,7 +213,7 @@ final class FolderJobTests: XCTestCase {
         var job = FolderJob(folder: folder)
         _ = job.apply(.systemStart(recorded: record.count, start: record, token: 1))
         let action = job.apply(.lastPage(token: 1, items: (105..<110).map { item("f\($0).txt", ino: $0) },
-                                         digest: nil, record: record, uploading: [], uploadNames: []))
+                                         digest: nil, record: record, idMap: FilesIdMap(), uploading: [], uploadNames: []))
         guard case .report(let delta, _, _, _) = action else {
             return XCTFail("expected a report, got \(action)")
         }
@@ -228,7 +228,7 @@ final class FolderJobTests: XCTestCase {
         var job = FolderJob(folder: folder)
         _ = job.apply(.systemStart(recorded: 3, start: record, token: 1))
         let action = job.apply(.lastPage(token: 1, items: [], digest: nil, record: record,
-                                         uploading: ["ino:6"], uploadNames: ["b.jpg"]))
+                                         idMap: FilesIdMap(), uploading: ["ino:6"], uploadNames: ["b.jpg"]))
         guard case .report(let delta, let listing, _, _) = action else {
             return XCTFail("expected a report, got \(action)")
         }
@@ -236,11 +236,26 @@ final class FolderJobTests: XCTestCase {
         _ = listing
     }
 
+    func testAnItemTheIdMapPlacesElsewhereIsNotDeleted() {
+        let record = byID([item("a.txt", ino: 6), item("b.txt", ino: 7)])
+        var map = FilesIdMap()
+        map.remember(identifier: "ino:6", path: "D/a.txt", parentIdentifier: "ino:20")
+        var job = FolderJob(folder: folder)
+        _ = job.apply(.systemStart(recorded: 2, start: record, token: 1))
+        let action = job.apply(.lastPage(token: 1, items: [], digest: nil, record: record,
+                                         idMap: map, uploading: [], uploadNames: []))
+        guard case .report(let delta, _, _, let dropped) = action else {
+            return XCTFail("expected a report, got \(action)")
+        }
+        XCTAssertEqual(dropped, ["ino:6"], "the moved item leaves the old folder's record")
+        XCTAssertEqual(delta.deleted, ["ino:7"], "and is not reported deleted")
+    }
+
     func testAFailedWalkNeverDeletes() {
         let record = byID((100..<110).map { item("f\($0).txt", ino: $0) })
         var job = FolderJob(folder: folder)
         _ = job.apply(.systemStart(recorded: record.count, start: record, token: 1))
-        let action = job.apply(.failedPage(token: 1, record: record, recordDigest: "d0",
+        let action = job.apply(.failedPage(token: 1, record: record, recordDigest: "d0", idMap: FilesIdMap(),
                                            uploading: [], uploadNames: []))
         guard case .report(let delta, let listing, let digest, _) = action else {
             return XCTFail("expected a report, got \(action)")
@@ -257,9 +272,9 @@ final class FolderJobTests: XCTestCase {
         var job = FolderJob(folder: folder)
         _ = job.apply(.systemStart(recorded: record.count, start: record, token: 1))
         XCTAssertEqual(job.apply(.lastPage(token: 1, items: [], digest: nil, record: record,
-                                           uploading: [], uploadNames: [])), .scheduleConfirm)
+                                           idMap: FilesIdMap(), uploading: [], uploadNames: [])), .scheduleConfirm)
         _ = job.apply(.confirmDue(token: 1))
-        let action = job.apply(.failedPage(token: 1, record: record, recordDigest: "d1",
+        let action = job.apply(.failedPage(token: 1, record: record, recordDigest: "d1", idMap: FilesIdMap(),
                                            uploading: [], uploadNames: []))
         guard case .report(let delta, _, _, _) = action else {
             return XCTFail("expected a report, got \(action)")
@@ -319,8 +334,8 @@ final class FolderJobTests: XCTestCase {
                        .none)
         XCTAssertEqual(job.state, before)
         XCTAssertEqual(job.apply(.lastPage(token: 2, items: [], digest: nil,
-                                           record: [:], uploading: [], uploadNames: [])), .none)
-        XCTAssertEqual(job.apply(.failedPage(token: 2, record: [:], recordDigest: nil,
+                                           record: [:], idMap: FilesIdMap(), uploading: [], uploadNames: [])), .none)
+        XCTAssertEqual(job.apply(.failedPage(token: 2, record: [:], recordDigest: nil, idMap: FilesIdMap(),
                                              uploading: [], uploadNames: [])), .none)
         XCTAssertEqual(job.state, before, "the current walk is untouched")
 
@@ -364,8 +379,8 @@ final class FolderJobTests: XCTestCase {
         XCTAssertEqual(idle.apply(.refreshDue(token: 1, recorded: 0, start: [:])), .none)
         XCTAssertEqual(idle.apply(.page(token: 1, items: [], next: "p")), .none)
         XCTAssertEqual(idle.apply(.lastPage(token: 1, items: [], digest: nil, record: [:],
-                                            uploading: [], uploadNames: [])), .none)
-        XCTAssertEqual(idle.apply(.failedPage(token: 1, record: [:], recordDigest: nil,
+                                            idMap: FilesIdMap(), uploading: [], uploadNames: [])), .none)
+        XCTAssertEqual(idle.apply(.failedPage(token: 1, record: [:], recordDigest: nil, idMap: FilesIdMap(),
                                               uploading: [], uploadNames: [])), .none)
         XCTAssertEqual(idle.state, .idle)
 

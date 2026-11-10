@@ -383,6 +383,41 @@ final class FilesSyncTests: XCTestCase {
         XCTAssertEqual(host.replica.folders["ino:7"]?.children["ino:6"]?.name, "photo.jpg")
     }
 
+    /// The phone moved a photo between two watched folders: the new folder's
+    /// listing lands first and the old folder's walk lands last. Identifiers are
+    /// domain-wide, so the old listing must not report the moved item deleted
+    /// (ISS-37, "Left for a later slice").
+    func testAPhoneMoveBetweenTwoWatchedFoldersNeverLogsTheItemDeleted() throws {
+        let a = folder("A", ino: 100)
+        let d = folder("D", ino: 200)
+        let photo = item("photo.jpg", ino: 6, parent: a.identifier)
+        saveRecord([
+            a.identifier: Recorded(children: [photo], digest: hex(1), touched: 1),
+            d.identifier: Recorded(children: [], digest: hex(2), touched: 2),
+        ])
+        rememberPaths([a.identifier: "A", d.identifier: "D"])
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        // The phone moved the photo to D, and D is listed first.
+        host.list(item: d.identifier, page: nil) { _ in }
+        answerPendingStats()
+        answerPendingLists(["D": [fs("photo.jpg", ino: 6)]], digest: hex(3))
+        // The old folder's walk lands last and does not carry the photo.
+        host.list(item: a.identifier, page: nil) { _ in }
+        answerPendingStats()
+        answerPendingLists(["A": []], digest: hex(4))
+
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertFalse(replay.deleted.contains("ino:6"),
+                       "a phone-side move is never a deletion")
+        XCTAssertEqual(replay.items.filter { $0.identifier == "ino:6" }
+            .map(\.parentIdentifier), [d.identifier])
+        XCTAssertNil(host.replica.folders[a.identifier]?.children["ino:6"],
+                     "the old folder's record lets it go")
+        XCTAssertEqual(host.replica.folders[d.identifier]?.children["ino:6"]?.name, "photo.jpg")
+    }
+
     // MARK: Guards
 
     func testAnItemWithAnUploadInFlightIsNotDeleted() throws {

@@ -1194,6 +1194,7 @@ Watching only touched folders, and nothing while away, is right for the battery 
    - **Guards, so a diff never deletes a real file:**
      - an item with a pending or in-flight upload is never deleted by a listing;
      - nor is an item the record gained or changed after the walk's first page was asked (a Mac write racing the walk);
+     - nor is an item the id map now places in another folder: the phone moved it between two watched folders, and a listing of the old one must not report a deletion for a domain-wide identifier (the item leaves the old folder's record silently, and the new folder's listing adds it);
      - a walk that would delete more than half of a folder's recorded items, and more than 20, is repeated once after 2 s, and only the deletions both walks agree on go out. The person's 459-of-568 case passes that; a phone whose storage isn't mounted yet doesn't empty Finder.
 3. **A durable change log.** The log (sequence, container, delta; 512 entries, as now) and its epoch persist with the record, so an app start no longer expires the system's anchor. If an anchor expires anyway, the working set's full enumeration answers every item in the record, not just this process's cache.
 4. **A resync on reconnect.** On session-ready, and once after an app start, the app checks the folders in the record, most recently touched first, at most 64 (the watch cap).
