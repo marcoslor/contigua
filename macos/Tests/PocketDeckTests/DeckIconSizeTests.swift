@@ -1,7 +1,7 @@
 // The Deck's icon size as an explicit choice (DECK-6): ⌘+ / ⌘− step and ⌘0
-// returns to 100 %, but only while the Deck is the key window — a stream
-// window's same keys belong to that window's density. Pure, so the key filter
-// is tested without a window.
+// returns to the default, 125 %, but only while the Deck is the key window — a
+// stream window's same keys belong to that window's density. Pure, so the key
+// filter is tested without a window.
 
 import AppKit
 import XCTest
@@ -14,7 +14,7 @@ final class DeckIconSizeTests: XCTestCase {
     }
 
     /// The keys the View ▸ Density items already name step the Deck's icon
-    /// size: ⌘+ / ⌘− one 25 % step, ⌘0 back to 100 %.
+    /// size: ⌘+ / ⌘− one 25 % step, ⌘0 back to the default.
     func testTheKeysStepTheDecksIconSize() {
         XCTAssertEqual(action(24), .step(DeckZoom.step), "⌘=")
         XCTAssertEqual(action(69), .step(DeckZoom.step), "keypad +")
@@ -46,5 +46,37 @@ final class DeckIconSizeTests: XCTestCase {
     func testTheMenuTitlesAreTheFourPercentages() {
         XCTAssertEqual(DeckZoom.options.map { MenuModel.iconSizeTitle($0) },
                        ["75 %", "100 %", "125 %", "150 %"])
+    }
+
+    /// [DECK-6] A profile with no stored choice shows the Deck at the default,
+    /// 125 % ("make less dense the default"). Named through the constant; the
+    /// percentage is pinned by the menu's own title below.
+    func testAFreshProfileShowsTheDefaultIconSize() {
+        let name = "deckzoom-fresh-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(DeckZoom.stored(in: defaults), DeckZoom.defaultValue,
+                       "a profile with no stored choice is the default")
+        XCTAssertEqual(MenuModel.iconSizeTitle(DeckZoom.defaultValue), "125 %")
+    }
+
+    /// [DECK-6] A stored choice is kept, an explicit 100 % included: the new
+    /// default is not a migration.
+    func testAStoredChoiceIsKept() {
+        let name = "deckzoom-stored-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(1.0, forKey: DeckZoom.key)
+        XCTAssertEqual(DeckZoom.stored(in: defaults), 1.0)
+        defaults.set(0.75, forKey: DeckZoom.key)
+        XCTAssertEqual(DeckZoom.stored(in: defaults), 0.75)
+    }
+
+    /// [DECK-6] ⌘0 returns to the default, 125 %, not to 100 %: a step still
+    /// moves one quarter and clamps at the four options.
+    func testCommandZeroReturnsToTheDefault() {
+        XCTAssertEqual(DeckZoom.applied(.reset, to: 0.75), DeckZoom.defaultValue)
+        XCTAssertEqual(DeckZoom.applied(.reset, to: 1.5), DeckZoom.defaultValue)
+        XCTAssertEqual(DeckZoom.applied(.step(DeckZoom.step), to: 1), 1.25)
     }
 }

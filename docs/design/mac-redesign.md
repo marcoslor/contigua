@@ -132,7 +132,8 @@ backgrounds), window background default.
   `.fill(.quaternary)`; keyboard/mouse selection `.fill(Color.accentColor.opacity(0.22))`, both
   `RoundedRectangle(cornerRadius: 16)`. **Single click opens** (↩ opens the selected one, or the first match when none
   is selected). **⌘+ / ⌘− / ⌘0** scale the whole grid (cell, icon, gaps, insets and the 880 pt cap) through
-  0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window. A **title-bar
+  0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; a profile with no stored choice is 1.25 (125 %, the
+  default ⌘0 returns to), and the keys do nothing in another window. A **title-bar
   double-click or the green button** takes the system's standard frame — the screen's visible frame — and a second
   zoom returns the frame it came from (DECK-24); the zoom never changes the icon size.
 - **Start page (D1, ISS-74):** the content above All Apps is a list of sections, in reading order **Open on this Mac**,

@@ -552,9 +552,9 @@ struct PhoneDeckView: View {
                               rows: { columns in DeckPage.rows(self.sections, columns: columns) },
                               clearQuery: { query = "" },
                               hasQuery: { !query.isEmpty },
-                              setZoom: { delta in
+                              setZoom: { action in
                                   let store = Profile.active.defaults
-                                  let next = delta.map { DeckZoom.stepped(from: DeckZoom.stored(in: store), by: $0) } ?? 1
+                                  let next = DeckZoom.applied(action, to: DeckZoom.stored(in: store))
                                   store.set(Double(next), forKey: DeckZoom.key)
                               })
         }
@@ -898,13 +898,13 @@ final class GridNavigator {
     @ObservationIgnored private var rows: (Int) -> [[DeckPageCell]] = { _ in [] }
     @ObservationIgnored private var clearQuery: () -> Void = {}
     @ObservationIgnored private var hasQuery: () -> Bool = { false }
-    /// ⌘+/⌘−/⌘0 on the Deck: a step's delta, or nil for 100 %.
-    @ObservationIgnored private var setZoom: (CGFloat?) -> Void = { _ in }
+    /// ⌘+/⌘−/⌘0 on the Deck: the action to apply to the profile's choice.
+    @ObservationIgnored private var setZoom: (DeckKeyZoom.Action) -> Void = { _ in }
 
     func install(controller: ConnectionController, cells: @escaping () -> [DeckPageCell],
                  rows: @escaping (Int) -> [[DeckPageCell]],
                  clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool,
-                 setZoom: @escaping (CGFloat?) -> Void = { _ in }) {
+                 setZoom: @escaping (DeckKeyZoom.Action) -> Void = { _ in }) {
         self.controller = controller
         self.cells = cells
         self.rows = rows
@@ -933,10 +933,7 @@ final class GridNavigator {
         // stream window key the press goes on to that window's own handling.
         let deckIsKey = NSApp.keyWindow === DeckWindow.window
         if let action = DeckKeyZoom.action(keyCode: keyCode, flags: flags, deckIsKey: deckIsKey) {
-            switch action {
-            case .step(let delta): setZoom(delta)
-            case .reset: setZoom(nil)
-            }
+            setZoom(action)
             return true
         }
         guard deckIsKey else { return false }
@@ -1023,6 +1020,11 @@ enum DeckZoom {
     static let options: [CGFloat] = [0.75, 1.0, 1.25, 1.5]
     static let step: CGFloat = 0.25
     static let range: ClosedRange<CGFloat> = 0.75...1.5
+    /// What a profile with no stored choice shows, and what ⌘0 returns to:
+    /// 125 %, so a fresh Deck is less dense than 100 %. The only literal for
+    /// the default; the stored read, ⌘0, the menu's checkmark and the tests
+    /// all use this value.
+    static let defaultValue: CGFloat = 1.25
 
     static func clamped(_ value: CGFloat) -> CGFloat {
         min(max(value, range.lowerBound), range.upperBound)
@@ -1033,15 +1035,24 @@ enum DeckZoom {
         clamped((value + delta).rounded(toPlaces: 3))
     }
 
-    /// 100% when the profile has no usable value.
+    /// The profile's next stored choice after one ⌘+ / ⌘− / ⌘0 press: a step
+    /// from the current value, or the default when the key returns to it.
+    static func applied(_ action: DeckKeyZoom.Action, to value: CGFloat) -> CGFloat {
+        switch action {
+        case .step(let delta): return stepped(from: value, by: delta)
+        case .reset: return defaultValue
+        }
+    }
+
+    /// The default when the profile has no usable value.
     static func stored(in defaults: UserDefaults) -> CGFloat {
         let value = defaults.double(forKey: key)
-        return value > 0 ? clamped(value) : 1
+        return value > 0 ? clamped(value) : defaultValue
     }
 }
 
-/// The Deck's icon-size keys as a value: ⌘+ / ⌘− step and ⌘0 returns to
-/// 100 %, but only while the Deck is the key window. A stream window's
+/// The Deck's icon-size keys as a value: ⌘+ / ⌘− step and ⌘0 returns to the
+/// default, 125 %, but only while the Deck is the key window. A stream window's
 /// ⌘+ / ⌘− / ⌘0 belong to that window's density, so the same press there must
 /// not move the Deck's stored choice (DECK-6).
 enum DeckKeyZoom {

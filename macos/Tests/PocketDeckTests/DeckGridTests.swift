@@ -93,6 +93,23 @@ final class DeckGridTests: XCTestCase {
                        "125 % tiles still fill the cap with eight columns")
     }
 
+    /// [DECK-4] The default is 125 % (DECK-6), so the same 640 / 760 / 1000 pt
+    /// widths carry fewer columns than their 100 % counts: 4, 5 and 6, one
+    /// cell size at every width. The 125 % numbers are the drawn ones the
+    /// `deckstart` run reports; the 100 % counts above stay DECK-4's.
+    func testTheDefaultIconSizesWidthsKeepOneSizeAndOnlyChangeColumns() {
+        let metrics = DeckGridSize(zoom: DeckZoom.defaultValue)
+        XCTAssertEqual(metrics.cellWidth, 120, accuracy: 0.001)
+        XCTAssertEqual(metrics.iconSide, 80, accuracy: 0.001)
+        let widths: [(width: CGFloat, columns: Int)] = [(640, 4), (760, 5), (1000, 6)]
+        for row in widths {
+            let block = DeckWide.block(width: row.width, metrics: metrics)
+            XCTAssertEqual(block.columns, row.columns, "width \(row.width) at the default")
+            XCTAssertEqual(DeckWide.cellFrame(0, in: block, metrics: metrics).width, 120,
+                           "the drawn cell at \(row.width) at the default")
+        }
+    }
+
     /// DECK-4: the block reserves the rail's 44 pt at every zoom and width, so
     /// the rail's column starts one gap right of the grid's right edge and no
     /// cell sits under it.
