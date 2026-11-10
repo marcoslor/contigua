@@ -1,11 +1,13 @@
 // The two window styles a stream window can wear, and the rules behind them.
 //
-// Framed (the default): a permanent 28 pt bar above the stream — window
+// Immersive (the default): a permanent 28 pt bar above the stream — window
 // material over the stream's own top 28 pt, which an NSBackgroundExtensionView
 // mirrors into the bar and fades into the material by the seam/top alphas —
-// holding the traffic lights. Immersive: the window is
-// exactly the stream, and the lights live behind a 350 ms dwell in a 72x32 pt
-// hot zone at the stream's top-left.
+// holding the traffic lights and the picture's name.
+// Framed: a real frame on all four sides — 38.5 pt above the picture and 5.5 pt
+// on the other three, a system material, a hairline, a lighter rim and the
+// picture's own 11.5 pt corners. The person's names, 2026-11-10: the bar style
+// is "Immersive", the frame is "Framed".
 //
 // Everything in this file is pure: the views (StreamChrome.swift) and the unit
 // tests read the same numbers, and time is always passed in.
@@ -13,19 +15,37 @@
 import AppKit
 
 enum WindowStyle: String, CaseIterable {
-    case framed
     case immersive
+    // Framed's stored value is deliberately not "framed": that string was the
+    // old name of today's bar style. No migration is attempted, so a stored
+    // "framed" is an unknown value and opens the default, Immersive.
+    case framed = "mat"
 
-    /// An app with no stored choice opens framed.
-    static let standard = WindowStyle.framed
+    /// An app with no stored choice, or an unknown one, opens Immersive.
+    static let standard = WindowStyle.immersive
+
+    /// The smallest stream a window may hold; the window adds the style's chrome.
+    static let minimumStream = CGSize(width: 320, height: 240)
 
     /// The name the View menu shows.
-    var label: String { self == .framed ? "Framed" : "Immersive" }
+    var label: String {
+        switch self {
+        case .immersive: return "Immersive"
+        case .framed: return "Framed"
+        }
+    }
 
-    /// The padding the style adds around the stream: the bar above it, nothing
-    /// on the other three sides. Full screen never has a bar.
+    /// The padding the style adds around the stream. Full screen never has
+    /// windowed chrome in either style.
     func insets(fullScreen: Bool) -> NSEdgeInsets {
-        NSEdgeInsets(top: self == .framed && !fullScreen ? ChromeBar.height : 0, left: 0, bottom: 0, right: 0)
+        guard !fullScreen else { return NSEdgeInsets() }
+        switch self {
+        case .immersive:
+            return NSEdgeInsets(top: ChromeBar.height, left: 0, bottom: 0, right: 0)
+        case .framed:
+            return NSEdgeInsets(top: FramedChrome.topInset, left: FramedChrome.sideInset,
+                                bottom: FramedChrome.bottomInset, right: FramedChrome.sideInset)
+        }
     }
 
     /// The window that holds a stream `stream` big.
@@ -42,42 +62,93 @@ enum WindowStyle: String, CaseIterable {
     }
 
     /// The frame a window takes when it changes from this style to `next`: the
-    /// window grows or shrinks by the bar above the stream, so the stream keeps
-    /// its place on screen; if the bar would then poke above the screen's
-    /// visible area, the window moves down just enough for it to fit.
+    /// window grows or shrinks by the difference in the styles' insets so the
+    /// stream keeps its place on screen; if the larger frame would then poke
+    /// above the screen's visible area, the window moves down just enough for
+    /// it to fit.
     func frame(switchedTo next: WindowStyle, current: NSRect, visible: NSRect, fullScreen: Bool = false) -> NSRect {
+        let old = insets(fullScreen: fullScreen)
+        let new = next.insets(fullScreen: fullScreen)
         var frame = current
-        frame.size.height += next.insets(fullScreen: fullScreen).top - insets(fullScreen: fullScreen).top
+        frame.origin.x += old.left - new.left
+        frame.origin.y += old.bottom - new.bottom
+        frame.size.width += (new.left + new.right) - (old.left + old.right)
+        frame.size.height += (new.top + new.bottom) - (old.top + old.bottom)
         if frame.maxY > visible.maxY { frame.origin.y -= frame.maxY - visible.maxY }
         return frame
     }
 }
 
-/// The window's titlebar and traffic lights in a given state. Outside full
-/// screen the chrome owns both: the title is hidden, the titlebar is clear over
-/// the stream, and the lights ride the framed bar or the dwell pill. Native
-/// full screen is the system's: the bar macOS slides down at the top edge shows
-/// the window's title and the standard lights in their standard place, so the
-/// chrome leaves the buttons to AppKit.
+/// The Framed style's own geometry, in points (ISS-45, WIN-70): a 0.5 pt outer
+/// hairline, a 1 pt inner rim, a 22 pt window radius and an 11.5 pt picture
+/// radius (deliberately not concentric: 22 - 5.5 is 16.5, not 11.5), 38.5 pt
+/// above the picture and 5.5 pt on the other three sides, and a white top
+/// highlight fading over the first 10 pt. Measured from the system's quick
+/// preview window, the reference in docs/DESIGN.md.
+enum FramedChrome {
+    static let topInset: CGFloat = 38.5
+    static let sideInset: CGFloat = 5.5
+    static let bottomInset: CGFloat = 5.5
+    static let outerRadius: CGFloat = 22
+    /// The picture's own radius; deliberately not `outerRadius - sideInset`.
+    static let contentRadius: CGFloat = 11.5
+    static let hairline: CGFloat = 0.5
+    static let rim: CGFloat = 1
+    static let highlightHeight: CGFloat = 10
+    /// The title's ink: the system label colour; the material and the window's
+    /// appearance own the contrast, so Framed needs no tone machine (WIN-70).
+    static let titleColor: NSColor = .labelColor
+
+    /// The traffic lights in the taller bar: 14 pt square, 12.25 pt in from the
+    /// window's left and top edges, centred on the 38.5 pt bar's line.
+    static let lightInset: CGFloat = (topInset - ChromeBar.trafficLightButtonSide) / 2
+
+    /// The right end of the bar's controls mirrors the lights' inset: the
+    /// Immersive bar's 7 pt plus this style's 5.5 pt frame.
+    static let controlsRightInset: CGFloat = sideInset + ChromeBar.trafficLightInset
+
+    /// The picture's rect in the chrome's coordinates (AppKit's bottom-left
+    /// origin; the view is not flipped).
+    static func contentRect(in bounds: NSRect) -> NSRect {
+        NSRect(x: bounds.minX + sideInset,
+               y: bounds.minY + bottomInset,
+               width: max(bounds.width - sideInset * 2, 0),
+               height: max(bounds.height - topInset - bottomInset, 0))
+    }
+
+    /// The picture's rounded rect, for the clip and the click mapping.
+    static func contentPath(in bounds: NSRect) -> CGPath {
+        CGPath(roundedRect: contentRect(in: bounds), cornerWidth: contentRadius,
+               cornerHeight: contentRadius, transform: nil)
+    }
+
+    /// Whether `point` (the view's coordinates) is on the picture, rounded
+    /// corners included. Everything else is the window's chrome.
+    static func contentContains(_ point: NSPoint, in bounds: NSRect) -> Bool {
+        contentPath(in: bounds).contains(point)
+    }
+}
+
+/// The window's titlebar and traffic lights in a given state. In both full
+/// screen and a windowed style the chrome owns the lights and hides the
+/// system's title: the windowed bar, the Framed frame and the full-screen
+/// acrylic bar all place them themselves.
 struct ChromeConfig: Equatable {
     let titleVisible: Bool
     let titlebarTransparent: Bool
     /// true: AppKit places the standard buttons; false: the chrome does.
     let lightsManagedByAppKit: Bool
 
-    static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
-        if fullScreen {
-            return ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
-        }
-        return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
+    static func forState(fullScreen: Bool) -> ChromeConfig {
+        ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
     }
 }
 
-/// The framed bar and the immersive pill: the numbers both styles share.
+/// The Immersive bar and the full-screen bar: the numbers both share.
 enum ChromeBar {
     /// The permanent bar above the stream.
     static let height = BarGeometry.barHeight
-    /// The stream's own corners, as the window's in the immersive style.
+    /// The stream's own corners, as the window's in the Immersive style.
     static let cornerRadius: CGFloat = 16
     /// Traffic lights: `trafficLightInset` in from the window's left edge and
     /// from the bar's top and bottom, `trafficLightButtonSide` square,
@@ -91,51 +162,219 @@ enum ChromeBar {
     static func hazeTopAlpha(dark: Bool) -> CGFloat { dark ? 0.14 : 0.30 }
 }
 
-/// The immersive style's hot zone, the dwell that brings the lights in and the
-/// pill they sit in.
-enum DwellChrome {
-    /// At the stream's top-left.
-    static let hotZone = CGSize(width: 72, height: 32)
-    /// The pill is as tall as the framed bar, at the stream's top-left corner;
-    /// its width follows what is in it.
-    static var pillHeight: CGFloat { ChromeBar.height }
-    static let pillCornerRadius: CGFloat = 8
-    /// The dwell has to rest this long, without drifting more than
-    /// `tolerance` pt, before the pill fades in over `fadeIn`.
-    static let dwell: TimeInterval = 0.35
-    static let tolerance: CGFloat = 3
-    static let fadeIn: TimeInterval = 0.12
-    /// And it fades out this long after the pointer leaves the pill.
+/// The full-screen bar both styles wear: one 28 pt acrylic bar across the
+/// screen's top, hidden until the pointer reaches the top edge and revealed by
+/// FullScreenBarMachine. No mirror, no frame: the system material frosts the
+/// stream behind it.
+enum FullScreenBar {
+    static let height = ChromeBar.height
+    /// The band at the very top edge a pointer has to reach while the bar is
+    /// hidden. Once it is showing, its own height keeps it alive.
+    static let edgeHeight: CGFloat = 8
+    /// The default rest before the bar slides in, from RevealDelay.short.
+    static let revealDelay: TimeInterval = 0.35
+    /// How long the pointer may leave the bar before it slides away.
     static let hideDelay: TimeInterval = 0.6
-    /// The pill sits this far in from the stream's top-left corner.
-    static let pillInset: CGFloat = 6
-    /// The lights ride the pill in from its edge, on the pill's centre line,
-    /// the same spacing as the bar's, with the bar's left inset mirrored.
-    static var pillLightInset: CGFloat { pillInset + ChromeBar.trafficLightInset }
-    static var pillLightSpacing: CGFloat { ChromeBar.trafficLightSpacing }
-    /// The window kind's actions 8 pts right of the zoom light's slot.
-    static var pillActionsX: CGFloat {
-        pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+    /// The slide's own times: down like the system's full-screen titlebar, and
+    /// away a little faster.
+    static let revealDuration: TimeInterval = 0.18
+    static let hideDuration: TimeInterval = 0.15
+    /// The bar's own background: the system's full-screen material, blended
+    /// within the window so it frosts the stream, not the desktop.
+    static let material: NSVisualEffectView.Material = .fullScreenUI
+    /// The centred title's ink: the system label colour; the material and the
+    /// window's appearance own the contrast.
+    static let titleColor: NSColor = .labelColor
+}
+
+/// The full-screen bar's four states (WIN-8). One explicit machine: no
+/// booleans elsewhere stand for a phase. `pending` records which timer the
+/// current state asked for, so a late or duplicated `delayElapsed` can be
+/// ignored and a pointer returning cancels the right one.
+enum FullScreenBarMode: String, CaseIterable {
+    case hidden
+    case revealing
+    case shown
+    case hiding
+}
+
+enum FullScreenBarEvent: Equatable {
+    /// The system entered full screen: the bar starts hidden.
+    case enterFullScreen
+    /// The system left full screen: the bar goes and no timer survives.
+    case exitFullScreen
+    /// The pointer reached the top edge (the top band while hidden, the bar
+    /// while it shows) and is resting there.
+    case pointerAtTopEdge
+    /// The pointer left the top edge and the bar.
+    case pointerLeaves
+    /// The reveal rest or the hide grace expired.
+    case delayElapsed
+    /// The slide in or out finished.
+    case animationFinished
+    /// A menu began or ended tracking: the bar stays while one is open.
+    case menuTracking(Bool)
+    /// View ▸ Hide Controls or Settings picked another reveal choice.
+    case configurationChanged(RevealDelay)
+}
+
+/// What the window has to do for one transition. Effects run in the
+/// controller; the machine only names them.
+enum FullScreenBarAction: Equatable {
+    case scheduleReveal(TimeInterval)
+    case scheduleHide(TimeInterval)
+    case cancelTimer
+    case reveal(animated: Bool)
+    case hide(animated: Bool)
+}
+
+/// The full-screen bar's transition table. Pure: time, pointer and menu events
+/// are passed in and the caller runs the returned actions.
+struct FullScreenBarMachine: Equatable {
+    enum Pending: Equatable {
+        case reveal
+        case hide
     }
-    /// The pill is as tall as the framed bar and as wide as its contents: the
-    /// traffic lights, the window kind's action capsules, then Live Text's
-    /// capsule, then the edge.
-    static func pillWidth(actions: [HeaderAction]) -> CGFloat {
-        pillActionsX + HeaderBar.rowWidth(actions)
-            + (actions.isEmpty ? 0 : HeaderBar.capsuleGap) + HeaderBar.liveTextSide + 2
+
+    private(set) var mode: FullScreenBarMode = .hidden
+    private(set) var reveal: RevealDelay
+    private(set) var pointerAtTop = false
+    private(set) var menuIsTracking = false
+    private(set) var pending: Pending?
+
+    init(reveal: RevealDelay = .short) {
+        self.reveal = reveal
+    }
+
+    private var alwaysVisible: Bool { reveal.keepsChromeVisible }
+
+    /// Folds one event in and returns the effects to run, in order.
+    mutating func handle(_ event: FullScreenBarEvent) -> [FullScreenBarAction] {
+        switch event {
+        case .enterFullScreen, .exitFullScreen:
+            mode = .hidden
+            pointerAtTop = false
+            menuIsTracking = false
+            pending = nil
+            return [.cancelTimer, .hide(animated: false)]
+
+        case .pointerAtTopEdge:
+            pointerAtTop = true
+            if alwaysVisible {
+                pending = nil
+                guard mode != .shown else { return [] }
+                mode = .revealing
+                return [.cancelTimer, .reveal(animated: true)]
+            }
+            switch mode {
+            case .hidden:
+                pending = .reveal
+                return [.cancelTimer, .scheduleReveal(reveal.seconds)]
+            case .revealing, .shown:
+                guard pending == .hide else { return [] }
+                pending = nil
+                return [.cancelTimer]
+            case .hiding:
+                pending = nil
+                mode = .revealing
+                return [.cancelTimer, .reveal(animated: true)]
+            }
+
+        case .pointerLeaves:
+            pointerAtTop = false
+            if alwaysVisible || menuIsTracking { return [] }
+            switch mode {
+            case .hidden:
+                guard pending == .reveal else { return [] }
+                pending = nil
+                return [.cancelTimer]
+            case .revealing:
+                pending = nil
+                mode = .hiding
+                return [.hide(animated: true)]
+            case .shown:
+                pending = .hide
+                return [.cancelTimer, .scheduleHide(FullScreenBar.hideDelay)]
+            case .hiding:
+                return []
+            }
+
+        case .delayElapsed:
+            switch (mode, pending) {
+            case (.hidden, .reveal):
+                pending = nil
+                mode = alwaysVisible ? .shown : .revealing
+                return [.reveal(animated: true)]
+            case (.shown, .hide):
+                pending = nil
+                guard !alwaysVisible, !menuIsTracking, !pointerAtTop else { return [] }
+                mode = .hiding
+                return [.hide(animated: true)]
+            default:
+                return []
+            }
+
+        case .animationFinished:
+            switch mode {
+            case .revealing:
+                mode = .shown
+                guard !alwaysVisible, !menuIsTracking, !pointerAtTop else { return [] }
+                pending = .hide
+                return [.scheduleHide(FullScreenBar.hideDelay)]
+            case .hiding:
+                mode = .hidden
+                return []
+            case .hidden, .shown:
+                return []
+            }
+
+        case .menuTracking(let tracking):
+            menuIsTracking = tracking
+            if tracking {
+                pending = nil
+                guard mode != .shown else { return [.cancelTimer] }
+                mode = .revealing
+                return [.cancelTimer, .reveal(animated: true)]
+            }
+            guard !alwaysVisible, !pointerAtTop, mode == .shown else { return [] }
+            pending = .hide
+            return [.scheduleHide(FullScreenBar.hideDelay)]
+
+        case .configurationChanged(let choice):
+            let wasAlwaysVisible = alwaysVisible
+            reveal = choice
+            if alwaysVisible {
+                pending = nil
+                guard mode != .shown else { return [.cancelTimer] }
+                mode = .revealing
+                return [.cancelTimer, .reveal(animated: true)]
+            }
+            if wasAlwaysVisible {
+                pending = nil
+                if pointerAtTop || menuIsTracking {
+                    guard mode == .hidden else { return [.cancelTimer] }
+                    pending = .reveal
+                    return [.cancelTimer, .scheduleReveal(choice.seconds)]
+                }
+                guard mode == .shown || mode == .revealing else { return [.cancelTimer] }
+                mode = .hiding
+                return [.cancelTimer, .hide(animated: true)]
+            }
+            guard pending == .reveal, mode == .hidden else { return [] }
+            return [.cancelTimer, .scheduleReveal(choice.seconds)]
+        }
     }
 }
 
-/// Settings → General "Reveal controls after" and View ▸ Immersive: how long
-/// the pointer rests in the immersive hot zone before the chrome shows, or
-/// "Always Visible", which keeps it up at rest. Short is the old fixed 350 ms
-/// and the default; the value lives in the profile's defaults and applies to
-/// open windows at once.
+/// Settings → General "Reveal controls after" and View ▸ Hide Controls: how
+/// long the pointer rests at the top edge in full screen before the bar shows,
+/// or "Always Visible", which keeps it up. Short is the 350 ms default; the
+/// value lives in the profile's defaults and applies to open windows at once.
 enum RevealDelay: String, CaseIterable {
     case instantly
     case short
     case long
-    /// Immersive chrome stays shown: no hot zone, no dwell, no hiding.
+    /// The full-screen bar stays shown: no rest, no hiding.
     case alwaysVisible
 
     static let key = "immersive.revealDelay"
@@ -149,17 +388,17 @@ enum RevealDelay: String, CaseIterable {
         }
     }
 
-    /// Instantly (0), the default 350 ms, or twice that. Unused when the
-    /// chrome is always visible.
+    /// Instantly (0), the default 350 ms, or twice that. Unused when the bar
+    /// is always visible.
     var seconds: TimeInterval {
         switch self {
         case .instantly, .alwaysVisible: return 0
-        case .short: return DwellChrome.dwell
-        case .long: return DwellChrome.dwell * 2
+        case .short: return FullScreenBar.revealDelay
+        case .long: return FullScreenBar.revealDelay * 2
         }
     }
 
-    /// The immersive chrome never hides for this choice.
+    /// The full-screen bar never hides for this choice.
     var keepsChromeVisible: Bool { self == .alwaysVisible }
 
     /// Unset or unreadable values are Short, the default.
@@ -227,11 +466,12 @@ enum PhoneChrome {
             return visible
         }
         let ratio = phone.width / phone.height
-        let bar = style.insets(fullScreen: false).top
-        var streamHeight = max(visible.height - bar, 1)
+        let pad = style.insets(fullScreen: false)
+        var streamHeight = max(visible.height - pad.top - pad.bottom, 1)
         var streamWidth = streamHeight * ratio
-        if streamWidth > visible.width {
-            streamWidth = visible.width
+        let maxStreamWidth = max(visible.width - pad.left - pad.right, 1)
+        if streamWidth > maxStreamWidth {
+            streamWidth = maxStreamWidth
             streamHeight = streamWidth / ratio
         }
         let size = style.windowSize(stream: CGSize(width: streamWidth, height: streamHeight))
@@ -287,18 +527,19 @@ enum PhoneChrome {
                               visible: NSRect, minimum: NSSize = .zero) -> NSRect {
         guard phone.width > 0, phone.height > 0, saved.width > 0, saved.height > 0 else { return saved }
         let ratio = phone.width / phone.height
-        let bar = style.insets(fullScreen: false).top
-        var streamHeight = max(saved.height - bar, 1)
+        let pad = style.insets(fullScreen: false)
+        var streamHeight = max(saved.height - pad.top - pad.bottom, 1)
         var streamWidth = streamHeight * ratio
-        let maxStreamHeight = max(visible.height - bar, 1)
-        let scale = min(1, min(visible.width / streamWidth, maxStreamHeight / streamHeight))
+        let maxStreamHeight = max(visible.height - pad.top - pad.bottom, 1)
+        let maxStreamWidth = max(visible.width - pad.left - pad.right, 1)
+        let scale = min(1, min(maxStreamWidth / streamWidth, maxStreamHeight / streamHeight))
         streamWidth *= scale
         streamHeight *= scale
         // The minimum is the phone's shape too (PhoneWindowController's
         // minSize): a narrow window grows both axes, never one.
-        let minStreamWidth = max(minimum.width, max(minimum.height - bar, 0) * ratio)
+        let minStreamWidth = max(minimum.width, max(minimum.height - pad.top - pad.bottom, 0) * ratio)
         if streamWidth < minStreamWidth {
-            streamWidth = min(minStreamWidth, visible.width)
+            streamWidth = min(minStreamWidth, maxStreamWidth)
             streamHeight = streamWidth / ratio
         }
         let size = style.windowSize(stream: CGSize(width: streamWidth.rounded(),
@@ -358,7 +599,9 @@ struct WindowStyleStore {
     }
 
     /// nil for a window with nothing to remember (a link window before the
-    /// phone reports the package it displays).
+    /// phone reports the package it displays). A stored value the enum does
+    /// not know — the old names included — is ignored and opens the default
+    /// (Immersive); no migration is attempted.
     func style(forKey key: String?) -> WindowStyle {
         guard let key, let raw = defaults.string(forKey: key), let style = WindowStyle(rawValue: raw) else {
             return .standard
@@ -369,92 +612,6 @@ struct WindowStyleStore {
     func set(_ style: WindowStyle, forKey key: String?) {
         guard let key else { return }
         defaults.set(style.rawValue, forKey: key)
-    }
-}
-
-/// The immersive hot zone's rule. The pointer has to rest still inside the zone
-/// for `dwell` before the pill shows; a click that arrives before that goes to
-/// the app as ordinary touch input (the view passes it straight through) and
-/// starts the rest again, so tapping can never summon the pill mid-tap. While
-/// the pill or the zone is under the pointer it stays; it hides `hideDelay`
-/// after the pointer leaves both.
-///
-/// Points and rects are in the stream's coordinates with a top-left origin.
-struct DwellPill: Equatable {
-    let zone: CGRect
-    let pill: CGRect
-    /// Settings → General "Reveal controls after"; `setDwell` changes it live.
-    private(set) var dwell: TimeInterval
-    let hideDelay: TimeInterval
-    let tolerance: CGFloat
-
-    private(set) var shown = false
-    /// When the pill hides unless the pointer comes back.
-    private(set) var hideAt: TimeInterval?
-    /// Where and when the current rest began; nil while no rest is running.
-    private(set) var restStart: TimeInterval?
-    private var restPoint: CGPoint = .zero
-
-    init(zone: CGRect = CGRect(origin: .zero, size: DwellChrome.hotZone),
-         pill: CGRect = CGRect(x: 0, y: 0, width: 0, height: DwellChrome.pillHeight),
-         dwell: TimeInterval = DwellChrome.dwell,
-         hideDelay: TimeInterval = DwellChrome.hideDelay,
-         tolerance: CGFloat = DwellChrome.tolerance) {
-        self.zone = zone
-        self.pill = pill
-        self.dwell = dwell
-        self.hideDelay = hideDelay
-        self.tolerance = tolerance
-    }
-
-    /// The pointer is at `point` (stream coordinates, top-left origin).
-    mutating func pointerMoved(to point: CGPoint, now: TimeInterval) {
-        if shown {
-            if pill.contains(point) || zone.contains(point) {
-                hideAt = nil
-            } else if hideAt == nil {
-                hideAt = now + hideDelay
-            }
-            return
-        }
-        guard zone.contains(point) else {
-            restStart = nil
-            return
-        }
-        let drifted = restStart.map { _ in hypot(point.x - restPoint.x, point.y - restPoint.y) > tolerance } ?? true
-        if drifted {
-            restStart = now
-            restPoint = point
-        }
-    }
-
-    /// The Settings control changed: the next rest uses `value`, and a rest
-    /// already running is re-timed from when it began (the controller folds
-    /// the time in again, so a shorter delay can show it at once).
-    mutating func setDwell(_ value: TimeInterval) {
-        dwell = max(value, 0)
-    }
-
-    /// A click reached the app through the hot zone: the rest starts again from
-    /// it, so the pill cannot appear while the finger is still tapping.
-    mutating func clickReachedApp(at point: CGPoint, now: TimeInterval) {
-        restStart = now
-        restPoint = point
-    }
-
-    /// Folds the time in: shows the pill once the rest is long enough, hides it
-    /// when the hide is due.
-    mutating func update(now: TimeInterval) {
-        if !shown, let start = restStart, now - start >= dwell {
-            shown = true
-            hideAt = nil
-            restStart = nil
-        }
-        if shown, let due = hideAt, now >= due {
-            shown = false
-            hideAt = nil
-            restStart = nil
-        }
     }
 }
 

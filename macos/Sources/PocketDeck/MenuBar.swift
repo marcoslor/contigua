@@ -221,7 +221,7 @@ struct AppCommands: Commands {
                 Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            // View ▸ Framed / Immersive: one radio pair for the key stream
+            // View ▸ Immersive / Framed: one radio pair for the key stream
             // window, built by the commands themselves. An inline Picker renders
             // it as checkmarked radio items with no section title; an AppKit
             // item inserted here is dropped the moment SwiftUI rebuilds the
@@ -237,11 +237,11 @@ struct AppCommands: Commands {
                         controller.windows.setKeyWindowStyle(picked)
                     }
                 })) {
-                Text(WindowStyle.framed.label)
-                    .tag(WindowStyle.framed)
-                    .keyboardShortcut("f", modifiers: [.command, .option])
                 Text(WindowStyle.immersive.label)
                     .tag(WindowStyle.immersive)
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Text(WindowStyle.framed.label)
+                    .tag(WindowStyle.framed)
             } label: {
                 EmptyView()
             }
@@ -252,23 +252,22 @@ struct AppCommands: Commands {
             // flag when the menu opens and whenever the key window changes.
             // The items stay enabled here on purpose — a disabled menu item
             // eats its key equivalent, and ⌥⌘F is on this pair.
-            // The reveal choice: enabled only while the window is immersive, so
-            // a choice is never also a submenu's parent (Framed/Immersive above
-            // own the style). A pick stores the choice and leaves the style.
+            // The reveal choice: enabled while a stream window is key. A pick
+            // stores the full-screen reveal and leaves the window's style.
             Menu {
                 ForEach(MenuModel.hideControls, id: \.self) { entry in
                     if entry == .separator {
                         Divider()
                     } else {
                         Toggle(entry.title, isOn: Binding(
-                            get: { ImmersiveMenuModel.isChecked(entry, reveal: MenuBarModel.shared.snapshot.revealDelay) },
-                            set: { _ in controller.windows.pickImmersive(entry) }))
+                            get: { FullScreenMenuModel.isChecked(entry, reveal: MenuBarModel.shared.snapshot.revealDelay) },
+                            set: { _ in controller.windows.pickHideControls(entry) }))
                     }
                 }
             } label: {
                 Text("Hide Controls")
             }
-            .disabled(!MenuModel.hideControlsEnabled(style: menu.style))
+            .disabled(!MenuModel.hideControlsEnabled(hasStream: menu.hasStream))
             Divider()
             Toggle(isOn: Binding(
                 get: { menu.showTouches },

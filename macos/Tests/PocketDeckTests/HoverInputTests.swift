@@ -2,7 +2,7 @@
 // exit before a button's touch DOWN, enter again after the release, no hover
 // while dragging, at most one move per 16 ms (the newest point), nothing when
 // the setting is off, and an exit when the pointer enters Mac UI over the
-// video (the framed bar, the immersive pill).
+// video (the Immersive bar, the Framed frame, the full-screen bar).
 
 import AppKit
 import XCTest
@@ -223,7 +223,7 @@ final class HoverInputTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
     }
 
-    func testTheFramedBarIsNotThePhone() throws {
+    func testTheImmersiveBarIsNotThePhone() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -243,31 +243,26 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent.actions, [.enter, .exit])
     }
 
-    func testTheImmersivePillIsNotThePhone() throws {
+    func testTheFramedFrameIsNotThePhone() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
-        controller.setStyle(.immersive)
+        controller.setStyle(.framed)
         window.orderFront(nil)
         controller.noteFirstFrame()
         var sent = Sent()
         controller.videoView.inputMapper?.send = { command in
             if case .hover(let event) = command { sent.hovers.append(event) }
         }
-        // Rest in the hot zone until the pill fades in over the video.
-        let hotZone = CGPoint(x: 20, y: window.frame.height - 16)
-        controller.pointerMoved(toWindowPoint: hotZone)
-        pump(0.5)
-        XCTAssertTrue(controller.chrome.showsPill, "the pill is up")
-        // The pill came up under the resting pointer: it is Mac UI now, so
-        // the hover ends without another move.
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
+        XCTAssertEqual(sent.actions, [.enter])
+        // The 5.5 pt left margin is the window's, not the picture's.
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 2, y: 300))
         XCTAssertEqual(sent.actions, [.enter, .exit])
-
-        // The same point is Mac UI: the phone sees nothing more.
-        controller.pointerMoved(toWindowPoint: hotZone)
-        XCTAssertEqual(sent.actions, [.enter, .exit])
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
+        XCTAssertEqual(sent.actions, [.enter, .exit, .enter])
     }
 
     // MARK: The band is never phone input (WIN-61)
@@ -277,7 +272,7 @@ final class HoverInputTests: XCTestCase {
     /// window, so the framed bar's mirror is still inside the video view, and
     /// moving the pointer there must end the phone's hover and send nothing
     /// while it stays (ISS-49, WIN-61).
-    func testHoverIntoTheFramedBandLeavesThePhoneAndStaysOut() throws {
+    func testHoverIntoTheImmersiveBandLeavesThePhoneAndStaysOut() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -316,7 +311,7 @@ final class HoverInputTests: XCTestCase {
 
     /// The Phone Mirror wears the same chrome: its framed band belongs to the
     /// window, not to the phone's own screen.
-    func testHoverIntoThePhoneMirrorsFramedBandLeavesThePhone() throws {
+    func testHoverIntoThePhoneMirrorsImmersiveBandLeavesThePhone() throws {
         let manager = makeManager()
         let controller = PhoneWindowController(stream: 1, phone: nil, manager: manager)
         defer { controller.window?.close() }
@@ -344,39 +339,5 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent.actions, [.enter, .exit, .enter])
     }
 
-    /// In immersive the pill appears under a pointer that is resting in the
-    /// hot zone. The pointer does not move to leave the phone: the pill's
-    /// arrival itself must end the hover, once, and further moves over it send
-    /// nothing until the pointer is back on the picture.
-    func testTheImmersivePillAppearingUnderARestingPointerEndsTheHover() throws {
-        let manager = makeManager()
-        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
-                                             label: "Example", manager: manager)
-        defer { controller.window?.close() }
-        let window = try XCTUnwrap(controller.window)
-        controller.setStyle(.immersive)
-        window.orderFront(nil)
-        controller.noteFirstFrame()
-        var sent = Sent()
-        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
-        mapper.scheduleHoverMove = { _, work in work() }
-        mapper.send = { command in
-            if case .hover(let event) = command { sent.hovers.append(event) }
-        }
-        let hotZone = CGPoint(x: 20, y: window.frame.height - 16)
-        controller.pointerMoved(toWindowPoint: hotZone)
-        XCTAssertEqual(sent.actions, [.enter], "at rest the hot zone is still the picture")
 
-        pump(0.5)
-        XCTAssertTrue(controller.chrome.showsPill, "the pill is up")
-        XCTAssertEqual(sent.actions, [.enter, .exit],
-                       "the pill came up under the resting pointer: the hover ends")
-
-        controller.pointerMoved(toWindowPoint: hotZone)
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 40, y: hotZone.y))
-        XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the pill")
-
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 40, y: hotZone.y - 80))
-        XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "the picture below resumes the hover")
-    }
 }

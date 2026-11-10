@@ -1,7 +1,6 @@
 // Phone-mode window: a 1:1 mirror of the phone's own screen in a window whose
 // video keeps the phone's aspect ratio and turns when the phone rotates.
-// Back / Home / Recents are small icons at the bar's right end (framed) or in
-// the dwell pill (immersive).
+// Back / Home / Recents are small icons at the bar's right end in either style.
 
 import AppKit
 

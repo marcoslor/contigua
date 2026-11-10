@@ -46,7 +46,7 @@
 //                                  paths, plus the first one's name as text)
 //   pasteimage PATH                an image on the pasteboard, no text
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
-//                                  in the dwell pill's hot zone); over the video it is
+//                                  over the chrome's top band); over the video it is
 //                                  a mouse hover on the phone
 //   hoverout                       the pointer leaves the video (hover EXIT)
 //   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
@@ -135,7 +135,7 @@ enum DebugInputAction: Equatable {
     case shortcutsAll(Bool)
     case windowStyle(String)
     /// View ▸ Immersive's pick (the reveal choice and the immersive style).
-    case immersive(ImmersiveMenuItem)
+    case hideControls(FullScreenMenuItem)
     /// The Navigate menu's action: back, home or recents.
     case nav(String)
     /// Open the Settings window (⌘,).
@@ -292,13 +292,13 @@ enum DebugInputScript {
             case "toggle" where args.count == 1: return .windowStyle("toggle")
             default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
-        case "immersive":
+        case "hidecontrols":
             switch args.first {
-            case "instantly" where args.count == 1: return .immersive(.delay(.instantly))
-            case "short" where args.count == 1: return .immersive(.delay(.short))
-            case "long" where args.count == 1: return .immersive(.delay(.long))
-            case "always" where args.count == 1: return .immersive(.alwaysVisible)
-            default: throw LineError(message: "immersive needs instantly, short, long or always")
+            case "instantly" where args.count == 1: return .hideControls(.delay(.instantly))
+            case "short" where args.count == 1: return .hideControls(.delay(.short))
+            case "long" where args.count == 1: return .hideControls(.delay(.long))
+            case "always" where args.count == 1: return .hideControls(.alwaysVisible)
+            default: throw LineError(message: "hidecontrols needs instantly, short, long or always")
             }
         case "nav":
             guard args.count == 1, ["back", "home", "recents"].contains(args[0]) else {
@@ -823,8 +823,8 @@ final class DebugInputDriver {
             case "immersive": controller.setStyle(.immersive)
             default: controller.toggleStyle()
             }
-        case .immersive(let item):
-            (view.window?.windowController as? StreamWindowController)?.manager.pickImmersive(item)
+        case .hideControls(let item):
+            (view.window?.windowController as? StreamWindowController)?.manager.pickHideControls(item)
         case .nav(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             switch target {

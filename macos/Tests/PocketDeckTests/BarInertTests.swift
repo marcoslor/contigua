@@ -13,7 +13,7 @@ import XCTest
 final class BarInertTests: XCTestCase {
     private func makeChrome() -> StreamChromeView {
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
-        let chrome = StreamChromeView(video: video, style: .framed)
+        let chrome = StreamChromeView(video: video, style: .immersive)
         chrome.frame = NSRect(x: 0, y: 0, width: 360, height: 800)
         return chrome
     }
@@ -66,7 +66,7 @@ final class BarInertTests: XCTestCase {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 800))
-        let chrome = StreamChromeView(video: video, style: .framed)
+        let chrome = StreamChromeView(video: video, style: .immersive)
         window.contentView = chrome
         window.orderFront(nil)
         window.layoutIfNeeded()

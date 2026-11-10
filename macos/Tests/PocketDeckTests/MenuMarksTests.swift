@@ -84,7 +84,8 @@ final class MenuMarksTests: XCTestCase {
         let framed = edits(state(style: .framed))
         XCTAssertTrue(framed.contains(.mark(["Framed"], true)))
         XCTAssertTrue(framed.contains(.mark(["Immersive"], false)))
-        XCTAssertTrue(framed.contains(.enable(["Hide Controls"], false)))
+        XCTAssertTrue(framed.contains(.enable(["Hide Controls"], true)),
+                      "Hide Controls follows the key stream window in either style")
     }
 
     /// Exactly one of the pair is on, whatever the state: no state leaves both

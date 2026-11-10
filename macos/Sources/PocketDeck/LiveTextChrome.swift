@@ -3,7 +3,7 @@
 // as a PNG, and the small "Live Text" pill that says input is paused.
 //
 // Both wear the chrome they sit in: the framed bar's line at the window's top
-// right, or inside the immersive dwell pill. In full screen there is no bar, so
+// right of the bar. In full screen it waits on the acrylic bar, so
 // only the View menu reaches the mode and the status pill floats at the top
 // edge of the stream.
 

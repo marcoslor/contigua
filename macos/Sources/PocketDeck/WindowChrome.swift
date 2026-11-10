@@ -193,7 +193,8 @@ enum HeaderBar {
         var width: CGFloat
     }
 
-    static func row(_ actions: [HeaderAction], rightEdge: CGFloat) -> Row? {
+    static func row(_ actions: [HeaderAction], rightEdge: CGFloat,
+                    rightInset: CGFloat = HeaderBar.rightInset) -> Row? {
         let actionsWidth = rowWidth(actions)
         let hasActions = !actions.isEmpty
         let width = (hasActions ? actionsWidth + capsuleGap : 0) + liveTextSide
