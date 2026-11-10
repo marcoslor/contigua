@@ -22,10 +22,11 @@ if root["width"] != 300:
     problems.append("width %s" % root["width"])
 if not root["mapped"]:
     problems.append("items %d, controls %d" % (len(items), len(root["controls"])))
-for kind in ("gear", "volume", "dnd", "ring", "phoneScreen", "findApps", "continueOnMac",
-             "installApk"):
+for kind in ("gear", "volume", "dnd", "ring", "screen", "phoneScreen", "findApps"):
     if kind not in kinds:
         problems.append("missing %s" % kind)
+if "installApk" in kinds:
+    problems.append("Install APK is the Phone menu's, not a card row")
 for kind in ("settings", "quit"):
     if kind in kinds:
         problems.append("%s is the icon's menu, not a row" % kind)
