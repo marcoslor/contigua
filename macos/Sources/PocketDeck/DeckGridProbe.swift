@@ -63,21 +63,20 @@ enum DeckGridProbe {
         return "\(pixel[0]),\(pixel[1]),\(pixel[2])"
     }
 
-    /// The block the layout drew, at the zoom step and the width the run uses.
-    /// Written on every real geometry change, so a check can resize the window
-    /// and read the settled numbers: the tiles, the cap, the block and the
-    /// rail's column all follow the width (DECK-4).
+    /// The block the layout drew, at the icon-size step and the width the run
+    /// uses. Written on every real geometry change, so a check can resize the
+    /// window and read the settled numbers: the cells keep one size, the block
+    /// is capped and centred, and the column count follows the width (DECK-4).
     @MainActor
     static func reportGeometry(zoom: CGFloat, viewport: CGFloat) {
-        let metrics = DeckGridSize(zoom: zoom, width: viewport)
+        let metrics = DeckGridSize(zoom: zoom)
         let block = DeckWide.block(width: viewport, metrics: metrics)
-        let key = "\(Int(viewport.rounded()))|\(metrics.zoom)|\(metrics.tileScale)|\(block.columns)"
+        let key = "\(Int(viewport.rounded()))|\(metrics.zoom)|\(block.columns)"
         guard key != lastGeometry else { return }
         lastGeometry = key
         append([
             "viewport": Double(viewport),
             "zoom": Double(metrics.zoom),
-            "factor": Double(metrics.tileScale),
             "columns": block.columns,
             "cell": Double(metrics.cellWidth),
             "cellHeight": Double(metrics.cellHeight),

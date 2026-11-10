@@ -22,7 +22,7 @@ enum RailArc {
     /// are centred, so the rest position is `centredLead` inside the rail, and
     /// the rail always stands one gap right of the grid's right edge.
     static func room(width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
-        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom))
         let cellRight = block.originX + block.span
         return max(0, block.railLeading - cellRight + centredLead - minimumClearance)
     }
@@ -60,7 +60,7 @@ enum RailArc {
     /// The clear space between the last icon column's cell and the widest drawn
     /// letter at `width` and `zoom`.
     static func clearance(width: CGFloat, zoom: CGFloat = 1, reduceMotion: Bool) -> CGFloat {
-        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom))
         let cellRight = block.originX + block.span
         let widestLead = block.railLeading + centredLead
             - reach(scale: RailFisheye.maxScale, reduceMotion: reduceMotion,

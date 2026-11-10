@@ -123,9 +123,10 @@ backgrounds), window background default.
   zoom cannot draw a clipped edge column. At 100 % a cell is 96×108, its icon 64×64 (the shared `PhoneAppIcon` in the
   macOS shape, docs/design/dock.md §Icons), with an 8 pt icon-label gap, a fixed 16 pt column gap and row spacing, a
   24 pt vertical inset and a 16 pt hover corner. The block is centred, capped at 880 pt and reserves the rail's 44 pt
-  on its trailing side (5 columns at 640, 8 at 1000 and wider). A window over 1000 pt scales the cells, icons, gaps,
-  insets and the cap by clamp(width/1000, 1, 1.5), so the tiles grow with the window; the rail's column starts 18 pt
-  right of the grid's right edge at every zoom and width. Label `.caption` 1 line `.truncationMode(.middle)`. Hover
+  on its trailing side (5 columns at 640, 6 at 760, 8 at 1000 and wider). The cell and icon keep one size at every
+  window width: a resize only changes the column count, and past the 880 pt cap the block keeps its eight columns and
+  grows its margins instead of scaling a tile. The rail's column starts 18 pt right of the grid's right edge at every
+  icon size and width. Label `.caption` 1 line `.truncationMode(.middle)`. Hover
   `.fill(.quaternary)`; keyboard/mouse selection `.fill(Color.accentColor.opacity(0.22))`, both
   `RoundedRectangle(cornerRadius: 16)`. **Single click opens** (↩ opens the selected one, or the first match when none
   is selected). **⌘+ / ⌘− / ⌘0** scale the whole grid (cell, icon, gaps, insets and the 880 pt cap) through

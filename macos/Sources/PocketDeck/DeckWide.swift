@@ -1,10 +1,9 @@
-// The Deck on a wide window (DECK-4, DECK-24): over 1000 pt the whole grid
-// grows with the window — the person's zoom times clamp(width/1000, 1, 1.5) —
-// and the block reserves the rail's 44 pt, so the letter column always sits
-// beside the grid and never over its last cell. The numbers are pure and
-// computed from the width the layout pass is drawing; a stored width lags a
-// live resize by a frame and clips the edge columns (the 10-21 Deck zoom
-// regression), so nothing here is state.
+// The Deck on a wide window (DECK-4): the grid keeps one cell and icon size at
+// every window width and the block is capped at 880 pt, so a wider window only
+// adds columns up to eight and then margins — the block and its rail are
+// centred together. The numbers are pure and computed from the width the layout
+// pass is drawing; a stored width lags a live resize by a frame and clips the
+// edge columns (the 10-21 Deck zoom regression), so nothing here is state.
 
 import AppKit
 
@@ -16,19 +15,12 @@ enum DeckWide {
     static let railGap: CGFloat = 18
     static let railSpace: CGFloat = railWidth + railGap
 
-    /// The width at which the design's 880 pt block keeps its 60 pt margins:
-    /// narrower windows draw the grid at the person's zoom alone.
-    static let referenceWidth: CGFloat = 1000
-    /// The block's cap at 100 %.
+    /// The block's cap at 100 %. A wider window keeps the eight-column block
+    /// and grows its margins; it never scales a cell.
     static let cap: CGFloat = 880
     /// The margin today's 1000 pt window leaves beside the 880 pt block; the
     /// standard zoom keeps it at the person's zoom.
     static let sideMargin: CGFloat = 60
-
-    /// The grid's extra scale at a window this wide.
-    static func tileScale(width: CGFloat) -> CGFloat {
-        min(max(width / referenceWidth, 1), 1.5)
-    }
 
     /// Where the grid and its rail sit in a container `width` wide.
     struct Block: Equatable {
