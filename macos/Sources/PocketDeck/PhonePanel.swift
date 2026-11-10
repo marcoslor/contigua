@@ -98,6 +98,11 @@ struct PhoneControlsState: Equatable {
     }
 
     var ringTitle: String { ringing ? "Stop Ringing" : "Ring Phone" }
+
+    /// [PANEL-8] The Ring Phone tile's second line. A timeout is not a state,
+    /// so the tile says nothing under its title at rest; while the phone rings
+    /// the line names the ring.
+    var ringSubtitle: String { ringing ? "Ringing" : "" }
 }
 
 /// The volume slider's small machine (docs/design/mac-redesign.md §3.8):
@@ -833,7 +838,7 @@ struct PhonePanelView: View {
         } label: {
             tileLabel(symbol: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right",
                       title: state.ringTitle,
-                      subtitle: tileLine(item, state.ringing ? "Ringing" : "30 seconds"),
+                      subtitle: tileLine(item, state.ringSubtitle),
                       lit: item.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
@@ -898,7 +903,10 @@ struct PhonePanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .foregroundStyle(strong)
-            Text(subtitle)
+            // A tile with no state to name (Ring Phone at rest) keeps its
+            // second line's box: the card's height is the same online and
+            // away (PANEL-19), so a blank line, never a shorter tile.
+            Text(subtitle.isEmpty ? " " : subtitle)
                 .font(.system(size: 9))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
