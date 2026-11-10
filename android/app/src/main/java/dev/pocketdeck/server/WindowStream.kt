@@ -209,6 +209,19 @@ internal class WindowStream(
     private val quality = QualityAdaptation()
 
     /**
+     * PATH-47/48: one machine for the early delay signal and the rung. The
+     * rung it reports is the one the encoder runs at; a rebuild is asynchronous
+     * (the frame writer must not wait a second for a resize), and a `kept`
+     * answer returns the rung to where it was.
+     */
+    private val rateControl = RateControl()
+    private val rateLock = Any()
+    private var rateState = RateControlState()
+    private val rungLock = Any()
+    private var pendingRung: RateControlAction.Scale? = null
+    private var rungThread: Thread? = null
+
+    /**
      * The inner loop: the codec key follows the believed bitrate through the
      * encoder's measured gain, so a VBR encoder cannot outrun the link while
      * the outer loop is already at its floor.
@@ -375,14 +388,16 @@ internal class WindowStream(
             ResizeNeed.DENSITY -> {
                 // Same pixels, new density: no encoder rebuild, so no re-attach
                 // and no lost frame (the 10-27 burst).
-                sequencer.densityOnly(IntSize(width, height), effectiveDpi)
+                val scaled = ladderBox(request, rateSnapshot().rung)
+                sequencer.densityOnly(IntSize(width, height), scaled.third)
                 ledger.settle(request, ResizeOutcome.DENSITY)
                 log("stream $stream density ${width}x$height dpi=$effectiveDpi (encoder kept)")
                 return ResizeOutcome.DENSITY
             }
             ResizeNeed.FULL -> Unit
         }
-        val outcome = resizeLocked(box.w, box.h, effectiveDpi)
+        val scaled = ladderBox(request, rateSnapshot().rung)
+        val outcome = resizeLocked(scaled.first, scaled.second, scaled.third)
         // The asked box, not the fitted one: a repeat of the same request is a
         // no-op even when the encoder shrank it (docs/PROTOCOL.md `window.resize`).
         ledger.settle(request, outcome)
@@ -516,9 +531,11 @@ internal class WindowStream(
 
     /** Runtime quality: bitrate target in bps and/or an fps cap (both optional). */
     fun setQuality(bitrate: Int?, maxFps: Int?) {
+        var explicit = false
         // A Mac may repeat a value; only a real change is logged and applied.
         if (maxFps != null && maxFps > 0 && maxFps != this.maxFps) {
             this.maxFps = maxFps
+            explicit = true
             log(
                 "stream $stream quality: maxFps=$maxFps " +
                     "(encoder cap at the next configure; frames above it are dropped)",
@@ -528,9 +545,13 @@ internal class WindowStream(
             requestedBitrate = bitrate
             val target = quality.setTarget(bitrate)
             resetCorrection()
+            explicit = true
             log("stream $stream quality: target bitrate ${mbps(target)} (${bitrate} bps requested)")
             applyBitrate()
         }
+        // PATH-48: an explicit quality ends the pixel ladder; the person asked
+        // for a bitrate/fps, so the stream goes back to the Mac's own pixels.
+        if (explicit) cancelLadder()
     }
 
     /**
@@ -542,6 +563,14 @@ internal class WindowStream(
      */
     fun onBackpressure(measuredBps: Int? = null, encodedBps: Int? = null) {
         val now = SystemClock.elapsedRealtime()
+        // The drop rule owns this episode: the early signal waits two seconds
+        // before it may lower again, so the two loops cannot double-adapt.
+        val drop = synchronized(rateLock) {
+            val step = rateControl.step(rateState, RateControlEvent.Drop(now))
+            rateState = step.state
+            step
+        }
+        drop.line?.let { log("stream $stream $it") }
         // The key that produced the measured output is the one the codec ran
         // with; the quality drop below has not reached the codec yet.
         val keyBefore = appliedBitrate.takeIf { it > 0 } ?: encoderBitrate(quality.bitrate)
@@ -562,6 +591,140 @@ internal class WindowStream(
         applyBitrate()
     }
 
+    /**
+     * PATH-47/48: the writer's queue-delay window and the link's newest deep
+     * reading. The machine may lower the belief or choose a rung; the actions
+     * run here and every phase/rung change is logged.
+     */
+    fun onQueueDelay(nowMs: Long, delayP95Us: Long, delayP50Us: Long, linkBps: Int?) {
+        if (!quality.enabled || released) return
+        val step = synchronized(rateLock) {
+            val next = rateControl.step(
+                rateState,
+                RateControlEvent.Window(
+                    nowMs = nowMs,
+                    delayP95Us = delayP95Us,
+                    delayP50Us = delayP50Us,
+                    linkBps = linkBps,
+                    believedBps = quality.bitrate,
+                    // A mirror's display is the phone's own screen: its size is
+                    // not the window's to step. The bitrate signal still applies.
+                    atFloor = quality.atFloor && mirrorScreen == null,
+                    early = StreamDebug.rateControlEnabled(),
+                    ladder = StreamDebug.ladderEnabled(),
+                ),
+            )
+            rateState = next.state
+            next
+        }
+        step.line?.let { log("stream $stream $it") }
+        when (val action = step.action) {
+            is RateControlAction.LowerTo -> {
+                val moved = quality.lowerTo(nowMs, action.bps)
+                if (moved != null) {
+                    log("stream $stream ratectl: target ${mbps(moved)} (before the drop rule)")
+                    applyBitrate()
+                }
+            }
+            is RateControlAction.Scale -> requestRung(action)
+            RateControlAction.None -> Unit
+        }
+    }
+
+    /** PATH-48: an explicit quality or a disabled ladder ends the rung. */
+    private fun cancelLadder() {
+        val step = synchronized(rateLock) {
+            if (rateState.rung == LadderRung.Full) return
+            val next = rateControl.step(rateState, RateControlEvent.Quality)
+            rateState = next.state
+            next
+        }
+        step.line?.let { log("stream $stream $it") }
+        (step.action as? RateControlAction.Scale)?.let { requestRung(it) }
+    }
+
+    /** The belief and rung the encoder should be built with. */
+    private fun rateSnapshot(): RateControlState = synchronized(rateLock) { rateState }
+
+    /**
+     * A ladder step rebuilds the encoder, which can take a second: it runs on
+     * its own thread, and a newer rung replaces a queued one so the last word
+     * wins.
+     */
+    private fun requestRung(step: RateControlAction.Scale) {
+        synchronized(rungLock) {
+            pendingRung = step
+            if (rungThread?.isAlive == true) return
+            rungThread = Thread({
+                while (true) {
+                    val next = synchronized(rungLock) {
+                        pendingRung.also { pendingRung = null }
+                    } ?: break
+                    applyRung(next)
+                }
+            }, "pocketdeck-ladder-$stream").also { it.start() }
+        }
+    }
+
+    /**
+     * Rebuilds at the rung's share of the Mac's asked box through the existing
+     * resize sequencer (`Prepare`/`Attach`), so a failed swap answers `kept`
+     * (WIN-6) and the rung returns to where it was. The ledger keeps the Mac's
+     * request: a repeat of it is still a no-op and the next step scales the
+     * same box again.
+     */
+    private fun applyRung(step: RateControlAction.Scale) {
+        var box: ResizeRequest? = null
+        var outcome = ResizeOutcome.KEPT
+        synchronized(this) {
+            if (!released && mirrorScreen == null) {
+                val asked = ledger.requested()
+                if (asked != null) {
+                    box = asked
+                    val scaled = ladderBox(asked, step.to)
+                    outcome = resizeLocked(scaled.first, scaled.second, scaled.third)
+                }
+            }
+        }
+        val asked = box
+        if (asked == null || outcome == ResizeOutcome.KEPT) {
+            val failed = synchronized(rateLock) {
+                val next = rateControl.step(
+                    rateState,
+                    RateControlEvent.RungFailed(step.from, step.to, SystemClock.elapsedRealtime()),
+                )
+                rateState = next.state
+                next
+            }
+            failed.line?.let { log("stream $stream $it") }
+            log("stream $stream ladder: ${step.from.wire} --kept--> ${step.from.wire}" +
+                (asked?.let { " (asked ${it.w}x${it.h})" } ?: " (no asked box)"))
+            return
+        }
+        log("stream $stream ladder: ${step.from.wire} --step--> ${step.to.wire}" +
+            " pixels=${width}x$height dpi=$baseDpi (asked ${asked.w}x${asked.h})" +
+            " base ${step.baseBps / 1000} kbps")
+        // The failure above can race a newer step; the success needs no event:
+        // the rung the machine already holds is the one just built.
+    }
+
+    /** The Mac's asked box at [rung]'s pixel and density scale. */
+    private fun ladderBox(asked: ResizeRequest, rung: LadderRung): Triple<Int, Int, Int> {
+        val scale = rung.scale
+        return Triple(
+            maxOf(16, (asked.w * scale).toInt()),
+            maxOf(16, (asked.h * scale).toInt()),
+            maxOf(1, (asked.dpi * scale).toInt()),
+        )
+    }
+
+    /** The rung's bitrate ceiling: the floor the ladder engaged at, scaled by pixels. */
+    private fun ladderTargetFor(computedBps: Int, state: RateControlState): Int {
+        if (state.rung == LadderRung.Full || state.baseBps <= 0) return computedBps
+        val scaled = (state.baseBps.toLong() * state.rung.scale * state.rung.scale).toInt()
+        return minOf(computedBps, maxOf(RateControl.MIN_BPS, scaled))
+    }
+
     @Synchronized
     fun close() {
         if (released) return
@@ -571,6 +734,10 @@ internal class WindowStream(
         logStillCount()
         rotationThread?.interrupt()
         rotationThread = null
+        synchronized(rungLock) {
+            pendingRung = null
+            rungThread = null
+        }
         performLifecycle(actions)
     }
 
@@ -963,7 +1130,15 @@ internal class WindowStream(
         this.videoCodec = kind
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps, capped by cap_kbps).
-        quality.setTarget(requestedBitrate ?: strategy.bitrateFor(w, h))
+        // While the ladder is active the rebuild keeps the link's belief (the
+        // pixels changed, not the link) and the rung's scaled ceiling applies.
+        val rate = rateSnapshot()
+        val computedTarget = requestedBitrate ?: strategy.bitrateFor(w, h)
+        if (rate.rung == LadderRung.Full) {
+            quality.setTarget(computedTarget)
+        } else {
+            quality.setTarget(ladderTargetFor(computedTarget, rate), restart = false)
+        }
         // A new encoder or a resize: no gain measured for this key yet.
         resetCorrection()
         if (strategy.overshoot != StreamStrategy.DEFAULT_OVERSHOOT) {
@@ -1538,6 +1713,10 @@ internal class AndroidDisplayLayer(
 
     override fun onBackpressure(stream: Int, measuredBps: Int?, encodedBps: Int?) {
         get(stream)?.onBackpressure(measuredBps, encodedBps)
+    }
+
+    override fun onQueueDelay(stream: Int, delayP95Us: Long, delayP50Us: Long, linkBps: Int?) {
+        get(stream)?.onQueueDelay(SystemClock.elapsedRealtime(), delayP95Us, delayP50Us, linkBps)
     }
 
     override fun setEncoderSuspend(stream: Int, suspended: Boolean) {

@@ -218,6 +218,10 @@ class Session(
 
     /** P4: the writer's recent goodput, the cap the TCP recovery may not cross. */
     private val goodput = GoodputMeter()
+    /** PATH-47: the writer's queue delay, the early signal's input (always on). */
+    private val queueDelay = QueueDelayMeter()
+    private val delayEvalAtUs = HashMap<Int, Long>()
+    private val delayLock = Any()
     private val queue = SendQueue(
         maxDeltaBytesPerStream,
         nowUs = monoUs,
@@ -1180,6 +1184,8 @@ class Session(
                             goodput.note(stream, size, writtenUs,
                                          limited = enqueued > 0 &&
                                              writtenUs - enqueued >= GoodputMeter.BACKLOG_WAIT_US)
+                            // PATH-47: the same wait is the early signal, once a window.
+                            noteQueueDelay(stream, enqueued, writtenUs, size)
                         }
                     }
                     else -> null
@@ -1201,10 +1207,45 @@ class Session(
         }
     }
 
+    /** A stream is gone: no meter may pair its samples with a reused id. */
+    private fun forgetStreamMeters(stream: Int) {
+        goodput.forget(stream)
+        queueDelay.forget(stream)
+        synchronized(delayLock) { delayEvalAtUs.remove(stream) }
+    }
+
+    /**
+     * PATH-47: one written delta's wait feeds the early signal; once a second
+     * the newest two-second window goes to the display. A window without writes
+     * is not sent, so a drop episode cannot read as calm.
+     */
+    private fun noteQueueDelay(stream: Int, enqueuedUs: Long, writtenUs: Long, bytes: Int) {
+        if (enqueuedUs <= 0) return
+        val wait = writtenUs - enqueuedUs
+        queueDelay.note(stream, writtenUs, wait, bytes)
+        val due = synchronized(delayLock) {
+            val last = delayEvalAtUs[stream] ?: 0L
+            // A frame that waited this long may be 100 ms from the drop rule's
+            // budget: evaluate now, not on the next window.
+            if (wait < EARLY_DELAY_US && writtenUs - last < DELAY_EVAL_US) {
+                false
+            } else {
+                delayEvalAtUs[stream] = writtenUs
+                true
+            }
+        }
+        if (!due) return
+        val p95 = queueDelay.p95Us(stream, writtenUs) ?: return
+        val p50 = queueDelay.p50Us(stream, writtenUs) ?: return
+        // The link's pace from the newest deep run: a shallow queue would report
+        // the app's own rate and talk the belief down.
+        val link = queueDelay.deepRateBps(stream, writtenUs)
+        runCatching { display.onQueueDelay(stream, p95, p50, link) }
+    }
+
     // ------------------------------------------------------------------
     // dispatch
     // ------------------------------------------------------------------
-
     private fun handle(frame: Frame) {
         if (frame.type != Frames.TYPE_JSON) {
             if (phase != Phase.READY) {
@@ -1844,7 +1885,7 @@ class Session(
             synchronized(streams) { streams.remove(stream) }
             display.close(stream)
             gate.forget(stream)
-            goodput.forget(stream)
+            forgetStreamMeters(stream)
             updatePower()
             sendError("cannot_adopt", "the task could not be moved", stream)
             log("adopt: refused stream=$stream task=$taskId")
@@ -2119,7 +2160,7 @@ class Session(
         streamCodecs.remove(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
-        goodput.forget(stream)
+        forgetStreamMeters(stream)
         synchronized(suspendApplies) { suspendApplies.remove(stream) }
         val sentAtClose = synchronized(statsLock) {
             sendStats.remove(stream)
@@ -3855,7 +3896,7 @@ class Session(
         display.close(stream)
         streamCodecs.remove(stream)
         gate.forget(stream)
-        goodput.forget(stream)
+        forgetStreamMeters(stream)
         arrival.on(TaskArrivalEvent.StreamClosed(stream))
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to reason))
         updatePower()
@@ -4157,6 +4198,10 @@ class Session(
 
         /** `stream.stats` cadence per streaming window (docs/PROTOCOL.md). */
         const val STATS_INTERVAL_MS = 2_000L
+        /** PATH-47: how often the early signal reads its two-second delay window. */
+        const val DELAY_EVAL_US = 1_000_000L
+        /** A written delta at this wait evaluates the early signal at once. */
+        const val EARLY_DELAY_US = 150_000L
         /** R4: the audio wait line's cadence. */
         const val AUDIO_STATS_INTERVAL_MS = 5_000L
         /** Log the running send count every this many `stream.stats` messages. */
