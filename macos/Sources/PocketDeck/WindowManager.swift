@@ -244,13 +244,20 @@ final class WindowManager {
 
     /// The View menu's Window Style: toggle/switch the key stream window's
     /// style directly (the menu cannot rely on the responder chain delivering
-    /// a nil-target action).
+    /// a nil-target action). The menu tracks the key stream window itself: a
+    /// pick or a ⌥⌘F while the Deck is key must never reach the window behind
+    /// it (ISS-88, MENU-9).
+    private var keyStreamController: StreamWindowController? {
+        guard StreamMenuState.shared.hasStream, let stream = keyStream else { return nil }
+        return controller(for: stream) as? StreamWindowController
+    }
+
     func toggleKeyWindowStyle() {
-        (NSApp.keyWindow?.windowController as? StreamWindowController)?.toggleStyleMenuAction(nil)
+        keyStreamController?.toggleStyleMenuAction(nil)
     }
 
     func setKeyWindowStyle(_ style: WindowStyle) {
-        (NSApp.keyWindow?.windowController as? StreamWindowController)?.setStyle(style)
+        keyStreamController?.setStyle(style)
     }
 
     // MARK: Placement
