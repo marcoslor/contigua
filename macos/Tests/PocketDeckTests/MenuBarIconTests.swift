@@ -40,11 +40,28 @@ final class MenuBarIconTests: XCTestCase {
         }
     }
 
-    func testTheDotWidensTheImageAndKeepsItsHeight() {
+    /// ISS-75: the dot is drawn in a slot the image reserves in both states, so
+    /// an agent connecting never widens the item or moves the glyph (PANEL-25).
+    func testTheDotKeepsTheImageSizeAndTheGlyphInPlace() {
+        for state in MenuBarPulseTestLink.allCases {
+            let plain = MenuBarGlyph.layout(link: link(state), dot: false)
+            let dotted = MenuBarGlyph.layout(link: link(state), dot: true)
+            XCTAssertEqual(plain.imageSize, dotted.imageSize,
+                           "\(state): the dot never widens the image")
+            XCTAssertEqual(plain.glyphRect, dotted.glyphRect,
+                           "\(state): the glyph keeps its place")
+            XCTAssertNil(plain.dotRect, "\(state): no dot, nothing drawn in its slot")
+            guard let dot = dotted.dotRect else {
+                return XCTFail("\(state): the dot has no rect")
+            }
+            XCTAssertTrue(NSRect(origin: .zero, size: dotted.imageSize).contains(dot),
+                          "\(state): the dot stays inside the image")
+        }
+
         let plain = MenuBarGlyph.image(link: .online(phone), dot: false)
-        let withDot = MenuBarGlyph.image(link: .online(phone), dot: true)
-        XCTAssertEqual(withDot.size.width, plain.size.width + MenuBarGlyph.dotGap + MenuBarGlyph.dotDiameter)
-        XCTAssertEqual(withDot.size.height, plain.size.height)
+        let dotted = MenuBarGlyph.image(link: .online(phone), dot: true)
+        XCTAssertEqual(plain.size, dotted.size, "the drawn images are the same size")
+        XCTAssertTrue(plain.isTemplate && dotted.isTemplate)
     }
 
     func testTheDimFrameKeepsTheImagesSize() {

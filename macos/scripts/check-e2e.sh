@@ -16451,7 +16451,7 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device vcx vcy
+    local shots="$WORK/menubar-shots" result device vcx vcy item_size dot_size
     local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
@@ -16519,10 +16519,11 @@ check_menubar_shots() {
     control menubaricon || true
     result="$CONTROL_REPLY"
     case "$result" in
-        "length=variable image=template subviews=0 state=online dot=0")
-            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        "length=variable image=template subviews=0 state=online dot=0 size="*)
+            item_size="${result##*size=}"
+            ok "MENUBAR-PANEL-25 $result" ;;
         *)
-            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0 size=WxH)" ;;
     esac
     item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
@@ -16698,12 +16699,22 @@ PY
         agent_pid=$!
         for _ in $(seq 1 100); do
             control menubaricon || true
-            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            case "$CONTROL_REPLY" in
+                *"dot=1"*) dot=1; dot_size="${CONTROL_REPLY##*size=}"; break ;;
+            esac
             sleep 0.1
         done
         [ "$dot" = 1 ] \
             && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
             || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # [PANEL-25] The dot is drawn in a slot the image reserves in both
+        # states: the item's image size never changes when an agent connects
+        # (ISS-75), so the status item never shifts.
+        if [ -n "$item_size" ] && [ "$dot_size" = "$item_size" ]; then
+            ok "[PANEL-25] the agent dot keeps the item's image size ($item_size with and without)"
+        else
+            bad "[PANEL-25] the agent dot changed the item's image size (plain=$item_size dot=$dot_size)"
+        fi
         # [PANEL-7] The card opens on its first tile, never on Disconnect
         # (ISS-75): with the agent row up the opening ring is still DND. A
         # quiet run cannot press a key into a non-activating panel, so the
