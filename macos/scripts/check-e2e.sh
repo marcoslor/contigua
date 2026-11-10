@@ -12343,7 +12343,7 @@ check_zoom() {
 # must log nothing until it is visible again.
 check_stats() {
     clean
-    FAKE_ARGS="--stats-drop 7 --stats-qp 24 --stats-retrans 2 --frame-gap-after 8 --frame-gap-ms 300 --no-backlog-restart" start_fake || return 1
+    FAKE_ARGS="--stats-drop 7 --stats-qp 24 --stats-retrans 2 --stats-no-frame --frame-gap-after 8 --frame-gap-ms 300 --no-backlog-restart" start_fake || return 1
     rm -rf "$WORK-control"
     mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
@@ -12555,6 +12555,28 @@ PY
         *"qp_avg=24.0"*) ok "STATS the line carries the phone's qp_avg=24.0" ;;
         *) bad "STATS the line has no qp_avg=24.0" ;;
     esac
+
+    # WIN-66 (ISS-10): the phone's no-frame episode reaches the Mac's log as
+    # its record and then its end, once each (the fake phone repeats the open
+    # episode in a second message, so a duplicate line would show here).
+    no_frame_log() {
+        /usr/bin/log show --last 5m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -F " no frame "
+    }
+    local no_frame_lines no_frame_open no_frame_ended
+    no_frame_lines="$(no_frame_log)"
+    no_frame_open="$(printf '%s\n' "$no_frame_lines" | grep -cF " no frame for 1.5s phase=draining " || true)"
+    no_frame_ended="$(printf '%s\n' "$no_frame_lines" | grep -cF " no frame ended outcome=late after 2600ms" || true)"
+    if [ "$no_frame_open" = "1" ] \
+            && printf '%s\n' "$no_frame_lines" | grep -qF "display=virtual task=launched on=on keyguard=showing doze=idle screen=on nudge=0 out=0 kf=0 bytes=0"; then
+        ok "[WIN-66] STATS the Mac logs the phone's no-frame record once with its closed tokens"
+    else
+        bad "[WIN-66] STATS the no-frame record line is missing or repeated ($no_frame_open)"
+    fi
+    [ "$no_frame_ended" = "1" ] \
+        && ok "[WIN-66] STATS the Mac logs the episode's late end once" \
+        || bad "[WIN-66] STATS the ended line is missing or repeated ($no_frame_ended)"
 
     # The closing totals line (WIN-55/56): complete over the window's whole
     # life, including the minimize stop above (covered_ms). The bench reads

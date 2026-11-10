@@ -401,6 +401,8 @@ class Session(
     @Volatile private var audioStatsNextAtMs = 0L
     /** `stream.stats` messages sent per stream this session, for the field log. */
     private val statsSent = HashMap<Int, Int>()
+    /** WIN-66: episode states waiting for the stream's next stats message. */
+    private val noFramePending = HashMap<Int, ArrayDeque<NoFrameEpisode>>()
     private val tickSignal = Object()
     // Joined from the server thread and read from the session thread.
     private val pathReaders = CopyOnWriteArrayList<Thread>()
@@ -2157,6 +2159,7 @@ class Session(
         // display forgets its counters (the CBR freeze is diagnosed from it).
         display.totalsLine(stream)?.let { log(it) }
         display.close(stream)
+        flushNoFrame(stream)
         streamCodecs.remove(stream)
         queue.takeDeltaStats(stream)
         queue.forget(stream)
@@ -3404,6 +3407,25 @@ class Session(
         sendJson(mapOf("t" to "window.still", "stream" to stream))
     }
 
+    /**
+     * WIN-66: the phone-side record. The app keeps the newest 20 in its private
+     * storage (one line per episode, updated when it ends), and the next stats
+     * message for the stream carries the episode once.
+     */
+    override fun onNoFrame(stream: Int, episode: NoFrameEpisode) {
+        callback.onNoFrameEpisode(episode.episode, Json.encode(episode.wire()))
+        synchronized(statsLock) {
+            noFramePending.getOrPut(stream) { ArrayDeque() }.addLast(episode)
+        }
+    }
+
+    /** WIN-66: a task on the stream's display, or `unknown` when it cannot be read. */
+    override fun noFrameTask(stream: Int): NoFrameTask {
+        if (taskPresence == null) return NoFrameTask.Unknown
+        val taskId = synchronized(streams) { streams[stream]?.taskId } ?: return NoFrameTask.Unknown
+        return if (taskId > 0) NoFrameTask.Launched else NoFrameTask.None
+    }
+
     // ------------------------------------------------------------------
     // audio sink (device-wide, stream 0)
     // ------------------------------------------------------------------
@@ -3631,7 +3653,10 @@ class Session(
                 sendStats.getOrPut(state.stream) { SendStats() }
                     .snapshot(deltas.dropped, deltas.episodes, deltas.gapMs)
             }
-            val message = StreamStatsWire.message(state.stream, STATS_INTERVAL_MS, encoder, send, tcp)
+            val message = StreamStatsWire.message(
+                state.stream, STATS_INTERVAL_MS, encoder, send, tcp,
+                noFrame = takeNoFrame(state.stream),
+            )
             sendJson(message, state.stream)
             // One closed-token line per tenth message (and the final count at
             // off or close): the field log that says how many the phone sent.
@@ -3641,6 +3666,31 @@ class Session(
                 n
             }
             if (sent % STATS_SENT_LOG_EVERY == 0) log("stream ${state.stream} stats sent=$sent")
+        }
+    }
+
+    /** WIN-66: the next episode state for a stream's stats message, if it has one. */
+    private fun takeNoFrame(stream: Int): NoFrameEpisode? = synchronized(statsLock) {
+        val queue = noFramePending[stream] ?: return null
+        val next = queue.pollFirst()
+        if (queue.isEmpty()) noFramePending.remove(stream)
+        next
+    }
+
+    /**
+     * WIN-66: a stream that closes before its next 2 s message gets one final
+     * stats message carrying the ended episode; with stats off the ring and
+     * the field log are the record.
+     */
+    private fun flushNoFrame(stream: Int) {
+        if (!statsOn) {
+            synchronized(statsLock) { noFramePending.remove(stream) }
+            return
+        }
+        while (true) {
+            val episode = takeNoFrame(stream) ?: return
+            val codec = streamCodecs[stream] ?: VideoCodec.Avc
+            sendJson(StreamStatsWire.episodeMessage(stream, codec, STATS_INTERVAL_MS, episode), stream)
         }
     }
 

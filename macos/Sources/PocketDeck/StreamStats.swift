@@ -111,6 +111,8 @@ struct PhoneStreamStats: Equatable {
     /// The phone's own measuring window; summed when two messages fold into
     /// one line, so `kbps` divides by the time they cover together.
     var windowMs = 2_000
+    /// WIN-66: one no-frame episode state the phone recorded (ISS-10).
+    var noFrame: NoFrameReport?
 
     init(json: [String: Any]) {
         frames = Self.int(json["frames"])
@@ -141,6 +143,7 @@ struct PhoneStreamStats: Equatable {
         rtoTimeouts = Self.optionalInt(json["rto"])
         lostRetransmits = Self.optionalInt(json["lost_retrans"])
         windowMs = Self.optionalInt(json["windowMs"]).flatMap { $0 > 0 ? $0 : nil } ?? 2_000
+        noFrame = (json["noFrame"] as? [String: Any]).flatMap(NoFrameReport.init(json:))
     }
 
     /// One line covers every message since the previous one: the counters add
@@ -181,6 +184,7 @@ struct PhoneStreamStats: Equatable {
         queueP95Us = other.queueP95Us
         qpP50 = other.qpP50
         qpP95 = other.qpP95
+        noFrame = other.noFrame
     }
 
     /// The phone's counters are per send window; this rate is the window's.
@@ -201,6 +205,111 @@ struct PhoneStreamStats: Equatable {
     private static func double(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber else { return nil }
         return number.doubleValue
+    }
+}
+
+/// WIN-66 (ISS-10): the phone's record of a window that produced no encoded
+/// frame for `first_frame_ms` after its display was created. Ids, counts,
+/// durations and closed tokens only — no app name, label, title or text. The
+/// tokens are mapped into the closed sets below, so an unknown value from a
+/// newer phone still prints a token this log owns.
+struct NoFrameReport: Equatable {
+    enum Outcome: String {
+        case late
+        case closed
+    }
+
+    static let phases: Set<String> = [
+        "empty", "opening", "prepared", "draining", "paused", "suspended",
+        "paused+suspended", "swapping", "released",
+    ]
+    static let displays: Set<String> = ["none", "mirror", "virtual"]
+    static let tasks: Set<String> = ["none", "launched", "unknown"]
+    static let displayStates: Set<String> = [
+        "on", "off", "doze", "doze-suspend", "vr", "on-suspend", "unknown",
+    ]
+    static let keyguards: Set<String> = ["showing", "hidden", "unknown"]
+    static let dozes: Set<String> = ["active", "light", "idle", "unknown"]
+    static let screens: Set<String> = ["on", "off", "unknown"]
+
+    /// The phone's id for the episode; a repeat of one id logs once.
+    let episode: Int
+    /// Milliseconds from the display's creation to the record.
+    let reportedMs: Int
+    let phase: String
+    let display: String
+    let task: String
+    let displayState: String
+    let keyguard: String
+    let doze: String
+    let screen: String
+    let nudges: Int
+    let framesOut: Int
+    let keyframesOut: Int
+    let bytesOut: Int
+    /// Nil while the episode is open; set when the stream got its frame or closed.
+    let outcome: Outcome?
+    /// Milliseconds from the display's creation to that end.
+    let waitedMs: Int?
+
+    init?(json: [String: Any]) {
+        guard let episode = Self.int(json["ep"]), episode > 0,
+              let reported = Self.int(json["ms"]), reported >= 0 else { return nil }
+        self.episode = episode
+        reportedMs = reported
+        phase = Self.token(json["phase"], in: Self.phases)
+        display = Self.token(json["display"], in: Self.displays)
+        task = Self.token(json["task"], in: Self.tasks)
+        displayState = Self.token(json["on"], in: Self.displayStates)
+        keyguard = Self.token(json["keyguard"], in: Self.keyguards)
+        doze = Self.token(json["doze"], in: Self.dozes)
+        screen = Self.token(json["screen"], in: Self.screens)
+        nudges = Self.int(json["nudge"]) ?? 0
+        framesOut = Self.int(json["out"]) ?? 0
+        keyframesOut = Self.int(json["kf"]) ?? 0
+        bytesOut = Self.int(json["bytes"]) ?? 0
+        outcome = (json["outcome"] as? String).flatMap(Outcome.init(rawValue:))
+        waitedMs = Self.int(json["waitedMs"])
+    }
+
+    /// The first line: the record, as the phone wrote it.
+    func openLine(stream: UInt32) -> String {
+        "stream \(stream): no frame for \(Self.seconds(reportedMs))s phase=\(phase)" +
+            " display=\(display) task=\(task) on=\(displayState) keyguard=\(keyguard)" +
+            " doze=\(doze) screen=\(screen) nudge=\(nudges) out=\(framesOut)" +
+            " kf=\(keyframesOut) bytes=\(bytesOut)"
+    }
+
+    /// The second line: how the same episode ended (`late` = a first frame came).
+    func endedLine(stream: UInt32) -> String {
+        "stream \(stream): no frame ended outcome=\(outcome?.rawValue ?? "-")" +
+            " after \(waitedMs ?? reportedMs)ms"
+    }
+
+    private static func int(_ value: Any?) -> Int? {
+        (value as? NSNumber)?.intValue
+    }
+
+    private static func token(_ value: Any?, in allowed: Set<String>) -> String {
+        guard let text = value as? String, allowed.contains(text) else { return "unknown" }
+        return text
+    }
+
+    private static func seconds(_ ms: Int) -> String {
+        String(format: "%.1f", Double(ms) / 1000)
+    }
+}
+
+/// One line the Mac owes for an episode: its record, or its end.
+enum NoFrameLine: Equatable {
+    case open(NoFrameReport)
+    case ended(NoFrameReport)
+
+    func text(stream: UInt32) -> String {
+        switch self {
+        case .open(let report): return report.openLine(stream: stream)
+        case .ended(let report): return report.endedLine(stream: stream)
+        }
     }
 }
 
@@ -295,6 +404,10 @@ struct StreamStatsWindow {
     /// arrived, so a line with none is visible (`phone_n=0`).
     private(set) var phone: PhoneStreamStats?
     private(set) var phoneMessages = 0
+    /// WIN-66: the last episode ids this window's log already printed, so a
+    /// repeated stats message never prints a line twice.
+    private var loggedNoFrame = 0
+    private var loggedNoFrameEnd = 0
 
     // X0: the stream socket's own readings. The cumulative out-of-order byte
     // count gives each line its delta and the totals the whole life; a config
@@ -476,7 +589,10 @@ struct StreamStatsWindow {
         return .types(nalTypes.map(String.init).joined(separator: ","))
     }
 
-    mutating func notePhoneStats(_ stats: PhoneStreamStats) {
+    /// WIN-66: folds the message into the counters and returns the no-frame
+    /// lines the log owes (the record once, its end once).
+    @discardableResult
+    mutating func notePhoneStats(_ stats: PhoneStreamStats) -> [NoFrameLine] {
         phoneMessages += 1
         if let codec = stats.codec { latestCodec = codec }
         if let average = stats.qpAvg, stats.frames > 0 {
@@ -510,6 +626,18 @@ struct StreamStatsWindow {
         if let lost = stats.lostRetransmits {
             totalPhoneLostRetransmits = (totalPhoneLostRetransmits ?? 0) + lost
         }
+        var lines: [NoFrameLine] = []
+        if let episode = stats.noFrame {
+            if episode.episode != loggedNoFrame {
+                loggedNoFrame = episode.episode
+                lines.append(.open(episode))
+            }
+            if episode.outcome != nil, episode.episode != loggedNoFrameEnd {
+                loggedNoFrameEnd = episode.episode
+                lines.append(.ended(episode))
+            }
+        }
+        return lines
     }
 
     /// The window's whole life, for the line at close. Percentiles cover every
@@ -1052,7 +1180,13 @@ final class StreamStatsRecorder {
     }
 
     func notePhoneStats(_ stats: PhoneStreamStats) {
-        lock.lock(); model.notePhoneStats(stats); lock.unlock()
+        lock.lock()
+        let lines = model.notePhoneStats(stats)
+        lock.unlock()
+        // WIN-66: ids, counts, durations and closed tokens only.
+        for line in lines {
+            Log.video.notice("\(line.text(stream: self.stream), privacy: .public)")  // log-ok: closed tokens only
+        }
     }
 
     func snapshot(now: TimeInterval, tcpInfo: TCPConnectionInfo? = nil) -> StreamStatsSnapshot {

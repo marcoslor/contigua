@@ -197,6 +197,11 @@ interface VideoSink {
     fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray)
     /** `window.still`: the stream is live, but its encoder produced nothing. */
     fun onStill(stream: Int)
+    /** WIN-66: one state of a stream's no-frame episode (recorded, then its end). */
+    fun onNoFrame(stream: Int, episode: NoFrameEpisode) {}
+
+    /** WIN-66: whether a task was launched on the stream's display, for the record. */
+    fun noFrameTask(stream: Int): NoFrameTask = NoFrameTask.Unknown
 }
 
 /** Receives encoded device-wide audio (one mixer tap, stream 0). */
@@ -641,6 +646,9 @@ interface DeckCallback {
      * to update until a session succeeds.
      */
     fun onVersionRefused(macV: Int?) {}
+
+    /** WIN-66: one episode for the app's ring; `json` is ids, counts and closed tokens only. */
+    fun onNoFrameEpisode(episode: Int, json: String) {}
 }
 
 /**

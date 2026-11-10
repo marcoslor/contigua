@@ -127,6 +127,15 @@ class DeckForegroundService : Service() {
                 answerClip(key, false)
             }
         }
+
+        /**
+         * WIN-66: one no-frame episode for the private ring. The shell builds
+         * the line (ids, counts, durations and closed tokens only); the file
+         * write is small and runs on the binder thread like the pairing writes.
+         */
+        override fun onNoFrameEpisode(episode: Int, json: String?) {
+            NoFrameStore.record(this@DeckForegroundService, episode, json ?: return)
+        }
     }
 
     /** The app's answer to the shell's `onClipImage` (SHARE-2/16). */

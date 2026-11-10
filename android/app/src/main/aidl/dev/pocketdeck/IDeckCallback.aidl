@@ -74,4 +74,12 @@ oneway interface IDeckCallback {
      * `clipImageDone`. The shell never sets an image clip itself.
      */
     void onClipImage(String id, String mime, in ParcelFileDescriptor data);
+
+    /**
+     * WIN-66: one no-frame episode for the app's private ring. `json` carries
+     * ids, counts, durations and closed tokens only. The app upserts by
+     * `episode` (a recorded episode is updated when it ends) and keeps the
+     * newest 20.
+     */
+    void onNoFrameEpisode(int episode, String json);
 }

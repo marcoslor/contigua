@@ -16,7 +16,7 @@ package dev.pocketdeck.server
  * encoder input), and either can arrive while the other is on, so they stay
  * qualifiers of an attached encoder instead of more phases.
  */
-internal enum class EncoderPhase {
+enum class EncoderPhase {
     /** No encoder and no display work in flight. */
     Empty,
 
@@ -36,7 +36,7 @@ internal enum class EncoderPhase {
     Released,
 }
 
-internal enum class DisplayPhase(val wire: String) {
+enum class DisplayPhase(val wire: String) {
     None("none"),
     Mirror("mirror"),
     Virtual("virtual"),
