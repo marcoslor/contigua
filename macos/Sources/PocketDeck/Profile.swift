@@ -35,20 +35,17 @@ struct Profile: Equatable {
 
     var isDefault: Bool { name == Self.defaultName }
 
-    /// The v1 pair keys file, in this profile's Application Support folder —
-    /// only used by the v2 migration that deletes it (§7 forced re-pair).
-    var pairKeysFileUrl: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent(supportDirectoryName, isDirectory: true)
-            .appendingPathComponent("pairkeys.json")
+    /// This profile's Application Support folder: identity.json, pins.json,
+    /// files-ids.json and the rest live here.
+    var supportDirectoryUrl: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(supportDirectoryName, isDirectory: true)
     }
 
     /// The app-owned identifier ↔ path map for phone files in Finder (design
-    /// §3, S4): one small JSON per profile, 0600, next to the pair keys.
+    /// §3, S4): one small JSON per profile, 0600.
     var filesIdMapUrl: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent(supportDirectoryName, isDirectory: true)
-            .appendingPathComponent("files-ids.json")
+        supportDirectoryUrl.appendingPathComponent("files-ids.json")
     }
 
     /// Name of the UserDefaults suite; nil means the standard defaults.

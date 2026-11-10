@@ -1,7 +1,7 @@
 // Tests for the v2 identity store (docs/design/e2ee.md §3): identity.json
-// round trip + permissions, point-fingerprint math, pair-key wipe migration,
-// and the pin-mismatch tracker's one-per-minute rule. Pure unit tests; the
-// real profiles' storage is never touched.
+// round trip + permissions, point-fingerprint math, and the pin-mismatch
+// tracker's one-per-minute rule. Pure unit tests; the real profiles' storage
+// is never touched.
 
 import CryptoKit
 import XCTest
@@ -87,16 +87,19 @@ final class IdentityV2Tests: XCTestCase {
         XCTAssertFalse(PointFingerprint.isWellFormed(pin: String(repeating: "g", count: 64)))
     }
 
-    // MARK: Migration
+    // MARK: An older key store
 
-    func testWipePairKeysDeletesTheFileAndIsIdempotent() throws {
-        let keysUrl = dir.appendingPathComponent("pairkeys.json")
-        // Any pre-v2 file content works: v1 keys authenticate nothing in v2.
+    func testALeftoverPairKeysFileIsIgnoredAndLeftAlone() throws {
+        // identity.json is the only key store. A pairkeys.json from an older
+        // build is neither read nor deleted.
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let keysUrl = dir.appendingPathComponent("pairkeys.json")
         try Data("{}".utf8).write(to: keysUrl)
-        XCTAssertTrue(IdentityMigrationV2.wipePairKeys(at: keysUrl))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: keysUrl.path))
-        XCTAssertFalse(IdentityMigrationV2.wipePairKeys(at: keysUrl)) // already gone
+        let identity = sampleIdentity()
+
+        XCTAssertTrue(file.save(identity))
+        XCTAssertEqual(file.load(), identity)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keysUrl.path))
     }
 
     // MARK: The pin store file

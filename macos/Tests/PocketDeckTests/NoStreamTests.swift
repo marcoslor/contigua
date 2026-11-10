@@ -35,7 +35,7 @@ final class NoStreamTests: XCTestCase {
         controller.shutdown()
         server.stop()
         if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
-        try? FileManager.default.removeItem(at: profile.pairKeysFileUrl.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
     }
 
     private func spin(_ seconds: TimeInterval) {

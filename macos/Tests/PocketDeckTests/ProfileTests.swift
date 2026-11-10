@@ -1,6 +1,7 @@
 // Profiles: every piece of persistent state is namespaced by the profile, and
 // the default profile keeps the storage of earlier builds. Nothing here writes
-// to the standard defaults or to the pair-key file: the checks are on the names.
+// to the standard defaults or to a profile's support folder: the checks are on
+// the names.
 
 import CoreSpotlight
 import XCTest
@@ -30,11 +31,11 @@ final class ProfileTests: XCTestCase {
 
     // MARK: Named profiles are namespaced
 
-    func testNamedProfileHasItsOwnPairKeyFile() {
+    func testNamedProfileHasItsOwnSupportFolder() {
         let profile = Profile(name: "e2e")!
         XCTAssertFalse(profile.isDefault)
-        XCTAssertTrue(profile.pairKeysFileUrl.path.hasSuffix("Application Support/PocketDeck-e2e/pairkeys.json"))
-        XCTAssertTrue(Profile.default.pairKeysFileUrl.path.hasSuffix("Application Support/PocketDeck/pairkeys.json"))
+        XCTAssertTrue(profile.supportDirectoryUrl.path.hasSuffix("Application Support/PocketDeck-e2e"))
+        XCTAssertTrue(Profile.default.supportDirectoryUrl.path.hasSuffix("Application Support/PocketDeck"))
     }
 
     func testNamedProfileUsesItsOwnDefaultsSuite() {

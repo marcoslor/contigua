@@ -568,8 +568,7 @@ final class ConnectionController {
         self.options = options
         self.profile = profile
         clientId = ClientIdentity.clientId(in: profile)
-        // The first v2 run deletes the v1 pair keys (one forced re-pair, §7);
-        // identity.json is created when missing — no reverse path.
+        // identity.json is created when missing; the pin store is read beside it.
         identityFile = IdentityFileV2(url: IdentityFileV2.fileUrl(in: profile))
         if let existing = identityFile.load() {
             identity = existing
@@ -578,7 +577,6 @@ final class ConnectionController {
             identityFile.save(generated.identity)
             identity = generated.identity
         }
-        IdentityMigrationV2.wipePairKeys(at: profile.pairKeysFileUrl)
         pins = PhonePinStoreV2(fileUrl: PhonePinStoreV2.fileUrl(in: profile))
         cache = CachedDeviceStore(profile: profile)
         remembered = RememberedPhones(profile: profile)
