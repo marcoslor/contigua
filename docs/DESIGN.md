@@ -64,12 +64,13 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred, capped at 880 pt and
   reserves the rail's 44 pt on its trailing side (5 columns at 640, 6 at 760, 8 at 1000+). A cell and its icon keep
   one size at every window width: a resize only changes the column count, and past the 880 pt cap the block keeps its
-  eight columns and grows its margins instead of scaling a tile. A title-bar double-click or the green button takes
+  eight columns and grows its margins instead of scaling a tile. The default icon size is 125 %, so a fresh Deck
+  draws 120×135 cells, 80 pt icons and 20 pt gaps, and the same widths carry 4, 5 and 6 columns. A title-bar double-click or the green button takes
   the system's standard frame (the screen's visible frame); a second zoom returns the frame it came from.
   Label `.caption` 1 line `.truncationMode(.middle)`; a name the line truncates carries the full name in its help tag.
   Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
-  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: one "Loading apps…" `.callout .secondary` line above 12 silent `.redacted(reason: .placeholder)`
+  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only; ⌘0 returns to the 125 % default. Loading: one "Loading apps…" `.callout .secondary` line above 12 silent `.redacted(reason: .placeholder)`
   cells (a cell never says Loading). **Icons** come
   from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
   When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom
