@@ -19,8 +19,8 @@ class DeviceNameTest {
     }
 
     @Test
-    fun `a name cached from an old build that is just the model is replaced`() {
-        assertEquals("Galaxy", DeviceName.resolve(model, model) { "Galaxy" })
+    fun `a stored name that equals the model is still the stored name`() {
+        assertEquals(model, DeviceName.resolve(model, model) { "Galaxy" })
     }
 
     @Test
