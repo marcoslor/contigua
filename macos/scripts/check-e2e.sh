@@ -15171,6 +15171,20 @@ icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1
 have_layered_icons() { [ "$(icons_kind '"layers":true')" -ge 4 ]; }
 have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 
+# The icon size the grid last drew (--debug-deck-grid's geometry line), for
+# DECK-6's stored-value steps.
+deck_stored_zoom() {
+    python3 - "$WORK/deck-grid.jsonl" <<'PY'
+import json, sys
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+blocks = [line for line in lines if "cap" in line]
+print(blocks[-1]["zoom"] if blocks else "")
+PY
+}
+
+# A fresh profile's Deck is the default, 125 % (DECK-6).
+deck_at_the_default_zoom() { [ "$(deck_stored_zoom)" = "1.25" ]; }
+
 # check_deck — the grid gets both kinds of icon the phone can send: fakephone
 # answers fg/bg layers for every 3rd app and a flat PNG for the rest. The Deck
 # shows both without errors and the grid is captured for the human (glass is
@@ -15264,6 +15278,12 @@ check_deckstart() {
     control deck-size 1000 700 >/dev/null || bad "DECKSTART deck-size 1000: $CONTROL_REPLY"
     sleep 1.2
     shot_deck "deckstart-1000-light"
+    control deck-size 760 600 >/dev/null || bad "DECKSTART deck-size 760 (light): $CONTROL_REPLY"
+    sleep 1
+    shot_deck "deckstart-760-light"
+    control deck-size 640 600 >/dev/null || bad "DECKSTART deck-size 640 (light): $CONTROL_REPLY"
+    sleep 1
+    shot_deck "deckstart-640-light"
     section_check 760
     section_check 1000
     section_check 1200
@@ -15874,6 +15894,28 @@ check_deck() {
         --debug-deck-zoom "$WORK/deck-zoom.json"
     wait_until 30 events_have '"t":"apps.list"' \
         && ok "[DECK-1] the app list was requested" || bad "[DECK-1] no apps.list"
+    # [DECK-6] A profile with no stored choice opens at the default, 125 %, and
+    # View ▸ Icon Size checks it (the person: "make less dense the default").
+    # The geometry checks below publish 100 % numbers, so they pin 100 % after
+    # this; a fresh Deck is the default only here.
+    wait_until 20 deck_at_the_default_zoom \
+        && ok "[DECK-6] a fresh profile's Deck is the default 125 %" \
+        || bad "[DECK-6] a fresh profile drew at $(deck_stored_zoom), not 125 %"
+    control menudump "$WORK/deck-fresh-menu.json" >/dev/null \
+        || bad "DECK menudump (fresh profile): $CONTROL_REPLY"
+    python3 - "$WORK/deck-fresh-menu.json" <<'PY' \
+        && ok "[DECK-6] a fresh profile checks 125 % in View ▸ Icon Size" \
+        || bad "[DECK-6] the View menu's Icon Size on a fresh profile is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(item for item in root["items"] if item["title"] == "View")
+icon = next(item for item in view["submenu"] if item["title"] == "Icon Size")
+checked = [item["title"] for item in icon["submenu"]
+           if not item["isSeparator"] and item["state"] == "on"]
+if checked != ["125 %"]:
+    print("checked:", checked); sys.exit(1)
+PY
+    control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-4): $CONTROL_REPLY"
     wait_until 30 have_layered_icons \
         && ok "[DECK-2] layered icon replies arrived ($(icons_kind '"layers":true'))" \
         || bad "[DECK-2] no layered icon replies"
@@ -16304,19 +16346,23 @@ PY
     else
         bad "DECK deckzoomwindow: $CONTROL_REPLY"
     fi
-    # DECK-6: the icon size is an explicit, stored choice. ⌘+ steps it while the
-    # Deck is key; the same key with a stream window key belongs to that
-    # window's density and must leave the Deck's choice alone.
-    deck_stored_zoom() {
-        python3 - "$WORK/deck-grid.jsonl" <<'PY'
-import json, sys
-lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-blocks = [line for line in lines if "cap" in line]
-print(blocks[-1]["zoom"] if blocks else "")
-PY
-    }
+    # DECK-6: the icon size is an explicit, stored choice. ⌘0 returns to the
+    # default, 125 %; ⌘+ steps it while the Deck is key; the same key with a
+    # stream window key belongs to that window's density and must leave the
+    # Deck's choice alone.
+    control deckzoom 1.5 >/dev/null || bad "DECK deckzoom 1.5 (DECK-6): $CONTROL_REPLY"
+    control deckfocus grid >/dev/null || bad "DECK deckfocus (DECK-6 ⌘0): $CONTROL_REPLY"
+    sleep 0.3
+    control key cmd+0 || bad "DECK key cmd+0 (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    control deck-size 1500 900 >/dev/null || bad "DECK deck-size 1500 (DECK-6 ⌘0): $CONTROL_REPLY"
+    sleep 0.6
+    if [ "$(deck_stored_zoom)" = "1.25" ]; then
+        ok "[DECK-6] ⌘0 returned the Deck's icon size from 150 % to the default 125 %"
+    else
+        bad "[DECK-6] ⌘0 left the icon size at $(deck_stored_zoom)"
+    fi
     control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-6): $CONTROL_REPLY"
-    control deckfocus grid >/dev/null || bad "DECK deckfocus (DECK-6): $CONTROL_REPLY"
     sleep 0.3
     control key cmd+= || bad "DECK key cmd+= (DECK-6): $CONTROL_REPLY"
     sleep 0.6
