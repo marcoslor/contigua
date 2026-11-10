@@ -277,6 +277,21 @@ enum MenuTrack {
 
     // MARK: - The report
 
+    /// A menu's items as the person reads them while it is open: title, check
+    /// state, enablement and whether it is hidden. Duplicate titles stay as
+    /// separate rows, because a second "Enter Full Screen" is the bug.
+    private static func marks(_ menu: NSMenu) -> [[String: Any]] {
+        menu.items.map { item in
+            var row: [String: Any] = ["title": item.title,
+                                      "separator": item.isSeparatorItem,
+                                      "state": item.state == .on ? "on" : item.state == .mixed ? "mixed" : "off",
+                                      "enabled": item.isEnabled,
+                                      "hidden": item.isHidden]
+            if let submenu = item.submenu { row["children"] = marks(submenu) }
+            return row
+        }
+    }
+
     private static func write() {
         let item = resolve(itemPath: MenuTrack.itemPath)
         let hover = hoverTitle.isEmpty ? nil
@@ -305,6 +320,9 @@ enum MenuTrack {
             // "ax" is the open item's own frame, "anchor" the popUp fallback.
             "hover_point": hoverPointText,
             "hover_point_source": hoverPointSource,
+            // What the open menu showed at this moment: the marks a person
+            // reads, read from the items themselves while they track.
+            "marks": item?.submenu.map(MenuTrack.marks) ?? [],
         ]
         if let data = try? JSONSerialization.data(withJSONObject: report,
                                                   options: [.prettyPrinted, .sortedKeys]) {

@@ -2,11 +2,7 @@
 // store the TLS layer pins phones against.
 //
 // - identity.json one JSON file, <profile>/Application Support/<profile folder>/identity.json,
-//   mode 0600 in a 0700 folder (the same treatment pairkeys.json has; Keychain
-//   returns with proper code signing).
-// - On the first v2 run pairkeys.json is deleted (the forced re-pair — §7):
-//   v1 HMAC keys authenticate nothing in v2 and must not be reused as pin data.
-//   No reverse path.
+//   mode 0600 in a 0700 folder (Keychain returns with proper code signing).
 // - The pin is NOT the certificate's bytes (Apple re-encodes them), it is
 //   SHA-256 over the 65-byte uncompressed EC point, identical on both stacks.
 //
@@ -68,9 +64,7 @@ final class IdentityFileV2 {
 
     /// identity.json in the profile's support folder.
     static func fileUrl(in profile: Profile) -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true)
-            .appendingPathComponent("identity.json")
+        profile.supportDirectoryUrl.appendingPathComponent("identity.json")
     }
 
     func load() -> DeviceIdentityV2? {
@@ -105,17 +99,6 @@ final class IdentityFileV2 {
 
     func clear() {
         try? FileManager.default.removeItem(at: url)
-    }
-}
-
-/// §3/§7 migration: the first v2 run deletes the v1 pair keys — one forced
-/// re-pair, no reverse path.
-enum IdentityMigrationV2 {
-    @discardableResult
-    static func wipePairKeys(at url: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        try? FileManager.default.removeItem(at: url)
-        return true
     }
 }
 

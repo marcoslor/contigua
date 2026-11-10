@@ -29,7 +29,7 @@ final class ConnectionLinkReconcileTests: XCTestCase {
         if let suite = profile.defaultsSuiteName {
             profile.defaults.removePersistentDomain(forName: suite)
         }
-        try? FileManager.default.removeItem(at: profile.pairKeysFileUrl.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
     }
 
     /// The regression: the old `!isDown -> restore` condition called

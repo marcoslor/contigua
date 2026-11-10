@@ -89,7 +89,7 @@ def clear_profile():
     while run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE]).returncode == 0:
         pass
     support = os.path.expanduser("~/Library/Application Support/PocketDeck-" + PROFILE)
-    for name in ("pairkeys.json", "identity.json", "pins.json"):
+    for name in ("identity.json", "pins.json"):
         try:
             os.remove(os.path.join(support, name))
         except FileNotFoundError:

@@ -710,10 +710,8 @@ func filesSystemContainer(_ identifier: String) -> Bool {
 /// and is persisted per profile. Every listing and stat reply fills it; every
 /// successful write, move, delete and mkdir updates it.
 struct FilesIdMap: Equatable {
-    /// The persisted shape. A different version is a fresh map: S3's ids carried
-    /// a path and are not worth migrating. Version 3 added the replica record
-    /// (FilesReplica, same version): the domain is replaced once so the system
-    /// drops items no record can explain.
+    /// The persisted shape. A different version is a fresh map: only the
+    /// current shape is read, so an older or unknown file is ignored.
     static let formatVersion = 3
 
     private(set) var pathByIdentifier: [String: String] = [FilesMap.rootIdentifier: ""]
@@ -864,8 +862,8 @@ struct FilesIdMap: Equatable {
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
     }
 
-    /// A corrupt, foreign or older file is a fresh map (the caller re-adds the
-    /// domain, which drops the ids the map cannot explain).
+    /// A corrupt, foreign or older file is a fresh map: an unknown version is
+    /// ignored and the default applies.
     static func decode(_ data: Data) -> FilesIdMap? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let version = (object["version"] as? NSNumber)?.intValue,

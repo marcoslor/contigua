@@ -232,6 +232,39 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertTrue(noWindow.contains(.mark(["Icon Size", "100 %"], false)))
     }
 
+    /// [DECK-6] A profile with no stored choice marks the default, 125 %, when
+    /// the menu opens: the mark is read from the profile at that moment, not
+    /// from a launch-time value.
+    @MainActor
+    func testAFreshProfilesIconSizeMarkIsTheDefault() {
+        let defaults = Profile.active.defaults
+        let saved = defaults.object(forKey: DeckZoom.key)
+        defer {
+            if let saved { defaults.set(saved, forKey: DeckZoom.key) }
+            else { defaults.removeObject(forKey: DeckZoom.key) }
+        }
+        defaults.removeObject(forKey: DeckZoom.key)
+
+        let main = NSMenu(title: "main")
+        let view = NSMenu(title: "View")
+        let icon = NSMenu(title: "Icon Size")
+        for option in DeckZoom.options {
+            icon.addItem(withTitle: MenuModel.iconSizeTitle(option), action: nil, keyEquivalent: "")
+        }
+        let iconItem = NSMenuItem(title: "Icon Size", action: nil, keyEquivalent: "")
+        iconItem.submenu = icon
+        view.addItem(iconItem)
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewItem.submenu = view
+        main.addItem(viewItem)
+
+        MenuMarks.apply(to: main)
+
+        let checked = icon.items.filter { $0.state == .on }.map(\.title)
+        XCTAssertEqual(checked, [MenuModel.iconSizeTitle(DeckZoom.defaultValue)],
+                       "a fresh profile checks the default, 125 %")
+    }
+
     func testTheDefaultDensityItemNamesTheSettingsDefault() {
         let key = state()
         key.settingsDensity = 1.5
@@ -446,5 +479,99 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone, stream: StreamMenuState()).last,
                        .handoff(title: "Open Current App on Mac", enabled: false,
                                 help: FrontAppRow.nothingToOpen))
+    }
+
+    // MARK: A pass that must finish (ISS-93)
+
+    /// A main menu with a View menu, no Navigate: the pass must still correct
+    /// View and go on. The shared state is reset to the Deck key so the
+    /// expected values do not depend on another test.
+    @MainActor
+    private func makeBar(view items: [NSMenuItem]) -> NSMenu {
+        let main = NSMenu(title: "main")
+        let viewMenu = NSMenu(title: "View")
+        for item in items { viewMenu.addItem(item) }
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewItem.submenu = viewMenu
+        main.addItem(viewItem)
+        StreamMenuState.shared.handle(.reset)
+        StreamMenuState.shared.showTouches = false
+        StreamMenuState.shared.deckZoom = 1
+        return main
+    }
+
+    private func item(_ title: String, _ menu: NSMenu) -> NSMenuItem? {
+        menu.items.first { $0.title == title }
+    }
+
+    /// ISS-93: a pass whose item lookup fails must not stop the rest. The item
+    /// that is missing is reported once, named by its menu, and every later
+    /// edit still lands.
+    @MainActor
+    func testAMissingItemIsReportedOnceAndThePassGoesOn() {
+        let immersive = NSMenuItem(title: "Immersive", action: nil, keyEquivalent: "")
+        immersive.state = .on
+        immersive.isEnabled = true
+        let touches = NSMenuItem(title: "Show Touches", action: nil, keyEquivalent: "")
+        touches.state = .on
+        touches.isEnabled = true
+        let live = NSMenuItem(title: "Live Text", action: nil, keyEquivalent: "")
+        live.state = .on
+        live.isEnabled = true
+        let main = makeBar(view: [immersive, touches, live])
+        let view = main.items.first { $0.title == "View" }!.submenu!
+
+        // A pass over the bar still corrects every item it has, even while one
+        // menu of the bar is absent (no Navigate here).
+        XCTAssertEqual(MenuMarks.apply(to: main), [])
+        XCTAssertEqual(item("Immersive", view)?.state, .off)
+        XCTAssertEqual(item("Immersive", view)?.isEnabled, false)
+        XCTAssertEqual(item("Show Touches", view)?.state, .off)
+        XCTAssertEqual(item("Show Touches", view)?.isEnabled, false)
+        XCTAssertEqual(item("Live Text", view)?.state, .off)
+        XCTAssertEqual(item("Live Text", view)?.isEnabled, false)
+
+        // A missing item is one skipped write, never the end of the pass: it is
+        // named "View ▸ Framed", and the next edit on the same menu still lands.
+        XCTAssertEqual(MenuMarks.apply(.mark(["Framed"], true), in: view, named: "View"),
+                       "View ▸ Framed")
+        XCTAssertNil(MenuMarks.apply(.enable(["Show Touches"], true), in: view, named: "View"))
+        XCTAssertTrue(item("Show Touches", view)!.isEnabled)
+    }
+
+    /// ISS-93: AppKit posts didBeginTracking before SwiftUI installs the command
+    /// items it rebuilt since the last open. The correction is deferred to the
+    /// end of that turn, so the install that follows cannot replace it: the
+    /// items an open menu shows are the key window's values, not the launch's.
+    @MainActor
+    func testTheCorrectionLandsAfterTheOpenInstallsTheItems() {
+        let framed = NSMenuItem(title: "Framed", action: nil, keyEquivalent: "")
+        let immersive = NSMenuItem(title: "Immersive", action: nil, keyEquivalent: "")
+        let touches = NSMenuItem(title: "Show Touches", action: nil, keyEquivalent: "")
+        let main = makeBar(view: [framed, immersive, touches])
+        let view = main.items.first { $0.title == "View" }?.submenu
+        // The launch's values: the style pair checked and enabled, touches on.
+        framed.state = .on
+        framed.isEnabled = true
+        immersive.isEnabled = true
+        touches.state = .on
+        touches.isEnabled = true
+        NSApplication.shared.mainMenu = main
+        defer { NSApplication.shared.mainMenu = nil }
+
+        MenuMarks.correctAfterTheOpen()
+        // The install a real open runs after the notification, in the same turn.
+        framed.state = .on
+        framed.isEnabled = true
+        immersive.isEnabled = true
+        touches.state = .on
+        touches.isEnabled = true
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+
+        XCTAssertEqual(item("Framed", view!)?.state, .off)
+        XCTAssertEqual(item("Framed", view!)?.isEnabled, false)
+        XCTAssertEqual(item("Immersive", view!)?.isEnabled, false)
+        XCTAssertEqual(item("Show Touches", view!)?.state, .off)
+        XCTAssertEqual(item("Show Touches", view!)?.isEnabled, false)
     }
 }
