@@ -41,8 +41,9 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
-Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
-percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
+Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
+125 %, 150 %, the current one checked) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
+system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
 Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. A control that cannot work is disabled, never hidden.
@@ -315,9 +316,9 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌥⌘F | Framed window style (the same key toggles Framed / Immersive) | View |
 | ⌃Tab | Move the keyboard into the Phone Mirror's bar; ←/→, Tab, Return and Esc act there | Phone Mirror |
 | ⇧⌘T | Live Text | View |
-| ⌘+ | Larger: the Deck grid, or the window's density | View, Deck |
-| ⌘− | Smaller: the Deck grid, or the window's density | View, Deck |
-| ⌘0 | Actual Size: the Deck grid, or the window's density | View, Deck |
+| ⌘+ | Larger: the Deck's icon size, or the window's density | View, Deck |
+| ⌘− | Smaller: the Deck's icon size, or the window's density | View, Deck |
+| ⌘0 | Actual Size: the Deck's icon size (100%), or the window's density | View, Deck |
 | ⌘P | Phone Mirror | Phone |
 | ⇧⌘C | Move Phone App to Mac | Phone |
 | ⌘[ | Back | Navigate |

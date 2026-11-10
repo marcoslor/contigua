@@ -323,7 +323,7 @@ struct DeckFrameFit: Equatable {
                             cells: frames.count,
                             columns: edges.count,
                             expectedColumns: DeckWide.block(width: width,
-                                                            metrics: DeckGridSize(zoom: zoom, width: width)).columns,
+                                                            metrics: DeckGridSize(zoom: zoom)).columns,
                             leftInset: minX - visible.minX,
                             rightInset: visible.maxX - maxX,
                             clipped: frames.filter { $0.minX < visible.minX - tolerance || $0.maxX > visible.maxX + tolerance }.count)

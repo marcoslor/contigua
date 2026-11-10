@@ -3478,7 +3478,7 @@ if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window
     problems.append("menus: %r" % (titles,))
 WANT = {
     "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
-             "Show Touches", "Live Text", "—", "Density"],
+             "Show Touches", "Live Text", "—", "Icon Size", "—", "Density"],
     "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
@@ -3987,6 +3987,10 @@ PY
 
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
+    # The Deck's icon size is a stored choice: start from 100 %, so the View
+    # menu's checkmark is the known one (DECK-6, MENU-9).
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1: $CONTROL_REPLY"
+    sleep 0.5
 
     # 1: a fresh launch with one stream window open.
     dump_now 1 || { stop_app; stop_fakephone; return 1; }
@@ -4061,6 +4065,24 @@ hide = by_title.get("Hide Controls")
 if hide is None or hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
+    # The Deck's icon size is a stored choice: its checkmark follows ⌘+ / ⌘−
+    # while the Deck is key (DECK-6, MENU-9). This is the store the keys write;
+    # the menu reads it when it opens.
+    control deckzoom 1.25 >/dev/null || bad "MENUS deckzoom 1.25: $CONTROL_REPLY"
+    sleep 0.5; dump_now 16
+    python3 - "$WORK/menus-16.json" <<'PY' && ok "[MENU-9] after the icon size became 125 %: 125 % is checked and 100 % is not" \
+        || bad "[MENU-9] the View menu did not follow the icon size"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+icon = next(i for i in view["submenu"] if i["title"] == "Icon Size")
+by_title = {i["title"]: i for i in icon["submenu"] if not i["isSeparator"]}
+if by_title["125 %"]["state"] != "on" or by_title["100 %"]["state"] != "off":
+    print("states:", {k: v["state"] for k, v in by_title.items()}); sys.exit(1)
+PY
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1 (restore): $CONTROL_REPLY"
+    sleep 0.5
+
     # 5: after a second stream window opened (a different key window).
     control open --open com.whatsapp --debug-chrome-state "$WORK/chrome.txt" \
         || bad "MENUS shared app: opening a second window answered '$CONTROL_REPLY'"
@@ -4157,6 +4179,26 @@ if shortcuts != [("Framed", "f", ["command", "option"])] and shortcuts != [("Imm
     print("⌥⌘F on the pair:", shortcuts); sys.exit(1)
 if "Toggle Window Style" in by_title:
     print("the separate Toggle Window Style item is still there"); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Icon Size is the four percentages, the stored one checked" \
+        || bad "[MENU-4] the Icon Size submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+icon = next(i for i in view["submenu"] if i["title"] == "Icon Size")
+sub = icon.get("submenu") or []
+seq = ["—" if i["isSeparator"] else i["title"] for i in sub]
+want = ["75 %", "100 %", "125 %", "150 %"]
+if seq != want:
+    print("Icon Size:", seq, "wanted:", want); sys.exit(1)
+checked = [i["title"] for i in sub if not i["isSeparator"] and i["state"] == "on"]
+if checked != ["100 %"]:
+    print("checked:", checked); sys.exit(1)
+if any(i["keyEquivalent"] for i in sub if not i["isSeparator"]):
+    print("an Icon Size item carries a key: the keys stay on Density", sub); sys.exit(1)
+if not icon["hasImage"]:
+    print("Icon Size has no symbol"); sys.exit(1)
 PY
 
     python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
@@ -4276,8 +4318,8 @@ root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
 for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
-              "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
-              "Recents"]:
+              "Live Text", "Icon Size", "Density", "Larger", "Smaller", "Actual Size", "Back",
+              "Home", "Recents"]:
     found = next((i for i in items if i["title"] == title), None)
     if found is None:
         missing.append(title + " (missing)")
@@ -15567,28 +15609,25 @@ PY
         bad "DECK no zoom measurement (--debug-deck-zoom)"
     fi
 
-    # D's block is 96 pt tiles on a fixed 16 pt pitch, centred and never wider
-    # than 880 pt (--debug-deck-grid's geometry lines). The zoom probe above
-    # owns the window while it runs, so resize only after it has reported.
+    # D's block is 96 pt tiles on a fixed 16 pt pitch at every width, centred
+    # and never wider than 880 pt: a resize only changes the column count, and
+    # past the cap it adds margins instead of scaling a tile (DECK-4,
+    # --debug-deck-grid's geometry lines). The zoom probe above owns the window
+    # while it runs, so resize only after it has reported.
     local geometry
-    if control deck-size 640 700 >/dev/null; then
-        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 640 5)"; then
-            ok "[DECK-4] at 640 pt the block is $geometry"
+    local wide_pt wide_cols
+    for size in "640 5" "760 6" "1200 8" "1500 8"; do
+        read -r wide_pt wide_cols <<< "$size"
+        if control deck-size "$wide_pt" 700 >/dev/null; then
+            if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" "$wide_pt" "$wide_cols")"; then
+                ok "[DECK-4] at $wide_pt pt the block keeps one tile size with $wide_cols columns ($geometry)"
+            else
+                bad "[DECK-4] at $wide_pt pt the block is not D's ($geometry)"
+            fi
         else
-            bad "[DECK-4] at 640 pt the block is not D's ($geometry)"
+            bad "DECK deck-size $wide_pt: $CONTROL_REPLY"
         fi
-    else
-        bad "DECK deck-size 640: $CONTROL_REPLY"
-    fi
-    if control deck-size 1200 700 >/dev/null; then
-        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1200 8)"; then
-            ok "[DECK-4] at 1200 pt the block is capped and centred ($geometry)"
-        else
-            bad "[DECK-4] at 1200 pt the block is not capped/centred ($geometry)"
-        fi
-    else
-        bad "DECK deck-size 1200: $CONTROL_REPLY"
-    fi
+    done
     # Put the Deck back on its default size for the visual record. R1's rail
     # needs 540 pt under the toolbar, which the 600 pt default leaves.
     control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
@@ -15865,42 +15904,57 @@ PY
     done
     control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
-    # DECK-4 on the person's wide window: over 1000 pt the whole grid grows
-    # with the width (clamp(width/1000, 1, 1.5), 1.5x from 1500 pt) and the
-    # block reserves the rail's 44 pt, so the letter column never sits over
-    # the last cell. The window may be wider than the run's display: the
-    # layout follows the width it is given, not what the screen can show.
+    # DECK-4 on the person's wide window: at 1960 pt the tiles keep their size,
+    # the block stays at the 880 pt cap with margins, and it reserves the rail's
+    # 44 pt, so the letter column never sits over the last cell. The window may
+    # be wider than the run's display: the layout follows the width it is given,
+    # not what the screen can show.
     if control deck-size 1960 1100 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1960 8 20)"; then
-            ok "[DECK-4] at 1960 pt the tiles grow with the width and the rail keeps its room ($geometry)"
+            ok "[DECK-4] at 1960 pt the tiles keep their size, the block is capped with margins and the rail keeps its room ($geometry)"
         else
-            bad "[DECK-4] at 1960 pt the block is not the wide one ($geometry)"
+            bad "[DECK-4] at 1960 pt the block is not the capped one ($geometry)"
         fi
     else
         bad "DECK deck-size 1960: $CONTROL_REPLY"
     fi
     # DECK-24: the green button's zoom (NSWindow.zoom, the same path a
-    # title-bar double-click takes) lands on the Deck's intrinsic width — the
-    # 880 pt grid plus 60 pt a side at 100 %, plus the rail — and the screen's
-    # visible height, not the whole screen.
-    local zx zy zw zh vw vh want
-    want=$(( 1000 + 44 ))
+    # title-bar double-click takes) is the system's standard zoom — the screen's
+    # visible frame, never a width computed from the grid — and a second zoom
+    # returns the frame the window came from, so the icon size never changes.
+    local zx zy zw zh vw vh bx by bw bh ax ay aw ah
+    control deck-frame "$WORK/deck-zoom-frame-before.txt" \
+        && read -r bx by bw bh < "$WORK/deck-zoom-frame-before.txt" \
+        || bad "DECK the frame before the standard zoom: $CONTROL_REPLY"
     if control deckzoomwindow; then
         sleep 2
         if control deck-frame "$WORK/deck-zoom-frame.txt" \
             && read -r zx zy zw zh < "$WORK/deck-zoom-frame.txt" \
             && control deck-screen "$WORK/deck-screen.txt" \
             && read -r vw vh < "$WORK/deck-screen.txt"; then
-            if [ "$zw" -ge $(( want - 2 )) ] && [ "$zw" -le $(( want + 2 )) ] \
+            if [ "$zw" -ge $(( vw - 2 )) ] && [ "$zw" -le $(( vw + 2 )) ] \
                 && [ "$zh" -ge $(( vh - 2 )) ] && [ "$zh" -le $(( vh + 2 )) ]; then
-                ok "[DECK-24] the standard zoom took the Deck to ${zw}x${zh} (its ${want} pt intrinsic width, the screen's ${vh} pt visible height)"
+                ok "[DECK-24] the standard zoom took the Deck to the screen's visible frame ${zw}x${zh}"
             else
-                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not ${want}x${vh}"
+                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not the ${vw}x${vh} visible frame"
             fi
-            if [ "$zw" -lt "$vw" ]; then
-                ok "[DECK-24] the standard zoom stops short of the ${vw} pt screen width"
+            if control deckzoomwindow; then
+                sleep 2
+                if control deck-frame "$WORK/deck-zoom-frame-back.txt" \
+                    && read -r ax ay aw ah < "$WORK/deck-zoom-frame-back.txt"; then
+                    if [ "$ax" -ge $(( bx - 2 )) ] && [ "$ax" -le $(( bx + 2 )) ] \
+                        && [ "$ay" -ge $(( by - 2 )) ] && [ "$ay" -le $(( by + 2 )) ] \
+                        && [ "$aw" -ge $(( bw - 2 )) ] && [ "$aw" -le $(( bw + 2 )) ] \
+                        && [ "$ah" -ge $(( bh - 2 )) ] && [ "$ah" -le $(( bh + 2 )) ]; then
+                        ok "[DECK-24] a second zoom returned the frame it came from (${aw}x${ah} at ${ax},${ay})"
+                    else
+                        bad "[DECK-24] a second zoom returned ${aw}x${ah} at ${ax},${ay}, not the ${bw}x${bh} at ${bx},${by} it came from"
+                    fi
+                else
+                    bad "DECK the frame after the second standard zoom: $CONTROL_REPLY"
+                fi
             else
-                bad "[DECK-24] the standard zoom stretched to the ${vw} pt screen width"
+                bad "DECK the second deckzoomwindow: $CONTROL_REPLY"
             fi
         else
             bad "DECK deckzoomwindow's frame: $CONTROL_REPLY"
@@ -15908,6 +15962,46 @@ PY
     else
         bad "DECK deckzoomwindow: $CONTROL_REPLY"
     fi
+    # DECK-6: the icon size is an explicit, stored choice. ⌘+ steps it while the
+    # Deck is key; the same key with a stream window key belongs to that
+    # window's density and must leave the Deck's choice alone.
+    deck_stored_zoom() {
+        python3 - "$WORK/deck-grid.jsonl" <<'PY'
+import json, sys
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+blocks = [line for line in lines if "cap" in line]
+print(blocks[-1]["zoom"] if blocks else "")
+PY
+    }
+    control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-6): $CONTROL_REPLY"
+    control deckfocus grid >/dev/null || bad "DECK deckfocus (DECK-6): $CONTROL_REPLY"
+    sleep 0.3
+    control key cmd+= || bad "DECK key cmd+= (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    control deck-size 1500 900 >/dev/null || bad "DECK deck-size 1500 (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    if [ "$(deck_stored_zoom)" = "1.25" ]; then
+        ok "[DECK-6] ⌘+ stepped the Deck's icon size to 125%"
+    else
+        bad "[DECK-6] ⌘+ left the icon size at $(deck_stored_zoom)"
+    fi
+    # The same window the ⌘F check below opens; it carries the chrome state
+    # that check waits for, and the raise there finds the file already written.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" >/dev/null \
+        || bad "DECK open settings (DECK-6): $CONTROL_REPLY"
+    sleep 2
+    control key cmd+= || bad "DECK key cmd+= with a stream window key (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    control deck-size 1500 900 >/dev/null || bad "DECK deck-size 1500 (DECK-6 stream): $CONTROL_REPLY"
+    sleep 0.6
+    if [ "$(deck_stored_zoom)" = "1.25" ]; then
+        ok "[DECK-6] with a stream window key ⌘+ left the Deck's 125% alone"
+    else
+        bad "[DECK-6] a stream window's ⌘+ changed the Deck's icon size to $(deck_stored_zoom)"
+    fi
+    # The stream window's own density: ⌘0 clears the override this check made.
+    control key cmd+0 >/dev/null || bad "DECK key cmd+0 (stream density): $CONTROL_REPLY"
+    control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-6 restore): $CONTROL_REPLY"
     control deck-size 760 600 || bad "DECK deck-size 760 600 (wide checks): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
@@ -16099,8 +16193,10 @@ PY
     deck_row() {
         shotlook="$1"
         control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
-        deck_size 1960 1100 "wide-1960x1100-$shotlook"
+        deck_size 760 600 "wide-760x600-$shotlook"
         deck_size 1440 900 "wide-1440x900-$shotlook"
+        deck_size 1500 900 "wide-1500x900-$shotlook"
+        deck_size 1960 1100 "wide-1960x1100-$shotlook"
         control deckzoom 1.25 >/dev/null || bad "DECK deckzoom 1.25: $CONTROL_REPLY"
         deck_size 1000 625 "wide-1000x625-125-$shotlook"
         control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"

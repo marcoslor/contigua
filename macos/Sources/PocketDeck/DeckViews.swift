@@ -614,7 +614,7 @@ enum DeckRail {
     /// reach into the viewport across the gutter: that makes it the current one.
     static func topIndex(offset: CGFloat?, apps: [AppInfo], zoom: CGFloat, width: CGFloat) -> Int? {
         guard !apps.isEmpty else { return nil }
-        let metrics = DeckGridSize(zoom: zoom, width: width)
+        let metrics = DeckGridSize(zoom: zoom)
         let columns = DeckWide.block(width: width, metrics: metrics).columns
         let pitch = metrics.cellHeight + metrics.rowSpacing
         let top = max(offset ?? 0, 0)
@@ -628,7 +628,7 @@ enum DeckRail {
         guard let index = topIndex(offset: offset, apps: apps, zoom: zoom, width: width) else {
             return nil
         }
-        let columns = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width)).columns
+        let columns = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom)).columns
         return rowLetter(rowStart: index, apps: apps, columns: columns)
     }
 
@@ -858,18 +858,19 @@ final class GridNavigator {
 
     /// True when the key was used here and must not reach the search field.
     private func handle(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
-        guard let controller, controller.sheet == nil,
-              NSApp.keyWindow === DeckWindow.window else { return false }
-        // ⌘+ / ⌘− / ⌘0 scale the Deck grid, not a stream window's density
-        // (that menu item is disabled while the Deck is key).
-        if flags.contains(.command), flags.intersection([.control, .option]).isEmpty {
-            switch keyCode {
-            case 24, 69: setZoom(DeckZoom.step); return true       // = / + and keypad +
-            case 27, 78: setZoom(-DeckZoom.step); return true      // - and keypad -
-            case 29, 82: setZoom(nil); return true                 // 0 and keypad 0
-            default: break
+        guard let controller, controller.sheet == nil else { return false }
+        // ⌘+ / ⌘− / ⌘0 set the Deck's icon size, not a stream window's density
+        // (DECK-6): the keys are the same, so the key window decides. With a
+        // stream window key the press goes on to that window's own handling.
+        let deckIsKey = NSApp.keyWindow === DeckWindow.window
+        if let action = DeckKeyZoom.action(keyCode: keyCode, flags: flags, deckIsKey: deckIsKey) {
+            switch action {
+            case .step(let delta): setZoom(delta)
+            case .reset: setZoom(nil)
             }
+            return true
         }
+        guard deckIsKey else { return false }
         // ⌘F is the Deck's Find: focus the search field and select what is
         // already typed, like ⌘F in any Mac window. It is not a menu item — a
         // menu item would eat ⌘F in a stream window, where the key belongs to
@@ -941,39 +942,52 @@ enum DeckZoom {
     }
 }
 
-/// The grid's numbers at one zoom step and one drawn width. Pure, so the
-/// layout, the cell views, the probe and the unit tests all read the same
-/// arithmetic: 64 pt icons in 96×108 pt cells on a fixed 16 pt pitch, a 24 pt
-/// vertical inset, an 8 pt icon-label gap, a 16 pt hover corner and an 880 pt
-/// cap — all of them times the width factor over 1000 pt (DeckWide).
+/// The Deck's icon-size keys as a value: ⌘+ / ⌘− step and ⌘0 returns to
+/// 100 %, but only while the Deck is the key window. A stream window's
+/// ⌘+ / ⌘− / ⌘0 belong to that window's density, so the same press there must
+/// not move the Deck's stored choice (DECK-6).
+enum DeckKeyZoom {
+    enum Action: Equatable {
+        case step(CGFloat)
+        case reset
+    }
+
+    static func action(keyCode: UInt16, flags: NSEvent.ModifierFlags, deckIsKey: Bool) -> Action? {
+        guard deckIsKey, flags.contains(.command),
+              flags.intersection([.control, .option]).isEmpty else { return nil }
+        switch keyCode {
+        case 24, 69: return .step(DeckZoom.step)       // = / + and keypad +
+        case 27, 78: return .step(-DeckZoom.step)      // - and keypad -
+        case 29, 82: return .reset                     // 0 and keypad 0
+        default: return nil
+        }
+    }
+}
+
+/// The grid's numbers at one icon-size step. Pure, so the layout, the cell
+/// views, the probe and the unit tests all read the same arithmetic: 64 pt
+/// icons in 96×108 pt cells on a fixed 16 pt pitch, a 24 pt vertical inset, an
+/// 8 pt icon-label gap, a 16 pt hover corner and an 880 pt cap — all of them
+/// times the person's icon size, and none of them a function of the window's
+/// width (DECK-4).
 struct DeckGridSize: Equatable {
     let zoom: CGFloat
-    /// The width factor this width draws at: 1 up to 1000 pt, 1.5 from 1500 pt.
-    let tileScale: CGFloat
 
-    /// The base metrics: what the reference width draws.
     init(zoom: CGFloat) {
         self.zoom = DeckZoom.clamped(zoom)
-        self.tileScale = 1
     }
 
-    /// The metrics at the width the layout is drawing right now.
-    init(zoom: CGFloat, width: CGFloat) {
-        self.zoom = DeckZoom.clamped(zoom)
-        self.tileScale = DeckWide.tileScale(width: width)
-    }
-
-    var cellWidth: CGFloat { 96 * zoom * tileScale }
-    var cellHeight: CGFloat { 108 * zoom * tileScale }
-    var iconSide: CGFloat { 64 * zoom * tileScale }
-    var columnGap: CGFloat { 16 * zoom * tileScale }
-    var rowSpacing: CGFloat { 16 * zoom * tileScale }
-    var verticalInset: CGFloat { 24 * zoom * tileScale }
-    var iconLabelGap: CGFloat { 8 * zoom * tileScale }
-    var cornerRadius: CGFloat { 16 * zoom * tileScale }
-    /// The block stops growing here: 880 pt times the zoom and the width
-    /// factor, so the tiles and the cap keep their proportions.
-    var maxContentWidth: CGFloat { DeckWide.cap * zoom * tileScale }
+    var cellWidth: CGFloat { 96 * zoom }
+    var cellHeight: CGFloat { 108 * zoom }
+    var iconSide: CGFloat { 64 * zoom }
+    var columnGap: CGFloat { 16 * zoom }
+    var rowSpacing: CGFloat { 16 * zoom }
+    var verticalInset: CGFloat { 24 * zoom }
+    var iconLabelGap: CGFloat { 8 * zoom }
+    var cornerRadius: CGFloat { 16 * zoom }
+    /// The block stops growing here: 880 pt at the person's icon size. Past it
+    /// a wider window only adds margins.
+    var maxContentWidth: CGFloat { DeckWide.cap * zoom }
 }
 
 /// The grid at 100 %: the D design's numbers, unchanged for callers that carry
@@ -1073,7 +1087,7 @@ struct AppGrid: View {
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
-                let current = DeckGridSize(zoom: zoom, width: outer.width)
+                let current = DeckGridSize(zoom: zoom)
                 navigator.columns = DeckWide.block(width: outer.width, metrics: current).columns
                 DeckGridProbe.reportGeometry(zoom: zoom, viewport: outer.width)
             }
@@ -1195,7 +1209,7 @@ struct AppGrid: View {
             return
         }
         let columns = DeckWide.block(width: scroll.width,
-                                     metrics: DeckGridSize(zoom: zoom, width: scroll.width)).columns
+                                     metrics: DeckGridSize(zoom: zoom)).columns
         let before = railAccent
         railAccent = RailAccent.reduce(before, .scroll(top: top, offset: scroll.offset,
                                                        columns: columns,
@@ -1238,7 +1252,7 @@ struct AppGrid: View {
             let fit = model.railFit ?? (count: model.slots.count, pitch: DeckRail.pitch)
             let width = model.containerSize.width
             let block = DeckWide.block(width: width,
-                                       metrics: DeckGridSize(zoom: zoom, width: width))
+                                       metrics: DeckGridSize(zoom: zoom))
             let rail = RailHover.point(hover: point, container: model.containerSize, fit: fit,
                                        trailing: block.railTrailingSpace)
             model.track(dx: rail.dx, y: rail.y, reduceMotion: reduceMotion)
@@ -1599,19 +1613,19 @@ private struct DeckIndexRail: View {
     }
 }
 
-/// The grid's placement. Columns, the width factor and the centred block come
-/// from the width this layout is given in the same pass that draws it: a stored
-/// width is still the old one while a zoom or a live resize changes the window,
-/// and the fixed-width columns past the edge are cut in half (the person's
-/// zoom-back frames). Tiles keep 96 pt at 100 % in a 1000 pt window; the pitch
-/// stays 16 pt, and both grow with the width (DeckWide).
+/// The grid's placement. Columns and the centred block come from the width this
+/// layout is given in the same pass that draws it: a stored width is still the
+/// old one while a zoom or a live resize changes the window, and the fixed-width
+/// columns past the edge are cut in half (the person's zoom-back frames). Tiles
+/// keep 96 pt at 100 % at every width; the pitch stays 16 pt, and a wider window
+/// only adds columns up to the 880 pt cap (DeckWide).
 struct DeckGridLayout: Layout {
     var zoom: CGFloat = 1
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         MainActor.assumeIsolated { DeckGridMetrics.beginLayout() }
         let width = proposal.replacingUnspecifiedDimensions().width
-        let metrics = DeckGridSize(zoom: zoom, width: width)
+        let metrics = DeckGridSize(zoom: zoom)
         let block = DeckWide.block(width: width, metrics: metrics)
         return CGSize(width: width,
                       height: DeckWide.height(count: subviews.count, block: block, metrics: metrics))
@@ -1619,7 +1633,7 @@ struct DeckGridLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         MainActor.assumeIsolated { DeckGridMetrics.relayouts += 1 }
-        let metrics = DeckGridSize(zoom: zoom, width: bounds.width)
+        let metrics = DeckGridSize(zoom: zoom)
         let block = DeckWide.block(width: bounds.width, metrics: metrics)
         for (index, subview) in subviews.enumerated() {
             let frame = DeckWide.cellFrame(index, in: block, metrics: metrics, origin: bounds.origin)
@@ -1632,13 +1646,13 @@ struct DeckGridLayout: Layout {
     /// Where cell `index` is drawn in a grid `width` wide at 100 %. Pure, so the
     /// tests pin the design's 96 pt tiles and fixed 16 pt pitch at any width.
     static func frame(of index: Int, in width: CGFloat, origin: CGPoint = .zero) -> CGRect {
-        let metrics = DeckGridSize(zoom: 1, width: width)
+        let metrics = DeckGridSize(zoom: 1)
         let block = DeckWide.block(width: width, metrics: metrics)
         return DeckWide.cellFrame(index, in: block, metrics: metrics, origin: origin)
     }
 
     static func height(for count: Int, width: CGFloat) -> CGFloat {
-        let metrics = DeckGridSize(zoom: 1, width: width)
+        let metrics = DeckGridSize(zoom: 1)
         let block = DeckWide.block(width: width, metrics: metrics)
         return DeckWide.height(count: count, block: block, metrics: metrics)
     }
@@ -1656,7 +1670,7 @@ struct DeckRailLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let block = DeckWide.block(width: bounds.width,
-                                   metrics: DeckGridSize(zoom: zoom, width: bounds.width))
+                                   metrics: DeckGridSize(zoom: zoom))
         for subview in subviews {
             subview.place(at: CGPoint(x: bounds.minX + block.railLeading + DeckWide.railWidth,
                                       y: bounds.midY),
@@ -1667,8 +1681,8 @@ struct DeckRailLayout: Layout {
 }
 
 /// One grid cell: the icon and its label, sized from the frame the grid gives
-/// it. The width factor lives in the layout pass, so the tile, the icon, the
-/// gap and the corner grow with the window without a stored width.
+/// it. The icon-size step lives in the layout pass, so the tile, the icon, the
+/// gap and the corner follow the person's choice without a stored width.
 struct DeckCellLayout: Layout {
     var zoom: CGFloat = 1
 
@@ -1728,8 +1742,8 @@ struct AppCell: View {
     /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
     let rendered: NSImage?
     let iconIsMissing: Bool
-    /// The grid's zoom step; the cell's own size comes from the frame the grid
-    /// gives it, which carries the width factor.
+    /// The grid's icon-size step; the cell's own size comes from the frame the
+    /// grid gives it.
     let zoom: CGFloat
     let selected: Bool
     let open: () -> Void
