@@ -77,6 +77,31 @@ final class DeckGridTests: XCTestCase {
         }
     }
 
+    /// DECK-4, pinned 2026-11-10 before the constant-size change: the width
+    /// factor's cells, icons and column counts at the five widths the brief
+    /// names. The numbers are today's behaviour, so the change that removes the
+    /// factor fails here first.
+    func testTheWidthFactorPinsTodaysSizeAtTheBriefsWidths() {
+        let today: [(width: CGFloat, columns: Int, cell: CGFloat, icon: CGFloat)] = [
+            (640, 5, 96, 64),
+            (760, 6, 96, 64),
+            (1000, 8, 96, 64),
+            (1200, 8, 115.2, 76.8),
+            (1500, 8, 144, 96),
+        ]
+        for row in today {
+            let metrics = DeckGridSize(zoom: 1, width: row.width)
+            let block = DeckWide.block(width: row.width, metrics: metrics)
+            XCTAssertEqual(block.columns, row.columns, "width \(row.width)")
+            XCTAssertEqual(metrics.cellWidth, row.cell, accuracy: 0.001, "width \(row.width)")
+            XCTAssertEqual(metrics.iconSide, row.icon, accuracy: 0.001, "width \(row.width)")
+        }
+        // At 125 % the same factor multiplies the person's zoom.
+        let zoomed = DeckGridSize(zoom: 1.25, width: 1500)
+        XCTAssertEqual(zoomed.cellWidth, 144 * 1.25, accuracy: 0.001)
+        XCTAssertEqual(zoomed.iconSide, 96 * 1.25, accuracy: 0.001)
+    }
+
     /// DECK-4: the block reserves the rail's 44 pt at every zoom and width, so
     /// the rail's column starts one gap right of the grid's right edge and no
     /// cell sits under it.
