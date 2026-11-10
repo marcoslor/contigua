@@ -707,13 +707,14 @@ final class SessionBridgeHost: FilesBridgeHost {
         let names = uploadNames[item] ?? []
         if failed {
             return step(.failedPage(token: token, record: record, recordDigest: recordDigest,
-                                    uploading: uploading, uploadNames: names), on: item)
+                                    idMap: map, uploading: uploading, uploadNames: names),
+                        on: item)
         }
         if let next {
             return step(.page(token: token, items: items, next: next), on: item)
         }
         return step(.lastPage(token: token, items: items, digest: digest, record: record,
-                              uploading: uploading, uploadNames: names), on: item)
+                              idMap: map, uploading: uploading, uploadNames: names), on: item)
     }
 
     /// Writes what the system is told: the record's children, the change log,
