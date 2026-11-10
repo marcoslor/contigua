@@ -25,7 +25,7 @@ final class DeckFullScreenTests: XCTestCase {
     func testTheDeckHidesTheSystemsToolbarStripWithTheMenuBar() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let proxy = DeckZoomDelegate()
+        let proxy = DeckWindowDelegate()
         guard proxy.responds(to: optionsSelector) else {
             XCTFail("""
                 the Deck's window delegate must answer the full-screen presentation options; \
@@ -63,7 +63,7 @@ final class DeckFullScreenTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         let stub = Stub()
-        let proxy = DeckZoomDelegate()
+        let proxy = DeckWindowDelegate()
         proxy.target = stub
         let proposed: NSApplication.PresentationOptions = [.fullScreen, .autoHideDock]
         let options = (proxy as NSWindowDelegate).window?(window, willUseFullScreenPresentationOptions: proposed) ?? []
