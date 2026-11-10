@@ -46,7 +46,7 @@ The Deck is the app's one home window and the only place a person starts from: y
 | DECK-21 | WHEN a file is dropped on the Deck THE Deck SHALL install an `.apk`/`.apks`/`.xapk` on the phone, open a link (or a `.webloc` file) on the phone, and transfer any other file; a drop it refuses SHALL be refused with a reason, and a phone that is away SHALL refuse the drop rather than queue it. | K2 `ApkBundleTests` (parts), `OpenLinkTests.testReadsAWeblocFile`, `FileDropTests.testOverTheCapRefusesNothingSent`; e2e `drop`, `apk` |
 | DECK-22 | WHILE the person browses the Deck (search, scroll, icons, opening and closing a window) THE Deck SHALL send no write to the phone. | e2e `nfr` (read-only Deck browsing and icons) |
 | DECK-23 | THE Deck SHALL write no app list, notification text, file name, path or media title to a log or crash report. | review of the Deck's logging (ids, counts and states only) |
-| DECK-24 | WHEN the Deck's standard zoom is used (a title-bar double-click or the green button) THE Deck SHALL take the screen's visible height and a width of the 880 pt grid at the person's zoom plus 60 pt a side at that zoom plus the rail's 44 pt, centred on the screen, and SHALL NOT exceed the screen's visible width. | K2 `DeckWideTests.testTheStandardFrameIsTheGridsIntrinsicWidthAtEachZoom`, `testTheStandardFrameNeverExceedsTheScreen`; e2e `deck` `[DECK-24]` (the frame after the standard zoom) |
+| DECK-24 | WHEN the Deck's standard zoom is used (a title-bar double-click or the green button) THE window SHALL take the system's standard frame — the screen's visible frame, never a frame computed from the grid's contents — and a second zoom SHALL return the frame it came from; the zoom SHALL NOT change the grid's icon size. | K2 `DeckWideTests.testTheDeckLeavesTheStandardZoomToTheSystem`, `testTheProxyForwardsEveryOtherDelegateQuestion`; e2e `deck` `[DECK-24]` (the frame after the standard zoom is the visible frame; a second zoom returns the previous frame) |
 | DECK-25 | WHEN the Deck enters native full screen THE window SHALL fill the screen's whole frame — the menu-bar/notch band included, not its visible frame — and its header (the connection chip, the title and the toolbar's actions) SHALL stay in the window's own toolbar, which auto-hides with the menu bar and comes down from the top edge as any full-screen app's; the system's toolbar strip SHALL NOT be pinned over the content, and leaving full screen SHALL restore the windowed frame. Both the system's Enter Full Screen item and ⌃⌘F take this one transition. | K2 `DeckFullScreenTests.testTheDeckHidesTheSystemsToolbarStripWithTheMenuBar`, `testTheDecksOptionsKeepWhatTheSystemProposed`, `WindowFrameLimitTests.testAFullScreenWindowIsTheSystemsToSize`; e2e (visible-only) a full-screen Deck's window frame is the screen frame and its screen has no band above the content |
 
 Priority note: DECK-1, 2, 8, 9, 11, 12, 13, 14, 15, 17, 18 and 19 are P1 — without them the Deck is not the app's home. Zoom, the rail, the popover, drop, the wide-window cap (DECK-4) and the standard zoom (DECK-24) are P2.
@@ -77,7 +77,7 @@ Three machines meet here: the Deck's *mode* (what the window shows, from the pro
 | any | `open(app)` | that app's window (or the one already open) |
 | any | `⌘K` / Dock click / reopen | the one Deck window, key, search field focused |
 | any | `move` / `resize` | the frame is stored for this profile (DECK-19); a launch places it again |
-| any | title-bar double-click / green button | the window takes the Deck's intrinsic width and the screen's visible height (DECK-24), and that frame is stored (DECK-19) |
+| any | title-bar double-click / green button | the window takes the system's standard frame, the screen's visible frame, and a second zoom returns the frame it came from (DECK-24); that frame is stored (DECK-19) |
 | any | `launch` WITH a stored frame | the window opens at that frame when it fits a screen, else centred |
 | any | `close` | the window closes; the app and its session keep running |
 
@@ -132,7 +132,7 @@ Ignored events, stated so nobody builds them: Esc with an empty query (no window
 | CONV-MAC-07 | applies: the app's one re-used key is ⌘P = Phone Mirror (menus.md), not the Deck's |
 | CONV-MAC-10 | n/a: the Deck is not the status item's panel; the chip's popover is the panel's second host (panel.md) |
 | CONV-MAC-11 | applies: DECK-10/DECK-18 (one Deck; ⌘K, the Dock icon and the panel raise it) |
-| CONV-MAC-12 | applies: DECK-19 (the profile's frame comes back at launch, centred when it fits no screen, never larger than the screen; `DeckPlacement`, the SET-WIN-09 pattern) and DECK-24 (the standard zoom takes the intrinsic width, never wider than the screen) |
+| CONV-MAC-12 | applies: DECK-19 (the profile's frame comes back at launch, centred when it fits no screen, never larger than the screen; `DeckPlacement`, the SET-WIN-09 pattern) and DECK-24 (the standard zoom is the system's own: the screen's visible frame, and a second zoom returns the previous frame) |
 | CONV-MAC-13 | n/a: the Deck adds no menu item and no full-screen command; the menus are menus.md's |
 | CONV-MAC-14 | applies: DECK-4 and DECK-5 (laid out per frame from that frame's width, one cell size, no clipping, no stale width) |
 | CONV-MAC-15 | applies: DECK-18 (closing the Deck does not quit; the Dock reopens it) |

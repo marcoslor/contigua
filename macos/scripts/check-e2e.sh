@@ -15846,27 +15846,42 @@ PY
         bad "DECK deck-size 1960: $CONTROL_REPLY"
     fi
     # DECK-24: the green button's zoom (NSWindow.zoom, the same path a
-    # title-bar double-click takes) lands on the Deck's intrinsic width — the
-    # 880 pt grid plus 60 pt a side at 100 %, plus the rail — and the screen's
-    # visible height, not the whole screen.
-    local zx zy zw zh vw vh want
-    want=$(( 1000 + 44 ))
+    # title-bar double-click takes) is the system's standard zoom — the screen's
+    # visible frame, never a width computed from the grid — and a second zoom
+    # returns the frame the window came from, so the icon size never changes.
+    local zx zy zw zh vw vh bx by bw bh ax ay aw ah
+    control deck-frame "$WORK/deck-zoom-frame-before.txt" \
+        && read -r bx by bw bh < "$WORK/deck-zoom-frame-before.txt" \
+        || bad "DECK the frame before the standard zoom: $CONTROL_REPLY"
     if control deckzoomwindow; then
         sleep 2
         if control deck-frame "$WORK/deck-zoom-frame.txt" \
             && read -r zx zy zw zh < "$WORK/deck-zoom-frame.txt" \
             && control deck-screen "$WORK/deck-screen.txt" \
             && read -r vw vh < "$WORK/deck-screen.txt"; then
-            if [ "$zw" -ge $(( want - 2 )) ] && [ "$zw" -le $(( want + 2 )) ] \
+            if [ "$zw" -ge $(( vw - 2 )) ] && [ "$zw" -le $(( vw + 2 )) ] \
                 && [ "$zh" -ge $(( vh - 2 )) ] && [ "$zh" -le $(( vh + 2 )) ]; then
-                ok "[DECK-24] the standard zoom took the Deck to ${zw}x${zh} (its ${want} pt intrinsic width, the screen's ${vh} pt visible height)"
+                ok "[DECK-24] the standard zoom took the Deck to the screen's visible frame ${zw}x${zh}"
             else
-                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not ${want}x${vh}"
+                bad "[DECK-24] the standard zoom took the Deck to ${zw}x${zh}, not the ${vw}x${vh} visible frame"
             fi
-            if [ "$zw" -lt "$vw" ]; then
-                ok "[DECK-24] the standard zoom stops short of the ${vw} pt screen width"
+            if control deckzoomwindow; then
+                sleep 2
+                if control deck-frame "$WORK/deck-zoom-frame-back.txt" \
+                    && read -r ax ay aw ah < "$WORK/deck-zoom-frame-back.txt"; then
+                    if [ "$ax" -ge $(( bx - 2 )) ] && [ "$ax" -le $(( bx + 2 )) ] \
+                        && [ "$ay" -ge $(( by - 2 )) ] && [ "$ay" -le $(( by + 2 )) ] \
+                        && [ "$aw" -ge $(( bw - 2 )) ] && [ "$aw" -le $(( bw + 2 )) ] \
+                        && [ "$ah" -ge $(( bh - 2 )) ] && [ "$ah" -le $(( bh + 2 )) ]; then
+                        ok "[DECK-24] a second zoom returned the frame it came from (${aw}x${ah} at ${ax},${ay})"
+                    else
+                        bad "[DECK-24] a second zoom returned ${aw}x${ah} at ${ax},${ay}, not the ${bw}x${bh} at ${bx},${by} it came from"
+                    fi
+                else
+                    bad "DECK the frame after the second standard zoom: $CONTROL_REPLY"
+                fi
             else
-                bad "[DECK-24] the standard zoom stretched to the ${vw} pt screen width"
+                bad "DECK the second deckzoomwindow: $CONTROL_REPLY"
             fi
         else
             bad "DECK deckzoomwindow's frame: $CONTROL_REPLY"
