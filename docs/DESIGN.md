@@ -74,10 +74,12 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   gradient of a hue derived from the package name (FNV-1a, so it is stable), the app's initial in
   `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
-- **A–Z rail (D):** trailing edge, 16 pt wide, 8 pt from the edge; A–Z + `#` at 9 pt on a 12 pt pitch, current letter
-  accent, empty letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to
-  that letter's first app, and an empty letter skips forward. The current letter follows the first app in the top
-  visible row.
+- **A–Z rail (D):** a 26 pt column beside the grid's last column, 18 pt to its right (the grid block and the rail are
+  centred together, so the margin past the rail grows with a wider window); A–Z + `#` at 9 pt in an 11 pt rest box on a
+  rest pitch of at most 20 pt, giving way down to 18 pt (and then to every other or every third letter) before the rail
+  hides — each letter is a 20 pt target at rest, and a short window never shrinks it; current letter accent, empty
+  letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to that letter's
+  first app, and an empty letter skips forward. The current letter follows the first app in the top visible row.
 
 - **App icons:** every tile is the shared `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS
   squircle (22.5 % corners), the adaptive `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp
