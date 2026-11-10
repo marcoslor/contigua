@@ -9,7 +9,7 @@ Until the project has an issue tracker, open bugs, tasks and queued features liv
 ## Order now (the person, 2026-11-08: stability, then performance)
 
 Stability:
-0. Merged 2026-11-09 and installed: `fix/mirrorfit` (ISS-63, 64, 65, ISS-51's landing), `fix/covers` (ISS-66 + ISS-55: every full-window cover, WIN-65) `fix/dropkey` (ISS-70), `fix/unpair2` (ISS-8), `feat/hevcdef` (HEVC default, ISS-40) and `feat/switch` (ISS-48 P3.6a). Running: `refactor/ps1` (P-S1 panel episode, ISS-24/52) and `refactor/ps3` (P-S3 encoder lifecycle). ISS-54 (corruption) is merged; its real-phone check is open.
+0. Merged 2026-11-09 and installed: `fix/mirrorfit` (ISS-63, 64, 65, ISS-51's landing), `fix/covers` (ISS-66 + ISS-55: every full-window cover, WIN-65) `fix/dropkey` (ISS-70), `fix/unpair2` (ISS-8), `feat/hevcdef` (HEVC default, ISS-40) and `feat/switch` (ISS-48 P3.6a). `refactor/ps1` (P-S1 panel episode; ISS-24 fixed, real-phone check open). Running: `refactor/ps3` (P-S3 encoder lifecycle), `probe/losslab` (does a weak link need UDP?). ISS-54 (corruption) is merged; its real-phone check is open.
 1. The stream collapses when frames outgrow the send budget or the link: video at 0–3 fps, artifacts on weak Wi-Fi, and the goodput fix never measured shaped (ISS-40, ISS-48 P4). In progress: `fix/overrun`.
 2. The phone's own screen never times out while a window is open (ISS-52), then the fade to black and the two-press wake (ISS-3, ISS-24): the virtual-device display move, requirements first.
 3. A window with no picture for 22 s (ISS-10): keep a phone-side record so the next case is caught.
