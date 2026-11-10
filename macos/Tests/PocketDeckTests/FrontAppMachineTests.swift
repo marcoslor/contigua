@@ -5,7 +5,7 @@
 import XCTest
 @testable import PocketDeck
 
-final class FrontAppTests: XCTestCase {
+final class FrontAppMachineTests: XCTestCase {
     func testIdleUntilTheCardAsks() {
         var machine = FrontAppMachine()
         XCTAssertEqual(machine.state, .idle)

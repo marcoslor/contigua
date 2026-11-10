@@ -5264,7 +5264,10 @@ class Session(object):
     # -- task.front (docs/PROTOCOL.md "Foreground app"): one read, no display.
     def _on_task_front(self, msg):
         """Answer the app in front, or null. `--foreground-pkg none` and
-        `--handoff-mode nothing` both mean nothing continuable."""
+        `--handoff-mode nothing` both mean nothing continuable;
+        `--ignore-task-front` models a phone that never answers the read."""
+        if self.phone.args.ignore_task_front:
+            return
         mode = self.phone.args.handoff_mode
         pkg = self.phone.args.foreground_pkg
         present = mode != "nothing" and pkg != "none"
@@ -6383,6 +6386,8 @@ def build_parser():
     p.add_argument("--foreground-pkg", default="com.android.settings", metavar="PKG",
                    help="the package task.continue reports as the foreground app "
                         "('none' means nothing continuable)")
+    p.add_argument("--ignore-task-front", action="store_true",
+                   help="never answer task.front (the panel must keep its row hidden)")
     p.add_argument("--fs-root", default=os.environ.get("PD_FAKE_FS_ROOT"),
                    metavar="DIR",
                    help="serve read-only phone files from DIR (default: PD_FAKE_FS_ROOT, "

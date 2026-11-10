@@ -4378,6 +4378,8 @@ for kind in ["gear", "volume", "dnd", "ringer", "ring", "screen", "phoneScreen",
         print("missing", kind, kinds); sys.exit(1)
 if "installApk" in kinds:
     print("Install APK… is a card row again:", kinds); sys.exit(1)
+if "continueOnMac" in kinds:
+    print("the handoff row appeared with no foreground reply:", kinds); sys.exit(1)
 for footed in ["settings", "quit"]:
     if footed in kinds:
         print(footed, "is a row; it belongs to the icon's menu", kinds); sys.exit(1)
@@ -6624,7 +6626,7 @@ ring_received() {
 check_controls() {
     # (1) the snapshot the extension reads, and DND from a control.
     clean
-    FAKE_ARGS="--foreground-pkg none" start_fake || return 1
+    FAKE_ARGS="--foreground-pkg com.example.maps --ignore-task-front" start_fake || return 1
     rm -rf "$WORK-control"
     mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" \
@@ -6680,7 +6682,7 @@ check_controls() {
     # them (CONV-MAC-10).
     control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P2 with the gear first and Sound above the modules" \
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P2 with the gear first and Sound above the modules; [PANEL-26] no handoff row before the phone answers task.front" \
         || bad "[PANEL-5] the panel is not P2"
 import json, sys
 root = json.load(open(sys.argv[1]))
