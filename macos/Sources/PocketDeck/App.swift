@@ -577,6 +577,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// The Dock icon's own menu: Find Apps and Phone Mirror, the icons' two
+    /// starting points (CONV-MAC-11), through the panel's shared actions and
+    /// the menus' enablement rule. Built on every open, so Phone Mirror is
+    /// enabled exactly while the menus would enable it.
+    @MainActor
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        DockMenu.make(controller: AppEnvironment.shared.controller)
+    }
+
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
         controlsHost?.stop()
