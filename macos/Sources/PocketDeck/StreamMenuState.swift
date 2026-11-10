@@ -1,6 +1,7 @@
 // What the View menu shows about the key stream window. SwiftUI's menu
 // commands cannot see AppKit windows, so the window controllers publish here.
 
+import CoreGraphics
 import Observation
 
 @Observable
@@ -39,6 +40,9 @@ final class StreamMenuState {
     /// Settings → General "Default window density", for the Default item's
     /// label and for deciding what "Default" restores.
     var settingsDensity = 1.0
+    /// The Deck's stored icon size (DECK-6), for View ▸ Icon Size's checkmark.
+    /// Read from the profile when a menu opens, so the mark follows ⌘+ at once.
+    var deckZoom: CGFloat = 1
 
     /// The app uses `shared`; a test builds its own to drive the menu rules.
     init() {}

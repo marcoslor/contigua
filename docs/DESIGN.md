@@ -62,9 +62,10 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - **Grid (D):** `DeckGridLayout` places cells from the width of the pass that draws them. At 100 %: 96×108 cells,
   64×64 icons `.clipShape(.rect(cornerRadius: 13, style: .continuous))` inside a 16 pt hover corner, 8 pt icon-label
   gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred, capped at 880 pt and
-  reserves the rail's 44 pt on its trailing side (5 columns at 640, 8 at 1000+). A window over 1000 pt scales cells,
-  icons, gaps, inset and cap by clamp(width/1000, 1, 1.5), so the tiles grow with it; a title-bar double-click or the
-  green button takes the intrinsic width (the 880 pt grid plus 60 pt a side at the person's zoom, plus the rail).
+  reserves the rail's 44 pt on its trailing side (5 columns at 640, 6 at 760, 8 at 1000+). A cell and its icon keep
+  one size at every window width: a resize only changes the column count, and past the 880 pt cap the block keeps its
+  eight columns and grows its margins instead of scaling a tile. A title-bar double-click or the green button takes
+  the system's standard frame (the screen's visible frame); a second zoom returns the frame it came from.
   Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
   (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
