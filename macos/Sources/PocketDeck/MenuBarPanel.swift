@@ -341,10 +341,13 @@ final class MenuBarController: NSObject {
         let length = statusItem.length == NSStatusItem.variableLength
             ? "variable" : "\(Int(statusItem.length))"
         let image: String
+        let size: String
         if let drawn = statusItem.button?.image {
             image = drawn.isTemplate ? "template" : "plain"
+            size = "\(Int(drawn.size.width.rounded()))x\(Int(drawn.size.height.rounded()))"
         } else {
             image = "none"
+            size = "0x0"
         }
         let state: String
         switch controller.link {
@@ -357,7 +360,7 @@ final class MenuBarController: NSObject {
         case .pairing: state = "pairing"
         }
         return "length=\(length) image=\(image) subviews=\(statusItem.button?.subviews.count ?? 0)"
-            + " state=\(state) dot=\(controller.mcp.clientCount > 0 ? 1 : 0)"
+            + " state=\(state) dot=\(controller.mcp.clientCount > 0 ? 1 : 0) size=\(size)"
     }
 
     // MARK: Events
