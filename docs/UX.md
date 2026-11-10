@@ -71,7 +71,9 @@ work is disabled, never hidden.
      connections-off banner adds one line naming the switch on the phone.
 2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
    Style), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
-   above it — the stream's own top rows mirrored there, blurred progressively and with no tint, the traffic lights on that line; **Immersive** is only the
+   above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, with the app's name centred on
+   that line (the phone's name in the Phone Mirror, and for a link or a handoff only once the phone reports an app), the traffic lights
+   on that line; **Immersive** is only the
    stream, with rounded corners and a shadow, no title bar, and the desktop shows right up to it; a rest at its top-left (350 ms by default; Settings →
    General → **Reveal controls after** picks Instantly, Short or Long) fades in a small clear-glass pill with the traffic lights (Back · Home · Recents
    join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades out 600 ms after the pointer
