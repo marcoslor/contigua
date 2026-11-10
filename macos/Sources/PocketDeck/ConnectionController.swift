@@ -4049,6 +4049,31 @@ final class ConnectionController {
         case "panelclick":
             guard arguments.count == 2 else { return "panelclick needs HOST and an item ID" }
             return PanelProbe.click(host: arguments[0], id: arguments[1]) ? nil : "panelclick failed"
+        case "panelfocus":
+            // The item holding the card's keyboard focus (PANEL-7): where the
+            // opening ring landed, which a quiet run reads instead of pressing
+            // a key into a non-activating panel.
+            guard arguments.count == 1, let item = PanelProbe.focusedItem(host: arguments[0]) else {
+                return "panelfocus needs HOST"
+            }
+            return item
+        case "gearhold":
+            // How long the gear's menu stays open in a quiet run: the run
+            // cannot press Escape, so the menu closes itself (PANEL-3).
+            guard arguments.count == 1, let seconds = Double(arguments[0]) else {
+                return "gearhold needs SECONDS"
+            }
+            guard let menuBar = MenuBarController.current else { return "no menu bar item" }
+            menuBar.holdGearMenu(seconds: seconds)
+            return nil
+        case "gearanchor":
+            // The frame the card's gear anchors its menu to, without opening it
+            // (PANEL-3). The hosted card is the one a quiet run has open.
+            if let rect = PanelProbe.gearAnchor() {
+                return "gear \(Int(rect.minX)) \(Int(rect.minY)) \(Int(rect.width)) \(Int(rect.height))"
+            }
+            guard let menuBar = MenuBarController.current else { return "no menu bar item" }
+            return menuBar.menuAnchorDescription()
         case "paneldrag":
             guard arguments.count == 3, let fraction = Double(arguments[2]) else {
                 return "paneldrag needs HOST, an item ID and FRACTION"
