@@ -32,4 +32,11 @@ enum MenuModel {
     static func densityOptions(settings: Double) -> [(label: String, value: Double)] {
         WindowDensity.options.filter { abs($0.value - settings) > 0.0005 }
     }
+
+    /// View ▸ Icon Size's items: the Deck's four icon-size steps (DECK-6). The
+    /// space before the sign keeps them distinct from Density's app percentages
+    /// in the same menu, which name a different setting.
+    static func iconSizeTitle(_ value: CGFloat) -> String {
+        "\(Int((Double(value) * 100).rounded())) %"
+    }
 }

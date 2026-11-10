@@ -43,9 +43,9 @@ struct DeckWindowFrame: NSViewRepresentable {
         private var notices: [NSObjectProtocol] = []
         private var saveTask: Task<Void, Never>?
         private var placed = false
-        /// The standard zoom's answer; strong, because NSWindow.delegate does
+        /// The window delegate proxy; strong, because NSWindow.delegate does
         /// not hold it.
-        private var zoomDelegate: DeckZoomDelegate?
+        private var windowDelegate: DeckWindowDelegate?
 
         func attach(to window: NSWindow?) {
             guard let window, self.window !== window else { return }
@@ -64,31 +64,30 @@ struct DeckWindowFrame: NSViewRepresentable {
                 MainActor.assumeIsolated { self?.saveNow() }
             })
             placeIfNeeded(window)
-            installZoomDelegate(on: window)
+            installWindowDelegate(on: window)
         }
 
-        /// DECK-24: the green button and a title-bar double-click land on the
-        /// Deck's intrinsic width. SwiftUI's delegate keeps every other
-        /// question through the proxy.
-        private func installZoomDelegate(on window: NSWindow) {
-            guard zoomDelegate == nil else { return }
-            let proxy = DeckZoomDelegate()
+        /// DECK-24/DECK-25: the proxy answers the full-screen presentation
+        /// options and forwards every other question to SwiftUI's delegate. The
+        /// standard zoom is AppKit's own: the proxy answers nothing about it, so
+        /// the green button and a title-bar double-click take the system's
+        /// standard frame.
+        private func installWindowDelegate(on window: NSWindow) {
+            guard windowDelegate == nil else { return }
+            let proxy = DeckWindowDelegate()
             proxy.target = window.delegate
-            proxy.preferredWidth = {
-                DeckWide.preferredWidth(zoom: DeckZoom.stored(in: Profile.active.defaults))
-            }
             window.delegate = proxy
-            zoomDelegate = proxy
+            windowDelegate = proxy
         }
 
         func detach() {
             saveNow()
             for notice in notices { NotificationCenter.default.removeObserver(notice) }
             notices = []
-            if let proxy = zoomDelegate, let window, window.delegate === proxy {
+            if let proxy = windowDelegate, let window, window.delegate === proxy {
                 window.delegate = proxy.target
             }
-            zoomDelegate = nil
+            windowDelegate = nil
             window = nil
             placed = false
         }

@@ -62,7 +62,7 @@ final class RailArcTests: XCTestCase {
     /// letter keeps, and it still covers the letters it must.
     func testTheHitAreaKeepsClearOfTheLastIconColumn() {
         for width in [CGFloat(640), 760, 1000] {
-            let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1, width: width))
+            let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1))
             let cellRight = block.originX + block.span
             let hitEdge = block.railLeading - RailArc.hitRoom(width: width)
             XCTAssertGreaterThanOrEqual(hitEdge, cellRight + RailArc.minimumClearance - 0.001,

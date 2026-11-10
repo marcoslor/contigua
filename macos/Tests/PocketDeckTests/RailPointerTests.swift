@@ -256,7 +256,7 @@ final class RailPointerTests: XCTestCase {
                 pointer.noteZoom(zoom)
                 XCTAssertEqual(pointer.room, RailArc.hitRoom(width: width, zoom: zoom), accuracy: 0.001)
                 XCTAssertEqual(pointer.arcRoom, RailArc.room(width: width, zoom: zoom), accuracy: 0.001)
-                let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom, width: width))
+                let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: zoom))
                 XCTAssertGreaterThanOrEqual(block.railLeading - pointer.room,
                                             block.originX + block.span + RailArc.minimumClearance - 0.001,
                                             "\(width) pt at \(zoom)x: the hit area reaches into the last column")

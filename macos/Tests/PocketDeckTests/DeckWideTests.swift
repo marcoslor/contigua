@@ -1,50 +1,49 @@
-// The wide Deck's standard zoom (DECK-24): a title-bar double-click or the
-// green button takes the window to the Deck's intrinsic width — the 880 pt grid
-// at the person's zoom, 60 pt a side at that zoom, and the rail's 44 pt — and
-// the screen's visible height, never wider than the screen.
+// The Deck's standard zoom (DECK-24): a title-bar double-click or the green
+// button takes the system's own standard frame — the screen's visible frame —
+// and a second zoom returns the frame the window came from. The Deck no longer
+// computes a frame from its grid, so the zoom cannot change the icon size.
 
+import AppKit
 import XCTest
 @testable import PocketDeck
 
+@MainActor
 final class DeckWideTests: XCTestCase {
+    private let standardFrameSelector =
+        #selector(NSWindowDelegate.windowWillUseStandardFrame(_:defaultFrame:))
 
-    /// At 100 / 125 / 150 % the intrinsic width is today's 1000 pt window
-    /// (880 pt of grid and 60 pt a side) scaled by the zoom, plus the rail.
-    func testTheStandardFrameIsTheGridsIntrinsicWidthAtEachZoom() {
-        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1055)
-        let expected: [(zoom: CGFloat, width: CGFloat)] = [(1, 1044), (1.25, 1294), (1.5, 1544)]
-        for (zoom, width) in expected {
-            XCTAssertEqual(DeckWide.preferredWidth(zoom: zoom), width, accuracy: 0.001, "zoom \(zoom)")
-            let frame = DeckWide.standardFrame(visible: screen,
-                                               preferredWidth: DeckWide.preferredWidth(zoom: zoom))
-            XCTAssertEqual(frame.width, width, accuracy: 0.001, "zoom \(zoom)")
-            XCTAssertEqual(frame.height, screen.height, "the screen's visible height")
-            XCTAssertEqual(frame.midX, screen.midX, accuracy: 0.001, "centred on the screen")
-            XCTAssertEqual(frame.minY, screen.minY, "standing on the visible frame")
-            // The grid at that width still fits beside the rail.
-            let metrics = DeckGridSize(zoom: zoom, width: frame.width)
-            let block = DeckWide.block(width: frame.width, metrics: metrics)
-            XCTAssertGreaterThanOrEqual(block.originX, 0, "zoom \(zoom)")
-            XCTAssertLessThanOrEqual(block.railLeading + DeckWide.railWidth, frame.width + 0.001,
-                                     "zoom \(zoom)")
-        }
+    /// The Deck's window delegate leaves the standard frame to AppKit: it does
+    /// not answer the question itself, so `NSWindow.zoom` uses the system's
+    /// standard frame (the screen's visible frame), not a width computed from
+    /// the 880 pt grid.
+    func testTheDeckLeavesTheStandardZoomToTheSystem() {
+        let proxy = DeckWindowDelegate()
+        XCTAssertFalse(proxy.responds(to: standardFrameSelector),
+                       """
+                       the Deck must not answer the standard-frame question: a frame computed from \
+                       the grid made a title-bar double-click change the icon size (DECK-24)
+                       """)
     }
 
-    /// A screen narrower than the intrinsic width keeps its own width, and the
-    /// smallest supported screen still gets the whole intrinsic width.
-    func testTheStandardFrameNeverExceedsTheScreen() {
-        let small = CGRect(x: 100, y: 40, width: 800, height: 600)
-        let frame = DeckWide.standardFrame(visible: small,
-                                           preferredWidth: DeckWide.preferredWidth(zoom: 1.5))
-        XCTAssertEqual(frame.width, small.width, "a narrower screen keeps its own width")
-        XCTAssertEqual(frame.minX, small.minX)
-        XCTAssertEqual(frame.height, small.height)
-        XCTAssertEqual(frame.minY, small.minY)
-
-        let smallest = CGRect(x: 0, y: 0, width: 1280, height: 775)
-        let normal = DeckWide.standardFrame(visible: smallest,
-                                            preferredWidth: DeckWide.preferredWidth(zoom: 1))
-        XCTAssertEqual(normal.width, 1044, "1280 pt holds the intrinsic width at 100 %")
-        XCTAssertLessThanOrEqual(normal.width, smallest.width)
+    /// SwiftUI's delegate keeps every question but the full-screen options:
+    /// the proxy forwards a standard frame if SwiftUI ever asks for one, so
+    /// AppKit's own zoom stays in charge of the answer.
+    func testTheProxyForwardsEveryOtherDelegateQuestion() {
+        final class Stub: NSObject, NSWindowDelegate {
+            func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+                newFrame
+            }
+        }
+        let stub = Stub()
+        let proxy = DeckWindowDelegate()
+        proxy.target = stub
+        XCTAssertTrue(proxy.responds(to: standardFrameSelector),
+                      "a question the proxy does not answer goes to SwiftUI's delegate")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let frame = CGRect(x: 0, y: 0, width: 1200, height: 900)
+        let delegate: NSWindowDelegate = proxy
+        let answer = delegate.windowWillUseStandardFrame?(window, defaultFrame: frame)
+        XCTAssertEqual(answer, frame, "the forwarded answer is the delegate's own")
     }
 }
