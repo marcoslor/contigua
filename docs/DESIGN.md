@@ -66,14 +66,17 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   one size at every window width: a resize only changes the column count, and past the 880 pt cap the block keeps its
   eight columns and grows its margins instead of scaling a tile. A title-bar double-click or the green button takes
   the system's standard frame (the screen's visible frame); a second zoom returns the frame it came from.
-  Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
+  Label `.caption` 1 line `.truncationMode(.middle)`; a name the line truncates carries the full name in its help tag.
+  Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
-  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
+  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: one "Loading apps…" `.callout .secondary` line above 12 silent `.redacted(reason: .placeholder)`
+  cells (a cell never says Loading). **Icons** come
   from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
   When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom
   gradient of a hue derived from the package name (FNV-1a, so it is stable), the app's initial in
   `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
-  Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
+  Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`,
+  height 120; a phone with no launchable apps: "No apps on this phone." in the same place.
 - **A–Z rail (D):** a 26 pt column beside the grid's last column, 18 pt to its right (the grid block and the rail are
   centred together, so the margin past the rail grows with a wider window); A–Z + `#` at 9 pt in an 11 pt rest box on a
   rest pitch of at most 20 pt, giving way down to 18 pt (and then to every other or every third letter) before the rail
