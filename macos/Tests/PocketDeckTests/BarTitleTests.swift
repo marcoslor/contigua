@@ -177,6 +177,18 @@ final class BarTitleLayoutTests: XCTestCase {
         XCTAssertEqual(frame.maxX, narrowRow - BarTitle.sideGap, accuracy: 0.01)
         XCTAssertGreaterThan(BarTitle.textWidth(long), frame.width,
                              "the field truncates in the middle at this width")
+        XCTAssertEqual(BarTitle.lineBreakMode(text: long, width: frame.width), .byTruncatingMiddle)
+    }
+
+    func testTheFieldOnlyTruncatesWhenTheNameDoesNotFit() {
+        let name = "Settings"
+        XCTAssertEqual(BarTitle.lineBreakMode(text: name, width: BarTitle.textWidth(name)),
+                       .byClipping,
+                       "a full line is drawn whole; the cell reserves the ellipsis otherwise")
+        XCTAssertEqual(BarTitle.lineBreakMode(text: name, width: BarTitle.textWidth(name) - 1),
+                       .byTruncatingMiddle,
+                       "one point short and the middle truncation takes over")
+        XCTAssertEqual(BarTitle.lineBreakMode(text: nil, width: 100), .byTruncatingMiddle)
     }
 
     func testTheTitleHidesBelowItsMinimumWidth() {
@@ -321,7 +333,8 @@ final class BarTitleViewTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(frame.minX, BarTitle.lightsEnd + BarTitle.sideGap)
         XCTAssertLessThanOrEqual(frame.maxX, 900 - 7 - 28 - BarTitle.sideGap,
                                  "the title keeps clear of the Live Text capsule")
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle)
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
+                       "the whole name fits, so the field must not reserve an ellipsis")
 
         tone.range = BandRange(low: 0.02, high: 0.03)
         tone.frameStamp += 1
@@ -391,5 +404,22 @@ final class BarTitleViewTests: XCTestCase {
                               height: 628)
         chrome.layoutChrome()
         XCTAssertFalse(chrome.barTitleVisible, "one point under the minimum hides the title")
+    }
+
+    func testTheFieldTruncatesAMiddleThatDoesNotFitAndClipsOneThatDoes() {
+        let tone = FakeToneSource()
+        tone.range = BandRange(low: 0.8, high: 0.9)
+        let (window, chrome) = makeChrome(tone: tone)
+        defer { window.close() }
+        chrome.setBarTitle("Settings")
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible)
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
+                       "a name that fits is drawn whole")
+        chrome.setBarTitle(String(repeating: "A very long app name ", count: 8))
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible)
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle,
+                       "a name wider than the bar truncates in the middle")
     }
 }

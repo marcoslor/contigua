@@ -207,6 +207,16 @@ enum BarTitle {
         return ceil(attributed.size().width) + 2
     }
 
+    /// The field's line-break mode for a name in `width`. An `NSTextField`
+    /// reserves the middle ellipsis's width even when the whole line fits, so
+    /// a field exactly as wide as its name would always truncate: only ask
+    /// for middle truncation when the frame is narrower than the line, and
+    /// clip (which draws the whole line) otherwise.
+    static func lineBreakMode(text: String?, width: CGFloat) -> NSLineBreakMode {
+        guard let text else { return .byTruncatingMiddle }
+        return width < textWidth(text) ? .byTruncatingMiddle : .byClipping
+    }
+
     /// The title's frame in the chrome's coordinates (origin bottom-left),
     /// nil when it is too narrow or has no text. `lightsEnd` is the right
     /// edge of the zoom light's slot; `rightRowStart` is the first pixel of
