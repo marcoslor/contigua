@@ -25,6 +25,11 @@ Performance:
 6. The battery cost of keep-alive pings (ISS-11).
 7. The Deck zoom-drag margin (ISS-31, rig only).
 
+UX queue (the person, 2026-11-10; one worker each, at most three at once):
+1. In build: the Deck start page (ISS-74, `feat/deckstart`), the Control Center panel (ISS-75/76, `feat/panelcc`), the bar's blur and app name (ISS-45 B3, `feat/barname`).
+2. **Queued next: the window styles (ISS-45).** Starts when `feat/barname` merges (same bar code). Pick up `feat/stock` (three styles, migration and the cycle already built and tested there), merge `main` in, apply the person's names (today's default → Immersive; the new real frame → Framed, per app), then real-render captures of every style for the reviewer before the person sees it. Blocked only on one answer: what happens to today's hot-zone style (`[NEEDS CLARIFICATION]` in ISS-45).
+3. After that: first run (ISS-77), covers (ISS-78), the phone app's home (ISS-79).
+
 Then the features: Live Updates (in progress: `spike/liveany`), the Stock style (ISS-45, `feat/stock`), several phones (with ISS-38). The test-setup items (§ 4) go to whichever worker next touches that check.
 
 ## 1. High QoL, next up
