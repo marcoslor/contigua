@@ -47,8 +47,14 @@ internal class StreamStats(
     private var totalSent = 0L
     private var totalSkipped = 0L
     private var totalBytes = 0L
+    private var totalKeyframes = 0L
     private var totalKeyIdr = 0L
     private var totalKeyNotIdr = 0L
+
+    /** WIN-66's record: the encoder's output counters over the stream's whole life. */
+    val framesOutTotal: Long get() = totalOut
+    val keyframesOutTotal: Long get() = totalKeyframes
+    val bytesOutTotal: Long get() = totalBytes
 
     // QP's mean: the sum and count are enough, and unlike the rings they are
     // never capped, so the window's mean covers every frame.
@@ -76,6 +82,7 @@ internal class StreamStats(
         val typeCodec = codec ?: this.codec
         if (key) {
             keyframesOut++
+            totalKeyframes++
             // The flag on a buffer says "key"; only a type-5 slice says the
             // decoder can start there. Intra refresh flags recovery points.
             if (keyNalTypes != null) {
@@ -328,7 +335,8 @@ internal data class AudioWaitSnapshot(
  */
 internal object StreamStatsWire {
     fun message(stream: Int, windowMs: Long, encoder: EncoderStats,
-                send: SendSnapshot, tcp: TCPCounterSample? = null): Map<String, Any?> {
+                send: SendSnapshot, tcp: TCPCounterSample? = null,
+                noFrame: NoFrameEpisode? = null): Map<String, Any?> {
         val out = linkedMapOf<String, Any?>(
             "t" to "stream.stats",
             "stream" to stream,
@@ -359,8 +367,23 @@ internal object StreamStatsWire {
         tcp?.retransSegs?.let { out["retrans"] = it }
         tcp?.timeouts?.let { out["rto"] = it }
         tcp?.lostRetransmit?.let { out["lost_retrans"] = it }
+        // WIN-66: one episode state per message, while it has one to send.
+        noFrame?.let { out["noFrame"] = it.wire() }
         return out
     }
+
+    /**
+     * The close path's message (WIN-66): the 2 s tick cannot come again for a
+     * stream that is gone, so its ended episode rides alone with no counters.
+     */
+    fun episodeMessage(stream: Int, codec: VideoCodec, windowMs: Long,
+                       episode: NoFrameEpisode): Map<String, Any?> = linkedMapOf(
+        "t" to "stream.stats",
+        "stream" to stream,
+        "windowMs" to windowMs,
+        "codec" to codec.token,
+        "noFrame" to episode.wire(),
+    )
 }
 
 /**
