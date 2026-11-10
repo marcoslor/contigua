@@ -20,5 +20,4 @@ __pycache__/
 .agent/
 
 # Per-machine agent rules
-AGENTS.local.md
-CLAUDE.local.md
+*.local.md

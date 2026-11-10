@@ -10,7 +10,6 @@
 - UI follows `docs/UX.md` (flows, copy, shortcuts) and `docs/DESIGN.md` (visuals).
 - Toolchain: `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=$HOME/Library/Android/sdk` (platform 36, build-tools 36.0.0). Swift 6.4 / macOS 27 SDK, deployment target macOS 26.
 - Don't bump Android `versionCode` on a branch, and don't tick ROADMAP boxes; the reviewer does both.
-- **The lead delegates; it does not code.** Whoever briefs, reviews and merges gives every code change to a subagent, small ones included: a one-file fix found in review, a regression the person reports, a copy or constant change. The brief names the bug, the test that must fail first and the files. The lead keeps the review, the merge and the install.
 - Bugs and work found outside your task go in `ISSUES.md` (rules at its top), not into an unasked fix.
 
 ## Product promises (never trade these away)
