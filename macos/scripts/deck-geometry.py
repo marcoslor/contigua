@@ -2,19 +2,19 @@
 """The Deck grid's drawn block, from --debug-deck-grid (e2e `deck`).
 
 The design's numbers (DECK-4): 96 pt tiles and a fixed 16 pt pitch at 100 % in
-a 1000 pt window, scaled by clamp(width/1000, 1, 1.5) over that width, with an
-880 pt cap that grows by the same factor. The block is centred and reserves the
-rail's 44 pt on its trailing side, so the rail's column starts one 18 pt gap
-right of the grid's right edge. The geometry lines are written by
-DeckGridProbe.reportGeometry on every real geometry change, so the check
-resizes the Deck (control deck-size) and reads the settled line back.
+an 880 pt cap, at EVERY window width; a resize only changes the column count,
+and past the cap the block is centred with margins and never scaled. The block
+reserves the rail's 44 pt on its trailing side, so the rail's column starts one
+18 pt gap right of the grid's right edge. The geometry lines are written by
+DeckGridProbe.reportGeometry on every real geometry change, so the check resizes
+the Deck (control deck-size) and reads the settled line back.
 
 usage: deck-geometry.py FILE WIDTH COLUMNS [WAIT_S]
 
-Exit 0 when the newest geometry for a WIDTH-wide window has the width factor,
-the design's cell, gap and cap, the expected column count, and a block that is
-centred with the rail's room and no cell under the rail. On success it prints
-one line; on failure it prints why and exits 1.
+Exit 0 when the newest geometry for a WIDTH-wide window has the design's cell,
+gap and cap, the expected column count, and a block that is centred with the
+rail's room and no cell under the rail. On success it prints one line; on
+failure it prints why and exits 1.
 """
 import json
 import sys
@@ -23,18 +23,12 @@ import time
 CELL = 96.0
 GAP = 16.0
 CAP = 880.0
-REFERENCE = 1000.0
-MAX_FACTOR = 1.5
 RAIL_WIDTH = 26.0
 RAIL_GAP = 18.0
 RAIL_SPACE = RAIL_WIDTH + RAIL_GAP
 # A window's content width can differ from the requested width by the vertical
 # scroller, never by more. Anything smaller means the resize has not settled.
 TOLERANCE = 64
-
-
-def factor(width):
-    return min(max(width / REFERENCE, 1.0), MAX_FACTOR)
 
 
 def geometry(path):
@@ -63,18 +57,15 @@ def main(path, width, columns, wait):
     if not (width - TOLERANCE <= viewport <= width):
         print("geometry is for a %.0f pt viewport, not %.0f" % (viewport, width))
         return 1
-    scale = factor(viewport)
-    cell = CELL * scale
-    gap = GAP * scale
-    cap = CAP * scale
+    cell = CELL
+    gap = GAP
+    cap = CAP
     span = columns * cell + max(columns - 1, 0) * gap
     left = (viewport - (span + RAIL_SPACE)) / 2
     rail_left = left + span + RAIL_GAP
     problems = []
     if block.get("zoom") != 1:
         problems.append("zoom=%s" % block.get("zoom"))
-    if abs(block.get("factor", 0) - scale) > 0.001:
-        problems.append("factor=%.3f, expected %.3f" % (block.get("factor", 0), scale))
     if abs(block.get("cell", 0) - cell) > 0.5:
         problems.append("cell=%.1f, expected %.1f" % (block.get("cell", 0), cell))
     if abs(block.get("gap", 0) - gap) > 0.5:
@@ -103,9 +94,9 @@ def main(path, width, columns, wait):
     if problems:
         print("; ".join(problems))
         return 1
-    print("%d cols, %.0f pt tiles at %.2fx, %.0f pt block, %.1f pt margins, "
+    print("%d cols, %.0f pt tiles, %.0f pt block, %.1f pt margins, "
           "rail at %.1f pt (viewport %.0f)"
-          % (columns, cell, scale, span, left, rail_left, viewport))
+          % (columns, cell, span, left, rail_left, viewport))
     return 0
 
 

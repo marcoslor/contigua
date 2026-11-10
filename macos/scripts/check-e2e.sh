@@ -15536,28 +15536,25 @@ PY
         bad "DECK no zoom measurement (--debug-deck-zoom)"
     fi
 
-    # D's block is 96 pt tiles on a fixed 16 pt pitch, centred and never wider
-    # than 880 pt (--debug-deck-grid's geometry lines). The zoom probe above
-    # owns the window while it runs, so resize only after it has reported.
+    # D's block is 96 pt tiles on a fixed 16 pt pitch at every width, centred
+    # and never wider than 880 pt: a resize only changes the column count, and
+    # past the cap it adds margins instead of scaling a tile (DECK-4,
+    # --debug-deck-grid's geometry lines). The zoom probe above owns the window
+    # while it runs, so resize only after it has reported.
     local geometry
-    if control deck-size 640 700 >/dev/null; then
-        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 640 5)"; then
-            ok "[DECK-4] at 640 pt the block is $geometry"
+    local wide_pt wide_cols
+    for size in "640 5" "760 6" "1200 8" "1500 8"; do
+        read -r wide_pt wide_cols <<< "$size"
+        if control deck-size "$wide_pt" 700 >/dev/null; then
+            if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" "$wide_pt" "$wide_cols")"; then
+                ok "[DECK-4] at $wide_pt pt the block keeps one tile size with $wide_cols columns ($geometry)"
+            else
+                bad "[DECK-4] at $wide_pt pt the block is not D's ($geometry)"
+            fi
         else
-            bad "[DECK-4] at 640 pt the block is not D's ($geometry)"
+            bad "DECK deck-size $wide_pt: $CONTROL_REPLY"
         fi
-    else
-        bad "DECK deck-size 640: $CONTROL_REPLY"
-    fi
-    if control deck-size 1200 700 >/dev/null; then
-        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1200 8)"; then
-            ok "[DECK-4] at 1200 pt the block is capped and centred ($geometry)"
-        else
-            bad "[DECK-4] at 1200 pt the block is not capped/centred ($geometry)"
-        fi
-    else
-        bad "DECK deck-size 1200: $CONTROL_REPLY"
-    fi
+    done
     # Put the Deck back on its default size for the visual record. R1's rail
     # needs 540 pt under the toolbar, which the 600 pt default leaves.
     control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
@@ -15834,16 +15831,16 @@ PY
     done
     control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
-    # DECK-4 on the person's wide window: over 1000 pt the whole grid grows
-    # with the width (clamp(width/1000, 1, 1.5), 1.5x from 1500 pt) and the
-    # block reserves the rail's 44 pt, so the letter column never sits over
-    # the last cell. The window may be wider than the run's display: the
-    # layout follows the width it is given, not what the screen can show.
+    # DECK-4 on the person's wide window: at 1960 pt the tiles keep their size,
+    # the block stays at the 880 pt cap with margins, and it reserves the rail's
+    # 44 pt, so the letter column never sits over the last cell. The window may
+    # be wider than the run's display: the layout follows the width it is given,
+    # not what the screen can show.
     if control deck-size 1960 1100 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1960 8 20)"; then
-            ok "[DECK-4] at 1960 pt the tiles grow with the width and the rail keeps its room ($geometry)"
+            ok "[DECK-4] at 1960 pt the tiles keep their size, the block is capped with margins and the rail keeps its room ($geometry)"
         else
-            bad "[DECK-4] at 1960 pt the block is not the wide one ($geometry)"
+            bad "[DECK-4] at 1960 pt the block is not the capped one ($geometry)"
         fi
     else
         bad "DECK deck-size 1960: $CONTROL_REPLY"
@@ -16068,8 +16065,10 @@ PY
     deck_row() {
         shotlook="$1"
         control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
-        deck_size 1960 1100 "wide-1960x1100-$shotlook"
+        deck_size 760 600 "wide-760x600-$shotlook"
         deck_size 1440 900 "wide-1440x900-$shotlook"
+        deck_size 1500 900 "wide-1500x900-$shotlook"
+        deck_size 1960 1100 "wide-1960x1100-$shotlook"
         control deckzoom 1.25 >/dev/null || bad "DECK deckzoom 1.25: $CONTROL_REPLY"
         deck_size 1000 625 "wide-1000x625-125-$shotlook"
         control deckzoom 1 >/dev/null || bad "DECK deckzoom 1: $CONTROL_REPLY"
