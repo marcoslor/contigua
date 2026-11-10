@@ -214,13 +214,15 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     add(EncoderAction.Build(event.size))
                 },
             )
-            else -> stay()
+            EncoderPhase.Opening, EncoderPhase.Prepared, EncoderPhase.Attached,
+            EncoderPhase.Swapping, EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.SurfaceReady -> when (state.phase) {
             EncoderPhase.Opening, EncoderPhase.Prepared ->
                 EncoderTransition(state.copy(persistent = event.persistent), emptyList())
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Attached, EncoderPhase.Swapping,
+            EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.Built -> when (state.phase) {
@@ -262,14 +264,14 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
             )
             EncoderPhase.Swapping -> EncoderTransition(
                 EncoderState(phase = EncoderPhase.Empty, paused = state.paused,
-                    display = state.display),
+                    suspended = state.suspended, display = state.display),
                 emptyList(),
             )
             // The old encoder never stopped feeding the display.
             EncoderPhase.Attached -> EncoderTransition(
                 state.copy(prepared = false, preparedStarted = false), emptyList(),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Prepared, EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.Started -> when (state.phase) {
@@ -281,7 +283,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                 state.copy(preparedStarted = true),
                 listOf(EncoderAction.Attach(persistent = true)),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Attached,
+            EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.StartRefused -> when (state.phase) {
@@ -298,7 +301,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                 state.copy(persistent = false, prepared = false, preparedStarted = false),
                 listOf(EncoderAction.DropSurface, EncoderAction.Build(event.size, attach = true)),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Attached,
+            EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.Created -> when (state.phase) {
@@ -307,7 +311,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     pendingDisplay = DisplayPhase.None),
                 listOf(EncoderAction.AttachFresh),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Attached,
+            EncoderPhase.Swapping, EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.Prepare -> when (state.phase) {
@@ -322,7 +327,7 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                 } else {
                     EncoderTransition(state, listOf(EncoderAction.Build(event.size)))
                 }
-            else -> stay()
+            EncoderPhase.Opening, EncoderPhase.Prepared, EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.Attach -> when (state.phase) {
@@ -347,7 +352,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     listOf(EncoderAction.DetachOld, EncoderAction.StartPrepared),
                 )
             }
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Swapping,
+            EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.Swapped -> when (state.phase) {
@@ -357,7 +363,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     suspended = event.suspended),
                 emptyList(),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Prepared,
+            EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.Installed -> when (state.phase) {
@@ -367,7 +374,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     suspended = event.suspended),
                 emptyList(),
             )
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Prepared,
+            EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.Pause -> when (state.phase) {
@@ -386,7 +394,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
             } else {
                 EncoderTransition(state.copy(paused = true), emptyList())
             }
-            else -> stay()
+            EncoderPhase.Opening, EncoderPhase.Prepared, EncoderPhase.Swapping,
+            EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.Resume -> when (state.phase) {
@@ -412,7 +421,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                     listOf(EncoderAction.Rebuild),
                 )
             }
-            else -> stay()
+            EncoderPhase.Opening, EncoderPhase.Prepared, EncoderPhase.Swapping,
+            EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.Suspend -> when (state.phase) {
@@ -422,7 +432,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
                 state.paused && !state.persistent -> stay()
                 else -> EncoderTransition(state, listOf(EncoderAction.ApplySuspend(event.suspended)))
             }
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Prepared,
+            EncoderPhase.Swapping, EncoderPhase.Released -> stay()
         }
 
         is EncoderEvent.SuspendApplied -> when (state.phase) {
@@ -431,7 +442,8 @@ internal fun encoderTransition(state: EncoderState, event: EncoderEvent): Encode
             } else {
                 EncoderTransition(state.copy(suspended = event.suspended), emptyList())
             }
-            else -> stay()
+            EncoderPhase.Empty, EncoderPhase.Opening, EncoderPhase.Prepared,
+            EncoderPhase.Swapping, EncoderPhase.Released -> stay()
         }
 
         EncoderEvent.ReleasePrevious -> if (!state.previous) {

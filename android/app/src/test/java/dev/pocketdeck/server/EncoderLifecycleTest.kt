@@ -450,6 +450,21 @@ class EncoderLifecycleTest {
     }
 
     @Test
+    fun `a failed swap keeps the queue's suspend for the next encoder`() {
+        val fake = FakeStream(surfaceWorks = true)
+        draining(fake)
+        fake.suspend(true)
+        fake.startRefusals = 1
+        fake.prepare(IntSize(960, 540))
+        fake.failAttachBuilds = 1
+
+        assertFalse(fake.attachPrepared())
+
+        assertEquals(EncoderPhase.Empty, fake.state.phase)
+        assertTrue("the rebuilt encoder must be suspended again", fake.state.suspended)
+    }
+
+    @Test
     fun `a resize recovers a stream left empty by a failed swap`() {
         val fake = failedSwap(pause = false)
         fake.calls.clear()
