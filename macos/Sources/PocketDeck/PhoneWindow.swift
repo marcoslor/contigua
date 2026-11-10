@@ -304,7 +304,7 @@ final class PhoneWindowController: StreamWindowController {
         chrome.setPanelPill(screenModel.panelPill)
         chrome.setActions(headerActions())
         if window?.isKeyWindow ?? false {
-            StreamMenuState.shared.panelOff = screenModel.panelOff
+            refreshMenuState()
         }
         writeChromeState()
     }
