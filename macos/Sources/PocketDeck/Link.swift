@@ -218,6 +218,21 @@ extension Cause {
     }
 }
 
+/// [DECK-14/15] When the phone was last reached, in the person's own words:
+/// "Last seen 14:32" while that was today, "Last seen 8 Nov, 14:32" before
+/// today. FormatStyle, so a 12-hour locale reads its own way.
+enum LastSeen {
+    static func line(_ date: Date, now: Date = Date(),
+                     calendar: Calendar = .current, locale: Locale = .current) -> String {
+        var style: Date.FormatStyle = calendar.isDate(date, inSameDayAs: now)
+            ? .dateTime.hour().minute()
+            : .dateTime.day().month(.abbreviated).hour().minute()
+        style.locale = locale
+        style.timeZone = calendar.timeZone
+        return "Last seen \(date.formatted(style))"
+    }
+}
+
 /// CONV-PD-07: one spelling for the pair-again action on the Mac. A banner or
 /// a state word says "Pair again" (sentence case, no ellipsis); a button or
 /// menu title that opens the pairing sheet says "Pair Again…" (the Mac's title
@@ -245,6 +260,9 @@ struct Banner: Equatable {
     /// A live countdown the view draws as "23 s" (R2); the deadline lives in
     /// the machine's state, never in a view timer.
     var countdownUntil: Date? = nil
+    /// [DECK-15] The offline banner's last line: when the phone was last
+    /// reached. A value from the link machine, drawn through `LastSeen`.
+    var lastSeen: Date? = nil
 
     var actionTitle: String? {
         switch action {
@@ -263,26 +281,33 @@ extension Link {
 
     /// The failure messages. `naming` turns the phone's ref into the name to
     /// show (its nickname, else its own name); every caller that can resolve
-    /// nicknames passes it, tests use the default.
-    func banner(naming: (PhoneRef) -> String = \.name) -> Banner? {
+    /// nicknames passes it, tests use the default. `lastSeen` is the machine's
+    /// stamp, and every offline banner carries it (DECK-15).
+    func banner(naming: (PhoneRef) -> String = \.name, lastSeen: Date? = nil) -> Banner? {
         switch self {
         case .offline(let p, .unreachable):
-            return Banner(text: "Can't reach \(naming(p)). Check that it's on the same Wi-Fi.", action: .tryNow)
+            return Banner(text: "Can't reach \(naming(p)). Check that it's on the same Wi-Fi.", action: .tryNow,
+                          lastSeen: lastSeen)
         case .offline(let p, .busy):
-            return Banner(text: "Another Mac is connected to \(naming(p)).", action: .tryNow)
+            return Banner(text: "Another Mac is connected to \(naming(p)).", action: .tryNow,
+                          lastSeen: lastSeen)
         case .offline(let p, .connectionsOff):
             return Banner(text: "Connections are turned off on \(naming(p)).", action: nil,
-                          detail: "Turn on Allow connections in PocketDeck on your phone.")
+                          detail: "Turn on Allow connections in PocketDeck on your phone.",
+                          lastSeen: lastSeen)
         case .offline(let p, .notFound):
             return Banner(text: "Can't find \(naming(p)) on this network.", action: nil,
-                          detail: "Check that the phone is on the same Wi-Fi and PocketDeck is running.")
+                          detail: "Check that the phone is on the same Wi-Fi and PocketDeck is running.",
+                          lastSeen: lastSeen)
         case .offline(let p, .pairingsOff):
-            return Banner(text: "\(naming(p)) isn't accepting new pairings.", action: nil)
+            return Banner(text: "\(naming(p)) isn't accepting new pairings.", action: nil,
+                          lastSeen: lastSeen)
         case .offline(let p, .versionMismatch):
-            return Banner(text: "\(naming(p)) runs an incompatible version of PocketDeck.", action: nil)
+            return Banner(text: "\(naming(p)) runs an incompatible version of PocketDeck.", action: nil,
+                          lastSeen: lastSeen)
         case .offline(_, .localNetworkDenied):
             return Banner(text: "PocketDeck needs Local Network access. Open System Settings → Privacy & Security → Local Network.",
-                          action: .openSettings)
+                          action: .openSettings, lastSeen: lastSeen)
         case .needsPairing(let p):
             return Banner(text: "\(naming(p)) no longer trusts this Mac.", action: .pairAgain)
         case .pairing(_, .denied(let until)):
@@ -424,8 +449,24 @@ struct LinkMachine {
     private var hasAddress = false
     /// Where to go back to when a pairing is cancelled.
     private var resume: Link = .idle
+    /// [DECK-14/15] When this phone was last reached: the chip's help tag and
+    /// the offline banner say it. Stamped by a welcome and by every tick of a
+    /// live session, seeded at launch from the remembered record, and never
+    /// inferred from a counter, a timer or another flag.
+    private(set) var lastSeen: Date?
 
-    init(link: Link = .idle) { self.link = link }
+    init(link: Link = .idle, lastSeen: Date? = nil) {
+        self.link = link
+        self.lastSeen = lastSeen
+    }
+
+    /// Launch: seed the sighting this Mac remembered, so a phone that is away
+    /// from the first second still says when it was here. A record with no
+    /// stamp leaves it nil (the banner then says nothing).
+    mutating func seedLastSeen(_ date: Date?) {
+        guard lastSeen == nil, let date else { return }
+        lastSeen = date
+    }
 
     var consecutiveFailures: Int { failures }
 
@@ -480,6 +521,7 @@ struct LinkMachine {
 
         case .welcome(let phone):
             link = .online(phone)
+            lastSeen = now
             outageStart = nil
             failures = 0
             earlyCloses = 0
@@ -566,6 +608,9 @@ struct LinkMachine {
             return [.stopAttempts]
 
         case .tick:
+            // A live session is a sighting: the stamp is the last contact, not
+            // the moment it dropped (DECK-14/15).
+            if case .online = link { lastSeen = now }
             // The inferred kind's quiet re-check (PAIR-31): the advertisement
             // may be a spoof, so this never becomes a permanent stop. While it
             // is advertised, one attempt per 60 s; while it is not, the kept
@@ -761,10 +806,11 @@ struct LinkPresentation: Equatable {
     var settingsPresence: DevicePresence
     var chip: Chip?
 
-    init(link: Link, naming: @escaping (PhoneRef) -> String = { $0.name }) {
-        banner = link.banner(naming: naming)
+    init(link: Link, naming: @escaping (PhoneRef) -> String = { $0.name },
+         lastSeen: Date? = nil) {
+        banner = link.banner(naming: naming, lastSeen: lastSeen)
         deckInteractive = link.isOnline
-        panelNotice = PhonePanelNotice.banner(for: link, naming: naming)
+        panelNotice = PhonePanelNotice.banner(for: link, naming: naming, lastSeen: lastSeen)
         settingsPresence = DevicePresence(link)
         chip = link.chip
     }

@@ -307,6 +307,9 @@ struct BannerView: View {
                 if let detail = banner.detail {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
+                if let lastSeen = banner.lastSeen {
+                    Text(LastSeen.line(lastSeen)).font(.caption).foregroundStyle(.secondary)
+                }
                 if let until = banner.countdownUntil {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         let seconds = Pairing.remaining(until: until, at: context.date)
@@ -404,6 +407,11 @@ struct StatusChip: View {
     }
 
     private var helpText: String {
+        // DECK-14: online the tag names the connection; away it says when the
+        // phone was last seen (the machine's stamp, not a guess).
+        if case .offline = controller.link, let seen = controller.lastSeen {
+            return LastSeen.line(seen)
+        }
         guard controller.link.isOnline, let status = controller.status else { return "" }
         let phone = controller.link.phone.map { controller.displayName(for: $0) } ?? "the phone"
         var parts = ["Connected to \(phone)", status.locked ? "phone locked" : "phone unlocked"]

@@ -108,7 +108,7 @@ Ignored events, stated so nobody builds them: an icon click while the card is cl
 | 2+ phones | The phone **in use** only, named in the header. Settings ▸ Phones' Use This Phone changes which phone the card acts on; the card itself offers no picker. |
 | Connecting | "Connecting…"; the phone's last known name; controls disabled with the offline reason; no battery until online. |
 | Connected | "Connected"; battery; every control the phone supports enabled. |
-| Offline / reconnecting | "Reconnecting…" then "Offline"; controls disabled with the reason, never hidden; the card stays usable as a readout. |
+| Offline / reconnecting | "Reconnecting…" then "Offline"; controls disabled with the reason, never hidden; the card stays usable as a readout; the notice row (the Deck's banner, PAIR-33/35) carries its last-seen line. |
 | Pair again | "Pair again"; controls disabled with the reason; the Deck's banner is the way to re-pair. |
 | Phone that can't do the feature | DND, ringer or volume individually disabled with its own sentence ("This phone doesn't report Do Not Disturb.", "This phone doesn't report a ringer.", "Your phone hasn't sent a volume."), never hidden. |
 | No mirror open | Turn Off Screen disabled with "Open Mirror first." |

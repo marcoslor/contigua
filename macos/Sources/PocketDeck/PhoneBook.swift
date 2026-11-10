@@ -105,7 +105,8 @@ final class PhoneBook {
     /// (PAIR-32).
     @discardableResult
     func start(active: PhoneRef?, at now: Date,
-               trustLost: TrustLossKind? = nil) -> PhoneBookEventResult {
+               trustLost: TrustLossKind? = nil,
+               lastSeen: Date? = nil) -> PhoneBookEventResult {
         guard let active else {
             currentId = nil
             return PhoneBookEventResult()
@@ -113,6 +114,9 @@ final class PhoneBook {
         currentId = active.id
         let record = ensureRecord(for: active.id, phone: active)
         record.claims.insert(.current)
+        // DECK-14/15: the remembered sighting, so an offline Deck can say when
+        // the phone was last seen before this run.
+        record.machine.seedLastSeen(lastSeen)
         if let trustLost {
             return handle(.restoreTrustLost(active, trustLost), from: active.id, at: now)
         }

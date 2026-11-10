@@ -276,10 +276,11 @@ struct PhoneControlsActions {
 /// that cannot be found. Never a code, never a transient line.
 enum PhonePanelNotice {
     static func banner(for link: Link,
-                       naming: (PhoneRef) -> String = \.name) -> Banner? {
+                       naming: (PhoneRef) -> String = \.name,
+                       lastSeen: Date? = nil) -> Banner? {
         switch link {
         case .needsPairing, .offline(_, .connectionsOff), .offline(_, .notFound):
-            return link.banner(naming: naming)
+            return link.banner(naming: naming, lastSeen: lastSeen)
         default:
             return nil
         }
@@ -633,6 +634,11 @@ struct PhonePanelView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let lastSeen = notice.lastSeen {
+                    Text(LastSeen.line(lastSeen))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 6)

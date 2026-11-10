@@ -65,7 +65,8 @@ work is disabled, never hidden.
      search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
-     line with at most one button (Try now / Pair again). A phone that no longer trusts this Mac, or whose connections
+     line with at most one button (Try now / Pair again); while the phone is away the banner and the chip's help tag say
+     when it was last seen. A phone that no longer trusts this Mac, or whose connections
      switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
      connections-off banner adds one line naming the switch on the phone.
 2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
