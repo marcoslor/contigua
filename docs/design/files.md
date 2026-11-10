@@ -1194,6 +1194,7 @@ Watching only touched folders, and nothing while away, is right for the battery 
    - **Guards, so a diff never deletes a real file:**
      - an item with a pending or in-flight upload is never deleted by a listing;
      - nor is an item the record gained or changed after the walk's first page was asked (a Mac write racing the walk);
+     - nor is an item the id map now places in another folder: the phone moved it between two watched folders, and a listing of the old one must not report a deletion for a domain-wide identifier (the item leaves the old folder's record silently, and the new folder's listing adds it);
      - a walk that would delete more than half of a folder's recorded items, and more than 20, is repeated once after 2 s, and only the deletions both walks agree on go out. The person's 459-of-568 case passes that; a phone whose storage isn't mounted yet doesn't empty Finder.
 3. **A durable change log.** The log (sequence, container, delta; 512 entries, as now) and its epoch persist with the record, so an app start no longer expires the system's anchor. If an anchor expires anyway, the working set's full enumeration answers every item in the record, not just this process's cache.
 4. **A resync on reconnect.** On session-ready, and once after an app start, the app checks the folders in the record, most recently touched first, at most 64 (the watch cap).
@@ -1203,6 +1204,8 @@ Watching only touched folders, and nothing while away, is right for the battery 
    - Folders beyond the 64 are checked on their next touch.
 5. **Errors repair.** A `fs_not_found` for an item's thumbnail, read or stat reports that item deleted and re-lists its folder.
 6. **Android's transient entries** (`.trashed-*`, `.pending-*`) are left out of every listing and digest, at any depth, as Android's own Files app does. They're not files a person calls theirs.
+
+**One job per folder.** The Mac runs one `FolderJob` per folder: `idle`, `walking` (the listing in flight), `confirming` (the one re-list after a too-large deletion), `repairing` (the re-list after a `fs_not_found`) and `refreshing(again)` (the 150 ms settle after a phone push, with `again` when another push arrives inside it). A push during any pass is one refresh after it; a touch or a resync read during a pass is answered but not recorded, so only the running pass owns the record. The phase, the walk's start record and its page cursor live in the job; there are no separate `visiting`/`refreshing`/`confirming`/`repairing` sets to fall out of step. A session run has a token carried by every page and timer: a drop abandons every pass and the token makes the old run's late callbacks change nothing. The transition is pure, the host runs its actions, and each phase change logs `folder: <from> --<event>--> <to>` with closed numeric codes (0 idle, 1 walking, 2 confirming, 3 repairing, 4 refreshing, 5 refreshing-again; events 0 visit … 10 page-failed).
 
 **The digest.** The phone computes it, and the Mac only stores and compares it, so no hash format has to match across platforms.
 - It's the first 16 bytes, as hex, of the SHA-256 of the folder's visible entries (the `fs.list` filter), sorted by name bytes, each written `name \0 ino \0 size \0 mtime \n`. It's deterministic across phone restarts.
