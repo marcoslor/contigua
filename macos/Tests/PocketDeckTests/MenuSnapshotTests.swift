@@ -7,13 +7,15 @@ import XCTest
 @testable import PocketDeck
 
 final class MenuSnapshotTests: XCTestCase {
-    private func stream() -> StreamMenuState {
+    private func stream(style: WindowStyle = .framed, showTouches: Bool = true,
+                        frozen: Bool = false, liveText: Bool = false,
+                        package: String? = "com.example.app",
+                        density: Double? = 1.25) -> StreamMenuState {
         let state = StreamMenuState()
-        state.hasStream = true
-        state.style = .framed
-        state.showTouches = true
-        state.densityPackage = "com.example.app"
-        state.densityOverride = 1.25
+        state.handle(.streamBecameKey(StreamMenuValues(
+            stream: 1, style: style, liveText: liveText, frozen: frozen,
+            densityPackage: package, densityOverride: density)))
+        state.showTouches = showTouches
         return state
     }
 
@@ -58,15 +60,13 @@ final class MenuSnapshotTests: XCTestCase {
         moved.live = []
         XCTAssertEqual(MenuSnapshot(stream: stream(), phone: MenuSnapshot.Phone(moved)), reference)
 
-        var stalled = stream()
-        stalled.frozen = false
+        let stalled = stream(frozen: false)
         XCTAssertEqual(MenuSnapshot(stream: stalled, phone: MenuSnapshot.Phone(moved)), reference)
     }
 
     func testAChangeTheMenuDoesShowIsANewSnapshot() {
         let reference = MenuSnapshot(stream: stream(), phone: MenuSnapshot.Phone(phone()))
-        var other = stream()
-        other.style = .immersive
+        let other = stream(style: .immersive)
         XCTAssertNotEqual(MenuSnapshot(stream: other, phone: MenuSnapshot.Phone(phone())), reference)
 
         var ringing = phone()
