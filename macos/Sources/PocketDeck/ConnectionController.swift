@@ -187,7 +187,7 @@ final class ConnectionController {
     /// [DECK-14/15] When the phone in use was last reached: the link machine's
     /// stamp, for the chip's help tag and the offline banner. Nil until this
     /// run has seen the phone and with no remembered sighting.
-    var lastSeen: Date? { book.current?.machine.lastSeen }
+    var lastSeen: Date? { machine.lastSeen }
     var pathsDown: Bool { book.current?.pathsDown ?? false }
     var pathsOffline: Bool { book.current?.pathsOffline ?? false }
     var pathOutage: PathOutage { book.current?.pathOutage ?? .none }

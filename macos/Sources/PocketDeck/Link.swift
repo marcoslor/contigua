@@ -219,8 +219,9 @@ extension Cause {
 }
 
 /// [DECK-14/15] When the phone was last reached, in the person's own words:
-/// "Last seen 14:32" while that was today, "Last seen 8 Nov, 14:32" before
-/// today. FormatStyle, so a 12-hour locale reads its own way.
+/// "Last seen 14:32" while that was today, and the date and the time before
+/// today. FormatStyle, so a 12-hour locale and the date's order read its own
+/// way.
 enum LastSeen {
     static func line(_ date: Date, now: Date = Date(),
                      calendar: Calendar = .current, locale: Locale = .current) -> String {
