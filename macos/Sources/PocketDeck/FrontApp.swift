@@ -9,29 +9,40 @@
 
 import AppKit
 
+/// The last answer the phone gave, kept on show while the next one is asked.
+enum FrontAppAnswer: Equatable {
+    /// No answer yet (since launch, a reset or a change of phone).
+    case unanswered
+    case none
+    case pkg(String)
+}
+
 /// What the Mac knows about the phone's foreground app.
 enum FrontAppState: Equatable {
     case idle
-    case asking(seq: Int)
+    /// A request is out. `showing` is the answer before it: the card asks
+    /// again every 2 s while it is open, and the row must not blink out
+    /// between each question and its answer.
+    case asking(seq: Int, showing: FrontAppAnswer = .unanswered)
     case known(pkg: String)
     case none
 }
 
-/// The foreground machine: Idle -> Asking(seq) on every request; Asking(seq)
-/// -> Known(pkg) or None on that request's reply; any -> Idle when the link
-/// goes or the phone in use changes. Only a reply for the newest request moves
-/// it; an older one is stale and ignored.
+/// The foreground machine: Idle -> Asking(seq) on every request, carrying the
+/// answer on show; Asking(seq) -> Known(pkg) or None on that request's reply;
+/// any -> Idle when the link goes or the phone in use changes. Only a reply
+/// for the newest request moves it; an older one is stale and ignored.
 struct FrontAppMachine: Equatable {
     private(set) var state: FrontAppState = .idle
 
     mutating func ask(seq: Int) {
-        state = .asking(seq: seq)
+        state = .asking(seq: seq, showing: answer)
     }
 
     /// Returns true when the reply was for the newest request.
     @discardableResult
     mutating func reply(seq: Int, pkg: String?) -> Bool {
-        guard case .asking(let expected) = state, seq == expected else { return false }
+        guard case .asking(let expected, _) = state, seq == expected else { return false }
         state = pkg.map(FrontAppState.known) ?? .none
         return true
     }
@@ -40,12 +51,23 @@ struct FrontAppMachine: Equatable {
         state = .idle
     }
 
+    /// The answer the views show: the newest reply, or the one before it
+    /// while a request is out.
+    var answer: FrontAppAnswer {
+        switch state {
+        case .idle: return .unanswered
+        case .asking(_, let showing): return showing
+        case .known(let pkg): return .pkg(pkg)
+        case .none: return .none
+        }
+    }
+
     var pkg: String? {
-        if case .known(let pkg) = state { return pkg }
+        if case .pkg(let pkg) = answer { return pkg }
         return nil
     }
 
-    var isNone: Bool { state == .none }
+    var isNone: Bool { answer == .none }
 }
 
 /// How long a reply stays usable to the Phone menu and the menu bar's item,

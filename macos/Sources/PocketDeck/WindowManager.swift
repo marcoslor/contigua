@@ -304,8 +304,7 @@ final class WindowManager {
         for controller in allControllers() where controller.densityPackage == pkg {
             controller.applyStoredDensity()
         }
-        let state = StreamMenuState.shared
-        if state.densityPackage == pkg { state.densityOverride = value }
+        refreshKeyWindowMenu()
         onDensityOverridesChanged?()
     }
 
@@ -313,7 +312,7 @@ final class WindowManager {
         let overridden = allControllers().filter { $0.densityOverride != nil }
         densityStore.clearAll()
         for controller in overridden { controller.applyStoredDensity() }
-        StreamMenuState.shared.densityOverride = nil
+        refreshKeyWindowMenu()
         onDensityOverridesChanged?()
     }
 
@@ -602,18 +601,26 @@ final class WindowManager {
     /// Follows the key window by AppKit's own notifications rather than the
     /// window delegate: a quiet run's emulated key window posts them, and a
     /// delegate method is only called for the notifications AppKit makes
-    /// itself (MENU-2's title and enabled flag hang on this).
+    /// itself (MENU-2's title and enabled flag hang on this). The same two
+    /// notifications are the menus' key-window machine's events, so a window
+    /// that is not a stream window (the Deck, Settings, a sheet) always drops
+    /// the last stream window's values (MENU-4, MENU-6, MENU-9, ISS-88).
     private func observeKeyWindows() {
         guard keyObservers.isEmpty else { return }
         let center = NotificationCenter.default
         keyObservers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification,
                                                object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
-                guard let self,
-                      let controller = (note.object as? NSWindow)?.windowController as? StreamWindowController
-                else { return }
+                guard let self, let window = note.object as? NSWindow else { return }
+                guard let controller = window.windowController as? StreamWindowController else {
+                    // Any other key window: the Deck, Settings, a sheet, the
+                    // panel. No stream window is key any more.
+                    self.performMenuKey(.otherWindowBecameKey)
+                    return
+                }
                 self.noteFront(controller.stream)
                 self.noteKey(controller.stream)
+                self.performMenuKey(.streamBecameKey(controller.menuValues))
             }
         })
         keyObservers.append(center.addObserver(forName: NSWindow.didResignKeyNotification,
@@ -623,8 +630,39 @@ final class WindowManager {
                       let controller = (note.object as? NSWindow)?.windowController as? StreamWindowController
                 else { return }
                 self.noteKeyLost(controller.stream)
+                self.performMenuKey(.streamResigned(stream: controller.stream))
             }
         })
+        // A reactivation gives the key back to the window that had it; a
+        // deactivation leaves the app with no usable key window at all.
+        keyObservers.append(center.addObserver(forName: NSApplication.didResignActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.performMenuKey(.appDeactivated) }
+        })
+        keyObservers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let controller = NSApp.keyWindow?.windowController as? StreamWindowController {
+                    self.performMenuKey(.streamBecameKey(controller.menuValues))
+                } else {
+                    self.performMenuKey(.otherWindowBecameKey)
+                }
+            }
+        })
+    }
+
+    /// One key-window transition for the menus, with its action run.
+    private func performMenuKey(_ event: StreamMenuKeyMachine.Event) {
+        let actions = StreamMenuState.shared.handle(event)
+        if actions.contains(.correctMenu) {
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
+        }
+    }
+
+    /// The key stream window's menu values moved (a density pick, a default).
+    private func refreshKeyWindowMenu() {
+        (NSApp.keyWindow?.windowController as? StreamWindowController)?.refreshMenuState()
     }
 
     func noteKey(_ stream: UInt32) { keyStream = stream }
@@ -939,7 +977,8 @@ final class WindowManager {
             frames.removeObject(forKey: key)
         }
         densityStore.clearAll()
-        StreamMenuState.shared.densityOverride = nil
+        StreamMenuState.shared.showTouches = false
+        StreamMenuState.shared.handle(.reset)
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: frames)
     }
 

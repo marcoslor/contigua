@@ -60,7 +60,7 @@ enum MenuMarks {
     /// The menus whose items carry a mark or a title that follows the window.
     /// Window's own items are AppKit's (the next-window flag is written below,
     /// and full screen is the system's: MENU-4, MENU-7).
-    static let menus = ["View"]
+    static let menus = ["View", "Navigate"]
 
     /// The Density item that names the Settings default: its own title carries
     /// the percentage, so a rule addresses it by this marker and the applier
@@ -84,8 +84,8 @@ enum MenuMarks {
                 edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
                 edits.append(.enable([item.title], state.hasStream))
             case ("View", "Hide Controls"):
-                // The full-screen reveal choice needs a key stream window; the
-                // mark inside follows the stored choice.
+                // The full-screen reveal choice needs a key stream window in
+                // either style; the mark inside follows the stored choice.
                 edits.append(.enable([item.title], MenuModel.hideControlsEnabled(hasStream: state.hasStream)))
                 for child in item.children where !child.isSeparator {
                     guard let entry = FullScreenMenuModel.items.first(where: { $0.title == child.title }),
@@ -94,9 +94,14 @@ enum MenuMarks {
                                        FullScreenMenuModel.isChecked(entry, reveal: state.revealDelay)))
                 }
             case ("View", "Show Touches"):
-                edits.append(.mark([item.title], state.showTouches))
+                // The key stream window's item: with the Deck (or nothing) key
+                // it is off and disabled, whatever the window behind it shows
+                // (MENU-4, MENU-9, ISS-88).
+                edits.append(.mark([item.title], state.hasStream && state.showTouches))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Live Text"):
-                edits.append(.mark([item.title], state.liveText))
+                edits.append(.mark([item.title], state.hasStream && state.liveText))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Icon Size"):
                 // The Deck's stored choice: one of the four percentages is
                 // checked (DECK-6). The value is read when the menu opens.
@@ -125,6 +130,14 @@ enum MenuMarks {
                 // while hidden. AppKit's own fn-F item has no ⌃⌘F and is never
                 // touched (MENU-4, MENU-8, MENU-11).
                 edits.append(.hide)
+            case ("Navigate", "Back"), ("Navigate", "Home"), ("Navigate", "Recents"):
+                // The three act on the key stream window through its responder
+                // chain: with the Deck (or nothing) key there is nothing to
+                // act on, so they are disabled (MENU-6, ISS-88). With a
+                // stream window key today's rule stands: frozen (Live Text or
+                // a cover) and a down link disable them.
+                edits.append(.enable([item.title],
+                                     state.hasStream && !state.frozen && !state.phoneOffline))
             default:
                 break
             }
@@ -177,7 +190,8 @@ extension MenuMarks {
         }
         if let phone = mainMenu.items.first(where: { $0.title == "Phone" })?.submenu {
             let state = PhoneControlsState(controller: AppEnvironment.shared.controller)
-            for edit in phoneEdits(items: snapshot(of: phone), phone: state) {
+            for edit in phoneEdits(items: snapshot(of: phone), phone: state,
+                                   stream: StreamMenuState.shared) {
                 apply(edit, in: phone)
             }
         }
@@ -214,15 +228,19 @@ extension MenuMarks {
 
     /// Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online, read when
     /// the menu starts tracking: SwiftUI's own flag for the item can lag a
-    /// connect, and then the item does nothing. Turn Off Phone Screen's check
-    /// follows the phone's own `state.panel`, so an open menu never shows a
-    /// value from before the report.
-    static func phoneEdits(items: [Item], phone: PhoneControlsState) -> [Edit] {
+    /// connect, and then the item does nothing. Turn Off Phone Screen acts on
+    /// the key phone window only, so it is disabled with any other key window
+    /// (MENU-5, ISS-88); its check follows the phone's own `state.panel`, so an
+    /// open menu never shows a value from before the report.
+    static func phoneEdits(items: [Item], phone: PhoneControlsState,
+                           stream: StreamMenuState) -> [Edit] {
         var edits: [Edit] = []
         for item in items where !item.isSeparator && item.title == "Phone Mirror" {
             edits.append(.enable([item.title], PhonePanelItem.phoneScreen.isEnabled(in: phone)))
         }
         if items.contains(where: { !$0.isSeparator && $0.title == "Turn Off Phone Screen" }) {
+            edits.append(.enable(["Turn Off Phone Screen"],
+                                 stream.phoneWindow && !stream.phoneOffline))
             edits.append(.mark(["Turn Off Phone Screen"], phone.panelOff))
         }
         // The item's title, enablement and reason follow the foreground reply,
