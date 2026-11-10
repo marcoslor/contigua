@@ -47,6 +47,8 @@ enum PanelProbe {
         self.controller = controller
         if let hostWindow {
             hostWindow.makeKeyAndOrderFront(nil)
+            (hostWindow as? MenuBarPanel)?.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
+                for: PhoneControlsState(controller: controller)))
             return
         }
         // The gear opens the app's one status-item menu (MenuBarPanel.swift),
@@ -89,12 +91,32 @@ enum PanelProbe {
                                                 y: screen.visibleFrame.maxY - 40))
         }
         window.makeKeyAndOrderFront(nil)
+        // The card opens on its first phone control, as MenuBarController's
+        // showPanel does (PANEL-7/PANEL-20).
+        window.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
+            for: PhoneControlsState(controller: controller)))
         hostWindow = window
     }
 
     /// `panelclose`.
     static func close() {
         hostWindow?.orderOut(nil)
+    }
+
+    /// `panelfocus HOST`: the item ID holding the card's keyboard focus, or
+    /// "none". The focus rule is the panel's own (PANEL-7): a quiet run cannot
+    /// press a key into a non-activating panel, so the check reads where the
+    /// ring landed rather than what a key would do.
+    static func focusedItem(host: String) -> String? {
+        guard let host = Host(rawValue: host), let state = currentState(),
+              let window = window(for: host),
+              let responder = window.firstResponder as? NSView else { return nil }
+        let items = PhonePanelItem.focusOrder(for: state, showsGear: showsGear(host))
+            .filter { $0.isEnabled(in: state) }
+        let views = laidOutViews(in: window)
+        guard let index = views.firstIndex(where: { $0 === responder }),
+              index < items.count else { return "none" }
+        return items[index].id
     }
 
     /// `deckpanel`: the status pill's popover (the pill itself is a toolbar
@@ -451,6 +473,15 @@ enum PanelProbe {
 
     private static func controlFrames(in window: NSWindow) -> [CGRect] {
         laidOut(in: window).map(\.frame)
+    }
+
+    /// The same controls in the same top-to-bottom order, as views: the focus
+    /// check matches the first responder to one of them.
+    private static func laidOutViews(in window: NSWindow) -> [NSView] {
+        controlViews(in: window).sorted { a, b in
+            let fa = a.convert(a.bounds, to: nil), fb = b.convert(b.bounds, to: nil)
+            return fa.maxY > fb.maxY
+        }
     }
 
     private static func controlViews(in window: NSWindow) -> [NSView] {

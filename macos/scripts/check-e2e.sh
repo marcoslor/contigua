@@ -16704,6 +16704,20 @@ PY
         [ "$dot" = 1 ] \
             && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
             || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # [PANEL-7] The card opens on its first tile, never on Disconnect
+        # (ISS-75): with the agent row up the opening ring is still DND. A
+        # quiet run cannot press a key into a non-activating panel, so the
+        # check reads where the ring landed.
+        control panelopen >/dev/null 2>&1 \
+            || bad "MENUBAR-SHOTS panelopen for the agent: $CONTROL_REPLY"
+        control panelfocus panel || true
+        case "$CONTROL_REPLY" in
+            panel.dnd)
+                ok "[PANEL-7] the card opens on Do Not Disturb, not Disconnect, with an agent connected" ;;
+            *)
+                bad "[PANEL-7] the card opens on '$CONTROL_REPLY' with an agent connected" ;;
+        esac
+        control panelclose >/dev/null 2>&1 || true
         # The crop is taken while the client is still connected: the dot is in
         # the drawing, not a second view over the button.
         item_shots menubar-item-dot
