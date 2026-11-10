@@ -148,10 +148,13 @@ final class GeometryTests: XCTestCase {
     func testVideoRectAspectFitsAndCenters() {
         let rect = Letterbox.videoRect(video: CGSize(width: 1920, height: 1080),
                                        in: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        // The fit's own edges are whole device pixels (ISS-87): 562.5 pt
+        // becomes 564 at 1x, and the view keeps its centre.
         XCTAssertEqual(rect.width, 1000, accuracy: 0.001)
-        XCTAssertEqual(rect.height, 562.5, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 564, accuracy: 0.001)
         XCTAssertEqual(rect.minX, 0, accuracy: 0.001)
-        XCTAssertEqual(rect.minY, 118.75, accuracy: 0.001)
+        XCTAssertEqual(rect.minY, 118, accuracy: 0.001)
+        XCTAssertEqual(rect.midY, 400, accuracy: 0.001)
     }
 
     func testVideoRectPillarboxes() {
