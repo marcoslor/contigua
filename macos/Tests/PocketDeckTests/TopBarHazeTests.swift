@@ -1,4 +1,4 @@
-// The framed bar's system blur, tint and haze (WIN-40, WIN-67): the
+// The Immersive bar's system blur, tint and haze (WIN-40, WIN-67): the
 // extension view's backdrop filter is turned up to 30 pt, a 14 % tint and a
 // white haze fade over the bar band only. The hide rules are the cover's
 // ground, the stall overlay, immersive and full screen.

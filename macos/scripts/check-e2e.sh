@@ -12294,8 +12294,8 @@ check_windows() {
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
     wait_until 20 events_have '"ev":"video"' \
         || bad "WIN-40 the stream never sent video"
-    wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
-        && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+    wait_until 15 chrome_has "bar_blur_radius=30 haze=1" \
+        && ok "[WIN-40] the live bar's system blur is 30 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
         || bad "[WIN-40] the live bar: $(chrome_state)"
     stop_app
     stop_fakephone
