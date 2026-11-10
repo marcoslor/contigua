@@ -452,7 +452,16 @@ struct PhoneDeckView: View {
     @State private var showPanel = false
     @FocusState private var searchFocused: Bool
 
-    private var filtered: [AppInfo] { GridNavigation.filter(controller.apps, query: query) }
+    /// The page's sections (DECK-26). While searching the sections collapse to
+    /// the results alone; with no window and no pin this is one All Apps
+    /// section without a header, exactly the grid the Deck had before.
+    private func sections(for query: String) -> [DeckSection] {
+        DeckPage.sections(apps: controller.apps, query: query,
+                          openPkgs: controller.deckOpenPkgs,
+                          pinnedPkgs: controller.deckPins)
+    }
+
+    private var sections: [DeckSection] { sections(for: query) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -474,7 +483,7 @@ struct PhoneDeckView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            AppGrid(apps: filtered, query: query, navigator: navigator)
+            AppGrid(sections: sections, query: query, navigator: navigator)
                 .opacity(controller.presentation.deckInteractive ? 1 : 0.5)
                 .allowsHitTesting(controller.presentation.deckInteractive)
                 .disabled(!controller.presentation.deckInteractive)
@@ -483,7 +492,8 @@ struct PhoneDeckView: View {
         .animation(.smooth(duration: 0.3), value: controller.banner)
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
         .animation(.smooth(duration: 0.3), value: controller.filesDomain.needsSwitch)
-        .navigationTitle(controller.activePhone.map { controller.displayName(for: $0) } ?? "PocketDeck")
+        .navigationTitle(DeckTitle.isMenu(phoneCount: controller.rememberedPhones.count)
+                         ? "" : controller.activePhone.map { controller.displayName(for: $0) } ?? "PocketDeck")
         .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
         .searchFocused($searchFocused)
         .toolbar {
@@ -501,6 +511,10 @@ struct PhoneDeckView: View {
                         DeckPhonePopover()
                             .environment(controller)
                     }
+            }
+            // [DECK-31] With 2+ remembered phones the title is the phone menu.
+            if DeckTitle.isMenu(phoneCount: controller.rememberedPhones.count) {
+                ToolbarItem(placement: .navigation) { PhoneTitleMenu() }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
@@ -521,10 +535,20 @@ struct PhoneDeckView: View {
         .onChange(of: controller.deckPanelRequest) { showPanel = true }
         .onChange(of: controller.deckPanelCloseRequest) { showPanel = false }
         .onChange(of: controller.sheet) { _, sheet in if sheet == nil { searchFocused = true } }
-        .onChange(of: query) { navigator.selection = nil }
+        // [DECK-29] Type-to-select: typing filters, and the first match is the
+        // selected tile so Return opens it. An empty field clears the
+        // selection (today's rule).
+        .onChange(of: query) { _, typed in
+            let list = DeckPage.cells(sections(for: typed))
+            navigator.selection = typed.trimmingCharacters(in: .whitespaces).isEmpty
+                ? nil : list.first?.id
+        }
         .onAppear {
             searchFocused = true
-            navigator.install(controller: controller, apps: { filtered }, clearQuery: { query = "" },
+            navigator.install(controller: controller,
+                              cells: { DeckPage.cells(self.sections) },
+                              rows: { columns in DeckPage.rows(self.sections, columns: columns) },
+                              clearQuery: { query = "" },
                               hasQuery: { !query.isEmpty },
                               setZoom: { delta in
                                   let store = Profile.active.defaults
@@ -533,6 +557,51 @@ struct PhoneDeckView: View {
                               })
         }
         .onDisappear { navigator.uninstall() }
+    }
+}
+
+/// [DECK-31] The title with 2+ phones: a short menu of the remembered phones,
+/// the one in use checked. Picking one makes it the phone in use, the same
+/// transition Settings ▸ Phones ▸ Use This Phone runs; Phone Settings… opens
+/// that phone's Settings page.
+struct PhoneTitleMenu: View {
+    @Environment(ConnectionController.self) private var controller
+
+    var body: some View {
+        let rows = DeckTitle.rows(controller.rememberedPhones.map {
+            (id: $0.id, name: controller.displayName(for: $0.ref))
+        }, inUse: controller.activePhone?.id)
+        Menu {
+            ForEach(rows, id: \.id) { row in
+                Button {
+                    if let phone = controller.rememberedPhones.first(where: { $0.id == row.id }) {
+                        controller.use(phone)
+                    }
+                } label: {
+                    if row.checked {
+                        Label(row.name, systemImage: "checkmark")
+                    } else {
+                        Text(row.name)
+                    }
+                }
+            }
+            Divider()
+            Button("Phone Settings…") { controller.openSettingsWindow() }
+        } label: {
+            HStack(spacing: 4) {
+                Text(controller.activePhone.map { controller.displayName(for: $0) } ?? "PocketDeck")
+                    .font(.system(size: 13, weight: .semibold))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Phones")
+        .accessibilityLabel("Phones")
     }
 }
 
@@ -545,19 +614,6 @@ enum GridNavigation {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return apps }
         return apps.filter { $0.label.localizedCaseInsensitiveContains(query) }
-    }
-
-    /// The index selected after an arrow key; the first arrow selects the first cell.
-    static func move(_ index: Int?, count: Int, columns: Int, _ direction: GridDirection) -> Int? {
-        guard count > 0 else { return nil }
-        guard let index else { return 0 }
-        let columns = max(columns, 1)
-        switch direction {
-        case .left: return max(index - 1, 0)
-        case .right: return min(index + 1, count - 1)
-        case .up: return index - columns >= 0 ? index - columns : index
-        case .down: return index + columns < count ? index + columns : index
-        }
     }
 }
 
@@ -836,17 +892,20 @@ final class GridNavigator {
 
     @ObservationIgnored private var monitor: Any?
     @ObservationIgnored private var controller: ConnectionController?
-    @ObservationIgnored private var apps: () -> [AppInfo] = { [] }
+    @ObservationIgnored private var cells: () -> [DeckPageCell] = { [] }
+    @ObservationIgnored private var rows: (Int) -> [[DeckPageCell]] = { _ in [] }
     @ObservationIgnored private var clearQuery: () -> Void = {}
     @ObservationIgnored private var hasQuery: () -> Bool = { false }
     /// ⌘+/⌘−/⌘0 on the Deck: a step's delta, or nil for 100 %.
     @ObservationIgnored private var setZoom: (CGFloat?) -> Void = { _ in }
 
-    func install(controller: ConnectionController, apps: @escaping () -> [AppInfo],
+    func install(controller: ConnectionController, cells: @escaping () -> [DeckPageCell],
+                 rows: @escaping (Int) -> [[DeckPageCell]],
                  clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool,
                  setZoom: @escaping (CGFloat?) -> Void = { _ in }) {
         self.controller = controller
-        self.apps = apps
+        self.cells = cells
+        self.rows = rows
         self.clearQuery = clearQuery
         self.hasQuery = hasQuery
         self.setZoom = setZoom
@@ -889,12 +948,22 @@ final class GridNavigator {
             DeckSearch.focusAndSelect(in: deck) { controller.requestSearchFocus() }
             return true
         }
+        // [DECK-29] ⌘1–⌘9 open the first nine visible tiles in reading order:
+        // the sections count too, so ⌘1 with a window open raises it, and the
+        // ones after it are the pins, then All Apps.
+        if flags.intersection([.command, .control, .option, .shift]) == .command,
+           let digit = DeckKeyOpen.digit(keyCode: keyCode) {
+            let list = cells()
+            guard list.indices.contains(digit - 1) else { return false }
+            controller.openApp(list[digit - 1].app)
+            return true
+        }
         guard flags.intersection([.command, .control, .option]).isEmpty else { return false }
-        let list = apps()
+        let list = cells()
         switch keyCode {
         case 36, 76: // Return
             guard let target = list.first(where: { $0.id == selection }) ?? list.first else { return false }
-            controller.openApp(target)
+            controller.openApp(target.app)
             return true
         case 53: // Esc
             guard hasQuery() else { return false }
@@ -905,13 +974,32 @@ final class GridNavigator {
             // Left/right belong to the text caret while there is text.
             guard vertical || !hasQuery() else { return false }
             let direction: GridDirection = [123: .left, 124: .right, 125: .down, 126: .up][keyCode]!
-            let current = list.firstIndex { $0.id == selection }
-            if let next = GridNavigation.move(current, count: list.count, columns: columns, direction) {
-                selection = list[next].id
+            if let next = DeckPage.move(selection: selection, cells: list,
+                                        rows: rows(columns), direction) {
+                selection = next
             }
             return true
         default:
             return false
+        }
+    }
+}
+
+/// [DECK-29] The digit a ⌘1–⌘9 press names, from its key code (the digit row's,
+/// not the keypad's: the keypad's ⌘1 is the system's own).
+enum DeckKeyOpen {
+    static func digit(keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 18: return 1
+        case 19: return 2
+        case 20: return 3
+        case 21: return 4
+        case 23: return 5
+        case 22: return 6
+        case 26: return 7
+        case 28: return 8
+        case 25: return 9
+        default: return nil
         }
     }
 }
@@ -1051,7 +1139,7 @@ enum GridMetrics {
 
 struct AppGrid: View {
     @Environment(ConnectionController.self) private var controller
-    let apps: [AppInfo]
+    let sections: [DeckSection]
     let query: String
     let navigator: GridNavigator
     /// The zoom step as a state, not @AppStorage: SwiftUI's @AppStorage
@@ -1086,7 +1174,7 @@ struct AppGrid: View {
 
             ScrollView {
                 Group {
-                    if apps.isEmpty {
+                    if allApps.isEmpty {
                         switch DeckGridEmpty.content(query: query,
                                                      appsLoaded: controller.appsLoaded,
                                                      phoneHasApps: !controller.apps.isEmpty) {
@@ -1094,11 +1182,12 @@ struct AppGrid: View {
                             VStack(spacing: 8) {
                                 Text(DeckGridEmpty.loadingLine)
                                     .font(.callout).foregroundStyle(.secondary)
-                                grid {
+                                DeckGridLayout(zoom: zoom) {
                                     ForEach(0..<DeckGridEmpty.placeholderCells, id: \.self) { _ in
                                         PlaceholderCell(zoom: zoom)
                                     }
                                 }
+                                .frame(maxWidth: .infinity)
                                 .redacted(reason: .placeholder)
                             }
                         case .noApps:
@@ -1107,18 +1196,10 @@ struct AppGrid: View {
                             emptyText("No apps match “\(query)”")
                         }
                     } else {
-                        grid {
-                            ForEach(cells) { cell in
-                                AppCell(app: cell.app,
-                                        rendered: controller.deckIcons[cell.app.pkg],
-                                        iconIsMissing: iconIsMissing(cell.app),
-                                        zoom: zoom,
-                                        selected: navigator.selection == cell.id) { controller.openApp(cell.app) }
-                                    .id(cell.id)
-                                    .deckCellGeometry(cell.id)
-                                    .contextMenu { DockMenuItems(app: cell.app) }
-                            }
+                        DeckStartLayout(zoom: zoom, sections: sections) {
+                            pageSections
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -1208,12 +1289,30 @@ struct AppGrid: View {
         }
     }
 
-    /// What the grid draws: one cell per launch target, never two cells with
-    /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
-    /// an empty slot). The order the phone sent is kept.
-    private var cells: [DeckCell] { AppGrid.entries(apps) }
+    /// The page's subviews in `DeckStartLayout`'s order: each section's header
+    /// (when it draws one), then its cells. One statement per ForEach keeps the
+    /// layout's builder small enough for the type checker.
+    @ViewBuilder
+    private var pageSections: some View {
+        ForEach(sections) { section in
+            if section.showsHeader {
+                DeckSectionHeader(title: section.title)
+            }
+            ForEach(section.apps, id: \.id) { app in
+                DeckPageCellView(section: section.kind, app: app, zoom: zoom,
+                                 selection: navigator.selection)
+            }
+        }
+    }
 
-    /// The rail follows the drawn cells, so its indexes are the grid's.
+    /// What All Apps draws: one cell per launch target, never two cells with
+    /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
+    /// an empty slot). The order All Apps carries is by name (DECK-26).
+    private var allApps: [AppInfo] { sections.first { $0.kind == .allApps }?.apps ?? [] }
+
+    private var cells: [DeckCell] { AppGrid.entries(allApps) }
+
+    /// The rail follows All Apps, so its indexes are that section's.
     private var cellApps: [AppInfo] { cells.map(\.app) }
     private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
     private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
@@ -1223,6 +1322,15 @@ struct AppGrid: View {
         cellApps.reduce(into: [:]) { counts, app in
             counts[DeckRail.letter(for: app.displayLabel), default: 0] += 1
         }
+    }
+
+    /// Where the All Apps grid's own coordinate space begins, from the page the
+    /// width draws: the rail's row mapping counts from the grid's 24 pt inset,
+    /// so the scroll offset is reduced by this (DECK-7/26). Zero when All Apps
+    /// is the only section — today's grid.
+    private func gridOrigin(width: CGFloat) -> CGFloat {
+        DeckPageLayout(width: width, metrics: DeckGridSize(zoom: zoom),
+                       sections: sections).gridOrigin
     }
 
     /// Scroll to a rail letter: its own first app, or the next letter with apps
@@ -1240,7 +1348,9 @@ struct AppGrid: View {
         }
         railAccent = picked
         DeckGridProbe.reportRailPick(letter: letter, index: pick.index)
-        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[pick.index].id, anchor: .top) }
+        withAnimation(.smooth(duration: 0.15)) {
+            proxy.scrollTo(DeckPageCell(section: .allApps, app: cellApps[pick.index]).id, anchor: .top)
+        }
         // A target already on screen scrolls nowhere, so no geometry change
         // follows: report the landing from the position we have.
         if let last = scrollBox.last { follow(last) }
@@ -1249,8 +1359,8 @@ struct AppGrid: View {
     /// The first app of the row at the last scroll position.
     private var currentTop: Int? {
         guard let last = scrollBox.last else { return nil }
-        return DeckRail.topIndex(offset: last.offset, apps: cellApps, zoom: zoom,
-                                 width: last.width)
+        return DeckRail.topIndex(offset: last.offset - gridOrigin(width: last.width),
+                                 apps: cellApps, zoom: zoom, width: last.width)
     }
 
     /// The accent and the pending jump at a scroll position. A jump is in
@@ -1260,7 +1370,10 @@ struct AppGrid: View {
     private func follow(_ scroll: RailScroll) {
         scrollBox.last = scroll
         let apps = cellApps
-        guard let top = DeckRail.topIndex(offset: scroll.offset, apps: apps,
+        let origin = gridOrigin(width: scroll.width)
+        let offset = scroll.offset - origin
+        let maxOffset = max(0, scroll.maxOffset - origin)
+        guard let top = DeckRail.topIndex(offset: offset, apps: apps,
                                           zoom: zoom, width: scroll.width) else {
             railAccent = .topRow
             if currentLetter != nil { currentLetter = nil }
@@ -1269,9 +1382,9 @@ struct AppGrid: View {
         let columns = DeckWide.block(width: scroll.width,
                                      metrics: DeckGridSize(zoom: zoom)).columns
         let before = railAccent
-        railAccent = RailAccent.reduce(before, .scroll(top: top, offset: scroll.offset,
+        railAccent = RailAccent.reduce(before, .scroll(top: top, offset: offset,
                                                        columns: columns,
-                                                       maxOffset: scroll.maxOffset))
+                                                       maxOffset: maxOffset))
         if railAccent != before {
             Log.app.debug("rail accent: \(before.name, privacy: .public) --scroll--> \(railAccent.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
         }
@@ -1287,7 +1400,7 @@ struct AppGrid: View {
             currentLetter = letter
             DeckGridProbe.reportRailAccent(letter: letter, topRow: topLetter, top: top,
                                            columns: columns, state: railAccent.name,
-                                           offset: scroll.offset, maxOffset: scroll.maxOffset)
+                                           offset: offset, maxOffset: maxOffset)
         }
     }
 
@@ -1319,22 +1432,11 @@ struct AppGrid: View {
         }
     }
 
-    /// Nothing more is coming for this icon: the phone said it has none, or
-    /// the link is down.
-    private func iconIsMissing(_ app: AppInfo) -> Bool {
-        controller.missingIcons.contains(app.pkg) || !controller.link.isOnline
-    }
-
     /// The cells the grid draws, one per id. Internal for the tests: a
     /// duplicate id is the person's empty slot.
     static func entries(_ apps: [AppInfo]) -> [DeckCell] {
         var seen = Set<String>()
         return apps.filter { seen.insert($0.id).inserted }.map(DeckCell.init)
-    }
-
-    private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        DeckGridLayout(zoom: zoom) { content() }
-            .frame(maxWidth: .infinity)
     }
 
     /// The empty states' one line: the place and height the search's message
@@ -1799,8 +1901,49 @@ private struct DeckCellGeometry: ViewModifier {
     }
 }
 
+/// The zoom probe measures All Apps: its cell ids are the grid's, and a pinned
+/// app's copy above must not report under the same id (DECK-5).
+private struct DeckGridGeometry: ViewModifier {
+    let cell: DeckPageCell
+
+    func body(content: Content) -> some View {
+        if cell.section == .allApps {
+            content.modifier(DeckCellGeometry(id: cell.app.id))
+        } else {
+            content
+        }
+    }
+}
+
 private extension View {
     func deckCellGeometry(_ id: String) -> some View { modifier(DeckCellGeometry(id: id)) }
+}
+
+/// One tile of the start page: the same `AppCell` All Apps draws, keyed by its
+/// section so a pinned app and its All Apps copy are two tiles, never two that
+/// light together (DECK-26/28). Only All Apps reports to the zoom probe.
+private struct DeckPageCellView: View {
+    @Environment(ConnectionController.self) private var controller
+    let section: DeckSection.Kind
+    let app: AppInfo
+    let zoom: CGFloat
+    let selection: String?
+
+    private var cell: DeckPageCell { DeckPageCell(section: section, app: app) }
+
+    var body: some View {
+        AppCell(app: app,
+                rendered: controller.deckIcons[app.pkg],
+                iconIsMissing: controller.missingIcons.contains(app.pkg) || !controller.link.isOnline,
+                zoom: zoom,
+                selected: selection == cell.id,
+                openMark: section == .openWindows) {
+            controller.openApp(app)
+        }
+        .id(cell.id)
+        .modifier(DeckGridGeometry(cell: cell))
+        .contextMenu { DockMenuItems(app: app) }
+    }
 }
 
 struct AppCell: View {
@@ -1812,14 +1955,16 @@ struct AppCell: View {
     /// grid gives it.
     let zoom: CGFloat
     let selected: Bool
+    /// [DECK-27] The small Mac-window mark: this app has a window open on this
+    /// Mac, drawn by the "Open on this Mac" row.
+    var openMark = false
     let open: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: open) {
             DeckCellLayout(zoom: zoom) {
-                AppIconView(app: app, rendered: rendered, isMissing: iconIsMissing,
-                            hovering: hovering, baseSide: DeckGridSize(zoom: zoom).iconSide)
+                icon
                 Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)
@@ -1840,6 +1985,29 @@ struct AppCell: View {
             app.displayLabel, cellWidth: DeckGridSize(zoom: zoom).cellWidth)))
         .accessibilityLabel(app.label)
     }
+
+    /// The icon, with the open-window mark on its bottom-trailing corner. The
+    /// mark is a status dot, not part of the icon: it repeats what the section
+    /// says in one word.
+    @ViewBuilder
+    private var icon: some View {
+        if openMark {
+            ZStack(alignment: .bottomTrailing) {
+                AppIconView(app: app, rendered: rendered, isMissing: iconIsMissing,
+                            hovering: hovering, baseSide: DeckGridSize(zoom: zoom).iconSide)
+                Image(systemName: "macwindow")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 14, height: 14)
+                    .background(Circle().fill(Color.accentColor))
+                    .offset(x: 3, y: 3)
+                    .accessibilityHidden(true)
+            }
+        } else {
+            AppIconView(app: app, rendered: rendered, isMissing: iconIsMissing,
+                        hovering: hovering, baseSide: DeckGridSize(zoom: zoom).iconSide)
+        }
+    }
 }
 
 /// The Deck cell's secondary-click menu (docs/design/dock.md, WIN-26): New
@@ -1852,10 +2020,18 @@ struct DockMenuItems: View {
 
     var body: some View {
         let rows = controller.windowMenuRows(for: app.pkg)
+        let pinned = controller.pins(app)
+        let canPin = controller.canPin(app)
         ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
             if index == 1 { Divider() }
             windowRow(row)
         }
+        Divider()
+        // [DECK-28] The pin lives on this Mac, per phone; the phone is never
+        // asked or written to. The ninth pin's item is disabled and says why.
+        Button(pinned ? "Unpin" : "Pin") { controller.togglePin(app) }
+            .disabled(!pinned && !canPin)
+            .modifier(DeckMenuHelp(help: pinned || canPin ? nil : DeckPage.pinFullHelp))
         Divider()
         if controller.isInDock(app) {
             Button("Remove from Dock App") { controller.removeFromDock(app) }
@@ -1915,6 +2091,21 @@ private struct DeckCellHelp: ViewModifier {
     func body(content: Content) -> some View {
         if let help {
             content.help(help)
+        } else {
+            content
+        }
+    }
+}
+
+/// The same rule for a menu item: the ninth pin's disabled row carries the
+/// reason as its help tag and VoiceOver hint (DECK-28); every other row has
+/// none.
+private struct DeckMenuHelp: ViewModifier {
+    let help: String?
+
+    func body(content: Content) -> some View {
+        if let help {
+            content.help(help).accessibilityHint(help)
         } else {
             content
         }

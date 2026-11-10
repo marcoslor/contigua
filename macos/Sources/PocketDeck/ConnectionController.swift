@@ -490,6 +490,14 @@ final class ConnectionController {
     private var dockHooksPending = true
     /// Bumped when Dock apps are added or removed, so menus re-read the folder.
     private(set) var dockRevision = 0
+    /// Bumped when an app, link or phone window opens, closes, is raised or
+    /// retitled: the Deck's "Open on this Mac" section re-reads the window set
+    /// (DECK-27). The window manager is not observable, so its changes land
+    /// here as one number the view tracks.
+    private(set) var openWindowsRevision = 0
+    /// Bumped when this phone's pins change (pin, unpin, a pin dropped for an
+    /// app the phone no longer lists), so the Deck redraws its Pinned row.
+    private(set) var deckPinsRevision = 0
     /// A link waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
@@ -1086,6 +1094,51 @@ final class ConnectionController {
         windows.openOrRaise(pkg: app.pkg, activity: app.activity)
     }
 
+    // MARK: The Deck's start page (ISS-74, DECK-26…DECK-31)
+
+    /// The packages with a Mac window open on the phone in use, front to back,
+    /// once each: the "Open on this Mac" section's order (DECK-27). An app
+    /// window is a Mac window whatever the phone shows, so a raise moves its
+    /// app to the front of the row.
+    var deckOpenPkgs: [String] {
+        _ = openWindowsRevision
+        var seen = Set<String>()
+        return windows.appWindows().map(\.pkg).filter { seen.insert($0).inserted }
+    }
+
+    /// This phone's pins, in pin order (DECK-28). Per phone: another phone in
+    /// use has its own list; the phone is never asked and never written to.
+    var deckPins: [String] {
+        _ = deckPinsRevision
+        guard let id = activePhone?.id else { return [] }
+        return DeckPinStore.load(deviceId: id, from: profile.defaults).pkgs
+    }
+
+    func pins(_ app: AppInfo) -> Bool { deckPins.contains(app.pkg) }
+
+    /// Whether the Pin item may act: an app already pinned can always be
+    /// unpinned; the ninth pin is refused while the list is full.
+    func canPin(_ app: AppInfo) -> Bool {
+        pins(app) || deckPins.count < DeckPage.pinnedLimit
+    }
+
+    /// The tile's Pin/Unpin menu item. Returns whether the list changed; the
+    /// ninth pin changes nothing (its item is disabled with the reason).
+    @discardableResult
+    func setPinned(_ app: AppInfo, _ pinned: Bool) -> Bool {
+        guard let id = activePhone?.id else { return false }
+        let current = DeckPinStore.load(deviceId: id, from: profile.defaults)
+        let next = pinned ? current.pinning(app.pkg) : current.unpinning(app.pkg)
+        guard next != current else { return false }
+        DeckPinStore.save(next, deviceId: id, to: profile.defaults)
+        deckPinsRevision += 1
+        return true
+    }
+
+    func togglePin(_ app: AppInfo) {
+        setPinned(app, !pins(app))
+    }
+
     /// File ▸ New <App> Window (⌘N, the Dock shim's menu, the Deck cell's
     /// menu): one more window of the key app on the phone in use (WIN-25).
     /// Every other entry point raises (WIN-36).
@@ -1119,6 +1172,7 @@ final class ConnectionController {
     /// every shim of those apps gets its new menu, and the Window menu's ⌘`
     /// item follows the key app's count at once (WIN-26, WIN-29).
     private func windowSetChanged() {
+        openWindowsRevision += 1
         MenuMarks.apply(to: NSApp.mainMenu)
         dockApps.refreshWindowMenus()
     }
@@ -3470,6 +3524,7 @@ final class ConnectionController {
         appsLoaded = true
         windows.appsByPkg = Dictionary(list.map { ($0.pkg, $0) }, uniquingKeysWith: { first, _ in first })
         windows.applyLabels()
+        prunePins(installed: list)
         if let id = link.phone?.id { appsCache.store(list, deviceId: id) }
         for app in list where icons[app.pkg] == nil {
             if let id = link.phone?.id, let cached = IconCache.shared.load(pkg: app.pkg, deviceId: id) {
@@ -3508,6 +3563,18 @@ final class ConnectionController {
         recheckOpenWindows()
         // An open-app intent needs the live list (a fresh profile has no cache).
         runPendingDebugIntents(immediateOnly: false)
+    }
+
+    /// An app the phone no longer lists loses its pin silently (DECK-28): the
+    /// list is the phone's, the pins are this Mac's, and a pin with no tile
+    /// would be a row that opens nothing.
+    private func prunePins(installed: [AppInfo]) {
+        guard let id = activePhone?.id else { return }
+        let current = DeckPinStore.load(deviceId: id, from: profile.defaults)
+        let next = current.pruning(Set(installed.map(\.pkg)))
+        guard next != current else { return }
+        DeckPinStore.save(next, deviceId: id, to: profile.defaults)
+        deckPinsRevision += 1
     }
 
     private func codeShown(deviceId: String?, code: String) {
@@ -4111,6 +4178,15 @@ final class ConnectionController {
             }
             Profile.active.defaults.set(value, forKey: DeckZoom.key)
             return nil
+        case "deckpin", "deckunpin":
+            // The Pin / Unpin menu item's action (DECK-28), for a quiet run
+            // that cannot click a context menu: setup, the same controller
+            // call the item makes. A full list refuses a ninth pin.
+            guard let pkg = arguments.first, let app = appInfo(pkg) else {
+                return "\(command) needs a known PKG"
+            }
+            let pinned = command == "deckpin"
+            return setPinned(app, pinned) ? nil : "the pin did not change"
         case "deckzoomwindow":
             // The Deck's standard zoom (DECK-24): the same AppKit path the
             // green button and a title-bar double-click take, so

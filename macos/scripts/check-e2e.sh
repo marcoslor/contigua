@@ -432,7 +432,7 @@ build_vdisplay() {
 # written against.
 vdisplay_size_for() {
     case "$1" in
-        deck) echo "2240x1170" ;;
+        deck|deckstart) echo "2240x1170" ;;
         *) echo "1280x800" ;;
     esac
 }
@@ -11865,6 +11865,13 @@ check_phones() {
     grep -qF -- "id=$id_b state=online current=1" "$report" \
         && ok "[PAIR-25] phones B is the current online row" \
         || bad "[PAIR-25] phones B is not the current online row"
+    # [DECK-30] With two phones remembered the Deck's title is the phone menu
+    # (a popup button), not the plain phone name.
+    if wait_until 10 eval 'ax_tree | grep -qE "(title|desc)=\[Phones\]"'; then
+        ok "[DECK-30] with two phones the Deck's title is the phone menu"
+    else
+        bad "[DECK-30] the Deck has no phone menu with two phones ($(ax_tree | tr '\n' '|' | cut -c1-300))"
+    fi
 
     # Both sessions answer the Mac's app-level ping for 20 s. The log is
     # cleared at the start of the window so each pong is inside it.
@@ -15024,6 +15031,172 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # shows both without errors and the grid is captured for the human (glass is
 # judged by eye in .agent/glass/; this check only asserts the wire and the
 # log say both kinds arrived).
+# --- The Deck as a start page (ISS-74, DECK-26…DECK-31) ---------------------
+#
+# The person's correction is the assertion: every section sits on All Apps'
+# columns, and its header starts at the grid's leading edge, at four widths.
+# The drawn frames come from the layout pass (--debug-deck-sections), not from
+# the model. Pins are seeded through the Pin item's own controller call (a quiet
+# run cannot click a context menu) and must survive a relaunch; the light and
+# dark shots are the visual record for the reviewer.
+check_deckstart() {
+    clean
+    local sections="$WORK/deck-sections.jsonl" shots="$SHOTS/deckstart"
+    # Eight pins, none of them in the three open windows: the ⌘4 proof below
+    # needs the first pin to open a new window, not raise one.
+    local -a pins=(com.spotify.music com.android.camera2 com.google.android.gm com.android.dialer
+                   com.google.android.apps.messaging com.google.android.apps.maps
+                   com.android.vending org.telegram.messenger)
+    local pinned_order
+    pinned_order="$(IFS=,; echo "${pins[*]}")"
+    mkdir -p "$shots" "$WORK-control"
+
+    FAKE_ARGS="--demo-apps 40 --rail-letters" start_fake || return 1
+    FAKE_ARGS=""
+
+    deckstart_launch() {  # deckstart_launch LIGHT|DARK KINDS [minimize]
+        [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null && stop_app
+        sleep 1
+        local minimize=()
+        [ "${3:-}" = "minimize" ] && minimize=(--minimize-stream 1:3 --minimize-stream 2:3 --minimize-stream 3:3)
+        launch --debug-control "$WORK-control" --connect "127.0.0.1:$PORT" \
+            --debug-deck-sections "$sections" --appearance "$1" \
+            --open com.android.settings,com.android.chrome,com.whatsapp \
+            ${minimize[@]+"${minimize[@]}"} --quit-after 600
+        wait_until 30 events_have '"t":"apps.list"' || bad "DECKSTART $1 no apps.list"
+        wait_until 30 python3 "$MACOS/scripts/deckstart-sections.py" "$sections" \
+            kinds "$2" >/dev/null 2>&1 \
+            && ok "DECKSTART $1 the page reads $2" \
+            || bad "DECKSTART $1 the page's sections are not $2 ($(python3 "$MACOS/scripts/deckstart-sections.py" "$sections" kinds "$2" 2>&1))"
+        sleep 2
+    }
+    shot_deck() {  # shot_deck NAME
+        local id
+        id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$id" "$shots/$1.png" >/dev/null 2>&1 \
+            && say "shot: $shots/$1.png" \
+            || bad "DECKSTART no Deck window for $1"
+    }
+    section_check() {  # section_check WIDTH
+        control deck-size "$1" 700 >/dev/null || bad "DECKSTART deck-size $1: $CONTROL_REPLY"
+        sleep 1.2
+        if python3 "$MACOS/scripts/deckstart-sections.py" "$sections" aligned "$1"; then
+            ok "[DECK-26] at $1 pt every section is on All Apps' columns, its header at the grid's edge"
+        else
+            bad "[DECK-26] at $1 pt the sections are not aligned ($(python3 "$MACOS/scripts/deckstart-sections.py" "$sections" aligned "$1" 2>&1))"
+        fi
+    }
+
+    deckstart_launch light "open:3,all:*"
+    # The Open section follows the windows, front first (DECK-27).
+    if python3 "$MACOS/scripts/deckstart-sections.py" "$sections" order open \
+        "com.whatsapp,com.android.chrome,com.android.settings"; then
+        ok "[DECK-27] Open on this Mac lists the three windows front first"
+    else
+        bad "[DECK-27] Open on this Mac is not the open windows ($(python3 "$MACOS/scripts/deckstart-sections.py" "$sections" order open "com.whatsapp,com.android.chrome,com.android.settings" 2>&1))"
+    fi
+
+    local n
+    for n in "${pins[@]}"; do
+        control deckpin "$n" || bad "DECKSTART deckpin $n: $CONTROL_REPLY"
+    done
+    wait_until 10 python3 "$MACOS/scripts/deckstart-sections.py" "$sections" order pinned "$pinned_order" >/dev/null 2>&1 \
+        && ok "[DECK-28] the eight pins sit in pin order" \
+        || bad "[DECK-28] the Pinned row is not the pin order ($(python3 "$MACOS/scripts/deckstart-sections.py" "$sections" order pinned "$pinned_order" 2>&1))"
+    # The ninth pin: the item is disabled; the action refuses it too.
+    if control deckpin com.google.android.youtube; then
+        bad "[DECK-28] a ninth pin was taken"
+    else
+        ok "[DECK-28] the ninth pin is refused ($CONTROL_REPLY)"
+    fi
+    wait_until 10 python3 "$MACOS/scripts/deckstart-sections.py" "$sections" order pinned "$pinned_order" >/dev/null 2>&1 \
+        && ok "[DECK-28] the refused ninth pin left the eight in order" \
+        || bad "[DECK-28] the refused ninth pin changed the row"
+
+    # The windows step back so the page is the shot; they are still windows on
+    # this Mac, so the row keeps its three (DECK-27).
+    control open --minimize-stream 1:0 --minimize-stream 2:0 --minimize-stream 3:0 >/dev/null \
+        || bad "DECKSTART minimize the open windows: $CONTROL_REPLY"
+    sleep 1.5
+
+    control deck-size 1000 700 >/dev/null || bad "DECKSTART deck-size 1000: $CONTROL_REPLY"
+    sleep 1.2
+    shot_deck "deckstart-1000-light"
+    section_check 760
+    section_check 1000
+    section_check 1200
+    section_check 1600
+    control deck-size 1000 700 >/dev/null || bad "DECKSTART deck-size 1000 (restore): $CONTROL_REPLY"
+
+    # A search collapses the page to its results, as today (DECK-26).
+    control deckquery cam >/dev/null || bad "DECKSTART deckquery cam: $CONTROL_REPLY"
+    wait_until 10 python3 "$MACOS/scripts/deckstart-sections.py" "$sections" search >/dev/null 2>&1 \
+        && ok "[DECK-26] while searching the sections collapse to the results alone" \
+        || bad "[DECK-26] the sections stayed while searching ($(python3 "$MACOS/scripts/deckstart-sections.py" "$sections" search 2>&1))"
+    control deckquery "" >/dev/null || bad "DECKSTART deckquery clear: $CONTROL_REPLY"
+    sleep 1
+
+    # The pins are this Mac's: a relaunch reads the same eight in order (DECK-28).
+    deckstart_launch dark "open:3,pinned:8,all:*" minimize
+    shot_deck "deckstart-1000-dark"
+    control deck-size 760 600 >/dev/null || bad "DECKSTART deck-size 760: $CONTROL_REPLY"
+    sleep 1
+    shot_deck "deckstart-760-dark"
+
+    # [DECK-29] ⌘1–⌘9 open the first nine visible tiles, sections included:
+    # ⌘1 raises the first open window (no second window.open), ⌘4 opens the
+    # first pin (a new window.open for it).
+    control deckfocus grid >/dev/null || bad "DECKSTART deckfocus: $CONTROL_REPLY"
+    local opens_before wins_before
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    wins_before="$(windows | wc -l | tr -d ' ')"
+    control key cmd+1 || bad "DECKSTART key cmd+1: $CONTROL_REPLY"
+    # The raise brings the window back from the Dock: a minimised window is not
+    # in the CGWindow list, so the count grows with no window.open sent.
+    if wait_until 8 eval '[ "$(windows | wc -l | tr -d " ")" -gt '"$wins_before"' ]'; then
+        ok "[DECK-29] ⌘1 raised the first open tile (its window is up again)"
+    else
+        bad "[DECK-29] ⌘1 raised nothing"
+    fi
+    [ "$(count_events '"t":"window.open"' | head -1)" = "$opens_before" ] \
+        && ok "[DECK-29] the raise sent no second window.open" \
+        || bad "[DECK-29] ⌘1 opened a second window"
+    # The raise made the stream window key; the Deck takes the keys again.
+    control deckfocus grid >/dev/null || bad "DECKSTART deckfocus (⌘4): $CONTROL_REPLY"
+    control key cmd+4 || bad "DECKSTART key cmd+4: $CONTROL_REPLY"
+    if wait_until 15 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ]; then
+        if grep '"t":"window.open"' "$WORK/events.jsonl" | tail -1 | grep -qF 'com.spotify.music'; then
+            ok "[DECK-29] ⌘4 opened the first pinned tile"
+        else
+            bad "[DECK-29] ⌘4 opened $(grep '"t":"window.open"' "$WORK/events.jsonl" | tail -1)"
+        fi
+    else
+        bad "[DECK-29] ⌘4 opened nothing"
+    fi
+    control open --close-stream 4:0 >/dev/null 2>&1 || true
+    sleep 2
+
+    # [DECK-31] Offline dims the whole page as one: the chip says Offline, the
+    # page under it is one dimmed layer (the shot is the record).
+    stop_fakephone
+    control deckpanel >/dev/null || bad "DECKSTART deckpanel (offline): $CONTROL_REPLY"
+    deck_offline() {
+        control paneldump deck "$WORK/deckstart-panel.json" >/dev/null 2>&1 || return 1
+        python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("status") == "Offline" else 1)' \
+            "$WORK/deckstart-panel.json"
+    }
+    if wait_until 60 deck_offline; then
+        ok "[DECK-31] the deck says Offline when the phone is away"
+        control deckpanelclose >/dev/null
+        sleep 1
+        shot_deck "deckstart-offline-dark"
+    else
+        bad "[DECK-31] the deck never said Offline ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status"))' "$WORK/deckstart-panel.json" 2>/dev/null))"
+    fi
+    stop_app
+    stop_fakephone
+}
+
 # The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
 # steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
 # Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
