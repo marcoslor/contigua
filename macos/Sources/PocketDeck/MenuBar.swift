@@ -253,6 +253,20 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
+            // View ▸ Icon Size: the Deck's own choice, one size per Mac
+            // (DECK-6). The checkmark follows the stored value when the menu
+            // opens (MenuMarks); the four items are the same steps ⌘+ / ⌘− /
+            // ⌘0 walk while the Deck is key.
+            Menu {
+                ForEach(DeckZoom.options, id: \.self) { option in
+                    Toggle(MenuModel.iconSizeTitle(option), isOn: Binding(
+                        get: { abs(iconSize - option) < 0.0005 },
+                        set: { _ in pickIconSize(option) }))
+                }
+            } label: {
+                Label("Icon Size", systemImage: "square.grid.2x2")
+            }
+            Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
             // that app. "Default" clears it; the check mark follows the
@@ -426,6 +440,15 @@ struct AppCommands: Commands {
 
     private func pickDensity(_ value: Double?) {
         controller.windows.setKeyWindowDensity(value)
+    }
+
+    /// The Deck's stored icon size (DECK-6).
+    private var iconSize: CGFloat {
+        DeckZoom.stored(in: Profile.active.defaults)
+    }
+
+    private func pickIconSize(_ value: CGFloat) {
+        Profile.active.defaults.set(Double(value), forKey: DeckZoom.key)
     }
 
     /// Stream windows implement these; the key window's controller answers.

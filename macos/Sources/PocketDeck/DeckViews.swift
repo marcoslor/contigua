@@ -858,18 +858,19 @@ final class GridNavigator {
 
     /// True when the key was used here and must not reach the search field.
     private func handle(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
-        guard let controller, controller.sheet == nil,
-              NSApp.keyWindow === DeckWindow.window else { return false }
-        // ⌘+ / ⌘− / ⌘0 scale the Deck grid, not a stream window's density
-        // (that menu item is disabled while the Deck is key).
-        if flags.contains(.command), flags.intersection([.control, .option]).isEmpty {
-            switch keyCode {
-            case 24, 69: setZoom(DeckZoom.step); return true       // = / + and keypad +
-            case 27, 78: setZoom(-DeckZoom.step); return true      // - and keypad -
-            case 29, 82: setZoom(nil); return true                 // 0 and keypad 0
-            default: break
+        guard let controller, controller.sheet == nil else { return false }
+        // ⌘+ / ⌘− / ⌘0 set the Deck's icon size, not a stream window's density
+        // (DECK-6): the keys are the same, so the key window decides. With a
+        // stream window key the press goes on to that window's own handling.
+        let deckIsKey = NSApp.keyWindow === DeckWindow.window
+        if let action = DeckKeyZoom.action(keyCode: keyCode, flags: flags, deckIsKey: deckIsKey) {
+            switch action {
+            case .step(let delta): setZoom(delta)
+            case .reset: setZoom(nil)
             }
+            return true
         }
+        guard deckIsKey else { return false }
         // ⌘F is the Deck's Find: focus the search field and select what is
         // already typed, like ⌘F in any Mac window. It is not a menu item — a
         // menu item would eat ⌘F in a stream window, where the key belongs to
@@ -938,6 +939,28 @@ enum DeckZoom {
     static func stored(in defaults: UserDefaults) -> CGFloat {
         let value = defaults.double(forKey: key)
         return value > 0 ? clamped(value) : 1
+    }
+}
+
+/// The Deck's icon-size keys as a value: ⌘+ / ⌘− step and ⌘0 returns to
+/// 100 %, but only while the Deck is the key window. A stream window's
+/// ⌘+ / ⌘− / ⌘0 belong to that window's density, so the same press there must
+/// not move the Deck's stored choice (DECK-6).
+enum DeckKeyZoom {
+    enum Action: Equatable {
+        case step(CGFloat)
+        case reset
+    }
+
+    static func action(keyCode: UInt16, flags: NSEvent.ModifierFlags, deckIsKey: Bool) -> Action? {
+        guard deckIsKey, flags.contains(.command),
+              flags.intersection([.control, .option]).isEmpty else { return nil }
+        switch keyCode {
+        case 24, 69: return .step(DeckZoom.step)       // = / + and keypad +
+        case 27, 78: return .step(-DeckZoom.step)      // - and keypad -
+        case 29, 82: return .reset                     // 0 and keypad 0
+        default: return nil
+        }
     }
 }
 
