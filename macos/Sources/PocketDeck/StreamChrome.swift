@@ -4,14 +4,15 @@
 // bar band — with a replica of the content's top edge, so nothing is read back
 // off the CPU and nothing is decoded twice. The replica carries the system's
 // progressive blur (strongest at the window's top edge, sharp at the seam)
-// turned up to 15 pt (BarBlur.swift), and a light white haze over the bar band
-// only, clear at its seam; nothing else lies over it: no material, tint or
-// scrim, so the bar shows the stream's own colours in light and dark apps
-// instead of a grey band. The traffic lights ride the bar's line as standard
-// controls. Immersive: no chrome at rest; the window is exactly the stream, and
-// the traffic lights live on a dwell pill that fades in at the stream's
-// top-left corner when the pointer rests there (DwellChrome, DwellPill in
-// WindowStyle.swift). Full screen has no bar in either style.
+// turned up to 30 pt (BarBlur.swift), a 14 % window-background tint and a light
+// white haze over the bar band only, clear at its seam; the stream's colours
+// still show through, so the bar reads as colour, not content. The centred
+// title is the app's name (or the phone's in the Mirror) in the tone the band
+// behind it allows (BarTitle.swift). The traffic lights ride the bar's line as
+// standard controls. Immersive: no chrome at rest; the window is exactly the
+// stream, and the traffic lights live on a dwell pill that fades in at the
+// stream's top-left corner when the pointer rests there (DwellChrome, DwellPill
+// in WindowStyle.swift). Full screen has no bar in either style.
 
 import AppKit
 import SwiftUI
@@ -64,6 +65,28 @@ final class StreamChromeView: NSView {
     /// The haze over the bar band only: white at the window's top edge, clear
     /// at the seam (WIN-40). Above the mirror, below the bar's controls.
     private let hazeLayer = CAGradientLayer()
+    /// The 14 % window-background tint over the bar band (WIN-67), above the
+    /// haze and below the title and the controls.
+    private let tintLayer = CALayer()
+    /// The centred title, one field per tone so a tone change cross-fades
+    /// instead of blinking (WIN-68, WIN-69). `titleLight` is white ink,
+    /// `titleDark` black.
+    private let titleLight = NSTextField(labelWithString: "")
+    private let titleDark = NSTextField(labelWithString: "")
+    /// What the bar names; nil hides the title (WIN-68).
+    private(set) var titleText: String?
+    /// The title's frame in this view, nil while hidden.
+    private var titleFrame: NSRect?
+    private var titleVisible = false
+    /// The band's two tones and their hysteresis (WIN-69).
+    private var toneMachine = BarToneMachine()
+    /// The displayed picture's top band, the mirror's own source.
+    private let toneSource: BarToneSource
+    /// Reduce Motion: a tone change applies at once.
+    private let reduceMotion: () -> Bool
+    private var toneTimer: Timer?
+    private var toneSampleInFlight = false
+    private var lastToneStamp: UInt64?
     /// Re-applies the system blur radius when the hosting view builds or
     /// rebuilds its backdrop (WIN-40).
     private let barBlur: BarBlurTuner
@@ -129,16 +152,21 @@ final class StreamChromeView: NSView {
     /// the mirrored video go now instead of living until the app quits
     /// (WIN-33). Nothing is drawn again from a released chrome.
     func releaseGraphics() {
+        stopToneTimer()
         ext.contentView = nil
         subviews.forEach { $0.removeFromSuperview() }
         layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
         layer?.contents = nil
     }
 
-    init(video: VideoLayerView, style: WindowStyle, barBlur: BarBlurTuner = BarBlurTuner()) {
+    init(video: VideoLayerView, style: WindowStyle, barBlur: BarBlurTuner = BarBlurTuner(),
+         toneSource: BarToneSource? = nil,
+         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.video = video
         self.style = style
         self.barBlur = barBlur
+        self.toneSource = toneSource ?? video
+        self.reduceMotion = reduceMotion
         super.init(frame: NSRect(origin: .zero, size: style.windowSize(stream: video.frame.size)))
         wantsLayer = true
         ext.automaticallyPlacesContentView = false
@@ -164,6 +192,30 @@ final class StreamChromeView: NSView {
         hazeLayer.endPoint = CGPoint(x: 0.5, y: 0)
         hazeLayer.zPosition = 0.55
         layer?.addSublayer(hazeLayer)
+        // The tint sits over the haze but under the title and every control.
+        tintLayer.zPosition = 0.56
+        tintLayer.isHidden = true
+        layer?.addSublayer(tintLayer)
+        for field in [titleLight, titleDark] {
+            field.font = BarTitle.font()
+            field.alignment = .center
+            field.lineBreakMode = .byTruncatingMiddle
+            field.usesSingleLineMode = true
+            field.maximumNumberOfLines = 1
+            field.isBezeled = false
+            field.drawsBackground = false
+            field.isEditable = false
+            field.isSelectable = false
+            field.alphaValue = 0
+            field.isHidden = true
+            field.wantsLayer = true
+            field.layer?.zPosition = 0.6
+            addSubview(field)
+        }
+        titleLight.textColor = .white
+        titleDark.textColor = .black
+        titleLight.setAccessibilityElement(false)
+        titleDark.setAccessibilityElement(false)
         addSubview(phoneOverlay)
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
@@ -379,21 +431,29 @@ final class StreamChromeView: NSView {
         reapplyBarBlur()
     }
 
-    /// Frames and shows the bar's haze from the current state: the 28 pt band
-    /// above the stream and nothing below its seam. Hidden while the opening
-    /// cover's ground or the stall overlay owns the bar, and in immersive or
-    /// full screen (both have no bar).
+    /// Frames and shows the bar's haze and tint from the current state: the
+    /// 28 pt band above the stream and nothing below its seam. Hidden while
+    /// the opening cover's ground or the stall overlay owns the bar, and in
+    /// immersive or full screen (both have no bar). The title follows them.
     func updateBarHaze() {
         let bar = barHeight
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let top = NSColor(white: 1, alpha: dark ? 0.14 : 0.30).cgColor
+        let top = NSColor(white: 1, alpha: ChromeBar.hazeTopAlpha(dark: dark)).cgColor
+        let visible = bar > 0 && !openingCover.isShowing && !stallOverlay.isShowing
+            && !phoneOverlay.isShowing
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         hazeLayer.colors = [top, NSColor(white: 1, alpha: 0).cgColor]
         hazeLayer.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
-        hazeLayer.isHidden = !(bar > 0 && !openingCover.isShowing && !stallOverlay.isShowing
-                               && !phoneOverlay.isShowing)
+        hazeLayer.isHidden = !visible
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            tintLayer.backgroundColor = NSColor.windowBackgroundColor
+                .withAlphaComponent(BarTitle.tintAlpha).cgColor
+        }
+        tintLayer.frame = hazeLayer.frame
+        tintLayer.isHidden = !visible
         CATransaction.commit()
+        updateBarTitle()
     }
 
     /// Re-applies the system blur radius after an event that can bring a new
@@ -402,6 +462,153 @@ final class StreamChromeView: NSView {
     func reapplyBarBlur(reportMissing: Bool = false) {
         guard window != nil else { return }
         barBlur.apply(in: ext.layer, reportMissing: reportMissing)
+    }
+
+    /// The bar's name: an app's, the phone's, or nil for a link or handoff
+    /// window that does not know an app yet (WIN-68, MIRROR-23).
+    func setBarTitle(_ text: String?) {
+        guard titleText != text else { return }
+        titleText = text
+        updateBarTitle()
+    }
+
+    /// Lays the title out and starts or stops its sampling. Called by every
+    /// layout and every cover change; the geometry is read at layout time,
+    /// never stored from a proposal.
+    private func updateBarTitle() {
+        let row = HeaderBar.row(actions.actions, rightEdge: bounds.width)
+        let frame = barTitleFrame(row: row)
+        titleFrame = frame
+        let shows = frame != nil
+        if shows != titleVisible {
+            titleVisible = shows
+            if shows {
+                titleLight.isHidden = false
+                titleDark.isHidden = false
+                if toneMachine.hasSample {
+                    applyTone(toneMachine.tone, animated: false)
+                } else {
+                    titleLight.alphaValue = 0
+                    titleDark.alphaValue = 0
+                }
+                startToneTimer()
+                sampleBarTone(force: !toneMachine.hasSample)
+            } else {
+                titleLight.isHidden = true
+                titleDark.isHidden = true
+                stopToneTimer()
+            }
+        }
+        guard let frame else { return }
+        let text = titleText ?? ""
+        if titleLight.stringValue != text {
+            titleLight.stringValue = text
+            titleDark.stringValue = text
+        }
+        titleLight.frame = frame
+        titleDark.frame = frame
+    }
+
+    private func barTitleFrame(row: HeaderBar.Row?) -> NSRect? {
+        guard !openingCover.isShowing, !stallOverlay.isShowing, !phoneOverlay.isShowing else { return nil }
+        return BarTitle.frame(text: titleText, windowWidth: bounds.width, barHeight: barHeight,
+                              boundsHeight: bounds.height, lightsEnd: BarTitle.lightsEnd,
+                              rightRowStart: row?.actionsX ?? bounds.width)
+    }
+
+    /// One tone sample at most every 0.5 s, and only when a new frame has
+    /// arrived since the last one: a still picture has no new tone.
+    private func startToneTimer() {
+        guard toneTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleBarTone(force: false) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        toneTimer = timer
+    }
+
+    private func stopToneTimer() {
+        toneTimer?.invalidate()
+        toneTimer = nil
+    }
+
+    private func sampleBarTone(force: Bool) {
+        guard titleVisible, let frame = titleFrame, !toneSampleInFlight else { return }
+        if !force, let last = lastToneStamp, last == toneSource.frameStamp { return }
+        let picture = video.videoRect()
+        guard picture.width > 0, picture.height > 0 else { return }
+        let x0 = max(frame.minX, picture.minX)
+        let x1 = min(frame.maxX, picture.maxX)
+        guard x1 > x0 else { return }
+        let from = (x0 - picture.minX) / picture.width
+        let to = (x1 - picture.minX) / picture.width
+        let band = min(1, ChromeBar.height / picture.height)
+        let stamp = toneSource.frameStamp
+        toneSampleInFlight = true
+        toneSource.topBandLuminance(xFrom: from, xTo: to, bandFraction: band) { [weak self] luminance in
+            guard let self else { return }
+            self.toneSampleInFlight = false
+            guard let luminance else { return }
+            self.lastToneStamp = stamp
+            self.consumeToneSample(luminance)
+        }
+    }
+
+    /// The band behind the title is the mirror's frame under the tint and the
+    /// haze at the title's line; the machine then decides the ink (WIN-69).
+    private func consumeToneSample(_ frameLuminance: Double) {
+        var tint = 0.0
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            tint = NSColor.windowBackgroundColor.relativeLuminance ?? tint
+        }
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let band = BarToneEstimate.band(
+            frameLuminance: frameLuminance,
+            tintLuminance: tint,
+            hazeAtTitle: Double(ChromeBar.hazeTopAlpha(dark: dark)) * BarTitle.hazeAtTitle)
+        let before = toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
+        let change = toneMachine.handle(.sample(band))
+        guard change != .ignored else { return }
+        applyTone(toneMachine.tone, animated: true)
+        let line = String(format: "bar tone: %@ --sample(%.2f)--> %@",
+                          before, band, toneMachine.tone.rawValue)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and a luminance
+    }
+
+    /// The two fields cross-fade; Reduce Motion swaps them at once.
+    private func applyTone(_ tone: BarTone, animated: Bool) {
+        titleLight.setAccessibilityElement(tone == .light)
+        titleDark.setAccessibilityElement(tone == .dark)
+        let light: CGFloat = tone == .light ? 1 : 0
+        let dark: CGFloat = tone == .dark ? 1 : 0
+        guard animated, !reduceMotion() else {
+            titleLight.alphaValue = light
+            titleDark.alphaValue = dark
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = BarTitle.fadeDuration
+            titleLight.animator().alphaValue = light
+            titleDark.animator().alphaValue = dark
+        }
+    }
+
+    /// The e2e's view of the title: shown, its rect in this view, its tone,
+    /// and the bar's tint. The text itself is never written to the state.
+    var barTitleVisible: Bool { titleVisible }
+    var barTitleToneName: String { toneMachine.tone.rawValue }
+    var barTitleRect: NSRect? { titleVisible ? titleFrame : nil }
+    var barTintVisible: Bool { !tintLayer.isHidden }
+
+    /// The tests' own clock tick: one forced sample, independent of the timer.
+    func sampleBarToneForTesting() {
+        sampleBarTone(force: true)
+    }
+
+    /// The title's truncation and its two ink alphas, for the tests.
+    var barTitleLineBreakMode: NSLineBreakMode { titleLight.lineBreakMode }
+    func barTitleAlpha(_ tone: BarTone) -> CGFloat {
+        tone == .light ? titleLight.alphaValue : titleDark.alphaValue
     }
 
     /// The system blur's radius right now, 0 when the fallback is in force
@@ -585,10 +792,12 @@ final class StreamChromeView: NSView {
         updateBarHaze()
         reapplyBarBlur()
         observeWindow()
+        if window == nil { stopToneTimer() }
     }
 
     deinit {
         windowObservers.forEach(NotificationCenter.default.removeObserver)
+        toneTimer?.invalidate()
     }
 
     /// Re-apply the radius when the window becomes or stops being key and when

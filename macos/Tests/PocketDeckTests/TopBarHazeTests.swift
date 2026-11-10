@@ -1,7 +1,7 @@
-// The framed bar's system blur and haze (WIN-40): the extension view's
-// backdrop filter is turned up to 15 pt, and a white haze fades over the bar
-// band only. The hide rules are the cover's ground, the stall overlay,
-// immersive and full screen.
+// The framed bar's system blur, tint and haze (WIN-40, WIN-67): the
+// extension view's backdrop filter is turned up to 30 pt, a 14 % tint and a
+// white haze fade over the bar band only. The hide rules are the cover's
+// ground, the stall overlay, immersive and full screen.
 
 import AppKit
 import XCTest
@@ -70,23 +70,37 @@ final class TopBarHazeTests: XCTestCase {
         return nil
     }
 
+    /// The 14 % window-background tint: a solid fill over the bar band.
+    private func barTint(in root: CALayer?) -> CALayer? {
+        guard let root else { return nil }
+        if let colour = root.backgroundColor.flatMap({ NSColor(cgColor: $0) })?.usingColorSpace(.sRGB),
+           abs(colour.alphaComponent - 0.14) < 0.005,
+           root.frame.height == ChromeBar.height, root.frame.width == 900 {
+            return root
+        }
+        for sub in root.sublayers ?? [] {
+            if let found = barTint(in: sub) { return found }
+        }
+        return nil
+    }
+
     func testTheSystemBarBlurIsTurnedUpAndSurvivesLayoutAndAppearance() throws {
         let (window, chrome) = makeChrome()
         defer { window.close() }
         let afterFirstLayout = try XCTUnwrap(variableBlur(in: chrome.layer),
                                              "the extension view hosts a variableBlur backdrop")
-        XCTAssertEqual(try XCTUnwrap(radius(afterFirstLayout)), 15, accuracy: 0.01,
-                       "the bar's system blur is the picked 15 pt, not the system's own 5")
+        XCTAssertEqual(try XCTUnwrap(radius(afterFirstLayout)), 30, accuracy: 0.01,
+                       "the bar's system blur is the picked 30 pt, not the system's own 5")
 
         chrome.layoutSubtreeIfNeeded()
         chrome.layoutChrome()
-        XCTAssertEqual(try XCTUnwrap(radius(variableBlur(in: chrome.layer))), 15, accuracy: 0.01,
+        XCTAssertEqual(try XCTUnwrap(radius(variableBlur(in: chrome.layer))), 30, accuracy: 0.01,
                        "a forced layout re-applies the radius")
 
         window.appearance = NSAppearance(named: .aqua)
         pump(0.2)
         chrome.layoutSubtreeIfNeeded()
-        XCTAssertEqual(try XCTUnwrap(radius(variableBlur(in: chrome.layer))), 15, accuracy: 0.01,
+        XCTAssertEqual(try XCTUnwrap(radius(variableBlur(in: chrome.layer))), 30, accuracy: 0.01,
                        "an appearance change re-applies the radius")
     }
 
@@ -136,6 +150,40 @@ final class TopBarHazeTests: XCTestCase {
         chrome.setStyle(.framed)
         chrome.layoutChrome()
         XCTAssertFalse(haze.isHidden, "the haze comes back with the framed bar")
+    }
+
+    func testTheTintSpansTheBarBandAndHidesWithTheHaze() throws {
+        let (window, chrome) = makeChrome()
+        defer { window.close() }
+        chrome.layoutChrome()
+        let tint = try XCTUnwrap(barTint(in: chrome.layer), "the bar has its 14 % tint")
+        XCTAssertEqual(tint.frame, NSRect(x: 0, y: chrome.bounds.height - ChromeBar.height,
+                                          width: chrome.bounds.width, height: ChromeBar.height),
+                       "the tint spans the 28 pt bar and nothing below the seam")
+        XCTAssertGreaterThan(tint.zPosition, 0.5, "the tint sits above the haze")
+        XCTAssertTrue(chrome.barTintVisible, "the tint shows with the framed bar")
+
+        chrome.openingCover.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9",
+                                                       phoneMode: false), icon: nil)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTintVisible, "the opening cover's ground takes the tint with the haze")
+        chrome.openingCover.show(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        chrome.layoutChrome()
+
+        chrome.stallOverlay.show(StallOverlayDisplay(kind: .stalled, phone: "Pixel 9"), icon: nil)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTintVisible, "the stall overlay owns the bar")
+        chrome.stallOverlay.hide()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        chrome.layoutChrome()
+
+        chrome.setStyle(.immersive)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTintVisible, "immersive has no bar and no tint")
+        chrome.setStyle(.framed)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTintVisible, "the tint comes back with the framed bar")
     }
 
     func testAMissingSystemFilterKeepsTheSystemsOwnRadiusAndSaysSoOnce() throws {
