@@ -41,7 +41,7 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
-Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
+Find Apps · Immersive / Framed (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
 125 %, 150 %, the current one checked) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
 system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
@@ -76,23 +76,26 @@ work is disabled, never hidden.
      when it was last seen. A phone that no longer trusts this Mac, or whose connections
      switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
      connections-off banner adds one line naming the switch on the phone.
-2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
-   Style), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
+2. **App windows**: two styles, View ▸ **Immersive** / **Framed** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
+   Style), remembered per app: **Immersive** (default) is the stream plus a permanent 28 pt bar
    above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, with the app's name centred on
    that line (the phone's name in the Phone Mirror, and for a link or a handoff only once the phone reports an app), the traffic lights
-   on that line; **Immersive** is only the
-   stream, with rounded corners and a shadow, no title bar, and the desktop shows right up to it; a rest at its top-left (350 ms by default; Settings →
-   General → **Reveal controls after** picks Instantly, Short or Long) fades in a small clear-glass pill with the traffic lights (Back · Home · Recents
-   join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades out 600 ms after the pointer
-   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. Native full screen is macOS's own View item
-   (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the screen in
-   either style; the bar macOS reveals at the top edge is the system's, with the window's title centred and the standard traffic lights. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   on that line; **Framed** is the stream inside a real frame on all four sides — 38.5 pt above and 5.5 pt on the other three sides, a
+   22 pt window corner radius and an 11.5 pt picture radius, the system's dark or light material, a hairline and a lighter rim, the app's
+   name in the system label colour, the traffic lights and our controls in the taller bar (the measured numbers and the reference are in
+   DESIGN.md). Switching grows or shrinks the window by the difference between the two insets, the stream keeps its place. Native full
+   screen is macOS's own View item (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the
+   screen in either style and a translucent 28 pt acrylic bar holds our traffic lights, the title and our controls without the mirror. It
+   stays hidden until the pointer reaches the top edge and rests there (350 ms by default; **View ▸ Hide Controls** and Settings →
+   General → **Reveal controls after** pick Instantly, Short or Long) and slides in; it slides away 600 ms after the pointer leaves it, or
+   goes at once on leaving full screen. **Always Visible** keeps it up; picking it never changes a window's style. A click at the top
+   edge before the bar shows is still the app's own touch. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
    **View → Show Touches** (on by default on a Mac with a trackpad) draws a dot where the phone is being touched by a trackpad
-   gesture — touches only, never the pointer's hover — and the framed bar above the stream never shows it: the bar mirrors the
+   gesture — touches only, never the pointer's hover — and the Immersive bar above the stream never shows it: the bar mirrors the
    video, not the overlay.
    The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
    mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
@@ -239,10 +242,10 @@ dark background, a 2 pt accent line sweeping under the window's top edge
 <phone>**.
 
 The cover is the whole window in either style: one sheet from the top edge,
-with the traffic lights and the action pill laid out as Immersive lays them out
-and the icon, title and line where Immersive puts them. A framed window's bar —
-its mirror, blur and haze — arrives with the first frame, so the loading state
-looks the same in Framed and Immersive; the stored style does not change.
+with the traffic lights and our controls on the top row, and the icon, title and
+line where Immersive puts them. The style's bar — its mirror, blur and haze — or
+frame — its material and rim — arrives with the first frame, so the loading
+state looks the same in Framed and Immersive; the stored style does not change.
 
 - 0–5 s: the icon, the line and the title.
 - 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel
@@ -332,7 +335,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | --- | --- | --- |
 | ⇧⌘N | Add Phone… | File |
 | ⌘K | Find Apps | View |
-| ⌥⌘F | Framed window style (the same key toggles Framed / Immersive) | View |
+| ⌥⌘F | Toggle window style (Immersive / Framed) | View |
 | ⌃Tab | Move the keyboard into the Phone Mirror's bar; ←/→, Tab, Return and Esc act there | Phone Mirror |
 | ⇧⌘T | Live Text | View |
 | ⌘+ | Larger: the Deck's icon size, or the window's density | View, Deck |
