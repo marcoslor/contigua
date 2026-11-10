@@ -375,42 +375,38 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// The app's watch set keeps a touched folder on the phone for ten minutes.
     var onTouch: ((String) -> Void)?
 
-    /// The page being built for a folder's listing.
-    private var building: [String: [String: FileItem]] = [:]
+    /// One job per folder (ISS-37): its phase, the one walk that may run for
+    /// it, and the refresh a phone push may owe. Empty means the folder is idle.
+    private var jobs: [String: FolderJob] = [:]
+    /// The session run: a drop or a new ready changes it, and a late page or
+    /// timer from the old run changes nothing.
+    private var jobToken = 0
     /// Which containers a folder belongs to, for a phone-side change.
     private var pathByItem: [String: String] = [:]
     private var itemsByPath: [String: Set<String>] = [:]
 
-    /// One listing walk per folder: the machine and the record as it was when
-    /// the walk's first page was asked (FILES-31's write-racing guard).
-    private struct ListingWalk {
-        var machine: FilesWalk
-        var start: [String: FileItem]
-    }
-    private var walks: [String: ListingWalk] = [:]
-    /// Folders whose confirmation re-list is pending or running.
-    private var confirming: Set<String> = []
     /// Identifiers (and create names per folder) with an upload in flight: a
     /// listing never deletes one (FILES-31).
     private var uploading: Set<String> = []
     private var uploadNames: [String: Set<String>] = [:]
-    /// Folders already being re-listed after a `fs_not_found` (FILES-34).
-    private var repairing: Set<String> = []
     /// The reconnect resync (FILES-33): its phases and the record it reads.
     private(set) var resync = FilesResync()
-    /// Which run of the machine is current: a drop or a new ready invalidates
-    /// the late callbacks of the old one.
-    private var resyncGeneration = 0
     /// The record's folders this session's resync has taken responsibility for:
     /// the bridge's re-watch touches must not list them again, because the
     /// digest compare (or the resync's own listing) is that folder's check.
     private var resyncCovered: Set<String> = []
     /// The folders one `fs.digest` was asked about, for mapping path → folder.
     private var resyncFolders: [FilesResync.Folder] = []
-    /// The record's clock and the confirmation delay; tests move both by hand.
+    /// The record's clock and the two delays; tests move all three by hand.
     var clock: () -> TimeInterval = { Date().timeIntervalSince1970 }
     var confirmDelay: TimeInterval = 2
+    var refreshDelay: TimeInterval = 0.15
     var confirmScheduler: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {  // gcd: one injected delay
+            MainActor.assumeIsolated { work() }
+        }
+    }
+    var refreshScheduler: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {  // gcd: one injected delay
             MainActor.assumeIsolated { work() }
         }
@@ -540,20 +536,34 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     // MARK: Reads
 
+    /// The extension's read of a folder (design § Sync integrity, 2): when the
+    /// folder is idle this page starts its job's walk, so even a repeat
+    /// enumeration diffs the record; while a pass already runs, the read is
+    /// answered without recording (one pass owns the record).
     func list(item: String, page: String?,
               completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void) {
         guard !filesSystemContainer(item) else {
             return completion(.failure(FsError(code: "fs_not_found")))
         }
         onTouch?(item)
-        if page == nil { beginWalk(item) }
+        var token: Int?
+        if page == nil {
+            let (record, _) = currentRecord(item)
+            let action = step(.systemStart(recorded: record.count, start: record,
+                                           token: jobToken), on: item)
+            if action == .start { token = jobs[item]?.walk?.token }
+        } else {
+            token = jobs[item]?.systemPageToken(page)
+        }
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
-                let partial = Array((self.building[item] ?? [:]).values)
-                self.building.removeValue(forKey: item)
-                self.finishWalk(item: item, listing: partial, failed: true)
+                if let token {
+                    let action = self.pageEvent(item: item, token: token, items: [], next: nil,
+                                                digest: nil, failed: true)
+                    self.run(action, item: item)
+                }
                 completion(.failure(error))
             case .success(let path):
                 self.client.list(path: path, page: page) { result in
@@ -562,20 +572,19 @@ final class SessionBridgeHost: FilesBridgeHost {
                         let items = self.map.insert(childrenOf: path, parentIdentifier: item,
                                                     items: listing.items)
                         self.save()
-                        var pageItems = self.building[item] ?? [:]
-                        for mapped in items { pageItems[mapped.identifier] = mapped }
-                        if listing.next == nil {
-                            self.building.removeValue(forKey: item)
-                            self.finishWalk(item: item, listing: Array(pageItems.values),
-                                            digest: listing.digest)
-                        } else {
-                            self.building[item] = pageItems
+                        if let token {
+                            let action = self.pageEvent(item: item, token: token, items: items,
+                                                        next: listing.next, digest: listing.digest,
+                                                        failed: false)
+                            self.run(action, item: item)
                         }
                         completion(.success((items, listing.next)))
                     case .failure(let error):
-                        let partial = Array((self.building[item] ?? [:]).values)
-                        self.building.removeValue(forKey: item)
-                        self.finishWalk(item: item, listing: partial, failed: true)
+                        if let token {
+                            let action = self.pageEvent(item: item, token: token, items: [],
+                                                        next: nil, digest: nil, failed: true)
+                            self.run(action, item: item)
+                        }
                         completion(.failure(error))
                     }
                 }
@@ -583,94 +592,152 @@ final class SessionBridgeHost: FilesBridgeHost {
         }
     }
 
-    /// The first page of a folder's walk starts the record comparison; the
-    /// confirmation re-list keeps the machine and the record it started from.
-    private func beginWalk(_ item: String) {
-        building[item] = [:]
-        guard !confirming.contains(item) else { return }
-        walks[item] = ListingWalk(
-            machine: FilesWalk(recorded: replica.folders[item]?.children.count ?? 0),
-            start: replica.folders[item]?.children ?? [:])
+    /// The record's children and digest as they are now.
+    private func currentRecord(_ item: String) -> ([String: FileItem], String?) {
+        let record = replica.folders[item]
+        return (record?.children ?? [:], record?.digest)
     }
 
-    /// The last page (or an error) of one walk: diff against the record, apply
-    /// the guards, let the machine decide, then write what the system is told.
-    /// A complete walk also stores the last page's digest (FILES-35); an
-    /// incomplete one keeps the record's previous digest.
-    private func finishWalk(item: String, listing: [FileItem]? = nil, failed: Bool = false,
-                            digest: String? = nil) {
-        guard var walk = walks[item] else { return }
-        let current = replica.folders[item]?.children ?? [:]
-        let seen = listing ?? []
-        var delta = FilesDiff.delta(old: current, new: seen)
-        var recordListing = seen
-        if failed {
-            // Additions and changes only: an unseen item is not a deletion.
-            delta.deleted = []
-            var merged = current
-            for child in seen { merged[child.identifier] = child }
-            recordListing = Array(merged.values)
+    /// One event through a folder's job, with one phase log per change. An idle
+    /// job leaves the map, so a session's folders do not accumulate.
+    @discardableResult
+    private func step(_ event: FolderJob.Event, on item: String) -> FolderJob.Action {
+        var job = jobs[item] ?? FolderJob(folder: item)
+        let before = job.state
+        let action = job.apply(event)
+        if before.code != job.state.code {
+            Log.files.notice("folder: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(job.state.code, privacy: .public)")
+        }
+        if case .idle = job.state {
+            jobs.removeValue(forKey: item)
         } else {
-            delta.deleted = delta.deleted.filter { identifier in
-                guard let now = current[identifier], let then = walk.start[identifier]
-                else { return false }
-                // A Mac write during the walk already told the system; the
-                // listing that was asked before it cannot delete the item.
-                if now != then { return false }
-                if uploading.contains(identifier) { return false }
-                if let names = uploadNames[item], names.contains(now.name) { return false }
-                return true
-            }
+            jobs[item] = job
         }
-        let event: FilesWalk.Event
-        if walk.machine.isConfirming {
-            event = failed ? .confirmFailed(delta: delta, listing: recordListing)
-                           : .confirmed(delta: delta, listing: recordListing)
-        } else {
-            event = failed ? .failed(delta: delta, listing: recordListing)
-                           : .finished(delta: delta, listing: recordListing)
-        }
-        let before = walk.machine.state
-        let action = walk.machine.apply(event)
-        walks[item] = walk
-        if before != walk.machine.state {
-            Log.files.notice("walk: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(walk.machine.state.code, privacy: .public) items=\(delta.items.count, privacy: .public) deletions=\(delta.deleted.count, privacy: .public)")
-        }
-        apply(action, item: item, current: current, digest: digest, failed: failed)
+        return action
     }
 
-    private func apply(_ action: FilesWalk.Action, item: String, current: [String: FileItem],
-                       digest: String?, failed: Bool) {
+    /// Runs one job action. `.start` asks the first page of a host pass;
+    /// `.serveOnly` answers a read without recording it; a timer comes back as
+    /// `confirmDue`/`refreshDue` after the host's delay.
+    private func run(_ action: FolderJob.Action, item: String,
+                     completion: ((Result<Void, FsError>) -> Void)? = nil) {
         switch action {
-        case .none:
-            break
-        case .confirm:
-            confirming.insert(item)
+        case .start:
+            guard let token = jobs[item]?.walk?.token else {
+                completion?(.success(()))
+                return
+            }
+            walkPages(item: item, cursor: nil, token: token, completion: completion)
+        case .serveOnly:
+            walkPages(item: item, cursor: nil, token: nil, completion: completion)
+        case .scheduleConfirm:
+            guard let token = jobs[item]?.walk?.token else { return }
             confirmScheduler(confirmDelay) { [weak self] in
                 guard let self else { return }
-                self.listPages(item: item) { [weak self] _ in
-                    self?.confirming.remove(item)
+                self.run(self.step(.confirmDue(token: token), on: item), item: item)
+            }
+        case .scheduleRefresh:
+            guard let state = jobs[item]?.state,
+                  case .refreshing(_, let token) = state else { return }
+            refreshScheduler(refreshDelay) { [weak self] in
+                guard let self else { return }
+                let (record, _) = self.currentRecord(item)
+                self.run(self.step(.refreshDue(token: token, recorded: record.count,
+                                               start: record), on: item), item: item)
+            }
+        case .report(let delta, let listing, let digest, let dropped):
+            applyReport(delta, listing: listing, digest: digest, dropped: dropped, item: item)
+        case .none:
+            break
+        }
+    }
+
+    /// Every page of one host-driven walk; `token` nil is a read that records
+    /// nothing. The closure runs once, at the last page or the first failure.
+    private func walkPages(item: String, cursor: String?, token: Int?,
+                           completion: ((Result<Void, FsError>) -> Void)?) {
+        onTouch?(item)
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                if let token {
+                    let action = self.pageEvent(item: item, token: token, items: [], next: nil,
+                                                digest: nil, failed: true)
+                    self.run(action, item: item)
+                }
+                completion?(.failure(error))
+            case .success(let path):
+                self.client.list(path: path, page: cursor) { result in
+                    switch result {
+                    case .success(let listing):
+                        let items = self.map.insert(childrenOf: path, parentIdentifier: item,
+                                                    items: listing.items)
+                        self.save()
+                        if let token {
+                            let action = self.pageEvent(item: item, token: token, items: items,
+                                                        next: listing.next, digest: listing.digest,
+                                                        failed: false)
+                            self.run(action, item: item)
+                        }
+                        if let next = listing.next {
+                            self.walkPages(item: item, cursor: next, token: token,
+                                           completion: completion)
+                        } else {
+                            completion?(.success(()))
+                        }
+                    case .failure(let error):
+                        if let token {
+                            let action = self.pageEvent(item: item, token: token, items: [],
+                                                        next: nil, digest: nil, failed: true)
+                            self.run(action, item: item)
+                        }
+                        completion?(.failure(error))
+                    }
                 }
             }
-        case .report(let delta, let listing):
-            var children: [String: FileItem] = [:]
-            for child in listing { children[child.identifier] = child }
-            // A guarded deletion keeps the item: the system still has it, and
-            // the next walk must still see it in the record.
-            for (identifier, old) in current
-            where children[identifier] == nil && !delta.deleted.contains(identifier) {
-                children[identifier] = old
-            }
-            replica.folders[item] = FilesFolderRecord(
-                children: children, touched: clock(),
-                // Only a complete walk's last page names the folder's state; a
-                // failed one leaves the digest for the next compare.
-                digest: failed ? replica.folders[item]?.digest : digest)
-            if replica.log.record(container: item, delta: delta) {
-                signal([item])
-            }
-            save()
         }
+    }
+
+    /// One page (or a failure) into the job: the page events carry the token the
+    /// pass started with, so a page from a dropped run changes nothing.
+    private func pageEvent(item: String, token: Int, items: [FileItem], next: String?,
+                           digest: String?, failed: Bool) -> FolderJob.Action {
+        let (record, recordDigest) = currentRecord(item)
+        let names = uploadNames[item] ?? []
+        if failed {
+            return step(.failedPage(token: token, record: record, recordDigest: recordDigest,
+                                    idMap: map, uploading: uploading, uploadNames: names),
+                        on: item)
+        }
+        if let next {
+            return step(.page(token: token, items: items, next: next), on: item)
+        }
+        return step(.lastPage(token: token, items: items, digest: digest, record: record,
+                              idMap: map, uploading: uploading, uploadNames: names), on: item)
+    }
+
+    /// Writes what the system is told: the record's children, the change log,
+    /// and the working-set signal (FILES-31). A guarded deletion keeps the
+    /// item; an identifier the id map moved elsewhere leaves the record without
+    /// a deletion, because the system itself moved it.
+    private func applyReport(_ delta: FilesDelta, listing: [FileItem], digest: String?,
+                             dropped: Set<String>, item: String) {
+        let current = replica.folders[item]?.children ?? [:]
+        var children: [String: FileItem] = [:]
+        for child in listing { children[child.identifier] = child }
+        for (identifier, old) in current
+        where children[identifier] == nil && !delta.deleted.contains(identifier)
+            && !dropped.contains(identifier) {
+            children[identifier] = old
+        }
+        replica.folders[item] = FilesFolderRecord(children: children, touched: clock(),
+                                                  digest: digest)
+        if replica.log.record(container: item, delta: delta) {
+            signal([item])
+        }
+        Log.files.notice("folder: report items=\(delta.items.count, privacy: .public) deletions=\(delta.deleted.count, privacy: .public) dropped=\(dropped.count, privacy: .public)")
+        save()
     }
 
     func stat(item: String, completion: @escaping (Result<FileItem, FsError>) -> Void) {
@@ -1040,8 +1107,11 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// recently touched first and at most 64 (design § Sync integrity, 4).
     /// Every connect comes through here, and so does an app start.
     func sessionReady() {
-        resyncGeneration += 1
-        let generation = resyncGeneration
+        // A new run: every job and every late callback of the old session is
+        // void (the same token the resync guards its replies with).
+        jobToken += 1
+        jobs.removeAll()
+        let generation = jobToken
         let candidates = resyncCandidates()
         resyncFolders = candidates
         resyncCovered = Set(candidates.map(\.id))
@@ -1050,10 +1120,12 @@ final class SessionBridgeHost: FilesBridgeHost {
         runResync(action, generation: generation)
     }
 
-    /// The session ended (or the switch went off): the resync goes back to idle
-    /// and the next ready starts over. A late phone reply is ignored.
+    /// The session ended (or the switch went off): every pass is abandoned, the
+    /// resync goes back to idle, and the next ready starts over. A late phone
+    /// reply changes nothing.
     func sessionDropped() {
-        resyncGeneration += 1
+        jobToken += 1
+        jobs.removeAll()
         _ = resync.apply(.dropped)
         resyncCovered.removeAll()
         resyncFolders.removeAll()
@@ -1086,7 +1158,7 @@ final class SessionBridgeHost: FilesBridgeHost {
     }
 
     private func stepResync(_ event: FilesResync.Event, generation: Int) {
-        guard generation == resyncGeneration else { return }
+        guard generation == jobToken else { return }
         let before = resync.state
         let action = resync.apply(event)
         if before != resync.state {
@@ -1096,14 +1168,14 @@ final class SessionBridgeHost: FilesBridgeHost {
     }
 
     private func runResync(_ action: FilesResync.Action, generation: Int) {
-        guard generation == resyncGeneration else { return }
+        guard generation == jobToken else { return }
         switch action {
         case .none, .finished:
             break
         case .ask(let paths):
             client.digest(paths: paths) { [weak self] result in
                 MainActor.assumeIsolated {
-                    guard let self, generation == self.resyncGeneration else { return }
+                    guard let self, generation == self.jobToken else { return }
                     switch result {
                     case .success(let values):
                         self.stepResync(.digests(self.answers(values)), generation: generation)
@@ -1121,7 +1193,10 @@ final class SessionBridgeHost: FilesBridgeHost {
             guard !relist.isEmpty else { return }
             Log.files.notice("resync: relisting=\(relist.count, privacy: .public) deleted=\(Set(deletions).count, privacy: .public)")
             for identifier in relist {
-                listPages(item: identifier) { [weak self] _ in
+                let (record, _) = currentRecord(identifier)
+                startHostPass(identifier,
+                              .hostStart(recorded: record.count, start: record,
+                                         token: generation)) { [weak self] _ in
                     MainActor.assumeIsolated {
                         self?.stepResync(.listed(identifier), generation: generation)
                     }
@@ -1148,6 +1223,7 @@ final class SessionBridgeHost: FilesBridgeHost {
         var frontier = [identifier]
         while let next = frontier.popLast() {
             guard let record = replica.folders.removeValue(forKey: next) else { continue }
+            jobs.removeValue(forKey: next)
             if seen.insert(next).inserted { deleted.append(next) }
             for (childID, child) in record.children {
                 if seen.insert(childID).inserted { deleted.append(childID) }
@@ -1193,18 +1269,22 @@ final class SessionBridgeHost: FilesBridgeHost {
         guard item != FilesMap.rootIdentifier, !filesSystemContainer(item) else { return }
         if let path { forget(map.invalidate(subtree: path)) }
         replica.folders.removeValue(forKey: item)
+        jobs.removeValue(forKey: item)
         let container = parent(of: item)
         removeReported(item, from: container)
         Log.files.notice("bridge: not found repair")
-        guard repairing.insert(container).inserted else { return }
-        listPages(item: container) { [weak self] _ in
-            self?.repairing.remove(container)
-        }
+        let (record, _) = currentRecord(container)
+        startHostPass(container,
+                      .notFound(recorded: record.count, start: record, token: jobToken))
     }
 
-    /// A subtree the id map no longer knows: its folders' records are stale too.
+    /// A subtree the id map no longer knows: its folders' records and jobs are
+    /// stale too.
     private func forget(_ identifiers: [String]) {
-        for identifier in identifiers { replica.folders.removeValue(forKey: identifier) }
+        for identifier in identifiers {
+            replica.folders.removeValue(forKey: identifier)
+            jobs.removeValue(forKey: identifier)
+        }
     }
 
     func delete(item: String, base: String, recursive: Bool,
@@ -1340,60 +1420,27 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// listing against the record, so what changed on the phone while nothing
     /// watched it reaches the system (design § Sync integrity, 2). Later touches
     /// only keep the watch alive; the phone's pushes cover the rest.
-    private var visiting: Set<String> = []
-
     private func visit(_ item: String) {
         // The resync already compared this folder against the phone (its digest,
         // or its own listing): a re-watch touch must not list it a second time.
         guard !resyncCovered.contains(item) else { return }
-        guard !refreshing.contains(item), visiting.insert(item).inserted else { return }
-        listPages(item: item) { [weak self] _ in
-            self?.visiting.remove(item)
-        }
+        let (record, _) = currentRecord(item)
+        startHostPass(item, .visit(recorded: record.count, start: record, token: jobToken))
     }
 
-    /// Containers being re-listed right now, and those that moved again while
-    /// they were (a rename arrives as more than one notification).
-    private var refreshing: Set<String> = []
-    private var refreshAgain: Set<String> = []
-
-    /// Re-lists one container; the walk diffs it against the record and
-    /// signals when something moved (FILES-31). The extension is signalled for
-    /// every changed container; the delta rides in its anchor log.
+    /// Re-lists one container after a phone push; the walk diffs it against the
+    /// record and signals when something moved (FILES-31). The job settles the
+    /// push briefly first (a rename arrives as a delete and an add), holds one
+    /// pass at a time per folder, and remembers one more if it moved again.
     private func refresh(_ item: String) {
-        if refreshing.contains(item) {
-            // One listing at a time per folder: a burst is settled by the run
-            // that is already happening (or by one more right after it).
-            refreshAgain.insert(item)
-            return
-        }
-        refreshing.insert(item)
-        // A rename can reach us as a delete followed by an add a moment later;
-        // settling briefly keeps one re-listing from reporting the file gone
-        // between its two names.
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self] in
-            guard let self else { return }
-            self.listPages(item: item) { _ in
-                self.refreshing.remove(item)
-                if self.refreshAgain.remove(item) != nil { self.refresh(item) }
-            }
-        }
+        startHostPass(item, .refresh(token: jobToken))
     }
 
-    /// Every page of one container; the closure runs once, at the last page.
-    private func listPages(item: String,
-                           completion: @escaping (Result<Void, FsError>) -> Void) {
-        func page(_ cursor: String?) {
-            list(item: item, page: cursor) { result in
-                switch result {
-                case .failure(let error):
-                    completion(.failure(error))
-                case .success(let listing):
-                    if let next = listing.next { page(next) } else { completion(.success(())) }
-                }
-            }
-        }
-        page(nil)
+    /// Starts one app-driven pass and runs what the job asks for. The closure
+    /// runs once, when the pass is over.
+    private func startHostPass(_ item: String, _ event: FolderJob.Event,
+                               completion: ((Result<Void, FsError>) -> Void)? = nil) {
+        run(step(event, on: item), item: item, completion: completion)
     }
 
     func cancel(id: UInt32) { client.cancel(id: id) }

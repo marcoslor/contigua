@@ -21,60 +21,76 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(GridMetrics.maxContentWidth, 880)
     }
 
-    /// DECK-4: over 1000 pt the whole grid grows with the window — cells,
-    /// icons, gaps, insets and the 880 pt cap — up to 1.5× at 1500 pt.
-    func testTheWidthFactorGrowsTheWholeGridToItsCap() {
-        XCTAssertEqual(DeckWide.tileScale(width: 800), 1, "a narrow window draws at the person's zoom")
-        XCTAssertEqual(DeckWide.tileScale(width: 1000), 1, "1000 pt is the reference width")
-        XCTAssertEqual(DeckWide.tileScale(width: 1250), 1.25, accuracy: 0.001)
-        XCTAssertEqual(DeckWide.tileScale(width: 1440), 1.44, accuracy: 0.001)
-        XCTAssertEqual(DeckWide.tileScale(width: 1500), 1.5)
-        XCTAssertEqual(DeckWide.tileScale(width: 1960), 1.5, "the factor is clamped at 1.5×")
-
+    /// DECK-4: one cell and icon size at every window width — a resize only
+    /// changes the column count, and past the 880 pt cap the block is centred
+    /// with margins instead of growing.
+    func testTheGridKeepsOneSizeAtEveryWidth() {
         for zoom in DeckZoom.options {
-            for width in [CGFloat(800), 1000, 1440, 1960] {
-                let factor = DeckWide.tileScale(width: width)
-                let metrics = DeckGridSize(zoom: zoom, width: width)
-                XCTAssertEqual(metrics.tileScale, factor, accuracy: 0.001, "zoom \(zoom) at \(width)")
-                XCTAssertEqual(metrics.cellWidth, 96 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.cellHeight, 108 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.iconSide, 64 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.columnGap, 16 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.rowSpacing, 16 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.verticalInset, 24 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.iconLabelGap, 8 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.cornerRadius, 16 * zoom * factor, accuracy: 0.001)
-                XCTAssertEqual(metrics.maxContentWidth, 880 * zoom * factor, accuracy: 0.001,
-                               "the cap scales with the tiles")
+            for width in [CGFloat(640), 760, 1000, 1200, 1500, 1960] {
+                let metrics = DeckGridSize(zoom: zoom)
                 let block = DeckWide.block(width: width, metrics: metrics)
+                XCTAssertEqual(metrics.cellWidth, 96 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.cellHeight, 108 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.iconSide, 64 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.columnGap, 16 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.rowSpacing, 16 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.verticalInset, 24 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.iconLabelGap, 8 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.cornerRadius, 16 * zoom, accuracy: 0.001, "zoom \(zoom) at \(width)")
+                XCTAssertEqual(metrics.maxContentWidth, 880 * zoom, accuracy: 0.001,
+                               "the cap does not grow with the window")
                 XCTAssertEqual(block.span, CGFloat(block.columns) * metrics.cellWidth
                                + CGFloat(block.columns - 1) * metrics.columnGap, accuracy: 0.001)
                 XCTAssertLessThanOrEqual(block.span, metrics.maxContentWidth + 0.001,
                                          "zoom \(zoom) at \(width) stays inside the cap")
+                XCTAssertEqual(block.originX, (width - block.span - DeckWide.railSpace) / 2,
+                               accuracy: 0.001, "the capped block is centred at \(width)")
             }
         }
+        // The drawn frame, not only the value: the layout that used to apply
+        // the width factor must draw one cell at every width.
+        for width in [CGFloat(640), 760, 1000, 1200, 1500, 1960] {
+            let frame = DeckGridLayout.frame(of: 0, in: width)
+            XCTAssertEqual(frame.width, 96, accuracy: 0.001, "the drawn cell at \(width)")
+            XCTAssertEqual(frame.height, 108, accuracy: 0.001, "the drawn cell at \(width)")
+        }
 
-        // Today's numbers at 1000 pt, and the person's 1960 pt window.
-        let reference = DeckGridSize(zoom: 1, width: 1000)
-        XCTAssertEqual(reference.cellWidth, 96)
-        XCTAssertEqual(reference.columnGap, 16)
-        XCTAssertEqual(reference.maxContentWidth, 880)
-        XCTAssertEqual(DeckWide.block(width: 1000, metrics: reference).columns, 8)
-
-        let wide = DeckGridSize(zoom: 1, width: 1960)
-        XCTAssertEqual(wide.cellWidth, 144)
-        XCTAssertEqual(wide.columnGap, 24)
-        XCTAssertEqual(wide.maxContentWidth, 1320)
-        let wideBlock = DeckWide.block(width: 1960, metrics: wide)
-        XCTAssertEqual(wideBlock.columns, 8)
-        XCTAssertEqual(wideBlock.span, 1320)
-
-        // The column counts the design keeps: 5 at 640, 8 from 1000 pt on.
-        let expected: [(CGFloat, Int)] = [(400, 3), (640, 5), (1000, 8), (1400, 8), (2400, 8)]
+        // The column counts the design keeps at 100 %: 5 at 640, 6 at 760,
+        // 8 from 1000 pt on; 1500 only adds margins.
+        let expected: [(CGFloat, Int)] = [(400, 3), (640, 5), (760, 6), (1000, 8),
+                                          (1200, 8), (1500, 8), (2400, 8)]
         for (width, columns) in expected {
-            let metrics = DeckGridSize(zoom: 1, width: width)
+            let metrics = DeckGridSize(zoom: 1)
             XCTAssertEqual(DeckWide.block(width: width, metrics: metrics).columns, columns, "width \(width)")
         }
+        let wideBlock = DeckWide.block(width: 1960, metrics: DeckGridSize(zoom: 1))
+        XCTAssertEqual(wideBlock.columns, 8)
+        XCTAssertEqual(wideBlock.span, 880)
+        XCTAssertEqual(wideBlock.originX, (1960 - 880 - DeckWide.railSpace) / 2, accuracy: 0.001,
+                       "the wide window's margins hold the capped block")
+    }
+
+    /// DECK-4, the brief's five widths: the cell and icon are the same size at
+    /// every one; only the column count changes, and 1200 / 1500 pt add
+    /// margins instead of scaling the tiles.
+    func testTheBriefsWidthsKeepOneSizeAndOnlyChangeColumns() {
+        let widths: [(width: CGFloat, columns: Int)] = [
+            (640, 5), (760, 6), (1000, 8), (1200, 8), (1500, 8),
+        ]
+        for row in widths {
+            let frame = DeckGridLayout.frame(of: 0, in: row.width)
+            XCTAssertEqual(frame.width, 96, "the drawn cell at \(row.width)")
+            XCTAssertEqual(frame.height, 108, "the drawn cell at \(row.width)")
+            let block = DeckWide.block(width: row.width, metrics: DeckGridSize(zoom: 1))
+            XCTAssertEqual(block.columns, row.columns, "width \(row.width)")
+        }
+        // At 125 % the same cell is 120 × 135 pt with an 80 pt icon, at every
+        // width: the icon-size setting alone decides the size.
+        let zoomed = DeckGridSize(zoom: 1.25)
+        XCTAssertEqual(zoomed.cellWidth, 120, accuracy: 0.001)
+        XCTAssertEqual(zoomed.iconSide, 80, accuracy: 0.001)
+        XCTAssertEqual(DeckWide.block(width: 1500, metrics: zoomed).columns, 8,
+                       "125 % tiles still fill the cap with eight columns")
     }
 
     /// DECK-4: the block reserves the rail's 44 pt at every zoom and width, so
@@ -86,7 +102,7 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(DeckWide.railGap, 18)
         for zoom in DeckZoom.options {
             for width in [CGFloat(640), 800, 1000, 1440, 1960, 2400] {
-                let metrics = DeckGridSize(zoom: zoom, width: width)
+                let metrics = DeckGridSize(zoom: zoom)
                 let block = DeckWide.block(width: width, metrics: metrics)
                 let what = "zoom \(zoom) at \(width)"
                 XCTAssertGreaterThanOrEqual(block.originX, 0, what)
@@ -122,7 +138,7 @@ final class DeckGridTests: XCTestCase {
             XCTAssertEqual(metrics.iconLabelGap, 8 * zoom, accuracy: 0.001)
             XCTAssertEqual(metrics.cornerRadius, 16 * zoom, accuracy: 0.001)
             for width in [CGFloat(400), 640, 1000, 1400, 2400] {
-                let drawn = DeckGridSize(zoom: zoom, width: width)
+                let drawn = DeckGridSize(zoom: zoom)
                 let block = DeckWide.block(width: width, metrics: drawn)
                 XCTAssertLessThanOrEqual(block.span, drawn.maxContentWidth + 0.001, "zoom \(zoom) at \(width)")
                 XCTAssertGreaterThanOrEqual(block.originX, 0, "zoom \(zoom) at \(width)")
@@ -207,7 +223,7 @@ final class DeckGridTests: XCTestCase {
         let apps = railApps((1...5).map { "Slack \($0)" } + ["Telegram"]
                             + (1...5).map { "Tuner \($0)" })
         let width: CGFloat = 700
-        XCTAssertEqual(DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1, width: width)).columns, 6)
+        XCTAssertEqual(DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1)).columns, 6)
         XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: apps, zoom: 1, width: width),
                        "T", "T's section starts in the top row, after five Slack tiles")
         let oneSection = railApps((1...6).map { "Slack \($0)" })
@@ -383,7 +399,7 @@ final class DeckGridTests: XCTestCase {
     /// block's edge, and no frame is outside the width it was given.
     func testTheDrawnLayoutFollowsTheWidthItIsGiven() {
         for width in stride(from: CGFloat(640), through: 1600, by: 37) {
-            let metrics = DeckGridSize(zoom: 1, width: width)
+            let metrics = DeckGridSize(zoom: 1)
             let block = DeckWide.block(width: width, metrics: metrics)
             for index in 0..<(block.columns * 3) {
                 let frame = DeckGridLayout.frame(of: index, in: width)
@@ -409,14 +425,14 @@ final class DeckGridTests: XCTestCase {
         let wide = (0..<12).map { DeckGridLayout.frame(of: $0, in: 1200) }
         let narrow = (0..<12).map { DeckGridLayout.frame(of: $0, in: 760) }
         XCTAssertNotEqual(wide, narrow)
-        let columns = DeckWide.block(width: 760, metrics: DeckGridSize(zoom: 1, width: 760)).columns
+        let columns = DeckWide.block(width: 760, metrics: DeckGridSize(zoom: 1)).columns
         XCTAssertEqual(Set(narrow.map { $0.minX }).count, columns)
     }
 
     /// The grid is tall enough for every row and its vertical inset.
     func testTheHeightCoversEveryRow() {
         let width: CGFloat = 760
-        let metrics = DeckGridSize(zoom: 1, width: width)
+        let metrics = DeckGridSize(zoom: 1)
         let columns = DeckWide.block(width: width, metrics: metrics).columns
         let rows = 6
         let height = DeckGridLayout.height(for: 6 * columns, width: width)
@@ -429,9 +445,9 @@ final class DeckGridTests: XCTestCase {
     // MARK: the drawn frame fits its width (e2e `deck`, the person's clipped edges)
 
     /// The cell origins a layout at `width` draws, with the design's inset, the
-    /// width factor's tiles and the gap the width asks for.
+    /// icon-size step's tiles and the gap.
     private func cells(atWidth width: CGFloat, count: Int) -> [CGRect] {
-        let metrics = DeckGridSize(zoom: 1, width: width)
+        let metrics = DeckGridSize(zoom: 1)
         let block = DeckWide.block(width: width, metrics: metrics)
         return (0..<count).map { DeckWide.cellFrame($0, in: block, metrics: metrics) }
     }
@@ -444,7 +460,7 @@ final class DeckGridTests: XCTestCase {
                                        visible: CGRect(x: 0, y: 0, width: width, height: 600),
                                        cells: cells(atWidth: width, count: 41), zoom: 1)
         XCTAssertTrue(fit.ok, fit.summary)
-        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1, width: width))
+        let block = DeckWide.block(width: width, metrics: DeckGridSize(zoom: 1))
         XCTAssertEqual(fit.columns, block.columns)
         XCTAssertEqual(fit.leftInset, block.originX, accuracy: 0.5)
         XCTAssertEqual(fit.rightInset, block.originX + DeckWide.railSpace, accuracy: 0.5,

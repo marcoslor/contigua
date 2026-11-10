@@ -94,6 +94,16 @@ enum MenuMarks {
                 edits.append(.mark([item.title], state.showTouches))
             case ("View", "Live Text"):
                 edits.append(.mark([item.title], state.liveText))
+            case ("View", "Icon Size"):
+                // The Deck's stored choice: one of the four percentages is
+                // checked (DECK-6). The value is read when the menu opens.
+                for child in item.children where !child.isSeparator {
+                    guard let option = DeckZoom.options.first(where: {
+                        MenuModel.iconSizeTitle($0) == child.title
+                    }) else { continue }
+                    edits.append(.mark([item.title, child.title],
+                                       abs(state.deckZoom - option) < 0.0005))
+                }
             case ("View", "Density"):
                 edits.append(.enable([item.title], state.hasStream && state.densityPackage != nil))
                 for child in item.children where !child.isSeparator {
@@ -152,6 +162,10 @@ extension MenuMarks {
     /// for what a person reads in an open menu (the e2e's dump and pick).
     static func apply(to mainMenu: NSMenu?) {
         guard let mainMenu else { return }
+        // The Deck's icon size is a stored choice, and its checkmark must follow
+        // a ⌘+ pressed a moment before the menu opened: read it now, not from
+        // the last poll.
+        StreamMenuState.shared.deckZoom = DeckZoom.stored(in: Profile.active.defaults)
         for title in menus {
             guard let menu = mainMenu.items.first(where: { $0.title == title })?.submenu else { continue }
             for edit in edits(menu: title, items: snapshot(of: menu), state: StreamMenuState.shared) {
