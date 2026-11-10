@@ -244,7 +244,8 @@ final class PhonePanelP3Tests: XCTestCase {
     /// runs itself.
     private func panelHost(_ state: PhoneControlsState) -> (MenuBarPanel, NSHostingView<PhonePanelView>) {
         window?.orderOut(nil)
-        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions(),
+        let view = NSHostingView(rootView: PhonePanelView(state: state,
+                                                          actions: PhoneControlsActions(),
                                                           onGear: {}))
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -369,35 +370,62 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertLessThan(gear.maxY, dnd.minY, "the gear is in the header, above the tiles")
     }
 
-    /// The panel opens on its first phone control, not on the gear: the ring
-    /// lands on DND, or on Disconnect while an agent is connected. The panel
-    /// steps past its first key view for this, and `openingFocus` names where
-    /// that step goes.
+    /// The panel opens on its first phone control, not on the gear and never on
+    /// a destructive action: the ring lands on DND with or without an agent,
+    /// and the panel steps past the agent row's Disconnect to get there
+    /// (PANEL-7, ISS-75). The panel steps past its first key view for this, and
+    /// `openingFocusSteps` names how far.
     func testThePanelOpensOnTheFirstTileNotTheGear() {
         let plain = state()
         let items = PhonePanelItem.focusOrder(for: plain, showsGear: true)
         XCTAssertEqual(items.first, .gear, "the gear heads the card")
         XCTAssertEqual(PhonePanelItem.openingFocus(for: plain), .dnd)
-        XCTAssertEqual(PhonePanelItem.openingFocus(for: state(agentCount: 1)), .disconnectAgent)
+        XCTAssertEqual(PhonePanelItem.openingFocusSteps(for: plain), 1)
+
+        let agent = state(agentCount: 1)
+        XCTAssertEqual(PhonePanelItem.openingFocus(for: agent), .dnd,
+                       "the opening focus never lands on Disconnect")
+        XCTAssertEqual(PhonePanelItem.openingFocusSteps(for: agent), 2,
+                       "the agent row adds one key view between the gear and DND")
 
         let (panel, view) = panelHost(plain)
         let laidOut = hierarchyControls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
         XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .gear)!],
                       "the key order starts on the gear")
-        panel.focusFirstPhoneControl()
+        panel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(for: plain))
         XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .dnd)!],
                       "the opening focus is the DND tile")
 
-        let agent = state(agentCount: 1)
         let agentItems = PhonePanelItem.focusOrder(for: agent, showsGear: true)
         let (agentPanel, agentView) = panelHost(agent)
         let agentControls = hierarchyControls(in: agentView)
         XCTAssertEqual(agentControls.count, agentItems.count)
-        agentPanel.focusFirstPhoneControl()
+        agentPanel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(for: agent))
         XCTAssertTrue(agentPanel.firstResponder
-                      === agentControls[agentItems.firstIndex(of: .disconnectAgent)!],
-                      "Disconnect takes the opening focus while an agent is connected")
+                      === agentControls[agentItems.firstIndex(of: .dnd)!],
+                      "the ring lands on DND, not on Disconnect")
+    }
+
+    /// The gear's menu anchors at the gear's own button: the pure rect the
+    /// controller pops at is the frame SwiftUI laid the gear out in (PANEL-3).
+    func testTheGearAnchorIsTheGearButtonsOwnFrame() {
+        let state = state()
+        let (panel, view) = panelHost(state)
+        let items = PhonePanelItem.focusOrder(for: state, showsGear: true)
+        let laidOut = hierarchyControls(in: view)
+        guard let gearIndex = items.firstIndex(of: .gear), gearIndex < laidOut.count else {
+            return XCTFail("no gear control")
+        }
+        let gear = laidOut[gearIndex]
+        let inWindow = gear.convert(gear.bounds, to: nil)
+        let onScreen = NSRect(origin: panel.convertPoint(toScreen: inWindow.origin),
+                              size: inWindow.size)
+        let anchor = MenuBarMenuAnchor.gearRect(host: view.frame, panel: panel.frame)
+        XCTAssertEqual(anchor.origin.x, onScreen.origin.x, accuracy: 0.5)
+        XCTAssertEqual(anchor.origin.y, onScreen.origin.y, accuracy: 0.5)
+        XCTAssertEqual(anchor.size, onScreen.size)
+        XCTAssertEqual(anchor.width, PhonePanelMetrics.gearSize)
     }
 
     /// One view, one body, two hosts: the menu bar panel passes the gear's
