@@ -447,6 +447,8 @@ The aim for every item: closest to other Mac apps, clear, useful, Mac-like, and 
 
 - **ISS-89 Emphasis on a letter's icons while the alphabet rail is in use** (the person, 2026-11-10; picked from `proto/railemph`: option 4, dim + lift, with the architect's change). While the pointer rests on or drags over a rail letter, All Apps tiles of that letter scale to 1.08 with a semibold label and every other All Apps tile dims to 50 %; the Open on this Mac and Pinned sections do NOT dim (they stay clickable and must not look disabled). 120 ms in, 200 ms out; Reduce Motion: no scale, the dim only, no animation. Brief `.agent/railemph/brief.md`; starts when `feat/deckdefault` merges (same file).
 
+- **ISS-90 Remove every data migration from the codebase** (the person, 2026-11-10: "this app is used in only ONE place, my machine. remove any migration from the codebase"; the rule ends once the repo is pushed). Candidates from a grep (to confirm one by one): `Identity.swift` / `IdentityV2.swift`, `Profile.swift`, `FilesCore.swift`, `DockApps.swift` / `DockMessages.swift`, `ConnectionController.swift`, `Session.swift`, the phone's `Session.kt`, and their tests. NOT in scope: network path migration (`PathSession`, `PathsMachines`, `p1-proof.sh`), which is a feature. Before deleting an identity or pairing migration, check that the person's installed profile is already in the new format (read-only), so the removal cannot unpair their phone. New work writes none (`.agent/_common.md`).
+
 ## 5c. Unmerged branches that had no item (triage 2026-11-10)
 
 Each branch holding work now has a number. "Superseded" means `main` got the behaviour another way; those branches are deleted only on the person's yes.
