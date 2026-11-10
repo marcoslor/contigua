@@ -11,11 +11,11 @@ import android.provider.Settings
 internal object DeviceName {
 
     /**
-     * A name the user chose in PocketDeck wins. A stored value equal to the
-     * model is the old default that was cached on first run, so it is replaced.
+     * A name the user chose in PocketDeck wins. The stored value is the current
+     * shape, so it is used as it is.
      */
     fun resolve(stored: String?, model: String, systemName: () -> String?): String {
-        if (!stored.isNullOrBlank() && stored != model) return stored
+        if (!stored.isNullOrBlank()) return stored
         return systemName()?.trim()?.takeIf { it.isNotEmpty() } ?: model
     }
 

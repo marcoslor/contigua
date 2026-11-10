@@ -172,11 +172,10 @@ clear_profile_state() {
     # A key created by a *different* build makes macOS show a modal Keychain
     # permission dialog, which hangs the app; remove every item, not just one.
     while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
-    # v2 pairing state = the Mac identity + per-phone pins in the profile
-    # folder; the checks pair from scratch each run, so both must go. v1's
-    # pairkeys.json is gone; IdentityMigrationV2 wipes it on the next start.
+    # Pairing state = the Mac identity + per-phone pins in the profile
+    # folder; the checks pair from scratch each run, so both must go.
     local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-    rm -f "$support/pairkeys.json" "$support/identity.json" "$support/pins.json"
+    rm -f "$support/identity.json" "$support/pins.json"
     defaults delete "$DEFAULTS_SUITE" >/dev/null 2>&1
     return 0
 }

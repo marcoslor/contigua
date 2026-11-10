@@ -236,7 +236,7 @@ final class PhoneBookTests: XCTestCase {
         let profile = Profile(name: "unit-phonebook-\(UUID().uuidString.prefix(8).lowercased())")!
         defer {
             if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
-            try? FileManager.default.removeItem(at: profile.pairKeysFileUrl.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
         }
         let remembered = RememberedPhones(profile: profile)
         remembered.remember(a)
