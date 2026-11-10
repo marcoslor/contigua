@@ -4378,8 +4378,12 @@ for kind in ["gear", "volume", "dnd", "ringer", "ring", "screen", "phoneScreen",
         print("missing", kind, kinds); sys.exit(1)
 if "installApk" in kinds:
     print("Install APK… is a card row again:", kinds); sys.exit(1)
-if "continueOnMac" in kinds:
-    print("the handoff row appeared with no foreground reply:", kinds); sys.exit(1)
+# The handoff row is the card's own (PANEL-28): it names the app the phone last
+# reported in front, and the card asks task.front when it opens. It is not one
+# of the old status-line items, so it belongs here.
+for row in root["items"]:
+    if row["kind"] == "continueOnMac" and not row["label"].startswith("Open "):
+        print("handoff row:", row); sys.exit(1)
 for footed in ["settings", "quit"]:
     if footed in kinds:
         print(footed, "is a row; it belongs to the icon's menu", kinds); sys.exit(1)
@@ -4527,6 +4531,77 @@ PY
              "$CGBIN" all 2>/dev/null | awk '$0 ~ /layer=[0-9]+/ { for (i = 1; i <= NF; i++) if ($i ~ /^layer=/) { split($i, p, "="); if (p[2] >= 100) print "  popup: " $0 } }'; }
 
 
+    # ISS-93: the values a person reads come from a menu that is really
+    # tracking. `menudump`'s route writes the marks itself before it reads
+    # them, so it passed while a real open showed the launch values; this
+    # reads the items mid-track, after AppKit's own tracking loop has begun.
+    view_marks() {  # FILE SCENE
+        python3 - "$1" "$2" <<'PY'
+import json, sys
+
+report = json.load(open(sys.argv[1]))
+scene = sys.argv[2]
+marks = report.get("marks") or []
+rows = {}
+for row in marks:
+    if not row["separator"]:
+        rows.setdefault(row["title"], []).append(row)
+problems = []
+
+def one(title):
+    found = rows.get(title) or []
+    if len(found) != 1:
+        problems.append("%s: %d rows" % (title, len(found)))
+        return {}
+    return found[0]
+
+for title in ("Framed", "Immersive"):
+    item = one(title)
+    wanted = "on" if scene == "stream-framed" and title == "Framed" else "off"
+    if item.get("state") != wanted:
+        problems.append("%s checked %r" % (title, item.get("state")))
+    wanted_enabled = scene == "stream-framed"
+    if bool(item.get("enabled")) != wanted_enabled:
+        problems.append("%s enabled %r" % (title, item.get("enabled")))
+for title in ("Hide Controls", "Density"):
+    item = one(title)
+    wanted = scene == "stream-framed" and title == "Density"
+    if bool(item.get("enabled")) != wanted:
+        problems.append("%s enabled %r" % (title, item.get("enabled")))
+for title in ("Show Touches", "Live Text"):
+    item = one(title)
+    wanted_enabled = scene == "stream-framed"
+    if bool(item.get("enabled")) != wanted_enabled:
+        problems.append("%s enabled %r" % (title, item.get("enabled")))
+    if item.get("state") != ("on" if wanted_enabled and title == "Show Touches" else "off"):
+        problems.append("%s checked %r" % (title, item.get("state")))
+visible = [row for row in marks
+           if row["title"] == "Enter Full Screen" and not row["hidden"]]
+if len(visible) != 1:
+    problems.append("%d visible Enter Full Screen items" % len(visible))
+icon = one("Icon Size")
+children = {row["title"]: row for row in icon.get("children") or [] if not row["separator"]}
+if scene in ("deck", "icon-100"):
+    wanted, other = "100 %", "75 %"
+elif scene == "icon-75":
+    wanted, other = "75 %", "100 %"
+else:
+    wanted = other = None
+if wanted:
+    if children.get(wanted, {}).get("state") != "on":
+        problems.append("%s checked %r" % (wanted, children.get(wanted, {}).get("state")))
+    if children.get(other, {}).get("state") != "off":
+        problems.append("%s still checked %r" % (other, children.get(other, {}).get("state")))
+if problems:
+    print("; ".join(problems))
+sys.exit(1 if problems else 0)
+PY
+    }
+    tracked_view() {  # FILE
+        rm -f "$1"
+        control menutrack "$1" View 3 || bad "MENUS menutrack View: $CONTROL_REPLY"
+        wait_until 20 [ -s "$1" ] || bad "MENUS no tracked View report in 20 s"
+    }
     # ISS-88: the Deck key with a stream window still open behind it. The
     # stream window is framed with Show Touches on (the script above set both);
     # with a non-stream window key, none of the stream-only View items may stay
@@ -4545,6 +4620,10 @@ if by_title["Framed"]["state"] != "on" or not by_title["Framed"]["enabled"]:
 if by_title["Show Touches"]["state"] != "on" or not by_title["Show Touches"]["enabled"]:
     print("Show Touches:", by_title["Show Touches"]); sys.exit(1)
 PY
+    tracked_view "$WORK/menus-viewtrack-stream.json"
+    view_marks "$WORK/menus-viewtrack-stream.json" stream-framed \
+        && ok "[MENU-9] with a framed stream window key, read while View tracks: Framed checked, the pair, Show Touches and Density enabled, Live Text unchecked, one Enter Full Screen" \
+        || bad "[MENU-9] a real View open does not follow the key stream window"
     control deckfocus grid || bad "MENUS deckfocus grid (the Deck key): $CONTROL_REPLY"
     sleep 1
     dump_stable 18 || { stop_app; stop_fakephone; return 1; }
@@ -4624,6 +4703,20 @@ PY
         && [ "$density_before" = "$density_after" ] \
         && ok "[MENU-9] the same keys did not reach the stream window behind the Deck (style, touches and density unchanged)" \
         || bad "[MENU-9] a stream-only key acted on the hidden stream window: $(chrome_state), density $density_before -> $density_after"
+
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1 for the tracked View: $CONTROL_REPLY"
+    sleep 0.5
+    tracked_view "$WORK/menus-viewtrack-deck.json"
+    view_marks "$WORK/menus-viewtrack-deck.json" deck \
+        && ok "[MENU-9] the Deck key with a stream window open behind it, read while View tracks: every stream-only item is off and disabled, one Enter Full Screen, Icon Size 100 % checked" \
+        || bad "[MENU-9] a real View open shows the launch values, not the Deck key's"
+    control menupick "View/Icon Size/75 %" || bad "MENUS icon size pick 75 %: $CONTROL_REPLY"
+    sleep 1
+    tracked_view "$WORK/menus-viewtrack-icon.json"
+    view_marks "$WORK/menus-viewtrack-icon.json" icon-75 \
+        && ok "[MENU-9] after picking 75 %, the first View open marks 75 % (not the previous 100 %)" \
+        || bad "[MENU-9] the Icon Size mark is one pick behind on the first open after the pick"
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1 (restore): $CONTROL_REPLY"
 
     # A relaunch: the same bar, built once from scratch. The shared app is
     # replaced, so the shell takes the new PID for the bookkeeping.
