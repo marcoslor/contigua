@@ -401,33 +401,36 @@ struct FolderJob: Equatable {
 }
 
 extension FolderJob.State {
-    /// The log's closed-set token: one line per phase change.
-    var token: String {
+    /// The log's closed-set code: 0 idle, 1 walking, 2 confirming,
+    /// 3 repairing, 4 refreshing, 5 refreshing-again.
+    var code: Int {
         switch self {
-        case .idle: return "idle"
-        case .walking: return "walking"
-        case .confirming: return "confirming"
-        case .repairing: return "repairing"
-        case .refreshing(let again, _): return again ? "refreshing-again" : "refreshing"
+        case .idle: return 0
+        case .walking: return 1
+        case .confirming: return 2
+        case .repairing: return 3
+        case .refreshing(let again, _): return again ? 5 : 4
         }
     }
 }
 
 extension FolderJob.Event {
-    /// The log's closed-set token for the event that moved the phase.
-    var token: String {
+    /// The log's closed-set code: 0 visit, 1 refresh, 2 host-start,
+    /// 3 system-start, 4 confirm-due, 5 refresh-due, 6 not-found, 7 dropped,
+    /// 8 page, 9 last-page, 10 page-failed.
+    var code: Int {
         switch self {
-        case .visit: return "visit"
-        case .refresh: return "refresh"
-        case .hostStart: return "host-start"
-        case .systemStart: return "system-start"
-        case .confirmDue: return "confirm-due"
-        case .refreshDue: return "refresh-due"
-        case .notFound: return "not-found"
-        case .dropped: return "dropped"
-        case .page: return "page"
-        case .lastPage: return "last-page"
-        case .failedPage: return "page-failed"
+        case .visit: return 0
+        case .refresh: return 1
+        case .hostStart: return 2
+        case .systemStart: return 3
+        case .confirmDue: return 4
+        case .refreshDue: return 5
+        case .notFound: return 6
+        case .dropped: return 7
+        case .page: return 8
+        case .lastPage: return 9
+        case .failedPage: return 10
         }
     }
 }

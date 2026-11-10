@@ -605,8 +605,8 @@ final class SessionBridgeHost: FilesBridgeHost {
         var job = jobs[item] ?? FolderJob(folder: item)
         let before = job.state
         let action = job.apply(event)
-        if before.token != job.state.token {
-            Log.files.notice("folder: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(job.state.token, privacy: .public) id=\(item, privacy: .public)")
+        if before.code != job.state.code {
+            Log.files.notice("folder: \(before.code, privacy: .public) --\(event.code, privacy: .public)--> \(job.state.code, privacy: .public)")
         }
         if case .idle = job.state {
             jobs.removeValue(forKey: item)
