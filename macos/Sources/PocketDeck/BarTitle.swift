@@ -183,6 +183,10 @@ enum BarTitle {
     static let sideGap: CGFloat = 8
     /// Narrower than this and the title hides instead of shrinking further.
     static let minimumWidth: CGFloat = 40
+    /// A name that does not fit whole needs at least this much room to be
+    /// worth truncating: below it the middle ellipsis leaves two or three
+    /// letters, which reads worse than no title.
+    static let minimumTruncatedWidth: CGFloat = 96
     /// The cross-fade between tones.
     static let fadeDuration: TimeInterval = 0.15
     /// The window-background tint over the mirror.
@@ -231,6 +235,7 @@ enum BarTitle {
         guard right > left else { return nil }
         let available = right - left
         guard available >= minimumWidth else { return nil }
+        if textWidth(text) > available, available < minimumTruncatedWidth { return nil }
         let width = min(textWidth(text), available)
         let height = ceil(font().ascender - font().descender + font().leading)
         // Centred on the bar's own line (the window's centre) while the room
@@ -247,7 +252,7 @@ enum BarTitle {
     }
 }
 
-/// What each window kind puts in its bar (WIN-68, MIRROR-23). Only names,
+/// What each window kind puts in its bar (WIN-68, MIRROR-26). Only names,
 /// never a host, URL, task label or placeholder.
 enum BarTitleName {
     /// An app window: the app's own label alone, trimmed.

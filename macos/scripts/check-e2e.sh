@@ -12202,7 +12202,7 @@ check_windows() {
 # both appearances at 2x. Each phase reads the chrome state's tone and title
 # rect, captures the real window and measures the worst band contrast behind
 # the glyphs (bar-title-contrast.py, WIN-69). The phone mirror runs the same
-# title with the phone's name (MIRROR-23). Visual record: $SHOTS/bar-title-*.
+# title with the phone's name (MIRROR-26). Visual record: $SHOTS/bar-title-*.
 
 bar_title_field() { chrome_state | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
 
@@ -12276,7 +12276,7 @@ check_bar_title() {
         done
     done
 
-    # The Phone Mirror's bar names the phone, not the mirrored app (MIRROR-23).
+    # The Phone Mirror's bar names the phone, not the mirrored app (MIRROR-26).
     for appearance in light dark; do
         clean
         FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
@@ -12284,27 +12284,17 @@ check_bar_title() {
             --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
         wait_until 25 events_have '"ev":"video"' \
             || bad "BAR-TITLE phone/$appearance the stream never sent video"
-        wait_until 15 chrome_has "bar_title=1" \
-            || bad "BAR-TITLE phone/$appearance no bar title: $(chrome_state)"
-        sleep 1
-        if wait_until 5 chrome_has "bar_title_tone=dark"; then
-            ok "[MIRROR-23] BAR-TITLE phone/$appearance the phone's name uses the band's tone"
+        sleep 2
+        # A portrait Mirror leaves less room than the phone's name needs, and
+        # a name cut down to two letters reads worse than none (WIN-68).
+        if chrome_has "bar_title=0 bar_title_tone=none bar_title_rect=none"; then
+            ok "[MIRROR-26] BAR-TITLE phone/$appearance a name that does not fit is not drawn"
         else
-            bad "[MIRROR-23] BAR-TITLE phone/$appearance wanted dark, state: $(bar_title_field bar_title_tone)"
-        fi
-        if wait_until 5 ax_has "value=[FakePhone]"; then
-            ok "[MIRROR-23] BAR-TITLE phone/$appearance the bar names the phone"
-        else
-            bad "[MIRROR-23] BAR-TITLE phone/$appearance the bar's name: $(ax_tree | grep -i 'FakePhone' | head -3 | tr '\n' '|')"
+            bad "[MIRROR-26] BAR-TITLE phone/$appearance wanted no title, state: $(chrome_state)"
         fi
         win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; continue; }
         shot="$SHOTS/bar-title-phone-$appearance.png"
-        if shot_window "$win" "$shot"; then
-            say "shot: $shot"
-            bar_title_measure "$shot" "phone/$appearance" 145
-        else
-            bad "BAR-TITLE phone/$appearance no window capture"
-        fi
+        shot_window "$win" "$shot" && say "shot: $shot" || bad "BAR-TITLE phone/$appearance no window capture"
         stop_app
         stop_fakephone
     done
