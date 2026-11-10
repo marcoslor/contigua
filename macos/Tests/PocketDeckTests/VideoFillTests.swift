@@ -178,7 +178,9 @@ final class VideoFillTests: XCTestCase {
         let bounds = CGRect(x: 0, y: 0, width: 400, height: 800)
         let rect = Letterbox.videoRect(video: wide, in: bounds, placement: .fill)
         XCTAssertEqual(rect.height, 800, accuracy: 0.001)
-        XCTAssertEqual(rect.width, 1194.667, accuracy: 0.01)
+        // The fill's own edges are whole device pixels (ISS-87), so the crop
+        // rounds out to 1196 pt; the view is still its centre.
+        XCTAssertEqual(rect.width, 1196, accuracy: 0.001)
         XCTAssertEqual(rect.midX, bounds.midX, accuracy: 0.001)
         XCTAssertLessThan(rect.minX, bounds.minX)
         XCTAssertGreaterThan(rect.maxX, bounds.maxX)
@@ -306,5 +308,143 @@ final class VideoFillTests: XCTestCase {
         XCTAssertEqual(ny, 0.5, accuracy: 0.0005)
         XCTAssertGreaterThan(nx, 0.3)
         XCTAssertLessThan(nx, 0.34)
+    }
+
+    // MARK: The picture meets the content edges (ISS-87, MIRROR-27)
+
+    /// The uncovered part of `bounds`, in device pixels, on each side.
+    private func uncoveredPixels(_ rect: CGRect, in bounds: CGRect,
+                                 scale: CGFloat) -> [CGFloat] {
+        [rect.minX - bounds.minX, bounds.maxX - rect.maxX,
+         rect.minY - bounds.minY, bounds.maxY - rect.maxY].map { max(0, $0) * scale }
+    }
+
+    /// Every edge of the drawn rect is on a whole device pixel: no row or
+    /// column is half covered (a blended line at the picture's edge).
+    private func assertOnDeviceGrid(_ rect: CGRect, scale: CGFloat, _ message: String,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        for edge in [rect.minX, rect.maxX, rect.minY, rect.maxY] {
+            XCTAssertEqual((edge * scale).rounded(), edge * scale, accuracy: 0.0001,
+                           "\(message): edge \(edge) pt is not a whole \(scale)x pixel",
+                           file: file, line: line)
+        }
+    }
+
+    /// The reported run (`.agent/barname`, ISS-87): a 301 x 653 pt stream
+    /// under the 28 pt bar, the fake phone's 16 px mirror frame at 592 x 1280.
+    /// On main the phone-mode fit leaves 1.09 pt above and below (a black row
+    /// under the bar and one at the window's bottom edge), and the picture's
+    /// own edge lands on half a pixel.
+    func testTheReportedMirrorPictureMeetsTheBarsBottomEdge() {
+        let bounds = CGRect(x: 0, y: 0, width: 301, height: 653)
+        let video = CGSize(width: 592, height: 1280)
+        let placement = Letterbox.placement(video: video, bounds: bounds.size, backingScale: 2,
+                                            resizePending: false, phoneMode: true)
+        XCTAssertEqual(placement, .fill,
+                       "[MIRROR-27] the mirror's picture covers the stream, not a fit")
+        let rect = Letterbox.videoRect(video: video, in: bounds, placement: placement,
+                                       backingScale: 2)
+        XCTAssertEqual(uncoveredPixels(rect, in: bounds, scale: 2).max() ?? -1, 0,
+                       accuracy: 0.0001,
+                       "[MIRROR-27] no backing row at the bar's seam or the other edges")
+        assertOnDeviceGrid(rect, scale: 2, "[MIRROR-27]")
+        XCTAssertEqual(rect.minY, bounds.minY, accuracy: 0.0001,
+                       "[MIRROR-27] the picture starts where the bar ends")
+        XCTAssertEqual(rect.maxY, bounds.maxY, accuracy: 0.0001,
+                       "[MIRROR-27] the picture reaches the window's bottom edge")
+    }
+
+    /// The same rule at every size: widths 280…900 pt, 1× and 2× backing,
+    /// portrait and landscape screens, framed (the 28 pt bar) and immersive
+    /// (no bar). The phone's frame is the Mac's box floored to 16 px and its
+    /// picture is the screen fitted and centred in it; the drawn picture must
+    /// leave no device pixel uncovered and every edge must be whole.
+    func testTheMirrorPictureMeetsTheContentEdgesAtEveryWidth() {
+        let screens = [CGSize(width: 1080, height: 2340), CGSize(width: 2340, height: 1080)]
+        for scale in [CGFloat(1), CGFloat(2)] {
+            for style in WindowStyle.allCases {
+                for screen in screens {
+                    var width: CGFloat = 280
+                    while width <= 900 {
+                        let window = PhoneChrome.frame(proposed: CGSize(width: width, height: width),
+                                                       phone: screen, style: style, edge: .left)
+                        let area = style.streamSize(window: window)
+                        let box = VideoSize.displayPixels(bounds: area, backingScale: Double(scale))
+                        let fitScale = min(box.width / screen.width, box.height / screen.height)
+                        let picture = CGSize(width: (screen.width * fitScale).rounded(),
+                                             height: (screen.height * fitScale).rounded())
+                        let bounds = CGRect(origin: .zero, size: area)
+                        let label = "\(style.rawValue) \(Int(screen.width))x\(Int(screen.height)) "
+                            + "at \(Int(width)) pt \(Int(scale))x"
+                        let placement = Letterbox.placement(video: picture, bounds: area,
+                                                            backingScale: Double(scale),
+                                                            resizePending: false, phoneMode: true)
+                        XCTAssertEqual(placement, .fill,
+                                       "[MIRROR-27] \(label): the mirror covers its stream")
+                        let rect = Letterbox.videoRect(video: picture, in: bounds,
+                                                       placement: placement, backingScale: Double(scale))
+                        XCTAssertEqual(uncoveredPixels(rect, in: bounds, scale: scale).max() ?? -1,
+                                       0, accuracy: 0.0001,
+                                       "[MIRROR-27] \(label): uncovered pixels \(uncoveredPixels(rect, in: bounds, scale: scale))")
+                        assertOnDeviceGrid(rect, scale: scale, "[MIRROR-27] \(label)")
+                        width += 1
+                    }
+                }
+            }
+        }
+    }
+
+    /// App windows share the drawn rect's rule: a settled frame within 2 % of
+    /// the area covers it (WIN-52), and a genuinely different picture is
+    /// fitted with its edges on whole device pixels — never a blended row.
+    func testAppWindowPictureEdgesMeetTheDeviceGridAtEveryWidth() {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            for style in WindowStyle.allCases {
+                for fullScreen in [false, true] {
+                    for landscape in [false, true] {
+                        var width: CGFloat = 280
+                        while width <= 900 {
+                            let content = CGSize(width: width,
+                                                 height: (width * (landscape ? 9.0 : 16.0) / (landscape ? 16.0 : 9.0))
+                                                     .rounded())
+                            let window = style.windowSize(stream: content, fullScreen: fullScreen)
+                            let area = style.streamSize(window: window, fullScreen: fullScreen)
+                            let bounds = CGRect(origin: .zero, size: area)
+                            let label = "\(style.rawValue) full=\(fullScreen) "
+                                + "landscape=\(landscape) at \(Int(width)) pt \(Int(scale))x"
+
+                            // The phone's answer a few pixels short of the
+                            // window: the same shape, so it covers the view.
+                            let near = CGSize(width: area.width * scale - 3,
+                                              height: area.height * scale - 1)
+                            let placed = Letterbox.placement(video: near, bounds: area,
+                                                             backingScale: Double(scale),
+                                                             resizePending: false, phoneMode: false)
+                            XCTAssertEqual(placed, .stretch, "[WIN-70] \(label)")
+                            let stretched = Letterbox.videoRect(video: near, in: bounds,
+                                                                placement: placed, backingScale: Double(scale))
+                            XCTAssertEqual(uncoveredPixels(stretched, in: bounds, scale: scale).max() ?? -1,
+                                           0, accuracy: 0.0001,
+                                           "[WIN-70] \(label): a near-shaped frame shows no band")
+                            assertOnDeviceGrid(stretched, scale: scale, "[WIN-70] \(label)")
+
+                            // A square picture in a phone-shaped area: a
+                            // real letterbox, whose edge is still whole.
+                            let square = CGSize(width: 1000, height: 1000)
+                            let fitted = Letterbox.placement(video: square, bounds: area,
+                                                             backingScale: Double(scale),
+                                                             resizePending: false, phoneMode: false)
+                            XCTAssertEqual(fitted, .fit, "[WIN-70] \(label)")
+                            let letterbox = Letterbox.videoRect(video: square, in: bounds,
+                                                                placement: fitted, backingScale: Double(scale))
+                            assertOnDeviceGrid(letterbox, scale: scale, "[WIN-70] \(label)")
+                            XCTAssertTrue(bounds.insetBy(dx: -0.0001, dy: -0.0001).contains(letterbox),
+                                          "[WIN-70] \(label): a fit stays inside the content")
+                            width += 1
+                        }
+                    }
+                }
+            }
+        }
     }
 }
