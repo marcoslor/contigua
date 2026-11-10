@@ -3212,7 +3212,7 @@ check_chrome() {
             full="$(await_window '$4 > 900 && $5 > 700')" \
                 && ok "[WIN-14] C14 $style_name full screen fills the screen" \
                 || { bad "[WIN-14] C14 $style_name full screen did not fill the screen"; continue; }
-            if wait_until 12 chrome_is "fullscreen=yes fullbar=hidden fullbar_visible=0"; then
+            if wait_until 12 chrome_all fullscreen=yes fullbar=hidden fullbar_visible=0; then
                 ok "[WIN-8] [WIN-14] C14 $style_name full screen starts with the bar hidden ($(chrome_state))"
             else
                 bad "[WIN-8] C14 $style_name full screen start: $(chrome_state)"
@@ -3221,7 +3221,7 @@ check_chrome() {
             screencapture -x "$WORK/chrome-fs-$style_name-hidden.png" && say "screenshot: $WORK/chrome-fs-$style_name-hidden.png"
             touch "$WORK/fs-hidden"
             cg_input move --window "$full" --top 2
-            if wait_until 8 chrome_is "fullbar=shown"; then
+            if wait_until 8 chrome_has "fullbar=shown"; then
                 wait_until 4 chrome_has "lights=shown"
                 ok "[WIN-8] C14 $style_name: a rest at the top edge reveals the acrylic bar with its lights ($(chrome_state))"
             else
@@ -3248,7 +3248,7 @@ check_chrome() {
                 && ok "[WIN-61] C14 $style_name: and it was the window's own press" \
                 || bad "[WIN-61] C14 $style_name: the full-screen bar click did not reach the chrome"
             cg_input move --window "$full" --top 400
-            if wait_until 8 chrome_is "fullbar=hidden"; then
+            if wait_until 8 chrome_has "fullbar=hidden"; then
                 ok "[WIN-8] C14 $style_name: leaving the bar hides it ($(chrome_state))"
             else
                 bad "[WIN-8] C14 $style_name: the bar stayed after the pointer left: $(chrome_state)"
@@ -3274,12 +3274,12 @@ check_chrome() {
         full="$(await_window '$4 > 900 && $5 > 700')" \
             && ok "[WIN-9] C14 Always Visible: the window fills the screen" \
             || bad "[WIN-9] C14 Always Visible: no full-screen window"
-        wait_until 8 chrome_is "fullbar=shown" \
+        wait_until 8 chrome_has "fullbar=shown" \
             && ok "[WIN-9] C14 Always Visible shows the full-screen bar at once ($(chrome_state))" \
             || bad "[WIN-9] C14 Always Visible did not show the bar: $(chrome_state)"
         cg_input move --window "$full" --top 500
         sleep 2
-        chrome_is "fullbar=shown" \
+        chrome_has "fullbar=shown" \
             && ok "[WIN-9] C14 Always Visible: still up past the hide delay with the pointer away" \
             || bad "[WIN-9] C14 Always Visible hid after the delay: $(chrome_state)"
         [ "$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)" = "alwaysVisible" ] \
@@ -3288,11 +3288,11 @@ check_chrome() {
         touch "$WORK/fs-always"
         sleep 0.5
         touch "$WORK/fs-short"
-        wait_until 8 chrome_is "fullbar=hidden" \
+        wait_until 8 chrome_has "fullbar=hidden" \
             && ok "[WIN-9] C14 picking Short takes the shown full-screen bar away" \
             || bad "[WIN-9] C14 Short did not hide the bar: $(chrome_state)"
         touch "$WORK/fs-always-done"
-        wait_until 12 chrome_is "fullscreen=no fullbar=hidden" \
+        wait_until 12 chrome_all fullscreen=no fullbar=hidden \
             && ok "[WIN-14] C14 leaving full screen ends the bar's machine" \
             || bad "[WIN-14] C14 after Always Visible full screen: $(chrome_state)"
     else
@@ -6039,6 +6039,12 @@ nav_clicked() { [ "$(nav_rx_count "$1")" -gt "$2" ]; }
 
 # chrome_has <text> — the chrome state file contains text.
 chrome_has() { case "$(chrome_state)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+# chrome_all <field>... — every field anywhere in the state (the state's first
+# field is the style; a later field never starts the line).
+chrome_all() {
+    local field
+    for field in "$@"; do chrome_has "$field" || return 1; done
+}
 
 # phone_screen_log — how many times the app logged the sleeping-panel line in
 # the last 2 minutes (states only, never pixels).
@@ -12658,7 +12664,7 @@ check_styles_shots() {
                         touch "$WORK/ss-begin"
                         full="$(await_window '$4 > 900 && $5 > 700')" \
                             || { bad "STYLES-SHOTS $appearance/$fixture/$style no full-screen window"; stop_app; continue; }
-                        wait_until 12 chrome_is "fullscreen=yes fullbar=hidden" \
+                        wait_until 12 chrome_all fullscreen=yes fullbar=hidden \
                             && ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style full screen starts with the bar hidden" \
                             || bad "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style: $(chrome_state)"
                         sleep 0.4
@@ -12670,7 +12676,7 @@ check_styles_shots() {
                         touch "$WORK/ss-hidden"
                         cg_input move --window "$full" --top 2
                         sleep 0.5
-                        wait_until 8 chrome_is "fullbar=shown" \
+                        wait_until 8 chrome_has "fullbar=shown" \
                             && ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style a rest at the top edge reveals the bar" \
                             || bad "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style: $(chrome_state)"
                         sleep 0.3
