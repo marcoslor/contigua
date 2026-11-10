@@ -12239,7 +12239,7 @@ bar_title_measure() {
 }
 
 check_bar_title() {
-    local fixture appearance want win shot
+    local fixture appearance want win shot bar frame_width seam
     ax_has() { ax_tree | grep -qF -- "$1"; }
     for appearance in light dark; do
         for fixture in white-page dark-page busy-photo; do
@@ -12301,7 +12301,23 @@ check_bar_title() {
         fi
         win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; continue; }
         shot="$SHOTS/bar-title-phone-$appearance.png"
-        shot_window "$win" "$shot" && say "shot: $shot" || bad "BAR-TITLE phone/$appearance no window capture"
+        if shot_window "$win" "$shot"; then
+            say "shot: $shot"
+            # ISS-87: the picture's first rows must meet the 28 pt bar's
+            # bottom edge; a backing row between them is a black line under
+            # the bar in light and dark.
+            bar="$(chrome_state | grep -oE ' bar:[0-9]+' | tail -1 | cut -d: -f2)"
+            frame_width="$(bar_title_field frame)"
+            frame_width="${frame_width%%x*}"
+            if [ -n "$bar" ] && [ -n "$frame_width" ] \
+                && seam="$(python3 "$MACOS/scripts/seam-gap.py" "$shot" "$frame_width" "$bar" 2>&1)"; then
+                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row at the bar's seam ($seam)"
+            else
+                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row at the bar's seam (${seam:-no seam})"
+            fi
+        else
+            bad "BAR-TITLE phone/$appearance no window capture"
+        fi
         stop_app
         stop_fakephone
     done
