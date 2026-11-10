@@ -12,10 +12,13 @@ import os
 import sys
 import unittest
 
+import OpenSSL.SSL
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import paths  # noqa: E402
+import proto  # noqa: E402
 
 
 class FakeTransport(object):
@@ -62,6 +65,36 @@ class PathSwitchTests(unittest.TestCase):
         hub.move_to("bbbb0002")
         self.assertEqual(2, hub.path_count)
         self.assertFalse(old.closed)
+
+
+class TransportErrorTests(unittest.TestCase):
+    """A dead path's TLS write is an OSError to the hub, never a crash.
+
+    The S4 black-hole check found this: the Mac closed a path after a planned
+    switch's drain while the fake's video writer was mid-send, pyOpenSSL raised
+    its own Error, `PathHub.send` caught only OSError, and the stream's writer
+    thread died — the picture never came back after the link did.
+    """
+
+    class BrokenSocket(object):
+        def sendall(self, data):
+            raise OpenSSL.SSL.Error([])
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            pass
+
+    def testAnSSLSendErrorBecomesAPathFailure(self):
+        transport = paths.Transport("aaaa0001", self.BrokenSocket())
+        with self.assertRaises(OSError):
+            transport.send(b"x")
+        hub = paths.PathHub(now=lambda: 1_000)
+        hub.start(transport)
+        frame = proto.pack_frame(proto.TYPE_VIDEO_FRAME, 1, b"x")
+        self.assertFalse(hub.send(frame))
+        self.assertEqual(0, hub.path_count, "the failed path stayed attached")
 
 
 if __name__ == "__main__":

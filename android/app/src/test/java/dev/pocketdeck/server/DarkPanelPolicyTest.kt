@@ -191,6 +191,55 @@ class DarkPanelPolicyTest {
     }
 
     @Test
+    fun `a press while the take-over waits for its first step hands the phone back`() {
+        // Characterization of today's answer: WAKE is ours only until the
+        // panel-off lands; without our own wake's settle an off edge is the
+        // person's and ends the take-over in one step.
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertEquals(
+            PowerWatchAction.HAND_BACK,
+            p.interactiveOff(nowMs = 1_000, streamsUp = true),
+        )
+        val after = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("the person's screen is not re-darkened", after.wake || after.panelOff || after.transitional)
+    }
+
+    @Test
+    fun `a press inside the relight's panel-off is read only after the own-wake settle`() {
+        // Characterization of the ISS-24 sequence's pure side. The power watch
+        // has already answered RELIGHT for the person's own screen-off; the
+        // relight then wakes the group and writes the panel off, and its
+        // re-applies run for about 2.5 s. A press inside that window arrives:
+        // - inside the 1 s own-wake settle it is read as our own panel-off
+        //   landing (NONE) and the take-over goes on;
+        // - after the settle the same press is the person's (HAND_BACK).
+        // The runtime must make both calls; today the watch is blocked in
+        // applyPanelOff and makes neither.
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // the person's own screen
+        assertEquals(
+            PowerWatchAction.RELIGHT,
+            p.interactiveOff(nowMs = 40_000, streamsUp = true),
+        )
+        p.ownWake(nowMs = 40_000) // relightStreams, before its wake
+        assertEquals(
+            "inside the settle the edge is our own panel-off, not the person",
+            PowerWatchAction.NONE,
+            p.interactiveOff(nowMs = 40_500, streamsUp = true),
+        )
+        assertEquals(
+            "the press 2.5 s into the panel-off is the person's",
+            PowerWatchAction.HAND_BACK,
+            p.interactiveOff(nowMs = 42_500, streamsUp = true),
+        )
+        val after = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("the handed-back panel is not re-darkened", after.wake || after.panelOff)
+    }
+
+    @Test
     fun `a pause during the take-over keeps the owed panel-off`() {
         val p = policy(forced = true)
         p.streamsStarted()
@@ -200,6 +249,31 @@ class DarkPanelPolicyTest {
             PanelPlan(wake = false, panelOff = true, transitional = true),
             p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK),
         )
+    }
+
+    @Test
+    fun `a pause before the take-over's first step still leaves the owed panel-off to that step`() {
+        // Characterization of today's answer (SM-P-2/SM-P-3): the episode start
+        // woke a sleeping shared group and armed the panel-off; the Mac covers
+        // its window before the keep-alive's first step. The pause must not
+        // forget the owed panel-off, and the step that follows still applies it
+        // without a second group wake.
+        val p = policy(forced = true)
+        p.streamsStarted()
+        assertEquals(
+            PanelPlan(wake = true, panelOff = true, transitional = true),
+            p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK),
+        )
+        assertFalse("the take-over is ours: a pause keeps the panel state", p.streamsPaused(nowMs = 1_000))
+        assertEquals(
+            "the first step still owes the panel-off, and does not wake again",
+            PanelPlan(wake = false, panelOff = true, transitional = true),
+            p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK),
+        )
+        // The pause deadline still runs from the pause: nothing in the step
+        // resumed the episode.
+        assertFalse(p.pauseGraceExpired(nowMs = 30_999))
+        assertTrue(p.pauseGraceExpired(nowMs = 31_000))
     }
 
     // --- the person's direct use wins (CTRL-11) -----------------------

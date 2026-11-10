@@ -2783,7 +2783,8 @@ final class ConnectionController {
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
-                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout),
+                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout,
+                      debugNoMarginSwitch: options.debugNoMarginSwitch),
               for: record, policy: .allowed)
     }
 

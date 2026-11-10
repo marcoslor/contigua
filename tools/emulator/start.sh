@@ -36,6 +36,14 @@ done
 
 . "$(dirname "$0")/lib.sh"
 
+# The emulator's console port comes from the serial, not a constant: a second
+# rig (another worker's emulator-5584, or this tree's S3 boot while 5554 is
+# busy) must land on its own port or adb would attach to the wrong guest.
+EMU_PORT="${SERIAL#emulator-}"
+case "$EMU_PORT" in
+  ''|*[!0-9]*) die "serial '$SERIAL' is not an emulator-<port> serial" ;;
+esac
+
 PKG="dev.pocketdeck"
 SHIZUKU_PKG="moe.shizuku.privileged.api"
 BROWSER_PKG="${POCKETDECK_BROWSER:-acr.browser.lightning}"
@@ -57,14 +65,15 @@ wait_boot() { # wait_boot <timeout_s>
 }
 
 if ! device_present; then
-  if pgrep -f "emulator.*-avd $AVD_NAME" >/dev/null 2>&1; then
+  if ps -axww -o command= | grep -E "emulator.*-avd $AVD_NAME .*-port $EMU_PORT" |
+      grep -v grep >/dev/null 2>&1; then
     step "emulator already starting, waiting for $SERIAL"
   else
     GPU_ARGS="-gpu swiftshader_indirect"
     [ "$WINDOW" -eq 1 ] && GPU_ARGS=""
-    ARGS="-avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full"
+    ARGS="-avd $AVD_NAME -port $EMU_PORT -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full"
     [ "$WINDOW" -eq 0 ] && ARGS="$ARGS -no-window"
-    step "starting $AVD_NAME on 5554 (headless=$((1 - WINDOW)))"
+    step "starting $AVD_NAME on $EMU_PORT (headless=$((1 - WINDOW)))"
     # shellcheck disable=SC2086
     nohup "$EMULATOR" $ARGS $GPU_ARGS >"$AGENT_DIR/emulator.log" 2>&1 &
   fi
