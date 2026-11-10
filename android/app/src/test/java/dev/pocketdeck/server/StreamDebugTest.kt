@@ -29,4 +29,14 @@ class StreamDebugTest {
         assertEquals(false, StreamDebug.freezeDrain(debug = false, property = "1"))
         assertEquals(false, StreamDebug.freezeDrain(debug = true, property = null))
     }
+
+    @Test
+    fun theRateSwitchesDefaultOnAndOnlyZeroTurnsThemOff() {
+        for (property in listOf(null, "", "1", "true", "off")) {
+            assertEquals(true, StreamDebug.enabled(debug = true, property = property))
+        }
+        assertEquals(false, StreamDebug.enabled(debug = true, property = "0"))
+        assertEquals("a release build ignores the property", true,
+            StreamDebug.enabled(debug = false, property = "0"))
+    }
 }
