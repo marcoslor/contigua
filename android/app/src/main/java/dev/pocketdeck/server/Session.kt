@@ -1734,6 +1734,7 @@ class Session(
                 "window.quality" -> onWindowQuality(obj, frame)
                 "window.launch" -> onWindowLaunch(obj, frame)
                 "task.continue" -> onTaskContinue(obj, frame)
+                "task.front" -> onTaskFront(obj)
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
@@ -1979,6 +1980,30 @@ class Session(
         updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
+    }
+
+    /**
+     * `task.front` (docs/PROTOCOL.md "Foreground app"): one read of the app in
+     * front on the phone's own screen, for the Mac panel's "Open <App> on Mac"
+     * row. The same one-shot task-list read and picker as `task.continue`; it
+     * opens nothing, presses no key and keeps no watch. The package is the only
+     * payload; the log names presence only, never the app.
+     */
+    private fun onTaskFront(obj: Map<String, Any?>) {
+        val seq = Json.int(obj["seq"])
+        val tasks = taskMove?.let { mover -> runCatching { mover.tasks() }.getOrNull() }
+        if (tasks == null) {
+            log("front: none")
+            sendError("not_available", "this phone can't report its foreground app")
+            return
+        }
+        val task = ForegroundTaskPicker.pick(tasks, OWN_PACKAGE)
+        log(if (task == null) "front: none" else "front: present")
+        // `pkg: null` is the answer for home, our app or SystemUI; an older
+        // Mac ignores the message, so no version bump.
+        val reply = linkedMapOf<String, Any?>("t" to "task.front", "pkg" to task?.pkg)
+        if (seq != null) reply["seq"] = seq
+        sendJson(reply)
     }
 
     /** After a successful move the phone's own screen shows nothing: go home. */

@@ -1173,6 +1173,10 @@ class EventLog(object):
         self._emit({"ev": "task.continue", "stream": stream, "mode": mode,
                     "started": started, "ts": time.time()})
 
+    def task_front(self, seq, present):
+        """`task.front` was read; only presence is recorded (no package)."""
+        self._emit({"ev": "front", "seq": seq, "present": present, "ts": time.time()})
+
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
@@ -3483,6 +3487,7 @@ class Session(object):
             "window.quality": self._on_window_quality,
             "window.launch": self._on_window_launch,
             "task.continue": self._on_task_continue,
+            "task.front": self._on_task_front,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -5255,6 +5260,20 @@ class Session(object):
         # The real phone's title watcher reports the top app of every display;
         # the Mac titles the window ("Settings (FakePhone)") from it.
         self._send(window.title_message())
+
+    # -- task.front (docs/PROTOCOL.md "Foreground app"): one read, no display.
+    def _on_task_front(self, msg):
+        """Answer the app in front, or null. `--foreground-pkg none` and
+        `--handoff-mode nothing` both mean nothing continuable."""
+        mode = self.phone.args.handoff_mode
+        pkg = self.phone.args.foreground_pkg
+        present = mode != "nothing" and pkg != "none"
+        seq = msg.get("seq")
+        self.phone.events.task_front(seq, present)
+        reply = {"t": "task.front", "pkg": pkg if present else None}
+        if seq is not None:
+            reply["seq"] = seq
+        self._send(reply)
 
     def _on_window_resize(self, msg):
         window = self._stream_or_error(msg)
