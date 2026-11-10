@@ -1,7 +1,8 @@
 // The live-resize rule: while the window has asked for a new size and no frame
 // at that size has arrived, the last frame fills it (a centred crop) instead of
-// letterboxing. The phone window's mirror is never cropped. The drawn rect is
-// the same rule the layer uses, so input maps to what is on screen.
+// letterboxing. The phone window's mirror crops the encoder's rounding only
+// (MIRROR-25). The drawn rect is the same rule the layer uses, so input maps to
+// what is on screen.
 
 import AVFoundation
 import XCTest

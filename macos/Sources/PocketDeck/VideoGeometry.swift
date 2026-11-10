@@ -147,10 +147,12 @@ enum Letterbox {
     ///   (a coarser encoder step, an older phone's 16 px floor, the cap) is
     ///   stretched over the view: no bars, under 2 % off in shape. Only a
     ///   settled frame of a clearly different shape is fitted.
-    /// - The phone window mirrors a fixed screen and is never cropped by more
-    ///   than a rendering artefact: a whole-point window size can leave the
-    ///   fit under a point short at 2×, so a sub-point miss fills (a crop
-    ///   under a pixel, ISS-65). Only a clearly different picture is fitted.
+    /// - The phone window mirrors a fixed screen: a picture of the same shape
+    ///   within `fillTolerance` — the window is kept in the phone's shape and
+    ///   the encoder rounds it — covers the area (a crop of the rounding, a
+    ///   fraction of a row, ISS-87), and a whole-point window size can leave
+    ///   the fit under a point short, which fills too (ISS-65). Only a clearly
+    ///   different picture is fitted (a rotation the window has not taken).
     static func placement(video: CGSize, bounds: CGSize, backingScale: Double = 1,
                           alignment: Int = VideoSize.granularity,
                           resizePending: Bool, phoneMode: Bool) -> Placement {
@@ -176,10 +178,16 @@ enum Letterbox {
 
     /// A phone-mode fit miss under one point is filled: it is the whole-point
     /// window sizing's rounding, not a picture of another shape, and at 2× it
-    /// shows as a black row or column (ISS-65). Filling crops under a pixel.
+    /// shows as a black row or column (ISS-65, ISS-87). Filling crops under a
+    /// pixel. A picture of the same shape within `fillTolerance` is the
+    /// phone's own screen at the encoder's rounding, so it fills too: leaving
+    /// 1.09 pt of a 301×653 pt mirror as a fit letterbox showed the black
+    /// backing as a row under the bar and a blurred half-row of picture
+    /// (ISS-87). Only a picture of a clearly different shape is fitted.
     static let phoneFillSlack: CGFloat = 1
 
     static func phonePlacement(video: CGSize, bounds: CGSize) -> Placement {
+        if sameShape(video: video, bounds: bounds) { return .fill }
         let slack = fitSlack(video: video, bounds: bounds)
         return max(slack.width, slack.height) < phoneFillSlack ? .fill : .fit
     }
@@ -198,12 +206,19 @@ enum Letterbox {
     /// points, anchored to the top-left (the strip is right and bottom). Origin
     /// is the bottom-left (AppKit view coordinates) because callers pass view
     /// bounds.
+    ///
+    /// Every edge lands on a whole device pixel: the origin floors and the far
+    /// edge ceils, so the picture never leaves a half-covered row or column
+    /// (a blended line at its edge, ISS-87). A fit stays inside `bounds` — a
+    /// letterbox may lose under a pixel to that snap but never grows into the
+    /// backing; a fill is not clamped (its crop is deliberate). A rect that
+    /// already covers the bounds stays covering.
     static func videoRect(video: CGSize, in bounds: CGRect, placement: Placement,
                           backingScale: Double = 1) -> CGRect {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
         switch placement {
         case .stretch:
-            return bounds
+            return snapped(bounds, backingScale: backingScale)
         case .oneToOne:
             let scale = CGFloat(max(backingScale, 1))
             func snapped(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
@@ -213,14 +228,36 @@ enum Letterbox {
         case .fit:
             let scale = min(bounds.width / video.width, bounds.height / video.height)
             let size = CGSize(width: video.width * scale, height: video.height * scale)
-            return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
-                          width: size.width, height: size.height)
+            return snapped(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                                  width: size.width, height: size.height),
+                           backingScale: backingScale, inside: bounds)
         case .fill:
             let scale = max(bounds.width / video.width, bounds.height / video.height)
             let size = CGSize(width: video.width * scale, height: video.height * scale)
-            return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
-                          width: size.width, height: size.height)
+            return snapped(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                                  width: size.width, height: size.height),
+                           backingScale: backingScale)
         }
+    }
+
+    /// `rect` with every edge on a whole device pixel: the origin floors, the
+    /// far edge ceils. `inside` keeps a fit within its content rect; a fill is
+    /// never clamped, because its overflow is the crop that covers the view.
+    static func snapped(_ rect: CGRect, backingScale: Double,
+                        inside bounds: CGRect? = nil) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return rect }
+        let scale = CGFloat(max(backingScale, 1))
+        func down(_ value: CGFloat) -> CGFloat { (value * scale).rounded(.down) / scale }
+        func up(_ value: CGFloat) -> CGFloat { (value * scale).rounded(.up) / scale }
+        var minX = down(rect.minX), minY = down(rect.minY)
+        var maxX = up(rect.maxX), maxY = up(rect.maxY)
+        if let bounds {
+            minX = max(minX, bounds.minX)
+            minY = max(minY, bounds.minY)
+            maxX = min(maxX, bounds.maxX)
+            maxY = min(maxY, bounds.maxY)
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     /// The drawn rect with the outer rule (no resize pending, app window): the
