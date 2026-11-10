@@ -184,6 +184,10 @@ final class ConnectionController {
         return book.currentLink
     }
     var currentId: String? { book.currentId }
+    /// [DECK-14/15] When the phone in use was last reached: the link machine's
+    /// stamp, for the chip's help tag and the offline banner. Nil until this
+    /// run has seen the phone and with no remembered sighting.
+    var lastSeen: Date? { book.current?.machine.lastSeen }
     var pathsDown: Bool { book.current?.pathsDown ?? false }
     var pathsOffline: Bool { book.current?.pathsOffline ?? false }
     var pathOutage: PathOutage { book.current?.pathOutage ?? .none }
@@ -227,7 +231,8 @@ final class ConnectionController {
     }()
     /// R1: one derivation for the Deck, the menu-bar panel and Settings.
     var presentation: LinkPresentation {
-        LinkPresentation(link: link, naming: { self.displayName(for: $0) })
+        LinkPresentation(link: link, naming: { self.displayName(for: $0) },
+                         lastSeen: lastSeen)
     }
 
     var banner: Banner? {
@@ -235,13 +240,14 @@ final class ConnectionController {
         // notice (a copy result, a launcher error): it is the one truth until
         // the phone is paired again or forgotten.
         if case .needsPairing = link,
-           let trustLost = link.banner(naming: { displayName(for: $0) }) {
+           let trustLost = link.banner(naming: { displayName(for: $0) }, lastSeen: lastSeen) {
             return trustLost
         }
         // R2: a pairing sheet says the cooldown itself; the Deck behind it does
         // not repeat the sentence. With no sheet the banner carries it.
         if sheet != nil, case .pairing = link { return transientBanner }
-        return transientBanner ?? link.banner(naming: { displayName(for: $0) })
+        return transientBanner ?? link.banner(naming: { displayName(for: $0) },
+                                              lastSeen: lastSeen)
     }
 
     // MARK: Nicknames (docs/ROADMAP.md #1)
@@ -770,7 +776,9 @@ final class ConnectionController {
         } else {
             if let active = remembered.active { resetPhoneData(for: active.ref) }
             let saved = remembered.active.flatMap { remembered.trustLost(id: $0.id) }
-            apply(book.start(active: remembered.active?.ref, at: Date(), trustLost: saved))
+            let seen = remembered.active.flatMap { remembered.phone(id: $0.id)?.lastSeen }
+            apply(book.start(active: remembered.active?.ref, at: Date(), trustLost: saved,
+                             lastSeen: seen))
             sendReachability()
         }
         // `--connect-phone`: an extra phone connects beside the current one and
@@ -4642,7 +4650,9 @@ final class ConnectionController {
             appsLoaded = loaded
             icons = PreviewData.icons
             missingIcons = PreviewData.iconless
-            machine = LinkMachine(link: link)
+            // A preview shows the offline banner's last-seen line: five
+            // minutes ago, a fixed sighting the shot can read.
+            machine = LinkMachine(link: link, lastSeen: Date().addingTimeInterval(-5 * 60))
             if case .online = link { status = PhoneStatus(locked: locked, battery: battery, charging: charging) }
         }
         func pairingSheet(_ state: Pairing) {

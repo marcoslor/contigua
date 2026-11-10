@@ -398,7 +398,7 @@ enum Pairing: Equatable { case contacting, comparing(code: String), verifying, d
 | any | launch with remembered phone | `.connecting(active)` | Deck/Phone mode, chip "Connecting…" |
 | `.connecting` / `.reconnecting` / `.offline` | `welcome` | `.online` | chip green, grid enabled, banner cleared |
 | `.online` | socket closed / ping timeout / receive error | `.reconnecting` | chip orange, grid dimmed, window pills after 1 s |
-| `.connecting` / `.reconnecting` | 15 s without live session | `.offline(.unreachable)` | chip "Offline", banner "Can't reach…" |
+| `.connecting` / `.reconnecting` | 15 s without live session | `.offline(.unreachable)` | chip "Offline" (help tag "Last seen …"), banner "Can't reach…" and the last-seen line |
 | any non-pairing | `error{busy}` | `.offline(.busy)` after 15 s total, banner immediately | banner "Another Mac is connected…" |
 | any non-pairing | `error{auth_failed}` (key rejected) | `.needsPairing` | banner + **Pair again**; reconnect loop stops |
 | any non-pairing | `error{version}` | `.offline(.versionMismatch)` | banner, loop stops |
