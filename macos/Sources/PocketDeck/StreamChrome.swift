@@ -470,7 +470,7 @@ final class StreamChromeView: NSView {
     }
 
     /// The bar's name: an app's, the phone's, or nil for a link or handoff
-    /// window that does not know an app yet (WIN-68, MIRROR-23).
+    /// window that does not know an app yet (WIN-68, MIRROR-26).
     func setBarTitle(_ text: String?) {
         guard titleText != text else { return }
         titleText = text

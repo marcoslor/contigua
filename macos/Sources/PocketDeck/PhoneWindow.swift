@@ -208,7 +208,7 @@ final class PhoneWindowController: StreamWindowController {
             .withSymbolConfiguration(.init(pointSize: 46, weight: .regular))
     }
 
-    /// The bar names the phone, never the mirrored app or a task (MIRROR-23).
+    /// The bar names the phone, never the mirrored app or a task (MIRROR-26).
     override var barTitle: String? {
         BarTitleName.phone(displayName: manager.phoneName, fallback: manager.phone?.name)
     }

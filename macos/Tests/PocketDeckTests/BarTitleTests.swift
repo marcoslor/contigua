@@ -1,6 +1,6 @@
 // The Framed bar's title: its tone machine, its luminance estimate, its pure
 // layout, the names each window kind gives it, and the band read off a real
-// pixel buffer (WIN-68, WIN-69, MIRROR-23).
+// pixel buffer (WIN-68, WIN-69, MIRROR-26).
 
 import AppKit
 import CoreVideo
@@ -201,6 +201,16 @@ final class BarTitleLayoutTests: XCTestCase {
                                        boundsHeight: 628, lightsEnd: 100,
                                        rightRowStart: 100 + 2 * BarTitle.sideGap
                                         + BarTitle.minimumWidth))
+        let long = "A Phone With A Long Display Name"
+        XCTAssertNil(BarTitle.frame(text: long, windowWidth: 900, barHeight: barHeight,
+                                    boundsHeight: 628, lightsEnd: 100,
+                                    rightRowStart: 100 + 2 * BarTitle.sideGap
+                                        + BarTitle.minimumTruncatedWidth - 1),
+                     "[WIN-68] a name that would truncate to a few letters hides instead")
+        XCTAssertNotNil(BarTitle.frame(text: long, windowWidth: 900, barHeight: barHeight,
+                                       boundsHeight: 628, lightsEnd: 100,
+                                       rightRowStart: 100 + 2 * BarTitle.sideGap
+                                        + BarTitle.minimumTruncatedWidth))
         XCTAssertNil(BarTitle.frame(text: "", windowWidth: 900, barHeight: barHeight,
                                     boundsHeight: 628, lightsEnd: 0, rightRowStart: 900),
                      "no name, no title")
