@@ -153,7 +153,7 @@ final class StreamMenuState {
     var settingsDensity = 1.0
     /// The Deck's stored icon size (DECK-6), for View ▸ Icon Size's checkmark.
     /// Read from the profile when a menu opens, so the mark follows ⌘+ at once.
-    var deckZoom: CGFloat = 1
+    var deckZoom: CGFloat = DeckZoom.defaultValue
 
     /// The app uses `shared`; a test builds its own to drive the menu rules.
     init() {}
