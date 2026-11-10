@@ -17,6 +17,7 @@ class ResizePlanTest {
         private val limits: EncoderLimits = EncoderLimits(),
         private val failPrepare: Boolean = false,
         private val shrinkTo: IntSize? = null,
+        private val loseEncoderOnAttach: Boolean = false,
     ) : ResizeSteps {
         val calls = ArrayList<String>()
 
@@ -36,7 +37,7 @@ class ResizePlanTest {
 
         override fun attachPrepared(): Boolean {
             calls += "attach"
-            return true
+            return !loseEncoderOnAttach
         }
 
         override fun releasePrevious() {
@@ -125,6 +126,30 @@ class ResizePlanTest {
 
         assertEquals(ResizeSequencer.Outcome.KEPT, result.outcome)
         assertEquals(listOf("fit", "prepare 1024x1200"), steps.calls)
+    }
+
+    @Test
+    fun `a swap that loses both encoders is kept, never resized`() {
+        val steps = Recorder(loseEncoderOnAttach = true)
+        val result = ResizeSequencer(steps).resize(960, 540, 240, paused = false, current = current)
+
+        assertEquals(ResizeSequencer.Outcome.KEPT, result.outcome)
+        assertEquals("the old size is the only one this stream ever showed", current, result.size)
+        assertEquals(
+            "nothing is released after the old encoder was already gone",
+            listOf("fit", "prepare 960x528", "resizeDisplay 960x528@240", "attach"),
+            steps.calls,
+        )
+    }
+
+    @Test
+    fun `a resume whose attach loses the encoder is kept`() {
+        val steps = Recorder(loseEncoderOnAttach = true)
+        val result = ResizeSequencer(steps).resume(1024, 1200, 318, IntSize(1024, 1200))
+
+        assertEquals(ResizeSequencer.Outcome.KEPT, result.outcome)
+        assertEquals(IntSize(1024, 1200), result.size)
+        assertFalse("nothing to release after a failed attach", "releasePrevious" in steps.calls)
     }
 
     // ------------------------------------------------------------------ sizes

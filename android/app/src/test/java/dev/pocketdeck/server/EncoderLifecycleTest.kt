@@ -37,6 +37,8 @@ class EncoderLifecycleTest {
         var width = 0
         var height = 0
         var failBuilds = 0
+        /** Builds a swap asks for itself (after a refused start) to fail. */
+        var failAttachBuilds = 0
         var startRefusals = startRefusals
         /** Set by the build: the fake codec kind, for the HEVC pin below. */
         var builtKind = VideoCodec.Avc
@@ -106,8 +108,8 @@ class EncoderLifecycleTest {
                 builtSize = action.size
                 width = action.size.w
                 height = action.size.h
-                if (failBuilds > 0) {
-                    failBuilds--
+                if (failBuilds > 0 || (action.attach && failAttachBuilds > 0)) {
+                    if (failBuilds > 0) failBuilds-- else failAttachBuilds--
                     prepared = false
                     builtSize = null
                     EncoderEvent.BuildFailed
@@ -617,7 +619,56 @@ class EncoderLifecycleTest {
         }
     }
 
+    @Test
+    fun `a failed swap answers the resize kept and releases nothing`() {
+        val fake = FakeStream(surfaceWorks = true)
+        fake.open(DisplayPhase.Virtual, IntSize(1280, 720))
+        fake.startRefusals = 1
+        fake.failAttachBuilds = 1
+        val steps = MachineSteps(fake)
+
+        val result = ResizeSequencer(steps).resize(
+            960, 540, 240, paused = false, current = IntSize(1280, 720),
+        )
+
+        assertEquals(ResizeSequencer.Outcome.KEPT, result.outcome)
+        assertEquals("the stream never showed another size", IntSize(1280, 720), result.size)
+        assertFalse("nothing is released after the old encoder was already gone",
+            "releasePrevious" in steps.calls)
+        assertEquals(EncoderPhase.Empty, fake.state.phase)
+        assertFalse(fake.encoder)
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** A [ResizeSteps] backed by the machine and its fake stream (the real sequencer above it). */
+    private class MachineSteps(private val fake: FakeStream) : ResizeSteps {
+        val calls = ArrayList<String>()
+
+        override fun fit(w: Int, h: Int): IntSize {
+            calls += "fit"
+            return EncoderSizes.fit(w, h, EncoderLimits())
+        }
+
+        override fun prepare(size: IntSize): IntSize? {
+            calls += "prepare ${size.w}x${size.h}"
+            return fake.prepare(size)
+        }
+
+        override fun resizeDisplay(size: IntSize, dpi: Int) {
+            calls += "resizeDisplay ${size.w}x${size.h}@$dpi"
+        }
+
+        override fun attachPrepared(): Boolean {
+            calls += "attach"
+            return fake.attachPrepared()
+        }
+
+        override fun releasePrevious() {
+            calls += "releasePrevious"
+            fake.releasePrevious()
+        }
+    }
 
     /** A stream whose swap rebuild fails: display resized, no encoder, optionally paused. */
     private fun failedSwap(pause: Boolean = true): FakeStream {
