@@ -129,8 +129,63 @@ enum DeckGridProbe {
     static func resetBodyCount() { bodyCount = 0 }
     #endif
 
+    /// The start page's drawn headers and cells, section by section, from the
+    /// layout pass that placed them (e2e `deckstart`): the alignment proof is
+    /// about what was drawn, not what the model would draw. One line per
+    /// geometry, so a resize rewrites it and a scroll does not.
+    @MainActor
+    static func reportSections(_ page: DeckPageLayout) {
+        guard AppEnvironment.shared.options.debugDeckSections != nil else { return }
+        let key = "\(Int(page.width.rounded()))|\(page.metrics.zoom)|"
+            + page.sections.map { "\($0.kind.rawValue):\($0.apps.count)" }.joined(separator: ",")
+        guard key != lastSections else { return }
+        lastSections = key
+        let sections: [[String: Any]] = page.sections.enumerated().map { index, section in
+            var item: [String: Any] = [
+                "kind": section.kind.rawValue,
+                "header": section.showsHeader,
+                "cells": page.cells[index].enumerated().map { offset, frame in
+                    ["id": DeckPageCell(section: section.kind, app: section.apps[offset]).id,
+                     "pkg": section.apps[offset].pkg,
+                     "label": section.apps[offset].displayLabel,
+                     "x": Double(frame.minX), "y": Double(frame.minY),
+                     "width": Double(frame.width), "height": Double(frame.height)]
+                },
+            ]
+            if let header = page.headerFrame(section) {
+                item["headerX"] = Double(header.minX)
+                item["headerY"] = Double(header.minY)
+                item["headerWidth"] = Double(header.width)
+            }
+            return item
+        }
+        appendSections([
+            "width": Double(page.width),
+            "zoom": Double(page.metrics.zoom),
+            "columns": page.block.columns,
+            "originX": Double(page.block.originX),
+            "span": Double(page.block.span),
+            "cell": Double(page.metrics.cellWidth),
+            "gap": Double(page.metrics.columnGap),
+            "allAppsTop": Double(page.allAppsTop),
+            "height": Double(page.height),
+            "sections": sections,
+        ])
+    }
+
+    private nonisolated(unsafe) static var lastSections: String?
+
     private static func append(_ line: [String: Any]) {
         guard let path = AppEnvironment.shared.options.debugDeckGrid else { return }
+        write(line, to: path)
+    }
+
+    private static func appendSections(_ line: [String: Any]) {
+        guard let path = AppEnvironment.shared.options.debugDeckSections else { return }
+        write(line, to: path)
+    }
+
+    private static func write(_ line: [String: Any], to path: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
               var text = String(data: data, encoding: .utf8) else { return }
         text += "\n"

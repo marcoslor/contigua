@@ -104,8 +104,9 @@ backgrounds), window background default.
 │   ▢ Camera  ▢ Chrome  ▢ Gallery  …   (D grid, 96×108 cells, 64 pt icons, 16 pt pitch)          │
 ```
 
-- `navigationTitle(phone.name)`; no subtitle. Toolbar: `ToolbarItem(placement: .status)` **chip**;
-  `ToolbarItem(.primaryAction)` **Phone** button (`iphone.gen3`, label "Phone"); `.searchable(text:
+- `navigationTitle(phone.name)`; no subtitle. With 2+ remembered phones the window title is empty and a phone menu
+  (the names, the one in use checked, then **Phone Settings…**) takes the title's place in the left toolbar group.
+  Toolbar: `ToolbarItem(placement: .status)` **chip**; `ToolbarItem(.primaryAction)` **Phone** button (`iphone.gen3`, label "Phone"); `.searchable(text:
   placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`. The chip is a button that opens the
   shared phone controls (the menu bar panel's `PhonePanelView`) in a `.popover`.
 - **Chip** (one capsule, `.caption`, system glass via toolbar): dot (6 pt `circle.fill`) + text,
@@ -134,6 +135,19 @@ backgrounds), window background default.
   0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window. A **title-bar
   double-click or the green button** takes the system's standard frame — the screen's visible frame — and a second
   zoom returns the frame it came from (DECK-24); the zoom never changes the icon size.
+- **Start page (D1, ISS-74):** the content above All Apps is a list of sections, in reading order **Open on this Mac**,
+  **Pinned**, **All Apps**. One `DeckPageLayout` computes the grid's block once from the width of the pass that draws it,
+  and every section is a range of cells in it: the same 96×108 cells, 64 pt icons, `.caption` labels and column x
+  origins as All Apps (a Pinned tile in column 3 sits exactly above All Apps' column 3), with each header (11 pt
+  semibold, secondary) at the grid's leading edge. A section starts a new row and never puts more tiles in a row than
+  the grid has columns; an empty section draws no header and no gap, so with nothing pinned and no window the page is
+  the plain grid of DECK-4 (the grid keeps its 24 pt top inset in that case). Open on this Mac lists each app with a Mac
+  window once, front window first, with the 14 pt accent `macwindow` mark; a click raises through `openOrRaise`
+  (CONV-MAC-11). Pinned keeps at most eight per phone in pin order, in this profile's defaults, never on the phone; the
+  tile's context menu says **Pin** / **Unpin** and the ninth pin is disabled with the help tag "You can pin up to
+  eight apps." While the search field has text the sections collapse to the results alone. With 2+ phones the title is a
+  menu of the remembered phones (the one in use checked, **Phone Settings…** below a divider), and picking one runs the
+  same transition as Settings ▸ Phones ▸ Use This Phone.
 - **A–Z rail (D):** the Deck's trailing edge carries one 16 pt column, 8 pt from the edge: A–Z then `#`, 9 pt letters
   on a 12 pt pitch, the current letter accent and semibold, empty letters dimmed at 35 %. It appears only when the
   search field is empty and there are at least 30 apps. Clicking or dragging a letter scrolls to its first app; an
@@ -443,7 +457,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 | Where | Keys |
 |---|---|
 | Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone Mirror · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · fn‑F / ⌃⌘F full screen (the system's) |
-| Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ⌘+/⌘−/⌘0 zoom the grid (75/100/125/150 %) · ↩ open selected / first match · Esc clears search, then does nothing |
+| Deck (Phone mode) | typing goes to search (focused on show) and the first match is selected · ⌘F focuses the search field and selects its text · ←→↑↓ move selection across the page's sections as one page · ⌘1–⌘9 open the first nine visible tiles in reading order · ⌘+/⌘−/⌘0 zoom the grid (75/100/125/150 %) · ↩ open selected / first match · Esc clears search, then does nothing |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
 | Code sheet | Esc Cancel |
