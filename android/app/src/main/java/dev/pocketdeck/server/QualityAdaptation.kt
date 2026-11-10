@@ -52,6 +52,8 @@ internal class QualityAdaptation(
     private var probesLeft = MAX_PROBES
     private var probeStep = FIRST_PROBE
     private var probeAtMs = Long.MIN_VALUE
+    /** The newest measured goodput; it decides the floor below 1 Mbps (PATH-40). */
+    private var lastMeasuredBps: Int? = null
 
     /** The bitrate the encoder should use now. */
     val bitrate: Int get() = current
@@ -61,6 +63,12 @@ internal class QualityAdaptation(
 
     /** The goodput-derived recovery cap; equal to [target] until a drop measures one. */
     val ceilingBps: Int get() = ceiling
+
+    /** The down-step floor the newest measurement implies (PATH-40). */
+    val floorNowBps: Int get() = dropFloor(lastMeasuredBps)
+
+    /** True while the belief cannot come down any further (the ladder's trigger). */
+    val atFloor: Boolean get() = current <= floorNowBps
 
     /** The step the next probe will add, for the field log and the tests. */
     val nextProbeStep: Double get() = probeStep
@@ -72,12 +80,22 @@ internal class QualityAdaptation(
      * A new target (computed or requested): the stream restarts at it. A
      * reconfigure that repeats the current target is not a restart: the
      * measured cap, the current bitrate and the recovery clock stay.
+     *
+     * [restart] false keeps the belief through a rebuild the ladder caused: the
+     * pixels changed, not the link, so the measured cap and the current
+     * bitrate stay and only the recovery ceiling follows the new target.
      */
     @Synchronized
-    fun setTarget(bps: Int): Int {
+    fun setTarget(bps: Int, restart: Boolean = true): Int {
         val next = bps.coerceAtLeast(0)
         if (next == target) return current
+        val raised = next > target
         target = next
+        if (!restart) {
+            current = minOf(current, target)
+            ceiling = if (raised) target else minOf(ceiling, target)
+            return current
+        }
         current = target
         ceiling = target
         nextRecoverAtMs = Long.MAX_VALUE
@@ -87,6 +105,7 @@ internal class QualityAdaptation(
         probesLeft = MAX_PROBES
         probeStep = FIRST_PROBE
         probeAtMs = Long.MIN_VALUE
+        lastMeasuredBps = null
         return current
     }
 
@@ -119,6 +138,7 @@ internal class QualityAdaptation(
             nextProbeAtMs = nowMs + PROBE_REFILL_MS
         }
         if (measuredBps != null && measuredBps > 0) {
+            lastMeasuredBps = measuredBps
             measuredDrops++
             val clearlySlower = measuredBps.toLong() * 10 < current.toLong() * 9
             if (probeFailed || clearlySlower || measuredDrops >= 2) {
@@ -133,6 +153,25 @@ internal class QualityAdaptation(
         val next = (current * dropFactor).toInt()
             .coerceAtLeast(dropFloor(measuredBps))
             .coerceAtMost(minOf(target, ceiling))
+        if (next >= current) return null
+        current = next
+        return current
+    }
+
+    /**
+     * PATH-47: the early delay signal measured a link below the belief. Lower
+     * the belief and its recovery ceiling to [bps] without the 25 % drop step
+     * and without asking for a keyframe; the 250 ms budget never had to fire.
+     * Bounded by the same down-step floor as a drop, never above the target.
+     * @return the new bitrate, or null when it did not move.
+     */
+    @Synchronized
+    fun lowerTo(nowMs: Long, bps: Int): Int? {
+        if (!enabled) return null
+        val bounded = minOf(target, maxOf(dropFloor(lastMeasuredBps), bps))
+        nextRecoverAtMs = nowMs + recoverIntervalMs
+        ceiling = minOf(ceiling, bounded)
+        val next = minOf(current, ceiling)
         if (next >= current) return null
         current = next
         return current

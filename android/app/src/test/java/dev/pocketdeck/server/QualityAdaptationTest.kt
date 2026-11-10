@@ -245,4 +245,61 @@ class QualityAdaptationTest {
         assertEquals(1_000_000, q.setTarget(1_000_000))
         assertNull("the floor is the target now", q.onDrop(0))
     }
+
+    @Test
+    fun `an early lowering caps the belief without a drop step`() {
+        q.setTarget(8_000_000)
+        assertEquals(3_400_000, q.lowerTo(1_000, 3_400_000))
+        assertEquals(3_400_000, q.ceilingBps)
+        assertNull("the cap is the believed rate", q.lowerTo(2_000, 3_400_000))
+        assertNull("recovery stays under the cap", q.maybeRecover(6_000))
+        assertEquals(3_400_000, q.bitrate)
+    }
+
+    @Test
+    fun `an early lowering never goes under the down-step floor`() {
+        q.setTarget(1_100_000)
+        q.onDrop(0, measuredBps = 900_000)
+        assertEquals(765_000, q.bitrate)
+        assertNull("already at the sub-megabit floor", q.lowerTo(1_000, 200_000))
+        assertEquals(765_000, q.bitrate)
+    }
+
+    @Test
+    fun `a disabled policy ignores the early signal`() {
+        val off = QualityAdaptation(enabled = false)
+        off.setTarget(4_000_000)
+        assertNull(off.lowerTo(0, 1_000_000))
+        assertEquals(4_000_000, off.bitrate)
+    }
+
+    @Test
+    fun `the belief at the floor is reported for the ladder`() {
+        q.setTarget(2_000_000)
+        assertTrue("a fresh belief is not at the floor", !q.atFloor)
+        q.onDrop(0) // 1.5 Mbps
+        q.onDrop(1) // 1.125 Mbps
+        q.onDrop(2) // 1 Mbps, the floor
+        assertTrue(q.atFloor)
+        assertEquals(1_000_000, q.floorNowBps)
+    }
+
+    @Test
+    fun `a rebuild keeps the belief when it is not a restart`() {
+        q.setTarget(8_000_000)
+        q.lowerTo(0, 3_400_000)
+        assertEquals(3_400_000, q.setTarget(6_000_000, restart = false))
+        assertEquals(3_400_000, q.bitrate)
+        assertEquals(3_400_000, q.ceilingBps)
+        assertEquals(6_000_000, q.targetBps)
+    }
+
+    @Test
+    fun `a raised target keeps room for recovery when the belief is kept`() {
+        q.setTarget(1_000_000)
+        q.lowerTo(0, 1_000_000)
+        assertEquals(1_000_000, q.setTarget(8_000_000, restart = false))
+        assertEquals(8_000_000, q.ceilingBps)
+        assertEquals(1_100_000, q.maybeRecover(5_000))
+    }
 }
