@@ -37,8 +37,8 @@ window you give it.
 - **Window styles** — a Framed bar (always visible, holds the traffic lights)
   or Immersive (the window *is* the app; a dwell pill brings the lights back).
   Switch with View ▸ Window Style or ⌥⌘F; the choice is remembered per app.
-- **Move Phone App to Mac (handoff)** — move the task in the phone's foreground onto
-  the Mac (menu bar, app menu, or ⌘⇧C): same app, a new window.
+- **Open <App> on Mac (handoff)** — move the task in the phone's foreground onto
+  the Mac (the card's row, the Phone menu, or ⌘⇧C): same app, a new window.
 - **Live Text** — View ▸ Live Text (⌘⇧T) freezes a window on its current frame:
   select and copy text, use data detectors (links, numbers, dates), lift an
   image subject, Visual Look Up, translate where macOS offers it. ⌘C without a
