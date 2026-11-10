@@ -219,7 +219,40 @@ and both are absent unless the codec reports
 `FEATURE_EncodingStatistics` (the phone then sets
 `KEY_VIDEO_ENCODING_STATISTICS_LEVEL` to level 1). `codec` names the stream's
 codec (`avc` or `hevc`). An absent optional field
-means "no measurement", never zero. The phone's closing totals line carries
+means "no measurement", never zero.
+
+#### No-frame episodes (WIN-66, ISS-10)
+
+A window that produced no encoded frame 1500 ms (`first_frame_ms`, NFR.md)
+after its display was created gets one record, carried by the optional
+`noFrame` object of that stream's next `stream.stats` message:
+
+| Field | Meaning |
+| --- | --- |
+| `ep` | the phone's id for the episode; the app's private ring of 20 upserts by it, so an end updates the entry instead of adding one |
+| `ms` | milliseconds from the display's creation to this record |
+| `phase` | the encoder's closed token: `empty`, `opening`, `prepared`, `draining`, `paused`, `suspended`, `paused+suspended`, `swapping`, `released` |
+| `display` | `none`, `mirror` or `virtual` |
+| `task` | `launched` when a task was launched on the display, `none` when it had none, `unknown` when the phone cannot read its task list |
+| `on` | the stream display's own state: `on`, `off`, `doze`, `doze-suspend`, `vr`, `on-suspend` or `unknown` |
+| `keyguard` | `showing`, `hidden` or `unknown` (read only; nothing unlocks the phone) |
+| `doze` | `active`, `light` (`isLightDeviceIdleMode`), `idle` (`isDeviceIdleMode`) or `unknown` |
+| `screen` | display 0's screen state, as `state.screen`: `on`, `off` or `unknown` |
+| `nudge` | redraw nudges the stream made (the input-side evidence; the codec's Surface input exposes no counter) |
+| `out`, `kf`, `bytes` | the encoder's output buffers, key buffers and encoded bytes over the stream's whole life |
+| `outcome` | absent while the episode is open; `late` when the first frame arrived, `closed` when the stream closed first |
+| `waitedMs` | with `outcome`, milliseconds from the display's creation to that end |
+
+Ids, counts, durations and closed tokens only: no app name, label, title or
+text. The phone sends each state of the episode once; a stream that closes
+before its next 2 s message carries its ended episode in one final
+`stream.stats` (no window counters), and with stats off the phone's private
+ring and its field log are the record. The Mac prints the record once as
+`stream <id>: no frame for <s>s phase=<...> display=<...> task=<...>
+on=<...> keyguard=<...> doze=<...> screen=<...> nudge=<n> out=<n> kf=<n>
+bytes=<n>` and its end once as `stream <id>: no frame ended
+outcome=<late|closed> after <ms>ms`; a repeated field with the same `ep` prints
+nothing new. The phone's closing totals line carries
 the same `codec=` and `qp_avg=` over the stream's whole life, with `qp_avg=-`
 when the encoder never reported a QP.
 
@@ -744,7 +777,7 @@ Phone → Mac:
 | `window.task` | `stream`, `taskId`, `pkg`, `label` — the app started a task of its own while one of its apps was streamed (WIN-44): the new task's id, its package and its own label. Sent once per task, at most once a second per package, only for a fresh `onTaskCreated` that the phone itself did not launch or move; the only other stream message is `window.title`'s app/pkgs (WIN-48). `label` is phone content: never logged, never used as a file name. The Mac decides with the New-item rule and answers with `window.adopt` (WIN-45) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`moved_to_phone`/`error`) — `moved_to_phone` is the person opening the streamed app on the phone's own screen: the display's task (same id) changed display and left the streamed display empty (WIN-49); `app_exited` stays for `onTaskRemoved` or a real exit |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
-| `stream.stats` | `stream`, `windowMs`, `codec`, `frames`, `kf`, `keyIdr`, `keyNotIdr`, `kfReq`, `bytes`, `drop`, `dropEp`, `dropGapMs`, `skip`, `susp`, `suspMs`, `refine`, `targetBps`, optional `encP50`/`encP95`/`queueP50`/`queueP95` (µs), `qpP50`/`qpP95`/`qpAvg` (average QP), `retrans`/`rto`/`lost_retrans` (system-wide TCP counter deltas) — the stream's counters over the last `windowMs` (2 s since the previous message); optional fields are absent when there is no measurement; see "Stream stats" |
+| `stream.stats` | `stream`, `windowMs`, `codec`, `frames`, `kf`, `keyIdr`, `keyNotIdr`, `kfReq`, `bytes`, `drop`, `dropEp`, `dropGapMs`, `skip`, `susp`, `suspMs`, `refine`, `targetBps`, optional `encP50`/`encP95`/`queueP50`/`queueP95` (µs), `qpP50`/`qpP95`/`qpAvg` (average QP), `retrans`/`rto`/`lost_retrans` (system-wide TCP counter deltas), optional `noFrame` (one no-frame episode state, see "Stream stats") — the stream's counters over the last `windowMs` (2 s since the previous message); optional fields are absent when there is no measurement; see "Stream stats" |
 | `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's task and its app: `pkg` is the task's own app (the root's package from `baseActivity`, then `baseIntent.component`), and only a task that reports no root falls back to its top activity, then `topActivityInfo`; another package's activity on top of the task never becomes the app (WIN-28). Every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |

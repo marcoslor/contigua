@@ -234,6 +234,8 @@ Then the features: Live Updates (in progress: `spike/liveany`), the Stock style 
   - **Reviewer's cleanup at 22:36:** `lsregister -u` on the test copy, `lsregister -f` and `pluginkit -a` on `/Applications`. Only the installed copy is registered now.
   - **Fix:** variant builds get their own bundle id (`dev.pocketdeck.mac.<variant>`, with extension ids to match), checking that the e2e TCC grants still apply. K2 never touches the real `NSFileProviderManager`: inject the fake manager everywhere, and add a test that fails if a real one is used in a test host.
 
+- **ISS-81 `tools/emulator/start.sh` builds on the host by default.** Without `--no-build` it runs `./gradlew :app:assembleDebug` on the Mac; with AMFI off the JVM dies with SIGBUS (`CodeHeap::allocate`) after the AVD is already booted, so a worker with a one-boot budget spends it on a build error. It should install the Docker-built APK by default or refuse unless `--no-build` (or `PD_E2E_PREBUILT`-style input) is given. Workaround: run K1 in Docker first, then `bash tools/emulator/start.sh --no-build`.
+
 - **ISS-57 Window audio glitches on a good link** (2026-11-08 ~23:00; the person, playing a language-lesson app's window: "audio is very glitchy").
   - **Evidence:** the stream ran 247 s, 14,724 frames at 59.5 fps, 25 IDRs (about one every 10 s), 73.8 MB. The phone's log was already rotated, so no per-packet audio data survives.
   - **Suspects, from the code:**

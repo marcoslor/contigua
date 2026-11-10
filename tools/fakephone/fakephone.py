@@ -5364,6 +5364,21 @@ class Session(object):
                 message["retrans"] = resends
                 message["rto"] = 1
                 message["lost_retrans"] = 0
+            if self.phone.args.stats_no_frame and window.stream_id == 1:
+                # WIN-66: one episode, open in the first two messages and then
+                # its late end once; the Mac must print each line once.
+                episode = {
+                    "ep": 1, "ms": 1500, "phase": "draining", "display": "virtual",
+                    "task": "launched", "on": "on", "keyguard": "showing",
+                    "doze": "idle", "screen": "on", "nudge": 0,
+                    "out": 0, "kf": 0, "bytes": 0,
+                }
+                if self._stats_sent < 2:
+                    message["noFrame"] = episode
+                elif self._stats_sent == 2:
+                    episode["outcome"] = "late"
+                    episode["waitedMs"] = 2600
+                    message["noFrame"] = episode
             self.phone.events.tx(message)
             self._send(message)
             self._stats_sent += 1
@@ -6222,6 +6237,9 @@ def build_parser():
     p.add_argument("--stats-retrans", type=int, default=0, metavar="N",
                    help="report N TCP resends per stream.stats window (plus one timeout), "
                         "as the phone's system-wide counters would")
+    p.add_argument("--stats-no-frame", action="store_true",
+                   help="carry one WIN-66 no-frame episode: open in the first two stats "
+                        "messages, then its late end once")
     p.add_argument("--no-backlog-restart", action="store_true",
                    help="do not restart a stream's encoder when the sender's backlog clears "
                         "(a steady stream for the stats check)")
