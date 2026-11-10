@@ -26,11 +26,14 @@ enum MenuBarPanelState: String, Equatable {
     case closing
 }
 
-enum MenuBarPanelEvent: String, Equatable {
+enum MenuBarPanelEvent: Equatable {
     /// The status item's own click (mouse-up).
     case iconClick
     /// A right-click or Control-click on the status item: the icon's menu.
     case iconSecondaryClick
+    /// The card's gear: the same request as the secondary click, anchored to
+    /// the gear's screen rect (a pull-down, not the item's menu).
+    case gear(NSRect)
     /// A click anywhere that is not the panel or the status item.
     case clickOutside
     case escape
@@ -38,6 +41,19 @@ enum MenuBarPanelEvent: String, Equatable {
     case openWindow
     /// The hide animation ended: the panel is off screen.
     case hideFinished
+
+    /// The field log's code for the event (a closed set, never a payload).
+    var eventCode: String {
+        switch self {
+        case .iconClick: "iconClick"
+        case .iconSecondaryClick: "iconSecondaryClick"
+        case .gear: "gear"
+        case .clickOutside: "clickOutside"
+        case .escape: "escape"
+        case .openWindow: "openWindow"
+        case .hideFinished: "hideFinished"
+        }
+    }
 }
 
 /// Which click the status item received. Control-click arrives as a left click
@@ -59,8 +75,9 @@ enum MenuBarPanelAction: Equatable {
     /// its loop would stall the animation's completion, leaving an invisible
     /// window on screen. A menu bar menu closes its panel at once anyway.
     case hideImmediately
-    /// Pop the status item's own menu up under the icon.
-    case showMenu
+    /// Pop the status item's own menu up: under the item for its own click, or
+    /// under the gear's rect (nil = the item) for the card's gear.
+    case showMenu(anchor: NSRect?)
 }
 
 struct MenuBarPanelMachine {
@@ -82,14 +99,22 @@ struct MenuBarPanelMachine {
             return []
         case (.closed, .iconSecondaryClick):
             // No panel to close: the menu opens on its own.
-            return [.showMenu]
+            return [.showMenu(anchor: nil)]
+        case (.closed, .gear(let anchor)):
+            // The gear with no panel: the menu still opens under the gear.
+            return [.showMenu(anchor: anchor)]
         case (.open, .iconSecondaryClick):
             // A panel covers the menu's anchor, so it goes first — at once:
             // the menu's tracking loop would stall a fade's completion. The
             // menu is still what the person asked for.
             state = .closed
-            return [.hideImmediately, .showMenu]
-        case (.closing, .iconSecondaryClick):
+            return [.hideImmediately, .showMenu(anchor: nil)]
+        case (.open, .gear(let anchor)):
+            // The same request from the card's gear: the card hides at once
+            // and the menu opens under the gear, where the person clicked.
+            state = .closed
+            return [.hideImmediately, .showMenu(anchor: anchor)]
+        case (.closing, .iconSecondaryClick), (.closing, .gear):
             // The panel is already leaving; a second menu must not stack.
             return []
         case (.open, .clickOutside), (.open, .escape), (.open, .openWindow):
@@ -104,6 +129,34 @@ struct MenuBarPanelMachine {
              (.open, .hideFinished):
             return []
         }
+    }
+}
+
+/// Where the icon's menu opens. A status item's own menu is AppKit's to place
+/// under the item; the card's gear asks for the same menu as a pull-down, so it
+/// opens under the gear's button (ISS-75) instead of under the item.
+enum MenuBarMenuAnchor {
+    /// The menu's top-left corner for a pull-down from `button`: under the
+    /// button's leading edge, moved left when the menu would leave `visible`,
+    /// and never past the screen's margin. The menu's top touches the button's
+    /// bottom, as a pop-up button's menu does.
+    static func pullDownPoint(under button: NSRect, menuWidth: CGFloat,
+                              in visible: NSRect) -> NSPoint {
+        let margin: CGFloat = 8
+        let x = min(button.minX, visible.maxX - max(menuWidth, 0) - margin)
+        return NSPoint(x: max(x, visible.minX + margin), y: button.minY)
+    }
+
+    /// The gear's frame on screen. `host` is the card's hosting view inside the
+    /// panel's content view (SwiftUI's top-left origin) and `panel` the panel's
+    /// screen frame; the gear sits `gearTop` below the card's top edge, on its
+    /// trailing inset (PhonePanelMetrics). One value, so the controller and the
+    /// view cannot drift.
+    static func gearRect(host: NSRect, panel: NSRect) -> NSRect {
+        let size = PhonePanelMetrics.gearSize
+        let x = host.minX + host.width - PhonePanelMetrics.inset - size
+        let y = host.minY + host.height - PhonePanelMetrics.gearTop - size
+        return NSRect(x: panel.minX + x, y: panel.minY + y, width: size, height: size)
     }
 }
 
@@ -370,14 +423,14 @@ final class MenuBarController: NSObject {
         let actions = machine.handle(event)
         let next = machine.state
         if next != before {
-            Log.app.notice("menu bar panel: \(before.rawValue, privacy: .public) --\(event.rawValue, privacy: .public)--> \(next.rawValue, privacy: .public)")
+            Log.app.notice("menu bar panel: \(before.rawValue, privacy: .public) --\(event.eventCode, privacy: .public)--> \(next.rawValue, privacy: .public)")
         }
         for action in actions {
             switch action {
             case .show: showPanel()
             case .hide: hidePanel()
             case .hideImmediately: hidePanelNow()
-            case .showMenu: openSecondaryMenu()
+            case .showMenu(let anchor): openSecondaryMenu(anchor: anchor)
             }
         }
     }
@@ -393,15 +446,79 @@ final class MenuBarController: NSObject {
     /// check reads is the menu a person gets.
     func secondaryMenu() -> NSMenu { MenuBarMenu.make(target: self) }
 
-    /// Pop the icon's menu up under the status item. The item's `menu` is set
-    /// only for the pop-up, so the button's action stays the panel's toggle the
-    /// rest of the time. The icon's secondary click and the panel's gear both
-    /// come through the machine's `.showMenu` action and land here.
-    func openSecondaryMenu() {
+    /// Pop the icon's menu up. `anchor` is the control that asked, in screen
+    /// points: the card's gear passes its own frame, so the menu opens under
+    /// the gear like a pull-down. Nil is the status item's own click, which
+    /// AppKit anchors under the item. The item's `menu` is set only for that
+    /// pop-up, so the button's action stays the panel's toggle the rest of the
+    /// time.
+    func openSecondaryMenu(anchor: NSRect? = nil) {
+        let menu = secondaryMenu()
+        if let anchor {
+            let screen = NSScreen.screens.first { $0.frame.intersects(anchor) } ?? NSScreen.main
+            let visible = screen?.visibleFrame ?? .zero
+            holdGearMenuIfAsked(menu)
+            menu.popUp(positioning: nil,
+                       at: MenuBarMenuAnchor.pullDownPoint(under: anchor,
+                                                          menuWidth: menu.size.width,
+                                                          in: visible),
+                       in: nil)
+            return
+        }
         guard let button = statusItem.button else { return }
-        statusItem.menu = secondaryMenu()
+        statusItem.menu = menu
         button.performClick(nil)
         statusItem.menu = nil
+    }
+
+    /// How long the gear's menu stays open in a quiet e2e run (`gearhold`): the
+    /// run cannot press Escape, so the menu closes itself. 0 in a person's run.
+    private var gearMenuHold: TimeInterval = 0
+
+    func holdGearMenu(seconds: TimeInterval) {
+        gearMenuHold = seconds
+    }
+
+    private func holdGearMenuIfAsked(_ menu: NSMenu) {
+        let seconds = gearMenuHold
+        gearMenuHold = 0
+        guard seconds > 0 else { return }
+        // The menu's tracking loop runs in .eventTracking; a timer in that mode
+        // (and the common modes) fires inside it and ends the loop.
+        let timer = Timer(timeInterval: seconds, repeats: false) { _ in
+            menu.cancelTracking()
+        }
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// The gear's frame on screen: the card's hosting view inside the panel's
+    /// content view, at the panel's own frame. Nil while the card is not up.
+    private func gearScreenRect() -> NSRect? {
+        guard let panel, let host = panel.contentView?.subviews.first else { return nil }
+        return MenuBarMenuAnchor.gearRect(host: host.frame, panel: panel.frame)
+    }
+
+    /// The gear asks for the icon's menu the way the right-click does, but the
+    /// menu anchors at the gear (PANEL-3).
+    private func gearClicked() {
+        if let rect = gearScreenRect() {
+            handle(.gear(rect))
+        } else {
+            handle(.iconSecondaryClick)
+        }
+    }
+
+    /// `gearanchor` (e2e): the frame the card's gear anchors its menu to, as
+    /// the controller pops it. Without a card the item's own menu still opens
+    /// under the item.
+    func menuAnchorDescription() -> String {
+        if let rect = gearScreenRect() {
+            return "gear \(Int(rect.minX)) \(Int(rect.minY)) \(Int(rect.width)) \(Int(rect.height))"
+        }
+        guard let button = statusItem.button else { return "none" }
+        let frame = buttonFrame(button)
+        return "statusitem \(Int(frame.minX)) \(Int(frame.minY)) \(Int(frame.width)) \(Int(frame.height))"
     }
 
     /// `iconmenu PATH` (e2e `menus`): what the builder would pop, as JSON,
@@ -525,9 +642,9 @@ final class MenuBarController: NSObject {
         let host = NSHostingView(rootView: MenuBarContent(onOpenWindow: { [weak self] in
             self?.handle(.openWindow)
         }, onSecondaryMenu: { [weak self] in
-            // The gear is the same request as the right-click: the machine
-            // closes the panel first, then the menu opens under the icon.
-            self?.handle(.iconSecondaryClick)
+            // The gear is the same request as the right-click, anchored to the
+            // gear's own button (PANEL-3).
+            self?.gearClicked()
         }).environment(controller))
         host.layoutSubtreeIfNeeded()
         let content = host.fittingSize
