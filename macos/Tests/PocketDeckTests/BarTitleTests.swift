@@ -9,13 +9,13 @@ import XCTest
 
 private final class FakeToneSource: BarToneSource {
     var frameStamp: UInt64 = 1
-    var luminance: Double?
+    var range: BandRange?
     private(set) var calls = 0
 
-    func topBandLuminance(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
-                          completion: @escaping (Double?) -> Void) {
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+                      completion: @escaping (BandRange?) -> Void) {
         calls += 1
-        completion(luminance)
+        completion(range)
     }
 }
 
@@ -53,67 +53,97 @@ final class BarTitleToneTests: XCTestCase {
 
     func testEveryToneTransitionAndIgnoredSample() {
         var machine = BarToneMachine()
-        XCTAssertEqual(machine.handle(.sample(0.05)), .baseline(.light),
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.02, high: 0.03))), .baseline(.light),
                        "the first dark-band sample appears light")
         XCTAssertTrue(machine.hasSample)
-        XCTAssertEqual(machine.handle(.sample(0.18)), .ignored,
-                       "inside the band the light tone stays")
-        XCTAssertEqual(machine.handle(.sample(0.17)), .ignored,
-                       "at toLight the light tone still stays (it only leaves above it)")
-        XCTAssertEqual(machine.handle(.sample(0.19)), .changed(.dark),
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.179, high: 0.182))), .ignored,
+                       "inside the hysteresis band the light tone stays")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.179, high: 0.18333))), .ignored,
+                       "at toDark white ink still passes, so the light tone stays")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.19, high: 0.3))), .changed(.dark),
                        "above toDark white ink can no longer pass")
-        XCTAssertEqual(machine.handle(.sample(0.18)), .ignored,
-                       "inside the band the dark tone stays")
-        XCTAssertEqual(machine.handle(.sample(0.18333)), .ignored,
-                       "exactly at toDark the dark tone stays")
-        XCTAssertEqual(machine.handle(.sample(0.175)), .changed(.light),
-                       "at toLight black ink can still pass, but the dark tone only leaves at or below it")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.18, high: 0.183))), .ignored,
+                       "inside the hysteresis band the dark tone stays")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.176, high: 0.18))), .ignored,
+                       "both inks pass, so the dark tone stays")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.1))), .changed(.light),
+                       "below toLight black ink can no longer pass")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.02, high: 0.03))), .ignored,
+                       "the light tone stays on a dark band")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.1, high: 0.5))), .unresolved(.light),
+                       "neither ink reaches the limit: the tone is kept and said once")
+        XCTAssertEqual(machine.tone, .light)
     }
 
     func testTheFirstSampleDecidesEitherToneAndNonFiniteIsIgnored() {
         var light = BarToneMachine()
-        XCTAssertEqual(light.handle(.sample(.nan)), .ignored, "a non-finite sample decides nothing")
+        XCTAssertEqual(light.handle(.sample(BandRange(low: .nan, high: 0.1))), .ignored,
+                       "a non-finite sample decides nothing")
         XCTAssertFalse(light.hasSample)
-        XCTAssertEqual(light.handle(.sample(0.02)), .baseline(.light))
+        XCTAssertEqual(light.handle(.sample(BandRange(low: 0.02, high: 0.03))), .baseline(.light))
         XCTAssertEqual(light.tone, .light)
 
         var dark = BarToneMachine()
-        XCTAssertEqual(dark.handle(.sample(0.95)), .baseline(.dark))
+        XCTAssertEqual(dark.handle(.sample(BandRange(low: 0.8, high: 0.95))), .baseline(.dark))
         XCTAssertEqual(dark.tone, .dark)
+
+        var both = BarToneMachine()
+        let change = both.handle(.sample(BandRange(low: 0.176, high: 0.182)))
+        XCTAssertEqual(change, .baseline(both.tone),
+                       "a band that both inks pass takes one tone and stays")
+        XCTAssertTrue([.light, .dark].contains(both.tone))
+
+        var neither = BarToneMachine()
+        XCTAssertEqual(neither.handle(.sample(BandRange(low: 0.1, high: 0.5))),
+                       .unresolved(neither.tone))
+        XCTAssertTrue(neither.hasSample)
     }
 
-    func testTheMachineHasOnlyTheTwoStatesAndKeepsTheToneInTheBand() {
-        var machine = BarToneMachine()
-        _ = machine.handle(.sample(0.01))
-        XCTAssertEqual(machine.tone, .light)
-        for luminance in stride(from: 0.1751, through: 0.1832, by: 0.001) {
-            XCTAssertEqual(machine.handle(.sample(luminance)), .ignored)
-            XCTAssertEqual(machine.tone, .light, "light holds at \(luminance)")
+    func testTheMachineKeepsTheToneInTheHysteresisBand() {
+        var light = BarToneMachine()
+        _ = light.handle(.sample(BandRange(low: 0.01, high: 0.02)))
+        XCTAssertEqual(light.tone, .light)
+        for low in stride(from: 0.175, through: 0.1833, by: 0.001) {
+            XCTAssertEqual(light.handle(.sample(BandRange(low: low, high: low))), .ignored)
+            XCTAssertEqual(light.tone, .light, "light holds at \(low)")
         }
-        _ = machine.handle(.sample(0.5))
-        XCTAssertEqual(machine.tone, .dark)
-        for luminance in stride(from: 0.1832, through: 0.1751, by: -0.001) {
-            XCTAssertEqual(machine.handle(.sample(luminance)), .ignored)
-            XCTAssertEqual(machine.tone, .dark, "dark holds at \(luminance)")
+
+        var dark = BarToneMachine()
+        _ = dark.handle(.sample(BandRange(low: 0.8, high: 0.9)))
+        XCTAssertEqual(dark.tone, .dark)
+        for high in stride(from: 0.1833, through: 0.175, by: -0.001) {
+            XCTAssertEqual(dark.handle(.sample(BandRange(low: high, high: high))), .ignored)
+            XCTAssertEqual(dark.tone, .dark, "dark holds at \(high)")
         }
     }
 
-    func testTheBandEstimateIncludesTheTintAndTheHaze() {
+    func testTheBandEstimateIncludesTheTintAndTheHazeInSRGB() {
+        // One uniform band, top and bottom haze equal: `.low` is the value.
+        func estimate(_ frame: Double, tint: Double = 1.0,
+                      tintAlpha: CGFloat = 0, haze: Double = 0) -> Double {
+            BarToneEstimate.blend(frame: BandRange(low: frame, high: frame),
+                                  tintLuminance: tint, tintAlpha: tintAlpha,
+                                  hazeTop: haze, hazeBottom: haze).low
+        }
         let frame = 0.02
-        let tint = 0.84
-        let noTint = BarToneEstimate.band(frameLuminance: frame, tintLuminance: tint,
-                                          tintAlpha: 0, hazeAtTitle: 0)
+        let tint = 1.0
+        let noTint = estimate(frame)
         XCTAssertEqual(noTint, frame, accuracy: 0.0001)
-        let tinted = BarToneEstimate.band(frameLuminance: frame, tintLuminance: tint,
-                                          tintAlpha: BarTitle.tintAlpha, hazeAtTitle: 0)
-        XCTAssertEqual(tinted, frame * 0.86 + tint * 0.14, accuracy: 0.0001,
-                       "the 14 % window background lifts a dark frame")
-        let hazed = BarToneEstimate.band(frameLuminance: frame, tintLuminance: tint,
-                                         tintAlpha: BarTitle.tintAlpha,
-                                         hazeAtTitle: 0.15)
-        XCTAssertEqual(hazed, tinted * 0.85 + 0.15, accuracy: 0.0001,
-                       "the white haze lifts it again at the title's line")
+        let tinted = estimate(frame, tintAlpha: BarTitle.tintAlpha)
+        let encode = BarToneEstimate.encode(frame)
+        XCTAssertEqual(tinted, BarToneEstimate.decode(encode * 0.86 + 1 * 0.14), accuracy: 0.0001,
+                       "the white tint lifts a dark frame in sRGB, not linear")
+        let hazed = estimate(frame, tintAlpha: BarTitle.tintAlpha, haze: 0.15)
         XCTAssertGreaterThan(hazed, tinted)
+
+        let range = BarToneEstimate.blend(frame: BandRange(low: 0.02, high: 0.4),
+                                          tintLuminance: tint,
+                                          hazeTop: 0.15, hazeBottom: 0.05)
+        XCTAssertLessThan(range.low, range.high)
+        XCTAssertLessThan(range.low, BarToneEstimate.blend(
+            frame: BandRange(low: 0.02, high: 0.02), tintLuminance: tint,
+            hazeTop: 0.15, hazeBottom: 0.05).high,
+            "the bottom line sees less haze than the top")
     }
 }
 
@@ -128,11 +158,8 @@ final class BarTitleLayoutTests: XCTestCase {
                                                 barHeight: barHeight, boundsHeight: 628,
                                                 lightsEnd: BarTitle.lightsEnd,
                                                 rightRowStart: rowStart))
-        XCTAssertEqual(frame.minX, BarTitle.lightsEnd + BarTitle.sideGap
-                       + (rowStart - BarTitle.sideGap - (BarTitle.lightsEnd + BarTitle.sideGap) - frame.width) / 2,
-                       accuracy: 0.01)
-        XCTAssertEqual(frame.midX, (BarTitle.lightsEnd + rowStart) / 2, accuracy: 0.01,
-                       "the title's centre is the bar's centre, not the room's")
+        XCTAssertEqual(frame.midX, windowWidth / 2, accuracy: 0.01,
+                       "the title is centred on the bar's own line")
         XCTAssertGreaterThanOrEqual(frame.minX, BarTitle.lightsEnd + BarTitle.sideGap)
         XCTAssertLessThanOrEqual(frame.maxX, rowStart - BarTitle.sideGap)
         XCTAssertEqual(frame.width, BarTitle.textWidth(text), accuracy: 0.5)
@@ -282,7 +309,7 @@ final class BarTitleViewTests: XCTestCase {
 
     func testTheTitleAppearsInTheBandsOwnToneAndFollowsIt() throws {
         let tone = FakeToneSource()
-        tone.luminance = 0.9
+        tone.range = BandRange(low: 0.8, high: 0.9)
         let (window, chrome) = makeChrome(tone: tone)
         defer { window.close() }
         chrome.setBarTitle("Quarterly notes")
@@ -296,7 +323,7 @@ final class BarTitleViewTests: XCTestCase {
                                  "the title keeps clear of the Live Text capsule")
         XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle)
 
-        tone.luminance = 0.01
+        tone.range = BandRange(low: 0.02, high: 0.03)
         tone.frameStamp += 1
         chrome.sampleBarToneForTesting()
         XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue,
@@ -307,13 +334,13 @@ final class BarTitleViewTests: XCTestCase {
 
     func testReduceMotionChangesTheToneAtOnce() throws {
         let tone = FakeToneSource()
-        tone.luminance = 0.9
+        tone.range = BandRange(low: 0.8, high: 0.9)
         let (window, chrome) = makeChrome(tone: tone, reduceMotion: { true })
         defer { window.close() }
         chrome.setBarTitle("Maps")
         chrome.layoutChrome()
         XCTAssertEqual(chrome.barTitleToneName, BarTone.dark.rawValue)
-        tone.luminance = 0.01
+        tone.range = BandRange(low: 0.02, high: 0.03)
         tone.frameStamp += 1
         chrome.sampleBarToneForTesting()
         XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue)
@@ -324,7 +351,7 @@ final class BarTitleViewTests: XCTestCase {
 
     func testTheTitleHidesForEveryCoverAndStyleAndComesBack() {
         let tone = FakeToneSource()
-        tone.luminance = 0.9
+        tone.range = BandRange(low: 0.8, high: 0.9)
         let (window, chrome) = makeChrome(tone: tone)
         defer { window.close() }
         chrome.setBarTitle("Maps")
@@ -352,7 +379,7 @@ final class BarTitleViewTests: XCTestCase {
 
     func testTheTitleHidesBelowItsMinimumWidth() {
         let tone = FakeToneSource()
-        tone.luminance = 0.9
+        tone.range = BandRange(low: 0.8, high: 0.9)
         let (window, chrome) = makeChrome(tone: tone)
         defer { window.close() }
         chrome.setBarTitle("Maps")
