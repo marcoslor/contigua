@@ -4582,7 +4582,7 @@ if len(visible) != 1:
     problems.append("%d visible Enter Full Screen items" % len(visible))
 icon = one("Icon Size")
 children = {row["title"]: row for row in icon.get("children") or [] if not row["separator"]}
-if scene == "icon-100":
+if scene in ("deck", "icon-100"):
     wanted, other = "100 %", "75 %"
 elif scene == "icon-75":
     wanted, other = "75 %", "100 %"
