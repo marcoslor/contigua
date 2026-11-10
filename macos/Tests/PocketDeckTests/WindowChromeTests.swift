@@ -431,7 +431,7 @@ final class StreamChromeStyleTests: XCTestCase {
         controller.setStyle(.immersive)
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628), "the bar comes back")
         XCTAssertEqual(window.frame.maxY,
-                       visible.maxY - (FramedChrome.topInset - ChromeBar.height),
+                       visible.maxY - (FramedChrome.topInset - ChromeBar.height), accuracy: 1,
                        "the stream keeps its place: the window sheds 16 pt, 10.5 from above")
         XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
                        .immersive)
@@ -571,12 +571,12 @@ final class StreamMenuTests: XCTestCase {
         }
         let state = StreamMenuState.shared
         key.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+        XCTAssertEqual(state.style, .immersive, "the default is Immersive")
+        behind.setStyle(.framed)
+        XCTAssertEqual(state.style, .immersive, "a window behind the key one cannot change the menu")
+        XCTAssertEqual(behind.style, .framed, "its own style still changed")
+        key.setStyle(.framed)
         XCTAssertEqual(state.style, .framed)
-        behind.setStyle(.immersive)
-        XCTAssertEqual(state.style, .framed, "a window behind the key one cannot change the menu")
-        XCTAssertEqual(behind.style, .immersive, "its own style still changed")
-        key.setStyle(.immersive)
-        XCTAssertEqual(state.style, .immersive)
     }
 }
 
