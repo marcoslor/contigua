@@ -349,14 +349,31 @@ enum NotifyMapping {
         return "\(text) (\(phoneName))"
     }
 
+    /// [NOTIFY-4] The phone's name in a banner title only while the Mac has
+    /// two or more phones paired: with one phone the app's own words place the
+    /// banner, and the name is noise on every post.
+    static func titlePhoneName(_ phoneName: String, phonesPaired: Int) -> String {
+        phonesPaired >= 2 ? phoneName : ""
+    }
+
     /// The banner shows `[title, body]`; a missing title falls back to the app's
-    /// label, and a body only carries the notification's own text.
+    /// label (else the package), and a body only carries the notification's own
+    /// text.
     static func content(_ n: PhoneNotification,
                         phoneName: String,
+                        phonesPaired: Int,
                         labelFor: (String) -> String?) -> (title: String, body: String) {
         let label = labelFor(n.pkg)
         let own = cap(n.title)
-        let title = Self.title(own ?? label, phoneName: phoneName)
+        let name = titlePhoneName(phoneName, phonesPaired: phonesPaired)
+        let title: String
+        if let base = own ?? label {
+            title = Self.title(base, phoneName: name)
+        } else {
+            // A banner always has a title: with one phone the package is the
+            // only honest one, since the phone's name is not part of it.
+            title = name.isEmpty ? n.pkg : name
+        }
         var body = ""
         if let text = cap(n.text), !text.isEmpty {
             body = text
@@ -790,8 +807,10 @@ final class NotifyCenter {
     }
 
     /// Posts one phone notification; the thread groups them under the phone's id.
-    func post(_ n: PhoneNotification, phoneId: String, phoneName: String, labelFor: (String) -> String?) {
-        let (title, body) = NotifyMapping.content(n, phoneName: phoneName, labelFor: labelFor)
+    func post(_ n: PhoneNotification, phoneId: String, phoneName: String, phonesPaired: Int,
+              labelFor: (String) -> String?) {
+        let (title, body) = NotifyMapping.content(n, phoneName: phoneName, phonesPaired: phonesPaired,
+                                                  labelFor: labelFor)
         let code = NotifyCode.find(title: n.title, text: n.text)
         // A Live Update: the first post banners, later ones update the row in
         // place and never banner again (docs/design/notify.md).

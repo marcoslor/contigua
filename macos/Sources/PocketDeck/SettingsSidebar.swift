@@ -110,7 +110,7 @@ private extension DevicePresence {
         case "Connected": self = .connected
         case "Connecting…": self = .connecting
         case "Reconnecting…": self = .reconnecting
-        case "Pair again": self = .pairAgain
+        case PairAgainCopy.banner: self = .pairAgain
         default: self = .offline(nil)
         }
     }

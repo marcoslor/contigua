@@ -42,13 +42,13 @@ final class NotifySnapshotMacTests: XCTestCase {
         center.post(PhoneNotification(id: "l1", pkg: "com.uber", when: nil,
                                       title: "Ride", text: "Arriving",
                                       live: live(0.2), alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         // The one-per-second window must be open before the snapshot's post.
         Thread.sleep(forTimeInterval: 1.05)  // real-time: the Live Update store's window is wall-clock
         center.post(PhoneNotification(id: "l1", pkg: "com.uber", when: nil,
                                       title: "Ride", text: "Arriving",
                                       live: live(0.9), alert: false),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.snapshot(ids: ["l1"])
         let all = try lines(url)
         let posts = all.filter { $0.hasPrefix("notify post id=l1 ") }
@@ -71,10 +71,10 @@ final class NotifySnapshotMacTests: XCTestCase {
         center.post(PhoneNotification(id: "l1", pkg: "com.uber", when: nil,
                                       title: "Ride", text: "Arriving",
                                       live: live(0.4), alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.post(PhoneNotification(id: "p1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.snapshot(ids: ["l1"])
         XCTAssertEqual(["l1"], center.liveItems.map(\.id))
         XCTAssertFalse(center.performOpen(id: "p1"), "the banner is forgotten")
@@ -95,7 +95,7 @@ final class NotifySnapshotMacTests: XCTestCase {
         let center = center(log: url)
         center.post(PhoneNotification(id: "p1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.snapshot(ids: ["p1"])
         XCTAssertTrue(center.performOpen(id: "p1"))
         XCTAssertTrue(try lines(url).contains("notify snapshot ids=1 ended=0"))
