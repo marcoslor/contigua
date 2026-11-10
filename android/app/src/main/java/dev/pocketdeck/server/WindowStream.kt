@@ -1,5 +1,6 @@
 package dev.pocketdeck.server
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -8,11 +9,14 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.SystemClock
+import android.view.Display
 import android.view.Surface
 import dev.pocketdeck.proto.Frames
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * One VirtualDisplay whose surface is a MediaCodec H.264 encoder input. The
@@ -252,6 +256,19 @@ internal class WindowStream(
     /** When this stream's encoder first existed; the closing line's `secs`. */
     private val startedAtMs = SystemClock.elapsedRealtime()
 
+    /**
+     * WIN-66: the first frame, explicit; one no-frame episode per stream. The
+     * clock starts when the display is created, and the drain loop's poll is
+     * the deadline. The holder logs every phase change.
+     */
+    private val firstFrame = FirstFrameWatch(
+        stream = stream,
+        episode = NoFrameEpisodeIds.next(),
+        log = log,
+    )
+    private val noFrameLock = Any()
+    private var noFrameEpisode: NoFrameEpisode? = null
+
     /** ISS-40's one-off QP sample after this stream's 30th output buffer. */
     private val qpSample = QpSampleProbe()
 
@@ -433,6 +450,9 @@ internal class WindowStream(
     fun pause() {
         if (paused || released) return
         heartbeat(IdleFrameWatchdogEvent.Pause)
+        // A window covered before its first frame still gets the record: the
+        // episode says the encoder was paused, which is the evidence.
+        pollFirstFrame(SystemClock.elapsedRealtime())
         performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Pause))
     }
 
@@ -728,6 +748,7 @@ internal class WindowStream(
     @Synchronized
     fun close() {
         if (released) return
+        performFirstFrame(firstFrame.dispatch(FirstFrameEvent.Close(SystemClock.elapsedRealtime())))
         val actions = encoderLifecycle.dispatch(EncoderEvent.Release)
         heartbeat(IdleFrameWatchdogEvent.Close)
         refine(RefineEvent.Close, SystemClock.elapsedRealtime())
@@ -924,6 +945,7 @@ internal class WindowStream(
                 lastDisplayPath = created.path
                 lastDisplayRate = created.rate
             }
+            performFirstFrame(firstFrame.dispatch(FirstFrameEvent.DisplayCreated(SystemClock.elapsedRealtime())))
             EncoderEvent.Created
         }
         EncoderAction.AttachFresh -> {
@@ -1120,6 +1142,105 @@ internal class WindowStream(
         }
     }
 
+    /** WIN-66: the drain loop's deadline poll; a no-op once the machine moved on. */
+    private fun pollFirstFrame(now: Long) {
+        if (firstFrame.model.state != FirstFrameState.Waiting) return
+        performFirstFrame(firstFrame.dispatch(FirstFrameEvent.Deadline(now)))
+    }
+
+    /** WIN-66: an encoded picture ends the wait (and a late episode if one was recorded). */
+    private fun noteFirstFrame(now: Long) {
+        if (firstFrame.model.state == FirstFrameState.Flowing) return
+        performFirstFrame(firstFrame.dispatch(FirstFrameEvent.Frame(now)))
+    }
+
+    /** Performs the machine's record/complete actions in order. */
+    private fun performFirstFrame(actions: List<FirstFrameAction>) {
+        for (action in actions) {
+            when (action) {
+                is FirstFrameAction.RecordNoFrame -> {
+                    val episode = noFrameFacts(action.episode, action.waitedMs)
+                    synchronized(noFrameLock) { noFrameEpisode = episode }
+                    log(episode.line())
+                    sink.onNoFrame(stream, episode)
+                }
+                is FirstFrameAction.EndNoFrame -> {
+                    val open = synchronized(noFrameLock) { noFrameEpisode }
+                    if (open != null) {
+                        val ended = open.copy(outcome = action.outcome, waitedMs = action.waitedMs)
+                        synchronized(noFrameLock) { noFrameEpisode = ended }
+                        log(ended.endedLine())
+                        sink.onNoFrame(stream, ended)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The episode's facts, read at the record: the encoder and display tokens
+     * from their machines, the producer facts the phone can read, and the
+     * encoder's own output counters. Ids, counts, durations and closed tokens.
+     */
+    private fun noFrameFacts(id: Int, waitedMs: Long): NoFrameEpisode {
+        val state = encoderLifecycle.state
+        return NoFrameEpisode(
+            episode = id,
+            stream = stream,
+            recordedMs = waitedMs,
+            display = state.display,
+            encoder = state.phase,
+            paused = state.paused,
+            suspended = state.suspended,
+            task = runCatching { sink.noFrameTask(stream) }.getOrDefault(NoFrameTask.Unknown),
+            displayState = displayFact(displayIdValue),
+            keyguard = keyguardFact(),
+            doze = dozeFact(),
+            screen = screenFact(),
+            nudges = guard.nudgeCount,
+            framesOut = stats.framesOutTotal,
+            keyframesOut = stats.keyframesOutTotal,
+            bytesOut = stats.bytesOutTotal,
+        )
+    }
+
+    /** The stream display's own power state; `unknown` when it cannot be read. */
+    private fun displayFact(displayId: Int): NoFrameDisplay = when (DisplayProbe.state(displayId)) {
+        Display.STATE_ON -> NoFrameDisplay.On
+        Display.STATE_OFF -> NoFrameDisplay.Off
+        Display.STATE_DOZE -> NoFrameDisplay.Doze
+        Display.STATE_DOZE_SUSPEND -> NoFrameDisplay.DozeSuspend
+        Display.STATE_VR -> NoFrameDisplay.Vr
+        Display.STATE_ON_SUSPEND -> NoFrameDisplay.OnSuspend
+        else -> NoFrameDisplay.Unknown
+    }
+
+    /** The keyguard's own answer; the read never changes the lock (product promise). */
+    private fun keyguardFact(): NoFrameKeyguard = runCatching {
+        val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            ?: return NoFrameKeyguard.Unknown
+        if (km.isKeyguardLocked) NoFrameKeyguard.Showing else NoFrameKeyguard.Hidden
+    }.getOrDefault(NoFrameKeyguard.Unknown)
+
+    private fun dozeFact(): NoFrameDoze = runCatching {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            ?: return NoFrameDoze.Unknown
+        val light = runCatching {
+            PowerManager::class.java.getMethod("isLightDeviceIdleMode").invoke(pm) as Boolean
+        }.getOrDefault(false)
+        when {
+            pm.isDeviceIdleMode -> NoFrameDoze.Idle
+            light -> NoFrameDoze.Light
+            else -> NoFrameDoze.Active
+        }
+    }.getOrDefault(NoFrameDoze.Unknown)
+
+    private fun screenFact(): NoFrameScreen = when (ScreenState.read(ctx)) {
+        ScreenState.ON -> NoFrameScreen.On
+        ScreenState.OFF -> NoFrameScreen.Off
+        null -> NoFrameScreen.Unknown
+    }
+
     private fun configure(codec: MediaCodec, w: Int, h: Int, strategy: StreamStrategy,
                           kind: VideoCodec) {
         // The switches are read once per configure (open, resize, encoder
@@ -1306,6 +1427,8 @@ internal class WindowStream(
         // A new encoder's first IDR may already answer the Mac's request.
         keyGate.reset()
         heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
+        // A stream that waited through a detach records on its next drain too.
+        pollFirstFrame(SystemClock.elapsedRealtime())
         // A rebuild while the queue was suspended must not restart a flowing
         // encoder: re-apply the input stop to the new codec.
         var stillSuspended = encoderSuspended
@@ -1459,6 +1582,8 @@ internal class WindowStream(
                 break
             }
             val now = SystemClock.elapsedRealtime()
+            // WIN-66: a stream that never gets a picture records it from here.
+            pollFirstFrame(now)
             // Poll only when no picture buffer was ready: the machine is about
             // encoder output, not the loop's cadence.
             if (idx < 0 && encoder === codec) heartbeat(IdleFrameWatchdogEvent.Tick(now))
@@ -1490,6 +1615,9 @@ internal class WindowStream(
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                     val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    // WIN-66: the stream's first encoded picture, paused or not,
+                    // ends the wait and completes a late episode.
+                    noteFirstFrame(now)
                     // The flag says "key"; the NAL types say whether the
                     // decoder can start there (intra refresh flags otherwise).
                     val keyNalTypes = if (key) {
@@ -1607,6 +1735,16 @@ internal class WindowStream(
         dup.get(bytes)
         return bytes
     }
+}
+
+/**
+ * WIN-66's episode ids. Time-seeded so a restarted phone does not overwrite a
+ * ring entry from an earlier run, then one per stream in this process.
+ */
+private object NoFrameEpisodeIds {
+    private val next = AtomicInteger(SystemClock.elapsedRealtime().toInt())
+
+    fun next(): Int = next.incrementAndGet()
 }
 
 /**

@@ -548,6 +548,10 @@ class DeckService(private val appContext: Context?) :
     override fun onVersionRefused(macV: Int?) =
         sendToApp { it.onVersionRefused(macV ?: -1) }
 
+    /** WIN-66: the app owns the private ring of no-frame episodes. */
+    override fun onNoFrameEpisode(episode: Int, json: String) =
+        sendToApp { it.onNoFrameEpisode(episode, json) }
+
     // ------------------------------------------------------------------
 
     private inline fun sendToApp(block: (IDeckCallback) -> Unit) {
