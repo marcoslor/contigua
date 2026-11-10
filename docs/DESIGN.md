@@ -66,18 +66,23 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   one size at every window width: a resize only changes the column count, and past the 880 pt cap the block keeps its
   eight columns and grows its margins instead of scaling a tile. A title-bar double-click or the green button takes
   the system's standard frame (the screen's visible frame); a second zoom returns the frame it came from.
-  Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
+  Label `.caption` 1 line `.truncationMode(.middle)`; a name the line truncates carries the full name in its help tag.
+  Hover `.fill(.quaternary)`;
   selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
-  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
+  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: one "Loading apps…" `.callout .secondary` line above 12 silent `.redacted(reason: .placeholder)`
+  cells (a cell never says Loading). **Icons** come
   from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
   When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom
   gradient of a hue derived from the package name (FNV-1a, so it is stable), the app's initial in
   `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
-  Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
-- **A–Z rail (D):** trailing edge, 16 pt wide, 8 pt from the edge; A–Z + `#` at 9 pt on a 12 pt pitch, current letter
-  accent, empty letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to
-  that letter's first app, and an empty letter skips forward. The current letter follows the first app in the top
-  visible row.
+  Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`,
+  height 120; a phone with no launchable apps: "No apps on this phone." in the same place.
+- **A–Z rail (D):** a 26 pt column beside the grid's last column, 18 pt to its right (the grid block and the rail are
+  centred together, so the margin past the rail grows with a wider window); A–Z + `#` at 9 pt in an 11 pt rest box on a
+  rest pitch of at most 20 pt, giving way down to 18 pt (and then to every other or every third letter) before the rail
+  hides — each letter is a 20 pt target at rest, and a short window never shrinks it; current letter accent, empty
+  letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to that letter's
+  first app, and an empty letter skips forward. The current letter follows the first app in the top visible row.
 
 - **App icons:** every tile is the shared `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS
   squircle (22.5 % corners), the adaptive `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp
@@ -193,7 +198,7 @@ using the phone with fingers.
 
 ### Menu bar
 - `MenuBarExtra { MenuBarContent() } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.window)`: a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`; a dot next to it, in a slot the image reserves in both states, while an AI agent is connected.
-- `PhonePanelView` (PhonePanel.swift), one component shared with the Deck popover, 300 pt wide, 12 pt inset (P3): header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · 2×2 tiles (134 pt wide, ≥ 62 pt high, 8 pt gap, 12 pt corners): **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** · volume `Slider` with its % · the reason on a disabled control's own second line (the full sentence in its help tag and hint) · **Now Playing follows** with ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon buttons (**Mirror** / **Find Apps** / **Move to Mac** / **Install APK…** with its phase) · a **gear** at the card's top-right that opens the icon's own menu (**Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q) anchored under the gear, which a secondary click on the status item also opens under the item, closing the card first.
+- `PhonePanelView` (PhonePanel.swift), one component shared with the Deck popover, 300 pt wide, 12 pt inset (P3): header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · 2×2 tiles (134 pt wide, ≥ 62 pt high, 8 pt gap, 12 pt corners): **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** · volume `Slider` with its % · the reason on a disabled control's own second line (the full sentence in its help tag and hint) · **Now playing: <app>** with ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon buttons (**Mirror** / **Find Apps** / **Move to Mac** / **Install APK…** with its phase) · a **gear** at the card's top-right that opens the icon's own menu (**Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q) anchored under the gear, which a secondary click on the status item also opens under the item, closing the card first.
 - **Ringer** opens Ring / Vibrate / Silent with the current mode checked (never cycles); its subtitle names the mode. **Turn Off Screen** says Screen on / Screen off and needs a Phone Mirror. **Volume** is a three-state control: Idle follows the phone, Dragging follows the pointer and ignores echoes with sends capped at 10/s plus the release, Settling shows the sent value until the echo or one second, after which the phone wins.
 - The Deck's status pill opens the same view in a `.popover` (one component, one copy, no footer, no gear).
 - Nothing is modal: pairing failures are inline in the code sheet.

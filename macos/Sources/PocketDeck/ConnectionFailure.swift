@@ -21,11 +21,11 @@ enum ConnectionFailure {
         case "pairing_off": return "\(phoneName) isn't accepting new pairings."
         case "busy": return "Another Mac is connected"
         case "pin-mismatch", "bad_pin":
-            return "This phone's identity changed. Pair again."
+            return "This phone's identity changed. \(PairAgainCopy.banner)."
         case "no-pin":
             return "Pairing was removed on the phone, pair again"
         case "forgotten":
-            return "This phone no longer trusts this Mac. Pair again."
+            return "This phone no longer trusts this Mac. \(PairAgainCopy.banner)."
         case "pair_denied": return "Pairing was denied"
         case "version": return "This phone runs an incompatible version of PocketDeck"
         case "protocol": return "The phone rejected a message from this Mac"

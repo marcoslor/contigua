@@ -231,8 +231,8 @@ struct NearbyRow: View {
             }
             Spacer()
             if pairable {
-                if phone.needsPairing { Text("Pair again").font(.subheadline).foregroundStyle(.orange) }
-                Button(phone.needsPairing ? "Pair again" : "Pair") { controller.pair(phone) }
+                if phone.needsPairing { Text(PairAgainCopy.banner).font(.subheadline).foregroundStyle(.orange) }
+                Button(PairAgainCopy.sheetButton(needsPairing: phone.needsPairing)) { controller.pair(phone) }
                     .buttonStyle(.glassProminent)
                     .controlSize(.small)
             } else {
@@ -306,6 +306,9 @@ struct BannerView: View {
                 Text(banner.text).font(.callout)
                 if let detail = banner.detail {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+                if let lastSeen = banner.lastSeen {
+                    Text(LastSeen.line(lastSeen)).font(.caption).foregroundStyle(.secondary)
                 }
                 if let until = banner.countdownUntil {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -404,6 +407,11 @@ struct StatusChip: View {
     }
 
     private var helpText: String {
+        // DECK-14: online the tag names the connection; away it says when the
+        // phone was last seen (the machine's stamp, not a guess).
+        if case .offline = controller.link, let seen = controller.lastSeen {
+            return LastSeen.line(seen)
+        }
         guard controller.link.isOnline, let status = controller.status else { return "" }
         let phone = controller.link.phone.map { controller.displayName(for: $0) } ?? "the phone"
         var parts = ["Connected to \(phone)", status.locked ? "phone locked" : "phone unlocked"]
@@ -990,6 +998,43 @@ struct DeckGridSize: Equatable {
     var maxContentWidth: CGFloat { DeckWide.cap * zoom }
 }
 
+/// [DECK-8] What the grid draws when it has no cells: one quiet line over
+/// twelve silent grey cells until the first app list arrives, "No apps on this
+/// phone." when the phone reported none, and the search's own message when a
+/// query filtered them all out. Pure, so the three cases are pinned without a
+/// window.
+enum DeckGridEmpty: Equatable {
+    case placeholders
+    case noApps
+    case noMatches(String)
+
+    /// The skeleton: twelve cells, one line above them.
+    static let placeholderCells = 12
+    static let loadingLine = "Loading apps…"
+    static let noAppsText = "No apps on this phone."
+
+    static func content(query: String, appsLoaded: Bool, phoneHasApps: Bool) -> DeckGridEmpty {
+        if !appsLoaded { return query.isEmpty ? .placeholders : .noMatches(query) }
+        guard phoneHasApps else { return .noApps }
+        return .noMatches(query)
+    }
+}
+
+/// [DECK-3] A cell's help tag: the full app name, but only when the drawn line
+/// truncates it at the cell's own size. The label is `.caption` (the caption1
+/// metrics) inside the cell with 6 pt on each side.
+enum DeckLabel {
+    static let horizontalPadding: CGFloat = 6
+
+    static func truncationHelp(_ label: String, cellWidth: CGFloat) -> String? {
+        let available = cellWidth - 2 * horizontalPadding
+        guard available > 0 else { return label }
+        let font = NSFont.preferredFont(forTextStyle: .caption1)
+        let width = (label as NSString).size(withAttributes: [.font: font]).width
+        return width > available ? label : nil
+    }
+}
+
 /// The grid at 100 %: the D design's numbers, unchanged for callers that carry
 /// neither the run's zoom nor its width.
 enum GridMetrics {
@@ -1041,13 +1086,26 @@ struct AppGrid: View {
 
             ScrollView {
                 Group {
-                    if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
-                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell(zoom: zoom) } }
-                            .redacted(reason: .placeholder)
-                    } else if apps.isEmpty {
-                        Text("No apps match “\(query)”")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 120)
+                    if apps.isEmpty {
+                        switch DeckGridEmpty.content(query: query,
+                                                     appsLoaded: controller.appsLoaded,
+                                                     phoneHasApps: !controller.apps.isEmpty) {
+                        case .placeholders:
+                            VStack(spacing: 8) {
+                                Text(DeckGridEmpty.loadingLine)
+                                    .font(.callout).foregroundStyle(.secondary)
+                                grid {
+                                    ForEach(0..<DeckGridEmpty.placeholderCells, id: \.self) { _ in
+                                        PlaceholderCell(zoom: zoom)
+                                    }
+                                }
+                                .redacted(reason: .placeholder)
+                            }
+                        case .noApps:
+                            emptyText(DeckGridEmpty.noAppsText)
+                        case .noMatches(let query):
+                            emptyText("No apps match “\(query)”")
+                        }
                     } else {
                         grid {
                             ForEach(cells) { cell in
@@ -1277,6 +1335,14 @@ struct AppGrid: View {
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         DeckGridLayout(zoom: zoom) { content() }
             .frame(maxWidth: .infinity)
+    }
+
+    /// The empty states' one line: the place and height the search's message
+    /// has always used.
+    private func emptyText(_ text: String) -> some View {
+        Text(text)
+            .font(.callout).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 120)
     }
 }
 
@@ -1770,6 +1836,8 @@ struct AppCell: View {
         .onHover { hovering = $0 }
         .animation(.smooth(duration: 0.15), value: selected)
         .animation(.smooth(duration: 0.2), value: hovering)
+        .modifier(DeckCellHelp(help: DeckLabel.truncationHelp(
+            app.displayLabel, cellWidth: DeckGridSize(zoom: zoom).cellWidth)))
         .accessibilityLabel(app.label)
     }
 }
@@ -1826,13 +1894,29 @@ struct DockMenuItems: View {
     }
 }
 
+/// One grey cell of the loading skeleton: no words of its own — the one
+/// "Loading apps…" line sits above the grid (DECK-8).
 struct PlaceholderCell: View {
     var zoom: CGFloat = 1
 
     var body: some View {
         DeckCellLayout(zoom: zoom) {
             RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
-            Text("Loading").font(.caption)
+            Color.clear
+        }
+    }
+}
+
+/// A help tag only when there is one to show (a truncated app name, DECK-3):
+/// `.help("")` would still arm an empty tooltip.
+private struct DeckCellHelp: ViewModifier {
+    let help: String?
+
+    func body(content: Content) -> some View {
+        if let help {
+            content.help(help)
+        } else {
+            content
         }
     }
 }

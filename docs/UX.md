@@ -46,7 +46,9 @@ Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show 
 system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
-Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. A control that cannot work is disabled, never hidden.
+Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. The Dock icon's own menu (a right-click on it)
+offers **Find Apps** and **Phone Mirror**, with Phone Mirror disabled while the phone is away. A control that cannot
+work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
    field and selects its text). What it shows is chosen by what this Mac remembers:
@@ -63,7 +65,8 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
      search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
-     line with at most one button (Try now / Pair again). A phone that no longer trusts this Mac, or whose connections
+     line with at most one button (Try now / Pair again); while the phone is away the banner and the chip's help tag say
+     when it was last seen. A phone that no longer trusts this Mac, or whose connections
      switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
      connections-off banner adds one line naming the switch on the phone.
 2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
@@ -96,7 +99,7 @@ Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥
    every app at once (**Save all apps as shortcuts**).
 3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's name and state,
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
-   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
+   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now playing: <app>** when several
    apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
    **Install APK…**), and a **gear** at the card's top-right. When the phone no longer trusts this Mac (or its
    connections switch is off) one banner row sits under the header with the same sentence the Deck shows and its

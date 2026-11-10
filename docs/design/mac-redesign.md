@@ -78,7 +78,8 @@ size 480×460) from Settings ▸ Phones ▸ **Add Phone…** and ⇧⌘N when a 
 - Row (`glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`, ≥ 52 pt): `iphone.gen3`
   22 pt · VStack(name `.body`, model `.subheadline .secondary`) · Spacer · **Pair** `.glassProminent
   .controlSize(.small)`. A phone that is already remembered shows "Paired" (`.secondary`) instead of the button
-  and is not pairable here (a rejected one shows **Pair again** `.orange` text + button).
+  and is not pairable here (a rejected one shows **Pair again** `.orange` text, with a
+  **Pair Again…** button that opens the pairing sheet).
   Whole row is also clickable (= Pair). No device ids.
 - Footer (`GlassEffectContainer`): **Pair with QR** (`qrcode`) · **Connect manually…** (`network`), `.glass`.
 - **Empty/searching:** centered `ProgressView().controlSize(.small)`, "Looking for phones on this
@@ -143,8 +144,10 @@ backgrounds), window background default.
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
   is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
   `.allowsHitTesting(false)`.
-- **Loading** (no cache, apps not yet received): 12 placeholder cells `.redacted(reason: .placeholder)`.
-- **No matches:** centered "No apps match “query”" `.callout .secondary`, height 120.
+- **Loading** (no cache, apps not yet received): one "Loading apps…" `.callout .secondary` line above 12
+  placeholder cells `.redacted(reason: .placeholder)`; the cells themselves say nothing.
+- **No matches:** centered "No apps match “query”" `.callout .secondary`, height 120. A phone that reports no
+  launchable apps: "No apps on this phone." in the same place.
 - **Banner** (§4.4): `Label(msg, systemImage:)` `.callout`, glass capsule/rect (cornerRadius 14, padding 12), full
   width minus 16, below the toolbar, with at most one trailing button (`.glass .controlSize(.small)`). Appears
   with `.transition(.opacity.combined(with: .move(edge: .top)))`. Only one banner exists at a time.
@@ -273,7 +276,7 @@ toolbar item group:
 - The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt inset (P3): header (phone symbol, name,
   status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · a 2×2 grid of 134 pt tiles,
   ≥62 pt high, 8 pt apart, 12 pt corners: **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** ·
-  the phone's media volume slider with its % · the one reason line when a control is off · **Now Playing follows**
+  the phone's media volume slider with its % · the one reason line when a control is off · **Now playing: <app>**
   when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
   buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C · **Install APK…**
   (with its phase) · a **gear** at the card's top-right. The panel's own commands are the icon's: a secondary click
@@ -397,7 +400,7 @@ enum Pairing: Equatable { case contacting, comparing(code: String), verifying, d
 | any | launch with remembered phone | `.connecting(active)` | Deck/Phone mode, chip "Connecting…" |
 | `.connecting` / `.reconnecting` / `.offline` | `welcome` | `.online` | chip green, grid enabled, banner cleared |
 | `.online` | socket closed / ping timeout / receive error | `.reconnecting` | chip orange, grid dimmed, window pills after 1 s |
-| `.connecting` / `.reconnecting` | 15 s without live session | `.offline(.unreachable)` | chip "Offline", banner "Can't reach…" |
+| `.connecting` / `.reconnecting` | 15 s without live session | `.offline(.unreachable)` | chip "Offline" (help tag "Last seen …"), banner "Can't reach…" and the last-seen line |
 | any non-pairing | `error{busy}` | `.offline(.busy)` after 15 s total, banner immediately | banner "Another Mac is connected…" |
 | any non-pairing | `error{auth_failed}` (key rejected) | `.needsPairing` | banner + **Pair again**; reconnect loop stops |
 | any non-pairing | `error{version}` | `.offline(.versionMismatch)` | banner, loop stops |

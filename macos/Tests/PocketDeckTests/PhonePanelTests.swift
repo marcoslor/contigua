@@ -170,6 +170,15 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertEqual(PhonePanelItem.ring.label, "Ring Phone")
     }
 
+    /// [PANEL-8] A timeout is not a state: the Ring Phone tile says nothing
+    /// under its title at rest, and names the ring only while it rings.
+    func testTheRingTileHasNoTimeoutLineAtRest() {
+        var state = panelState()
+        XCTAssertEqual(state.ringSubtitle, "")
+        state.ringing = true
+        XCTAssertEqual(state.ringSubtitle, "Ringing")
+    }
+
     /// Offline: one honest line, and the phone controls are off (no volume, no
     /// DND) even when the last state still had both.
     func testOfflineExplainsWhyTheControlsAreOff() {
@@ -206,9 +215,9 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertFalse(panelState(sessions: [row("a", "Spotify")]).showsPicker)
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
         XCTAssertTrue(state.showsPicker)
-        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Spotify")
+        XCTAssertEqual(state.pickerTitle, "Now playing: Spotify")
         state.media?.key = "b"
-        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Music")
+        XCTAssertEqual(state.pickerTitle, "Now playing: Music")
     }
 
     /// One item model for both hosts: the menu bar panel and the Deck popover

@@ -25,7 +25,7 @@ struct PhoneControlsState: Equatable {
             case .connecting: return "Connecting…"
             case .reconnecting: return "Reconnecting…"
             case .offline: return "Offline"
-            case .needsPairing: return "Pair again"
+            case .needsPairing: return PairAgainCopy.banner
             case .idle: return "No phone paired"
             }
         }
@@ -94,10 +94,15 @@ struct PhoneControlsState: Equatable {
     var showsPicker: Bool { MediaMenu.showsSessionPicker(sessions) }
 
     var pickerTitle: String {
-        "Now Playing follows: \(MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone")"
+        "Now playing: \(MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone")"
     }
 
     var ringTitle: String { ringing ? "Stop Ringing" : "Ring Phone" }
+
+    /// [PANEL-8] The Ring Phone tile's second line. A timeout is not a state,
+    /// so the tile says nothing under its title at rest; while the phone rings
+    /// the line names the ring.
+    var ringSubtitle: String { ringing ? "Ringing" : "" }
 }
 
 /// The volume slider's small machine (docs/design/mac-redesign.md §3.8):
@@ -271,10 +276,11 @@ struct PhoneControlsActions {
 /// that cannot be found. Never a code, never a transient line.
 enum PhonePanelNotice {
     static func banner(for link: Link,
-                       naming: (PhoneRef) -> String = \.name) -> Banner? {
+                       naming: (PhoneRef) -> String = \.name,
+                       lastSeen: Date? = nil) -> Banner? {
         switch link {
         case .needsPairing, .offline(_, .connectionsOff), .offline(_, .notFound):
-            return link.banner(naming: naming)
+            return link.banner(naming: naming, lastSeen: lastSeen)
         default:
             return nil
         }
@@ -629,13 +635,18 @@ struct PhonePanelView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let lastSeen = notice.lastSeen {
+                    Text(LastSeen.line(lastSeen))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 6)
             if notice.action == .pairAgain {
-                Button("Pair again", action: actions.pairAgain)
+                Button(PairAgainCopy.banner, action: actions.pairAgain)
                     .buttonStyle(.glassProminent)
                     .controlSize(.small)
-                    .accessibilityLabel("Pair again")
+                    .accessibilityLabel(PairAgainCopy.banner)
             }
         }
         .padding(10)
@@ -833,7 +844,7 @@ struct PhonePanelView: View {
         } label: {
             tileLabel(symbol: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right",
                       title: state.ringTitle,
-                      subtitle: tileLine(item, state.ringing ? "Ringing" : "30 seconds"),
+                      subtitle: tileLine(item, state.ringSubtitle),
                       lit: item.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(PanelControlStyle(enabled: enabled, active: item.isOn(in: state), hoverID: item.id))
@@ -898,7 +909,10 @@ struct PhonePanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .foregroundStyle(strong)
-            Text(subtitle)
+            // A tile with no state to name (Ring Phone at rest) keeps its
+            // second line's box: the card's height is the same online and
+            // away (PANEL-19), so a blank line, never a shorter tile.
+            Text(subtitle.isEmpty ? " " : subtitle)
                 .font(.system(size: 9))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
