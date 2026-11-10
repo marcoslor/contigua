@@ -9,7 +9,7 @@ import AppKit
 
 enum BarBlur {
     /// The radius of the bar's progressive blur (the system's own is 5).
-    static let radius: CGFloat = 15
+    static let radius: CGFloat = 30
 
     /// The radius the layer tree's `variableBlur` filter carries right now,
     /// nil when the backdrop or its filter is not there.

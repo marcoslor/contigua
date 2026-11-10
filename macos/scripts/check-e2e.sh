@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|pairflow|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|phones|chain|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|pairflow|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|bar-title|phones|chain|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -443,6 +443,7 @@ vdisplay_size_for() {
 vdisplay_scale_for() {
     case "$1" in
         crisp) echo 2 ;;
+        bar-title) echo 2 ;;
         *) echo 1 ;;
     esac
 }
@@ -12201,6 +12202,110 @@ check_windows() {
 # with the first frame. A quiet run captures the run's own virtual display;
 # the record the reviewer sees is the VM's visible run. The two check names are
 # the two appearances.
+
+# --- Barname: the Framed bar's heavier blur, tint and centred name ----------
+#
+# The three fixture pictures (a white page, a dark page and a busy photo) in
+# both appearances at 2x. Each phase reads the chrome state's tone and title
+# rect, captures the real window and measures the worst band contrast behind
+# the glyphs (bar-title-contrast.py, WIN-69). The phone mirror runs the same
+# title with the phone's name (MIRROR-26). Visual record: $SHOTS/bar-title-*.
+
+bar_title_field() { chrome_state | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
+
+# bar_title_measure <shot> <label> <right-inset> — one capture's title check:
+# inside the lights and the right-hand row, and the measured contrast.
+bar_title_measure() {
+    local shot="$1" label="$2" right_inset="$3" rect tone frame_width limit measured
+    rect="$(bar_title_field bar_title_rect)"
+    tone="$(bar_title_field bar_title_tone)"
+    frame_width="$(bar_title_field frame)"
+    frame_width="${frame_width%%x*}"
+    [ -n "$rect" ] && [ "$rect" != "none" ] || { bad "BAR-TITLE $label no title rect in the state"; return 1; }
+    local rx rw right_bound
+    IFS=, read -r rx _ rw _ <<<"$rect"
+    right_bound=$((frame_width - right_inset))
+    if [ "$rx" -ge 75 ] && [ $((rx + rw)) -le "$right_bound" ]; then
+        ok "BAR-TITLE $label the title sits clear of the lights and the right-hand controls (x=$rx w=$rw)"
+    else
+        bad "BAR-TITLE $label the title overlaps a control: x=$rx w=$rw right-bound=$right_bound"
+    fi
+    limit="$(nfr_limit bar_title_contrast_min)"
+    if measured="$(python3 "$MACOS/scripts/bar-title-contrast.py" "$shot" "$rect" "$frame_width" "$tone" "$limit" "$label" 2>&1)"; then
+        ok "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
+    else
+        bad "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
+    fi
+}
+
+check_bar_title() {
+    local fixture appearance want win shot
+    ax_has() { ax_tree | grep -qF -- "$1"; }
+    for appearance in light dark; do
+        for fixture in white-page dark-page busy-photo; do
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
+            wait_until 25 events_have '"ev":"video"' \
+                || bad "BAR-TITLE $appearance/$fixture the stream never sent video"
+            wait_until 15 chrome_has "bar_title=1" \
+                || bad "BAR-TITLE $appearance/$fixture no bar title: $(chrome_state)"
+            # The sample is at most 2 Hz: one beat after the first frame.
+            sleep 1
+            case "$fixture/$appearance" in
+                dark-page/*) want=light ;;
+                *) want=dark ;;
+            esac
+            if wait_until 5 chrome_has "bar_title_tone=$want"; then
+                ok "[WIN-69] BAR-TITLE $appearance/$fixture the tone follows the band: $want"
+            else
+                bad "[WIN-69] BAR-TITLE $appearance/$fixture wanted tone $want, state: $(bar_title_field bar_title_tone)"
+            fi
+            chrome_has "bar_blur_radius=30" && chrome_has "bar_tint=0.14 tint=1" \
+                && ok "[WIN-67] BAR-TITLE $appearance/$fixture blur=30 tint=0.14 over the band" \
+                || bad "[WIN-67] BAR-TITLE $appearance/$fixture bar: $(chrome_state)"
+            if wait_until 5 ax_has "value=[Settings]"; then
+                ok "[WIN-68] BAR-TITLE $appearance/$fixture the bar names the app alone"
+            else
+                bad "[WIN-68] BAR-TITLE $appearance/$fixture the bar's name: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
+            fi
+            win="$(await_window '$4 == 900')" || { bad "BAR-TITLE $appearance/$fixture no 900 pt window"; continue; }
+            shot="$SHOTS/bar-title-$fixture-$appearance.png"
+            if shot_window "$win" "$shot"; then
+                say "shot: $shot"
+                bar_title_measure "$shot" "$appearance/$fixture" 43
+            else
+                bad "BAR-TITLE $appearance/$fixture no window capture"
+            fi
+            stop_app
+            stop_fakephone
+        done
+    done
+
+    # The Phone Mirror's bar names the phone, not the mirrored app (MIRROR-26).
+    for appearance in light dark; do
+        clean
+        FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
+            --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
+        wait_until 25 events_have '"ev":"video"' \
+            || bad "BAR-TITLE phone/$appearance the stream never sent video"
+        sleep 2
+        # A portrait Mirror leaves less room than the phone's name needs, and
+        # a name cut down to two letters reads worse than none (WIN-68).
+        if chrome_has "bar_title=0 bar_title_tone=none bar_title_rect=none"; then
+            ok "[MIRROR-26] BAR-TITLE phone/$appearance a name that does not fit is not drawn"
+        else
+            bad "[MIRROR-26] BAR-TITLE phone/$appearance wanted no title, state: $(chrome_state)"
+        fi
+        win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; continue; }
+        shot="$SHOTS/bar-title-phone-$appearance.png"
+        shot_window "$win" "$shot" && say "shot: $shot" || bad "BAR-TITLE phone/$appearance no window capture"
+        stop_app
+        stop_fakephone
+    done
+}
 
 check_cover_bar() {
     local appearance="$1" shots="$SHOTS/cover-bar" id
