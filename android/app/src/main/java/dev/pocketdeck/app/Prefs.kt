@@ -99,8 +99,8 @@ object Prefs {
         return list.mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
-            // v2 only: entries without a pin are v1 leftovers and are dropped
-            // (docs/design/e2ee.md §7 — the forced re-pair, no reverse path).
+            // The current record carries the Mac cert's point fingerprint; an
+            // entry without a well-formed one is not a record and is ignored.
             val pin = Json.str(m["macFp"]) ?: return@mapNotNull null
             if (pin.length != 64) return@mapNotNull null
             PairedMac(id, Json.str(m["name"]) ?: "Mac", pin.lowercase(), Json.long(m["lastConnected"]) ?: 0)
