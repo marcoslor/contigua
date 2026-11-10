@@ -93,7 +93,7 @@ struct LaunchOptions {
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
     /// through the same code the Settings ▸ Phones ▸ Rename dialog calls (e2e).
     var setNickname: String?
-    /// `--continue-on-mac`: run the Move Phone App to Mac command once the session is
+    /// `--continue-on-mac`: run the Open Current App on Mac command once the session is
     /// ready (e2e, docs/design/handoff.md).
     var continueOnMac = false
     /// `--background`: the e2e run's quiet mode (BackgroundMode.swift). Only

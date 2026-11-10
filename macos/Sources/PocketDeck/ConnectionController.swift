@@ -1144,7 +1144,7 @@ final class ConnectionController {
         windows.openPhoneWindow()
     }
 
-    /// "Move Phone App to Mac" (docs/ROADMAP.md #9): a window for the app in the
+    /// "Open Current App on Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with `window.opened`
     /// (and the video) for the stream, or `nothing_to_continue` — which shows
     /// as the transient banner.
