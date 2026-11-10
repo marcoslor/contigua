@@ -2965,6 +2965,9 @@ final class ConnectionController {
                                   alert: alert, group: group),
                 phoneId: phone.id,
                 phoneName: displayName(for: phone, fallback: "your phone"),
+                // NOTIFY-4: the name suffixes a banner title only with 2+
+                // phones paired; with one the app's own words are enough.
+                phonesPaired: rememberedPhones.count,
                 labelFor: { [weak self] in self?.labelFor($0) ?? nil },
             )
         case .notifyImage(let id, let mime, let w, let h, let data):

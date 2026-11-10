@@ -51,8 +51,9 @@ phone has no second switch: its notification-listener grant is the phone-side ha
 - Parity guard: K1 `NotifyWireParityTest` pushes every field the app's builders emit through
   `Session.onDeviceEvent` and fails when the shell server drops or changes one.
 - Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
-  label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
-  a notification with neither title nor label shows the phone name alone; text = body, grouped per
+  label), with the phone's name appended ("Review (Nicky)") only while two or more phones are
+  paired; with one phone the title stands alone, and a notification with neither title nor label
+  shows its package; text = body, grouped per
   phone (`threadIdentifier` = phone id; `<phone id>.<group hash>` when the post carries a group,
   NOTIFY-20). "When I click a phone notification" (per phone, beside the
   opt-in, enabled only while it is on) picks what a click does: **Open on Mac** (default) opens or

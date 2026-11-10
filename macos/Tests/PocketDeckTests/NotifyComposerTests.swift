@@ -335,7 +335,7 @@ final class NotifyComposerTests: XCTestCase {
             .representation(using: .png, properties: [:]))
         center.post(PhoneNotification(id: "c1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.image(id: "c1", mime: "image/png", width: 200, height: 100, data: picture)
         let settled = expectation(description: "the hold elapsed")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { settled.fulfill() }
@@ -367,7 +367,7 @@ final class NotifyComposerTests: XCTestCase {
         center.iconFor = { _, _ in self.icon(self.fixtureIcon(side: 512)) }
         center.post(PhoneNotification(id: "c2", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "No picture", alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         let lines = try String(contentsOf: log, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         let post = lines.first { $0.hasPrefix("notify post id=c2 ") }

@@ -26,9 +26,19 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(NotifyMapping.title("   ", phoneName: "Nicky"), "Nicky")
     }
 
+    /// [NOTIFY-4] The phone's name suffixes a banner title only while the Mac
+    /// has two or more phones paired: with one phone the app's own words place
+    /// the banner, so the name is noise.
+    func testTitleSuffixesThePhoneNameOnlyWithTwoOrMorePhones() {
+        XCTAssertEqual(NotifyMapping.titlePhoneName("Nicky", phonesPaired: 1), "")
+        XCTAssertEqual(NotifyMapping.titlePhoneName("Nicky", phonesPaired: 2), "Nicky")
+        XCTAssertEqual(NotifyMapping.titlePhoneName("Nicky", phonesPaired: 3), "Nicky")
+    }
+
     func testTitleFallsBackToTheAppLabel() {
         let (title, body) = NotifyMapping.content(notification(text: "Deck at 4"),
-                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+                                                  phoneName: "Nicky", phonesPaired: 2,
+                                                  labelFor: { _ in "WhatsApp" })
         XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "Deck at 4")
     }
@@ -36,7 +46,7 @@ final class NotifyMacTests: XCTestCase {
     func testTitleWithBodyIsShownAsIs() {
         let (title, body) = NotifyMapping.content(
             notification(title: "Design review", text: "Deck vs slides at 4"),
-            phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+            phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in "WhatsApp" })
         XCTAssertEqual(title, "Design review (Nicky)")
         XCTAssertEqual(body, "Deck vs slides at 4")
     }
@@ -44,30 +54,61 @@ final class NotifyMacTests: XCTestCase {
     func testTitleOnlyFromAnUnlabeledPackageKeepsTheNameAsBody() {
         let (title, body) = NotifyMapping.content(
             notification(title: "File downloaded", text: nil),
-            phoneName: "Nicky", labelFor: { _ in nil })
+            phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         XCTAssertEqual(title, "File downloaded (Nicky)")
         XCTAssertEqual(body, "com.whatsapp")
     }
 
     func testATitlelessUnlabeledNotificationIsJustThePhoneName() {
         let (title, body) = NotifyMapping.content(notification(text: "ping"),
-                                                  phoneName: "Nicky", labelFor: { _ in nil })
+                                                  phoneName: "Nicky", phonesPaired: 2,
+                                                  labelFor: { _ in nil })
         XCTAssertEqual(title, "Nicky")
         XCTAssertEqual(body, "ping")
     }
 
     func testEmptyContentBecomesTheAppLabelWithThePhoneName() {
         let (title, body) = NotifyMapping.content(notification(text: ""),
-                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+                                                  phoneName: "Nicky", phonesPaired: 2,
+                                                  labelFor: { _ in "WhatsApp" })
         XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "")
     }
 
     func testTitleOnlyFromALabeledPackageHasNoBody() {
         let (title, body) = NotifyMapping.content(notification(title: "WhatsApp", text: nil),
-                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+                                                  phoneName: "Nicky", phonesPaired: 2,
+                                                  labelFor: { _ in "WhatsApp" })
         XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "")
+    }
+
+    /// [NOTIFY-4] With one phone paired every banner title is the app's own
+    /// words, and a titleless post from an unlabeled package shows its package
+    /// rather than the phone's name.
+    func testOnePhonePutsNoNameInAnyBannerTitle() {
+        let labeled = NotifyMapping.content(notification(text: "Deck at 4"),
+                                            phoneName: "Nicky", phonesPaired: 1,
+                                            labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(labeled.title, "WhatsApp")
+        XCTAssertEqual(labeled.body, "Deck at 4")
+
+        let titled = NotifyMapping.content(
+            notification(title: "Design review", text: "Deck vs slides at 4"),
+            phoneName: "Nicky", phonesPaired: 1, labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(titled.title, "Design review")
+
+        let unlabeled = NotifyMapping.content(
+            notification(title: "File downloaded", text: nil),
+            phoneName: "Nicky", phonesPaired: 1, labelFor: { _ in nil })
+        XCTAssertEqual(unlabeled.title, "File downloaded")
+
+        let nameless = NotifyMapping.content(notification(text: "ping"),
+                                             phoneName: "Nicky", phonesPaired: 1,
+                                             labelFor: { _ in nil })
+        XCTAssertEqual(nameless.title, "com.whatsapp",
+                       "a banner still has a title; the phone's name is not one")
+        XCTAssertEqual(nameless.body, "ping")
     }
 
     // MARK: recording (privacy: sizes, never text)
@@ -165,10 +206,10 @@ final class NotifyMacTests: XCTestCase {
         center.post(PhoneNotification(id: "g1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One",
                                       group: "0123456789abcdef"),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.post(PhoneNotification(id: "g2", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "Two", group: "Family chat"),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         let lines = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(lines.count, 2)
@@ -192,7 +233,7 @@ final class NotifyMacTests: XCTestCase {
         center.hold = 0
         center.post(PhoneNotification(id: "s1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: false),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         let posts = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n").map(String.init)
             .filter { $0.hasPrefix("notify post id=s1 ") }
@@ -214,10 +255,10 @@ final class NotifyMacTests: XCTestCase {
         center.hold = 0.25
         center.post(PhoneNotification(id: "h1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: true),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         center.post(PhoneNotification(id: "h1", pkg: "com.whatsapp", when: nil,
                                       title: "Chat", text: "One", alert: false),
-                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                    phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         let settled = expectation(description: "the hold elapsed")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { settled.fulfill() }
         wait(for: [settled], timeout: 3)
@@ -241,7 +282,7 @@ final class NotifyMacTests: XCTestCase {
             center.post(PhoneNotification(id: "q1", pkg: "com.whatsapp", when: nil,
                                           title: "Progress", text: "step \(step)",
                                           alert: step == 0),
-                        phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+                        phoneId: "phone-1", phoneName: "Nicky", phonesPaired: 2, labelFor: { _ in nil })
         }
         let lines = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n").map(String.init)
