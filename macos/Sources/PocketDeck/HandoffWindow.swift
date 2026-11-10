@@ -28,6 +28,12 @@ final class HandoffWindowController: StreamWindowController {
     /// remembered style applies.
     override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
 
+    /// The bar names the adopted app once the phone reports one; before that
+    /// it shows nothing — never the placeholder subject (WIN-68).
+    override var barTitle: String? {
+        BarTitleName.adoptedApp(pkg.flatMap { manager.appsByPkg[$0]?.label })
+    }
+
     /// And its density override.
     override var densityPackage: String? { pkg }
 
@@ -59,10 +65,12 @@ final class HandoffWindowController: StreamWindowController {
         self.pkg = pkg
         reapplyStoredStyle()
         reapplyStoredDensity()
+        refreshBarTitle()
     }
 
     override func retitle() {
         window?.title = manager.titled(subject)
+        refreshBarTitle()
     }
 
     /// The fallback launched the app fresh: a standing note in the window

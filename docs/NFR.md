@@ -28,6 +28,7 @@ promise in `AGENTS.md`, not from a measurement.
 | Density burst: first frame | `density_burst_first_frame_ms` = 600 ms | — (safety limit; the 10-27 report had 7 s with no frame) | Ten ⌘+/⌘− presses in one second must leave the picture live at the final density, not re-attach the phone's encoder once per press | the emulator burst (`deckctl density-burst`, real encoder: one attach, the frame after the last request); K2 `ResizeCoalescerTests`, K1 `ResizeLedgerTest` |
 | Density burst: no stall | `density_burst_stall_ms` = 1500 ms | — (safety limit: the window's own "Not responding" rule) | During the burst no window may go a second and a half without a frame, which is what an overlapping encoder re-attach costs | e2e `density` (ten ⌘+ presses: two requests, never a repeat — the Mac side); the emulator burst measures the phone's gap |
 | Control contrast | `contrast_min` = 3.0 | — (safety limit) | Bar controls sit over white, black and busy video | K2 `BarContrastTests` |
+| Bar title contrast | `bar_title_contrast_min` = 4.5 | — (safety limit; WCAG AA body text) | The centred title sits over the blurred, tinted mirror: white pages in dark appearance and busy photos are the worst cases | K2 `BarTitleTests`; e2e `bar-title` (measured from the real window capture over the white-page, dark-page and busy-photo fixtures in light and dark) |
 | Smallest supported screen | `layout_min_screen` = [1280, 800] | — (safety limit) | Every control must be reachable on the smallest Mac screen we support | K2 `SettingsLayoutTests`, `LayoutTests`; e2e `nfr` |
 | Settings design height | `settings_design_height_pt` = 560 pt | 560 | What the 1280×800 layout was designed around | K2 `SettingsLayoutTests` |
 | Request/reply return | `hanging_reply_ms` = 100 ms | — (safety limit) | A terminal reply ends a request; a peer that keeps the socket open must not add the 20 s receive timeout | K2 `HangingPeerTests` |
@@ -77,7 +78,7 @@ macos/scripts/nfr.sh
 ```
 
 It runs the NFR K2 tests (`NFRTestLimits`, `BarContrastTests`,
-`SettingsLayoutTests`, `LayoutTests`, `HangingPeerTests`,
+`BarTitleTests`, `SettingsLayoutTests`, `LayoutTests`, `HangingPeerTests`,
 `HonestSettingsTests`, `IconReferenceTests`, `ControlsRealPathTests`) and the
 host e2e check `nfr`, one after the other through the machine-wide heavy lock
 (never beside a second heavy step). On a UI or protocol change, run it before
