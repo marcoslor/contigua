@@ -49,6 +49,7 @@ enum PanelProbe {
             hostWindow.makeKeyAndOrderFront(nil)
             (hostWindow as? MenuBarPanel)?.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
                 for: PhoneControlsState(controller: controller)))
+            controller.beginPanelFrontWatch()
             return
         }
         // The gear opens the app's one status-item menu (MenuBarPanel.swift),
@@ -99,16 +100,19 @@ enum PanelProbe {
         // on the person's screen in a quiet run.
         window.orderFrontRegardless()
         window.makeKey()
-        // The card opens on its first phone control, as MenuBarController's
-        // showPanel does (PANEL-7/PANEL-20).
+        // The card opens on its first phone module, as MenuBarController's
+        // showPanel does (PANEL-7/PANEL-20); while it is open the foreground
+        // read runs (PANEL-26).
         window.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
             for: PhoneControlsState(controller: controller)))
+        controller.beginPanelFrontWatch()
         hostWindow = window
     }
 
     /// `panelclose`.
     static func close() {
         hostWindow?.orderOut(nil)
+        controller?.endPanelFrontWatch()
     }
 
     /// The hosted card's gear frame on screen, for the gear's menu anchor

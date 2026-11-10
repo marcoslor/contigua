@@ -1045,6 +1045,14 @@ final class ConnectionController {
             session.requestApps()
         }
         resetPhoneData(for: phone.ref)
+        rememberedPhones = remembered.all
+    }
+
+    /// The panel's phone pop-up (PANEL-27): switch the phone in use through the
+    /// same route Settings' Use This Phone runs (SET-DEV-03).
+    func usePhone(id: String) {
+        guard let phone = remembered.phone(id: id) else { return }
+        use(phone)
     }
 
     func forget(_ phone: RememberedPhone) {
@@ -1179,7 +1187,8 @@ final class ConnectionController {
     private func frontReplied(seq: Int, pkg: String?) {
         guard frontApp.reply(seq: seq, pkg: pkg) else { return }
         frontAppRepliedAt = Date()
-        Log.app.debug("front: \(pkg == nil ? "none" : "present", privacy: .public)")
+        let presence = pkg == nil ? "none" : "present"
+        Log.app.debug("front: \(presence, privacy: .public)")  // log-ok: only "present"/"none", never the package
     }
 
     /// A phone that cannot read its task list: no row, and the Phone menu's
