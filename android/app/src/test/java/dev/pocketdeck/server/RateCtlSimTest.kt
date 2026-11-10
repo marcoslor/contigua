@@ -55,7 +55,6 @@ class RateCtlSimTest {
         val clean = clean()
         for (sim in listOf(eight, four, stepped, clean)) {
             println(sim.summary())
-            println("trace ${sim.let { it.trace() }}")
         }
     }
 }

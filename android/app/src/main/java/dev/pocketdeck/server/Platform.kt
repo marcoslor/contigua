@@ -337,6 +337,14 @@ interface DisplayLayer {
     fun onBackpressure(stream: Int, measuredBps: Int? = null, encodedBps: Int? = null) {}
 
     /**
+     * PATH-47: the writer's queue delay (p95 over its last window) and the
+     * link's newest goodput. The stream lowers its bitrate before the 250 ms
+     * budget has to drop anything; [linkBps] is null while the writer cannot
+     * measure it.
+     */
+    fun onQueueDelay(stream: Int, delayP95Us: Long, delayP50Us: Long, linkBps: Int?) {}
+
+    /**
      * Q1 (`overflow=suspend`): stop (true) or resume (false) taking frames at
      * the encoder's input, so the source skips frames instead of the queue.
      */

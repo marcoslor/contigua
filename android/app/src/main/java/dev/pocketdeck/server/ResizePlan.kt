@@ -104,6 +104,9 @@ internal class ResizeLedger {
         return ResizeNeed.FULL
     }
 
+    /** The Mac's last applied box: the ladder scales this, never the answer. */
+    fun requested(): ResizeRequest? = applied
+
     /** The display now shows [request] (also after a density-only change). */
     fun remember(request: ResizeRequest): ResizeLedger {
         applied = request

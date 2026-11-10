@@ -32,4 +32,26 @@ internal object StreamDebug {
     /** A release build never reads the property: the drain asks twice a second. */
     fun freezeDrain(): Boolean =
         dev.pocketdeck.BuildConfig.DEBUG && freezeDrain(true, Hidden.systemProperty(FREEZE_DRAIN))
+
+    /**
+     * `debug.pocketdeck.rate_control=0` (debug builds only): the early
+     * delay-based signal never lowers the bitrate. Unset means on, so a debug
+     * phone behaves like the product and the reviewer can A/B one half.
+     */
+    const val RATE_CONTROL = "debug.pocketdeck.rate_control"
+
+    /**
+     * `debug.pocketdeck.ladder=0` (debug builds only): the resolution/fps
+     * ladder never steps; an active rung returns to the Mac's asked box.
+     */
+    const val LADDER = "debug.pocketdeck.ladder"
+
+    /** A debug switch defaults ON; only the exact value "0" turns it off. */
+    fun enabled(debug: Boolean, property: String?): Boolean = !debug || property != "0"
+
+    fun rateControlEnabled(): Boolean =
+        enabled(dev.pocketdeck.BuildConfig.DEBUG, Hidden.systemProperty(RATE_CONTROL))
+
+    fun ladderEnabled(): Boolean =
+        enabled(dev.pocketdeck.BuildConfig.DEBUG, Hidden.systemProperty(LADDER))
 }

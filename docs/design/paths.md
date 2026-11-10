@@ -317,6 +317,31 @@ answers, a path failure (D5).
 - A reliable frame is never dropped silently: it either arrives, or the session
   ends (§8).
 
+### 5.5.1 The queue is the early signal (PATH-47/48/49)
+
+The 250 ms queue budget is the last resort, not the first measurement. The
+writer already timestamps every delta at enqueue and at the end of its socket
+write (ISS-40), so `QueueDelayMeter` keeps a two-second ring of those waits and
+the stream reads its p95 and median once a second (or at once when a frame
+waited 150 ms). A p95 at or above 100 ms is a hitch; when the newest dense run
+of waits (≥ 30 ms, span ≥ 100 ms, no gap over 50 ms) reads a link whose 75 % is
+under the believed bitrate, the controller lowers the belief to that 75 %
+before the budget has to drop a delta. The run guard is what keeps a shallow
+queue from reporting the app's own frame rate as the link.
+
+One pure machine owns the phase (`steady`/`pressured`) and the pixel ladder
+(`full`/`three-quarters`/`half`), their timers, the drop quiet (2 s), and the
+explicit-quality cancel. Every phase or rung change logs
+`ratectl: <phase>/<rung> --<event>--> <phase>/<rung>`. The ladder fires after
+5 s at the down-step floor with a high p95, steps one rung per 30 s, and steps
+back only after 30 s below a 50 ms median; the dpi falls with the pixels, so
+apps lay out at the same logical size and the Mac stretches the smaller
+`VIDEO_CONFIG` over the same window (WIN-63), keeping text crisp. A rung change
+goes through the same `ResizePlan`/`EncoderLifecycle` `Prepare`/`Attach` path
+as a Mac resize; a `kept` answer (WIN-6) leaves the rung where it was. Mirrors
+are never scaled. The early signal and the ladder are each switchable by a
+debug property (default on) for the real-phone A/B.
+
 ### 5.6 After a switch
 
 - The Mac asks a keyframe of **every open video stream** with the existing
