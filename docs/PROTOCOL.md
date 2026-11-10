@@ -437,12 +437,11 @@ lost; the keyframe request above repairs the picture.
 
 ## Media over UDP
 
-> **PLANNED / NOT IMPLEMENTED IN THIS MERGE.** The UDP media plane described in
-> this section is a specification for `epic/pmaxx` P3.2/P3.3; the merge of
-> P0/P1/P2 carries no media capability, socket, sender, assembler, probe,
-> switch, feedback, NACK or parity code. Only the pure Android primitives
-> (`MediaDatagramTest`, `MediaCryptoTest`, `MediaReplayWindowTest`,
-> `MediaDefaultsTest`) exist. See `ISS-50`.
+> **WITHDRAWN 2026-11-09.** The native link carries media over TLS/TCP only;
+> measurements (ISS-48) showed no case for a UDP plane on the Mac–phone link.
+> No peer sends or accepts anything this section describes, and a leftover
+> `transport` bench property is ignored. Kept as background for the web client
+> (ISS-41, WebRTC) and a later over-the-internet tier. See `docs/design/media-transport.md`.
 
 Video access units can move on an unreliable, unordered datagram plane;
 everything else (JSON, input, files, audio and the CONFIG frames) stays on the
