@@ -26,21 +26,14 @@ enum MenuBarGlyph {
     }
 
     static func image(link: Link, dot: Bool, dimmed: Bool = false) -> NSImage {
-        let name = symbol(for: link)
-        let glyph = NSImage(systemSymbolName: name, accessibilityDescription: "PocketDeck")?
-            .withSymbolConfiguration(configuration)
-            ?? NSImage(size: NSSize(width: 14, height: 16))
+        let glyph = glyph(for: link)
+        let layout = layout(link: link, dot: dot)
         let fraction = dimmed ? dimFraction : 1
-        let size = NSSize(width: glyph.size.width + (dot ? dotGap + dotDiameter : 0),
-                          height: glyph.size.height)
-        let image = NSImage(size: size, flipped: false) { rect in
-            glyph.draw(in: NSRect(x: 0, y: 0, width: glyph.size.width, height: glyph.size.height),
-                       from: .zero, operation: .sourceOver, fraction: fraction)
-            if dot {
+        let image = NSImage(size: layout.imageSize, flipped: false) { rect in
+            glyph.draw(in: layout.glyphRect, from: .zero, operation: .sourceOver, fraction: fraction)
+            if let dotRect = layout.dotRect {
                 NSColor.black.withAlphaComponent(fraction).setFill()
-                NSBezierPath(ovalIn: NSRect(x: glyph.size.width + dotGap,
-                                            y: (rect.height - dotDiameter) / 2,
-                                            width: dotDiameter, height: dotDiameter)).fill()
+                NSBezierPath(ovalIn: dotRect).fill()
             }
             return true
         }
@@ -48,6 +41,37 @@ enum MenuBarGlyph {
         image.accessibilityDescription = "PocketDeck"
         return image
     }
+
+    /// The glyph itself, at the menu bar's standard symbol metrics.
+    static func glyph(for link: Link) -> NSImage {
+        NSImage(systemSymbolName: symbol(for: link), accessibilityDescription: "PocketDeck")?
+            .withSymbolConfiguration(configuration)
+            ?? NSImage(size: NSSize(width: 14, height: 16))
+    }
+
+    /// One layout for both frames: the image's size, the glyph's box and, when
+    /// the dot shows, its slot. The slot is reserved in both states, so an
+    /// agent connecting never widens the image or moves the glyph (PANEL-25).
+    static func layout(link: Link, dot: Bool) -> MenuBarGlyphLayout {
+        let glyph = glyph(for: link)
+        let size = NSSize(width: glyph.size.width + dotGap + dotDiameter,
+                          height: glyph.size.height)
+        let glyphRect = NSRect(x: 0, y: 0, width: glyph.size.width, height: glyph.size.height)
+        let dotRect = dot
+            ? NSRect(x: glyph.size.width + dotGap,
+                     y: (size.height - dotDiameter) / 2,
+                     width: dotDiameter, height: dotDiameter)
+            : nil
+        return MenuBarGlyphLayout(imageSize: size, glyphRect: glyphRect, dotRect: dotRect)
+    }
+}
+
+/// The status item image's geometry, so the dot's effect on the item's size and
+/// the glyph's place is one testable value (MenuBarIconTests).
+struct MenuBarGlyphLayout: Equatable {
+    let imageSize: NSSize
+    let glyphRect: NSRect
+    let dotRect: NSRect?
 }
 
 /// The reconnecting pulse: two template frames swapped on a timer. One machine

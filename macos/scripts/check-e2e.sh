@@ -3660,6 +3660,37 @@ for line in sys.stdin:
 PY
 }
 
+# app_menu_rect — this run's open menu window, "x,y,w,h" in Quartz points.
+# Filtered to the app's own windows: another app's menu is never ours to read.
+app_menu_rect() {
+    "$MENUBARBIN" layers "$APP_PID" 2>/dev/null | awk '
+        $2 >= 100 && $2 < 1000 && $5 >= 100 && $6 >= 60 { print $3","$4","$5","$6; exit }'
+}
+
+# window_rect_at X Y — the app window below a menu that contains that Quartz
+# point, "x,y,w,h". The hosted card is the window under its own gear.
+window_rect_at() {
+    "$MENUBARBIN" layers "$APP_PID" 2>/dev/null | awk -v px="$1" -v py="$2" '
+        $2 < 100 && px >= $3 && px <= $3 + $5 && py >= $4 && py <= $4 + $6 {
+            print $3","$4","$5","$6; exit
+        }'
+}
+
+# union_rect A B — the two "x,y,w,h" rects' union, with a 10 pt margin, for a
+# screenshot that shows a control and its menu together.
+union_rect() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+a = [int(v) for v in sys.argv[1].split(",")]
+b = [int(v) for v in sys.argv[2].split(",")]
+x = min(a[0], b[0]) - 10
+y = min(a[1], b[1]) - 10
+right = max(a[0] + a[2], b[0] + b[2]) + 10
+bottom = max(a[1] + a[3], b[1] + b[3]) + 10
+print(f"{x},{y},{right - x},{bottom - y}")
+PY
+}
+
 # e2e_menu_shot FILE MENU — hold one of the app's menus open through its
 # tracking loop and capture the screen cropped to that menu, then wait for it to
 # close. A menu that is gone at the shutter is retried once (round 5's empty
@@ -16547,7 +16578,7 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device vcx vcy
+    local shots="$WORK/menubar-shots" result device vcx vcy item_size dot_size
     local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
@@ -16615,10 +16646,11 @@ check_menubar_shots() {
     control menubaricon || true
     result="$CONTROL_REPLY"
     case "$result" in
-        "length=variable image=template subviews=0 state=online dot=0")
-            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        "length=variable image=template subviews=0 state=online dot=0 size="*)
+            item_size="${result##*size=}"
+            ok "MENUBAR-PANEL-25 $result" ;;
         *)
-            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0 size=WxH)" ;;
     esac
     item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
@@ -16627,6 +16659,59 @@ check_menubar_shots() {
         || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
     sleep 1
     shot_panel "panel-online-light.png"
+
+    # [PANEL-3] The gear's menu anchors at the gear, not under the status item
+    # (ISS-75). `gearanchor` reports the frame the gear's request pops at; the
+    # menu is only opened when that frame is the gear's, because a menu under
+    # the item would open on the person's own screen.
+    local gear_anchor gear_pt gx gy
+    if control panelpoint panel panel.gear "$shots/gear.pt" && read -r gx gy < "$shots/gear.pt"; then
+        # After panelpoint's settle: the card's height (and so the gear's y)
+        # follows its rows, and the anchor must be read from the same frame.
+        control gearanchor || true
+        gear_anchor="$CONTROL_REPLY"
+        case "$gear_anchor" in
+            "gear "*)
+                read -r mainx mainy mainw mainh <<< "$(display_of main)"
+                python3 - "$gear_anchor" "$gx" "$gy" "$mainh" <<'PY' && ok "[PANEL-3] the gear's menu anchors at the gear, not under the status item" \
+                    || bad "[PANEL-3] the gear's anchor is not the gear's own frame"
+import sys
+words = sys.argv[1].split()
+x, y = int(words[1]), int(words[2])
+gx, gy = int(float(sys.argv[2])), int(float(sys.argv[3]))
+# The gear is 22 pt square: its bottom-left is the anchor, under the click.
+# `gearanchor` is AppKit (y up); panelpoint is Quartz (y down).
+quartz_y = int(sys.argv[4]) - y
+if abs(x - (gx - 11)) > 4 or abs(quartz_y - (gy + 11)) > 4:
+    print("anchor", x, quartz_y, "gear bottom-left", gx - 11, gy + 11); sys.exit(1)
+PY
+                ;;
+            *)
+                bad "[PANEL-3] the gear's menu still anchors at the status item ($gear_anchor)" ;;
+        esac
+        # The real render: the hosted card with the gear's menu held open at
+        # the gear. A quiet run cannot press Escape, so `gearhold` closes it.
+        if [ "${gear_anchor%% *}" = "gear" ]; then
+            control gearhold 4 || bad "MENUBAR-SHOTS gearhold: $CONTROL_REPLY"
+            control panelclick panel panel.gear >/dev/null 2>&1 &
+            local menu_click_pid=$!
+            sleep 1
+            local menu_rect panel_rect region
+            menu_rect="$(app_menu_rect)"
+            panel_rect="$(window_rect_at "$gx" "$gy")"
+            if [ -n "$menu_rect" ] && [ -n "$panel_rect" ]; then
+                region="$(union_rect "$menu_rect" "$panel_rect")"
+                screencapture -x -R "$region" "$shots/gear-menu.png" >/dev/null 2>&1 \
+                    && say "shot: $shots/gear-menu.png (the gear's menu, $region)" \
+                    || bad "MENUBAR-SHOTS no gear menu screenshot"
+            else
+                bad "MENUBAR-SHOTS no menu or panel window for the gear's menu ($menu_rect / $panel_rect)"
+            fi
+            wait "$menu_click_pid" || bad "MENUBAR-SHOTS the gear's menu did not close"
+        fi
+    else
+        bad "MENUBAR-SHOTS panelpoint panel panel.gear: $CONTROL_REPLY"
+    fi
 
     # The real pointer (visible runs only): moving onto the DND tile changes
     # the picture, and the footer's Settings row opens Settings. The panel host
@@ -16794,12 +16879,36 @@ PY
         agent_pid=$!
         for _ in $(seq 1 100); do
             control menubaricon || true
-            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            case "$CONTROL_REPLY" in
+                *"dot=1"*) dot=1; dot_size="${CONTROL_REPLY##*size=}"; break ;;
+            esac
             sleep 0.1
         done
         [ "$dot" = 1 ] \
             && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
             || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # [PANEL-25] The dot is drawn in a slot the image reserves in both
+        # states: the item's image size never changes when an agent connects
+        # (ISS-75), so the status item never shifts.
+        if [ -n "$item_size" ] && [ "$dot_size" = "$item_size" ]; then
+            ok "[PANEL-25] the agent dot keeps the item's image size ($item_size with and without)"
+        else
+            bad "[PANEL-25] the agent dot changed the item's image size (plain=$item_size dot=$dot_size)"
+        fi
+        # [PANEL-7] The card opens on its first tile, never on Disconnect
+        # (ISS-75): with the agent row up the opening ring is still DND. A
+        # quiet run cannot press a key into a non-activating panel, so the
+        # check reads where the ring landed.
+        control panelopen >/dev/null 2>&1 \
+            || bad "MENUBAR-SHOTS panelopen for the agent: $CONTROL_REPLY"
+        control panelfocus panel || true
+        case "$CONTROL_REPLY" in
+            panel.dnd)
+                ok "[PANEL-7] the card opens on Do Not Disturb, not Disconnect, with an agent connected" ;;
+            *)
+                bad "[PANEL-7] the card opens on '$CONTROL_REPLY' with an agent connected" ;;
+        esac
+        control panelclose >/dev/null 2>&1 || true
         # The crop is taken while the client is still connected: the dot is in
         # the drawing, not a second view over the button.
         item_shots menubar-item-dot
