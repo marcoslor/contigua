@@ -1,8 +1,7 @@
 // App icons on disk, one folder per phone: a package name means a different
 // icon on every phone (and on the test phones the harness runs), so icons are
-// keyed by device id + package. Files from before that (`<pkg>.png` straight
-// in the profile's folder) are never read again; non-default profiles delete
-// them, the default profile leaves the user's files alone.
+// keyed by device id + package. Only that shape is read; anything else in the
+// profile's folder is left alone.
 //
 // The adaptive layers have one slot per size class (docs/design/dock.md
 // §Icons): the Deck's 432 px render and the Dock shim's 1296 px render never
@@ -34,17 +33,15 @@ final class IconCache {
     private let lock = NSLock()
 
     /// `directory` is the profile's folder under ~/Library/Caches.
-    init(directory: URL, removingLegacyFiles: Bool = false) {
+    init(directory: URL) {
         self.directory = directory.appendingPathComponent("icons", isDirectory: true)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-        if removingLegacyFiles { Self.removeLegacyFiles(in: directory) }
     }
 
     convenience init(profile: Profile) {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches")
-        self.init(directory: base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true),
-                  removingLegacyFiles: !profile.isDefault)
+        self.init(directory: base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true))
     }
 
     /// A flat icon plus, when the phone sent them (`icon` message), the
@@ -150,11 +147,6 @@ final class IconCache {
     /// (a path separator from a hostile phone) is dropped.
     private static func safe(_ value: String) -> String {
         value.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }
-    }
-
-    private static func removeLegacyFiles(in directory: URL) {
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.pathExtension == "png" { try? FileManager.default.removeItem(at: file) }
     }
 }
 

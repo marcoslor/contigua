@@ -67,10 +67,8 @@ final class FilesDomainControllerTests: XCTestCase {
     override func setUp() async throws {
         profile = Profile(name: "ftest")!
         FilesDomainSetting.write(false, in: profile.defaults)
-        // These tests model the current build: its identifiers are format 2 and
-        // its bundle carries the extension (the test runner's does not).
-        profile.defaults.set(FilesIdMap.formatVersion,
-                             forKey: FilesDomainSetting.idsFormatKey)
+        // These tests model the current build: its bundle carries the extension
+        // (the test runner's does not).
         RememberedPhones(profile: profile).removeAll()
         profile.defaults.removeObject(forKey: "phoneNicknames")
         manager = FakeDomainManager()
@@ -217,22 +215,19 @@ final class FilesDomainControllerTests: XCTestCase {
         XCTAssertTrue(manager.adds.isEmpty)
     }
 
-    func testAnOldIdentifierFormatReplacesTheDomainOnce() {
-        // S3's ids carried a path; the app-owned map cannot resolve them, so
-        // the first run of the new format removes and re-adds the domain.
+    func testAnOldStoredMapFormatDoesNotReplaceTheDomain() {
+        // The old format key is ignored: only the current shape is read, so an
+        // existing domain is adopted as it is.
         FilesDomainSetting.write(true, in: profile.defaults)
-        profile.defaults.removeObject(forKey: FilesDomainSetting.idsFormatKey)
+        profile.defaults.set(2, forKey: "files.idsFormat")
         manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
                                        displayName: "PocketDeck", isDisconnected: false,
                                        userEnabled: true)
         rebuild()
         controller.start()
-        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.removes)
-        XCTAssertEqual(1, manager.adds.count)
-        XCTAssertEqual(.needsSwitch, controller.state)
-        // The format is recorded: a second start does not do it again.
-        controller.start()
-        XCTAssertEqual(1, manager.removes.count)
+        XCTAssertTrue(manager.removes.isEmpty)
+        XCTAssertEqual(.on, controller.state)
+        XCTAssertTrue(manager.adds.isEmpty)
     }
 
     func testAnExistingDisabledDomainAsksForTheSwitch() {

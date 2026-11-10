@@ -395,7 +395,7 @@ final class FilesIdMapTests: XCTestCase {
         XCTAssertNil(FilesIdMap.decode(Data("{}".utf8)))
         XCTAssertNil(FilesIdMap.decode(Data("{\"version\":1,\"ids\":{}}".utf8)))
         XCTAssertNil(FilesIdMap.decode(Data("{\"version\":2,\"ids\":{\"ino:1\":{}}}".utf8)))
-        // A version from before S4 is not migrated: the domain is re-added.
+        // A version from before S4 is ignored: a fresh map is used.
         let fresh = FilesIdMap.load(URL(fileURLWithPath: "/tmp/pd-no-such-map-\(UUID().uuidString).json"))
         XCTAssertTrue(fresh.isEmpty)
         XCTAssertEqual("", fresh.path(for: FilesMap.rootIdentifier))

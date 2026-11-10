@@ -139,21 +139,6 @@ final class IconCacheTests: XCTestCase {
                       "the default profile's old files stay where they are")
     }
 
-    func testNonDefaultProfilesDeleteTheOldFilesButNotTheNewOnes() throws {
-        let legacy = directory.appendingPathComponent("com.android.settings.png")
-        try png(1).write(to: legacy)
-        let kept = directory.appendingPathComponent("apps-abc.json")
-        try Data("[]".utf8).write(to: kept)
-
-        let first = IconCache(directory: directory)
-        first.store(png(9), pkg: "a.b", deviceId: "d1")
-        let cache = IconCache(directory: directory, removingLegacyFiles: true)
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
-        XCTAssertNotNil(cache.loadData(pkg: "a.b", deviceId: "d1"))
-    }
-
     func testIdentifiersCannotEscapeTheCacheFolder() {
         let cache = IconCache(directory: directory)
         cache.store(png(5), pkg: "../../evil", deviceId: "../x")
