@@ -3478,7 +3478,7 @@ if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window
     problems.append("menus: %r" % (titles,))
 WANT = {
     "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
-             "Show Touches", "Live Text", "—", "Density"],
+             "Show Touches", "Live Text", "—", "Icon Size", "—", "Density"],
     "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
@@ -3956,6 +3956,10 @@ PY
 
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
+    # The Deck's icon size is a stored choice: start from 100 %, so the View
+    # menu's checkmark is the known one (DECK-6, MENU-9).
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1: $CONTROL_REPLY"
+    sleep 0.5
 
     # 1: a fresh launch with one stream window open.
     dump_now 1 || { stop_app; stop_fakephone; return 1; }
@@ -4030,6 +4034,24 @@ hide = by_title.get("Hide Controls")
 if hide is None or hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
+    # The Deck's icon size is a stored choice: its checkmark follows ⌘+ / ⌘−
+    # while the Deck is key (DECK-6, MENU-9). This is the store the keys write;
+    # the menu reads it when it opens.
+    control deckzoom 1.25 >/dev/null || bad "MENUS deckzoom 1.25: $CONTROL_REPLY"
+    sleep 0.5; dump_now 16
+    python3 - "$WORK/menus-16.json" <<'PY' && ok "[MENU-9] after the icon size became 125 %: 125 % is checked and 100 % is not" \
+        || bad "[MENU-9] the View menu did not follow the icon size"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+icon = next(i for i in view["submenu"] if i["title"] == "Icon Size")
+by_title = {i["title"]: i for i in icon["submenu"] if not i["isSeparator"]}
+if by_title["125 %"]["state"] != "on" or by_title["100 %"]["state"] != "off":
+    print("states:", {k: v["state"] for k, v in by_title.items()}); sys.exit(1)
+PY
+    control deckzoom 1 >/dev/null || bad "MENUS deckzoom 1 (restore): $CONTROL_REPLY"
+    sleep 0.5
+
     # 5: after a second stream window opened (a different key window).
     control open --open com.whatsapp --debug-chrome-state "$WORK/chrome.txt" \
         || bad "MENUS shared app: opening a second window answered '$CONTROL_REPLY'"
@@ -4126,6 +4148,26 @@ if shortcuts != [("Framed", "f", ["command", "option"])] and shortcuts != [("Imm
     print("⌥⌘F on the pair:", shortcuts); sys.exit(1)
 if "Toggle Window Style" in by_title:
     print("the separate Toggle Window Style item is still there"); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Icon Size is the four percentages, the stored one checked" \
+        || bad "[MENU-4] the Icon Size submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+icon = next(i for i in view["submenu"] if i["title"] == "Icon Size")
+sub = icon.get("submenu") or []
+seq = ["—" if i["isSeparator"] else i["title"] for i in sub]
+want = ["75 %", "100 %", "125 %", "150 %"]
+if seq != want:
+    print("Icon Size:", seq, "wanted:", want); sys.exit(1)
+checked = [i["title"] for i in sub if not i["isSeparator"] and i["state"] == "on"]
+if checked != ["100 %"]:
+    print("checked:", checked); sys.exit(1)
+if any(i["keyEquivalent"] for i in sub if not i["isSeparator"]):
+    print("an Icon Size item carries a key: the keys stay on Density", sub); sys.exit(1)
+if not icon["hasImage"]:
+    print("Icon Size has no symbol"); sys.exit(1)
 PY
 
     python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
@@ -4245,8 +4287,8 @@ root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
 for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
-              "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
-              "Recents"]:
+              "Live Text", "Icon Size", "Density", "Larger", "Smaller", "Actual Size", "Back",
+              "Home", "Recents"]:
     found = next((i for i in items if i["title"] == title), None)
     if found is None:
         missing.append(title + " (missing)")
@@ -15889,6 +15931,46 @@ PY
     else
         bad "DECK deckzoomwindow: $CONTROL_REPLY"
     fi
+    # DECK-6: the icon size is an explicit, stored choice. ⌘+ steps it while the
+    # Deck is key; the same key with a stream window key belongs to that
+    # window's density and must leave the Deck's choice alone.
+    deck_stored_zoom() {
+        python3 - "$WORK/deck-grid.jsonl" <<'PY'
+import json, sys
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+blocks = [line for line in lines if "cap" in line]
+print(blocks[-1]["zoom"] if blocks else "")
+PY
+    }
+    control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-6): $CONTROL_REPLY"
+    control deckfocus grid >/dev/null || bad "DECK deckfocus (DECK-6): $CONTROL_REPLY"
+    sleep 0.3
+    control key cmd+= || bad "DECK key cmd+= (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    control deck-size 1500 900 >/dev/null || bad "DECK deck-size 1500 (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    if [ "$(deck_stored_zoom)" = "1.25" ]; then
+        ok "[DECK-6] ⌘+ stepped the Deck's icon size to 125%"
+    else
+        bad "[DECK-6] ⌘+ left the icon size at $(deck_stored_zoom)"
+    fi
+    # The same window the ⌘F check below opens; it carries the chrome state
+    # that check waits for, and the raise there finds the file already written.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" >/dev/null \
+        || bad "DECK open settings (DECK-6): $CONTROL_REPLY"
+    sleep 2
+    control key cmd+= || bad "DECK key cmd+= with a stream window key (DECK-6): $CONTROL_REPLY"
+    sleep 0.6
+    control deck-size 1500 900 >/dev/null || bad "DECK deck-size 1500 (DECK-6 stream): $CONTROL_REPLY"
+    sleep 0.6
+    if [ "$(deck_stored_zoom)" = "1.25" ]; then
+        ok "[DECK-6] with a stream window key ⌘+ left the Deck's 125% alone"
+    else
+        bad "[DECK-6] a stream window's ⌘+ changed the Deck's icon size to $(deck_stored_zoom)"
+    fi
+    # The stream window's own density: ⌘0 clears the override this check made.
+    control key cmd+0 >/dev/null || bad "DECK key cmd+0 (stream density): $CONTROL_REPLY"
+    control deckzoom 1 >/dev/null || bad "DECK deckzoom 1 (DECK-6 restore): $CONTROL_REPLY"
     control deck-size 760 600 || bad "DECK deck-size 760 600 (wide checks): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the

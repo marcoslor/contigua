@@ -24,6 +24,13 @@ final class MenuMarksTests: XCTestCase {
             MenuMarks.Item(title: "Show Touches"),
             MenuMarks.Item(title: "Live Text"),
             MenuMarks.Item(title: "", isSeparator: true),
+            MenuMarks.Item(title: "Icon Size", children: [
+                MenuMarks.Item(title: "75 %"),
+                MenuMarks.Item(title: "100 %"),
+                MenuMarks.Item(title: "125 %"),
+                MenuMarks.Item(title: "150 %"),
+            ]),
+            MenuMarks.Item(title: "", isSeparator: true),
             MenuMarks.Item(title: "Density", children: [
                 MenuMarks.Item(title: "Default (100%)"),
                 MenuMarks.Item(title: "", isSeparator: true),
@@ -44,7 +51,8 @@ final class MenuMarksTests: XCTestCase {
                        liveText: Bool = false,
                        hasStream: Bool = true,
                        package: String? = "com.android.settings",
-                       density: Double? = nil) -> StreamMenuState {
+                       density: Double? = nil,
+                       iconSize: CGFloat = 1) -> StreamMenuState {
         let state = StreamMenuState()
         state.style = style
         state.revealDelay = reveal
@@ -53,6 +61,7 @@ final class MenuMarksTests: XCTestCase {
         state.hasStream = hasStream
         state.densityPackage = package
         state.densityOverride = density
+        state.deckZoom = iconSize
         return state
     }
 
@@ -137,6 +146,23 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertTrue(noWindow.contains(.enable(["Density"], false)))
     }
 
+    /// View ▸ Icon Size checks exactly the stored choice, whatever the window
+    /// key is: the Deck's size is not a function of the key window (DECK-6).
+    func testTheIconSizeCheckmarkFollowsTheStoredChoice() {
+        for option in DeckZoom.options {
+            let writes = edits(state(iconSize: option))
+            for other in DeckZoom.options {
+                XCTAssertTrue(writes.contains(.mark(["Icon Size", MenuModel.iconSizeTitle(other)],
+                                                    abs(other - option) < 0.0005)),
+                              "icon size \(option): \(other) is marked wrong")
+            }
+        }
+        // The checkmark does not depend on a stream window: it is the Deck's.
+        let noWindow = edits(state(hasStream: false, package: nil, iconSize: 1.5))
+        XCTAssertTrue(noWindow.contains(.mark(["Icon Size", "150 %"], true)))
+        XCTAssertTrue(noWindow.contains(.mark(["Icon Size", "100 %"], false)))
+    }
+
     func testTheDefaultDensityItemNamesTheSettingsDefault() {
         let key = state()
         key.settingsDensity = 1.5
@@ -207,12 +233,18 @@ final class MenuMarksTests: XCTestCase {
     func testApplyingWritesTheValuesOntoSwiftUIsOwnItems() {
         let shared = StreamMenuState.shared
         let saved = (shared.style, shared.revealDelay, shared.showTouches, shared.liveText,
-                     shared.hasStream, shared.densityPackage, shared.densityOverride)
+                     shared.hasStream, shared.densityPackage, shared.densityOverride,
+                     shared.deckZoom)
+        let defaults = Profile.active.defaults
+        let savedZoom = defaults.object(forKey: DeckZoom.key)
         defer {
             shared.style = saved.0; shared.revealDelay = saved.1; shared.showTouches = saved.2
             shared.liveText = saved.3; shared.hasStream = saved.4; shared.densityPackage = saved.5
-            shared.densityOverride = saved.6
+            shared.densityOverride = saved.6; shared.deckZoom = saved.7
+            if let savedZoom { defaults.set(savedZoom, forKey: DeckZoom.key) }
+            else { defaults.removeObject(forKey: DeckZoom.key) }
         }
+        defaults.set(1.25, forKey: DeckZoom.key)
         shared.style = .immersive
         shared.revealDelay = .alwaysVisible
         shared.hasStream = true
@@ -230,6 +262,13 @@ final class MenuMarksTests: XCTestCase {
         let hideItem = NSMenuItem(title: "Hide Controls", action: nil, keyEquivalent: "")
         hideItem.submenu = hide
         view.addItem(hideItem)
+        let iconSize = NSMenu(title: "Icon Size")
+        for title in ["75 %", "100 %", "125 %", "150 %"] {
+            iconSize.addItem(withTitle: title, action: nil, keyEquivalent: "")
+        }
+        let iconSizeItem = NSMenuItem(title: "Icon Size", action: nil, keyEquivalent: "")
+        iconSizeItem.submenu = iconSize
+        view.addItem(iconSizeItem)
         let density = NSMenu(title: "Density")
         for title in ["Default (100%)", "75%", "125%", "150%"] {
             density.addItem(withTitle: title, action: nil, keyEquivalent: "")
@@ -252,14 +291,16 @@ final class MenuMarksTests: XCTestCase {
         windowItem.submenu = window
         main.addItem(windowItem)
 
-        let before = (view.items.count, hide.items.count, density.items.count, window.items.count)
+        let before = (view.items.count, hide.items.count, iconSize.items.count,
+                      density.items.count, window.items.count)
         MenuMarks.apply(to: main)
 
         // Nothing was added or removed: only values changed.
         XCTAssertEqual(view.items.count, before.0)
         XCTAssertEqual(hide.items.count, before.1)
-        XCTAssertEqual(density.items.count, before.2)
-        XCTAssertEqual(window.items.count, before.3)
+        XCTAssertEqual(iconSize.items.count, before.2)
+        XCTAssertEqual(density.items.count, before.3)
+        XCTAssertEqual(window.items.count, before.4)
 
         XCTAssertEqual(view.items.first { $0.title == "Framed" }?.state, .off)
         XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .on)
@@ -267,6 +308,8 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on)
         XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
         XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
+        XCTAssertEqual(iconSize.items.first { $0.title == "125 %" }?.state, .on)
+        XCTAssertEqual(iconSize.items.first { $0.title == "100 %" }?.state, .off)
         XCTAssertTrue(alternate.isHidden)
         XCTAssertTrue(alternate.allowsKeyEquivalentWhenHidden)
         XCTAssertEqual(alternate.keyEquivalent, "f")
