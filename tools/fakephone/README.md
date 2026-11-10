@@ -88,7 +88,9 @@ time (`pong ID on|off|delay [MS]`, `slow ID MS`, `drop ID`).
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
 `--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.pocketdeck-fakephone.json`),
 `--events` (JSON Lines log, flushed per line), `--no-labels` (skip the stream
-label overlay), `--resize-delay-ms MS` (hold a window's new VIDEO_CONFIG that long
+label overlay), `--image-frame PATH` (encode that still picture in every
+stream, cover-cropped to the stream's size and with no label: a visual
+fixture), `--resize-delay-ms MS` (hold a window's new VIDEO_CONFIG that long
 after `window.resize`, so a Mac can be checked mid-resize), `--config-every
 SECONDS` (re-send the stream's last VIDEO_CONFIG every N seconds without
 restarting the encoder: the real phone's config on a resume, followed by deltas
