@@ -163,8 +163,12 @@ HTML
 if [ "$MODE" = check ]; then
     CHECK_FAIL=0
     cfail() { echo "SWITCHQUALITY CHECK FAIL: $*"; CHECK_FAIL=1; }
-    [ "$SERIAL" = "emulator-5584" ] ||
-        cfail "serial '$SERIAL' is not emulator-5584 (never any other serial)"
+    # Any emulator port is a rig; the default 5584 only keeps the original
+    # worker off 5554. A worker with a fixed serial (ratectl: 5588) must pass.
+    case "$SERIAL" in
+        emulator-[0-9]*) ;;
+        *) cfail "serial '$SERIAL' is not an emulator-<port> serial (never the real phone)" ;;
+    esac
     bash -n "$0" || cfail "bash -n $0"
     bash -n "$HERE/start.sh" || cfail "bash -n tools/emulator/start.sh"
     bash -n "$NETSHAPE" || cfail "bash -n tools/emulator/netshape.sh"
