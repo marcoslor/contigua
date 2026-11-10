@@ -244,7 +244,8 @@ final class PhonePanelP3Tests: XCTestCase {
     /// runs itself.
     private func panelHost(_ state: PhoneControlsState) -> (MenuBarPanel, NSHostingView<PhonePanelView>) {
         window?.orderOut(nil)
-        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions(),
+        let view = NSHostingView(rootView: PhonePanelView(state: state,
+                                                          actions: PhoneControlsActions(),
                                                           onGear: {}))
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -404,6 +405,27 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertTrue(agentPanel.firstResponder
                       === agentControls[agentItems.firstIndex(of: .dnd)!],
                       "the ring lands on DND, not on Disconnect")
+    }
+
+    /// The gear's menu anchors at the gear's own button: the pure rect the
+    /// controller pops at is the frame SwiftUI laid the gear out in (PANEL-3).
+    func testTheGearAnchorIsTheGearButtonsOwnFrame() {
+        let state = state()
+        let (panel, view) = panelHost(state)
+        let items = PhonePanelItem.focusOrder(for: state, showsGear: true)
+        let laidOut = hierarchyControls(in: view)
+        guard let gearIndex = items.firstIndex(of: .gear), gearIndex < laidOut.count else {
+            return XCTFail("no gear control")
+        }
+        let gear = laidOut[gearIndex]
+        let inWindow = gear.convert(gear.bounds, to: nil)
+        let onScreen = NSRect(origin: panel.convertPoint(toScreen: inWindow.origin),
+                              size: inWindow.size)
+        let anchor = MenuBarMenuAnchor.gearRect(host: view.frame, panel: panel.frame)
+        XCTAssertEqual(anchor.origin.x, onScreen.origin.x, accuracy: 0.5)
+        XCTAssertEqual(anchor.origin.y, onScreen.origin.y, accuracy: 0.5)
+        XCTAssertEqual(anchor.size, onScreen.size)
+        XCTAssertEqual(anchor.width, PhonePanelMetrics.gearSize)
     }
 
     /// One view, one body, two hosts: the menu bar panel passes the gear's

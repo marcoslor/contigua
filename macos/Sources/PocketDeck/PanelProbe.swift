@@ -52,9 +52,13 @@ enum PanelProbe {
             return
         }
         // The gear opens the app's one status-item menu (MenuBarPanel.swift),
-        // so the hosted card behaves as the real panel does.
+        // anchored to the gear's own button as the real card's does.
         let view = NSHostingView(rootView: MenuBarContent(onSecondaryMenu: {
-            MenuBarController.current?.openSecondaryMenu()
+            guard let anchor = gearAnchor() else {
+                MenuBarController.current?.openSecondaryMenu()
+                return
+            }
+            MenuBarController.current?.openSecondaryMenu(anchor: anchor)
         }).environment(controller))
         hostView = view
         let effect = NSVisualEffectView()
@@ -90,7 +94,11 @@ enum PanelProbe {
             window.setFrameTopLeftPoint(NSPoint(x: screen.visibleFrame.minX + 60,
                                                 y: screen.visibleFrame.maxY - 40))
         }
-        window.makeKeyAndOrderFront(nil)
+        // orderFrontRegardless moves the host onto the run's virtual display
+        // (BackgroundMode/VirtualDisplay); makeKeyAndOrderFront would leave it
+        // on the person's screen in a quiet run.
+        window.orderFrontRegardless()
+        window.makeKey()
         // The card opens on its first phone control, as MenuBarController's
         // showPanel does (PANEL-7/PANEL-20).
         window.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
@@ -101,6 +109,14 @@ enum PanelProbe {
     /// `panelclose`.
     static func close() {
         hostWindow?.orderOut(nil)
+    }
+
+    /// The hosted card's gear frame on screen, for the gear's menu anchor
+    /// (`gearanchor`). The probe host wraps the card exactly as the real panel
+    /// does, so the same `MenuBarMenuAnchor.gearRect` serves both.
+    static func gearAnchor() -> NSRect? {
+        guard let window = hostWindow, let host = hostView else { return nil }
+        return MenuBarMenuAnchor.gearRect(host: host.frame, panel: window.frame)
     }
 
     /// `panelfocus HOST`: the item ID holding the card's keyboard focus, or

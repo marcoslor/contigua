@@ -412,6 +412,11 @@ enum PhonePanelMetrics {
     /// stays on the grid while the highlight sits just outside it.
     static let hoverBleed: CGFloat = 8
     static let headerHeight: CGFloat = 44
+    /// The gear's button and its top offset from the card's top edge. The
+    /// controller reads these to anchor the gear's menu at the button, so the
+    /// two never disagree (MenuBarMenuAnchor.gearRect).
+    static let gearSize: CGFloat = 22
+    static let gearTop: CGFloat = 21
     static let rowHeight: CGFloat = 28
     static let rowCorner: CGFloat = 6
     static let iconColumn: CGFloat = 18
@@ -568,7 +573,11 @@ struct PhonePanelView: View {
         // card and the key view loop reaches it last: it must not take the
         // opening focus (focusOrder ends with it too).
         ZStack(alignment: .topTrailing) {
-            if let onGear { gearButton(onGear).offset(x: -inset, y: 21).zIndex(1) }
+            if let onGear {
+                gearButton(onGear)
+                    .offset(x: -inset, y: PhonePanelMetrics.gearTop)
+                    .zIndex(1)
+            }
             card
         }
         .onAppear { syncVolume() }
@@ -661,7 +670,10 @@ struct PhonePanelView: View {
             headerIdentity
             // Room for the overlaid gear, so the battery keeps its distance
             // from it without a second focusable control in the header.
-            if onGear != nil { Color.clear.frame(width: 22, height: 22) }
+            if onGear != nil {
+                Color.clear.frame(width: PhonePanelMetrics.gearSize,
+                                  height: PhonePanelMetrics.gearSize)
+            }
         }
         .frame(height: PhonePanelMetrics.headerHeight)
     }
@@ -709,7 +721,7 @@ struct PhonePanelView: View {
         Button(action: action) {
             Image(systemName: "gearshape")
                 .font(.system(size: 13))
-                .frame(width: 22, height: 22)
+                .frame(width: PhonePanelMetrics.gearSize, height: PhonePanelMetrics.gearSize)
                 .contentShape(.rect(cornerRadius: PhonePanelMetrics.rowCorner))
         }
         .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
