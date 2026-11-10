@@ -98,7 +98,7 @@ work is disabled, never hidden.
    every app at once (**Save all apps as shortcuts**).
 3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's name and state,
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
-   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
+   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now playing: <app>** when several
    apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
    **Install APK…**), and a **gear** at the card's top-right. When the phone no longer trusts this Mac (or its
    connections switch is off) one banner row sits under the header with the same sentence the Deck shows and its

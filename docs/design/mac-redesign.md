@@ -274,7 +274,7 @@ toolbar item group:
 - The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt inset (P3): header (phone symbol, name,
   status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · a 2×2 grid of 134 pt tiles,
   ≥62 pt high, 8 pt apart, 12 pt corners: **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** ·
-  the phone's media volume slider with its % · the one reason line when a control is off · **Now Playing follows**
+  the phone's media volume slider with its % · the one reason line when a control is off · **Now playing: <app>**
   when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
   buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C · **Install APK…**
   (with its phase) · a **gear** at the card's top-right. The panel's own commands are the icon's: a secondary click
