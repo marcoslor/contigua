@@ -311,8 +311,8 @@ class DeckService(private val appContext: Context?) :
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
             val pin = Json.str(m["macFp"]) ?: return@mapNotNull null
-            // v1 clients carry a shared key; without a 32-byte pin they are v1
-            // leftovers, refused here (the §7 forced re-pair).
+            // A record without a 64-hex pin is not a v2 client: ignore it
+            // rather than dial a Mac that cannot be verified.
             if (pin.length != 64) {
                 log("skipping client without a v2 pin")
                 return@mapNotNull null
