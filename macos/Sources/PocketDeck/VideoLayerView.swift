@@ -54,8 +54,10 @@ final class VideoLayerView: NSView, BarToneSource {
     /// Clips the display layer to the drawn picture (PictureCrop.swift).
     private let pictureClip = CALayer()
 
-    /// The phone window mirrors a fixed screen: its letterbox is never filled
-    /// (Letterbox.placement). The app window's is.
+    /// The phone window mirrors a fixed screen: a picture of the same shape
+    /// fills its area (the encoder's rounding only, Letterbox.placement), and
+    /// a clearly different shape is fitted. The app window stretches a
+    /// same-shape frame.
     var isPhoneMode = false
 
     /// The window's strategy (ISS-40), read when the window opens or resizes.

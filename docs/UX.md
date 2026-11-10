@@ -47,7 +47,10 @@ system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Open <
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
 Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. The Dock icon's own menu (a right-click on it)
-offers **Find Apps** and **Phone Mirror**, with Phone Mirror disabled while the phone is away. A control that cannot
+offers **Find Apps** and **Phone Mirror**, with Phone Mirror disabled while the phone is away. The items that act on a stream
+window — Framed/Immersive, Hide Controls, Show Touches, Live Text, Density and Navigate's three — are off and disabled whenever
+a window that is not a stream window (the Deck, Settings, a sheet) has the keyboard, and unchecked where they carry a mark.
+A control that cannot
 work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search

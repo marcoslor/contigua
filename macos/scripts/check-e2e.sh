@@ -4528,6 +4528,104 @@ PY
              "$CGBIN" all 2>/dev/null | awk '$0 ~ /layer=[0-9]+/ { for (i = 1; i <= NF; i++) if ($i ~ /^layer=/) { split($i, p, "="); if (p[2] >= 100) print "  popup: " $0 } }'; }
 
 
+    # ISS-88: the Deck key with a stream window still open behind it. The
+    # stream window is framed with Show Touches on (the script above set both);
+    # with a non-stream window key, none of the stream-only View items may stay
+    # checked or enabled, and the keys that carry them must not run on the
+    # hidden window or leak into the Deck's search field. `deckfocus` makes the
+    # Deck key the way a click does (the Deck's own makeKey).
+    dump_now 17
+    python3 - "$WORK/menus-17.json" <<'PY' && ok "MENUS setup: the stream window is key, framed, with Show Touches on" \
+        || bad "MENUS setup: the stream window is not key/framed with Show Touches on"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "on" or not by_title["Framed"]["enabled"]:
+    print("Framed:", by_title["Framed"]); sys.exit(1)
+if by_title["Show Touches"]["state"] != "on" or not by_title["Show Touches"]["enabled"]:
+    print("Show Touches:", by_title["Show Touches"]); sys.exit(1)
+PY
+    control deckfocus grid || bad "MENUS deckfocus grid (the Deck key): $CONTROL_REPLY"
+    sleep 1
+    dump_stable 18 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-18.json" "dump 18"
+    python3 - "$WORK/menus-18.json" <<'PY' && ok "[MENU-9] the Deck key with a stream window open behind it: Framed/Immersive, Hide Controls, Show Touches, Live Text and Density are off and disabled" \
+        || bad "[MENU-9] the Deck key left a stream-only View item checked or enabled"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+problems = []
+for title in ("Framed", "Immersive"):
+    item = by_title.get(title)
+    if item is None or item["state"] != "off" or item["enabled"]:
+        problems.append("%s: %r" % (title, item))
+for title in ("Hide Controls", "Show Touches", "Live Text", "Density"):
+    item = by_title.get(title)
+    if item is None or item["enabled"]:
+        problems.append("%s enabled: %r" % (title, item))
+for title in ("Show Touches", "Live Text"):
+    item = by_title.get(title)
+    if item is None or item["state"] != "off":
+        problems.append("%s checked: %r" % (title, item))
+if problems:
+    print("; ".join(problems)); sys.exit(1)
+PY
+    python3 - "$WORK/menus-18.json" <<'PY' && ok "[MENU-6] the Deck key disables Navigate's three stream items" \
+        || bad "[MENU-6] a Navigate item stays enabled with the Deck key"
+import json, sys
+root = json.load(open(sys.argv[1]))
+navigate = next(i for i in root["items"] if i["title"] == "Navigate")
+by_title = {item["title"]: item for item in navigate["submenu"]}
+problems = [title for title in ("Back", "Home", "Recents")
+            if by_title.get(title, {}).get("enabled") is not False]
+if problems:
+    print("enabled with the Deck key:", problems); sys.exit(1)
+PY
+    python3 - "$WORK/menus-18.json" <<'PY' && ok "[MENU-5] the Deck key disables Turn Off Phone Screen; the phone's own items keep their rule" \
+        || bad "[MENU-5] the Deck key changed the Phone menu's own mapping"
+import json, sys
+root = json.load(open(sys.argv[1]))
+phone = next(i for i in root["items"] if i["title"] == "Phone")
+by_title = {item["title"]: item for item in phone["submenu"] if not item["isSeparator"]}
+problems = []
+if by_title["Turn Off Phone Screen"]["enabled"]:
+    problems.append("Turn Off Phone Screen is enabled with the Deck key")
+for title in ("Phone Mirror", "Do Not Disturb", "Ring Phone", "Install APK…"):
+    if not by_title[title]["enabled"]:
+        problems.append(title + " is disabled while the phone is online")
+if problems:
+    print("; ".join(problems)); sys.exit(1)
+PY
+    # The keys the disabled items carry: ⇧⌘T, ⌥⌘F, ⌘+/⌘−/⌘0 must not reach the
+    # hidden stream window (its style, touches and density stay) and must not
+    # type into the Deck's search field.
+    local density_before density_after
+    density_before="$(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>/dev/null || echo none)"
+    control deckfocus search || bad "MENUS deckfocus search for the Deck-key keys: $CONTROL_REPLY"
+    control deckquery keep || bad "MENUS deckquery for the Deck-key keys: $CONTROL_REPLY"
+    sleep 0.3
+    local stroke
+    for stroke in "shift+cmd+t" "option+cmd+f" "cmd+=" "cmd+-" "cmd+0"; do
+        control key "$stroke" || bad "MENUS key $stroke with the Deck key: $CONTROL_REPLY"
+    done
+    sleep 1
+    density_after="$(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>/dev/null || echo none)"
+    control decksearch "$WORK/menus-decksearch.json" || bad "MENUS decksearch after the keys: $CONTROL_REPLY"
+    python3 - "$WORK/menus-decksearch.json" <<'PY' && ok "[MENU-9] ⇧⌘T, ⌥⌘F and ⌘+/⌘−/⌘0 with the Deck key leave the Deck's search field alone" \
+        || bad "[MENU-9] a stream-only key leaked into the Deck's search field"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if not root["focused"] or root["text"] != "keep" or root["keyWindow"] != "deck":
+    print(root); sys.exit(1)
+PY
+    grep -q "style=framed" "$WORK/chrome.txt" 2>/dev/null \
+        && grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
+        && [ "$density_before" = "$density_after" ] \
+        && ok "[MENU-9] the same keys did not reach the stream window behind the Deck (style, touches and density unchanged)" \
+        || bad "[MENU-9] a stream-only key acted on the hidden stream window: $(chrome_state), density $density_before -> $density_after"
+
     # A relaunch: the same bar, built once from scratch. The shared app is
     # replaced, so the shell takes the new PID for the bookkeeping.
     kill "$SHARED_PID" >/dev/null 2>&1
@@ -12279,7 +12377,7 @@ bar_title_measure() {
 }
 
 check_bar_title() {
-    local fixture appearance want win shot
+    local fixture appearance want win shot bar frame_width seam
     ax_has() { ax_tree | grep -qF -- "$1"; }
     for appearance in light dark; do
         for fixture in white-page dark-page busy-photo; do
@@ -12341,7 +12439,23 @@ check_bar_title() {
         fi
         win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; continue; }
         shot="$SHOTS/bar-title-phone-$appearance.png"
-        shot_window "$win" "$shot" && say "shot: $shot" || bad "BAR-TITLE phone/$appearance no window capture"
+        if shot_window "$win" "$shot"; then
+            say "shot: $shot"
+            # ISS-87: the picture's first rows must meet the 28 pt bar's
+            # bottom edge; a backing row between them is a black line under
+            # the bar in light and dark.
+            bar="$(chrome_state | grep -oE ' bar:[0-9]+' | tail -1 | cut -d: -f2)"
+            frame_width="$(bar_title_field frame)"
+            frame_width="${frame_width%%x*}"
+            if [ -n "$bar" ] && [ -n "$frame_width" ] \
+                && seam="$(python3 "$MACOS/scripts/seam-gap.py" "$shot" "$frame_width" "$bar" 2>&1)"; then
+                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row at the bar's seam ($seam)"
+            else
+                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row at the bar's seam (${seam:-no seam})"
+            fi
+        else
+            bad "BAR-TITLE phone/$appearance no window capture"
+        fi
         stop_app
         stop_fakephone
     done
