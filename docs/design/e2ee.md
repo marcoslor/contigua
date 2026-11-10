@@ -122,13 +122,10 @@ Evidence (spike s1-mac, two rounds):
 
 ## 3. Mac private key at rest
 
-`pairkeys.json` (0600, profile folder, same as today per ROADMAP's note) is
-replaced by a **per-profile identity file** `identity.json`:
+The Mac's private key lives in a **per-profile identity file** `identity.json`:
 `{"deviceId": ..., "certPem": ..., "keyP8": ..., "pin": "<64 hex of the phone's
-point fingerprint>", "pinVersion": 2}`.0600 in the 0700 profile folder, exactly
-as pairkeys.json is treated now; Keychain returns when Wallet-style code signing
-exists (ROADMAP). Migration: on first v2 run the old pairkeys.json is deleted
-(the forced re-pair) and identity.json is created — no reverse path.
+point fingerprint>", "pinVersion": 2}`.0600 in the 0700 profile folder; Keychain
+returns when Wallet-style code signing exists (ROADMAP).
 
 `pin` is a **mirror of the phone in use**, not the pin check: the per-phone
 records in `pins.json` (§6) are the authority, and a connection verifies the
@@ -294,8 +291,8 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
   sends `pre_shared_key`, the config pins min=max TLSv1.3; the open-io path
   treats a resumed (PSK) handshake as an error and re-handshakes from scratch —
   a fakephone test asserts the full-handshake path completes (section 6, `tls`).
-- **Mac key store**: pairkeys.json → identity.json (section 3); Mac-side identity
-  files keep the QR secret `s` in RAM only (never written — regenerate per QR).
+- **Mac key store**: identity.json (section 3); Mac-side identity files keep the
+  QR secret `s` in RAM only (never written — regenerate per QR).
 - **Exporter on both stacks**: section 4b (Mac: keylog EXPORTER_SECRET + HKDF;
   phone: `android.net.ssl.SSLSockets` on the platform SSLSocket). The label is
   carried in protocol code as a constant.
@@ -340,13 +337,8 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
   "pairing keys" → "identity + pins"; key decisions gains "TLS 1.3 at shell UID:
   Conscrypt/JSSE, in-memory identity pushed via AIDL".
 
-## 7. Migration experience
+## 7. Re-pairing and stale pins
 
-- One forced re-pair per phone⇄Mac pair, before release. The Mac shows
-  "PocketDeck updated its connection security — pair your phone again"; the
-  phone's omnibox prompt pairs normally. Pair keys from v1 (`pairkeys.json`) are
-  deleted on first v2 start (they authenticate nothing in v2 and MUST NOT be
-  reused as pin data given both sides' certs replace them).
 - **Stale pin** (phone reinstalled → phone cert regenerated): the Mac's
   connection dies at TLS verify with `certificate changed` (not a network
   error). The Mac surface: the phone row in "Nearby" gains a ⚠ "re-pair" hint;
@@ -364,8 +356,8 @@ swift test`; e2e = `PD_E2E_PORT=... ./scripts/check-e2e.sh <check>`.
 
 1. **DER cert builder (Kotlin, JVM-testable)** + tests: minimal self-signed
    P-256 cert byte-exact (extensions: SAN/IP, EKU, BC) — K1's JVM tests only.
-2. **Identity + pin store on the Mac** (identity.json, 0600, delete pairkeys;
-   SwiftUI pin-mismatch surface) — swift unit test for the JSON round trip +
+2. **Identity + pin store on the Mac** (identity.json, 0600; SwiftUI
+   pin-mismatch surface) — swift unit test for the JSON round trip +
    fingerprint math (reuse of S1's pointFP code).
 3. **NIOSSL transport on the Mac** — connection/controller wiring, pin
    enforcement against the dialed phone's record (no record ⇒ refuse, record

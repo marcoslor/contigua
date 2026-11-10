@@ -221,8 +221,7 @@ so it never is. One mechanism, four reasons a bundle exists — its **origin set
 
 The bundle stays while the set is non-empty, and removing an origin removes only
 that origin, so two features can never silently delete each other's shortcut. A
-record from before the set existed migrates its `PDPinned` marker: pinned (or
-missing, the old default) → `dock`, unpinned → `window`.
+record without an origin set has none.
 
 - **Per phone: Save all.** Settings ▸ a phone ▸ Applications ▸ "Save all apps as
   shortcuts", off by default, stored per phone id. On: every app of that phone

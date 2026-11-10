@@ -42,7 +42,7 @@ Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windo
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
 Find Apps · Immersive / Framed (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
-125 %, 150 %, the current one checked) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
+125 %, 150 %, the current one checked; 125 % until the person picks another) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
 system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
@@ -343,7 +343,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⇧⌘T | Live Text | View |
 | ⌘+ | Larger: the Deck's icon size, or the window's density | View, Deck |
 | ⌘− | Smaller: the Deck's icon size, or the window's density | View, Deck |
-| ⌘0 | Actual Size: the Deck's icon size (100%), or the window's density | View, Deck |
+| ⌘0 | Actual Size: the Deck's icon size (back to its default, 125 %), or the window's density | View, Deck |
 | ⌘P | Phone Mirror | Phone |
 | ⇧⌘C | Open <App> on Mac | Phone |
 | ⌘[ | Back | Navigate |

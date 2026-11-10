@@ -47,14 +47,7 @@ struct DockOriginSet: OptionSet, Equatable {
         }
     }
 
-    /// Reads PDOrigins. A bundle from before the set existed migrates its
-    /// `pinned` marker: pinned (or missing, which the old default was) = dock,
-    /// unpinned = window.
-    static func migrated(names: [String]?, pinned: Bool) -> DockOriginSet {
-        guard let names else { return pinned ? .dock : .window }
-        return parse(names)
-    }
-
+    /// Reads PDOrigins; a bundle with no set has no origins.
     static func parse(_ names: [String]) -> DockOriginSet {
         names.reduce(into: DockOriginSet()) { set, name in
             guard let origin = DockOrigin(rawValue: name) else { return }
@@ -350,8 +343,7 @@ struct DockShimRecord: Equatable {
     var pkg: String
     var profile: String
     var name: String
-    /// Why the bundle exists (docs/design/dock.md §Shortcuts). A bundle from
-    /// before the set existed migrates its `pinned` marker (dock or window).
+    /// Why the bundle exists (docs/design/dock.md §Shortcuts).
     var origins: DockOriginSet
     /// The app's raw label (PDLabel); empty in bundles from before it existed.
     var label = ""
@@ -452,8 +444,7 @@ enum DockShimBuilder {
             else { return nil }
             return DockShimRecord(url: url, deviceId: deviceId, pkg: pkg, profile: owner,
                                   name: plist["CFBundleName"] as? String ?? "",
-                                  origins: DockOriginSet.migrated(names: plist[DockMessage.plistOrigins] as? [String],
-                                                                 pinned: plist[DockMessage.plistPinned] as? Bool ?? true),
+                                  origins: DockOriginSet.parse(plist[DockMessage.plistOrigins] as? [String] ?? []),
                                   label: plist[DockMessage.plistLabel] as? String ?? "",
                                   token: plist[DockMessage.plistToken] as? String ?? "",
                                   iconVersion: plist[DockMessage.plistIconVersion] as? Int ?? 0,

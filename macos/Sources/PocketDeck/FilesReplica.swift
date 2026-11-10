@@ -23,9 +23,8 @@ struct FilesFolderRecord: Equatable {
 
 /// The whole persisted replica: every folder's record and the change log.
 struct FilesReplica: Equatable {
-    /// The record shares the id map's format version: a change to either shape
-    /// replaces the domain once (FilesDomainController), so the system does not
-    /// keep items no record can explain.
+    /// The record shares the id map's format version: only the current shape is
+    /// read, so a change to either shape means a fresh record.
     static let formatVersion = FilesIdMap.formatVersion
 
     var folders: [String: FilesFolderRecord] = [:]

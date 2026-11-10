@@ -6,8 +6,7 @@
 //   a 0700 folder; the phones this Mac has pinned live beside it in pins.json
 //   (PhonePinStoreV2). Not the Keychain: every re-signed build made macOS ask
 //   for the login password. Keychain storage returns with proper code signing
-//   before release. (The v1 pairkeys.json is deleted by IdentityMigrationV2 —
-//   v2 pairs from scratch.)
+//   before release.
 // - Logging: os.Logger only (no `print`); the optional latency log is a file
 //   under ~/Library/Logs/<profile folder> because it is sampled by the tests.
 

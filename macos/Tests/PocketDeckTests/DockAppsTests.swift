@@ -74,7 +74,7 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(plist["PDLabel"] as? String, "Tom & \"Jerry\" <1>",
                        "the raw label survives a rebuild that only changes the origins")
         XCTAssertEqual(plist["PDOrigins"] as? [String], ["window"], "an automatic shim exists for its window")
-        XCTAssertNil(plist["PDPinned"], "the origin set replaces the old marker")
+        XCTAssertNil(plist["PDPinned"], "only the origin set is written")
         XCTAssertNil(plist["LSUIElement"], "the shim must show in the Dock and ⌘-Tab")
         XCTAssertNil(plist["PDShimHash"], "a spec that was not built from a binary has no hash")
         var hashed = spec()
@@ -328,25 +328,19 @@ final class DockAppsTests: XCTestCase {
                        "shims added by hand are not stopped by the setting")
     }
 
-    func testLegacyShimsMigratePinnedToDockAndUnpinnedToWindow() throws {
-        // Bundles from before origins: a missing PDPinned meant a hand-added
-        // Dock app (true was the old default); false was an automatic identity.
+    func testABundleWithoutAnOriginSetHasNone() throws {
+        // No PDOrigins means no reason to exist. The pre-origins PDPinned
+        // marker is not read.
         let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), icon: nil)
         let plistURL = url.appendingPathComponent("Contents/Info.plist")
         var plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: try Data(contentsOf: plistURL),
                                                                         format: nil) as? [String: Any])
         plist.removeValue(forKey: "PDOrigins")
-        plist.removeValue(forKey: "PDPinned")
+        plist["PDPinned"] = true
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
-        var records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
-        XCTAssertEqual(records.map(\.origins), [.dock])
 
-        plist["PDPinned"] = false
-        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
-        records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
-        XCTAssertEqual(records.map(\.origins), [.window])
-        XCTAssertEqual(DockQuit.plan(records: records).count, 1,
-                       "a migrated automatic identity still stops with the setting")
+        let records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
+        XCTAssertEqual(records.map(\.origins), [DockOriginSet()])
     }
 
     // MARK: The origin machine (docs/design/dock.md §Shortcuts)
@@ -401,10 +395,6 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(DockOriginSet.parse(set.names), set)
         XCTAssertEqual(DockOriginSet.parse(["nonsense", "manual"]), .manual)
         XCTAssertEqual(DockOriginSet.parse([]), [])
-        XCTAssertEqual(DockOriginSet.migrated(names: nil, pinned: true), .dock)
-        XCTAssertEqual(DockOriginSet.migrated(names: nil, pinned: false), .window)
-        XCTAssertEqual(DockOriginSet.migrated(names: ["manual"], pinned: true), .manual,
-                       "the stored set wins over the old marker")
     }
 
     func testSaveAllSettingIsPerPhoneAndOffByDefault() {
