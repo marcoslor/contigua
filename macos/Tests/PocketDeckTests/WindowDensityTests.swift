@@ -170,9 +170,7 @@ final class DensityWindowTests: XCTestCase {
     func testTheMenuStateFollowsTheKeyWindow() {
         let manager = makeManager(makeDefaults())
         addTeardownBlock {
-            StreamMenuState.shared.hasStream = false
-            StreamMenuState.shared.densityPackage = nil
-            StreamMenuState.shared.densityOverride = nil
+            StreamMenuState.shared.handle(.reset)
         }
         let controller = manager.openOrRaise(pkg: "com.example.app")
         defer { controller.window?.close() }

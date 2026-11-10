@@ -53,16 +53,18 @@ final class MenuMarksTests: XCTestCase {
                        hasStream: Bool = true,
                        package: String? = "com.android.settings",
                        density: Double? = nil,
-                       iconSize: CGFloat = 1) -> StreamMenuState {
+                       iconSize: CGFloat = 1,
+                       phoneWindow: Bool = false,
+                       phoneOffline: Bool = false) -> StreamMenuState {
         let state = StreamMenuState()
-        state.style = style
+        if hasStream {
+            state.handle(.streamBecameKey(StreamMenuValues(
+                stream: 1, style: style, liveText: liveText, frozen: frozen,
+                phoneOffline: phoneOffline, phoneWindow: phoneWindow,
+                densityPackage: package, densityOverride: density)))
+        }
         state.revealDelay = reveal
         state.showTouches = touches
-        state.liveText = liveText
-        state.frozen = frozen
-        state.hasStream = hasStream
-        state.densityPackage = package
-        state.densityOverride = density
         state.deckZoom = iconSize
         return state
     }
@@ -298,24 +300,21 @@ final class MenuMarksTests: XCTestCase {
     @MainActor
     func testApplyingWritesTheValuesOntoSwiftUIsOwnItems() {
         let shared = StreamMenuState.shared
-        let saved = (shared.style, shared.revealDelay, shared.showTouches, shared.liveText,
-                     shared.hasStream, shared.densityPackage, shared.densityOverride,
-                     shared.deckZoom)
+        let savedMachine = shared.machine
+        let saved = (shared.revealDelay, shared.showTouches, shared.deckZoom)
         let defaults = Profile.active.defaults
         let savedZoom = defaults.object(forKey: DeckZoom.key)
         defer {
-            shared.style = saved.0; shared.revealDelay = saved.1; shared.showTouches = saved.2
-            shared.liveText = saved.3; shared.hasStream = saved.4; shared.densityPackage = saved.5
-            shared.densityOverride = saved.6; shared.deckZoom = saved.7
+            shared.handle(.reset)
+            if let values = savedMachine.values { shared.handle(.streamBecameKey(values)) }
+            shared.revealDelay = saved.0; shared.showTouches = saved.1; shared.deckZoom = saved.2
             if let savedZoom { defaults.set(savedZoom, forKey: DeckZoom.key) }
             else { defaults.removeObject(forKey: DeckZoom.key) }
         }
         defaults.set(1.25, forKey: DeckZoom.key)
-        shared.style = .immersive
+        shared.handle(.streamBecameKey(StreamMenuValues(
+            stream: 1, style: .immersive, densityPackage: "com.android.settings")))
         shared.revealDelay = .alwaysVisible
-        shared.hasStream = true
-        shared.densityPackage = "com.android.settings"
-        shared.densityOverride = nil
 
         let main = NSMenu(title: "main")
         let view = NSMenu(title: "View")
@@ -393,19 +392,37 @@ final class MenuMarksTests: XCTestCase {
                      MenuMarks.Item(title: "Open Current App on Mac")]
         var phone = PhoneControlsState()
         phone.connection = .online
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone, stream: StreamMenuState()),
                        [.enable(["Phone Mirror"], true),
                         .handoff(title: "Open Current App on Mac", enabled: true, help: nil)])
         phone.connection = .idle
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone, stream: StreamMenuState()),
                        [.enable(["Phone Mirror"], false),
                         .handoff(title: "Open Current App on Mac", enabled: false,
                                  help: "Connect your phone to use these.")])
         phone.connection = .reconnecting
-        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone),
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone, stream: StreamMenuState()),
                        [.enable(["Phone Mirror"], false),
                         .handoff(title: "Open Current App on Mac", enabled: false,
                                  help: "Connect your phone to use these.")])
+    }
+
+    /// Turn Off Phone Screen acts on the key phone window, so with the Deck (or
+    /// any non-stream window) key it is disabled; the phone's own items keep
+    /// their rule (MENU-5, ISS-88).
+    @MainActor
+    func testTurnOffPhoneScreenIsForTheKeyPhoneWindowOnly() {
+        let items = [MenuMarks.Item(title: "Turn Off Phone Screen")]
+        let phone = PhoneControlsState()
+        let deck = MenuMarks.phoneEdits(items: items, phone: phone,
+                                        stream: state(hasStream: false))
+        XCTAssertTrue(deck.contains(.enable(["Turn Off Phone Screen"], false)))
+        let key = MenuMarks.phoneEdits(items: items, phone: phone,
+                                       stream: state(phoneWindow: true))
+        XCTAssertTrue(key.contains(.enable(["Turn Off Phone Screen"], true)))
+        let offline = MenuMarks.phoneEdits(items: items, phone: phone,
+                                           stream: state(phoneWindow: true, phoneOffline: true))
+        XCTAssertTrue(offline.contains(.enable(["Turn Off Phone Screen"], false)))
     }
 
     /// The handoff item names the app a fresh reply reports, falls back when
@@ -416,16 +433,16 @@ final class MenuMarksTests: XCTestCase {
         var phone = PhoneControlsState()
         phone.connection = .online
         let fallback = MenuMarks.Edit.handoff(title: "Open Current App on Mac", enabled: true, help: nil)
-        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last, fallback)
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone, stream: StreamMenuState()).last, fallback)
 
         phone.handoff = FrontAppRow(pkg: "p.maps", label: "Maps", icon: nil)
         phone.frontFresh = true
-        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last,
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone, stream: StreamMenuState()).last,
                        .handoff(title: "Open Maps on Mac", enabled: true, help: nil))
 
         phone.handoff = nil
         phone.frontNone = true
-        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone).last,
+        XCTAssertEqual(MenuMarks.phoneEdits(items: [], phone: phone, stream: StreamMenuState()).last,
                        .handoff(title: "Open Current App on Mac", enabled: false,
                                 help: FrontAppRow.nothingToOpen))
     }
