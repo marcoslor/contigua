@@ -395,7 +395,7 @@ final class StreamChromeImmersiveTests: XCTestCase {
     /// display that same window's stream.
     func testImmersiveIsTheStreamAloneWithNothingShowing() throws {
         let manager = makeManager(choose: .immersive)
-        addTeardownBlock { StreamMenuState.shared.hasStream = false }
+        addTeardownBlock { StreamMenuState.shared.handle(.reset) }
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
@@ -491,6 +491,7 @@ final class StreamChromeImmersiveTests: XCTestCase {
     /// top of the screen the window moves down by just what would poke above.
     func testSwitchingStylesKeepsTheStreamAndIsRemembered() throws {
         let manager = makeManager()
+        addTeardownBlock { StreamMenuState.shared.handle(.reset) }
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         let window = try XCTUnwrap(controller.window)
@@ -501,6 +502,9 @@ final class StreamChromeImmersiveTests: XCTestCase {
         // so the window moves down by exactly the bar on the way to immersive.
         window.setFrameTopLeftPoint(NSPoint(x: visible.minX + 200, y: visible.maxY))
         XCTAssertEqual(window.frame.maxY, visible.maxY)
+        // The menu follows the key window: the style switch below is the one a
+        // person makes while this window has the keyboard.
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
 
         controller.setStyle(.immersive)
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 600), "the window is the stream alone")
@@ -769,7 +773,7 @@ final class StreamMenuTests: XCTestCase {
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock {
             UserDefaults().removePersistentDomain(forName: name)
-            StreamMenuState.shared.hasStream = false
+            StreamMenuState.shared.handle(.reset)
         }
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
@@ -788,6 +792,38 @@ final class StreamMenuTests: XCTestCase {
         XCTAssertTrue(NSApp.sendAction(#selector(StreamWindowController.toggleShowTouches(_:)), to: controller, from: nil))
         XCTAssertEqual(manager.showTouches, !alreadyOn, "the menu item toggled the setting")
         XCTAssertEqual(state.showTouches, manager.showTouches, "and the menu state follows it")
+    }
+
+    /// ISS-88: only the key stream window publishes its values. A style change
+    /// in a second window behind the Deck cannot reach the menu, and the key
+    /// window's own change can.
+    func testAWindowBehindTheKeyWindowCannotChangeTheMenu() {
+        let name = "dev.pocketdeck.tests.menu.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: name)
+            StreamMenuState.shared.handle(.reset)
+        }
+        let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
+                              clientId: "test-client")
+        let manager = WindowManager(session: session, defaults: defaults)
+        self.manager = manager
+        let key = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil, label: "Example",
+                                      manager: manager)
+        let behind = AppWindowController(stream: 2, pkg: "com.example.other", activity: nil, label: "Other",
+                                         manager: manager)
+        defer {
+            key.window?.close()
+            behind.window?.close()
+        }
+        let state = StreamMenuState.shared
+        key.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+        XCTAssertEqual(state.style, .framed)
+        behind.setStyle(.immersive)
+        XCTAssertEqual(state.style, .framed, "a window behind the key one cannot change the menu")
+        XCTAssertEqual(behind.style, .immersive, "its own style still changed")
+        key.setStyle(.immersive)
+        XCTAssertEqual(state.style, .immersive)
     }
 }
 
