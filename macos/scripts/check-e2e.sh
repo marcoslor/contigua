@@ -15054,15 +15054,12 @@ check_deckstart() {
     FAKE_ARGS="--demo-apps 40 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
 
-    deckstart_launch() {  # deckstart_launch LIGHT|DARK KINDS [minimize]
+    deckstart_launch() {  # deckstart_launch LIGHT|DARK KINDS
         [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null && stop_app
         sleep 1
-        local minimize=()
-        [ "${3:-}" = "minimize" ] && minimize=(--minimize-stream 1:3 --minimize-stream 2:3 --minimize-stream 3:3)
         launch --debug-control "$WORK-control" --connect "127.0.0.1:$PORT" \
             --debug-deck-sections "$sections" --appearance "$1" \
-            --open com.android.settings,com.android.chrome,com.whatsapp \
-            ${minimize[@]+"${minimize[@]}"} --quit-after 600
+            --open com.android.settings,com.android.chrome,com.whatsapp --quit-after 600
         wait_until 30 events_have '"t":"apps.list"' || bad "DECKSTART $1 no apps.list"
         wait_until 30 python3 "$MACOS/scripts/deckstart-sections.py" "$sections" \
             kinds "$2" >/dev/null 2>&1 \
@@ -15137,7 +15134,12 @@ check_deckstart() {
     sleep 1
 
     # The pins are this Mac's: a relaunch reads the same eight in order (DECK-28).
-    deckstart_launch dark "open:3,pinned:8,all:*" minimize
+    deckstart_launch dark "open:3,pinned:8,all:*"
+    # The windows step back so the page is the shot (the same step the light
+    # pass takes; a launch-time --minimize-stream still caught stream 1).
+    control open --minimize-stream 1:0 --minimize-stream 2:0 --minimize-stream 3:0 >/dev/null \
+        || bad "DECKSTART minimize the open windows (dark): $CONTROL_REPLY"
+    sleep 1.5
     shot_deck "deckstart-1000-dark"
     control deck-size 760 600 >/dev/null || bad "DECKSTART deck-size 760: $CONTROL_REPLY"
     sleep 1
