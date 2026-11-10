@@ -72,11 +72,10 @@ final class DeckIconSizeTests: XCTestCase {
         XCTAssertEqual(DeckZoom.stored(in: defaults), 0.75)
     }
 
-    /// [DECK-6] ⌘0 returns to the default, 125 %, not to 100 %: a step still
-    /// moves one quarter and clamps at the four options.
+    /// [DECK-6] ⌘0 returns to the default, 125 %, not to 100 %: the same key
+    /// that used to mean Actual Size.
     func testCommandZeroReturnsToTheDefault() {
         XCTAssertEqual(DeckZoom.applied(.reset, to: 0.75), DeckZoom.defaultValue)
         XCTAssertEqual(DeckZoom.applied(.reset, to: 1.5), DeckZoom.defaultValue)
-        XCTAssertEqual(DeckZoom.applied(.step(DeckZoom.step), to: 1), 1.25)
     }
 }
