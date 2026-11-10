@@ -49,6 +49,7 @@ final class MenuMarksTests: XCTestCase {
                        reveal: RevealDelay = .short,
                        touches: Bool = false,
                        liveText: Bool = false,
+                       frozen: Bool = false,
                        hasStream: Bool = true,
                        package: String? = "com.android.settings",
                        density: Double? = nil,
@@ -58,6 +59,7 @@ final class MenuMarksTests: XCTestCase {
         state.revealDelay = reveal
         state.showTouches = touches
         state.liveText = liveText
+        state.frozen = frozen
         state.hasStream = hasStream
         state.densityPackage = package
         state.densityOverride = density
@@ -65,11 +67,20 @@ final class MenuMarksTests: XCTestCase {
         return state
     }
 
+    private var navigateItems: [MenuMarks.Item] {
+        [MenuMarks.Item(title: "Back"), MenuMarks.Item(title: "Home"),
+         MenuMarks.Item(title: "Recents")]
+    }
+
     private func edits(_ state: StreamMenuState, menu: String = "View") -> [MenuMarks.Edit] {
-        let items = menu == "View" ? viewItems : [MenuMarks.Item(title: "Minimize"),
-                                                  MenuMarks.Item(title: "Zoom"),
-                                                  MenuMarks.Item(title: "Enter Full Screen"),
-                                                  MenuMarks.Item(title: "Bring All to Front")]
+        let items = switch menu {
+        case "View": viewItems
+        case "Navigate": navigateItems
+        default: [MenuMarks.Item(title: "Minimize"),
+                  MenuMarks.Item(title: "Zoom"),
+                  MenuMarks.Item(title: "Enter Full Screen"),
+                  MenuMarks.Item(title: "Bring All to Front")]
+        }
         return MenuMarks.edits(menu: menu, items: items, state: state)
     }
 
@@ -114,6 +125,61 @@ final class MenuMarksTests: XCTestCase {
         let withStream = edits(state(style: .framed))
         XCTAssertTrue(withStream.contains(.enable(["Framed"], true)))
         XCTAssertTrue(withStream.contains(.enable(["Immersive"], true)))
+    }
+
+    // MARK: The Deck (or any non-stream window) key — ISS-88
+
+    /// ISS-88: the Deck key with one stream window open behind it. The stream
+    /// window is still framed with Show Touches on, so the state handed to the
+    /// rules carries those values; nothing stream-only may be checked or
+    /// enabled, because the key window is not a stream window (MENU-4, MENU-9).
+    /// The marks are a function of the key window: a value left from the window
+    /// behind must not show.
+    func testTheDeckKeyLeavesEveryStreamOnlyItemOffAndDisabled() {
+        let deck = state(style: .framed, touches: true, liveText: true, hasStream: false,
+                         package: "com.android.settings")
+        let writes = edits(deck)
+        XCTAssertTrue(writes.contains(.mark(["Framed"], false)))
+        XCTAssertTrue(writes.contains(.mark(["Immersive"], false)))
+        XCTAssertTrue(writes.contains(.enable(["Framed"], false)))
+        XCTAssertTrue(writes.contains(.enable(["Immersive"], false)))
+        XCTAssertTrue(writes.contains(.enable(["Hide Controls"], false)))
+        XCTAssertTrue(writes.contains(.mark(["Show Touches"], false)),
+                      "Show Touches is the key stream window's; there is none")
+        XCTAssertTrue(writes.contains(.enable(["Show Touches"], false)),
+                      "a disabled item eats its key: ⇧⌘T does nothing with the Deck key")
+        XCTAssertTrue(writes.contains(.mark(["Live Text"], false)),
+                      "Live Text is the key stream window's; there is none")
+        XCTAssertTrue(writes.contains(.enable(["Live Text"], false)))
+        XCTAssertTrue(writes.contains(.enable(["Density"], false)))
+        // The Deck's own items are unchanged: Icon Size is the Deck's stored
+        // choice and Find Apps acts on the Deck.
+        XCTAssertTrue(writes.contains(.mark(["Icon Size", "100 %"], true)))
+        XCTAssertFalse(writes.contains { edit in
+            if case .enable(let path, let on) = edit, path == ["Icon Size"] { return !on }
+            return false
+        })
+    }
+
+    /// ISS-88 sweep, MENU-6: Back, Home and Recents act on the key stream
+    /// window through its responder chain, so they are off and disabled when
+    /// no stream window is key; a stream window keeps today's rule.
+    func testNavigateIsDisabledWithoutAStreamWindow() {
+        let deck = MenuMarks.edits(menu: "Navigate", items: navigateItems,
+                                   state: state(hasStream: false))
+        for title in ["Back", "Home", "Recents"] {
+            XCTAssertTrue(deck.contains(.enable([title], false)), title)
+        }
+        let key = MenuMarks.edits(menu: "Navigate", items: navigateItems,
+                                  state: state(hasStream: true))
+        for title in ["Back", "Home", "Recents"] {
+            XCTAssertTrue(key.contains(.enable([title], true)), title)
+        }
+        let frozen = MenuMarks.edits(menu: "Navigate", items: navigateItems,
+                                     state: state(liveText: true, frozen: true))
+        for title in ["Back", "Home", "Recents"] {
+            XCTAssertTrue(frozen.contains(.enable([title], false)), title)
+        }
     }
 
     // MARK: Hide Controls and its reveal choice
