@@ -218,6 +218,22 @@ extension Cause {
     }
 }
 
+/// CONV-PD-07: one spelling for the pair-again action on the Mac. A banner or
+/// a state word says "Pair again" (sentence case, no ellipsis); a button or
+/// menu title that opens the pairing sheet says "Pair Again…" (the Mac's title
+/// case, and an action that asks for more). The phone's own "Pair new Mac" is
+/// the phone's and stays as it is.
+enum PairAgainCopy {
+    static let banner = "Pair again"
+    static let sheet = "Pair Again…"
+
+    /// The Deck's Nearby row button: the sheet's spelling for a remembered
+    /// phone whose key is gone, plain "Pair" for a phone never paired.
+    static func sheetButton(needsPairing: Bool) -> String {
+        needsPairing ? sheet : "Pair"
+    }
+}
+
 /// One line under the toolbar, with at most one button. Derived from `Link`;
 /// never raw reason codes.
 struct Banner: Equatable {
@@ -233,7 +249,7 @@ struct Banner: Equatable {
     var actionTitle: String? {
         switch action {
         case .tryNow: return "Try now"
-        case .pairAgain: return "Pair again"
+        case .pairAgain: return PairAgainCopy.banner
         case .openSettings: return "Open Settings"
         case nil: return nil
         }
@@ -295,7 +311,7 @@ extension Link {
         case .connecting: return Chip(text: "Connecting…", style: .grey)
         case .reconnecting: return Chip(text: "Reconnecting…", style: .pulsingOrange)
         case .offline: return Chip(text: "Offline", style: .grey)
-        case .needsPairing: return Chip(text: "Pair again", style: .orange)
+        case .needsPairing: return Chip(text: PairAgainCopy.banner, style: .orange)
         }
     }
 }

@@ -30,7 +30,7 @@ enum PhonePageHeaderAction: Equatable {
         switch self {
         case .inUse: return nil
         case .useThisPhone: return "Use This Phone"
-        case .pairAgain: return "Pair Again…"
+        case .pairAgain: return PairAgainCopy.sheet
         }
     }
 }
@@ -188,7 +188,7 @@ struct PhoneSettingsPage: View {
             case .inUse:
                 EmptyView()
             case .pairAgain:
-                Button("Pair Again…") { controller.pairAgain(for: phone, source: .settings) }
+                Button(PairAgainCopy.sheet) { controller.pairAgain(for: phone, source: .settings) }
                     .help("Forget the old pairing and pair this phone again.")
             case .useThisPhone:
                 Button("Use This Phone") { controller.use(phone) }
