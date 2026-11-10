@@ -97,6 +97,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   hides — each letter is a 20 pt target at rest, and a short window never shrinks it; current letter accent, empty
   letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to that letter's
   first app, and an empty letter skips forward. The current letter follows the first app in the top visible row.
+  While the pointer is on the rail (hover or drag) the letter a jump would land on lights its All Apps tiles: each at
+  1.08× (a transform, so nothing reflows) with a semibold label, and every other All Apps tile at 50 % opacity. The
+  Open on this Mac and Pinned sections — tiles and headers — never dim or lift; section headers never dim. It fades in
+  over 0.12 s ease-out, cross-fades between letters, and returns to rest over 0.2 s; Reduce Motion draws no scale and
+  no animation and applies the fade at once.
 
 - **App icons:** every tile is the shared `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS
   squircle (22.5 % corners), the adaptive `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp
