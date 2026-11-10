@@ -3861,10 +3861,10 @@ waitfile $WORK/menus-step-2 60
 menupick View/Show Touches
 wait 1.2
 waitfile $WORK/menus-step-3 60
-menupick View/Immersive
+menupick View/Framed
 wait 1.5
 waitfile $WORK/menus-step-4 60
-menupick View/Framed
+menupick View/Immersive
 wait 1.5
 waitfile $WORK/menus-step-7 60
 menupick View/Density/125%
@@ -3876,6 +3876,9 @@ hover 0.5 0.5
 wait 0.3
 fingerpinch 0.5 0.01 1.25 4
 wait 1
+waitfile $WORK/menus-step-framed 60
+key opt+cmd+f
+wait 1.5
 waitfile $WORK/menus-step-full 60
 fullscreen
 wait 6
@@ -4001,35 +4004,35 @@ if not all(row["command"] for row in rows if not row["separator"] and row["key"]
 PY
     # 2: after View ▸ Show Touches was toggled (the commands read its state).
     touch "$WORK/menus-step-2"; sleep 1.5; dump_now 2
-    # 3 and 4: after switching the style to immersive and back.
+    # 3 and 4: after switching the style to Framed and back to Immersive.
     touch "$WORK/menus-step-3"; sleep 1.5
-    wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
-        && ok "[MENU-4] choosing Immersive took the window to the immersive style" \
-        || bad "[MENU-4] choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    wait_until 5 grep -q "style=framed" "$WORK/chrome.txt" \
+        && ok "[MENU-4] choosing Framed took the window to the framed style" \
+        || bad "[MENU-4] choosing Framed left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
     # The pair's mark and Hide Controls' enablement follow the key window: the
     # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
     # their values when the menu opens.
-    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Immersive: it is checked and Hide Controls is enabled" \
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is enabled" \
         || bad "[MENU-9] the View menu did not follow the style change"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
+if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
     print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
 hide = by_title.get("Hide Controls")
 if hide is None or not hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
     touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
-    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls stays enabled (a key stream window)" \
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] back on Immersive: it is checked and Hide Controls stays enabled (a key stream window)" \
         || bad "[MENU-9] the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
+if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
     print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
 hide = by_title.get("Hide Controls")
 if hide is None or not hide.get("enabled"):
@@ -4317,14 +4320,15 @@ PY
     touch "$WORK/menus-step-touch"
     sleep 1.5
     local win
-    win="$(await_window '$4 == 911 && $5 == 644')" \
+    win="$(await_window '$4 == 900 && $5 == 628')" \
         && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
         && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
         || bad "MENUS no window to capture the bar"
-    grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
-        && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
+    wait_until 5 eval 'grep -q "touches=on" "$WORK/chrome.txt" && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt"' \
         && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
         || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
+    # The style pick waits until the dots' shot is taken: Framed draws no dots.
+    touch "$WORK/menus-step-framed"
     sleep 4
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
@@ -4531,7 +4535,9 @@ for title in ("Framed", "Immersive"):
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Hide Controls", "Density"):
     item = one(title)
-    wanted = scene == "stream-framed" and title == "Density"
+    # Hide Controls follows a key stream window in either style (ISS-45);
+    # Density needs an app window, which this scene has.
+    wanted = scene == "stream-framed"
     if bool(item.get("enabled")) != wanted:
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Show Touches", "Live Text"):
