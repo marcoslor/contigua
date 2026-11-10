@@ -21,7 +21,7 @@ Performance:
 2. Tap to screen in 182 ms: split it into input, app reaction and first draw.
 3. The first connect after an install takes 3.2 s (ISS-46, left open).
 4. The real-phone sharpness check (ISS-39).
-5. The UDP media plane (ISS-50) waits until a measurement shows TCP is the limit.
+5. ~~The UDP media plane (ISS-50)~~ withdrawn 2026-11-09: measured, TCP is not the limit; the crowded-link work is `feat/ratectl`.
 6. The battery cost of keep-alive pings (ISS-11).
 7. The Deck zoom-drag margin (ISS-31, rig only).
 
@@ -420,6 +420,7 @@ Each goes through the requirements gate first: a surface spec, the conventions, 
 ## 6. On their own branches
 
 - **ISS-50 pmaxx P3.2/P3.3: the UDP media plane is not implemented (merge call, 2026-11-06).** `main` carries P0/P1/P2 plus the TCP goodput fix; `epic/pmaxx` is kept for this plane. Main carries only the specification, marked **PLANNED / NOT IMPLEMENTED IN THIS MERGE** in PATH-25…PATH-35, PROTOCOL § "Media over UDP" and `docs/design/media-transport.md`. What exists is the pure Android layer: `MediaDatagramTest` (header and fragmentation), `MediaCryptoTest` (HKDF/AEAD and the PMX-5/6 sequence rules), `MediaReplayWindowTest` (replay and cap sizing), `MediaDefaultsTest` (the shipped TCP strategy) and `SessionTest.aDefaultSessionOffersNoMediaField` (the absent capability).
+  - **Withdrawn 2026-11-09 (the person: "based on experiments you can trim the protocol feature set"):** the native link stays TLS/TCP. The unused `MediaDatagram`/`MediaCrypto`/`MediaReplayWindow` and the `transport` bench property were deleted (`chore/trim-udp`); PATH-25..35 and PROTOCOL "Media over UDP" are marked withdrawn; `epic/pmaxx` keeps the history. Kept: `tools/pdpathfault/pdudpfault.py` and `tools/netem/` for the web client (ISS-41, WebRTC) and a later paid over-the-internet tier, which design their own transport.
   - **Remaining:** the `media` capability in hello/welcome (and the Mac-side `stream.transport` switch), the phone UDP socket and sender, the Mac Swift mirror and assembler, the probe/switch state machine, feedback and the delay-based controller, NACK/parity, the fault arms, and the real-link rounds. The capability, sockets, sender/assembler, probe/switch, feedback/controller, NACK/parity and fault arms are all absent.
   - **Reviewer IDs:** PMX-1…PMX-14 (A, crypto/wire), BP-01…BP-16 (B, backpressure/runtime), R4/R5/R6/R8/R10/R13/R14/R15 (C, UI/spec hygiene).
   - **Fixed in the merge-prep round:** PMX-5/6 (AEAD before the replay window; session-lifetime sequence; identical-or-fresh-sequence retransmit), PMX-7 (API 31 exporter guard; fail closed on API 30), PMX-8 (never a zero exporter; `pair_exporter`), BP-01/02/03/04/05/06/07/09/10/12, R4/R5/R6/R8/R10/R13/R14/R15.
