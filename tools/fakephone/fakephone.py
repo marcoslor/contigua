@@ -2279,7 +2279,16 @@ class WindowStream(object):
         # -re paces the source to real time; without it ffmpeg encodes as fast
         # as the CPU allows (thousands of fps for cheap patterns).
         crisp = self.phone.args.crisp_pattern and self.mode == "app" and not self._black
-        if crisp:
+        image = getattr(self.phone.args, "image_frame", None) and not self._black
+        if image:
+            # A fixture picture is the whole stream, cover-cropped to the
+            # stream's shape: no label or word sits on top of it.
+            cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
+                   "-loop", "1", "-framerate", str(FRAME_RATE),
+                   "-i", image,
+                   "-vf", "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d"
+                          % (self.w, self.h, self.w, self.h)]
+        elif crisp:
             # The pattern is the whole picture: no label or word may sit on top
             # of it, or the lossless source would not be what was encoded.
             path = self.phone.crisp_assets(self.w, self.h)
@@ -2291,7 +2300,7 @@ class WindowStream(object):
         # Still overlays, in order: the stream id/size label and, with
         # --text-frame, a large word on a white band for Live Text's analyser.
         overlays = []
-        if crisp:
+        if crisp or image:
             pass
         elif self.phone.label_dir and self.h >= 48:
             text = "stream=%d %dx%d" % (self.stream_id, self.w, self.h)
@@ -2302,7 +2311,7 @@ class WindowStream(object):
                     fp.write(render_text_png(text, 8 + len(text) * 12, 18,
                                              (255, 255, 255), (16, 16, 16), scale=2))
             overlays.append((path, "8:8"))
-        word = None if crisp else getattr(self.phone.args, "text_frame", None)
+        word = None if crisp or image else getattr(self.phone.args, "text_frame", None)
         if word:
             digest = hashlib.md5(word.encode("utf-8")).hexdigest()[:8]
             path = os.path.join(self.phone.label_dir or tempfile.gettempdir(),
@@ -6200,6 +6209,9 @@ def build_parser():
     p.add_argument("--text-frame", metavar="WORD", default=None,
                    help="draw WORD large on a white band in every app stream "
                         "(a stable frame for the Live Text check)")
+    p.add_argument("--image-frame", metavar="PATH", default=None,
+                   help="encode this still picture in every stream, cover-cropped "
+                        "to the stream's size and with no label (a fixture)")
     p.add_argument("--codec", choices=("avc", "hevc"), default="avc", metavar="CODEC",
                    help="encode HEVC for the bench's C1 arm; it falls back to H.264 when "
                         "the Mac's hello.codecs does not list hevc")
