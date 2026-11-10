@@ -38,6 +38,7 @@ The app's menu bar is how a Mac person finds every command and every shortcut wi
 | MENU-15 | THE menu items SHALL be real menu items with their key equivalents (never buttons that imitate them), so the keyboard, VoiceOver and the system's own menu handling all work; the app SHALL document every shortcut it adds in UX.md's table (R-KEY-1 reads it). | e2e `menus` `[MENU-4]` (the keys and modifiers as the bar reports them); `scripts/check-rules.sh` R-KEY-1 (the table and the code agree) |
 | MENU-16 | Opening a menu, reading its marks or dumping it SHALL send nothing to the phone; only the person's pick of an action item SHALL act (and that action is the panel's or the window's own). | review of `MenuMarks`/`MenuDump` (read-only); untested as an e2e zero-write assertion |
 | MENU-17 | THE app's items SHALL be built from one small Equatable menu model that holds only what the menu shows (titles, marks, enablement), recomputed at most every 250 ms; a change to any other state — a battery report, a stall, a Now Playing update, an occlusion flip — SHALL NOT rebuild the items; WHILE a menu is tracking NO change SHALL rebuild them (the newest value waits for the menu to close, and only the latest one lands); and a menu that is tracking SHALL NOT pause a stream (a menu is transient, and pausing on it was half of the person's open-menu loop). | K2 `MenuSnapshotTests` (only menu values reach the model, the tracking gate, the deferred value, the pause rule); e2e `menus` `[MENU-17]` (a real menu held open for 5 s while the state under it changes: 0 rebuilds, the same items and submenu, still open) |
+| MENU-18 | WHEN the Dock icon's own menu is opened (`applicationDockMenu`) THE menu SHALL offer Find Apps and Phone Mirror, built from the same `PhoneControlsActions` as the Phone menu and the menu-bar panel, with Phone Mirror enabled by the same mapping (`PhonePanelItem.phoneScreen`, so offline it is disabled) and Find Apps always enabled; a pick SHALL run that shared action (Find Apps shows the one Deck and focuses its search field, Phone Mirror raises the phone window). | K2 `DockMenuTests.testTheDockMenuOffersFindAppsAndPhoneMirror`, `testPhoneMirrorIsDisabledWithTheMenusRule`, `testEachPickRunsItsSharedAction`; review of `AppDelegate.applicationDockMenu` (the Dock's own menu cannot be opened in a quiet run) |
 
 Priority note: MENU-1, 2, 4, 5, 6, 7, 8, 9 and 10 are P1 — a person cannot find the app's commands or trust the bar without them. The cleanup detail and the naming audit are P2.
 
@@ -140,7 +141,7 @@ Ignored events, stated so nobody builds them: a mark correction while a menu is 
 ## Non-goals
 
 - A Help book, a feedback item or a search in the menu bar (Help stays empty).
-- A custom menu bar, a dock menu or a Control Center control of the app's commands (Control Center is the opt-in extension).
+- A custom menu bar, or a Control Center control of the app's commands (Control Center is the opt-in extension). The Dock icon's own menu is the two starting points of MENU-18, not a second place for every command.
 - Items for the file domain, notifications, media or Settings' per-phone pages: those surfaces own their own actions.
 - A Shortcuts/App Intents entry per menu item: those are separate entry points, listed in docs/design/intents.md.
 - Reordering, hiding or customising the system's items.

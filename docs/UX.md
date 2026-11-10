@@ -46,7 +46,9 @@ Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show 
 system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
-Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. A control that cannot work is disabled, never hidden.
+Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. The Dock icon's own menu (a right-click on it)
+offers **Find Apps** and **Phone Mirror**, with Phone Mirror disabled while the phone is away. A control that cannot
+work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
    field and selects its text). What it shows is chosen by what this Mac remembers:

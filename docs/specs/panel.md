@@ -167,7 +167,7 @@ Ignored events, stated so nobody builds them: an icon click while the card is cl
 - A settings page, a phone picker or a notification history in the card (Settings and the notification surface own those).
 - Track title, artwork, a per-app volume, or a second audio device picker: the Mac's own Now Playing shows the track, and the phone's media volume is the only volume here.
 - A customisable card (reordering, hiding rows) or extra control tiles.
-- A Dock menu or a Control Center control: Control Center is its own opt-in extension (design/controls.md).
+- A Control Center control: Control Center is its own opt-in extension (design/controls.md). The Dock icon's own menu is the menus' two starting points (MENU-18), not the panel's.
 - Keeping the card open while another app is frontmost for more than a click or a key: the card is transient by convention.
 - A second card for another phone at the same time.
 
