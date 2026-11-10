@@ -398,7 +398,7 @@ internal class WindowStream(
                 log("stream $stream resize ${result.size.w}x${result.size.h} dpi=$dpi" +
                     if (result.size.w != boxW || result.size.h != boxH) " (asked ${boxW}x$boxH)" else "")
             ResizeSequencer.Outcome.KEPT ->
-                log("stream $stream resize ${boxW}x$boxH refused by the encoder; staying at ${width}x$height")
+                log("stream $stream resize ${boxW}x$boxH refused by the encoder; staying at ${result.size.w}x${result.size.h}")
             ResizeSequencer.Outcome.DENSITY_ONLY -> Unit
         }
         return when (result.outcome) {

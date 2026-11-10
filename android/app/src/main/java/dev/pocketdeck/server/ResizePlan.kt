@@ -197,7 +197,11 @@ internal class ResizeSequencer(private val steps: ResizeSteps) {
         }
         val actual = steps.prepare(size) ?: return Result(Outcome.KEPT, current)
         steps.resizeDisplay(actual, dpi)
-        steps.attachPrepared()
+        // The swap can lose both encoders (the old one is gone before the
+        // shared surface refuses the new one, and its rebuild fails): the
+        // stream then has no picture, so the request was not applied. Answer
+        // KEPT and release nothing (the old codec was already released).
+        if (!steps.attachPrepared()) return Result(Outcome.KEPT, current)
         steps.releasePrevious()
         return Result(Outcome.RESIZED, actual)
     }
@@ -207,7 +211,7 @@ internal class ResizeSequencer(private val steps: ResizeSteps) {
         val size = steps.fit(w, h)
         val actual = steps.prepare(size) ?: return Result(Outcome.KEPT, displaySize)
         if (actual != displaySize) steps.resizeDisplay(actual, dpi)
-        steps.attachPrepared()
+        if (!steps.attachPrepared()) return Result(Outcome.KEPT, displaySize)
         steps.releasePrevious()
         return Result(Outcome.RESIZED, actual)
     }
