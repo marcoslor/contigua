@@ -252,10 +252,13 @@ final class AudioEngine {
     /// The packet cap: a burst past it is dropped rather than queued. It
     /// follows the adaptive target but never passes 8 units (see below).
     private func jitterPushLocked() -> Bool {
-        // The cap is in 20 ms units and never past 9: the target covers the
-        // 180 ms arrival gaps R1 names; the video pipeline's delay keeps the
-        // A/V trail under the 185 ms limit (CONV-PD-06).
-        let cap = min(9, max(6, machine.targetFrames + 3))
+        // The cap is the absolute 9 x 20 ms ceiling, not the adaptive target:
+        // a target that shrinks after a starved stretch must not cut a packet
+        // that has already arrived (MEDIA-15: a backlog above the target is
+        // time-compressed, never cut). switchlink measured exactly one such
+        // drop ~3 s after the link returned while the queue drained 180 -> 80
+        // ms; the machine's stretch ratio drains the excess instead.
+        let cap = 9
         let depth = depthLocked()
         return depth < cap
     }
@@ -342,10 +345,12 @@ final class AudioEngine {
         lock.lock()
         let buffers = pendingPCM
         pendingPCM.removeAll()
+        // The 9-unit (180 ms) ceiling, the same absolute cap as
+        // jitterPushLocked: an audible buffer above the adaptive target is
+        // drained by the stretch ratio below, not cut (MEDIA-15). Only a
+        // queue past the ceiling sheds anything.
         let targetFrames = Int64(machine.targetFrames) * 960
-        // The same 9-unit cap as jitterPushLocked: concealment buffers count
-        // too, so the queue stays at the target's ceiling.
-        let maxFrames = min(targetFrames + 3 * 960, 9 * 960)
+        let maxFrames = 9 * 960
         let ratio = machine.stretchRatio
         lock.unlock()
         for buffer in buffers {

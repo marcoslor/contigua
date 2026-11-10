@@ -161,4 +161,31 @@ class PhoneWakeSessionTest {
         readUntil("pong")
         assertNull(platform.wakeCalls.firstOrNull())
     }
+
+    @Test
+    fun `a screen off edge reaches the power seam once per change`() {
+        // The relight starts from the session's own `state` edge (PHONE-22):
+        // only a real change is an edge, and a repeat is not a second press.
+        platform.deviceState = DeviceState(true, 55, false, screen = ScreenState.ON)
+        connect()
+        authenticate()
+
+        platform.pushState(platform.deviceState.copy(screen = ScreenState.OFF))
+        awaitScreenReports(listOf(false))
+        platform.pushState(platform.deviceState)
+        assertEquals("a repeated off frame is not a second edge", listOf(false), platform.screenReports.toList())
+
+        platform.pushState(platform.deviceState.copy(screen = ScreenState.ON))
+        platform.pushState(platform.deviceState.copy(screen = ScreenState.OFF))
+        awaitScreenReports(listOf(false, true, false))
+    }
+
+    private fun awaitScreenReports(expected: List<Boolean>) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            if (platform.screenReports.toList() == expected) return
+            Thread.sleep(10) // real-time: the session answers on its own thread
+        }
+        error("screen reports were ${platform.screenReports.toList()}, expected $expected; logs: $logs")
+    }
 }

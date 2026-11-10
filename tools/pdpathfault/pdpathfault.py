@@ -6,7 +6,8 @@ person's Wi-Fi would, without touching the other paths:
 
     pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
                    --mode pass|delay|blackhole|pass-new|rst|throttle|delay-throttle \
-                   [--delay-ms 120] [--rate-mbit 2] [--ctl-file /tmp/pdpathfault.ctl]
+                   [--delay-ms 120] [--rate-mbit 2] [--ctl-file /tmp/pdpathfault.ctl] \
+                   [--script /tmp/pdpathfault.timeline]
 
 Modes (docs/design/paths.md §10.3):
     pass       bytes both ways, unmodified (the default)
@@ -25,6 +26,18 @@ Modes (docs/design/paths.md §10.3):
 
 The mode can be changed at run time by writing one line to --ctl-file
 (`mode blackhole`), so a check can kill a path at a precise byte of a transfer.
+A timeline script changes it on a clock instead, for the link's own pattern:
+
+    at 10 throttle 3      # from 10 s: cap each direction at 3 Mbit/s
+    at 20 stall           # 20 s: the AWDL off-channel pattern (--stall-*)
+    at 30 blackhole       # 30 s: read and drop, keep the socket open
+    at 33 pass            # 33 s: bytes again
+    at 40 rate 10         # a rate change alone
+
+Each line is `at SECONDS ACTION [ARG|key=value ...]`; actions are any mode
+name, `mode NAME`, `rate MBIT` or `delay MS`, with `stall_ms=`,
+`stall_every_ms=`, `stall_long_ms=` and `stall_long_at_ms=` as settings.
+Times are seconds from the proxy listening and must not go backwards.
 Every accepted connection and each mode change is a JSON line on --events. A
 peer's FIN is forwarded to the other side (the connection is half-closed, not
 left hanging), and delivered bytes are reported per direction (`"ev":"bytes"`),
@@ -49,6 +62,76 @@ CHUNK = 65536
 # sender's own write buffer (the Mac's outbox never fills, so a check could not
 # see back-pressure at all).
 QUEUE_CAP = 256 * 1024
+SETTING_KEYS = ("stall_ms", "stall_every_ms", "stall_long_ms", "stall_long_at_ms")
+
+
+def _settings(parts, number):
+    """`key=value` settings after a timeline action, validated."""
+    out = {}
+    for part in parts:
+        if "=" not in part:
+            raise ValueError("line %d: expected key=value, got %r" % (number, part))
+        key, value = part.split("=", 1)
+        if key in ("rate", "rate_mbit"):
+            out["rate"] = float(value)
+        elif key in ("delay", "delay_ms"):
+            out["delay_ms"] = float(value)
+        elif key in SETTING_KEYS:
+            out[key] = float(value)
+        else:
+            raise ValueError("line %d: unknown setting %r" % (number, key))
+    return out
+
+
+def parse_script(text):
+    """The `--script` timeline: [(seconds, settings)], in order.
+
+    A settings dict holds any of `mode`, `rate`, `delay_ms` and the four
+    `stall_*` knobs. Times are non-negative and never go backwards.
+    """
+    steps = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "at":
+            raise ValueError("line %d: expected `at SECONDS ACTION ...`" % number)
+        try:
+            at = float(parts[1])
+        except ValueError:
+            raise ValueError("line %d: seconds %r is not a number" % (number, parts[1]))
+        if at < 0:
+            raise ValueError("line %d: seconds cannot be negative" % number)
+        if steps and at < steps[-1][0]:
+            raise ValueError("line %d: `at` goes backwards" % number)
+        verb, tail = parts[2], parts[3:]
+        settings = {}
+        if verb == "rate":
+            if len(tail) != 1:
+                raise ValueError("line %d: `rate` needs one Mbit/s value" % number)
+            settings["rate"] = float(tail[0])
+        elif verb == "delay":
+            if len(tail) != 1:
+                raise ValueError("line %d: `delay` needs one millisecond value" % number)
+            settings["delay_ms"] = float(tail[0])
+        elif verb == "mode":
+            if not tail:
+                raise ValueError("line %d: `mode` needs a mode name" % number)
+            settings["mode"] = tail[0]
+            settings.update(_settings(tail[1:], number))
+        elif verb in MODES:
+            settings["mode"] = verb
+            if tail and "=" not in tail[0]:
+                settings["rate"] = float(tail[0])
+                tail = tail[1:]
+            settings.update(_settings(tail, number))
+        else:
+            raise ValueError("line %d: unknown action %r" % (number, verb))
+        if "mode" in settings and settings["mode"] not in MODES:
+            raise ValueError("line %d: unknown mode %r" % (number, settings["mode"]))
+        steps.append((at, settings))
+    return steps
 
 
 class Proxy(object):
@@ -67,6 +150,8 @@ class Proxy(object):
         self._ctl_mtime = None
         # `stall`: the off-channel clock starts with the proxy.
         self.started_at = time.monotonic()
+        self.timeline = list(getattr(args, "timeline", None) or [])
+        self.timeline_origin = self.started_at
 
     # -- events --
     def event(self, obj):
@@ -106,6 +191,35 @@ class Proxy(object):
             if self.mode != "pass-new":
                 return self.mode
             return "pass" if conn.id > self.split_at else "blackhole"
+
+    def run_timeline(self):
+        """Apply the `--script` steps at their seconds from listening."""
+        for at, settings in self.timeline:
+            while not self.stop.is_set():
+                left = self.timeline_origin + at - time.monotonic()
+                if left <= 0:
+                    break
+                if self.stop.wait(min(left, 1.0)):
+                    return
+            if self.stop.is_set():
+                return
+            self.apply_step(at, settings)
+
+    def apply_step(self, at, settings):
+        """One timeline step: settings first, then the mode it names."""
+        now = time.monotonic() - self.timeline_origin
+        action = dict(settings)
+        self.event({"ev": "timeline", "at_plan": at,
+                    "at": round(now, 3), "action": action})
+        if "rate" in settings:
+            self.args.rate_mbit = float(settings["rate"])
+        if "delay_ms" in settings:
+            self.args.delay_ms = float(settings["delay_ms"])
+        for key in SETTING_KEYS:
+            if key in settings:
+                setattr(self.args, key, int(settings[key]))
+        if "mode" in settings:
+            self.set_mode(settings["mode"])
 
     def watch_ctl(self):
         path = self.args.ctl_file
@@ -147,7 +261,10 @@ class Proxy(object):
         self.event({"ev": "start", "listen": self.args.listen,
                     "connect": self.args.connect, "mode": self.mode,
                     "delay_ms": self.args.delay_ms, "rate_mbit": self.args.rate_mbit})
+        self.timeline_origin = time.monotonic()
         threading.Thread(target=self.watch_ctl, daemon=True).start()
+        if self.timeline:
+            threading.Thread(target=self.run_timeline, daemon=True).start()
         print("pdpathfault 127.0.0.1:%d -> %s mode=%s"
               % (self.args.listen, self.args.connect, self.mode), file=sys.stderr)
         sys.stderr.flush()
@@ -409,12 +526,23 @@ def build_parser():
                    help="stall mode: when the long pause starts")
     p.add_argument("--ctl-file", default=None,
                    help="write `mode blackhole` here to change the mode")
+    p.add_argument("--script", default=None,
+                   help="timeline file: `at 10 throttle 3`")
     p.add_argument("--events", default=None, help="JSON Lines events here")
     return p
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.timeline = []
+    if args.script:
+        try:
+            with open(args.script, "r") as fp:
+                args.timeline = parse_script(fp.read())
+        except (OSError, ValueError) as exc:
+            print("pdpathfault: --script: %s" % exc, file=sys.stderr)
+            return 2
 
     def stop(_signum, _frame):
         raise SystemExit(0)
