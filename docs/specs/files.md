@@ -168,7 +168,7 @@ Ignored events, stated so nobody builds them: a working-set identifier as a watc
 | CONV-PD-04 | n/a: no slider or toggle follows a phone value (the drop's percentage follows the phone's progress reports; the person does not drag it) |
 | CONV-PD-05 | applies: FILES-19 and FILES-27 (a thumbnail log carries an id, a count, a size, a duration, a mime or a code, never a name or a path) |
 | CONV-PD-06 | applies: FILES-21 (`fetch_small_ms`); FILES-25 and FILES-29 (at most 3 thumbnails, one generated at a time, on the bulk lane below video, each bounded by 8 s) so a grid of icons cannot delay a listing, a read or a stream; the bridge runs no work when nothing is browsing, and a drop is paced so it cannot starve the video queue (≤256 KiB, ≤4 in flight — design/dragdrop.md) |
-| CONV-PD-07 | applies: "Show phone files in Finder", "Install APK…", "Install on Phone", "Move Phone App to Mac" (not this surface), and the location's name "PocketDeck (<phone name>)" are one name each; thumbnails add no name of their own |
+| CONV-PD-07 | applies: "Show phone files in Finder", "Install APK…", "Install on Phone", "Open <App> on Mac" (not this surface), and the location's name "PocketDeck (<phone name>)" are one name each; thumbnails add no name of their own |
 | CONV-PD-08 | applies: the switch/domain machine, the session's effect on it, the drop sender and the thumbnail queue (FILES-25, FILES-29) are the tables above |
 | CONV-PD-09 | applies: FILES-4 (the row's sentences name the next step), FILES-15 (a refusal says why), FILES-3 ("Open System Settings" and "Check again" name what they do) |
 

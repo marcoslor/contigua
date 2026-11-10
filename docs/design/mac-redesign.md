@@ -36,7 +36,7 @@ machine (§4), which also fixes the root causes of A01–A03.
 | **Phone Mirror** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
 | **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
 | *Sheets over the Deck* | SwiftUI `.sheet` | | Nearby (Add phone), Code, QR, Manual connect. |
-| **Menu-bar item** | SwiftUI `MenuBarExtra` (`.window`) | always (toggle in Settings) | A Control Center-style panel: the phone's controls, live notifications, window actions, Settings/Quit (§3.8). |
+| **Menu-bar item** | AppKit status item (`NSStatusItem` + `NSPanel`) | always (toggle in Settings) | A Control Center-style panel: the phone's controls, live notifications, window actions, Settings/Quit (§3.8). |
 
 There is no separate Welcome window and no floating launcher panel in v0 (§9): both are states of the
 Deck. The Deck has three content modes, chosen **only** by what the profile remembers:
@@ -264,26 +264,32 @@ toolbar item group:
 - **Live Text freezes the controls.** While a window is in Live Text mode every bar action except Live Text itself is
   disabled (dimmed, no hover, no action, accessibility "dimmed"), and the phone navigation shortcuts (⌘[, ⇧⌘H, ⌘↑) do
   nothing, because they would drive the live phone behind the frozen picture. Leaving the mode re-enables them.
-  "Move Phone App to Mac" is left alone: it opens another window for the phone's current app, it does not act on this
-  window's frozen frame. `HeaderActionPolicy` is the one decision, unit tested.
+  **Open <App> on Mac** is left alone: it opens another window for the phone's current app, it does not act on this
+  window's frozen frame. The handoff reads the phone's foreground app with `task.front` only while the card is
+  open; it is not this window's action. `HeaderActionPolicy` is the one decision, unit tested.
 
 ### 3.8 Menu bar item and app menu
 
-- `MenuBarExtra(isInserted: showMenuBar) { MenuBarContent() } label: { Image(systemName: "apps.iphone") }`,
-  `.menuBarExtraStyle(.window)`. A Control Center-style panel, not a menu: a menu-style extra turned the volume
-  `Slider` into a "Phone volume" stepper submenu whose hover opened and closed it. Icon: online `apps.iphone` ·
-  reconnecting `apps.iphone` (pulse) · offline `iphone.slash`.
-- The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt inset (P3): header (phone symbol, name,
-  status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · a 2×2 grid of 134 pt tiles,
-  ≥62 pt high, 8 pt apart, 12 pt corners: **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** ·
-  the phone's media volume slider with its % · the one reason line when a control is off · **Now playing: <app>**
-  when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
-  buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C · **Install APK…**
-  (with its phase) · a **gear** at the card's top-right. The panel's own commands are the icon's: a secondary click
-  (right-click, or ⌃-click) opens **Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q under the icon,
-  closing the card first, and the gear opens the same menu anchored under the gear. The Deck popover has neither the gear nor a footer.
+- `NSStatusItem.variableLength` with `MenuBarPanel` and `MenuBarContent`. A Control Center-style panel, not a
+  menu: a menu-style extra turned the volume `Slider` into a "Phone volume" stepper submenu whose hover opened and
+  closed it, and SwiftUI's `MenuBarExtra` could not close on a second click. Icon: the button's own template image —
+  online `apps.iphone` · reconnecting swaps two frames of it · offline `iphone.slash`; the agent dot is drawn into
+  a slot the image reserves in both states.
+- The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt inset (P2): header (phone symbol, name —
+  a checkmark pop-up with 2+ phones —, status dot + text, lock, battery; the last-seen line while away) · the agent
+  row ("AI agent connected" + **Disconnect**) · one full-width **Sound** module (speaker, "Sound", the phone's %,
+  the slider) · a 2×2 grid of 134 pt modules, ≥62 pt high, 8 pt apart, 12 pt corners: **Focus** (Do Not Disturb /
+  Off), **Ringer**, **Ring Phone** / **Stop Ringing** (Plays a sound / Ringing), **Turn Off Screen** (Screen on /
+  Screen off) · **Now playing** with the chosen app when the phone reports ≥ 2 sessions · **Live** rows, each with
+  its own **Dismiss** (Mac only) · **Open <App> on Mac** ⇧⌘C only while the phone reports an app in front (the app's
+  icon and name when the list knows the package, else "Open Current App on Mac" and a generic icon) · one **WINDOWS**
+  row of two normal-text buttons: **Phone Mirror** ⌘P · **Apps** ⌘K (VoiceOver "Find Apps") · a **gear** at the
+  card's top-right. **Install APK…** is not on the card: it stays in the Phone menu, the Deck's drop and Finder's
+  Open With. The panel's own commands are the icon's: a secondary click (right-click, or ⌃-click) opens **Settings…**
+  ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q under the icon, closing the card first, and the gear opens the
+  same menu anchored under the gear. The Deck popover has neither the gear nor a footer.
 - **Ringer** opens a menu (**Ring** / **Vibrate** / **Silent**) with the phone's current mode checked; it never
-  cycles on click. The tile's subtitle names the current mode. It is disabled, with a reason, when the phone sends
+  cycles on click. The module's second line names the current mode. It is disabled, with a reason, when the phone sends
   no `ringer` or while the phone's DND is on (`dnd_on`). **Turn Off Screen** shows **Screen on** / **Screen off**
   from the phone's held panel and is disabled until a Phone Mirror is open.
 - **Volume slider:** Idle shows the phone's value. Dragging shows the pointer's value every frame and ignores the
@@ -292,7 +298,8 @@ toolbar item group:
   change while Idle moves the slider.
 - No track title, performer, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the
   phone's media volume is the only volume control. A control that cannot work is dimmed with one line saying why
-  (offline, no volume sent, no DND reported, no ringer, DND on), never hidden.
+  (offline, no volume sent, no DND reported, no ringer, DND on), never hidden. While the phone is away the Sound
+  module carries the one group reason and the four modules dim with no second line (PANEL-19).
 - **One component, two hosts:** the Deck's status pill opens the same view in a `.popover`; both build it from
   `PhoneControlsState(controller:)` and `PhoneControlsActions(controller:openDeck:)`.
 - **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
@@ -309,15 +316,17 @@ toolbar item group:
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
   *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density › · ── · Enter Full Screen fn‑F) ·
-  *Phone* (Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
+  *Phone* (Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
   Ringing · ── · Install APK…) ·
   *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
   *Window* (Minimize ⌘M · Zoom · the system's window group · Bring All to Front · the window list) ·
   *Help* (empty: there is no help book and no public issue tracker, so no dead item).
 - **The Phone menu is the panel's controls**: it builds from the same `PhoneControlsState` and `PhoneControlsActions`
-  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Move to Mac*,
-  *Turn Off Phone Screen*, *Ring Phone* and *Install APK…* are disabled while the phone is away, and *Turn Off Phone
-  Screen* until a Phone Mirror is open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
+  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Open <App> on
+  Mac*, *Turn Off Phone Screen*, *Ring Phone* and *Install APK…* are disabled while the phone is away, and *Turn Off
+  Phone Screen* until a Phone Mirror is open. The handoff item's title and enablement follow the foreground reply:
+  "Open <App> on Mac" when a fresh reply names an app, "Open Current App on Mac" otherwise, disabled with "Nothing to
+  move…" when a fresh reply says the screen has nothing to open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
   keeps its checkmark on the phone's own `state.panel` report, never a local guess. *Install APK…* and *Ring
   Phone* name what they are doing ("Sending foo.apk… 40%", "Stop Ringing").
 - **View ▸ Framed / Immersive** is one radio pair for the key stream window, built by the commands as an inline
@@ -461,7 +470,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 
 | Piece | Tech | Why |
 |---|---|---|
-| `@main PocketDeckApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`, `MenuBarExtra` | SwiftUI | scenes, sheets, glass, `.searchable`, `SMAppService` |
+| `@main PocketDeckApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`; the menu bar is an AppKit status item | SwiftUI + AppKit | scenes, sheets, glass, `.searchable`, `SMAppService`, `NSStatusItem` |
 | Deck / Welcome / Nearby / Phone grid / Code / QR / Manual / Settings / banner / chip | SwiftUI | pure view state |
 | Stream windows (`StreamWindowController`, `AppWindow`, `PhoneWindow`), `VideoLayerView`, `InputMapper`, `DebugInput`, gestures | **AppKit (unchanged)** | NSEvent fidelity, `AVSampleBufferDisplayLayer`, resize/occlusion |
 | Link-down pill, stream hover chrome | AppKit host (`NSGlassEffectView`) + SwiftUI content | lives inside the video window |

@@ -339,7 +339,7 @@ A window says it in its title, which already carries the phone name
 opening cover says "Opening on <phone>". The Window menu groups windows by
 phone when two or more are online; the Dock shim names already include the
 phone. The menu items that change one phone (Ring, DND, Ringer, Volume, Turn
-Off Screen, Move to Mac) name the phone in their title while two or more are
+Off Screen, Open <App> on Mac) name the phone in their title while two or more are
 online, because the action may be invoked from a window of the other phone.
 
 A small phone chip in the window bar is a visual decision. It is not needed for
@@ -361,7 +361,7 @@ improvise.
 | A link with no phone, 2+ paired | the person's pick | The picker lists remembered phones, connected first. The chosen phone gets the link; the current phone does not change. |
 | Start Timer… | current phone, or the phone whose Live section was used | The timer is created in that phone's Clock app and the live item carries that phone. Two phones can each have a timer. |
 | `phone_status`, `list_apps`, `open_app`, `send_link`, `send_file` (MCP) | the call's `phone`, else current | An unknown or ambiguous phone is a tool error that lists the phones. Window tools use the window's phone. |
-| Ring, DND, ringer, volume, Turn Off Screen, Move to Mac | the key window's phone, else current | These change one phone. Their menu titles name the phone when two or more are online. |
+| Ring, DND, ringer, volume, Turn Off Screen, Open <App> on Mac | the key window's phone, else current | These change one phone. Their menu titles name the phone when two or more are online. |
 | A notification click, reply or dismiss | the notification's phone | Open that app's window on that phone and send the action on its session. |
 | Now Playing | the phone that is playing | If the current phone is playing, it wins. Otherwise the most recently updated playing phone wins. A pick in the panel wins until that phone's session ends or it stops playing. Transport commands go to the phone that owns the displayed state. |
 | Audio | current phone, and only while one of its windows is open and unpaused | One route. Switching stops the old phone's capture and starts the new one only if it has an open window. Two phones do not mix. |
@@ -733,7 +733,7 @@ enters a log. `CONV-PD-05` and `R-PRIV-1` already say this.
 ### 9.4 Wrong-phone actions
 
 The dangerous cases are the phone-level actions with no window: Ring, DND,
-ringer, volume, Turn Off Screen, Move to Mac, Install APK, Start Timer and a
+ringer, volume, Turn Off Screen, Open <App> on Mac, Install APK, Start Timer and a
 notification reply. Each gets an explicit target in section 6, and the menu or
 card names the phone when two or more are online. The old behaviour (act on
 `link.phone`) is not enough once two phones are online; a wrong Ring or a wrong

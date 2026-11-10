@@ -1,7 +1,10 @@
-# handoff — Move Phone App to Mac (docs/ROADMAP.md #9)
+# handoff — Open <App> on Mac (docs/ROADMAP.md #9)
 
-One command, three surfaces: the menu bar menu, the Deck's app menu and ⌘⇧C
-while PocketDeck is active (`ConnectionController.continueOnMac`). It opens a
+One command, three surfaces: the menu bar panel's row, the Phone menu and ⌘⇧C
+while PocketDeck is active (`ConnectionController.continueOnMac`). Both the menu
+item and the card's row read the phone's foreground app through the pull-only
+`task.front` (docs/PROTOCOL.md "Foreground app"); the card shows the row only
+while that reply names a package. It opens a
 new Mac window for the app in the **foreground on the phone's own screen**
 (display 0) and moves the task there — same screen, same scroll — while the
 phone's screen returns to its home screen. Excluded: our own app, the
