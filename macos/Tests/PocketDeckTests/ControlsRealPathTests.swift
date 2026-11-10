@@ -16,7 +16,6 @@ final class ControlsRealPathTests: XCTestCase {
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
         let chrome = StreamChromeView(video: video, style: style)
         chrome.frame = NSRect(x: 0, y: 0, width: 380, height: 800)
-        if style == .immersive { chrome.setPill(true) }
         return chrome
     }
 

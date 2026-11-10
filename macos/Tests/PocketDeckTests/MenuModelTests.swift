@@ -6,16 +6,16 @@ import XCTest
 
 final class MenuModelTests: XCTestCase {
     func testTheStylePairHasExactlyOneChecked() {
-        XCTAssertEqual(MenuModel.styles, [.framed, .immersive])
+        XCTAssertEqual(MenuModel.styles, [.immersive, .framed])
         for key in WindowStyle.allCases {
             let checked = MenuModel.styles.filter { MenuModel.styleChecked($0, key: key) }
             XCTAssertEqual(checked, [key], "exactly one of the pair is checked for \(key)")
         }
     }
 
-    func testHideControlsIsForAnImmersiveWindowOnly() {
-        XCTAssertTrue(MenuModel.hideControlsEnabled(style: .immersive))
-        XCTAssertFalse(MenuModel.hideControlsEnabled(style: .framed))
+    func testHideControlsNeedsAKeyStreamWindow() {
+        XCTAssertTrue(MenuModel.hideControlsEnabled(hasStream: true))
+        XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: false))
         XCTAssertEqual(MenuModel.hideControls.map(\.title),
                        ["Instantly", "Short", "Long", "", "Always Visible"])
     }

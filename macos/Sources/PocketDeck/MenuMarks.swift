@@ -84,14 +84,14 @@ enum MenuMarks {
                 edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
                 edits.append(.enable([item.title], state.hasStream))
             case ("View", "Hide Controls"):
-                // The reveal choice is only meaningful while the window is
-                // immersive; the mark inside follows the stored choice.
-                edits.append(.enable([item.title], MenuModel.hideControlsEnabled(style: state.style)))
+                // The full-screen reveal choice needs a key stream window; the
+                // mark inside follows the stored choice.
+                edits.append(.enable([item.title], MenuModel.hideControlsEnabled(hasStream: state.hasStream)))
                 for child in item.children where !child.isSeparator {
-                    guard let entry = ImmersiveMenuModel.items.first(where: { $0.title == child.title }),
+                    guard let entry = FullScreenMenuModel.items.first(where: { $0.title == child.title }),
                           entry != .separator else { continue }
                     edits.append(.mark([item.title, child.title],
-                                       ImmersiveMenuModel.isChecked(entry, reveal: state.revealDelay)))
+                                       FullScreenMenuModel.isChecked(entry, reveal: state.revealDelay)))
                 }
             case ("View", "Show Touches"):
                 edits.append(.mark([item.title], state.showTouches))

@@ -322,19 +322,19 @@ final class StallOverlayTests: XCTestCase {
         XCTAssertTrue(chrome.stallOverlay.isHidden, "the 200 ms fade-out ends hidden")
     }
 
-    /// WIN-39: no bar (immersive or full screen) means the overlay is the
-    /// stream's own rect, and the words stay centred in it.
+    /// WIN-39: no bar (full screen) means the overlay is the stream's own
+    /// rect, and the words stay centred in it.
     func testTheOverlayWithoutABarIsTheStreamsRect() throws {
         let manager = makeManager()
         let controller = try makeWindow(manager)
         defer { controller.window?.close() }
-        controller.chrome.setStyle(.immersive)
+        controller.simulateFullScreenForTesting(true)
         controller.chrome.layoutChrome()
         XCTAssertEqual(controller.chrome.barHeight, 0)
 
         let t0 = ProcessInfo.processInfo.systemUptime
         stall(controller, at: t0)
-        XCTAssertEqual(controller.chrome.stallOverlay.frame, controller.chrome.video.frame)
+        XCTAssertEqual(controller.chrome.stallOverlay.frame, controller.chrome.bounds)
         XCTAssertEqual(controller.chrome.stallOverlay.topInset, 0)
         XCTAssertFalse(controller.chrome.barMirrorCovered)
     }
