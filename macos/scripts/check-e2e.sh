@@ -4379,8 +4379,12 @@ for kind in ["gear", "volume", "dnd", "ringer", "ring", "screen", "phoneScreen",
         print("missing", kind, kinds); sys.exit(1)
 if "installApk" in kinds:
     print("Install APK… is a card row again:", kinds); sys.exit(1)
-if "continueOnMac" in kinds:
-    print("the handoff row appeared with no foreground reply:", kinds); sys.exit(1)
+# The handoff row is the card's own (PANEL-28): it names the app the phone last
+# reported in front, and the card asks task.front when it opens. It is not one
+# of the old status-line items, so it belongs here.
+for row in root["items"]:
+    if row["kind"] == "continueOnMac" and not row["label"].startswith("Open "):
+        print("handoff row:", row); sys.exit(1)
 for footed in ["settings", "quit"]:
     if footed in kinds:
         print(footed, "is a row; it belongs to the icon's menu", kinds); sys.exit(1)
