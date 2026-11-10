@@ -205,6 +205,14 @@ final class ConnectionController {
     /// running chronometer instead of the time it was opened.
     private(set) var liveTick: Date = Date()
     @ObservationIgnored private var liveTicker: Timer?
+    /// PANEL-26: the app in front, one read at a time. The machine ignores a
+    /// reply for an older request; the reply's time is what the Phone menu's
+    /// two-second freshness rule reads.
+    private(set) var frontApp = FrontAppMachine()
+    private(set) var frontAppRepliedAt: Date?
+    @ObservationIgnored private var frontSeq = 0
+    @ObservationIgnored private var frontWatchCount = 0
+    @ObservationIgnored private var frontTimer: Timer?
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -1045,6 +1053,14 @@ final class ConnectionController {
             session.requestApps()
         }
         resetPhoneData(for: phone.ref)
+        rememberedPhones = remembered.all
+    }
+
+    /// The panel's phone pop-up (PANEL-27): switch the phone in use through the
+    /// same route Settings' Use This Phone runs (SET-DEV-03).
+    func usePhone(id: String) {
+        guard let phone = remembered.phone(id: id) else { return }
+        use(phone)
     }
 
     func forget(_ phone: RememberedPhone) {
@@ -1182,7 +1198,7 @@ final class ConnectionController {
         windows.openPhoneWindow()
     }
 
-    /// "Move Phone App to Mac" (docs/ROADMAP.md #9): a window for the app in the
+    /// "Open Current App on Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with `window.opened`
     /// (and the video) for the stream, or `nothing_to_continue` — which shows
     /// as the transient banner.
@@ -1190,6 +1206,91 @@ final class ConnectionController {
         guard link.isOnline else { return }
         windows.openHandoffWindow()
     }
+
+    // MARK: Foreground app (PANEL-26)
+
+    /// A card opened: ask once now, then at most once every 2 s while it stays
+    /// open. The count covers both hosts (the menu-bar panel and the Deck
+    /// popover); the timer stops when the last one closes, so a closed card
+    /// never reads the phone.
+    func beginPanelFrontWatch() {
+        frontWatchCount += 1
+        guard frontWatchCount == 1 else { return }
+        askFront()
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.askFront() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frontTimer = timer
+    }
+
+    func endPanelFrontWatch() {
+        frontWatchCount = max(frontWatchCount - 1, 0)
+        guard frontWatchCount == 0 else { return }
+        frontTimer?.invalidate()
+        frontTimer = nil
+    }
+
+    private func askFront() {
+        guard link.isOnline, let session else { return }
+        frontSeq += 1
+        frontApp.ask(seq: frontSeq)
+        session.requestFront(seq: frontSeq)
+    }
+
+    private func frontReplied(seq: Int, pkg: String?) {
+        guard frontApp.reply(seq: seq, pkg: pkg) else { return }
+        frontAppRepliedAt = Date()
+        let presence = pkg == nil ? "none" : "present"
+        Log.app.debug("front: \(presence, privacy: .public)")  // log-ok: only "present"/"none", never the package
+    }
+
+    /// A phone that cannot read its task list: no row, and the Phone menu's
+    /// fallback keeps its old one-shot behaviour (the window reports the
+    /// phone's own refusal).
+    private func frontUnavailable() {
+        guard case .asking = frontApp.state else { return }
+        frontApp.reset()
+        frontAppRepliedAt = Date()
+        Log.app.debug("front: none")
+    }
+
+    /// No stale package across a link loss or a phone change. Bumping the
+    /// sequence leaves any in-flight reply stale.
+    private func resetFrontApp() {
+        frontApp.reset()
+        frontAppRepliedAt = nil
+        frontSeq += 1
+    }
+
+    /// The panel's row: only while online and the machine knows a package.
+    var frontAppRow: FrontAppRow? {
+        guard link.isOnline, let pkg = frontApp.pkg else { return nil }
+        let app = apps.first { $0.pkg == pkg }
+        return FrontAppRow(pkg: pkg, label: app?.displayLabel, icon: deckIcons[pkg])
+    }
+
+    /// A reply no older than the Phone menu's two-second rule.
+    var frontAppFresh: Bool { FrontAppFreshness.isFresh(frontAppRepliedAt) }
+    var frontAppNone: Bool { frontApp.isNone }
+
+    /// The Phone menu's handoff item: the app's name while a fresh reply names
+    /// one, else the fallback the item must always have.
+    var frontMenuTitle: String {
+        guard frontAppFresh, let row = frontAppRow else { return FrontAppRow.fallbackTitle }
+        return row.title
+    }
+
+    var frontMenuEnabled: Bool {
+        link.isOnline && !(frontAppFresh && frontAppNone)
+    }
+
+    var frontMenuHelp: String? {
+        guard link.isOnline else { return PanelUnavailable.offline.sentence }
+        if frontAppFresh && frontAppNone { return FrontAppRow.nothingToOpen }
+        return nil
+    }
+
 
     func openFromSpotlight(_ request: SpotlightOpenRequest) {
         if link.isOnline, link.phone?.id == request.deviceId {
@@ -2383,6 +2484,7 @@ final class ConnectionController {
     // MARK: Phone data
 
     private func resetPhoneData(for ref: PhoneRef) {
+        resetFrontApp()
         windows.setPhoneName(displayName(for: ref))
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
@@ -2883,6 +2985,7 @@ final class ConnectionController {
             switch state {
             case .failed(let reason):
                 clearPathOutage()
+                resetFrontApp()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -2899,6 +3002,7 @@ final class ConnectionController {
                 notifyCenter.clearAll()
             case .closed:
                 clearPathOutage()
+                resetFrontApp()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3080,9 +3184,10 @@ final class ConnectionController {
             runPendingApplicationAdds()
             pumpShortcutWork()
             recheckOpenWindows()
+        case .frontApp(let seq, let pkg):
+            frontReplied(seq: seq, pkg: pkg)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
-                         let volumeMax, let screen, let secure, let panel):
-            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
+                         let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  volume: volume, volumeMax: volumeMax, screen: screen)
             windows.setPhoneScreen(screen)
             if let secure { windows.setPhoneSecure(secure) }
@@ -3114,7 +3219,11 @@ final class ConnectionController {
             Log.session.notice("dropping cached address for \(expected, privacy: .public) (answers as \(actual, privacy: .public))")
             cache.forget(deviceId: expected)
         case .phoneError(let code, _, let stream):
-            if code == "nothing_to_continue" {
+            if code == "not_available", stream == 0 {
+                // `task.front` on a phone that cannot read its task list:
+                // the row stays off; the Phone menu keeps its fallback.
+                frontUnavailable()
+            } else if code == "nothing_to_continue" {
                 // The window never opened: it goes away, the notice is what stays.
                 windows.closeFailedHandoff(stream: stream)
                 showTransient("Nothing to move. Your phone is showing its home screen or PocketDeck.")

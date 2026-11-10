@@ -104,10 +104,13 @@ final class PhonePanelTests: XCTestCase {
     }
 
     /// No track text or artwork anywhere in the panel: the panel's source never
-    /// reads the title, artist, album or the artwork.
+    /// reads the media title, artist, album or the artwork. The foreground
+    /// app's own title is not track text (PANEL-28), so only reads of the
+    /// media state are forbidden.
     func testThePanelHasNoTrackText() throws {
         let panel = try source("PhonePanel.swift")
-        for forbidden in ["trackLine", "mediaArt", "artist", "album", ".title"] {
+        for forbidden in ["trackLine", "mediaArt", "media?.title", "media?.artist",
+                          "media?.album", "media.title", "media.artist", "media.album"] {
             XCTAssertFalse(panel.contains(forbidden),
                            "the panel must not read the media \(forbidden)")
         }
@@ -138,27 +141,29 @@ final class PhonePanelTests: XCTestCase {
 
     /// The rows in the order the view lays them out, because the e2e maps the
     /// hosting view's key views (top to bottom) to this list by index: the
-    /// phone controls, the live notifications, then the window actions. The
-    /// gear is the menu bar panel's (PhonePanelP3Tests); Settings… and Quit are
-    /// the icon's menu now, not rows.
+    /// Sound slider, the modules, the live notifications (each with its
+    /// Dismiss), the handoff row, then the two window actions. The gear is the
+    /// menu bar panel's (PhonePanelP3Tests); Settings… and Quit are the icon's
+    /// menu now, not rows.
     func testTheRowsAreInTheOrderTheViewLaysThemOut() {
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music")])
         state.live = [NotifyLiveItem(id: "n1", pkg: "com.example.clock", label: "Timer",
                                      chip: nil, progress: nil, chrono: nil, countDown: false,
                                      updated: Date())]
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
-                       [.dnd, .ringer, .ring, .screen, .volume, .sessions, .live,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk])
+                       [.volume, .dnd, .ringer, .ring, .screen, .sessions, .live, .liveDismiss,
+                        .phoneScreen, .findApps])
 
-        // The agent row's Disconnect button is the first focusable control.
+        // The agent row's Disconnect button sits after the gear and before the
+        // Sound slider.
         state.agentCount = 1
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state).first, .disconnectAgent)
 
         // Without live rows and with one session the picker is not there.
         state = panelState(sessions: [row("a", "Spotify")])
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
-                       [.dnd, .ringer, .ring, .screen, .volume,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk])
+                       [.volume, .dnd, .ringer, .ring, .screen,
+                        .phoneScreen, .findApps])
     }
 
     /// Ring becomes Stop Ringing while the phone rings, and back.
@@ -170,22 +175,28 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertEqual(PhonePanelItem.ring.label, "Ring Phone")
     }
 
-    /// [PANEL-8] A timeout is not a state: the Ring Phone tile says nothing
-    /// under its title at rest, and names the ring only while it rings.
-    func testTheRingTileHasNoTimeoutLineAtRest() {
+    /// [PANEL-8/PANEL-11] The Ring Phone module's second line is the design's
+    /// "Plays a sound" at rest and "Ringing" while it rings; a timeout is never
+    /// a state line.
+    func testTheRingModuleSaysPlaysASoundAtRest() {
         var state = panelState()
-        XCTAssertEqual(state.ringSubtitle, "")
+        XCTAssertEqual(state.ringSubtitle, "Plays a sound")
         state.ringing = true
         XCTAssertEqual(state.ringSubtitle, "Ringing")
     }
 
-    /// Offline: one honest line, and the phone controls are off (no volume, no
-    /// DND) even when the last state still had both.
+    /// Offline: one reason for the dimmed group (in the Sound module), and the
+    /// phone controls are off even when the last state still had them.
     func testOfflineExplainsWhyTheControlsAreOff() {
         let state = panelState(online: false, sessions: [row("a", "Spotify")])
         XCTAssertEqual(state.reason, "Connect your phone to use these.")
         XCTAssertNil(state.volumeFraction)
         XCTAssertEqual(state.connection.text, "Offline")
+        for item in [PhonePanelItem.dnd, .ringer, .ring, .screen, .phoneScreen] {
+            XCTAssertFalse(item.isEnabled(in: state), "\(item) stayed enabled offline")
+            XCTAssertNil(item.shortReason(in: state), "\(item) adds a second offline reason")
+        }
+        XCTAssertNil(state.handoff, "no handoff row while away")
     }
 
     /// Every control names its own missing capability; P3 does not fold them
@@ -233,6 +244,94 @@ final class PhonePanelTests: XCTestCase {
                           "\(name) builds the panel state the same way")
         }
     }
+
+    /// The header says whether the phone is locked and, while it is away, when
+    /// it was last seen; the battery stays online-only (PANEL-6).
+    func testTheHeaderNamesThePhoneItsLinkItsLockAndItsBattery() throws {
+        var state = panelState()
+        state.battery = 87
+        state.locked = true
+        XCTAssertEqual(state.shownBattery, 87)
+        XCTAssertTrue(state.locked)
+
+        state.connection = .offline
+        state.lastSeen = Date(timeIntervalSinceNow: -300)
+        XCTAssertNil(state.shownBattery, "no stale battery while away")
+        let source = try source("PhonePanel.swift")
+        XCTAssertTrue(source.contains("lock.fill"), "the header draws the lock")
+        XCTAssertTrue(source.contains("LastSeen.line(lastSeen)"), "the header names the last sighting")
+        XCTAssertTrue(source.contains("if !state.connection.isOnline, let lastSeen"),
+                      "the last-seen line is for the away states")
+    }
+
+    /// The panel's phone pop-up (PANEL-27) is a plain list with the one in use
+    /// checked, and its pick runs the app's one Use This Phone route.
+    func testTwoPhonesMakeTheNameAPopUpAndSwitchingUsesTheOneRoute() {
+        let a = RememberedPhone(id: "panel-a", name: "Pixel 9", model: "Pixel 9",
+                                lastSeen: Date().addingTimeInterval(-60))
+        let b = RememberedPhone(id: "panel-b", name: "Galaxy S25+", model: "SM-S938",
+                                lastSeen: Date())
+        controller.remembered.remember(a.ref)
+        controller.remembered.remember(b.ref)
+        controller.usePhone(id: "panel-a")
+        XCTAssertEqual(controller.currentId, "panel-a")
+        let state = PhoneControlsState(controller: controller)
+        XCTAssertEqual(state.phones.map(\.id), ["panel-b", "panel-a"],
+                       "most recently used first")
+        XCTAssertEqual(state.phones.filter(\.active).map(\.id), ["panel-a"])
+        XCTAssertTrue(state.showsPhonePicker)
+
+        let one = PhoneControlsState.PanelPhone(id: "panel-a", name: "Pixel 9", active: true)
+        var single = state
+        single.phones = [one]
+        XCTAssertFalse(single.showsPhonePicker, "one phone keeps the plain name")
+    }
+
+    /// The handoff row appears only with a known package while online; the
+    /// Phone menu's words fall back, and a fresh None disables it (PANEL-28).
+    func testTheHandoffRowNamesTheKnownAppAndItsFallback() {
+        var state = panelState()
+        XCTAssertNil(state.handoff)
+        XCTAssertFalse(state.showsHandoff)
+        XCTAssertEqual(state.continueTitle, "Open Current App on Mac")
+        XCTAssertTrue(state.continueEnabled)
+
+        state.handoff = FrontAppRow(pkg: "p.maps", label: "Maps", icon: nil)
+        XCTAssertTrue(state.showsHandoff)
+        state.frontFresh = true
+        XCTAssertEqual(state.continueTitle, "Open Maps on Mac")
+        XCTAssertTrue(state.continueEnabled)
+
+        state.handoff = FrontAppRow(pkg: "p.unknown", label: nil, icon: nil)
+        XCTAssertEqual(state.continueTitle, "Open Current App on Mac")
+
+        state.handoff = nil
+        state.frontNone = true
+        XCTAssertFalse(state.continueEnabled, "a fresh None disables the menu item")
+        XCTAssertEqual(state.continueReason, FrontAppRow.nothingToOpen)
+
+        state.connection = .offline
+        XCTAssertFalse(state.showsHandoff)
+        XCTAssertEqual(state.continueReason, "Connect your phone to use these.")
+    }
+
+    /// PANEL-15: dismissing a Live row hides that row on the Mac only and
+    /// leaves the others.
+    func testTheLiveRowsFilterTheirDismissedOnes() {
+        let timer = NotifyLiveItem(id: "n1", pkg: "com.example.clock", label: "Timer",
+                                   chip: nil, progress: nil, chrono: nil, countDown: false,
+                                   updated: Date())
+        let delivery = NotifyLiveItem(id: "n2", pkg: "com.example.shop", label: "Delivery",
+                                      chip: nil, progress: nil, chrono: nil, countDown: false,
+                                      updated: Date())
+        XCTAssertEqual(PhonePanelLiveRows.visible([timer, delivery], dismissed: []).map(\.id),
+                       ["n1", "n2"])
+        XCTAssertEqual(PhonePanelLiveRows.visible([timer, delivery], dismissed: ["n1"]).map(\.id),
+                       ["n2"])
+        XCTAssertEqual(PhonePanelLiveRows.visible([timer, delivery], dismissed: ["n1", "n2"]).count,
+                       0)
+    }
+
 
     // MARK: - The panel's geometry (the review's shots, 2026-10-21)
 
@@ -345,8 +444,9 @@ final class PhonePanelTests: XCTestCase {
         }
     }
 
-    /// The picker and the volume keep the shared text column: the volume is a
-    /// 14 pt slider between two speakers, the picker a full-width menu row.
+    /// The picker and the Sound module keep the shared text column: the Sound
+    /// slider is a 14 pt control between the speaker and the percentage, the
+    /// picker a full-width module.
     func testThePickerAndTheVolumeKeepTheirColumns() throws {
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
         state.battery = 87
@@ -365,23 +465,25 @@ final class PhonePanelTests: XCTestCase {
 
         let picker = controls[items.firstIndex(of: .sessions)!]
         let pickerRect = frame(picker, in: view)
-        XCTAssertGreaterThan(pickerRect.width, 200, "the picker spans the row")
-        XCTAssertEqual(pickerRect.height, PhonePanelMetrics.rowHeight, accuracy: 1)
+        XCTAssertGreaterThan(pickerRect.width, 200, "the picker spans the module")
+        XCTAssertEqual(pickerRect.height, PhonePanelMetrics.nowPlayingMinHeight, accuracy: 1)
     }
 
-    /// P3's rhythm: two tile rows at the review's 134 pt size, the volume, then
-    /// one WINDOWS row, then the menu bar panel's footer.
-    func testThePanelIsP3sTileGridThenVolumeThenOneWindowsRow() throws {
+    /// P2's rhythm: the full-width Sound module, then the 2×2 modules at the
+    /// review's 134 pt size, then the two window buttons.
+    func testThePanelIsP2sSoundThenModulesThenOneWindowsRow() throws {
         let state = panelState()
         let view = host(state)
         let items = PhonePanelItem.focusOrder(for: state)
         let controls = laidOut(in: view)
         XCTAssertEqual(controls.count, items.count)
 
+        let volume = frame(controls[items.firstIndex(of: .volume)!], in: view)
         let dnd = frame(controls[items.firstIndex(of: .dnd)!], in: view)
         let ringer = frame(controls[items.firstIndex(of: .ringer)!], in: view)
         let ring = frame(controls[items.firstIndex(of: .ring)!], in: view)
         let screen = frame(controls[items.firstIndex(of: .screen)!], in: view)
+        XCTAssertLessThan(volume.maxY, dnd.minY, "Sound comes above the modules")
         XCTAssertEqual(dnd.width, PhonePanelMetrics.tileWidth, accuracy: 1)
         XCTAssertEqual(ringer.minX - dnd.maxX, PhonePanelMetrics.tileGap, accuracy: 1)
         XCTAssertEqual(dnd.minY, ringer.minY, accuracy: 1)
@@ -389,25 +491,21 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(dnd.height, PhonePanelMetrics.tileMinHeight - 1)
         XCTAssertEqual(ring.minY - dnd.minY, dnd.height + PhonePanelMetrics.tileGap, accuracy: 1.5)
 
-        let volume = frame(controls[items.firstIndex(of: .volume)!], in: view)
-        XCTAssertGreaterThan(volume.minY, screen.minY)
         let phone = frame(controls[items.firstIndex(of: .phoneScreen)!], in: view)
-        let find = frame(controls[items.firstIndex(of: .findApps)!], in: view)
-        let cont = frame(controls[items.firstIndex(of: .continueOnMac)!], in: view)
-        let install = frame(controls[items.firstIndex(of: .installApk)!], in: view)
-        for rect in [phone, find, cont, install] {
-            XCTAssertEqual(rect.minY, phone.minY, accuracy: 1, "WINDOWS is one row")
-            XCTAssertGreaterThan(rect.width, 50)
-        }
-        XCTAssertGreaterThan(phone.minY, volume.minY)
-        XCTAssertEqual(items.last, .installApk, "the card ends at the window row")
+        let apps = frame(controls[items.firstIndex(of: .findApps)!], in: view)
+        XCTAssertEqual(phone.minY, apps.minY, accuracy: 1, "WINDOWS is one row")
+        XCTAssertGreaterThan(phone.minY, screen.minY)
+        XCTAssertLessThan(phone.maxX, apps.minX)
+        XCTAssertEqual(items.last, .findApps, "the card ends at the window row")
     }
 
-    /// Away: every phone control is off and the panel says why; the header
-    /// drops its stale battery. Only the controls that need no phone stay on.
-    func testOfflineDimsThePhoneControlsAndHidesTheBattery() throws {
+    /// Away: every phone control is off and the card says why once (in the
+    /// Sound module); the header drops the stale battery and adds last seen.
+    /// Only the controls that need no phone stay on.
+    func testOfflineDimsThePhoneControlsAndShowsLastSeen() throws {
         var state = panelState(online: false, phoneWindow: false)
         state.battery = 87
+        state.lastSeen = Date(timeIntervalSinceNow: -300)
         let view = host(state)
         let items = PhonePanelItem.focusOrder(for: state)
         let enabled = items.filter { $0.isEnabled(in: state) }
@@ -415,11 +513,8 @@ final class PhonePanelTests: XCTestCase {
                        "the key loop holds exactly the enabled controls")
         XCTAssertEqual(enabled, [.findApps])
         XCTAssertNil(state.shownBattery, "offline the header does not draw a stale battery")
-
-        // The reasons sit on the controls they disable (a tile's subtitle, the
-        // volume row), so the offline panel is the online panel's height.
-        let away = try XCTUnwrap(render(state).flatMap(Pixels.init))
-        let now = try XCTUnwrap(render(panelState()).flatMap(Pixels.init))
-        XCTAssertEqual(away.height, now.height)
+        XCTAssertTrue(LastSeen.line(state.lastSeen!).hasPrefix("Last seen "),
+                      "the header names when the phone was last reached")
+        XCTAssertNil(state.handoff, "offline the handoff row is absent")
     }
 }

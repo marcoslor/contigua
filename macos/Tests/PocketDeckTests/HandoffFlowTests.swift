@@ -3,6 +3,7 @@
 // moved), and `nothing_to_continue` removes the never-opened window and shows
 // the notice. v2 peer = TLS fake phone with a scripted §4 pairing.
 
+import AppKit
 import XCTest
 @testable import PocketDeck
 
@@ -15,6 +16,9 @@ final class HandoffFlowTests: XCTestCase {
     private var received: [JSONMessage] = []
 
     override func setUp() async throws {
+        // The window set's menu pass reads NSApp; a filtered run of this class
+        // is the first thing that creates a window, so create the app first.
+        _ = NSApplication.shared
         profile = Profile(name: "unit-handoff-\(UUID().uuidString.prefix(8).lowercased())")!
         controller = ConnectionController(options: LaunchOptions.parse(["PocketDeck"]), profile: profile)
         controller.connectTimeout = 0.4
