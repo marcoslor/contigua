@@ -510,6 +510,9 @@ final class StreamChromeView: NSView {
             titleLight.stringValue = text
             titleDark.stringValue = text
         }
+        let mode = BarTitle.lineBreakMode(text: text, width: frame.width)
+        titleLight.lineBreakMode = mode
+        titleDark.lineBreakMode = mode
         titleLight.frame = frame
         titleDark.frame = frame
     }
