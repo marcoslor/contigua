@@ -1,6 +1,6 @@
 # Deck
 
-Prefix: `DECK`. Owner docs: [design/mac-redesign.md](../design/mac-redesign.md) §2–3.3, §4 (the Link machine), [UX.md](../UX.md) § "macOS app" 1, [DESIGN.md](../DESIGN.md) (Deck), [dragdrop.md](../design/dragdrop.md). Last reviewed: 2026-11-10, against main `306343bb`.
+Prefix: `DECK`. Owner docs: [design/mac-redesign.md](../design/mac-redesign.md) §2–3.3, §4 (the Link machine), [UX.md](../UX.md) § "macOS app" 1, [DESIGN.md](../DESIGN.md) (Deck), [dragdrop.md](../design/dragdrop.md). Last reviewed: 2026-11-10, against main `5f8b94bc`.
 
 ## Purpose
 
@@ -55,12 +55,13 @@ The Deck is the app's one home window and the only place a person starts from: y
 | DECK-29 | WHEN the person types in the search field THE Deck SHALL filter by label (DECK-8) and SHALL select the first matching tile so that ↩ opens it; WHEN ⌘1–⌘9 is pressed WHILE the Deck is key THE Deck SHALL open the first nine visible tiles in reading order (the sections included); arrow keys SHALL move as DECK-11 says. | K2 `DeckStartTests.testCommandDigitsNameTheFirstNineTilesInReadingOrder`, `testArrowsMoveAcrossSectionsAsOnePage`; e2e `deckstart` (⌘1 raises the first open tile, ⌘4 the first pin) |
 | DECK-30 | WHILE two or more phones are remembered THE Deck's title SHALL be a menu of them, the phone in use checked; choosing another SHALL make it the phone in use (the same transition as Settings ▸ Phones ▸ Use This Phone) and Phone Settings… SHALL open Settings; with one phone the title SHALL stay the phone's name (DECK-13). | K2 `DeckStartTests.testTheTitleIsAPhoneMenuOnlyWithTwoPhones`; review of `PhoneTitleMenu` and `use`; e2e `phones` (two phones paired: the Deck's title is the menu) |
 | DECK-31 | WHILE the link is connecting, reconnecting or offline THE whole start page — every section and All Apps — SHALL dim as one at 0.5 and take no clicks, with nothing replaced (DECK-14/15). | review of `PhoneDeckView`'s one opacity; e2e `deckstart` (the offline shot) |
+| DECK-32 | WHILE the rail's pointer is on a letter (hovering or dragging, DECK-7) THE Deck SHALL emphasise the All Apps tiles filed under the letter a jump would land on — each at 1.08× its drawn size with a semibold label — and draw every other All Apps tile at 50 % opacity; THE Open on this Mac and Pinned sections, their tiles and their headers SHALL NOT dim or lift; a move from one letter to the next SHALL cross-fade, entering over 0.12 s ease-out and leaving over 0.2 s, and leaving the rail SHALL return the grid to rest over 0.2 s; an empty letter SHALL emphasise the letter its jump lands on, so the grid and the rail's accent agree; WHILE the rail is hidden (searching) or the link is not online THE emphasis SHALL not apply; with Reduce Motion the tiles SHALL take no scale and no animation, and the opacity SHALL change at once; the emphasis SHALL be visual only — VoiceOver's order and labels SHALL NOT change. | K2 `RailEmphasisTests` (every transition: enter, the same letter, another letter, leave, an empty letter's landed letter, Reduce Motion, and the emphasis each section and tile takes); e2e `deckrail` `[DECK-32]` (the probe's per-tile emphasis at C, D and an empty B, the Open and Pinned tiles at rest, and the whole grid at rest after a leave) |
 
 Priority note: DECK-1, 2, 8, 9, 11, 12, 13, 14, 15, 17, 18, 19, 26, 27 and 29 are P1 — without them the Deck is not the app's home. Zoom, the rail, the popover, drop, the wide-window cap (DECK-4) and the standard zoom (DECK-24) are P2; the pins (DECK-28), the phone menu (DECK-30) and the page's offline dim (DECK-31) are P2.
 
 ## States and events
 
-Three machines meet here: the Deck's *mode* (what the window shows, from the profile), the *Link* (the connection, one value the chip and banner read; `LinkMachine` in `macOS/Sources/PocketDeck/Link.swift`, tables in design/mac-redesign.md §4.3) and the rail's *pointer* (DECK-7, `RailPointer` in `macOS/Sources/PocketDeck/RailPointer.swift`). The grid's own state is a query, a selection and one stored zoom, not a mode.
+Four machines meet here: the Deck's *mode* (what the window shows, from the profile), the *Link* (the connection, one value the chip and banner read; `LinkMachine` in `macOS/Sources/PocketDeck/Link.swift`, tables in design/mac-redesign.md §4.3), the rail's *pointer* (DECK-7, `RailPointer` in `macOS/Sources/PocketDeck/RailPointer.swift`) and the rail's *emphasis* (DECK-32, `RailEmphasis` in `macOS/Sources/PocketDeck/RailEmphasis.swift`). The grid's own state is a query, a selection and one stored zoom, not a mode.
 
 | State | Event | Result |
 |---|---|---|
@@ -115,6 +116,19 @@ The rail's accent (`RailAccent`, DECK-7): the top row's letter, or the letter a 
 | picked | `scroll` away from the landing | topRow: the wheel, the trackpad, the scroll bar or the keys hand the accent back |
 | jumping, picked | `pick(letter, app)` | jumping toward the new app; the new letter replaces the old |
 
+The rail's emphasis (`RailEmphasis`, DECK-32): the letter All Apps lights while the rail's pointer rests on it. `point` carries the letter a jump would land on — an empty letter forwards to the next letter with apps — so the grid and the accent agree.
+
+| State | Event | Result |
+|---|---|---|
+| none | `point(letter)` | letter: its All Apps tiles lift to 1.08× with a semibold label and every other All Apps tile dims to 50 %; the fade in runs 0.12 s ease-out |
+| letter(X) | `point(X)` | letter(X): nothing changes; moving inside one letter crosses no boundary |
+| letter(X) | `point(Y)` where Y differs | letter(Y): the two letters cross-fade in 0.12 s, never through rest |
+| none | `leave` | none |
+| letter(X) | `leave` | none: the grid eases back to rest over 0.2 s |
+| any | `point` or `leave` under Reduce Motion | the state changes with no duration: no scale and no animation, the dim applies at once |
+
+The Open on this Mac and Pinned sections never take part: the machine names the letter, and only All Apps tiles read it; their tiles and headers stay at rest.
+
 Ignored events, stated so nobody builds them: Esc with an empty query (no window closes), Return with no apps and no selection, an arrow with a modifier held, a drop while the phone is away, and any zoom key while another window is key.
 
 ## Phone count and connection
@@ -150,7 +164,7 @@ Ignored events, stated so nobody builds them: Esc with an empty query (no window
 | CONV-MAC-16 | applies: DECK-21 (a drop is accepted, refused with a reason, or the Deck says the phone is away); copy and paste are the standard text behaviour |
 | CONV-MAC-20 | applies: the Deck is the system's own window material and text styles; light, dark, accent and Increase Contrast render (reviewed from e2e captures) |
 | CONV-MAC-21 | applies: DECK-13 (every icon-only button has a help tag and a label: Phone, Settings, the chip), DECK-30 (the phone menu's label), DECK-28 (the ninth pin's disabled item carries the reason as its hint) and DECK-11 (arrow keys never replace VoiceOver's own order); review of the grid cells' labels |
-| CONV-MAC-22 | applies: the Deck's motion is the mode cross-fade, the banner's move and the rail's magnification (DECK-7); Reduce Motion removes them, drawing the rail's plain highlight |
+| CONV-MAC-22 | applies: the Deck's motion is the mode cross-fade, the banner's move, the rail's magnification (DECK-7) and the rail's emphasis (DECK-32, 0.12 s in and 0.2 s out); Reduce Motion removes them, drawing the rail's plain highlight and the emphasis without its scale or animation |
 | CONV-MAC-23 | applies: DECK-14 (the chip is words as well as a dot; the battery reads a percentage) |
 | CONV-MAC-24 | applies: the Deck asks for no permission; Local Network is asked for by the system when the app first browses, and a denial is one banner with Open Settings (DECK-15/16) |
 | CONV-MAC-25 | applies: cells, rows, buttons and menu items use the native hover and pressed states, and a disabled Phone button or Pin item is dimmed neutral, never accent (DECK-28) |

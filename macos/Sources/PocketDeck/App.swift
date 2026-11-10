@@ -62,6 +62,10 @@ struct LaunchOptions {
     /// `--debug-deck-sections FILE`: the start page's drawn headers and cells,
     /// section by section (e2e `deckstart`).
     var debugDeckSections: String?
+    /// `--debug-deck-emphasis`: record each tile's rail emphasis for the e2e
+    /// `deckrail` `[DECK-32]` probe. Off by default: the recording runs in the
+    /// cells' bodies, and the frame checks must be measured without it.
+    var debugDeckEmphasis = false
     /// `--debug-deck-zoom FILE`: the Deck's double-click zoom, measured (e2e `deck`).
     var debugDeckZoom: String?
     /// `--debug-stream-zoom FILE`: a live stream window's double-click zoom,
@@ -167,6 +171,7 @@ struct LaunchOptions {
         "--debug-frame-log": true,
         "--debug-banner": true,
         "--debug-deck-sections": true,
+        "--debug-deck-emphasis": false,
         "--audio-stats": true,
         "--share-log": true,
         "--preview": true,
@@ -281,6 +286,8 @@ struct LaunchOptions {
                 options.debugDeckGrid = next()
             case "--debug-deck-sections":
                 options.debugDeckSections = next()
+            case "--debug-deck-emphasis":
+                options.debugDeckEmphasis = true
             case "--debug-deck-zoom":
                 options.debugDeckZoom = next()
             case "--debug-stream-zoom":
