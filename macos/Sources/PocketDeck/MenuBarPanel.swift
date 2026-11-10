@@ -146,9 +146,12 @@ final class MenuBarPanel: NSPanel {
 
     /// The card opens with its ring on the first phone control. The gear heads
     /// the card's key order (it is the header's top-right control), so the
-    /// panel steps past it once: DND, or the agent row's Disconnect.
-    func focusFirstPhoneControl() {
-        selectNextKeyView(nil)
+    /// panel steps past it — and past any row between it and the opening focus
+    /// (the agent row's Disconnect) — the number `openingFocusSteps` names.
+    func focusFirstPhoneControl(steps: Int = 1) {
+        for _ in 0..<max(steps, 1) {
+            selectNextKeyView(nil)
+        }
     }
 
     override var canBecomeKey: Bool { true }
@@ -555,7 +558,8 @@ final class MenuBarController: NSObject {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         panel.makeKey()
-        panel.focusFirstPhoneControl()
+        panel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(
+            for: PhoneControlsState(controller: controller)))
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             panel.animator().alphaValue = 1

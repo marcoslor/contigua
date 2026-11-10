@@ -4049,6 +4049,14 @@ final class ConnectionController {
         case "panelclick":
             guard arguments.count == 2 else { return "panelclick needs HOST and an item ID" }
             return PanelProbe.click(host: arguments[0], id: arguments[1]) ? nil : "panelclick failed"
+        case "panelfocus":
+            // The item holding the card's keyboard focus (PANEL-7): where the
+            // opening ring landed, which a quiet run reads instead of pressing
+            // a key into a non-activating panel.
+            guard arguments.count == 1, let item = PanelProbe.focusedItem(host: arguments[0]) else {
+                return "panelfocus needs HOST"
+            }
+            return item
         case "paneldrag":
             guard arguments.count == 3, let fraction = Double(arguments[2]) else {
                 return "paneldrag needs HOST, an item ID and FRACTION"

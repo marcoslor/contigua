@@ -369,35 +369,41 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertLessThan(gear.maxY, dnd.minY, "the gear is in the header, above the tiles")
     }
 
-    /// The panel opens on its first phone control, not on the gear: the ring
-    /// lands on DND, or on Disconnect while an agent is connected. The panel
-    /// steps past its first key view for this, and `openingFocus` names where
-    /// that step goes.
+    /// The panel opens on its first phone control, not on the gear and never on
+    /// a destructive action: the ring lands on DND with or without an agent,
+    /// and the panel steps past the agent row's Disconnect to get there
+    /// (PANEL-7, ISS-75). The panel steps past its first key view for this, and
+    /// `openingFocusSteps` names how far.
     func testThePanelOpensOnTheFirstTileNotTheGear() {
         let plain = state()
         let items = PhonePanelItem.focusOrder(for: plain, showsGear: true)
         XCTAssertEqual(items.first, .gear, "the gear heads the card")
         XCTAssertEqual(PhonePanelItem.openingFocus(for: plain), .dnd)
-        XCTAssertEqual(PhonePanelItem.openingFocus(for: state(agentCount: 1)), .disconnectAgent)
+        XCTAssertEqual(PhonePanelItem.openingFocusSteps(for: plain), 1)
+
+        let agent = state(agentCount: 1)
+        XCTAssertEqual(PhonePanelItem.openingFocus(for: agent), .dnd,
+                       "the opening focus never lands on Disconnect")
+        XCTAssertEqual(PhonePanelItem.openingFocusSteps(for: agent), 2,
+                       "the agent row adds one key view between the gear and DND")
 
         let (panel, view) = panelHost(plain)
         let laidOut = hierarchyControls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
         XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .gear)!],
                       "the key order starts on the gear")
-        panel.focusFirstPhoneControl()
+        panel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(for: plain))
         XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .dnd)!],
                       "the opening focus is the DND tile")
 
-        let agent = state(agentCount: 1)
         let agentItems = PhonePanelItem.focusOrder(for: agent, showsGear: true)
         let (agentPanel, agentView) = panelHost(agent)
         let agentControls = hierarchyControls(in: agentView)
         XCTAssertEqual(agentControls.count, agentItems.count)
-        agentPanel.focusFirstPhoneControl()
+        agentPanel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(for: agent))
         XCTAssertTrue(agentPanel.firstResponder
-                      === agentControls[agentItems.firstIndex(of: .disconnectAgent)!],
-                      "Disconnect takes the opening focus while an agent is connected")
+                      === agentControls[agentItems.firstIndex(of: .dnd)!],
+                      "the ring lands on DND, not on Disconnect")
     }
 
     /// One view, one body, two hosts: the menu bar panel passes the gear's
