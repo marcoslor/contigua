@@ -94,7 +94,7 @@ struct PhoneControlsState: Equatable {
     var showsPicker: Bool { MediaMenu.showsSessionPicker(sessions) }
 
     var pickerTitle: String {
-        "Now Playing follows: \(MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone")"
+        "Now playing: \(MediaMenu.chosenApp(sessions, chosen: media?.key) ?? "your phone")"
     }
 
     var ringTitle: String { ringing ? "Stop Ringing" : "Ring Phone" }

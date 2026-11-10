@@ -215,9 +215,9 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertFalse(panelState(sessions: [row("a", "Spotify")]).showsPicker)
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
         XCTAssertTrue(state.showsPicker)
-        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Spotify")
+        XCTAssertEqual(state.pickerTitle, "Now playing: Spotify")
         state.media?.key = "b"
-        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Music")
+        XCTAssertEqual(state.pickerTitle, "Now playing: Music")
     }
 
     /// One item model for both hosts: the menu bar panel and the Deck popover
