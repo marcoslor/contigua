@@ -142,8 +142,12 @@ internal interface ResizeSteps {
 
     fun resizeDisplay(size: IntSize, dpi: Int)
 
-    /** Points the display at the prepared encoder and starts draining it. */
-    fun attachPrepared()
+    /**
+     * Points the display at the prepared encoder and starts draining it.
+     * @return true when an encoder ended attached to the display; false when
+     * the swap lost both encoders (the stream has no picture then).
+     */
+    fun attachPrepared(): Boolean
 
     /** Stops the encoder the display no longer feeds. */
     fun releasePrevious()

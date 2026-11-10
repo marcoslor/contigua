@@ -34,8 +34,9 @@ class ResizePlanTest {
             calls += "resizeDisplay ${size.w}x${size.h}@$dpi"
         }
 
-        override fun attachPrepared() {
+        override fun attachPrepared(): Boolean {
             calls += "attach"
+            return true
         }
 
         override fun releasePrevious() {

@@ -120,10 +120,27 @@ internal class WindowStream(
     @Volatile private var vd: VirtualDisplay? = null
     @Volatile private var encoder: MediaCodec? = null
     @Volatile private var drainThread: Thread? = null
-    @Volatile private var released = false
-    @Volatile private var paused = false
     @Volatile private var width = 0
     @Volatile private var height = 0
+
+    /** The stream's closed phases, encoder slots and input controls (`encoder:` log lines). */
+    private val encoderLifecycle = EncoderLifecycle(stream) { log(it) }
+
+    private val released: Boolean get() = encoderLifecycle.state.released
+
+    private val paused: Boolean get() = encoderLifecycle.state.paused
+
+    private val encoderSuspended: Boolean get() = encoderLifecycle.state.suspended
+
+    /** The last build's fitted size, for the sequencer's `prepare` answer. */
+    private var builtSize: IntSize? = null
+
+    /** Set by an `Attach`/`Swap` action so `attachPrepared` can answer the sequencer. */
+    private var attachedInPlan = false
+
+    /** The last display's creation path and requested rate, for the open's log line. */
+    private var lastDisplayPath = ""
+    private var lastDisplayRate: Float? = null
 
     /** Where the picture sits in the frame of the size above (window.content). */
     @Volatile private var picture = IntRect(0, 0, 0, 0)
@@ -180,10 +197,12 @@ internal class WindowStream(
 
     private val sequencer = ResizeSequencer(object : ResizeSteps {
         override fun fit(w: Int, h: Int): IntSize = fitToEncoder(w, h)
-        override fun prepare(size: IntSize): IntSize? = prepareEncoder(size)
+        override fun prepare(size: IntSize): IntSize? = buildPrepared(size)
         override fun resizeDisplay(size: IntSize, dpi: Int) = applyDisplaySize(size, dpi)
-        override fun attachPrepared() = swapInPrepared()
-        override fun releasePrevious() = releasePreviousEncoder()
+        override fun attachPrepared(): Boolean = attachInPrepared()
+        override fun releasePrevious() {
+            releasePreviousCodec()
+        }
     })
 
     /** Live bitrate policy: computed target or `window.quality`, drops and recovery. */
@@ -229,9 +248,6 @@ internal class WindowStream(
     /** The switches this encoder was configured with (read once per configure). */
     @Volatile private var strategy = StreamStrategy.DEFAULT
 
-    /** Q1: the queue stopped encoder input; a rebuilt encoder is suspended again. */
-    @Volatile private var encoderSuspended = false
-
     /** T1: still refinement's machine, and the last time a *new* picture was encoded. */
     private val refineLock = Any()
     @Volatile private var refineModel = RefineModel()
@@ -270,17 +286,16 @@ internal class WindowStream(
         val screen = checkNotNull(DisplayProbe.logicalSize(DEFAULT_DISPLAY)) { "display 0 size unknown" }
         mirrorScreen = screen
         mirrorBox = MirrorFit.turnBox(IntSize(w, h), screen)
-        val size = checkNotNull(prepareEncoder(mirrorFrame(mirrorBox, screen))) { "no encoder for mirror" }
-        val next = prepared!!
-        prepared = null
-        vd = createMirror(size.w, size.h, next.surface)
-        displayIdValue = DEFAULT_DISPLAY
-        encoder = next.codec
-        startDrain(next.codec, next.kind)
+        performLifecycle(
+            encoderLifecycle.dispatch(
+                EncoderEvent.Open(DisplayPhase.Mirror, mirrorFrame(mirrorBox, screen)),
+            ),
+        )
+        checkNotNull(vd) { "no encoder for mirror" }
         rotationThread = Thread({ watchRotation() }, "pocketdeck-mirror-$stream").also { it.start() }
-        log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${size.w}x${size.h}")
+        log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${width}x$height")
         ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
-        return size
+        return IntSize(width, height)
     }
 
     /**
@@ -322,26 +337,14 @@ internal class WindowStream(
 
     fun start(w: Int, h: Int, dpi: Int): Int {
         baseDpi = dpi
-        persistent = createPersistentSurface()
-        var size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
-        var next = prepared!!
-        prepared = null
-        if (!next.started && !startOnPersistent(next.codec, next.kind)) {
-            dropPersistent()
-            size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
-            next = prepared!!
-            prepared = null
-        }
-        val created = createDisplay(size.w, size.h, dpi, next.surface)
-        val display = created.display
-        displayIdValue = display.display.displayId
-        vd = display
-        encoder = next.codec
-        startDrain(next.codec, next.kind)
+        performLifecycle(
+            encoderLifecycle.dispatch(EncoderEvent.Open(DisplayPhase.Virtual, IntSize(w, h))),
+        )
+        checkNotNull(vd) { "no encoder for ${w}x$h" }
         hideIme(displayIdValue)
         val requested = flags()
-        log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}" +
-            (DisplayRate.displayToken(created.rate)?.let { " $it" } ?: ""))
+        log("stream $stream vd=$displayIdValue ${width}x$height dpi=$dpi path=$lastDisplayPath" +
+            (DisplayRate.displayToken(lastDisplayRate)?.let { " $it" } ?: ""))
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
         log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
         // What a repeat is measured against is the request as it was asked, not
@@ -413,29 +416,17 @@ internal class WindowStream(
      */
     @Synchronized
     fun pause() {
-        if (paused) return
-        paused = true
+        if (paused || released) return
         heartbeat(IdleFrameWatchdogEvent.Pause)
-        if (persistent == null || encoder == null) detachEncoder()
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Pause))
     }
 
     @Synchronized
     fun resume() {
         if (!paused || released) return
-        paused = false
         lastDistinctMs = SystemClock.elapsedRealtime()
         heartbeat(IdleFrameWatchdogEvent.Resume(SystemClock.elapsedRealtime()))
-        if (persistent != null && encoder != null) {
-            lastCsd?.let { sink.onConfig(stream, videoCodec.wire, width, height, it, picture) }
-            requestKeyframe()
-            // The app may have nothing new to draw: the redraw guard nudges it.
-            guard.onAttached(SystemClock.elapsedRealtime())
-            return
-        }
-        val result = sequencer.resume(width, height, baseDpi, IntSize(width, height))
-        if (result.outcome == ResizeSequencer.Outcome.KEPT) {
-            log("stream $stream resume: no encoder for ${width}x$height")
-        }
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Resume))
     }
 
     /** The drop rule's request: the IDR before the dropped deltas answers nothing. */
@@ -461,22 +452,7 @@ internal class WindowStream(
      * resume is a tiny delta, not a keyframe.
      */
     fun setEncoderSuspend(suspended: Boolean) {
-        if (encoderSuspended == suspended) return
-        val codec = encoder ?: return
-        if (!applySuspend(codec, suspended)) {
-            log("stream $stream overflow: suspend ${if (suspended) "on" else "off"} refused by the encoder")
-            return
-        }
-        encoderSuspended = suspended
-        val now = SystemClock.elapsedRealtime()
-        if (suspended) {
-            stats.onSuspendStart(now)
-            refine(RefineEvent.Suspend, now)
-        } else {
-            stats.onSuspendEnd(now)
-            lastDistinctMs = now
-        }
-        log("stream $stream overflow: ${if (suspended) "suspended" else "resumed"}")
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Suspend(suspended)))
     }
 
     /** `PARAMETER_KEY_SUSPEND` 1/0; false when the codec has no such control. */
@@ -588,20 +564,14 @@ internal class WindowStream(
 
     @Synchronized
     fun close() {
-        released = true
+        if (released) return
+        val actions = encoderLifecycle.dispatch(EncoderEvent.Release)
         heartbeat(IdleFrameWatchdogEvent.Close)
         refine(RefineEvent.Close, SystemClock.elapsedRealtime())
         logStillCount()
         rotationThread?.interrupt()
         rotationThread = null
-        detachEncoder()
-        runCatching { prepared?.codec?.release() }
-        prepared = null
-        runCatching { vd?.release() }
-        vd = null
-        runCatching { persistent?.release() }
-        persistent = null
-        displayIdValue = -1
+        performLifecycle(actions)
     }
 
     // ------------------------------------------------------------------
@@ -712,11 +682,110 @@ internal class WindowStream(
             .onFailure { log("stream $stream: VirtualDisplay.resize failed: ${it.message}") }
     }
 
-    /** Points the display at the prepared encoder; the old one is released afterwards. */
-    private fun swapInPrepared() {
-        var next = prepared ?: return
-        prepared = null
-        if (!next.started) {
+    /** The sequencer's `prepare`: the machine decides whether a build is legal here. */
+    private fun buildPrepared(size: IntSize): IntSize? {
+        builtSize = null
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Prepare(size)))
+        return builtSize
+    }
+
+    /** The sequencer's `attachPrepared`: false when no encoder ended attached. */
+    private fun attachInPrepared(): Boolean {
+        if (prepared == null) return false
+        attachedInPlan = false
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.Attach))
+        return attachedInPlan
+    }
+
+    /** The sequencer's `releasePrevious`: the swap's old codec goes now. */
+    private fun releasePreviousCodec() {
+        performLifecycle(encoderLifecycle.dispatch(EncoderEvent.ReleasePrevious))
+    }
+
+    /**
+     * Performs the machine's actions in order; an action that reports an outcome
+     * dispatches it before the next action, so a refused start's rebuild runs
+     * inside the same plan.
+     */
+    private fun performLifecycle(actions: List<EncoderAction>) {
+        val pending = ArrayDeque<EncoderAction>()
+        for (action in actions) pending.addLast(action)
+        while (pending.isNotEmpty()) {
+            val outcome = performLifecycleAction(pending.removeFirst()) ?: continue
+            val next = encoderLifecycle.dispatch(outcome)
+            next.asReversed().forEach { pending.addFirst(it) }
+        }
+    }
+
+    private fun performLifecycleAction(action: EncoderAction): EncoderEvent? = when (action) {
+        EncoderAction.CreateSurface -> {
+            persistent = createPersistentSurface()
+            EncoderEvent.SurfaceReady(persistent != null)
+        }
+        is EncoderAction.Build -> {
+            builtSize = prepareEncoder(action.size)
+            val next = prepared
+            if (builtSize == null || next == null) {
+                EncoderEvent.BuildFailed
+            } else {
+                EncoderEvent.Built(next.started, action.attach)
+            }
+        }
+        EncoderAction.StartPrepared -> {
+            val next = prepared
+            if (next != null && startOnPersistent(next.codec, next.kind)) {
+                EncoderEvent.Started
+            } else {
+                EncoderEvent.StartRefused(IntSize(width, height))
+            }
+        }
+        EncoderAction.DropSurface -> {
+            dropPersistent()
+            null
+        }
+        is EncoderAction.CreateDisplay -> {
+            val next = prepared ?: return null
+            if (action.display == DisplayPhase.Mirror) {
+                vd = createMirror(width, height, next.surface)
+                displayIdValue = DEFAULT_DISPLAY
+                lastDisplayPath = "mirror"
+                lastDisplayRate = null
+            } else {
+                val created = createDisplay(width, height, baseDpi, next.surface)
+                vd = created.display
+                displayIdValue = created.display.display.displayId
+                lastDisplayPath = created.path
+                lastDisplayRate = created.rate
+            }
+            EncoderEvent.Created
+        }
+        EncoderAction.AttachFresh -> {
+            val next = prepared ?: return null
+            prepared = null
+            encoder = next.codec
+            EncoderEvent.Installed(startDrain(next.codec, next.kind))
+        }
+        is EncoderAction.Attach -> {
+            val next = prepared ?: return null
+            prepared = null
+            if (!action.persistent) pointDisplayAt(next.surface)
+            guard.onAttached(SystemClock.elapsedRealtime())
+            encoder = next.codec
+            attachedInPlan = true
+            EncoderEvent.Installed(startDrain(next.codec, next.kind))
+        }
+        EncoderAction.Swap -> {
+            val next = prepared ?: return null
+            prepared = null
+            val old = encoder
+            previous = old
+            encoder = next.codec
+            pointDisplayAt(next.surface)
+            guard.onAttached(SystemClock.elapsedRealtime())
+            attachedInPlan = true
+            EncoderEvent.Swapped(startDrain(next.codec, next.kind), previous = old != null)
+        }
+        EncoderAction.DetachOld -> {
             // The surface takes one codec at a time: the old one goes first.
             val old = encoder
             encoder = null
@@ -725,28 +794,82 @@ internal class WindowStream(
                 runCatching { old.stop() }
                 runCatching { old.release() }
             }
-            if (!startOnPersistent(next.codec, next.kind)) {
-                dropPersistent()
-                if (prepareEncoder(IntSize(width, height)) == null) return
-                next = prepared ?: return
-                prepared = null
-                runCatching { vd?.setSurface(next.surface) }
-            }
-            encoder = next.codec
-            guard.onAttached(SystemClock.elapsedRealtime())
-            startDrain(next.codec, next.kind)
-            return
+            null
         }
-        previous = encoder
-        encoder = next.codec
+        EncoderAction.Detach -> {
+            detachEncoder()
+            null
+        }
+        EncoderAction.ReleasePrepared -> {
+            runCatching { prepared?.codec?.release() }
+            prepared = null
+            null
+        }
+        EncoderAction.ReleasePreviousCodec -> {
+            releasePreviousEncoder()
+            null
+        }
+        EncoderAction.ReleaseDisplay -> {
+            runCatching { vd?.release() }
+            vd = null
+            displayIdValue = -1
+            null
+        }
+        EncoderAction.ReleaseSurface -> {
+            runCatching { persistent?.release() }
+            persistent = null
+            null
+        }
+        EncoderAction.ResendConfig -> {
+            lastCsd?.let { sink.onConfig(stream, videoCodec.wire, width, height, it, picture) }
+            null
+        }
+        EncoderAction.RequestKey -> {
+            requestKeyframe()
+            null
+        }
+        EncoderAction.Nudge -> {
+            // The app may have nothing new to draw: the redraw guard nudges it.
+            guard.onAttached(SystemClock.elapsedRealtime())
+            null
+        }
+        EncoderAction.Rebuild -> {
+            val result = sequencer.resume(width, height, baseDpi, IntSize(width, height))
+            if (result.outcome == ResizeSequencer.Outcome.KEPT) {
+                log("stream $stream resume: no encoder for ${width}x$height")
+            }
+            null
+        }
+        is EncoderAction.ApplySuspend -> {
+            val codec = encoder ?: return null
+            val ok = applySuspend(codec, action.suspended)
+            if (!ok) {
+                log("stream $stream overflow: suspend ${if (action.suspended) "on" else "off"} refused by the encoder")
+            } else {
+                val now = SystemClock.elapsedRealtime()
+                if (action.suspended) {
+                    stats.onSuspendStart(now)
+                    refine(RefineEvent.Suspend, now)
+                } else {
+                    stats.onSuspendEnd(now)
+                    lastDistinctMs = now
+                }
+                log("stream $stream overflow: ${if (action.suspended) "suspended" else "resumed"}")
+            }
+            EncoderEvent.SuspendApplied(action.suspended, ok)
+        }
+    }
+
+    /** A mirror's projection is fixed at creation: point it by rebuilding it; else setSurface. */
+    private fun pointDisplayAt(surface: Surface) {
         if (mirrorScreen != null) {
             runCatching { vd?.release() }
-            vd = runCatching { createMirror(width, height, next.surface) }
+            vd = runCatching { createMirror(width, height, surface) }
                 .onFailure { log("stream $stream: mirror rebuild failed: ${it.message}") }.getOrNull()
-        } else runCatching { vd?.setSurface(next.surface) }
-            .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
-        guard.onAttached(SystemClock.elapsedRealtime())
-        startDrain(next.codec, next.kind)
+        } else {
+            runCatching { vd?.setSurface(surface) }
+                .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
+        }
     }
 
     private fun createPersistentSurface(): Surface? {
@@ -1000,7 +1123,8 @@ internal class WindowStream(
         }
     }
 
-    private fun startDrain(codec: MediaCodec, kind: VideoCodec) {
+    /** Starts the drain; returns whether the new codec stayed suspended (Q1). */
+    private fun startDrain(codec: MediaCodec, kind: VideoCodec): Boolean {
         videoCodec = kind
         stats.codec = kind
         // A new encoder's first IDR may already answer the Mac's request.
@@ -1008,13 +1132,15 @@ internal class WindowStream(
         heartbeat(IdleFrameWatchdogEvent.Live(SystemClock.elapsedRealtime()))
         // A rebuild while the queue was suspended must not restart a flowing
         // encoder: re-apply the input stop to the new codec.
-        if (encoderSuspended && !applySuspend(codec, true)) {
-            encoderSuspended = false
+        var stillSuspended = encoderSuspended
+        if (stillSuspended && !applySuspend(codec, true)) {
+            stillSuspended = false
             stats.onSuspendEnd(SystemClock.elapsedRealtime())
         }
         lastOutputSize = -1
         lastDistinctMs = SystemClock.elapsedRealtime()
         drainThread = Thread({ drain(codec, kind) }, "pocketdeck-drain-$stream").also { it.start() }
+        return stillSuspended
     }
 
     /**
