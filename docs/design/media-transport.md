@@ -1,13 +1,15 @@
 # Media transport — UDP datagrams (P3)
 
-> **PLANNED / NOT IMPLEMENTED IN THIS MERGE.** This document specifies the
-> P3.2/P3.3 UDP media plane. The P0/P1/P2 merge carries no UDP capability,
-> socket, sender, assembler, probe/switch machine, feedback/controller,
-> NACK/parity or fault arm. Only the pure Android primitives exist:
-> `MediaDatagramTest`, `MediaCryptoTest`, `MediaReplayWindowTest` and
-> `MediaDefaultsTest`. Every other test name below is planned. `ISS-50` lists
-> what remains, and `epic/pmaxx` is kept for it; main carries this
-> specification only, marked planned.
+> **WITHDRAWN 2026-11-09 for the native link.** Measurements (ISS-48: the
+> person's real-phone logs and the losslab netem probe) showed the native
+> Mac–phone link loses almost nothing on a LAN and that a crowded link's stutter
+> comes from bitrate above capacity, not from TCP; plain UDP without FEC would
+> break the picture more often. The media plane stays TLS/TCP, and the work went
+> to a queue-aware rate controller. The Android primitives this document named
+> (`MediaDatagram`, `MediaCrypto`, `MediaReplayWindow`) were deleted; git history
+> keeps them. The web client (ISS-41) uses the browser's WebRTC transport, and a
+> future over-the-internet tier designs its own; this document is kept only as
+> background for those.
 
 Design for the datagram half of P3. It extends the session layer in
 [paths.md](paths.md); it does not fork it. The requirements are
