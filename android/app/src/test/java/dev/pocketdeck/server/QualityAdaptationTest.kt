@@ -222,6 +222,16 @@ class QualityAdaptationTest {
     }
 
     @Test
+    fun `a disabled policy never moves the bitrate`() {
+        val off = QualityAdaptation(enabled = false)
+        assertEquals(4_000_000, off.setTarget(4_000_000))
+        assertNull("no drop step", off.onDrop(0, measuredBps = 1_000_000))
+        assertEquals(4_000_000, off.bitrate)
+        assertNull("no recovery step", off.maybeRecover(60_000))
+        assertEquals(4_000_000, off.targetBps)
+    }
+
+    @Test
     fun `an explicit target below the floor never drops`() {
         q.setTarget(800_000)
         assertNull(q.onDrop(0))

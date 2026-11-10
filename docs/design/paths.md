@@ -799,6 +799,37 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
   bounded per direction (256 KiB), like a socket buffer, so a sender's own
   write queue can fill and back-pressure is real. Every request and its mode is
   written as a JSON line to `--events`.
+- `--script FILE` runs the same changes on one clock instead of racing a shell
+  against the ctl file: `at 10 throttle 3`, `at 20 stall`, `at 30 blackhole`,
+  `at 33 pass`. Each line is `at SECONDS ACTION [ARG|key=value …]`; the actions
+  are any mode name, `mode NAME`, `rate MBIT` or `delay MS`, and the stall
+  knobs are `stall_ms=`, `stall_every_ms=`, `stall_long_ms=` and
+  `stall_long_at_ms=`. Times are seconds from the proxy listening and never go
+  backwards. Every applied step logs a `timeline` event with its planned and
+  applied second, so a run can show when each change actually landed.
+  `tools/pdpathfault/test_script.py` pins the grammar, the refusals and a live
+  pass → black hole → pass on one proxy.
+
+`tools/pdpathfault/pdudpfault.py` is the datagram twin for P3.2's media plane:
+`--mode pass|delay|throttle|delay-throttle|blackhole|stall`, plus `--loss-pct`,
+`--duplicate-pct`, `--reorder-pct`/`--reorder-delay-ms`, the same `--ctl-file`
+directives (`mode blackhole`, `rate 2`, `loss 5`, `duplicate 10`,
+`reorder 20`, `delay 120`) and the same JSON `--events`. It is a relay, not a
+terminator: one client address is learned, datagrams go both ways, and the
+scheduler paces, delays, drops, repeats, reorders and stalls them. It is not
+wired to the session yet; P3.2 owns that. `tools/pdpathfault/test_udpfault.py`
+pins every fault, the ctl changes and the two directions.
+
+`tools/emulator/netshape.sh` wraps the emulator console's own shaper for the
+S3 arm: `show` (`network status`), `speed MBIT`, `delay MS`, `throttle MBIT MS`
+and `reset` (`speed full`, `delay none`), all through
+`adb -s emulator-<port> emu network …`. It refuses any serial that is not an
+emulator and has a `--check` that prints the console lines without a device.
+The console shapes the emulator's virtual NIC; the Mac's e2e reaches the phone
+through an `adb forward`, which is an adb pipe rather than the guest's NIC, so
+the S3 check shapes the forwarded leg with `pdpathfault --rate-mbit` and uses
+`netshape.sh show` to keep the console's own shaping off.
+
 
 ### 10.4 e2e, one check each
 
@@ -812,6 +843,9 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
 | `pathversion` | version pinning, both ways: a v3 fake phone answers the Mac's v4 `hello` with `error version` and closes (the Mac shows its incompatible-version state and stops retrying), and a v3-shaped `hello` against a v4 phone gets the same answer and no `welcome` — no path frame, no `join`, and no served session in either direction | PATH-1 |
 | `pathrejoin` | the only path dies and the route returns inside the 30 s grace: the Mac re-dials a join on the reconnect backoff, the same session id comes back, the windows clear "reconnecting", and no second session starts | PATH-22, PATH-17 |
 | `pathbulk` | a 16 Mbit/s path carries a 32 MiB drop with a fast standby: no lost pong, no path down, both paths open, the hash exact; then, on a 400 Mbit/s path, a KEY typed 0.6 s into a 64 MiB drop reaches the fake phone within `input_latency_ms` | PATH-23, PATH-7, PATH-10 |
+| `switchpath` | one window streams video and audio while numbered probes run; the margin rule makes a planned switch across two paths through the fault proxy. From 2 s before to 5 s after: no frame gap over 150 ms, `chain_fed=0`, no chain break, zero audio underrun/conceal/drop, every probe once and in order, one session and no reconnect banner. Red with `--debug-no-margin-switch` | PATH-44 |
+| `switchlink` | one path follows the link's own timeline through `pdpathfault --script`: 10 s pass, 10 s at 3 Mbit/s, 10 s of the 100 ms-per-second off-channel pattern, a 3 s black hole, then pass. Pass and recovery keep the picture within 150 ms and the audio clean (up to 20 stale packets in the first second back); the black hole withholds only its own 3 s, the first frame returns within 1 s, the session never reconnects, and every probe sent while a path was usable arrives once and in order. Red against the fake-phone commit before its dead-path send fix | PATH-45 |
+| `switchquality` | the emulator behind the shaped leg: 20 → 3 → 20 Mbit/s with motion on screen, then the 100 ms off-channel pattern at 20 Mbit/s. The phone steps its bitrate within PATH-36's cap without a repeated drop/key cycle and climbs back within 10 % (the stall step is reported, not bounded). One boot runs the red arm (`debug.pocketdeck.stream.quality=off`: no down-step, repeated drop cycle) and the green arm; `tools/emulator/switchquality_stats.py` judges the Mac's own stats lines against the phone's `drop episode` transitions. Measured 2026-11-09: the policy moves (red target flat 7533 kbps; green 7533 → 1000 → 7400 kbps in 108 s) but the emulator's software encoder ignores the live key (6.0-6.7 Mbps at a 1.0 Mbps target, 15-18 fps), so the picture/cycle bounds stay red on this rig (ISS-48; round 2: real phone or a codec with working runtime rate control) | PATH-46 |
 
 `[PATH-n]` tags go on the `ok`/`bad` lines of those checks.
 
