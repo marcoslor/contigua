@@ -56,9 +56,6 @@ enum DockMessage {
     /// The app's label as the phone sent it, so a rebuild that only changes the
     /// origins keeps the name without the phone part.
     static let plistLabel = "PDLabel"
-    /// The pre-origins marker ("Add to Dock" = true): read only to migrate a
-    /// bundle written before PDOrigins existed.
-    static let plistPinned = "PDPinned"
     /// The renderer version the shim's icon was made with (docs/design/dock.md
     /// §Icons): a bundle with an older or missing one is rebuilt.
     static let plistIconVersion = "PDIconVersion"
