@@ -197,9 +197,10 @@ final class PhonePanelViewTests: XCTestCase {
                        PhonePanelItem.focusOrder(for: plain).count)
     }
 
-    /// The rows in the order the view lays them out: P3's four tiles, the
-    /// volume, the live notifications, the WINDOWS row, then Settings/Quit.
-    /// This is the order the e2e's panelclick/paneldrag map indices to.
+    /// The rows in the order the view lays them out: the full-width Sound
+    /// module, the 2×2 modules, the picker, the live rows with their Dismiss
+    /// buttons and the two window buttons (PANEL-13/PANEL-20). This is the
+    /// order the e2e's panelclick/paneldrag map indices to.
     func testTheControlsAreLaidOutInThePanelOrder() {
         var state = panelState(sessions: [MediaSessionRow(key: "a", pkg: "p.a", app: "Spotify", playing: false),
                                           MediaSessionRow(key: "b", pkg: "p.b", app: "Music", playing: true)])
@@ -210,12 +211,12 @@ final class PhonePanelViewTests: XCTestCase {
         XCTAssertEqual(laidOut.count, items.count)
         let ys = laidOut.map { frame($0, in: view).minY }
         XCTAssertEqual(ys, ys.sorted(), "the controls are top to bottom in the model's order")
-        XCTAssertEqual(Array(items.prefix(5)), [.dnd, .ringer, .ring, .screen, .volume])
-        XCTAssertLessThan(ys[items.firstIndex(of: .screen)!], ys[items.firstIndex(of: .volume)!])
-        XCTAssertLessThan(ys[items.firstIndex(of: .volume)!], ys[items.firstIndex(of: .sessions)!])
+        XCTAssertEqual(Array(items.prefix(5)), [.volume, .dnd, .ringer, .ring, .screen])
+        XCTAssertLessThan(ys[items.firstIndex(of: .volume)!], ys[items.firstIndex(of: .dnd)!])
+        XCTAssertLessThan(ys[items.firstIndex(of: .screen)!], ys[items.firstIndex(of: .sessions)!])
         XCTAssertLessThan(ys[items.firstIndex(of: .sessions)!], ys[items.firstIndex(of: .live)!])
         XCTAssertLessThan(ys[items.firstIndex(of: .live)!], ys[items.firstIndex(of: .phoneScreen)!])
-        XCTAssertEqual(items.last, .installApk, "no footer and no gear in the Deck's copy")
+        XCTAssertEqual(items.last, .findApps, "no footer, no Install APK and no gear in the Deck's copy")
 
         // The menu bar panel heads its order with the gear, in the header.
         let menu = host(state, gear: true)
@@ -294,7 +295,49 @@ final class PhonePanelViewTests: XCTestCase {
         XCTAssertEqual(a.width, b.width)
         XCTAssertEqual(a.height, b.height)
         XCTAssertNotNil(png(a))
-        XCTAssertEqual(png(a), png(b), "the track's text must not be drawn anywhere in the panel")
+        // The renderer's anti-aliasing can differ by a pixel or two between
+        // two runs; track text would cover a band of the card. The panel reads
+        // no media title, performer or album (PANEL-15).
+        let diff = pixelDifference(a, b)
+        XCTAssertLessThanOrEqual(diff.count, 4,
+                                 "the track's text must not be drawn anywhere in the panel: \(diff.count) pixels differ at \(diff.box)")
+    }
+
+    /// PANEL-28: the handoff row is drawn only while the phone is online and
+    /// the front machine knows a package; it sits after the Live rows and
+    /// before WINDOWS, and its arrival moves no row above it.
+    func testTheHandoffRowAppearsOnlyForAFreshFrontApp() {
+        var known = panelState()
+        known.handoff = FrontAppRow(pkg: "p.maps", label: "Maps", icon: nil)
+        let with = host(known)
+        let withItems = PhonePanelItem.focusOrder(for: known)
+        XCTAssertTrue(withItems.contains(.continueOnMac), "no handoff row for a known app")
+        XCTAssertEqual(withItems.firstIndex(of: .continueOnMac),
+                       withItems.firstIndex(of: .phoneScreen)! - 1,
+                       "the handoff row sits just above WINDOWS")
+        XCTAssertEqual(controls(in: with).count, withItems.count,
+                       "one laid-out control per item, the handoff row included")
+        let withHeight = with.fittingSize.height
+        let volumeY = frame(controls(in: with)[withItems.firstIndex(of: .volume)!], in: with).minY
+        let dndY = frame(controls(in: with)[withItems.firstIndex(of: .dnd)!], in: with).minY
+
+        let plain = panelState()
+        let without = host(plain)
+        let withoutItems = PhonePanelItem.focusOrder(for: plain)
+        XCTAssertFalse(withoutItems.contains(.continueOnMac), "no row without a known app")
+        XCTAssertEqual(controls(in: without).count, withoutItems.count)
+        XCTAssertLessThan(without.fittingSize.height, withHeight, "the row adds its height")
+        XCTAssertEqual(frame(controls(in: without)[withoutItems.firstIndex(of: .volume)!],
+                             in: without).minY, volumeY, accuracy: 1,
+                       "the Sound module stays where it was")
+        XCTAssertEqual(frame(controls(in: without)[withoutItems.firstIndex(of: .dnd)!],
+                             in: without).minY, dndY, accuracy: 1,
+                       "the modules stay where they were")
+
+        var away = known
+        away.connection = .offline
+        XCTAssertFalse(away.showsHandoff, "offline hides the row")
+        XCTAssertFalse(PhonePanelItem.focusOrder(for: away).contains(.continueOnMac))
     }
 
     /// The one shared component: the Deck's popover and the menu bar panel
@@ -313,5 +356,31 @@ final class PhonePanelViewTests: XCTestCase {
         let panel = try String(contentsOf: sources.appendingPathComponent("PhonePanel.swift"), encoding: .utf8)
         XCTAssertTrue(panel.contains("accessibilityIdentifier(PhonePanelItem."),
                       "the rows carry the panel item ids both hosts inherit")
+    }
+
+    /// The pixels two renders differ in, and where.
+    private func pixelDifference(_ a: CGImage, _ b: CGImage) -> (count: Int, box: CGRect) {
+        func pixels(_ image: CGImage) -> [UInt8] {
+            var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let context = CGContext(data: &data, width: image.width, height: image.height,
+                                    bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return data
+        }
+        let pa = pixels(a), pb = pixels(b)
+        var count = 0
+        var box = CGRect.null
+        for y in 0..<min(a.height, b.height) {
+            for x in 0..<min(a.width, b.width) {
+                let i = (y * a.width + x) * 4
+                if pa[i..<i + 4] != pb[i..<i + 4] {
+                    count += 1
+                    box = box.union(CGRect(x: x, y: y, width: 1, height: 1))
+                }
+            }
+        }
+        return (count, box)
     }
 }

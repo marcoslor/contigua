@@ -442,6 +442,8 @@ struct DeckPhonePopover: View {
             state: PhoneControlsState(controller: controller),
             actions: PhoneControlsActions(controller: controller) { DeckWindow.show() },
         )
+        .onAppear { controller.beginPanelFrontWatch() }
+        .onDisappear { controller.endPanelFrontWatch() }
     }
 }
 

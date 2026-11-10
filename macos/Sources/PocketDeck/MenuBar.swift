@@ -137,10 +137,15 @@ struct MenuBarContent: View {
     /// function, so they cannot drift apart.
     var onSecondaryMenu: (() -> Void)?
 
+    /// The card's height changed (a row arrived or left): the AppKit panel
+    /// follows it from its top edge (PANEL-4).
+    var onSizeChange: ((CGFloat) -> Void)?
+
     var body: some View {
         PhonePanelView(state: PhoneControlsState(controller: controller),
                        actions: actions,
-                       onGear: onSecondaryMenu)
+                       onGear: onSecondaryMenu,
+                       onSizeChange: onSizeChange)
     }
 
     private var actions: PhoneControlsActions {
