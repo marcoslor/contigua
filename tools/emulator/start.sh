@@ -95,6 +95,15 @@ if [ "$(emu shell locksettings get-disabled 2>/dev/null | tr -d '\r')" = "false"
   emu shell dumpsys window 2>/dev/null | grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true'; then
   step "device is locked, unlocking with the rig PIN"
   bash "$EMU_DIR/unlock.sh"
+  # The AVD keeps userdata across boots, so a PIN lock.sh set for a check must
+  # not leave every later boot at the bouncer (ISS-71). lock.sh sets it again
+  # when a check needs a locked phone.
+  RIG_PIN="${POCKETDECK_PIN:-1234}"
+  if emu shell "locksettings clear --old $RIG_PIN" >/dev/null 2>&1; then
+    step "cleared the rig PIN: the next boot starts unlocked"
+  else
+    step "warn: could not clear the rig PIN (the next boot may ask for it)"
+  fi
 fi
 
 # --- 2. install the apps ----------------------------------------------------
