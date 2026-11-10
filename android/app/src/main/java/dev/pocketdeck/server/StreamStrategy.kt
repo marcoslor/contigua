@@ -29,8 +29,6 @@ data class StreamStrategy(
     val vdRate: Int = 0,
     /** P2: ask a supporting codec for low-latency mode. */
     val lowLatency: Boolean = false,
-    /** P3: the media plane. `tcp` is the shipped default until P5. */
-    val transport: Transport = Transport.Tcp,
     /** `quality=off`: the switchquality check's broken build. */
     val quality: Boolean = true,
     /**
@@ -44,8 +42,6 @@ data class StreamStrategy(
     enum class Overflow { Drop, Suspend }
 
     enum class RateControl { Vbr, Cbr }
-
-    enum class Transport(val token: String) { Tcp("tcp"), Auto("auto"), Udp("udp") }
 
     val capBps: Int get() = capKbps * 1000
 
@@ -97,7 +93,6 @@ data class StreamStrategy(
         if (lowLatency) {
             parts += if (applied.lowLatency) "low_latency=on" else "low_latency=on unsupported"
         }
-        if (transport != Transport.Tcp) parts += "transport=${transport.token}"
         if (queueMs != DEFAULT_QUEUE_MS) parts += "queue_ms=$queueMs"
         if (overflow == Overflow.Suspend) parts += "overflow=suspend"
         if (overshoot != DEFAULT_OVERSHOOT) parts += "overshoot=$overshoot"
@@ -169,11 +164,6 @@ data class StreamStrategy(
                 fps = raw("fps").parseInt(DEFAULT_FPS, MIN_FPS..MAX_FPS),
                 vdRate = raw("vd_rate").parseVdRate(),
                 lowLatency = raw("low_latency") == "on",
-                transport = when (raw("transport")) {
-                    "auto" -> Transport.Auto
-                    "udp" -> Transport.Udp
-                    else -> Transport.Tcp
-                },
                 overshoot = raw("overshoot")
                     .parseInt(DEFAULT_OVERSHOOT, 1..MAX_OVERSHOOT),
                 quality = raw("quality") != "off",
