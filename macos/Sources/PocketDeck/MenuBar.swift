@@ -231,7 +231,13 @@ struct AppCommands: Commands {
             Picker(selection: Binding(
                 get: { MenuBarModel.shared.snapshot.style },
                 set: { picked in
-                    if picked == MenuBarModel.shared.snapshot.style {
+                    // A click on the already-checked radio item is no change.
+                    // The pair's ⌥⌘F arrives as a key event and toggles, so
+                    // the checked item's pick flips the window instead.
+                    let event = NSApp.currentEvent
+                    let toggling = event?.type == .keyDown
+                        && (event?.modifierFlags.contains([.command, .option]) ?? false)
+                    if picked == MenuBarModel.shared.snapshot.style && toggling {
                         controller.windows.toggleKeyWindowStyle()
                     } else {
                         controller.windows.setKeyWindowStyle(picked)

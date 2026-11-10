@@ -1556,7 +1556,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // check reads the screenshot inside it.
         let picture = videoView.convert(videoView.videoRect(), to: nil)
         let pictureTop = (window?.frame.height ?? 0) - picture.maxY
-        let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden")"
+        let line = "style=\(style.label.lowercased()) lights=\(lights ? "shown" : "hidden")"
             + " fullbar=\(fullBarStateName) fullbar_visible=\(chrome.fullBarVisible ? 1 : 0)"
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
