@@ -17,6 +17,12 @@ final class LinkWindowController: StreamWindowController {
     /// The link wears the style the package remembers, once it is known.
     override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
 
+    /// The bar names the app once the phone has reported its package; before
+    /// that it shows nothing — never the host or the URL (WIN-68).
+    override var barTitle: String? {
+        BarTitleName.adoptedApp(pkg.flatMap { manager.appsByPkg[$0]?.label })
+    }
+
     /// And its density override, under the same package key.
     override var densityPackage: String? { pkg }
 
@@ -56,9 +62,11 @@ final class LinkWindowController: StreamWindowController {
         self.pkg = pkg
         reapplyStoredStyle()
         reapplyStoredDensity()
+        refreshBarTitle()
     }
 
     override func retitle() {
         window?.title = manager.titled(subject)
+        refreshBarTitle()
     }
 }

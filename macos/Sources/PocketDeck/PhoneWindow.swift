@@ -208,6 +208,11 @@ final class PhoneWindowController: StreamWindowController {
             .withSymbolConfiguration(.init(pointSize: 46, weight: .regular))
     }
 
+    /// The bar names the phone, never the mirrored app or a task (MIRROR-23).
+    override var barTitle: String? {
+        BarTitleName.phone(displayName: manager.phoneName, fallback: manager.phone?.name)
+    }
+
     private static let minVideoWidth: CGFloat = 240
 
     /// The window's narrowest width: the video's own minimum, or the bar's
@@ -468,9 +473,11 @@ final class PhoneWindowController: StreamWindowController {
     override func retitle() {
         if let subject {
             window?.title = manager.titled(subject)
+            refreshBarTitle()
             return
         }
         window?.title = Self.title(name: manager.phoneName, phone: manager.phone)
+        refreshBarTitle()
     }
 
     override var frameKey: String { "phone" }

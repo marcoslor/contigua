@@ -37,6 +37,9 @@ final class AppWindowController: StreamWindowController {
     override var openingName: String { appLabel }
     override var openingIcon: NSImage? { manager.icons[pkg] }
 
+    /// The bar names the app alone, never the task label or the phone.
+    override var barTitle: String? { BarTitleName.app(appLabel) }
+
     /// Only an app's first window is where the app's frame is remembered; an
     /// added window cascades from it and forgets its own place (WIN-13).
     private var storedRemembersFrame = true
@@ -119,5 +122,6 @@ final class AppWindowController: StreamWindowController {
         let title = WindowTitles.title(app: appLabel, label: taskLabel,
                                        phone: manager.phoneName, windowCount: count)
         if window?.title != title { window?.title = title }
+        refreshBarTitle()
     }
 }

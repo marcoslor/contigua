@@ -85,6 +85,10 @@ enum ChromeBar {
     static let trafficLightInset = BarGeometry.lightInset
     static let trafficLightButtonSide = BarGeometry.lightSide
     static let trafficLightSpacing = BarGeometry.lightSpacing
+
+    /// The white haze at the window's top edge; it fades to clear at the
+    /// seam (WIN-40). `dark` is the window appearance.
+    static func hazeTopAlpha(dark: Bool) -> CGFloat { dark ? 0.14 : 0.30 }
 }
 
 /// The immersive style's hot zone, the dwell that brings the lights in and the

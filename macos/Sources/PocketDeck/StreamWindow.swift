@@ -249,6 +249,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome.onLiveTextToggle = { [weak self] in self?.toggleLiveText() }
         chrome.liveTextDragProvider = { [weak self] in self?.liveText.dragFileURL() }
         chrome.setActions(headerActions())
+        refreshBarTitle()
         // The overlay's setting before the first state write: the file reports it.
         videoView.showsTouches = manager.showTouches
         opening = OpeningCover(startedAt: now())
@@ -412,6 +413,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The window kind's actions, at the bar's right end (the phone window's
     /// Back/Home/Recents), also inside the immersive pill.
     func headerActions() -> [HeaderAction] { [] }
+
+    /// What the Framed bar names: an app window's app, the Mirror's phone, or
+    /// an adopted app for a link/handoff; nil hides the title (WIN-68).
+    var barTitle: String? { nil }
+
+    /// The bar's name follows every retitle path (the phone's nickname, the
+    /// app list, a task, an adopted package).
+    func refreshBarTitle() {
+        chrome.setBarTitle(barTitle)
+    }
 
     // MARK: Opening cover
 
@@ -1532,6 +1543,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
             + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " bar_tint=\(String(format: "%.2f", BarTitle.tintAlpha))"
+            + " tint=\(chrome.barTintVisible ? 1 : 0)"
+            + " bar_title=\(chrome.barTitleVisible ? 1 : 0)"
+            + " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
+            + " bar_title_rect=\(barTitleRectState())"
             + " haze=\(chrome.hazeVisible ? 1 : 0)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
@@ -1540,6 +1556,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " video_gap=\(Int(videoView.videoGap().rounded()))"
             + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
+    }
+
+    /// The title's rect in window points, top-left origin (the e2e maps it
+    /// onto the capture); none while hidden. The text itself is never here.
+    private func barTitleRectState() -> String {
+        guard let window, let rect = chrome.barTitleRect else { return "none" }
+        let inWindow = chrome.convert(rect, to: nil)
+        return "\(Int(inWindow.minX.rounded())),\(Int((window.frame.height - inWindow.maxY).rounded())),\(Int(inWindow.width.rounded())),\(Int(inWindow.height.rounded()))"
     }
 
     /// The e2e's geometry: the window, the content and the chrome, the mirror
