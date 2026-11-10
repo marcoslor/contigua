@@ -65,6 +65,15 @@ CONDITIONS = {
     "wifi4": dict(qdisc="tbf", rate="4mbit",
                   base="delay 10ms 30ms distribution paretonormal loss 0.5%",
                   pulse=("delay 200ms", 200, 2.0)),
+    # The order-preserving control for the two above: a saturated AP queue
+    # delays and drops but never reorders (netem's jitter does reorder, which
+    # 802.11 does not). Same cap, loss and spike.
+    "wifiq8": dict(qdisc="tbf", rate="8mbit",
+                   base="delay 10ms loss 0.5%",
+                   pulse=("delay 200ms", 200, 2.0)),
+    "wifiq4": dict(qdisc="tbf", rate="4mbit",
+                   base="delay 10ms loss 0.5%",
+                   pulse=("delay 200ms", 200, 2.0)),
 }
 
 
@@ -96,6 +105,10 @@ class Phone:
 
     def start(self):
         run(["docker", "rm", "-f", CONTAINER])
+        for _ in range(40):
+            if run(["docker", "inspect", CONTAINER]).returncode != 0:
+                break
+            time.sleep(0.25)
         cmd = [
             "docker", "run", "-d", "--name", CONTAINER, "--cap-add", "NET_ADMIN",
             "-p", "127.0.0.1:%d:%d" % (PORT, PORT),
@@ -298,17 +311,21 @@ def runs(cond, count, base):
         clear_profile()
         phone = Phone(work)
         phone.cond = cond
-        phone.start()
-        phone.setup()
         app = logp = logstream = None
         stop_flag = threading.Event()
         samples = []
         try:
+            phone.start()
+            phone.setup()
+            with open(os.path.join(work, "qdisc-before.txt"), "w") as f:
+                f.write(run(["docker", "exec", CONTAINER, "tc", "-s", "qdisc", "show", "dev", "eth0"]).stdout)
             app, logp, logstream, frames = launch(work)
 
             def sampler():
                 while not stop_flag.is_set():
-                    samples.append({"t": time.time(), "ss": phone.ss()})
+                    samples.append({"t": time.time(), "ss": phone.ss(),
+                                    "tc": run(["docker", "exec", CONTAINER, "tc", "-s", "qdisc",
+                                               "show", "dev", "eth0"]).stdout})
                     time.sleep(1.0)
 
             sampler_thread = threading.Thread(target=sampler, daemon=True)
@@ -320,12 +337,17 @@ def runs(cond, count, base):
             stop_flag.set()
             sampler_thread.join(timeout=3)
             final = [{"t": time.time(), "ss": phone.ss()}]
+            with open(os.path.join(work, "qdisc-after.txt"), "w") as f:
+                f.write(run(["docker", "exec", CONTAINER, "tc", "-s", "qdisc", "show", "dev", "eth0"]).stdout)
             with open(os.path.join(work, "timeline.json"), "w") as f:
                 json.dump(timeline, f)
             with open(os.path.join(work, "ss.txt"), "w") as f:
                 for s in samples + final:
                     f.write("### %.6f\n" % s["t"])
                     f.write(s["ss"])
+                    if s.get("tc"):
+                        f.write(";;tc\n")
+                        f.write(s["tc"])
             phone.logs()
             with open(os.path.join(work, "phone.log"), "w") as f:
                 f.write(phone.logs())
