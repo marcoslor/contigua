@@ -54,6 +54,14 @@ and the codec choice against the Mac's `hello.codecs`) have their own:
 python3.11 tools/fakephone/test_hevc.py   # prints OK, exit 0
 ```
 
+The path socket's kernel-queue cap (the real phone's `TCP_NOTSENT_LOWAT`, 16 KiB
+at Linux option 25) has its own; it also pins that a kernel without the option
+returns an errno instead of failing:
+
+```sh
+python3.11 tools/fakephone/test_notsent_lowat.py   # prints OK, exit 0
+```
+
 It starts `fakephone` on an ephemeral port (`--no-mdns --auto-allow`), pairs with
 `deckctl`, runs `apps`, `icon`, `open`, `resize-test`, `input-test`,
 `pause-test`, `latency`, checks that a second simultaneous session is rejected

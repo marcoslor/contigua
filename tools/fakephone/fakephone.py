@@ -65,6 +65,15 @@ SCREEN_W, SCREEN_H, SCREEN_DPI = 1080, 2340, 450
 BATTERY = 87
 FRAME_RATE = 60
 
+# The real phone bounds every path socket's kernel queue (Server.serve calls
+# TcpNotSentLowat): at most 16 KiB of unsent bytes, so a slow link backs up in
+# the phone's own send queue where its priority rules apply, not in the kernel.
+# TCP_NOTSENT_LOWAT is Linux's tcp.h option 25 (absent from Python's socket
+# module); a kernel without it keeps today's behaviour, and macOS refuses it
+# exactly as the phone's own apply tolerates.
+TCP_NOTSENT_LOWAT = 25
+NOTSENT_LOWAT_BYTES = 16 * 1024
+
 # Backpressure: at most ~250 ms of delta frames pending per stream (60 fps).
 MAX_BULK_BYTES = 1024 * 1024  # the phone's SendQueue bulk bound
 MAX_PENDING_DELTA = 15
@@ -98,6 +107,30 @@ def dbg(message):
     if FAKE_DEBUG:
         sys.stderr.write("fakephone: %s\n" % message)
         sys.stderr.flush()
+
+
+def set_notsent_lowat(sock, limit=NOTSENT_LOWAT_BYTES):
+    """Linux TCP_NOTSENT_LOWAT: 0 when set, the kernel's errno when it is not.
+
+    An optional socket option on the phone too (a kernel that refuses it changes
+    nothing), so a refusal is a return value, never an exception.
+    """
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, TCP_NOTSENT_LOWAT, limit)
+        return 0
+    except OSError as exc:
+        return exc.errno or -1
+
+
+def configure_socket(sock):
+    """The real phone's Server.serve socket setup, before TLS: no Nagle and a
+    16 KiB cap on the kernel's unsent bytes, so the app's send queue is where
+    the backlog shows up in a rig run."""
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    return set_notsent_lowat(sock)
 
 DEFAULT_STATE = os.path.expanduser("~/.pocketdeck-fakephone.json")
 
@@ -5927,7 +5960,11 @@ class FakePhone(object):
         a refusal before the session thread exists."""
         handed_off = False
         try:
-            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # The real phone's socket setup runs on the raw accepted socket,
+            # before TLS (Server.serve): a slow link then backs up in the app's
+            # own send queue instead of the kernel's megabytes.
+            lowat = configure_socket(conn)
+            dbg("notsent lowat %s" % ("on" if lowat == 0 else "failed errno=%d" % lowat))
             if not self.args.no_tls:
                 conn = self.accept_tls(conn)
             self.events.session("open")
