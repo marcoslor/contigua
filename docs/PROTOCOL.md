@@ -733,7 +733,8 @@ Mac → phone (after `welcome`):
 | `window.quality` | `stream`, `bitrate` (bps, optional), `maxFps` (optional) | live encoder quality; optional, the phone may ignore it |
 | `link.open` | `stream`, `w`, `h`, `dpi`, `url` | like `window.open`, but the phone starts `ACTION_VIEW` for `url` on the new display and Android picks the app; see "Links" |
 | `window.launch` | `stream`, `pkg` (+`activity`) | launch an app onto an existing window's display (phone mode) |
-| `task.continue` | `stream`, `w`, `h`, `dpi` | "Move Phone App to Mac" (docs/design/handoff.md): open a virtual display for [stream] like `window.open` and move the app that is in the foreground on the phone's own screen onto it, keeping the task. On success `window.opened` (see below) with `"started":"moved"`; when the move is refused the package is relaunched on the display instead and `started` is `"fresh"`; when nothing continuable runs in the foreground the phone answers `error code nothing_to_continue` and opens nothing |
+| `task.continue` | `stream`, `w`, `h`, `dpi` | "Open <App> on Mac" (docs/design/handoff.md): open a virtual display for [stream] like `window.open` and move the app that is in the foreground on the phone's own screen onto it, keeping the task. On success `window.opened` (see below) with `"started":"moved"`; when the move is refused the package is relaunched on the display instead and `started` is `"fresh"`; when nothing continuable runs in the foreground the phone answers `error code nothing_to_continue` and opens nothing |
+| `task.front` | `seq` | a one-shot read of the app in front on the phone's own screen (display 0), for the panel's "Open <App> on Mac" row (docs/design/handoff.md). The phone answers `task.front` with the same `seq` and `pkg` (the package) or `pkg: null` when nothing continuable is in front (our app, the launcher/home or SystemUI); it opens nothing, sends no HOME key and keeps no watch. `error code not_available` when the phone cannot read its task list. The Mac asks only while the card is open, at most once every 2 s, and ignores a reply whose `seq` is not its newest request |
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents (HOME / APP_SWITCH on display 0) only in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
@@ -780,6 +781,7 @@ Phone → Mac:
 | `stream.stats` | `stream`, `windowMs`, `codec`, `frames`, `kf`, `keyIdr`, `keyNotIdr`, `kfReq`, `bytes`, `drop`, `dropEp`, `dropGapMs`, `skip`, `susp`, `suspMs`, `refine`, `targetBps`, optional `encP50`/`encP95`/`queueP50`/`queueP95` (µs), `qpP50`/`qpP95`/`qpAvg` (average QP), `retrans`/`rto`/`lost_retrans` (system-wide TCP counter deltas), optional `noFrame` (one no-frame episode state, see "Stream stats") — the stream's counters over the last `windowMs` (2 s since the previous message); optional fields are absent when there is no measurement; see "Stream stats" |
 | `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's task and its app: `pkg` is the task's own app (the root's package from `baseActivity`, then `baseIntent.component`), and only a task that reports no root falls back to its top activity, then `topActivityInfo`; another package's activity on top of the task never becomes the app (WIN-28). Every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
+| `task.front` | `seq` (the request echoed), `pkg`: string or null — the app in front on the phone's own screen when the Mac asked (docs/design/handoff.md); `null` when nothing continuable is in front. A read: it opens nothing and changes nothing on the phone, and the phone never sends it unasked |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
@@ -1475,12 +1477,29 @@ live while the panel is on.
    responding", so the press does not read as a dead stream. It sends nothing for a press
    while the panel is already held (point 4): that one hands the phone back instead.
 
+## Foreground app
+
+The panel's "Open <App> on Mac" row names the app in front without opening a stream
+(docs/design/handoff.md). It is a **pull**, never a watch:
+
+1. Mac → `{"t":"task.front","seq":N}`. The phone reads `IActivityTaskManager.getTasks`
+   once at shell UID and picks the same task `task.continue` would (`ForegroundTaskPicker`):
+   display 0, not our app, not home, not SystemUI, with a package. It answers
+   `{"t":"task.front","seq":N,"pkg":"…"}`, or `pkg: null` when nothing continuable is in
+   front. No display opens, no HOME key is pressed and no task moves.
+2. The package is the only payload: no label, title or activity. The Mac resolves the app's
+   name and icon from the `apps` list it already has and logs only `front: present|none`,
+   never the package.
+3. The Mac asks once when the card opens and at most once every 2 s while it stays open; it
+   never asks while the card is closed. A reply whose `seq` is not the newest request is
+   stale and ignored. `not_available` (no task-manager access) and `pkg: null` both leave
+   the row off; nothing else changes on the phone.
+
 ## Secure screens
 
 Android blanks secure surfaces in a screen capture: a `FLAG_SECURE` app (banking, password
 managers) and the lock screen's PIN/password pad. In the display-0 mirror those areas arrive
 black, so the Mac must say why instead of showing a dead picture.
-
 1. Once the phone has read it, every `state` carries `secure`: `true` while display 0 shows
    a secure window or the keyguard bouncer, otherwise `false`. It is sent on change. The
    phone reads the focused window's `FLAG_SECURE` at shell UID and SystemUI's bouncer state
@@ -1538,7 +1557,7 @@ own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailab
 phone." and slows to one attempt per 30 s), `pairing_off` (the phone's "Allow new pairings" switch is off and
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
 `not_available` (the phone can't
-report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
+report its foreground app, e.g. no task manager access, for `task.continue` or `task.front`), `nothing_to_continue` (the
 foreground is our app, the launcher/home or SystemUI), `fs_not_found`,
 `fs_denied` (a path outside the readable rules, or a range outside the file),
 `fs_not_a_dir`, `fs_stale` (the `fs.read`/`fs.thumb` etag no longer matches the file),
