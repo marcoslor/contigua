@@ -90,10 +90,10 @@ final class FramedChromeView: NSView {
     private var titleRightEdge: CGFloat = 0
 
     func setTitle(_ title: String?, rightEdge: CGFloat) {
-        let text = title ?? ""
-        guard titleLabel.stringValue != text || titleRightEdge != rightEdge else { return }
-        titleLabel.stringValue = text
+        titleLabel.stringValue = title ?? ""
         titleRightEdge = rightEdge
+        // Always lay out: the frame is hidden while Immersive, so a title set
+        // then has no laid-out label yet; the switch to Framed must place it.
         needsLayout = true
     }
 
@@ -722,6 +722,9 @@ final class StreamChromeView: NSView {
         let row = HeaderBar.row(actions.actions, rightEdge: bounds.width,
                                 rightInset: FramedChrome.controlsRightInset)
         framedView.setTitle(titleText, rightEdge: row?.actionsX ?? bounds.width)
+        // A hidden view has no layout pass of its own; the chrome state and the
+        // switch to Framed both read the label's place now.
+        framedView.layoutSubtreeIfNeeded()
     }
 
     /// Lays the title out and starts or stops its sampling. Called by every
