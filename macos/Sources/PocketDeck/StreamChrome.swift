@@ -87,6 +87,7 @@ final class StreamChromeView: NSView {
     private var toneTimer: Timer?
     private var toneSampleInFlight = false
     private var lastToneStamp: UInt64?
+    private var loggedUnresolvedTone = false
     /// Re-applies the system blur radius when the hosting view builds or
     /// rebuilds its backdrop (WIN-40).
     private let barBlur: BarBlurTuner
@@ -141,6 +142,10 @@ final class StreamChromeView: NSView {
     /// The cover changed the chrome's effective style (WIN-11): the window's
     /// dwell configuration follows it, alongside the layout below.
     var onEffectiveStyleChange: (() -> Void)?
+
+    /// The title's tone changed: the window rewrites the chrome state so the
+    /// e2e and the chrome state file see the tone that is drawn.
+    var onBarToneChange: (() -> Void)?
 
     /// The Live Text button: a click toggles the mode; the drag source is the
     /// frozen frame (nil while the mode is off).
@@ -545,34 +550,52 @@ final class StreamChromeView: NSView {
         let band = min(1, ChromeBar.height / picture.height)
         let stamp = toneSource.frameStamp
         toneSampleInFlight = true
-        toneSource.topBandLuminance(xFrom: from, xTo: to, bandFraction: band) { [weak self] luminance in
+        toneSource.topBandRange(xFrom: from, xTo: to, bandFraction: band) { [weak self] range in
             guard let self else { return }
             self.toneSampleInFlight = false
-            guard let luminance else { return }
+            guard let range else { return }
             self.lastToneStamp = stamp
-            self.consumeToneSample(luminance)
+            self.consumeToneSample(range, frame: frame)
         }
     }
 
     /// The band behind the title is the mirror's frame under the tint and the
-    /// haze at the title's line; the machine then decides the ink (WIN-69).
-    private func consumeToneSample(_ frameLuminance: Double) {
+    /// haze; the machine then decides the ink (WIN-69). The haze fades from
+    /// the window's top edge to the seam, so the darkest end uses its alpha
+    /// at the title's bottom line and the brightest end at its top.
+    private func consumeToneSample(_ frame: BandRange, frame titleFrame: NSRect) {
         var tint = 0.0
         effectiveAppearance.performAsCurrentDrawingAppearance {
             tint = NSColor.windowBackgroundColor.relativeLuminance ?? tint
         }
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let band = BarToneEstimate.band(
-            frameLuminance: frameLuminance,
-            tintLuminance: tint,
-            hazeAtTitle: Double(ChromeBar.hazeTopAlpha(dark: dark)) * BarTitle.hazeAtTitle)
+        let topAlpha = Double(ChromeBar.hazeTopAlpha(dark: dark))
+        let bandTop = bounds.height
+        func haze(_ offset: CGFloat) -> Double {
+            let clamped = min(max(offset, 0), ChromeBar.height)
+            return topAlpha * (1 - Double(clamped / ChromeBar.height))
+        }
+        let band = BarToneEstimate.blend(
+            frame: frame, tintLuminance: tint,
+            hazeTop: haze(bandTop - titleFrame.maxY),
+            hazeBottom: haze(bandTop - titleFrame.minY))
         let before = toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
         let change = toneMachine.handle(.sample(band))
-        guard change != .ignored else { return }
-        applyTone(toneMachine.tone, animated: true)
-        let line = String(format: "bar tone: %@ --sample(%.2f)--> %@",
-                          before, band, toneMachine.tone.rawValue)
-        Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and a luminance
+        switch change {
+        case .ignored:
+            return
+        case .baseline, .changed, .unresolved:
+            applyTone(toneMachine.tone, animated: true)
+        }
+        let line = String(format: "bar tone: %@ --sample(%.3f..%.3f)--> %@",
+                          before, band.low, band.high, toneMachine.tone.rawValue)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and luminances
+        if case .unresolved = change, !loggedUnresolvedTone {
+            loggedUnresolvedTone = true
+            let kept = toneMachine.tone.rawValue
+            Log.video.notice("bar tone: neither ink reaches the contrast limit; keeping \(kept, privacy: .public)")  // log-ok: a closed tone name
+        }
+        onBarToneChange?()
     }
 
     /// The two fields cross-fade; Reduce Motion swaps them at once.

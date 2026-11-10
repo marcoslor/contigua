@@ -63,7 +63,7 @@ struct BarToneThresholds: Equatable {
 /// band behind it. Pure; the view applies the returned change.
 struct BarToneMachine: Equatable {
     enum Event: Equatable {
-        case sample(Double)
+        case sample(BandRange)
     }
 
     enum Change: Equatable {
@@ -72,6 +72,9 @@ struct BarToneMachine: Equatable {
         case changed(BarTone)
         /// A sample that keeps the tone; no fade, no log line.
         case ignored
+        /// Neither ink reaches the limit over this band (the mid-grey case):
+        /// the tone is kept and the caller says so once.
+        case unresolved(BarTone)
     }
 
     private(set) var tone: BarTone = .light
@@ -82,39 +85,92 @@ struct BarToneMachine: Equatable {
         self.thresholds = thresholds
     }
 
+    /// Black ink passes when the band's darkest pixel is at or above
+    /// `toLight`; white ink passes when its brightest pixel is at or below
+    /// `toDark` (the two are the same 4.5:1 boundary from each ink's side).
     mutating func handle(_ event: Event) -> Change {
         switch event {
-        case .sample(let luminance):
-            guard luminance.isFinite else { return .ignored }
+        case .sample(let band):
+            guard band.isFinite else { return .ignored }
+            let darkPasses = band.low >= thresholds.toLight
+            let lightPasses = band.high <= thresholds.toDark
             if !hasSample {
                 hasSample = true
-                tone = BarTone.preferred(for: luminance)
-                return .baseline(tone)
+                switch (darkPasses, lightPasses) {
+                case (true, false):
+                    tone = .dark
+                    return .baseline(.dark)
+                case (false, true):
+                    tone = .light
+                    return .baseline(.light)
+                case (true, true):
+                    tone = BarTone.preferred(for: band.mid)
+                    return .baseline(tone)
+                case (false, false):
+                    tone = BarTone.preferred(for: band.mid)
+                    return .unresolved(tone)
+                }
             }
-            switch tone {
-            case .light:
-                guard luminance >= thresholds.toDark else { return .ignored }
+            switch (darkPasses, lightPasses) {
+            case (true, false):
+                guard tone != .dark else { return .ignored }
                 tone = .dark
                 return .changed(.dark)
-            case .dark:
-                guard luminance <= thresholds.toLight else { return .ignored }
+            case (false, true):
+                guard tone != .light else { return .ignored }
                 tone = .light
                 return .changed(.light)
+            case (true, true):
+                // Hysteresis: both inks still pass, so the current one stays.
+                return .ignored
+            case (false, false):
+                return .unresolved(tone)
             }
         }
     }
 }
 
+/// A band's darkest and brightest pixel: the two numbers a contrast-safe
+/// tone decision needs, because black ink is worst on the dark end and white
+/// ink on the bright one.
+struct BandRange: Equatable {
+    var low: Double
+    var high: Double
+
+    var mid: Double { (low + high) / 2 }
+
+    var isFinite: Bool { low.isFinite && high.isFinite && low <= high }
+}
+
 /// The band behind the title, as the title sees it: the mirror's frame under
-/// the 14 % window-background tint and the white haze at the title's line.
-/// All values are WCAG relative luminances.
+/// the 14 % window-background tint and the white haze. The layers composite in
+/// sRGB, so the estimate does too: blending WCAG-linear luminances directly
+/// overestimates how much the white haze lifts a dark page. Inputs and the
+/// result are WCAG relative luminances.
 enum BarToneEstimate {
-    static func band(frameLuminance: Double, tintLuminance: Double,
-                     tintAlpha: CGFloat = BarTitle.tintAlpha,
-                     hazeAtTitle: Double) -> Double {
-        let tinted = frameLuminance * (1 - Double(tintAlpha)) + tintLuminance * Double(tintAlpha)
-        let haze = min(max(hazeAtTitle, 0), 1)
-        return tinted * (1 - haze) + haze
+    /// The composited band range: the darkest frame pixel under the haze at
+    /// the title's bottom line, the brightest under the haze at its top.
+    static func blend(frame: BandRange, tintLuminance: Double,
+                      tintAlpha: CGFloat = BarTitle.tintAlpha,
+                      hazeTop: Double, hazeBottom: Double) -> BandRange {
+        func composite(_ value: Double, haze: Double) -> Double {
+            let srgb = encode(min(max(value, 0), 1))
+            let tint = encode(min(max(tintLuminance, 0), 1))
+            let tinted = srgb * (1 - Double(tintAlpha)) + tint * Double(tintAlpha)
+            let alpha = min(max(haze, 0), 1)
+            return decode(tinted * (1 - alpha) + alpha)
+        }
+        return BandRange(low: composite(frame.low, haze: hazeBottom),
+                         high: composite(frame.high, haze: hazeTop))
+    }
+
+    /// sRGB transfer, the space the bar's layers composite in.
+    static func encode(_ value: Double) -> Double {
+        value <= 0.0031308 ? value * 12.92 : 1.055 * pow(value, 1 / 2.4) - 0.055
+    }
+
+    static func decode(_ value: Double) -> Double {
+        value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -143,10 +199,12 @@ enum BarTitle {
         .systemFont(ofSize: pointSize, weight: weight)
     }
 
-    /// The text's one-line width, rounded up like an AppKit field.
+    /// The text's one-line width, rounded up like an AppKit field, with two
+    /// points for the cell's own edges so a name that exactly fits does not
+    /// truncate by a rounding step.
     static func textWidth(_ text: String) -> CGFloat {
         let attributed = NSAttributedString(string: text, attributes: [.font: font()])
-        return ceil(attributed.size().width)
+        return ceil(attributed.size().width) + 2
     }
 
     /// The title's frame in the chrome's coordinates (origin bottom-left),
@@ -165,8 +223,10 @@ enum BarTitle {
         guard available >= minimumWidth else { return nil }
         let width = min(textWidth(text), available)
         let height = ceil(font().ascender - font().descender + font().leading)
-        return NSRect(x: left + (available - width) / 2,
-                      y: boundsHeight - barHeight + (barHeight - height) / 2,
+        // Centred on the bar's own line (the window's centre) while the room
+        // allows it; clamped into the space the controls leave otherwise.
+        let x = min(max(windowWidth / 2 - width / 2, left), right - width)
+        return NSRect(x: x, y: boundsHeight - barHeight + (barHeight - height) / 2,
                       width: width, height: height)
     }
 
@@ -219,23 +279,36 @@ extension NSColor {
 protocol BarToneSource: AnyObject {
     /// Changes when a new frame reaches the display layer.
     var frameStamp: UInt64 { get }
-    /// The mean relative luminance of the displayed picture's top band over
-    /// the horizontal fractions `xFrom...xTo` of its width; the band is
-    /// `bandFraction` of its height, measured from its top. The completion
-    /// runs on the main queue; nil when there is no readable frame.
-    func topBandLuminance(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
-                          completion: @escaping (Double?) -> Void)
+    /// The displayed picture's top band over the horizontal fractions
+    /// `xFrom...xTo` of its width, `bandFraction` of its height from its top.
+    /// The completion runs on the main queue; nil when there is no readable
+    /// frame.
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+                      completion: @escaping (BandRange?) -> Void)
 }
 
-/// One frame's top-band luminance for the tone machine (WIN-69). A decoder
-/// gives back 32BGRA, a bi-planar 4:2:0 buffer or a losslessly compressed
-/// buffer; the first two are read in place, the last through Core Image and
-/// only for the requested rectangle.
-enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rect`, which is in
-    /// pixels with the origin at the buffer's top-left. A grid of at most
-    /// 32×8 samples: a mean, not a full readback. Nil for a format it cannot
-    /// read, an empty rect or a missing base address.
+/// One frame's top-band luminance range for the tone machine (WIN-69). A
+/// decoder gives back 32BGRA, a bi-planar 4:2:0 buffer or a losslessly
+/// compressed buffer; the first two are read in place, the last through Core
+/// Image and only for the requested rectangle.
+enum BandLuminance {
+    /// The darkest and brightest WCAG relative luminance of `buffer` inside
+    /// `rect`, which is in pixels with the origin at the buffer's top-left.
+    /// A grid of at most 32×8 samples, not a full readback. Nil for a format
+    /// it cannot read, an empty rect or a missing base address.
+    static func range(of buffer: CVPixelBuffer, rect: CGRect) -> BandRange? {
+        guard let values = values(of: buffer, rect: rect), !values.isEmpty,
+              let low = values.min(), let high = values.max() else { return nil }
+        return BandRange(low: low, high: high)
+    }
+
+    /// The same range's mean, for callers that want one number.
     static func mean(of buffer: CVPixelBuffer, rect: CGRect) -> Double? {
+        guard let values = values(of: buffer, rect: rect), !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private static func values(of buffer: CVPixelBuffer, rect: CGRect) -> [Double]? {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
         guard width > 0, height > 0 else { return nil }
@@ -243,7 +316,7 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
         guard clipped.width >= 1, clipped.height >= 1 else { return nil }
         let format = CVPixelBufferGetPixelFormatType(buffer)
         if format == kCVPixelFormatType_32BGRA {
-            return meanDirect(buffer, rect: clipped) { base, stride, x, y in
+            return directValues(buffer, rect: clipped) { base, stride, x, y in
                 let offset = y * stride + x * 4
                 let b = Double(base.load(fromByteOffset: offset + 0, as: UInt8.self)) / 255
                 let g = Double(base.load(fromByteOffset: offset + 1, as: UInt8.self)) / 255
@@ -265,15 +338,16 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
             }
         }
         if format == losslessVideoRange || format == losslessFullRange {
-            return meanThroughCoreImage(of: buffer, rect: clipped)
+            guard let output = renderThroughCoreImage(of: buffer, rect: clipped) else { return nil }
+            return values(of: output, rect: CGRect(x: 0, y: 0, width: clipped.width, height: clipped.height))
         }
         return nil
     }
 
-    /// The same mean for any buffer Core Image can read, over one small
-    /// render of the requested rectangle. The buffer's rows run top-down and
-    /// Core Image's coordinates bottom-up.
-    static func meanThroughCoreImage(of buffer: CVPixelBuffer, rect: CGRect) -> Double? {
+    /// A small BGRA render of any buffer Core Image can read, for the
+    /// lossless formats a display layer hands back. The buffer's rows run
+    /// top-down and Core Image's coordinates bottom-up.
+    static func renderThroughCoreImage(of buffer: CVPixelBuffer, rect: CGRect) -> CVPixelBuffer? {
         let width = Int(rect.width.rounded())
         let height = Int(rect.height.rounded())
         guard width > 0, height > 0 else { return nil }
@@ -295,7 +369,13 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
         context.render(cropped, to: output,
                        bounds: CGRect(x: 0, y: 0, width: width, height: height),
                        colorSpace: CGColorSpaceCreateDeviceRGB())
-        return mean(of: output, rect: CGRect(x: 0, y: 0, width: width, height: height))
+        return output
+    }
+
+    /// The mean of a Core Image render, for the tests.
+    static func meanThroughCoreImage(of buffer: CVPixelBuffer, rect: CGRect) -> Double? {
+        guard let output = renderThroughCoreImage(of: buffer, rect: rect) else { return nil }
+        return mean(of: output, rect: CGRect(x: 0, y: 0, width: rect.width, height: rect.height))
     }
 
     /// The lossless-compressed forms of 420v/420f a display layer hands back.
@@ -304,8 +384,8 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
 
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
-    private static func meanDirect(_ buffer: CVPixelBuffer, rect: CGRect,
-                                   luma: (UnsafeRawPointer, Int, Int, Int) -> Double) -> Double? {
+    private static func directValues(_ buffer: CVPixelBuffer, rect: CGRect,
+                                     luma: (UnsafeRawPointer, Int, Int, Int) -> Double) -> [Double]? {
         guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess,
               let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
@@ -314,20 +394,19 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
     }
 
     /// At most 32×8 even samples across the rect, row-major from its top.
-    private static func grid(rect: CGRect, value: (Int, Int) -> Double) -> Double {
+    private static func grid(rect: CGRect, value: (Int, Int) -> Double) -> [Double] {
         let columns = min(32, max(1, Int(rect.width)))
         let rows = min(8, max(1, Int(rect.height)))
-        var total = 0.0
-        var count = 0
+        var values: [Double] = []
+        values.reserveCapacity(columns * rows)
         for row in 0..<rows {
             let y = Int(rect.minY) + (row * Int(rect.height)) / rows
             for column in 0..<columns {
                 let x = Int(rect.minX) + (column * Int(rect.width)) / columns
-                total += value(x, y)
-                count += 1
+                values.append(value(x, y))
             }
         }
-        return count > 0 ? total / Double(count) : 0
+        return values
     }
 
     /// sRGB → WCAG relative luminance's linear form (one channel).
@@ -335,4 +414,3 @@ enum BandLuminance {    /// Mean WCAG relative luminance of `buffer` inside `rec
         value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
     }
 }
-

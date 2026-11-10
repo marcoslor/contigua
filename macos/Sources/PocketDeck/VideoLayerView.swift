@@ -577,16 +577,16 @@ final class VideoLayerView: NSView, BarToneSource {
         return renderer.displayedPixelBuffer()
     }
 
-    /// The mean luminance of the picture's top band, the source the Framed
+    /// The luminance range of the picture's top band, the source the Framed
     /// bar mirrors (WIN-69). The displayed buffer is taken on main (the
     /// renderer's own rule) and read on `toneQueue`, a few dozen samples:
     /// no full-frame copy and no work on the frame path.
-    func topBandLuminance(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
-                          completion: @escaping (Double?) -> Void) {
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+                      completion: @escaping (BandRange?) -> Void) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in  // gcd: the renderer's buffer is main's
-                self?.topBandLuminance(xFrom: xFrom, xTo: xTo, bandFraction: bandFraction,
-                                       completion: completion)
+                self?.topBandRange(xFrom: xFrom, xTo: xTo, bandFraction: bandFraction,
+                                   completion: completion)
             }
             return
         }
@@ -612,7 +612,7 @@ final class VideoLayerView: NSView, BarToneSource {
                           width: max(1, (x1 - x0) * scaleX), height: height * scaleY).integral
         toneQueue.async { [weak self] in
             guard let self else { return }
-            let value = BandLuminance.mean(of: buffer, rect: rect)
+            let value = BandLuminance.range(of: buffer, rect: rect)
             DispatchQueue.main.async { completion(value) }  // gcd: the completion's main-queue contract
         }
     }

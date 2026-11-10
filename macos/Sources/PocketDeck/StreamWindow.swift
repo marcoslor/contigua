@@ -242,6 +242,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // dwell follows the same place the layout reads (WIN-11). One
         // reconfigure per visibility change, never per frame.
         chrome.onEffectiveStyleChange = { [weak self] in self?.configureDwell() }
+        chrome.onBarToneChange = { [weak self] in self?.writeChromeState() }
         // Where AppKit put the standard buttons before the chrome moves them;
         // full screen gives them back (applyChromeConfig).
         captureStandardLights()
