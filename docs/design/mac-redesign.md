@@ -144,8 +144,10 @@ backgrounds), window background default.
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
   is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
   `.allowsHitTesting(false)`.
-- **Loading** (no cache, apps not yet received): 12 placeholder cells `.redacted(reason: .placeholder)`.
-- **No matches:** centered "No apps match “query”" `.callout .secondary`, height 120.
+- **Loading** (no cache, apps not yet received): one "Loading apps…" `.callout .secondary` line above 12
+  placeholder cells `.redacted(reason: .placeholder)`; the cells themselves say nothing.
+- **No matches:** centered "No apps match “query”" `.callout .secondary`, height 120. A phone that reports no
+  launchable apps: "No apps on this phone." in the same place.
 - **Banner** (§4.4): `Label(msg, systemImage:)` `.callout`, glass capsule/rect (cornerRadius 14, padding 12), full
   width minus 16, below the toolbar, with at most one trailing button (`.glass .controlSize(.small)`). Appears
   with `.transition(.opacity.combined(with: .move(edge: .top)))`. Only one banner exists at a time.
