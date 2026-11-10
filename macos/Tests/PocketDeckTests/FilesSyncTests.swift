@@ -314,6 +314,35 @@ final class FilesSyncTests: XCTestCase {
         XCTAssertEqual(channel.lists.count, 1, "a second touch in this process lists nothing")
     }
 
+    /// A folder's first touch lists it once; a phone push then lists it again,
+    /// and whatever moved reaches the log (design § Sync integrity, 2).
+    func testAVisitListsOnceAndAPhoneChangeListsItAgain() throws {
+        let a = folder("A", ino: 100)
+        saveRecord([a.identifier: Recorded(children: [], digest: hex(1), touched: 1)])
+        rememberPaths([a.identifier: "A"])
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        host.touch(item: a.identifier) { _ in }
+        answerPendingStats()
+        XCTAssertEqual(channel.lists.count, 1, "a visit lists the folder once")
+        answerPendingLists(["A": [fs("a1.txt", ino: 1)]], digest: hex(2))
+        XCTAssertEqual(signals.count, 1)
+
+        // The phone says the folder changed: one more listing, and its
+        // addition reaches the log.
+        host.filesChanged(paths: ["A"])
+        let deadline = Date().addingTimeInterval(2)
+        while channel.lists.count < 2 && Date() < deadline {
+            answerPendingStats()
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
+        XCTAssertEqual(channel.lists.count, 2, "the push lists the folder again")
+        answerPendingLists(["A": [fs("a1.txt", ino: 1), fs("a2.txt", ino: 2)]], digest: hex(3))
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertEqual(Set(replay.items.map(\.name)), ["a1.txt", "a2.txt"])
+    }
+
     /// A Mac move to another folder: the system already knows the item's new
     /// parent. Identifiers are domain-wide, so a deletion logged for the old
     /// folder would delete the moved item itself on the next replay.
@@ -352,6 +381,41 @@ final class FilesSyncTests: XCTestCase {
                        "the moved item is not reported deleted")
         XCTAssertNil(host.replica.folders[root]?.children["ino:6"])
         XCTAssertEqual(host.replica.folders["ino:7"]?.children["ino:6"]?.name, "photo.jpg")
+    }
+
+    /// The phone moved a photo between two watched folders: the new folder's
+    /// listing lands first and the old folder's walk lands last. Identifiers are
+    /// domain-wide, so the old listing must not report the moved item deleted
+    /// (ISS-37, "Left for a later slice").
+    func testAPhoneMoveBetweenTwoWatchedFoldersNeverLogsTheItemDeleted() throws {
+        let a = folder("A", ino: 100)
+        let d = folder("D", ino: 200)
+        let photo = item("photo.jpg", ino: 6, parent: a.identifier)
+        saveRecord([
+            a.identifier: Recorded(children: [photo], digest: hex(1), touched: 1),
+            d.identifier: Recorded(children: [], digest: hex(2), touched: 2),
+        ])
+        rememberPaths([a.identifier: "A", d.identifier: "D"])
+
+        let signals = Signals()
+        let host = makeHost(signals)
+        // The phone moved the photo to D, and D is listed first.
+        host.list(item: d.identifier, page: nil) { _ in }
+        answerPendingStats()
+        answerPendingLists(["D": [fs("photo.jpg", ino: 6)]], digest: hex(3))
+        // The old folder's walk lands last and does not carry the photo.
+        host.list(item: a.identifier, page: nil) { _ in }
+        answerPendingStats()
+        answerPendingLists(["A": []], digest: hex(4))
+
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertFalse(replay.deleted.contains("ino:6"),
+                       "a phone-side move is never a deletion")
+        XCTAssertEqual(replay.items.filter { $0.identifier == "ino:6" }
+            .map(\.parentIdentifier), [d.identifier])
+        XCTAssertNil(host.replica.folders[a.identifier]?.children["ino:6"],
+                     "the old folder's record lets it go")
+        XCTAssertEqual(host.replica.folders[d.identifier]?.children["ino:6"]?.name, "photo.jpg")
     }
 
     // MARK: Guards
@@ -454,6 +518,50 @@ final class FilesSyncTests: XCTestCase {
         XCTAssertEqual(signals.count, 1, "only the confirmed walk signals")
     }
 
+    /// The confirmation re-list keeps the first walk's record: an item a Mac
+    /// write changed during that walk is not deleted by the confirmation even
+    /// when its listing lacks the item (FILES-31's write-racing guard).
+    func testAConfirmRelistKeepsTheWalksStartRecord() throws {
+        let thirtyFS = (100..<130).map { fs("f\($0).txt", ino: $0) }
+        let thirty = thirtyFS.map { FilesMap.item(path: $0.name, parentIdentifier: root, fs: $0) }
+        saveEarlierRun(thirty)
+        var map = FilesIdMap()
+        for entry in thirty {
+            map.remember(identifier: entry.identifier, path: entry.name, parentIdentifier: root)
+        }
+        FilesIdMap.save(map, to: mapURL)
+
+        let host = makeHost(Signals())
+        var confirm: (() -> Void)?
+        host.confirmScheduler = { _, work in confirm = work }
+        host.list(item: root, page: nil) { _ in }
+        // 25 of 30 are gone: the machine wants one confirmation re-list.
+        answerList(thirtyFS.filter { $0.ino >= 125 })
+
+        // During the first walk, a Mac write changes f100.
+        host.modify(BridgeModify(item: "ino:100", base: "aa", content: false, name: nil,
+                                 parent: nil, mtime: 99, size: 4, sha256: nil),
+                    ready: { _ in }, completion: { _ in })
+        answerStat(fs("f100.txt", ino: 100))
+        answerStat(fs("f100.txt", ino: 100))
+        client.result(id: channel.setAttrs.last!.id, ok: true,
+                      item: fs("f100.txt", ino: 100, mtime: 99, etag: "bb").jsonObject,
+                      code: nil, message: nil)
+
+        // The confirmation lists f100 as gone too; the start record still has
+        // the pre-write item, which must not be deleted.
+        let work = try XCTUnwrap(confirm, "the big deletion asks for a confirmation")
+        work()
+        XCTAssertEqual(channel.lists.count, 2)
+        answerList(thirtyFS.filter { $0.ino >= 125 })
+
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertFalse(replay.deleted.contains("ino:100"),
+                       "an item the Mac wrote during the walk is not deleted")
+        XCTAssertEqual(Set(replay.deleted), Set((101..<125).map { "ino:\($0)" }))
+        XCTAssertNotNil(host.replica.folders[root]?.children["ino:100"])
+    }
+
     // MARK: Not-found repair (FILES-34)
 
     func testANotFoundThumbnailReportsTheItemDeletedAndRelistsItsParent() throws {
@@ -507,7 +615,51 @@ final class FilesSyncTests: XCTestCase {
         XCTAssertEqual(replay.deleted, ["ino:6"])
     }
 
+    /// Two not-found items in one folder while its repair is running: the
+    /// parent is re-listed once, not once per item (FILES-34).
+    func testANotFoundRepairListsTheParentOnce() throws {
+        let photo = item("photo.jpg", ino: 6)
+        let other = item("other.txt", ino: 7)
+        saveEarlierRun([photo, other])
+        var map = FilesIdMap()
+        map.remember(identifier: "ino:6", path: "photo.jpg", parentIdentifier: root)
+        map.remember(identifier: "ino:7", path: "other.txt", parentIdentifier: root)
+        FilesIdMap.save(map, to: mapURL)
+
+        let host = makeHost(Signals())
+        host.thumb(item: "ino:6", size: 512, onStart: { _ in }, completion: { _ in })
+        client.failure(id: channel.thumbs.last!.id, code: "fs_not_found", message: nil)
+        XCTAssertEqual(channel.lists.count, 1, "the first not-found repairs the folder")
+
+        host.thumb(item: "ino:7", size: 512, onStart: { _ in }, completion: { _ in })
+        client.failure(id: channel.thumbs.last!.id, code: "fs_not_found", message: nil)
+        XCTAssertEqual(channel.lists.count, 1, "the repair already running is enough")
+
+        answerList([])
+        let replay = try XCTUnwrap(host.replica.log.changes(from: nil, container: nil))
+        XCTAssertEqual(Set(replay.deleted), ["ino:6", "ino:7"])
+    }
+
     // MARK: The reconnect resync (FILES-33)
+
+    /// A folder the resync already compared is not listed again by the
+    /// re-watch touch that follows every reconnect (design § Sync integrity, 4:
+    /// a reconnect costs one digest per folder, not a listing).
+    func testAResyncCoveredFolderIsNotListedByAVisit() throws {
+        let a = folder("A", ino: 100)
+        saveRecord([a.identifier: Recorded(children: [], digest: hex(1), touched: 1)])
+        rememberPaths([a.identifier: "A"])
+
+        let host = makeHost(Signals())
+        host.sessionReady()
+        answerDigest(["A": hex(1)])
+        XCTAssertEqual(channel.lists.count, 0, "the digest matches; nothing is listed")
+
+        host.touch(item: a.identifier) { _ in }
+        answerPendingStats()
+        XCTAssertEqual(channel.lists.count, 0, "the covered folder is not listed by the touch")
+        XCTAssertEqual(channel.watches.map(\.on), [true], "its watch is still re-sent")
+    }
 
     /// (a) Three recorded folders, one digest differs: one `fs.digest` for all
     /// of them, exactly one listing, and its deletions reach the log.
