@@ -432,9 +432,13 @@ check_pathstart() {
     # blackhole drops them, and a real path cannot finish TLS from bytes it
     # never sent again. 600 ms is longer than the second listener's handshake
     # and far inside the 6 s connect budget.
-    pathfault_start "$listen" "$PORT" delay 600
+    # Pair through the same proxy the launch dials, while it still passes: the
+    # launch then reuses the pin cached at that address and runs pinned, like a
+    # real user's. The delay goes on only for the launch.
+    pathfault_start "$listen" "$PORT" pass 600
     ctl="$PATHFAULT_CTL"
-    path_pair_once "$((PORT + 1))"
+    path_pair_once "$listen"
+    pathfault_mode "$ctl" delay
     launch --connect "127.0.0.1:$listen" --connect2 "127.0.0.1:$((PORT + 1))" \
         --open-phone --quit-after 25
     # The first listener is dead radio until the second has founded: only then
@@ -498,8 +502,12 @@ PY
     clean
     pathfault_nuke
     FAKE_ARGS="--paths 1" start_fake || return 1
-    path_pair_once "$PORT"
-    pathfault_start "$((PORT + 2))" "$PORT" blackhole
+    # Pair through the black-hole proxy while it still passes, then cut it: the
+    # launch dials the cached address first, so its session is pinned and the
+    # live provider founds it (a real user's session, never a pairing one).
+    pathfault_start "$((PORT + 2))" "$PORT" pass
+    path_pair_once "$((PORT + 2))"
+    pathfault_mode "$PATHFAULT_CTL" blackhole
     launch --connect "127.0.0.1:$((PORT + 2))" --connect2 "127.0.0.1:$PORT" \
         --open-phone --quit-after 22
     wait_until 15 events_have '"ev":"video"' \
@@ -1306,9 +1314,11 @@ pathblip_phase() {
     local ctl session founder t_launch t_fault t_lift conns_before delta blip_ms probes gaps chrome_pid=""
     blip_ms="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["blip_recovery_ms"]))' "$MACOS/scripts/nfr-limits.json")"
     FAKE_ARGS="--paths 1" start_fake || return 1
-    path_pair_once "$PORT"
     pathfault_start "$((PORT + 3))" "$PORT"
     ctl="$PATHFAULT_CTL"
+    # Pair through the proxy the launch dials, so the session is pinned and may
+    # join the probe (path_pair_once's comment).
+    path_pair_once "$((PORT + 3))"
     # The rig's own readiness probes reach the proxy before the app does: the
     # count below starts at this launch.
     t_launch="$(path_now)"
@@ -1646,15 +1656,18 @@ PY
     # the session; it is made fast once both paths are up.
     pathfault_start "$((PORT + 4))" "$((PORT + 1))" delay 600
     fast_ctl="$PATHFAULT_CTL"
-    path_pair_once "$PORT"
+    # Pair through the throttled proxy the launch dials, so the launched session
+    # is pinned (path_pair_once's comment): a pairing-mode session may never join,
+    # and the standby's join is what this check measures.
+    path_pair_once "$((PORT + 3))"
     python3 - "$WORK/pathbulk2.bin" <<'PY2'
 import os, sys
 with open(sys.argv[1], "wb") as fp:
     fp.write(os.urandom(64 * 1024 * 1024))
 PY2
-    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 40" > "$WORK/pathbulk.txt"
+    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 60" > "$WORK/pathbulk.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
-        --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 60
+        --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 90
     wait_until 25 path_upto 2 || bad "[PATH-10] PATHBULK the standby never joined"
     founder=""
     for _ in $(seq 1 80); do
@@ -1670,7 +1683,12 @@ PY2
     # The standby is fast for the rest of the run: a live throttled path must
     # still not be failed by a late pong.
     pathfault_mode "$fast_ctl" pass
-    if wait_until 70 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
+    # A pinned session with its standby up is the first run that carries the
+    # file beside a live video stream on the same 16 Mbit/s path; the phone's
+    # ACKs wait behind its video backlog, so the drop runs slower than the
+    # link-alone 17 s (measured 8 MiB per 15.5 s on the slowest run, 19.5 s for
+    # the whole file on another). The assertion is the same; only the window grew.
+    if wait_until 90 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
         ok "[PATH-10] [PATH-23] PATHBULK the 32 MiB file arrived byte-exact across the throttled path"
     else
         bad "[PATH-10] PATHBULK the file never arrived intact: $(grep '"ev":"drop"' "$WORK/events.jsonl" | tail -2)"
