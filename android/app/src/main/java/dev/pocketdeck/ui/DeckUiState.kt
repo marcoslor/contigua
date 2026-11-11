@@ -62,6 +62,10 @@ fun mapStatus(input: StatusInput): DeckStatus = when {
         DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
+    // ISS-100: Shizuku answers but its shell service never bound; the card
+    // names the helper instead of "Couldn't start" and Try again restarts it.
+    input.shellNotAnswering ->
+        DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHELL_NOT_ANSWERING)
     input.notifyNoAccess -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS)
     // A prompt the person cannot see anywhere but the foreground: the home
     // names the permission that would show it (PAIR-6, M8).

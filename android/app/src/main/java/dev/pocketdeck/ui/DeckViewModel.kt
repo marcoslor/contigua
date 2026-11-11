@@ -324,11 +324,15 @@ class DeckViewModel(
             AttentionKind.VERSION -> refresh()
 
             AttentionKind.RETRY -> {
+                ShizukuClient.retry()
                 DeckForegroundService.start(ctx)
                 refresh()
             }
 
             AttentionKind.SHELL_NOT_ANSWERING -> {
+                // ISS-100: a tap restarts PocketDeck's own connection, which for
+                // a binder that answers but never binds means our process.
+                ShizukuClient.retry()
                 DeckForegroundService.start(ctx)
                 refresh()
             }

@@ -34,11 +34,14 @@ data class ShellFailure(val token: String, val exceptionClass: String? = null) {
 
 /**
  * The binding's states. [Binding] and [WaitingRetry] carry the bounded tries;
- * every state that can wait carries the slow-ladder [slowStep] so a round that
- * fails resumes the ladder instead of starting it over.
+ * every state that can wait carries the slow-ladder step so a round that fails
+ * resumes the ladder instead of starting it over.
  */
 sealed interface ShellState {
-    /** Shizuku's binder is not with this process: nothing can be bound yet. */
+    /**
+     * Shizuku's binder is not with this process: nothing can be bound yet.
+     * [probeStep] is the slow-ladder step of the last wait (0 before any).
+     */
     data class NoBinder(val probeStep: Int = 0) : ShellState
 
     /** The binder is here but PocketDeck may not use it: the person must allow. */
@@ -169,7 +172,8 @@ sealed interface ShellAction {
 /**
  * One transition function, exhaustive over every (state, event) pair, with no
  * unbounded fast loop: a round starts at most [maxTries] binds and ends in
- * [Failed]; from there the slow ladder ([slowDelay]) probes forever.
+ * [Failed]; from there the slow ladder ([slowDelay]) probes forever, and the
+ * 60 s step restarts our own process once for a lost binder.
  */
 class ShellBinding(
     private val maxTries: Int = MAX_TRIES,
@@ -196,15 +200,37 @@ class ShellBinding(
         from: ShellState.NoBinder,
         event: ShellEvent,
     ): Pair<ShellState, List<ShellAction>> = when (event) {
+        // A fresh process (or a re-attach) asks for the binder at once: the
+        // sticky listener only replays a binder Shizuku already pushed.
+        ShellEvent.Started -> from to listOf(ShellAction.ProbeBinder)
         ShellEvent.BinderReceived -> ShellState.NeedsPermission() to listOf(ShellAction.CheckPermission)
+        // Losing the binder again is the same state; ask now, then wait.
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
+        ShellEvent.BinderAbsent ->
+            ShellState.NoBinder(from.probeStep + 1) to
+                listOf(ShellAction.WaitThenRetry(slowDelay(from.probeStep + 1)))
+        ShellEvent.RetryTick ->
+            if (from.probeStep == RESTART_STEP - 1) {
+                // The ladder reached a minute with no binder: a new pid is the
+                // one thing that makes a surviving server push (PHONE-23).
+                ShellState.NoBinder(RESTART_STEP) to
+                    listOf(
+                        ShellAction.RestartSelf(ShellFailure(ShellFailure.BINDER_DEAD), bounded = true),
+                        ShellAction.WaitThenRetry(slowDelay(RESTART_STEP)),
+                    )
+            } else {
+                from to listOf(ShellAction.ProbeBinder)
+            }
         // Nothing to do until a binder arrives. Asking to start with none is a
-        // failure the person can see, not a silent no-op.
+        // failure the person can see and the ladder keeps probing behind it.
         ShellEvent.RetryRequested ->
             ShellState.Failed(ShellFailure(ShellFailure.BINDER_DEAD)) to
-                listOf(ShellAction.ReportFailure(ShellFailure(ShellFailure.BINDER_DEAD)))
-        ShellEvent.Started,
-        ShellEvent.BinderDead,
-        ShellEvent.BinderAbsent,
+                listOf(
+                    ShellAction.CancelTimers,
+                    ShellAction.ReportFailure(ShellFailure(ShellFailure.BINDER_DEAD)),
+                    ShellAction.WaitThenRetry(slowDelay(1)),
+                )
         ShellEvent.PermissionGranted,
         ShellEvent.PermissionDenied,
         ShellEvent.BindSucceeded,
@@ -212,7 +238,6 @@ class ShellBinding(
         ShellEvent.BindTimedOut,
         ShellEvent.ServiceDied,
         ShellEvent.RestartRequested,
-        ShellEvent.RetryTick,
         -> from to emptyList()
     }
 
@@ -225,7 +250,8 @@ class ShellBinding(
                 listOf(ShellAction.BindService, ShellAction.ArmTimeout(bindTimeoutMs))
         // The person may still allow: the card keeps its Allow action.
         ShellEvent.PermissionDenied -> from to emptyList()
-        ShellEvent.BinderDead -> ShellState.NoBinder() to listOf(ShellAction.CancelTimers)
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
         // The tap re-checks: the grant may have just landed.
         ShellEvent.RetryRequested -> from to listOf(ShellAction.CheckPermission)
         ShellEvent.Started,
@@ -253,8 +279,10 @@ class ShellBinding(
             retryOrFail(from.tries, from.slowStep, ShellFailure(ShellFailure.SERVICE_DIED))
         // The server went away mid-bind: wait for the next binder instead of
         // spending the rest of the round on a bind that cannot work.
-        ShellEvent.BinderDead -> ShellState.NoBinder() to listOf(ShellAction.CancelTimers)
-        ShellEvent.PermissionDenied -> ShellState.NeedsPermission(from.slowStep) to listOf(ShellAction.CancelTimers)
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
+        ShellEvent.PermissionDenied ->
+            ShellState.NeedsPermission(from.slowStep) to listOf(ShellAction.CancelTimers)
         ShellEvent.Started,
         ShellEvent.BinderReceived,
         ShellEvent.BinderAbsent,
@@ -272,8 +300,14 @@ class ShellBinding(
         ShellEvent.RetryTick ->
             ShellState.Binding(from.tries + 1, from.slowStep) to
                 listOf(ShellAction.BindService, ShellAction.ArmTimeout(bindTimeoutMs))
-        ShellEvent.BinderDead -> ShellState.NoBinder() to listOf(ShellAction.CancelTimers)
-        ShellEvent.PermissionDenied -> ShellState.NeedsPermission(from.slowStep) to listOf(ShellAction.CancelTimers)
+        // ISS-100: the connect that lost the race with the timeout is still the
+        // service; dropping it was what restarted the slow cold start.
+        ShellEvent.BindSucceeded ->
+            ShellState.Ready to listOf(ShellAction.CancelTimers, ShellAction.ReportReady)
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
+        ShellEvent.PermissionDenied ->
+            ShellState.NeedsPermission(from.slowStep) to listOf(ShellAction.CancelTimers)
         // An explicit ask starts a new round with the full budget.
         ShellEvent.RetryRequested ->
             ShellState.Binding(1, from.slowStep) to
@@ -282,7 +316,6 @@ class ShellBinding(
         ShellEvent.BinderReceived,
         ShellEvent.BinderAbsent,
         ShellEvent.PermissionGranted,
-        ShellEvent.BindSucceeded,
         is ShellEvent.BindFailed,
         ShellEvent.BindTimedOut,
         ShellEvent.ServiceDied,
@@ -296,7 +329,8 @@ class ShellBinding(
         ShellEvent.ServiceDied ->
             ShellState.WaitingRetry(0, ShellFailure(ShellFailure.SERVICE_DIED)) to
                 listOf(ShellAction.WaitThenRetry(backoffMs(1)))
-        ShellEvent.BinderDead -> ShellState.NoBinder() to listOf(ShellAction.CancelTimers)
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
         ShellEvent.Started,
         ShellEvent.BinderReceived,
         ShellEvent.BinderAbsent,
@@ -315,28 +349,43 @@ class ShellBinding(
         from: ShellState.Failed,
         event: ShellEvent,
     ): Pair<ShellState, List<ShellAction>> = when (event) {
+        // No tap: probe for a binder on the slow ladder, then start the next
+        // round if one answers.
+        ShellEvent.RetryTick -> from to listOf(ShellAction.ProbeBinder)
+        ShellEvent.BinderAbsent ->
+            ShellState.Failed(from.reason, from.slowStep + 1) to
+                listOf(ShellAction.WaitThenRetry(slowDelay(from.slowStep + 1)))
         // The binder coming back is the recovery the person should not have to
         // ask for: re-check and bind without a tap.
         ShellEvent.BinderReceived ->
             ShellState.NeedsPermission(from.slowStep) to listOf(ShellAction.CheckPermission)
-        ShellEvent.BinderDead -> ShellState.NoBinder() to emptyList()
+        // ISS-100: the service that finally started after the round gave up is
+        // the same service; accept it.
+        ShellEvent.BindSucceeded ->
+            ShellState.Ready to listOf(ShellAction.CancelTimers, ShellAction.ReportReady)
+        ShellEvent.BinderDead ->
+            ShellState.NoBinder() to listOf(ShellAction.CancelTimers, ShellAction.ProbeBinder)
         ShellEvent.RetryRequested ->
             ShellState.Binding(1, from.slowStep) to
-                listOf(ShellAction.BindService, ShellAction.ArmTimeout(bindTimeoutMs))
+                listOf(ShellAction.CancelTimers, ShellAction.BindService, ShellAction.ArmTimeout(bindTimeoutMs))
+        // A tap is consent to restart PocketDeck's own process now (PHONE-23);
+        // the ladder stays at its last step so nothing loops by itself.
+        ShellEvent.RestartRequested ->
+            ShellState.Failed(from.reason, RESTART_STEP) to
+                listOf(
+                    ShellAction.RestartSelf(from.reason, bounded = false),
+                    ShellAction.WaitThenRetry(slowDelay(RESTART_STEP)),
+                )
         ShellEvent.Started,
-        ShellEvent.BinderAbsent,
         ShellEvent.PermissionGranted,
         ShellEvent.PermissionDenied,
-        ShellEvent.BindSucceeded,
         is ShellEvent.BindFailed,
         ShellEvent.BindTimedOut,
         ShellEvent.ServiceDied,
-        ShellEvent.RestartRequested,
-        ShellEvent.RetryTick,
         -> from to emptyList()
     }
 
-    /** The next try, or the end of this round and the first slow wait. */
+    /** The next try, or the end of this round and the next slow wait. */
     private fun retryOrFail(
         tries: Int,
         slowStep: Int,
@@ -346,8 +395,12 @@ class ShellBinding(
             ShellState.WaitingRetry(tries, failure, slowStep) to
                 listOf(ShellAction.CancelTimers, ShellAction.WaitThenRetry(backoffMs(tries)))
         } else {
-            ShellState.Failed(failure, slowStep) to
-                listOf(ShellAction.CancelTimers, ShellAction.ReportFailure(failure))
+            ShellState.Failed(failure, slowStep + 1) to
+                listOf(
+                    ShellAction.CancelTimers,
+                    ShellAction.ReportFailure(failure),
+                    ShellAction.WaitThenRetry(slowDelay(slowStep + 1)),
+                )
         }
 
     companion object {

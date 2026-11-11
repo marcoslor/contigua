@@ -199,7 +199,10 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
-     **Shizuku isn't installed** with **Get Shizuku** when the app is absent. While
+     **Shizuku isn't installed** with **Get Shizuku** when the app is absent. When
+     Shizuku runs but its shell service keeps timing out the card says
+     **Shizuku isn't answering** · "PocketDeck can't reach Shizuku. Try again
+     restarts PocketDeck's connection." with **Try again**. While
      a pairing prompt waits and this phone's notifications are off the card says
      **Notifications are off** · "Allow notifications so your Mac can ask to pair."
      with **Allow** (the runtime permission). With the background switch off the
