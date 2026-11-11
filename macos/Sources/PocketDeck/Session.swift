@@ -390,8 +390,9 @@ final class Session {
     private var attempts: [String: Attempt] = [:]
     private var attemptReasons: [String: String] = [:]
     /// The pin and the handshake-learned values every dial uses (a rejoin dial
-    /// happens long after doConnect).
-    private var dialPinned: PinnedPhoneV2?
+    /// happens long after doConnect). A pairing session adopts the pin its
+    /// pairing established, so its own rejoins are verified joins (PATH-52).
+    private var dialPin: SessionPinState = .pairing(verified: false)
     private var dialLearned = SessionLockedBox(value: "")
     private var dialLearnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
     /// path id -> the provider that dialed it: a provider with no path and no
@@ -574,7 +575,7 @@ final class Session {
         learnedCertProvider = { learnedCert.get() }
         dialLearned = learned
         dialLearnedCert = learnedCert
-        dialPinned = pinned
+        dialPin = pinned.map { .pinned($0) } ?? .pairing(verified: false)
 
         // PATH-20: every ready provider starts at once and only the hello is
         // serialized. PathStart hands the one plain hello to the first attempt
@@ -610,7 +611,7 @@ final class Session {
                            probe: Bool = false, timeout: TimeInterval? = nil) {
         guard let endpoint = provider.endpoint else { return }
         attempts[id] = Attempt(id: id, endpoint: endpoint,
-                               dialedPinned: dialPinned != nil,
+                               dialedPinned: dialPin.isPinned,
                                providerIndex: index,
                                rejoin: join,
                                probeJoin: probe,
@@ -627,7 +628,7 @@ final class Session {
         let group = eventLoopGroup!
         let learned = dialLearned
         let learnedCert = dialLearnedCert
-        let pinned = dialPinned
+        let pinned = dialPin.record
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
             self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
                        learned: learned, learnedCert: learnedCert)
@@ -762,11 +763,20 @@ final class Session {
 
     /// Sends this path's `hello` directly (no seq space exists before welcome).
     private func sendHello(on id: String, join: String?) {
-        guard var attempt = attempts[id], let send = attempt.sendRaw else { return }
+        guard let attempt = attempts[id], let send = attempt.sendRaw else {
+            // Without a hello there is no welcome; a rejoin's ending must still
+            // reach the schedule exactly once (ISS-95).
+            closeAttempt(id)
+            return
+        }
         if let join {
             // Only a pinned TLS connection may join (PATH-3): TLS is the only
-            // authentication, and a pairing-mode one has verified nothing.
+            // authentication, and a pairing-mode one has verified nothing. The
+            // phone would answer such a peer `busy` (PATH-11), so the attempt
+            // ends here — and reports that ending, or the rejoin schedule would
+            // stay in flight until the grace ends (ISS-95).
             guard attempt.dialedPinned else {
+                Log.session.notice("paths: join refused, this attempt's TLS is unpinned (path \(id, privacy: .public))")  // log-ok: a path id
                 closeAttempt(id)
                 return
             }
@@ -803,19 +813,8 @@ final class Session {
             attempt.timer?.cancel()
             return
         }
-        attempt.timer?.cancel()
-        attemptEvent(id, .failed(reason: reason))
-        attempts.removeValue(forKey: id)
         attemptReasons[id] = reason
-        if attempt.probeJoin {
-            probeFailed()
-            return
-        }
-        if attempt.rejoin {
-            rejoinFailed()
-            return
-        }
-        performStart(pathStart.handle(.attemptFailed(id)))
+        closeAttempt(id, failure: reason)
     }
 
     /// A rejoin dial failed: inside the grace the next tick dials at once
@@ -915,7 +914,9 @@ final class Session {
     private func cancelProbe() {
         guard let id = probeAttemptId else { return }
         probeAttemptId = nil
-        if attempts[id] != nil { closeAttempt(id) }
+        // The probe machine already returned to idle on the cancel: its
+        // ending reports nothing.
+        if attempts[id] != nil { closeAttempt(id, reports: false) }
     }
 
     private func probeFailed() {
@@ -950,8 +951,7 @@ final class Session {
             handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
             return
         }
-        guard let attempt = attempts[id] else { return }
-        attempt.timer?.cancel()
+        guard attempts[id] != nil else { return }
         var reason = "tls"
         let lowered = message.lowercased()
         if message.contains("closed-by-peer") {
@@ -963,25 +963,31 @@ final class Session {
         } else if lowered.contains("bad certificate") || lowered.contains("bad_certificate") {
             reason = "bad_certificate"
         }
-        attemptEvent(id, .failed(reason: reason))
-        closeAttempt(id)
         attemptReasons[id] = reason
-        if attempt.probeJoin {
-            probeFailed()
-            return
-        }
-        if attempt.rejoin {
-            rejoinFailed()
-            return
-        }
-        performStart(pathStart.handle(.attemptFailed(id)))
+        closeAttempt(id, failure: reason)
     }
 
-    private func closeAttempt(_ id: String) {
-        attemptEvent(id, .closed)
-        guard let attempt = attempts.removeValue(forKey: id) else { return }
+    /// Ends one attempt that never became a path. `failure` records a failed
+    /// transition (otherwise the attempt is closed); `reports` hands the ending
+    /// to the machine that owns the round — PathStart, the silence probe, the
+    /// orphan's rejoin schedule — exactly once, from the one place that removes
+    /// the attempt. A join whose ending went unreported left the rejoin
+    /// schedule in flight until the grace ended (ISS-95); a session that is
+    /// closing reports nothing, because no machine will dial again.
+    private func closeAttempt(_ id: String, failure: String? = nil, reports: Bool = true) {
+        guard let attempt = attempts[id] else { return }
         attempt.timer?.cancel()
+        attemptEvent(id, failure.map { .failed(reason: $0) } ?? .closed)
+        attempts.removeValue(forKey: id)
         if let channel = attempt.channel { channel.close() }
+        guard reports else { return }
+        if attempt.probeJoin {
+            probeFailed()
+        } else if attempt.rejoin {
+            rejoinFailed()
+        } else if let failure {
+            performStart(pathStart.handle(.attemptFailed(id)))
+        }
     }
 
     /// Ends one attached path: closes its channel and forgets the provider that
@@ -1280,7 +1286,7 @@ final class Session {
 
     private func closeChannel() {
         exporterProvider = nil
-        for id in Array(attempts.keys) { closeAttempt(id) }
+        for id in Array(attempts.keys) { closeAttempt(id, reports: false) }
         attempts.removeAll()
         attemptReasons.removeAll()
         preWelcomeSender.set(nil)
@@ -1629,6 +1635,9 @@ final class Session {
                     fail("pair_commit"); return
                 }
             }
+            // The pairing flow is verified: the record it establishes may be
+            // adopted at the founding welcome, so later dials pin it (PATH-52).
+            sessionPinEvent(.phoneAllowed)
             // The person allowed on the phone. On the QR path the sheet
             // completes on the welcome that follows: the pin is stored there,
             // and the controller closes this probe as soon as it hears.
@@ -1694,7 +1703,12 @@ final class Session {
                 transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
                 return
             }
-            storePinFor(info: info)
+            let pinRecord = storePinFor(info: info)
+            // PATH-52: a pairing session adopts the pin its pairing just
+            // established, so its own rejoin dials are verified joins. Only a
+            // complete record (the handshake's own certificate carries the
+            // pin) is adopted, and only after the phone's pair.ok.
+            sessionPinEvent(.founded(record: pinRecord.flatMap(verifiablePinRecord)))
             knownDeviceIdReal = info.id
             if qrApproved {
                 qrApproved = false
@@ -2031,9 +2045,9 @@ final class Session {
     /// Pairing ended with `pair.ok` + `welcome`: keep the phone's pin record (cert
     /// + fingerprint learned at the handshake) and let the owner mirror §3's
     /// identity.json pin. Only reached right after a pairing session's success.
-    private func storePinFor(info: PhoneInfo) {
+    private func storePinFor(info: PhoneInfo) -> PinnedPhoneV2? {
         let pin = learnedPeerPin
-        guard !pin.isEmpty else { return }
+        guard !pin.isEmpty else { return nil }
         var certPem = ""
         if let cert = aspectPeerCert, let der = try? cert.toDERBytes() {
             let b64 = Data(der).base64EncodedString()
@@ -2042,6 +2056,29 @@ final class Session {
         let record = PinnedPhoneV2(deviceId: info.id, phoneFingerprintHex: pin, certPem: certPem)
         phonePinStore?.store(record)
         pinSessionEstablished?(record)
+        return record
+    }
+
+    /// The record only when TLS could verify it on the next dial: its own
+    /// certificate parses and carries the pin. The adoption transition never
+    /// holds a record that could only fail (PATH-52).
+    private func verifiablePinRecord(_ record: PinnedPhoneV2) -> PinnedPhoneV2? {
+        guard let cert = try? NIOSSLCertificate(bytes: [UInt8](record.certPem.utf8), format: .pem),
+              let fingerprint = PinCheckV2.pointFingerprint(cert: cert),
+              PinCheckV2.matches(fingerprint, pinHex: record.phoneFingerprintHex) else {
+            return nil
+        }
+        return record
+    }
+
+    /// Moves the session's own pin state and logs the transition with closed
+    /// tokens: never a fingerprint, an id or key material (R-PRIV-1).
+    private func sessionPinEvent(_ event: SessionPinEvent) {
+        let before = dialPin
+        guard dialPin.handle(event) else { return }
+        let from = before.token
+        let to = dialPin.token
+        Log.session.notice("session pin: \(from, privacy: .public) --\(event.token, privacy: .public)--> \(to, privacy: .public)")  // log-ok: closed state and event tokens
     }
 
     /// Dev and e2e bundles log an 8-hex prefix of the exporter's SHA-256 for
