@@ -199,7 +199,9 @@ print("join=%s hello=%s welcome=%s session=%s" % (show(join), show(hello), show(
 PY
 }
 
-# path_video_since <epoch> — a video frame arrived after <epoch>.
+# path_video_since <epoch> — a window's video config reached the phone after
+# <epoch>: the picture started on a fresh stream (not a keyframe restart, which
+# keeps the same parameter sets and needs no config).
 path_video_since() {
     python3 - "$WORK/events.jsonl" "$1" <<'PY'
 import json, sys
@@ -211,6 +213,27 @@ for line in open(sys.argv[1]):
         continue
     if event.get("ev") == "video" and event.get("ts", 0) > start:
         sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# path_frame_since <file> <epoch> — a decoded video frame reached a window
+# after <epoch> (`--debug-frame-log`): the picture itself moved, which a config
+# event (a new stream) does not prove.
+path_frame_since() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+start = float(sys.argv[2])
+try:
+    for line in open(sys.argv[1]):
+        parts = line.rstrip("\n").split("\t")
+        try:
+            if float(parts[0]) > start:
+                sys.exit(0)
+        except (ValueError, IndexError):
+            continue
+except OSError:
+    pass
 sys.exit(1)
 PY
 }
@@ -249,9 +272,14 @@ path_wait_line() {
     done
 }
 
-# path_pair_once <port> — pair on a fresh profile before a two-provider
+# path_pair_once <port> — pair on a fresh profile before a multi-provider
 # launch: a held, unpinned attempt is closed at welcome (pathstart), so the
-# second launch must find a pin. The fake's log is truncated after it.
+# second launch must find a pin. Pair through the address the launch uses (a
+# fault proxy's when it has one): a real pairing happens at the phone's address,
+# and only a launch on the cached address reuses the pin. A pairing-mode session
+# is unpinned and may never join (PATH-11/52), so pairing on PORT and launching
+# through PORT+3 used to hand every path check a session that could not rejoin.
+# The fake's log is truncated after it.
 path_pair_once() {
     launch --connect "127.0.0.1:$1" --quit-after 10
     wait_until 12 events_have '"state":"auth_ok"' || true
@@ -857,7 +885,7 @@ PY
     FAKE_ARGS="--paths 2" start_fake || return 1
     pathfault_start "$((PORT + 3))" "$PORT"
     pathfault_start "$((PORT + 4))" "$((PORT + 1))"
-    path_pair_once "$PORT"
+    path_pair_once "$((PORT + 3))"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open-phone --debug-chrome-state "$WORK/chrome-grace.txt" --quit-after 70
     path_stream_start
@@ -931,7 +959,7 @@ PY
     FAKE_ARGS="--paths 2 --notify-rejoin" start_fake || return 1
     pathfault_start "$((PORT + 3))" "$PORT"
     pathfault_start "$((PORT + 4))" "$((PORT + 1))"
-    path_pair_once "$PORT"
+    path_pair_once "$((PORT + 3))"
     # The per-phone opt-in is a stored default, seeded after the pairing run so
     # that run did not enable it (docs/specs/notifications.md NOTIFY-1).
     notify_device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
@@ -942,6 +970,7 @@ PY
     mkdir -p "$WORK-control"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open-phone --debug-chrome-state "$WORK/chrome-grace2.txt" --quit-after 70 \
+        --debug-frame-log "$WORK/frames-grace2.tsv" \
         --debug-control "$WORK-control" --share-log "$notify_log"
     path_stream_start
     wait_until 20 path_upto 2 \
@@ -1038,9 +1067,9 @@ PY
     wait_until 5 chrome_online "$WORK/chrome-grace2.txt" \
         && ok "[PATH-17] PATHGRACE(b) the window left reconnecting" \
         || bad "[PATH-17] PATHGRACE(b) the window still says the link is down"
-    wait_until 10 path_video_since "$t_lift" \
-        && ok "[PATH-5] PATHGRACE(b) the picture resumed after the rejoin" \
-        || bad "[PATH-5] PATHGRACE(b) no video frame after the rejoin"
+    wait_until 10 path_frame_since "$WORK/frames-grace2.tsv" "$t_lift" \
+        && ok "[PATH-5] PATHGRACE(b) the picture resumed after the rejoin (a decoded frame arrived)" \
+        || bad "[PATH-5] PATHGRACE(b) no decoded frame after the rejoin: $(tail -3 "$WORK/frames-grace2.tsv" 2>/dev/null | tr '\n' ' ')"
     python3 - "$WORK/events.jsonl" <<'PY'
 import json, sys
 plain = 0
@@ -1073,9 +1102,10 @@ PY
     FAKE_ARGS="--paths 2" start_fake || return 1
     pathfault_start "$((PORT + 3))" "$PORT"
     pathfault_start "$((PORT + 4))" "$((PORT + 1))"
-    path_pair_once "$PORT"
+    path_pair_once "$((PORT + 3))"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
-        --open-phone --debug-chrome-state "$WORK/chrome-grace3.txt" --quit-after 75
+        --open-phone --debug-chrome-state "$WORK/chrome-grace3.txt" --quit-after 75 \
+        --debug-frame-log "$WORK/frames-grace3.tsv"
     path_stream_start
     wait_until 20 path_upto 2 \
         || bad "[PATH-6] PATHGRACE(c) the second path never joined"
@@ -1130,7 +1160,7 @@ PY
     wait_until 10 path_joined_up_since "$t_lift" \
         && ok "[PATH-22] PATHGRACE(c) the phone attached the rejoined path to the same session" \
         || bad "[PATH-6] PATHGRACE(c) no path attached after the 15 s lift"
-    if wait_until 5 path_video_since "$t_lift"; then
+    if wait_until 5 path_frame_since "$WORK/frames-grace3.tsv" "$t_lift"; then
         video_dt="$(python3 -c "print('%.2f' % (float('$(path_now)') - float('$t_lift')))")"
         if python3 -c "import sys; sys.exit(0 if float('$video_dt') <= 3.0 else 1)"; then
             ok "[PATH-5] PATHGRACE(c) the picture resumed ${video_dt}s after the 15 s lift (limit 3.0)"
@@ -1138,7 +1168,7 @@ PY
             bad "[PATH-5] PATHGRACE(c) the picture resumed ${video_dt}s after the 15 s lift (limit 3.0)"
         fi
     else
-        bad "[PATH-5] PATHGRACE(c) no video frame after the 15 s lift"
+        bad "[PATH-5] PATHGRACE(c) no decoded frame in 5 s after the 15 s lift: $(tail -3 "$WORK/frames-grace3.tsv" 2>/dev/null | tr '\n' ' ')"
     fi
     wait_until 5 chrome_online "$WORK/chrome-grace3.txt" \
         && ok "[PATH-17] PATHGRACE(c) the window left reconnecting" \
@@ -1178,8 +1208,10 @@ check_pathrejoin() {
     pathfault_nuke
     local ctl session path_lines
     FAKE_ARGS="--paths 1" start_fake || return 1
-    path_pair_once "$PORT"
     pathfault_start "$((PORT + 3))" "$PORT"
+    # Pair through the proxy the launch dials: the session a real user has is
+    # pinned, and only a pinned connection may join (path_pair_once's comment).
+    path_pair_once "$((PORT + 3))"
     ctl="$PATHFAULT_CTL"
     local t_launch
     t_launch="$(date +%s)"
