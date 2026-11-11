@@ -1317,9 +1317,16 @@ struct AppGrid: View {
             .onContinuousHover { phase in trackRail(phase) }
             // [DECK-32] The rail disappearing (a search, a short grid) ends the
             // emphasis even if the pointer's leave never arrives; the results
-            // are never drawn dimmed.
+            // are never drawn dimmed. A zoom change and the page going offline
+            // end it the same way, and a person's scroll ends it in `follow`.
             .onChange(of: railShown) { _, shown in
-                if !shown { RailEmphasisModel.shared.leave(reduceMotion: reduceMotion) }
+                if !shown { RailEmphasisModel.shared.end(reduceMotion: reduceMotion) }
+            }
+            .onChange(of: zoom) { _, _ in
+                RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+            }
+            .onChange(of: controller.presentation.deckInteractive) { _, interactive in
+                if !interactive { RailEmphasisModel.shared.end(reduceMotion: reduceMotion) }
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
@@ -1450,6 +1457,12 @@ struct AppGrid: View {
         railAccent = RailAccent.reduce(before, .scroll(top: top, offset: offset,
                                                        columns: columns,
                                                        maxOffset: maxOffset))
+        if personScrolled(before: before, after: railAccent,
+                          offset: offset, width: scroll.width) {
+            RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+        }
+        scrollBox.lastOffset = offset
+        scrollBox.lastWidth = scroll.width
         if railAccent != before {
             Log.app.debug("rail accent: \(before.name, privacy: .public) --scroll--> \(railAccent.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
         }
@@ -1469,8 +1482,27 @@ struct AppGrid: View {
         }
     }
 
+    /// Whether this scroll came from the person (the wheel, trackpad, scroll
+    /// bar or keys) rather than the pick's own animated jump, which DECK-32
+    /// ends a click's emphasis on. The jump's frames are all `jumping` and
+    /// settle at `picked`; a jump that falls off its path to `topRow` is the
+    /// person's, and while no jump is in flight any move of the offset is.
+    /// A resize changes the width and the origin together, so it is not a
+    /// scroll and keeps the emphasis.
+    private func personScrolled(before: RailAccent, after: RailAccent,
+                                offset: CGFloat, width: CGFloat) -> Bool {
+        if case .jumping = before {
+            if case .topRow = after { return true }
+            return false
+        }
+        guard let last = scrollBox.lastOffset, scrollBox.lastWidth == width else {
+            return false
+        }
+        return abs(offset - last) > RailAccent.landingTolerance
+    }
+
     /// The container hover, reduced to where the pointer is relative to the
-    /// rail: `dx` points left of its leading edge, 0 inside it.
+    /// rail: a signed `x` from its leading edge, and its y in the rail.
     private func trackRail(_ phase: HoverPhase) {
         let model = RailPointerModel.shared
         guard DeckRail.shows(count: cells.count, query: query) else {
@@ -1532,6 +1564,11 @@ private final class RailScrollBox {
     var last: RailScroll?
     /// The first app of the row at `last`: a pick's jump starts from here.
     var lastTop: Int?
+    /// The last offset and width `follow` saw, so a person's scroll (which
+    /// ends DECK-32's emphasis) is told apart from a resize and from the
+    /// pick's own animated jump.
+    var lastOffset: CGFloat?
+    var lastWidth: CGFloat?
 }
 
 /// Dock-style magnification (R1): the letter under the pointer swells to
@@ -1772,15 +1809,12 @@ private struct DeckIndexRail: View {
         .onChange(of: pointerRequest) { _, request in
             if let request { handlePointer(request) }
         }
-        // [DECK-32] The drawn letter under the pointer lights its All Apps
-        // tiles. An empty letter forwards to the letter its jump lands on, so
-        // the grid and the accent agree; leaving the rail or hiding it (search)
-        // returns the grid to rest.
-        .onChange(of: hovered?.letter, initial: true) { _, letter in
-            updateEmphasis(letter)
-        }
+        // [DECK-32] The emphasis follows the button, never the hover: the
+        // gesture below presses, drags and releases it. Leaving the rail with
+        // the pointer does not cut a click's linger short; the model's own
+        // clock ends it.
         .onDisappear {
-            RailEmphasisModel.shared.leave(reduceMotion: reduceMotion)
+            RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
@@ -1794,15 +1828,20 @@ private struct DeckIndexRail: View {
 
     /// Feed the emphasis machine the letter a pointer on `letter` lights: the
     /// letter itself, or the next one with apps. No letter here to land on
-    /// (an empty tail) lights nothing.
-    private func updateEmphasis(_ letter: String?) {
+    /// (an empty tail) lights nothing. `dragging` is the button's second and
+    /// later moves: the machine sets its moved flag, so the release is a drag.
+    private func pressEmphasis(_ letter: String?, dragging: Bool) {
         let model = RailEmphasisModel.shared
         guard let letter,
               let landed = DeckRail.landedLetter(for: letter, in: entries) else {
-            model.leave(reduceMotion: reduceMotion)
+            model.end(reduceMotion: reduceMotion)
             return
         }
-        model.point(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        if dragging {
+            model.drag(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        } else {
+            model.press(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        }
     }
 
     private func slotView(index: Int, slot: DeckRail.Slot, box: RailLayout.Slot,
@@ -1905,17 +1944,30 @@ private struct DeckIndexRail: View {
             .onChanged { value in
                 let model = RailPointerModel.shared
                 let y = value.location.y + hitVertical.lowerBound
-                if model.state.isDragging {
+                let wasDragging = model.state.isDragging
+                if wasDragging {
                     model.drag(y: y, reduceMotion: reduceMotion)
                 } else {
                     model.press(y: y, reduceMotion: reduceMotion)
                 }
                 pickIfNeeded(atY: y)
+                if model.state.isDragging {
+                    pressEmphasis(letter(atY: y), dragging: wasDragging)
+                }
             }
             .onEnded { value in
-                lastPicked = nil
                 let y = value.location.y + hitVertical.lowerBound
+                // The release inside the frozen span is a click or a held
+                // press; past its ends the rail is left, so the emphasis ends
+                // at once rather than lingering on a letter nobody released.
+                let inside = frozen.map { y >= $0.span.top && y <= $0.span.bottom } ?? false
+                lastPicked = nil
                 RailPointerModel.shared.release(y: y, reduceMotion: reduceMotion)
+                if inside {
+                    RailEmphasisModel.shared.release(reduceMotion: reduceMotion)
+                } else {
+                    RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+                }
             }
     }
 
@@ -1941,12 +1993,26 @@ private struct DeckIndexRail: View {
                                    span: frozen?.span) else { return }
             model.press(y: request.y, reduceMotion: reduceMotion)
             pickIfNeeded(atY: request.y)
+            if model.state.isDragging {
+                pressEmphasis(letter(atY: request.y), dragging: false)
+            }
         case .drag:
             model.drag(y: request.y, reduceMotion: reduceMotion)
             pickIfNeeded(atY: request.y)
+            if model.state.isDragging {
+                pressEmphasis(letter(atY: request.y), dragging: true)
+            }
         case .up:
+            let inside = frozen.map {
+                request.y >= $0.span.top && request.y <= $0.span.bottom
+            } ?? false
             lastPicked = nil
             model.release(y: request.y, reduceMotion: reduceMotion)
+            if inside {
+                RailEmphasisModel.shared.release(reduceMotion: reduceMotion)
+            } else {
+                RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+            }
         }
     }
 }

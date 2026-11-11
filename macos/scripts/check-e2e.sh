@@ -16220,7 +16220,7 @@ PY
         || bad "DECKRAIL deckpin camera (DECK-32): $CONTROL_REPLY"
     sleep 3
     local emphasis="$WORK/rail-emphasis.json" emphasis_error
-    emphasis_check() {  # emphasis_check LETTER [source:POINTER]
+    emphasis_check() {  # emphasis_check MODE [source:POINTER] [duration:SECS]
         sleep 0.5
         if ! control deckrailemph "$emphasis"; then
             emphasis_error="deckrailemph: $CONTROL_REPLY"
@@ -16231,40 +16231,100 @@ PY
         fi
         return 0
     }
+    # Hover alone is not a press: the rail magnifies, the grid lights nothing.
     control deckrailenter C || bad "DECKRAIL deckrailenter C (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:C; then
-        ok "[DECK-32] C lights its All Apps tiles (1.08, semibold) and dims the rest; the sections stay at rest ($emphasis_error)"
+    if emphasis_check none; then
+        ok "[DECK-32] a hover on C lights nothing (hover is not a press)"
     else
-        bad "[DECK-32] the C emphasis is wrong ($emphasis_error)"
+        bad "[DECK-32] the hover lit the grid ($emphasis_error)"
     fi
-    control deckrailmove D || bad "DECKRAIL deckrailmove D (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:D; then
-        ok "[DECK-32] moving to D cross-fades to D's tiles ($emphasis_error)"
+    # The button down lights C; the drag to D cross-fades; the release after a
+    # held press or a drag ends it at once.
+    control deckrailpress C || bad "DECKRAIL deckrailpress C (DECK-32): $CONTROL_REPLY"
+    if emphasis_check pressed:C source:C; then
+        ok "[DECK-32] pressing C lifts its All Apps tiles (1.08, semibold) and dims the rest to 30%; the sections stay at rest ($emphasis_error)"
     else
-        bad "[DECK-32] the move to D did not light D ($emphasis_error)"
+        bad "[DECK-32] the C press is wrong ($emphasis_error)"
     fi
-    # B is empty in the fixture: its jump lands on C, so the grid follows the
+    control deckraildragto D || bad "DECKRAIL deckraildragto D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check pressed:D source:D; then
+        ok "[DECK-32] dragging to D cross-fades to D's tiles ($emphasis_error)"
+    else
+        bad "[DECK-32] the drag to D did not light D ($emphasis_error)"
+    fi
+    control deckrailup D || bad "DECKRAIL deckrailup D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] releasing a held press ends the emphasis at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the held release did not end the emphasis ($emphasis_error)"
+    fi
+    # A click (80 ms, one letter) lingers for 1000 ms, then the grid returns.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    if emphasis_check lingering:C source:C; then
+        ok "[DECK-32] a click on C lingers with C lit ($emphasis_error)"
+    else
+        bad "[DECK-32] the click did not linger on C ($emphasis_error)"
+    fi
+    sleep 1.2
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] the click's 1000 ms linger ends and the whole grid returns to rest ($emphasis_error)"
+    else
+        bad "[DECK-32] the linger did not end ($emphasis_error)"
+    fi
+    # A new press during the linger replaces the letter at once and discards
+    # the old clock: this press outlives the click's own deadline.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    sleep 0.8
+    control deckrailpress D || bad "DECKRAIL deckrailpress D (DECK-32): $CONTROL_REPLY"
+    sleep 0.4
+    if emphasis_check pressed:D; then
+        ok "[DECK-32] a press during the linger replaces it and discards its clock ($emphasis_error)"
+    else
+        bad "[DECK-32] the press during the linger did not replace it ($emphasis_error)"
+    fi
+    control deckrailup D || bad "DECKRAIL deckrailup D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] the replacing press's held release ends the emphasis ($emphasis_error)"
+    else
+        bad "[DECK-32] the replacing press did not end ($emphasis_error)"
+    fi
+    # An empty B has no apps: its jump lands on C, so the grid follows the
     # accent rather than dimming the whole page.
-    control deckrailmove B || bad "DECKRAIL deckrailmove B (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:C source:B; then
+    control deckrailpress B || bad "DECKRAIL deckrailpress B (DECK-32): $CONTROL_REPLY"
+    if emphasis_check pressed:C source:B; then
         ok "[DECK-32] the empty B lights the C its jump lands on ($emphasis_error)"
     else
         bad "[DECK-32] the empty B did not light its landing letter ($emphasis_error)"
     fi
-    control deckrailleave
-    if emphasis_check away; then
-        ok "[DECK-32] leaving the rail puts every tile back at rest ($emphasis_error)"
-    else
-        bad "[DECK-32] the grid did not return to rest after the rail ($emphasis_error)"
-    fi
-    # The rail is hidden while searching: the results are never drawn dimmed.
+    control deckrailup B || bad "DECKRAIL deckrailup B (DECK-32): $CONTROL_REPLY"
+    sleep 0.3
+    # Each early end cuts a click's linger at once: typing in search, a person's
+    # scroll, and a zoom change.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
     control deckquery "a" || bad "DECKRAIL deckquery (DECK-32): $CONTROL_REPLY"
-    if emphasis_check away; then
-        ok "[DECK-32] searching hides the rail and lights nothing ($emphasis_error)"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] typing in search ends the linger at once ($emphasis_error)"
     else
         bad "[DECK-32] the search results took the rail's emphasis ($emphasis_error)"
     fi
     control deckquery "" || bad "DECKRAIL deckquery clear (DECK-32): $CONTROL_REPLY"
+    sleep 0.5
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    control deck-scroll -100 || bad "DECKRAIL deck-scroll (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] scrolling the grid ends the linger at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the scroll left the emphasis up ($emphasis_error)"
+    fi
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    control deckzoom 1 || bad "DECKRAIL deckzoom (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] a zoom change ends the linger at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the zoom left the emphasis up ($emphasis_error)"
+    fi
+    control deckzoom 1.25 || bad "DECKRAIL deckzoom restore (DECK-32): $CONTROL_REPLY"
+    sleep 0.5
 
     stop_app
 }

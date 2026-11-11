@@ -56,6 +56,35 @@ enum DeckRailInput {
         return nil
     }
 
+    /// The button goes down on `letter`'s band and stays down: a press the
+    /// e2e can dump mid-way (DECK-32's pressed emphasis).
+    static func press(letter: String, controller: ConnectionController) -> String? {
+        guard let y = DeckRailPoint.bandCentre(letter: letter) else { return "no rail letter \(letter)" }
+        controller.sendRailPointer(.hover, x: 13, y: y)
+        turn(0.08)
+        controller.sendRailPointer(.down, x: 13, y: y)
+        turn(0.05)
+        return nil
+    }
+
+    /// With the button still down, the pointer moves to `letter`'s band: the
+    /// drag that cross-fades the emphasis.
+    static func drag(to letter: String, controller: ConnectionController) -> String? {
+        guard let y = DeckRailPoint.bandCentre(letter: letter) else { return "no rail letter \(letter)" }
+        controller.sendRailPointer(.drag, x: 13, y: y)
+        turn(0.05)
+        return nil
+    }
+
+    /// The button goes up at `letter`'s band: a click or a held press, as the
+    /// time since the down decides.
+    static func up(letter: String, controller: ConnectionController) -> String? {
+        guard let y = DeckRailPoint.bandCentre(letter: letter) else { return "no rail letter \(letter)" }
+        controller.sendRailPointer(.up, x: 13, y: y)
+        turn(0.1)
+        return nil
+    }
+
     /// Let the view run its handler and SwiftUI redraw before the next phase.
     private static func turn(_ seconds: TimeInterval) {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
