@@ -23,8 +23,9 @@
 //   showtouches on|off             View > Show Touches
 //   windowstyle framed|immersive|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
-//   immersive instantly|short|long|always   View > Immersive's pick: the reveal
-//                                  choice (stored globally) and the immersive style
+//   hidecontrols instantly|short|long|always
+//                                  View > Hide Controls' pick: the full-screen
+//                                  reveal choice (stored globally)
 //   nav back|home|recents          the Navigate menu's own action for the window
 //                                  (what a bar button and the shortcut run)
 //   opensettings                   open the Settings window (⌘,)
@@ -46,7 +47,7 @@
 //                                  paths, plus the first one's name as text)
 //   pasteimage PATH                an image on the pasteboard, no text
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
-//                                  in the dwell pill's hot zone); over the video it is
+//                                  over the chrome's top band); over the video it is
 //                                  a mouse hover on the phone
 //   hoverout                       the pointer leaves the video (hover EXIT)
 //   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
@@ -134,8 +135,8 @@ enum DebugInputAction: Equatable {
     /// for the phone in use, through the same write-then-apply path (e2e).
     case shortcutsAll(Bool)
     case windowStyle(String)
-    /// View ▸ Immersive's pick (the reveal choice and the immersive style).
-    case immersive(ImmersiveMenuItem)
+    /// View ▸ Hide Controls' pick: the full-screen reveal choice.
+    case hideControls(FullScreenMenuItem)
     /// The Navigate menu's action: back, home or recents.
     case nav(String)
     /// Open the Settings window (⌘,).
@@ -292,13 +293,13 @@ enum DebugInputScript {
             case "toggle" where args.count == 1: return .windowStyle("toggle")
             default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
-        case "immersive":
+        case "hidecontrols":
             switch args.first {
-            case "instantly" where args.count == 1: return .immersive(.delay(.instantly))
-            case "short" where args.count == 1: return .immersive(.delay(.short))
-            case "long" where args.count == 1: return .immersive(.delay(.long))
-            case "always" where args.count == 1: return .immersive(.alwaysVisible)
-            default: throw LineError(message: "immersive needs instantly, short, long or always")
+            case "instantly" where args.count == 1: return .hideControls(.delay(.instantly))
+            case "short" where args.count == 1: return .hideControls(.delay(.short))
+            case "long" where args.count == 1: return .hideControls(.delay(.long))
+            case "always" where args.count == 1: return .hideControls(.alwaysVisible)
+            default: throw LineError(message: "hidecontrols needs instantly, short, long or always")
             }
         case "nav":
             guard args.count == 1, ["back", "home", "recents"].contains(args[0]) else {
@@ -823,8 +824,8 @@ final class DebugInputDriver {
             case "immersive": controller.setStyle(.immersive)
             default: controller.toggleStyle()
             }
-        case .immersive(let item):
-            (view.window?.windowController as? StreamWindowController)?.manager.pickImmersive(item)
+        case .hideControls(let item):
+            (view.window?.windowController as? StreamWindowController)?.manager.pickHideControls(item)
         case .nav(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             switch target {
@@ -840,12 +841,13 @@ final class DebugInputDriver {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
         case .fullScreen:
-            // The menu item's action, through the responder chain: in full
-            // screen the content can live in the system's full-screen window,
-            // which is the one that has to toggle back.
-            if !NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil) {
-                view.window?.toggleFullScreen(nil)
-            }
+            // The script is this stream window's, not whichever window is
+            // key: `to: nil` once put the Deck into full screen and left this
+            // window windowed in the VM. In full screen the content can live
+            // in the system's full-screen window, which `view.window` is.
+            guard let window = view.window else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.toggleFullScreen(nil)
         case .density(let pkg, let value):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             controller.manager.setDensity(value, forPackage: pkg)

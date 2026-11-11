@@ -7,7 +7,7 @@ import XCTest
 @testable import PocketDeck
 
 final class MenuSnapshotTests: XCTestCase {
-    private func stream(style: WindowStyle = .framed, showTouches: Bool = true,
+    private func stream(style: WindowStyle = .immersive, showTouches: Bool = true,
                         frozen: Bool = false, liveText: Bool = false,
                         package: String? = "com.example.app",
                         density: Double? = 1.25) -> StreamMenuState {
@@ -38,7 +38,7 @@ final class MenuSnapshotTests: XCTestCase {
         let state = stream()
         let snapshot = MenuSnapshot(stream: state, phone: MenuSnapshot.Phone(phone()))
         XCTAssertTrue(snapshot.hasStream)
-        XCTAssertEqual(snapshot.style, .framed)
+        XCTAssertEqual(snapshot.style, .immersive)
         XCTAssertTrue(snapshot.showTouches)
         XCTAssertEqual(snapshot.densityPackage, "com.example.app")
         XCTAssertEqual(snapshot.densityOverride, 1.25)
@@ -66,7 +66,7 @@ final class MenuSnapshotTests: XCTestCase {
 
     func testAChangeTheMenuDoesShowIsANewSnapshot() {
         let reference = MenuSnapshot(stream: stream(), phone: MenuSnapshot.Phone(phone()))
-        let other = stream(style: .immersive)
+        let other = stream(style: .framed)
         XCTAssertNotEqual(MenuSnapshot(stream: other, phone: MenuSnapshot.Phone(phone())), reference)
 
         var ringing = phone()
@@ -111,7 +111,7 @@ final class MenuSnapshotTests: XCTestCase {
         _ = gate.update(a)
         _ = gate.tracking(true)
         var b = MenuSnapshot()
-        b.style = .immersive
+        b.style = .framed
         XCTAssertNil(gate.update(b), "nothing may rebuild the items under the pointer")
         XCTAssertEqual(gate.applied, a)
         XCTAssertEqual(gate.tracking(false), b, "and it lands when the menu closes")

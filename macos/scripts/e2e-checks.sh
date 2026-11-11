@@ -11,7 +11,7 @@ ALL_CHECKS=(tls qr pair gates forgot pairflow direct mirror spotlight clip share
             pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathrestart pathbulk pathblip
             switchpath switchlink
             dnd-edge panel-edge
-            files-domain files-thumbs files-thumbs-scale nfr bar-title menubar-shots cover-bar-dark cover-bar-light)
+            files-domain files-thumbs files-thumbs-scale nfr bar-title menubar-shots cover-bar-dark cover-bar-light styles-shots styles-fullscreen)
 
 
 # True when $1 is one of ALL_CHECKS.

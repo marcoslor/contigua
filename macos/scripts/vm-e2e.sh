@@ -77,6 +77,13 @@ if [ "$CHECK_ONLY" = 1 ]; then
     exit 0
 fi
 
+# The run is its own process-group leader: the cap watchdog kills the whole
+# group (ssh, tee, tart, rsync), never just this shell. Re-exec once so the
+# group id is this script's pid.
+if [ "${PD_VM_GROUPED:-0}" != 1 ]; then
+    exec env PD_VM_GROUPED=1 perl -e 'setpgrp(0,0); die "vm-e2e: setpgrp failed\n" unless getpgrp(0) == $$; exec @ARGV' -- "$0" "$@"
+fi
+
 VISIBLE="${PD_VM_VISIBLE:-1}"
 slug="${raw//,/+}"
 OUT="$MACOS/build/vm-e2e/$slug"
@@ -86,7 +93,16 @@ mkdir -p "$OUT"
 memory_gate || exit 3
 
 heavy_lock
-trap 'vm_stop; heavy_unlock' EXIT
+# A hard wall-clock cap for the whole boot + build + run. The guest has its
+# own per-check watchdog; this one exists so a wedged ssh or tart cannot hold
+# the machine-wide lock for hours. The group kill takes the ssh child with it.
+CAP_SECS="${PD_VM_HOST_CAP_SECS:-3600}"
+( sleep "$CAP_SECS"
+  say "vm-e2e: hard cap ${CAP_SECS}s reached; killing the run's process group"
+  kill -TERM -"$$" 2>/dev/null ) &
+CAP_PID=$!
+trap 'kill "$CAP_PID" 2>/dev/null; vm_stop; heavy_unlock; exit 3' TERM INT
+trap 'kill "$CAP_PID" 2>/dev/null; vm_stop; heavy_unlock' EXIT
 
 if vm_running; then
     say "$VM was left running; stopping it"
@@ -175,13 +191,26 @@ last=0
 for check in "$@"; do
     echo "===== $check ====="
     mkdir -p "$art/$check"
+    log="$art/$check/run.log"
     # /bin/bash, like the host: the guest's bash 3.2 is the same one a run on
     # the Mac uses, so the VM reproduces the host's behaviour, not its own.
-    # A check that hangs still ends here (PD_VM_CHECK_SECS, default 40 min), so
-    # its work dir comes back to the host instead of dying with the session.
-    perl -e 'alarm shift; exec @ARGV' "${PD_VM_CHECK_SECS:-2400}" \
-        /bin/bash scripts/check-e2e.sh "$check" 2>&1 | tee "$art/$check/run.log"
-    last=${PIPESTATUS[0]}
+    # The check leads its own process group and a watchdog kills that group on
+    # the step budget (PD_VM_CHECK_SECS, default 40 min): the app, fakephone
+    # and a blocked lsregister/security child all go with it, so a hung step
+    # cannot outlive its budget or keep the host ssh open.
+    perl -e 'setpgrp(0,0); die "vm-check: setpgrp failed\n" unless getpgrp(0) == $$; exec @ARGV' /bin/bash scripts/check-e2e.sh "$check" >"$log" 2>&1 &
+    check_pid=$!
+    ( sleep "${PD_VM_CHECK_SECS:-2400}"
+      echo "vm-check $check timed out after ${PD_VM_CHECK_SECS:-2400}s" >>"$log"
+      kill -TERM -"$check_pid" 2>/dev/null
+      sleep 10
+      kill -KILL -"$check_pid" 2>/dev/null ) &
+    watchdog_pid=$!
+    wait "$check_pid"
+    last=$?
+    kill "$watchdog_pid" 2>/dev/null
+    wait "$watchdog_pid" 2>/dev/null
+    cat "$log"
     [ "$last" = 0 ] || failed=$((failed + 1))
     work="/tmp/pocketdeck-e2e-$port"
     [ -d "$work" ] && cp -R "$work" "$art/$check/work"

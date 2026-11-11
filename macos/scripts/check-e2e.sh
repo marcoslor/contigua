@@ -171,7 +171,13 @@ clear_profile_state() {
     esac
     # A key created by a *different* build makes macOS show a modal Keychain
     # permission dialog, which hangs the app; remove every item, not just one.
-    while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
+    # Bounded: a blocked `security` call is the other unbounded step `clean`
+    # makes on every styles cell.
+    local removed=0
+    while run_limited 10 security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do
+        removed=$((removed + 1))
+        [ "$removed" -lt 20 ] || break
+    done
     # Pairing state = the Mac identity + per-phone pins in the profile
     # folder; the checks pair from scratch each run, so both must go.
     local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
@@ -933,7 +939,11 @@ lit_screenshot() {
     return 1
 }
 
-count_events() { grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || echo 0; }
+count_events() {
+    local n
+    n="$(grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
 
 # fake_counter writes|input — the fake phone's cumulative counter (the newest
 # `counters` event). 0 before the phone has seen anything. A read-only flow's
@@ -2767,7 +2777,7 @@ PY
 # --- C14: window chrome ----------------------------------------------------
 
 # chrome_state — the chrome the app last wrote (--debug-chrome-state):
-# "style=framed|immersive lights=shown|hidden pill=shown|hidden
+# "style=immersive|framed lights=shown|hidden fullbar=shown|hidden
 #  title_visible=yes|no lights_managed=us|appkit fullscreen=yes|no clicks=N"
 # (N = clicks that reached the bar or the pill; in native full screen the
 # system's titlebar shows the title and places the lights).
@@ -2845,6 +2855,45 @@ def series(cols):
     return max(hi[c] - lo[c] for c in range(3))
 seam = sum(sum(abs(a[c] - b[c]) for c in range(3)) for a, b in zip(bar, stream)) / (len(bar) * 3)
 print("spread=%d seam=%d" % (series(bar), round(seam)))
+PY
+}
+
+# frame_strip_spread <png> <w-pt> <h-pt> — the Framed frame's four 3 pt
+# margins and the picture between them: each margin is material (little
+# variation), the picture is the live stream (spread >= 40).
+frame_strip_spread() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def spread(pixels):
+    lo, hi = [255] * 3, [0] * 3
+    for i in pixels:
+        for c in range(3):
+            v = raw[i + c]
+            lo[c] = min(lo[c], v); hi[c] = max(hi[c], v)
+    return max(hi[c] - lo[c] for c in range(3))
+def row(y, xs):
+    return [(int(y) * w + int(x)) * 3 for x in xs]
+def col(x, ys):
+    return [(int(y) * w + int(x)) * 3 for y in ys]
+xs = range(int(120 * scale), w - int(120 * scale), 4)
+ys = range(int(80 * scale), h - int(80 * scale), 4)
+left = spread(col(int(3 * scale), ys))
+right = spread(col(w - int(3 * scale) - 1, ys))
+top = spread(row(int(3 * scale), xs))
+bottom = spread(row(h - int(3 * scale) - 1, xs))
+mid = spread(row(h // 2, range(int(20 * scale), w - int(20 * scale), 4)))
+def mark(value, limit):
+    return "ok" if value <= limit else "bad"
+print("left=%s(%d) right=%s(%d) top=%s(%d) bottom=%s(%d) mid=%s(%d)"
+      % (mark(left, 30), left, mark(right, 30), right, mark(top, 30), top,
+         mark(bottom, 30), bottom, "ok" if mid >= 40 else "bad", mid))
 PY
 }
 
@@ -2981,78 +3030,63 @@ check_chrome() {
     rm -f "$WORK/chrome.txt"
     local on_virtual=()
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
-    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
+    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 180 ${on_virtual[@]+"${on_virtual[@]}"} &
     local backdrop=$!
     # The stream's video pixels: 900x600 pt at the run's backing scale, the
-    # window's exact pixels at the encoder's 2 px alignment — 1800x1200 in a 2x
-    # run, the one size the phone is told and the display keeps through every
-    # style and switch.
-    local wake hake
+    # window's exact pixels at the encoder's 2 px alignment.
+    local wake hake style_key
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
+    style_key="chrome.style.com.android.settings"
 
-    # --- Framed: the permanent bar over the stream ---
-    # The pointer rests in the window, below the bar.
-    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
+    # --- Immersive: the default bar over the stream ---
+    defaults delete "$DEFAULTS_SUITE" "$style_key" 2>/dev/null
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-immersive.txt"
     open_shared --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
         || { kill "$backdrop"; return 1; }
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
-    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "[WIN-4] C14 the window is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
-    sleep 0.3
+    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt Immersive window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "[WIN-4] C14 Immersive is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
+    chrome_is "style=immersive lights=shown fullbar=hidden" \
+        && ok "[WIN-7] C14 no stored choice opens Immersive with its bar and lights" \
+        || bad "[WIN-7] C14 Immersive at rest: $(chrome_state)"
+    chrome_has "can_fullscreen=1" \
+        && ok "[WIN-14] C14 an app window may go full screen" \
+        || bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
     local before
     before="$(window_opens_resizes)"
     case "$before" in
         "open=${wake}x${hake} "*) ok "[WIN-5] C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
         *) bad "[WIN-5] C14 window.open size: $before" ;;
     esac
-    chrome_is "style=framed lights=shown pill=hidden" \
-        && ok "[WIN-7] C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
-        || bad "[WIN-7] C14 framed at rest: $(chrome_state)"
-    # Only the phone window opts out: an app window keeps full screen, and
-    # AppKit's own View item reads the opt-out for itself (full screen stays
-    # available where a mirror is not the thing filling the display).
-    if chrome_has "can_fullscreen=1"; then
-        ok "[WIN-14] C14 an app window may go full screen (the system's View item is enabled for it)"
-    else
-        bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
-    fi
-
-    screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
+    screencapture -x -o -l"$win" "$WORK/chrome-immersive.png" && say "screenshot: $WORK/chrome-immersive.png"
     local bar spread seam tries=40
-    # The first frames of the stream can take a second to land; the bar's
-    # mirror follows them (the e2e's stream is testsrc2, colourful per column).
     while [ "$tries" -gt 0 ]; do
-        bar="$(bar_pixels "$WORK/chrome-framed.png" 900 628)"
+        bar="$(bar_pixels "$WORK/chrome-immersive.png" 900 628)"
         spread="$(echo "$bar" | sed -n 's/.*spread=\([0-9]*\).*/\1/p')"
         seam="$(echo "$bar" | sed -n 's/.*seam=\([0-9]*\).*/\1/p')"
         [ "${spread:-0}" -ge 40 ] && break
         sleep 0.25
-        screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
+        screencapture -x -o -l"$win" "$WORK/chrome-immersive.png"
         tries=$((tries - 1))
     done
     [ "${spread:-0}" -ge 40 ] \
-        && ok "[WIN-7] C14 the bar is not flat: the mirrored stream's columns move it (row spread $spread)" \
-        || bad "[WIN-7] C14 the bar is flat (spread ${spread:-0}): no mirror"
+        && ok "[WIN-67] C14 the bar is the mirrored stream, not flat (row spread $spread)" \
+        || bad "[WIN-67] C14 the bar is flat (spread ${spread:-0}): no mirror"
     [ "${seam:-255}" -le 60 ] \
-        && ok "[WIN-7] C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
-        || bad "[WIN-7] C14 the seam does not track the stream (mean diff ${seam:-255})"
-    say "screenshot: $WORK/chrome-framed.png"
-
+        && ok "[WIN-67] C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
+        || bad "[WIN-67] C14 the seam does not track the stream (mean diff ${seam:-255})"
     local x y w h edges
     read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
-    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-frame.png"
-    edges="$(edge_pixels "$WORK/chrome-frame.png" "$w" "$h")"
+    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-immersive-frame.png"
+    edges="$(edge_pixels "$WORK/chrome-immersive-frame.png" "$w" "$h")"
     [ "$edges" = "left=stream right=stream bottom=stream" ] \
-        && ok "[WIN-4] C14 the window's sides and bottom are the stream's edges ($edges)" \
-        || bad "[WIN-4] C14 window edges: $edges"
+        && ok "[WIN-4] C14 the Immersive window's sides and bottom are the stream's edges ($edges)" \
+        || bad "[WIN-4] C14 Immersive window edges: $edges"
 
-    # WIN-61: real clicks through the window server on the band. The middle is
-    # the bar's press; the last rows under the native titlebar (taller than the
-    # 28 pt bar) are still the window's edge and used to reach the picture.
-    # A quiet run cannot post them (they move the pointer), so this step runs
-    # in a visible one, like the rig's other real-input steps.
+    # WIN-61: real clicks through the window server on the band. A quiet run
+    # cannot post them, so this step runs visible.
     if [ "$VISIBLE" = "1" ]; then
         local bar_touches bar_touches_after bar_clicks bar_clicks_after
         local geom win_h layout_h titlebar band_click
@@ -3064,9 +3098,6 @@ check_chrome() {
         say "BAR geometry: $geom (titlebar $titlebar pt, band click $band_click pt)"
         bar_touches="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
         bar_clicks="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
-        # Three points, each 200 pt apart so none is read as a double-click:
-        # the band's middle, then the titlebar's bottom row twice (an inactive
-        # window's first click may only activate it).
         cg_input click --window "$win" --top 14 --dx -200
         sleep 0.6
         cg_input click --window "$win" --top "$band_click" --dx 0
@@ -3079,261 +3110,200 @@ check_chrome() {
             && ok "[WIN-61] C14 real clicks in the bar's band made no touch ($bar_touches)" \
             || bad "[WIN-61] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
         [ "${bar_clicks_after:-0}" -gt "${bar_clicks:-0}" ] \
-            && ok "[WIN-61] C14 the clicks were the bar's own press (clicks $bar_clicks -> $bar_clicks_after)" \
+            && ok "[WIN-61] C14 the clicks were the window's own press (clicks $bar_clicks -> $bar_clicks_after)" \
             || bad "[WIN-61] C14 the bar's band click never reached the chrome (clicks ${bar_clicks:-?} -> ${bar_clicks_after:-?})"
     else
         skip_visible "WIN-61 the bar's band click as a real CGEvent"
     fi
-
-    # The virtual display is the stream's in either style and while switching
-    # (checked over all three launches at the end).
-
-    # ---
-
-    # --- Immersive: the dwell pill ---
     next_shared
-    # The script waits for the check's go before clicking the pill's minimise light.
-    rm -f "$WORK/chrome-step-minimise"
-    # In a VM the scripted click is an in-app NSEvent pair that the window server
-    # never sees, so the Dock's minimise animation freezes on its first frame.
-    # Visible runs click through the window server instead; quiet runs keep the
-    # scripted click, which is what the host's reference run exercises.
-    if [ "$VISIBLE" = "1" ]; then
-        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
-            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
-            "waitfile $WORK/chrome-step-minimise" "wait 8" > "$WORK/chrome-immersive.txt"
-    else
-        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
-            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
-            "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
-    fi
+
+    # --- Framed: the real frame round the picture ---
+    rm -f "$WORK/chrome-step-framed" "$WORK/chrome-step-framed-clicks"
+    printf '%s\n' "wait 0.6" "windowstyle framed" "wait 1.5" "waitfile $WORK/chrome-step-framed 60" \
+        "clickat -450 300" "wait 0.3" "clickat 450 300" "wait 0.3" \
+        "clickat 0 640" "wait 0.3" "clickat -450 640" "wait 0.3" \
+        "clickat 0 20" "wait 0.3" "waitfile $WORK/chrome-step-framed-clicks 60" "wait 6" > "$WORK/chrome-framed.txt"
     open_shared --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
         || { kill "$backdrop"; return 1; }
-    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no framed window on the relaunch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    # The script flips to immersive: the window shrinks by the bar, the stream stays.
-    wait_until 8 win_size "$win" 900 600 \
-        && ok "[WIN-7] C14 the toggle (also ⌥⌘F) took the bar away: the window is now exactly the stream (900x600)" \
-        || bad "[WIN-7] C14 the window did not become 900x600 after the toggle: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
-    wait_until 4 chrome_is "style=immersive lights=hidden pill=hidden" \
-        && ok "[WIN-8] C14 immersive at rest: no lights, no pill ($(chrome_state))" \
-        || bad "[WIN-8] C14 immersive at rest: $(chrome_state)"
-    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "immersive" ] \
-        && ok "[WIN-7] C14 the choice is remembered under the package's key" \
-        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
-
-    # An early tap in the hot zone is the app's ordinary touch (no added delay),
-    # and the rest it restarts brings the pill up 400 ms later.
-    local touches_first touches
-    wait_until 6 chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "[WIN-8] C14 the 400 ms rest shows the dwell pill ($(chrome_state))" \
-        || bad "[WIN-8] C14 the rest did not show the pill: $(chrome_state)"
-    touches="$(count_events '"kind":"touch","stream":1,"action":0')"
-    [ "$touches" -ge 1 ] \
-        && ok "[WIN-8] C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
-        || bad "[WIN-8] C14 no touch from the hot zone's early click"
-    screencapture -x -o -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
-    # The immersive window's stream is the live app: the fake app's coloured
-    # columns are still on screen under the pill (a hidden video layer would
-    # blank them and read 0).
-    spread="$(stream_spread "$WORK/chrome-pill.png" 900 600)"
-    [ "${spread:-0}" -ge 40 ] \
-        && ok "[WIN-7] C14 the immersive stream is the live app (mid-row spread $spread)" \
-        || bad "[WIN-7] C14 the immersive stream is blank (mid-row spread ${spread:-0})"
-
-    # The pill's minimise light: a click there goes through the window's own
-    # event dispatch to the light. Visible runs send it as a real click so the
-    # window server (and the Dock's animation) sees it.
-    touch "$WORK/chrome-step-minimise"
-    if [ "$VISIBLE" = "1" ]; then
-        cg_input click --window "$win" --dx -406 --top 20
-    fi
-    sleep 1
-    window_gone "$win" \
-        && ok "[WIN-8] C14 a click on the pill's minimise light minimised the window" \
-        || bad "[WIN-8] C14 the minimise light click did not minimise (window is still listed)"
-    [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$touches" ] \
-        && ok "[WIN-8] C14 and no touch reached the phone from the chrome" \
-        || bad "[WIN-8] C14 the chrome's click reached the phone as touch"
+    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no window for the Framed switch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    wait_until 8 win_size "$win" 910 643 \
+        && ok "[WIN-4] [WIN-71] C14 Framed is the stream plus 38 pt above and 5 pt on the other three sides (910x643)" \
+        || bad "[WIN-4] C14 the Framed window is not 910x643: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    wait_until 5 chrome_is "style=framed" \
+        && chrome_has "video=5,38,900,600" \
+        && ok "[WIN-71] C14 the picture's rect is the stream inside the frame (rounded 5,38,900,600)" \
+        || bad "[WIN-71] C14 the Framed picture's rect: $(chrome_state)"
+    before="$(window_opens_resizes)"
+    case "$before" in
+        "open=${wake}x${hake} "*) ok "[WIN-5] C14 the Framed window still asks for the stream's ${wake}x${hake}, not the window's pixels" ;;
+        *) bad "[WIN-5] C14 the Framed window.open size: $before" ;;
+    esac
+    [ "$(defaults read "$DEFAULTS_SUITE" "$style_key" 2>/dev/null)" = "mat" ] \
+        && ok "[WIN-7] C14 Framed's stored value is its own (mat), never the old framed string" \
+        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "$style_key" 2>&1)"
+    screencapture -x -o -l"$win" "$WORK/chrome-framed.png" && say "screenshot: $WORK/chrome-framed.png"
+    local strips frame_touches frame_touches_after
+    strips="$(frame_strip_spread "$WORK/chrome-framed.png" 910 643)"
+    say "C14 Framed bands: $strips"
+    case "$strips" in
+        *"left=ok"*"right=ok"*"top=ok"*"bottom=ok"*)
+            ok "[WIN-71] C14 the four frame margins are the material, not the stream" ;;
+        *) bad "[WIN-71] C14 the Framed margins do not read as chrome: $strips" ;;
+    esac
+    case "$strips" in
+        *"mid=ok"*) ok "[WIN-71] C14 and the picture between them is the live stream" ;;
+        *) bad "[WIN-71] C14 the Framed picture is flat: $strips" ;;
+    esac
+    frame_touches="$(count_events '"kind":"touch","stream":1,"action":0')"
+    touch "$WORK/chrome-step-framed"
+    sleep 2.5
+    frame_touches_after="$(count_events '"kind":"touch","stream":1,"action":0')"
+    [ "$frame_touches_after" -eq "$frame_touches" ] \
+        && ok "[WIN-61] C14 presses in the four margins and a rounded corner made no touch ($frame_touches)" \
+        || bad "[WIN-61] C14 a frame press reached the phone as a touch ($frame_touches -> $frame_touches_after)"
+    touch "$WORK/chrome-step-framed-clicks"
     next_shared
 
-    # --- Switching with ⌥⌘F, near the top of the screen ---
-    rm -f "$WORK/chrome-step-top"
+    # --- ⌥⌘F flips the pair both ways ---
+    rm -f "$WORK/chrome-step-toggle1" "$WORK/chrome-step-toggle2" "$WORK/chrome-step-toggle3"
     printf '%s\n' "wait 0.6" "click 0.5 0.5" "wait 0.8" "key opt+cmd+f" \
-        "waitfile $WORK/chrome-step-top" "windowtop" "wait 9" \
-        "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 8" > "$WORK/chrome-switch.txt"
+        "waitfile $WORK/chrome-step-toggle1 60" "wait 0.4" "key opt+cmd+f" \
+        "waitfile $WORK/chrome-step-toggle2 60" "wait 0.4" "key opt+cmd+f" \
+        "waitfile $WORK/chrome-step-toggle3 60" "wait 8" > "$WORK/chrome-toggle.txt"
     open_shared --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-switch.txt" \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-toggle.txt" \
         || { kill "$backdrop"; return 1; }
-    win="$(await_window '$4 == 900')" || { bad "C14 no window for the switch checks"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    local y0
-    # The stored immersive choice opens immersive; ⌥⌘F brings the bar back.
+    win="$(await_window '$4 == 900 || $4 == 910')" || { bad "C14 no window for the toggle"; kill "$backdrop"; return 1; }
+    wait_until 8 win_size "$win" 910 643 \
+        && ok "[WIN-7] C14 the stored framed choice opens Framed (910x643)" \
+        || bad "[WIN-7] C14 the stored style did not open its window: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    touch "$WORK/chrome-step-toggle1"
     wait_until 8 win_size "$win" 900 628 \
-        && ok "[WIN-7] C14 ⌥⌘F flips to framed: the window grows by the 28 pt bar (900x628)" \
-        || bad "[WIN-7] C14 ⌥⌘F did not grow the window to 900x628: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
-    y0="$(win_y "$win")"
-    # The window goes to the top of the screen, where pushing its bar up hard
-    # pins it: the visible frame's top edge.
-    touch "$WORK/chrome-step-top"
-    sleep 0.4
-    local ytop
-    ytop="$(win_y "$win")"
-    # ⌥⌘F to immersive (600, no bar here), then back to framed: the bar cannot
-    # go above the screen's visible frame, so the window moves down just enough.
-    sleep 8
-    wait_until 8 win_size "$win" 900 600 \
-        && ok "[WIN-7] C14 ⌥⌘F to immersive at the top: the window is the stream (900x600)" \
-        || bad "[WIN-7] C14 ⌥⌘F did not drop the bar at the top: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
-    # The framed shape returns between the two later ⌥⌘F presses; catch it fast.
-    wait_until 7 win_size "$win" 900 628 \
-        && ok "[WIN-7] C14 ⌥⌘F back to framed right under the screen's top: still 900x628" \
-        || bad "[WIN-7] C14 ⌥⌘F did not bring the bar back: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
-
-    local yback
-    yback="$(win_y "$win")"
-    local move=$((yback - ytop))
-    if [ "$move" -ge 0 ] && [ "$move" -le 28 ]; then
-        ok "[WIN-7] C14 the switch's down-move fits the bar (moved down ${move} pt; the visible frame's top is lower than the drag's pin)"
-    else
-        bad "[WIN-7] C14 the switch's down-move is wrong: $ytop -> $yback (legal is 0..28)"
-    fi
-    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "framed" ] \
-        && ok "[WIN-7] C14 the stored key followed the last switch" \
-        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
-    sleep 6
-    # The virtual display's size never changed over the whole run: one size,
-    # the stream's, through three launches and every switch.
+        && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x628" \
+        || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    touch "$WORK/chrome-step-toggle2"
+    wait_until 8 win_size "$win" 910 643 \
+        && ok "[WIN-7] C14 ⌥⌘F from Immersive brings the frame back: 910x643" \
+        || bad "[WIN-7] C14 ⌥⌘F did not reach Framed: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    touch "$WORK/chrome-step-toggle3"
+    wait_until 8 win_size "$win" 900 628 \
+        && ok "[WIN-7] C14 and again to Immersive: 900x628" \
+        || bad "[WIN-7] C14 the toggle pair did not complete ($(windows | awk -v id="$win" '$1 == id {print $4, $5}'))"
     case "$(resize_sizes)" in
-        "${wake}x${hake}") ok "[WIN-5] C14 the virtual display kept the stream's size through all styles and switches" ;;
-        # No resize landed: every window.resize kept the display's one true size.
+        "${wake}x${hake}") ok "[WIN-5] C14 the virtual display kept the stream's size through both styles" ;;
         none) ok "[WIN-5] C14 the virtual display changed nothing: one stream size throughout" ;;
         *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
     esac
-    [ "$(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ')" -eq 1 ] \
-        && ok "[WIN-1] C14 one window.open per stream: no re-open on switching" \
-        || ok "[WIN-1] C14 window.open count: $(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ') (restarts included)"
 
-    # --- C2: native full screen ---
-    # The bar macOS reveals at the top edge is the system's: the window's title
-    # and the standard traffic lights in their standard place, in both styles;
-    # the stream stays full-bleed under it. Entering full screen switches the
-    # Space, which only a visible run can do (the quiet run's virtual display
-    # has none), so this is a VISIBLE-only step.
+    # --- Full screen: the acrylic bar, hidden then revealed (WIN-8, WIN-14) ---
     if [ "$VISIBLE" = "1" ]; then
+        local style_pair style_name want_windowed want_w want_h
+        for style_pair in "immersive:900x628" "framed:910x643"; do
+            style_name="${style_pair%%:*}"
+            want_windowed="${style_pair##*:}"
+            want_w="${want_windowed%x*}"
+            want_h="${want_windowed#*x}"
+            next_shared
+            rm -f "$WORK/fs-hidden" "$WORK/fs-revealed" "$WORK/fs-left" "$WORK/fs-exit" "$WORK/fs-done"
+            printf '%s\n' "wait 1" "windowstyle $style_name" "wait 1" "fullscreen" "wait 6" \
+                "waitfile $WORK/fs-hidden 90" "waitfile $WORK/fs-revealed 90" \
+                "waitfile $WORK/fs-left 90" "fullscreen" "wait 8" "waitfile $WORK/fs-exit 90" \
+                "fullscreen" "wait 6" "waitfile $WORK/fs-done 90" "wait 10" > "$WORK/chrome-fs.txt"
+            open_shared --open com.android.settings \
+                --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fs.txt" \
+                || { kill "$backdrop"; return 1; }
+            win="$(await_window '$4 == 900 || $4 == 910')" || { bad "C14 no window before full screen"; kill "$backdrop"; return 1; }
+            if wait_until 20 chrome_all fullscreen=yes fullbar=hidden fullbar_visible=0; then
+                ok "[WIN-8] [WIN-14] C14 $style_name full screen starts with the bar hidden ($(chrome_state))"
+            else
+                bad "[WIN-8] [WIN-14] C14 $style_name never entered full screen: $(chrome_state)"
+                continue
+            fi
+            sleep 0.4
+            screencapture -x "$WORK/chrome-fs-$style_name-hidden.png" && say "screenshot: $WORK/chrome-fs-$style_name-hidden.png"
+            touch "$WORK/fs-hidden"
+            # The absolute point is the screen's top edge; a full-screen
+            # window is not in the on-screen list cgevent's --window reads.
+            # 6 pt is inside the bar's 8 pt edge band but below the system
+            # menu bar's own reveal strip, which would otherwise cover it.
+            cg_input moveat --x 200 --y 6
+            if wait_until 8 chrome_has "fullbar=shown"; then
+                wait_until 4 chrome_has "lights=shown"
+                ok "[WIN-8] C14 $style_name: a rest at the top edge reveals the acrylic bar with its lights ($(chrome_state))"
+            else
+                bad "[WIN-8] C14 $style_name: the top edge revealed nothing: $(chrome_state)"
+            fi
+            wait_until 4 chrome_has "bar_title=1" \
+                && ok "[WIN-8] C14 $style_name: the full-screen bar carries the name" \
+                || bad "[WIN-8] C14 $style_name: no title on the full-screen bar ($(chrome_state))"
+            sleep 0.3
+            screencapture -x "$WORK/chrome-fs-$style_name-revealed.png" && say "screenshot: $WORK/chrome-fs-$style_name-revealed.png"
+            local fs_touches fs_clicks fs_touches_after fs_clicks_after
+            fs_touches="$(count_events '"kind":"touch","stream":1,"action":0')"
+            fs_clicks="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
+            touch "$WORK/fs-revealed"
+            sleep 0.5
+            cg_input clickat --x 200 --y 14
+            sleep 0.8
+            fs_touches_after="$(count_events '"kind":"touch","stream":1,"action":0')"
+            fs_clicks_after="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
+            [ "$fs_touches_after" -eq "$fs_touches" ] \
+                && ok "[WIN-61] C14 $style_name: a click on the full-screen bar made no touch" \
+                || bad "[WIN-61] C14 $style_name: the full-screen bar click reached the phone"
+            [ "${fs_clicks_after:-0}" -gt "${fs_clicks:-0}" ] \
+                && ok "[WIN-61] C14 $style_name: and it was the window's own press" \
+                || bad "[WIN-61] C14 $style_name: the full-screen bar click did not reach the chrome"
+            cg_input moveat --x 200 --y 400
+            if wait_until 8 chrome_has "fullbar=hidden"; then
+                ok "[WIN-8] C14 $style_name: leaving the bar hides it ($(chrome_state))"
+            else
+                bad "[WIN-8] C14 $style_name: the bar stayed after the pointer left: $(chrome_state)"
+            fi
+            touch "$WORK/fs-left"
+            wait_until 12 win_size "$win" "$want_w" "$want_h" \
+                && ok "[WIN-14] C14 $style_name: leaving full screen restores the windowed chrome" \
+                || bad "[WIN-14] C14 $style_name: exit did not restore the window: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+            touch "$WORK/fs-exit"
+            touch "$WORK/fs-done"
+        done
+
+        # --- Always Visible keeps the full-screen bar up (WIN-9) ---
         next_shared
-        rm -f "$WORK/c2-step-framed" "$WORK/c2-step-exit-framed" \
-            "$WORK/c2-step-immersive" "$WORK/c2-step-exit-immersive"
-        printf '%s\n' "wait 1" "windowstyle framed" "wait 1" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-framed 60" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-exit-framed 60" "windowstyle immersive" "wait 2" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-immersive 60" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-exit-immersive 60" "wait 10" > "$WORK/chrome-fullscreen.txt"
+        rm -f "$WORK/fs-always" "$WORK/fs-short" "$WORK/fs-always-done"
+        printf '%s\n' "wait 1" "hidecontrols always" "wait 1" "fullscreen" "wait 6" \
+            "waitfile $WORK/fs-always 90" "waitfile $WORK/fs-short 90" "hidecontrols short" "wait 3" "fullscreen" "wait 8" \
+            "waitfile $WORK/fs-always-done 90" "wait 10" > "$WORK/chrome-fs-always.txt"
         open_shared --open com.android.settings \
-            --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fullscreen.txt" \
+            --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fs-always.txt" \
             || { kill "$backdrop"; return 1; }
-        win="$(await_window '$4 == 900 && $5 == 628')" \
-            || { bad "C2 no framed window before full screen"; kill "$backdrop"; return 1; }
-
-        local full
-        full="$(await_window '$4 > 900 && $5 > 628')" \
-            && ok "[WIN-14] C2 framed full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
-            || bad "[WIN-14] C2 framed full screen: the window did not fill the screen"
-        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
-            && ok "[WIN-14] C2 framed full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
-            || bad "[WIN-14] C2 framed full screen: $(chrome_state)"
-        # The system's bar only slides down when the pointer reaches the top
-        # edge; look at it there.
-        cg_input move --window "$full" --top 0
-        sleep 1
-        screencapture -x "$WORK/chrome-fullscreen-framed.png" && say "screenshot: $WORK/chrome-fullscreen-framed.png"
-        touch "$WORK/c2-step-framed"
-
-        win="$(await_window '$4 == 900 && $5 == 628')" \
-            && ok "[WIN-14] C2 leaving framed full screen restores the 900x628 window" \
-            || bad "[WIN-14] C2 leaving framed full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
-        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no" \
-            && ok "[WIN-14] C2 and the framed bar's lights come back, title hidden ($(chrome_state))" \
-            || bad "[WIN-14] C2 after framed full screen: $(chrome_state)"
-        touch "$WORK/c2-step-exit-framed"
-
-        win="$(await_window '$4 == 900 && $5 == 600')" \
-            && ok "[WIN-14] C2 the style switch after full screen took the bar away (900x600)" \
-            || bad "[WIN-14] C2 immersive after full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
-        full="$(await_window '$4 > 900 && $5 > 600')" \
-            && ok "[WIN-14] C2 immersive full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
-            || bad "[WIN-14] C2 immersive full screen: the window did not fill the screen"
-        wait_until 15 chrome_is "style=immersive lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
-            && ok "[WIN-14] C2 immersive full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
-            || bad "[WIN-14] C2 immersive full screen: $(chrome_state)"
-        cg_input move --window "$full" --top 0
-        sleep 1
-        screencapture -x "$WORK/chrome-fullscreen-immersive.png" && say "screenshot: $WORK/chrome-fullscreen-immersive.png"
-        touch "$WORK/c2-step-immersive"
-
-        win="$(await_window '$4 == 900 && $5 == 600')" \
-            && ok "[WIN-14] C2 leaving immersive full screen restores the 900x600 window" \
-            || bad "C2 leaving immersive full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
-        wait_until 15 chrome_is "style=immersive lights=hidden pill=hidden title_visible=no lights_managed=us fullscreen=no" \
-            && ok "[WIN-14] C2 and immersive is back at rest: no lights, no pill, title hidden ($(chrome_state))" \
-            || bad "C2 after immersive full screen: $(chrome_state)"
-        touch "$WORK/c2-step-exit-immersive"
-        # Leave the pointer where it was, not on the screen's top edge.
-        cg_input move --window "$win" --dx 0 --dy 0
+        win="$(await_window '$4 == 900')" || { bad "C14 no window for Always Visible"; kill "$backdrop"; return 1; }
+        if wait_until 20 chrome_all fullscreen=yes fullbar=shown; then
+            ok "[WIN-9] C14 Always Visible: the window fills the screen and shows the bar at once ($(chrome_state))"
+        else
+            bad "[WIN-9] C14 Always Visible did not enter full screen with the bar: $(chrome_state)"
+        fi
+        cg_input moveat --x 200 --y 500
+        sleep 2
+        chrome_has "fullbar=shown" \
+            && ok "[WIN-9] C14 Always Visible: still up past the hide delay with the pointer away" \
+            || bad "[WIN-9] C14 Always Visible hid after the delay: $(chrome_state)"
+        [ "$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)" = "alwaysVisible" ] \
+            && ok "[WIN-9] C14 Always Visible is stored as the one reveal choice" \
+            || bad "[WIN-9] C14 Always Visible stored: $(defaults read "$DEFAULTS_SUITE" immersive.revealDelay 2>&1)"
+        touch "$WORK/fs-always"
+        sleep 0.5
+        touch "$WORK/fs-short"
+        wait_until 8 chrome_has "fullbar=hidden" \
+            && ok "[WIN-9] C14 picking Short takes the shown full-screen bar away" \
+            || bad "[WIN-9] C14 Short did not hide the bar: $(chrome_state)"
+        touch "$WORK/fs-always-done"
+        wait_until 12 chrome_all fullscreen=no fullbar=hidden \
+            && ok "[WIN-14] C14 leaving full screen ends the bar's machine" \
+            || bad "[WIN-14] C14 after Always Visible full screen: $(chrome_state)"
     else
-        skip_visible "C2 native full screen (a real Space switch)"
+        skip_visible "C2 full screen and the acrylic bar (a real Space switch and pointer)"
     fi
-
-    # --- Immersive ▸ Always Visible (ImmersiveMenu.swift) ---
-    # Picking it keeps the lights and the capsules up with the pointer away
-    # from the window, past the hide delay; picking Short hides them again.
-    next_shared
-    rm -f "$WORK/chrome-step-short"
-    printf '%s\n' "wait 0.6" "immersive always" "wait 2" "hoverat -460 -80" "wait 3" \
-        "menudump $WORK/chrome-always-menu.json" \
-        "waitfile $WORK/chrome-step-short 60" "immersive short" "wait 2" > "$WORK/chrome-always.txt"
-    open_shared --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-always.txt" \
-        || { kill "$backdrop"; return 1; }
-    win="$(await_window '$4 == 900')" || { bad "C14 no window for Always Visible"; kill "$backdrop"; return 1; }
-    wait_until 8 win_size "$win" 900 600 \
-        && ok "[WIN-9] C14 Always Visible takes the window to immersive (900x600)" \
-        || bad "[WIN-9] C14 Always Visible did not switch the style: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
-    wait_until 8 chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "[WIN-9] C14 Always Visible: the lights and the capsules are up at rest ($(chrome_state))" \
-        || bad "[WIN-9] C14 Always Visible: $(chrome_state)"
-    sleep 2
-    chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "[WIN-9] C14 Always Visible: still up past the hide delay with the pointer outside the window" \
-        || bad "[WIN-9] C14 Always Visible hid after the delay: $(chrome_state)"
-    if wait_until 12 [ -s "$WORK/chrome-always-menu.json" ]; then
-        local stored_reveal
-        stored_reveal="$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)"
-        [ "$stored_reveal" = "alwaysVisible" ] \
-            && ok "[WIN-9] C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
-            || bad "[WIN-9] C14 Always Visible stored '$stored_reveal'"
-        python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS Immersive is a plain radio item and Hide Controls holds the choice" \
-            || bad "MENUS the View menu's style pair or Hide Controls is wrong"
-import json, sys
-root = json.load(open(sys.argv[1]))
-view = next(i for i in root["items"] if i["title"] == "View")
-imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
-if imm.get("submenu"):
-    print("Immersive still has a submenu"); sys.exit(1)
-# The pair's own check mark is what SwiftUI re-reads when it rebuilds the
-# commands, which a quiet run never does; the chrome being immersive is
-# asserted above, and the visible run checks the mark.
-hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
-checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
-if len(checked) != 1:
-    print("checked:", checked); sys.exit(1)
-PY
-    else
-        bad "MENUS no menu dump in the Always Visible phase"
-    fi
-    touch "$WORK/chrome-step-short"
-    wait_until 8 chrome_is "style=immersive lights=hidden pill=hidden" \
-        && ok "[WIN-9] C14 picking Short hides the chrome again ($(chrome_state))" \
-        || bad "[WIN-9] C14 Short did not hide the chrome: $(chrome_state)"
 
     # --- Settings: the real window fits the screen and General scrolls ---
     # The reported bug (1680x1050): the General tab ended at "Default window
@@ -3477,7 +3447,7 @@ titles = [i["title"] for i in root["items"]]
 if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
     problems.append("menus: %r" % (titles,))
 WANT = {
-    "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
+    "View": ["Find Apps", "—", "Immersive", "Framed", "—", "Hide Controls", "—",
              "Show Touches", "Live Text", "—", "Icon Size", "—", "Density"],
     "Phone": ["Phone Mirror", "Open … on Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
@@ -3897,10 +3867,10 @@ waitfile $WORK/menus-step-2 60
 menupick View/Show Touches
 wait 1.2
 waitfile $WORK/menus-step-3 60
-menupick View/Immersive
+menupick View/Framed
 wait 1.5
 waitfile $WORK/menus-step-4 60
-menupick View/Framed
+menupick View/Immersive
 wait 1.5
 waitfile $WORK/menus-step-7 60
 menupick View/Density/125%
@@ -3912,6 +3882,9 @@ hover 0.5 0.5
 wait 0.3
 fingerpinch 0.5 0.01 1.25 4
 wait 1
+waitfile $WORK/menus-step-framed 60
+key opt+cmd+f
+wait 1.5
 waitfile $WORK/menus-step-full 60
 fullscreen
 wait 6
@@ -4037,17 +4010,30 @@ if not all(row["command"] for row in rows if not row["separator"] and row["key"]
 PY
     # 2: after View ▸ Show Touches was toggled (the commands read its state).
     touch "$WORK/menus-step-2"; sleep 1.5; dump_now 2
-    # 3 and 4: after switching the style to immersive and back.
+    # 3 and 4: after switching the style to Framed and back to Immersive.
     touch "$WORK/menus-step-3"; sleep 1.5
-    wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
-        && ok "[MENU-4] choosing Immersive took the window to the immersive style" \
-        || bad "[MENU-4] choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    wait_until 5 grep -q "style=framed" "$WORK/chrome.txt" \
+        && ok "[MENU-4] choosing Framed took the window to the framed style" \
+        || bad "[MENU-4] choosing Framed left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
     # The pair's mark and Hide Controls' enablement follow the key window: the
     # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
     # their values when the menu opens.
-    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Immersive: it is checked and Hide Controls is enabled" \
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is enabled" \
         || bad "[MENU-9] the View menu did not follow the style change"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or not hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
+    touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] back on Immersive: it is checked and Hide Controls stays enabled (a key stream window)" \
+        || bad "[MENU-9] the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -4056,19 +4042,6 @@ if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on
     print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
 hide = by_title.get("Hide Controls")
 if hide is None or not hide.get("enabled"):
-    print("Hide Controls:", hide); sys.exit(1)
-PY
-    touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
-    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is disabled" \
-        || bad "[MENU-9] the View menu did not follow the style back"
-import json, sys
-root = json.load(open(sys.argv[1]))
-view = next(i for i in root["items"] if i["title"] == "View")
-by_title = {item["title"]: item for item in view["submenu"]}
-if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
-    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
-hide = by_title.get("Hide Controls")
-if hide is None or hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
     # The Deck's icon size is a stored choice: its checkmark follows ⌘+ / ⌘−
@@ -4266,8 +4239,8 @@ if any(i["title"] == "Bar Prototype" for i in view["submenu"]):
 PY
 
     # Immersive is a plain radio item (no submenu); the reveal choice lives in
-    # Hide Controls, which is disabled while the window is framed.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is disabled while Framed" \
+    # Hide Controls and follows the key stream window in either style.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is enabled while Framed" \
         || bad "[MENU-4] Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -4284,6 +4257,8 @@ if seq != want:
 checked = [item["title"] for item in sub if item["state"] == "on"]
 if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
+if not hide.get("enabled"):
+    print("Hide Controls is disabled"); sys.exit(1)
 PY
 
     # The bar's full-screen structure on the bar a person reads: no app item,
@@ -4355,10 +4330,11 @@ PY
         && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
         && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
         || bad "MENUS no window to capture the bar"
-    grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
-        && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
+    wait_until 5 eval 'grep -q "touches=on" "$WORK/chrome.txt" && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt"' \
         && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
         || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
+    # The style pick waits until the dots' shot is taken: Framed draws no dots.
+    touch "$WORK/menus-step-framed"
     sleep 4
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
@@ -4565,7 +4541,9 @@ for title in ("Framed", "Immersive"):
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Hide Controls", "Density"):
     item = one(title)
-    wanted = scene == "stream-framed" and title == "Density"
+    # Hide Controls follows a key stream window in either style (ISS-45);
+    # Density needs an app window, which this scene has.
+    wanted = scene == "stream-framed"
     if bool(item.get("enabled")) != wanted:
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Show Touches", "Live Text"):
@@ -5331,9 +5309,14 @@ window_video_ratio() {
     [ -n "$frame" ] || return 1
     w="${frame%x*}"
     h="${frame#*x}"
-    bar=28
-    [ "$style" = "immersive" ] && bar=0
-    frame_video_ratio "$w" "$h" "$bar"
+    # The two-style windowed chrome: Immersive adds the 28 pt bar above the
+    # stream, Framed insets 38 pt above and 5 pt on the other three sides.
+    if [ "$style" = "framed" ]; then
+        w=$((w - 10)); h=$((h - 43))
+    else
+        h=$((h - 28))
+    fi
+    frame_video_ratio "$w" "$h" 0
 }
 
 # aspect_ok RATIO W H — true when RATIO is W/H within 1%.
@@ -6073,6 +6056,27 @@ nav_clicked() { [ "$(nav_rx_count "$1")" -gt "$2" ]; }
 
 # chrome_has <text> — the chrome state file contains text.
 chrome_has() { case "$(chrome_state)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+# chrome_frame_live — a live picture is on screen: the opening cover is gone,
+# no window is opening and the newest frame is under a second old. A capture
+# taken before this proves the cover, not the style.
+chrome_frame_live() {
+    local state age
+    state="$(chrome_state)"
+    case "$state" in *"loading=0"*) ;; *) return 1 ;; esac
+    case "$state" in *"cover_phase=0"*) ;; *) return 1 ;; esac
+    case "$state" in *"opening=0"*) ;; *) return 1 ;; esac
+    case "$state" in *"cover_visible=0"*) ;; *) return 1 ;; esac
+    age="$(printf '%s\n' "$state" | sed -n 's/.* frame_age_ms=\([-0-9]*\).*/\1/p')"
+    [ -n "$age" ] || return 1
+    case "$age" in -*) return 1 ;; esac
+    [ "$age" -le 1000 ]
+}
+# chrome_all <field>... — every field anywhere in the state (the state's first
+# field is the style; a later field never starts the line).
+chrome_all() {
+    local field
+    for field in "$@"; do chrome_has "$field" || return 1; done
+}
 
 # phone_screen_log — how many times the app logged the sleeping-panel line in
 # the last 2 minutes (states only, never pixels).
@@ -10371,7 +10375,8 @@ remove_dock_apps() {
     [ -n "$pids" ] && kill $pids >/dev/null 2>&1
     for app in "$(dock_dir)"/*.app "$(profile_dock_dir)"/*.app; do
         [ -d "$app" ] || continue
-        "$LSREGISTER" -u "$app" >/dev/null 2>&1
+        # Bounded: a stalled LaunchServices made this step the VM run's hang.
+        run_limited 15 "$LSREGISTER" -u "$app" >/dev/null 2>&1 || true
         rm -rf "$app"
     done
     return 0
@@ -12417,8 +12422,8 @@ check_windows() {
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
     wait_until 20 events_have '"ev":"video"' \
         || bad "WIN-40 the stream never sent video"
-    wait_until 15 chrome_has "bar_blur_radius=15 haze=1" \
-        && ok "[WIN-40] the live bar's system blur is 15 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+    wait_until 15 chrome_has "bar_blur_radius=30 haze=1" \
+        && ok "[WIN-40] the live bar's system blur is 30 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
         || bad "[WIN-40] the live bar: $(chrome_state)"
     stop_app
     stop_fakephone
@@ -12554,106 +12559,74 @@ check_bar_title() {
 }
 
 check_cover_bar() {
-    local appearance="$1" shots="$SHOTS/cover-bar" id
+    local appearance="$1" shots="$SHOTS/cover-bar" id style key width height style_name
     clean
     mkdir -p "$shots"
+    local style_store="chrome.style.com.android.settings"
 
-    # The framed window while opening: the fake holds the first frame — and
-    # the video config with it, so a scripted input driver (armed on the first
-    # config) cannot run here. The dwell shot moves the real pointer in the
-    # visible run instead; a quiet run skips it and takes the rest.
-    FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
-    wait_until 20 chrome_has "loading=1 cover_phase=opening" \
-        || bad "COVER-BAR $appearance no framed opening state: $(chrome_state)"
-    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no framed window"
-    sleep 0.6
-    if [ -n "$id" ]; then
-        shot_window "$id" "$shots/framed-opening-$appearance.png" \
-            && ok "COVER-BAR $appearance framed opening shot: $shots/framed-opening-$appearance.png" \
-            || bad "COVER-BAR $appearance no framed opening shot"
-    fi
-    # The cover's dwell: the same hot zone and the same rest as immersive, so
-    # the pill and the lights come up over the cover. A real pointer move is a
-    # visible run's step; a quiet one has no pointer to spare.
-    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
-        cg_input move --window "$id" --dx -430 --top 8
-        wait_until 8 chrome_has "pill=shown" \
-            || bad "COVER-BAR $appearance the cover's dwell brought no pill: $(chrome_state)"
-        sleep 0.15
-        shot_window "$id" "$shots/framed-dwell-$appearance.png" \
-            && ok "COVER-BAR $appearance framed dwell shot: $shots/framed-dwell-$appearance.png" \
-            || bad "COVER-BAR $appearance no framed dwell shot"
-        cg_input move --window "$id" --dx 0 --dy 0
-        wait_until 8 chrome_has "pill=hidden" \
-            || bad "COVER-BAR $appearance the cover's pill stayed up: $(chrome_state)"
-        # The pill's fade is 0.12 s: let the window finish it before the slow
-        # state's shot, or the two frames are the same pixels.
-        sleep 0.4
-    else
-        skip_visible "COVER-BAR $appearance framed dwell shot"
-    fi
-    wait_until 8 chrome_has "cover_phase=slow cover_buttons=cancel" \
-        || bad "COVER-BAR $appearance no slow state: $(chrome_state)"
-    if [ -n "$id" ]; then
-        shot_window "$id" "$shots/framed-slow-$appearance.png" \
-            && ok "COVER-BAR $appearance framed slow shot: $shots/framed-slow-$appearance.png" \
-            || bad "COVER-BAR $appearance no framed slow shot"
-    fi
-    stop_app
+    # The opening cover is one sheet over the stored style's window: Framed's
+    # 5/38 pt frame band is under it, and Immersive's 28 pt bar is. The fake
+    # holds the first frame (and its video config), so no scripted driver runs.
+    for style in framed immersive; do
+        if [ "$style" = "framed" ]; then key=mat; width=910; height=643
+        else key=immersive; width=900; height=628; fi
+        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
+        clean
+        FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+            --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+        wait_until 20 chrome_has "loading=1 cover_phase=opening" \
+            || bad "COVER-BAR $appearance $style no opening state: $(chrome_state)"
+        id="$(await_window "\$4 == $width && \$5 == $height")" \
+            || bad "COVER-BAR $appearance no $style window ($width x $height)"
+        sleep 0.6
+        if [ -n "$id" ]; then
+            shot_window "$id" "$shots/$style-opening-$appearance.png" \
+                && ok "COVER-BAR $appearance $style opening shot: $shots/$style-opening-$appearance.png" \
+                || bad "COVER-BAR $appearance no $style opening shot"
+        fi
+        wait_until 8 chrome_has "cover_phase=slow cover_buttons=cancel" \
+            || bad "COVER-BAR $appearance $style no slow state: $(chrome_state)"
+        if [ -n "$id" ]; then
+            shot_window "$id" "$shots/$style-slow-$appearance.png" \
+                && ok "COVER-BAR $appearance $style slow shot: $shots/$style-slow-$appearance.png" \
+                || bad "COVER-BAR $appearance no $style slow shot"
+        fi
+        stop_app
+        stop_fakephone
+    done
 
-    # The same app in immersive while opening: the style is stored per package.
-    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
-    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
-    # The chrome state's fields are not adjacent: test them one at a time.
-    wait_until 20 chrome_has "style=immersive" \
-        || bad "COVER-BAR $appearance no immersive opening state: $(chrome_state)"
-    wait_until 5 chrome_has "loading=1" \
-        || bad "COVER-BAR $appearance the cover is not up: $(chrome_state)"
-    id="$(await_window '$4 == 900 && $5 == 600')" || bad "COVER-BAR $appearance no immersive window"
-    sleep 0.6
-    if [ -n "$id" ]; then
-        shot_window "$id" "$shots/immersive-opening-$appearance.png" \
-            && ok "COVER-BAR $appearance immersive opening shot: $shots/immersive-opening-$appearance.png" \
-            || bad "COVER-BAR $appearance no immersive opening shot"
-    fi
-    # The same pointer at the same point: the reference the cover's shot is
-    # compared with.
-    if [ -n "$id" ] && [ "$VISIBLE" = "1" ]; then
-        cg_input move --window "$id" --dx -430 --top 8
-        wait_until 8 chrome_has "pill=shown" \
-            || bad "COVER-BAR $appearance the immersive dwell brought no pill: $(chrome_state)"
-        sleep 0.15
-        shot_window "$id" "$shots/immersive-dwell-$appearance.png" \
-            && ok "COVER-BAR $appearance immersive dwell shot: $shots/immersive-dwell-$appearance.png" \
-            || bad "COVER-BAR $appearance no immersive dwell shot"
-    else
-        skip_visible "COVER-BAR $appearance immersive dwell shot"
-    fi
-    stop_app
-    stop_fakephone
-
-    # The first frame: the framed bar is back, its mirror and haze over it.
-    clean
-    mkdir -p "$shots"
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
-    wait_until 20 events_have '"ev":"video"' || bad "COVER-BAR $appearance no video"
-    cover_bar_live() { chrome_has "loading=0" && chrome_has "haze=1"; }
-    wait_until 15 cover_bar_live \
-        || bad "COVER-BAR $appearance the first frame did not restore the framed bar: $(chrome_state)"
-    id="$(await_window '$4 == 900 && $5 == 628')" || bad "COVER-BAR $appearance no live framed window"
-    sleep 0.5
-    if [ -n "$id" ]; then
-        shot_window "$id" "$shots/framed-live-$appearance.png" \
-            && ok "COVER-BAR $appearance framed first-frame shot: $shots/framed-live-$appearance.png" \
-            || bad "COVER-BAR $appearance no framed first-frame shot"
-    fi
-    stop_app
-    stop_fakephone
+    # The first frame restores the stored style's windowed chrome: Immersive
+    # brings its mirror and haze, Framed its material frame and no haze.
+    for style in framed immersive; do
+        if [ "$style" = "framed" ]; then key=mat; width=910; height=643
+        else key=immersive; width=900; height=628; fi
+        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
+        clean
+        start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+            --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+        wait_until 20 events_have '"ev":"video"' || bad "COVER-BAR $appearance $style no video"
+        wait_until 15 chrome_has "loading=0" \
+            || bad "COVER-BAR $appearance $style the first frame did not land: $(chrome_state)"
+        if [ "$style" = "immersive" ]; then
+            wait_until 10 chrome_has "haze=1" \
+                || bad "COVER-BAR $appearance immersive has no mirror"
+        else
+            chrome_has "haze=0" \
+                || bad "COVER-BAR $appearance framed drew a mirror"
+        fi
+        id="$(await_window "\$4 == $width && \$5 == $height")" \
+            || bad "COVER-BAR $appearance no live $style window"
+        sleep 0.5
+        if [ -n "$id" ]; then
+            shot_window "$id" "$shots/$style-live-$appearance.png" \
+                && ok "COVER-BAR $appearance $style live shot: $shots/$style-live-$appearance.png" \
+                || bad "COVER-BAR $appearance no $style live shot"
+        fi
+        stop_app
+        stop_fakephone
+    done
 
     # The VM run copies $WORK back to the host, not the run's shot dir.
     mkdir -p "$WORK/cover-bar"
@@ -12663,6 +12636,334 @@ check_cover_bar() {
 
 check_cover_bar_dark() { check_cover_bar dark; }
 check_cover_bar_light() { check_cover_bar light; }
+
+# --- Styles: the two looks over the three fixtures ---------------------------
+#
+# The reviewer's visual record (ISS-45): every style × app / Phone Mirror ×
+# appearance × windowed, and — in a visible run, where the pointer and the
+# Space are real — full screen hidden and revealed, over the bar fixtures.
+# Phone Mirror never goes full screen (WIN-72), so its full-screen cells do
+# not exist. A quiet run takes the windowed cells only.
+check_styles_shots() {
+    local appearance style fixture surface key width height id full
+    local style_store="chrome.style.com.android.settings"
+    local shots="$SHOTS/styles"
+    mkdir -p "$shots"
+    for appearance in light dark; do
+        for fixture in white-page dark-page busy-photo; do
+            for surface in app mirror; do
+                for style in immersive framed; do
+                    clean
+                    FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
+                    if [ "$style" = "framed" ]; then key=mat; width=910; height=643
+                    else key=immersive; width=900; height=628; fi
+                    defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
+                    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
+                    rm -f "$WORK/ss-begin" "$WORK/ss-hidden" "$WORK/ss-revealed" "$WORK/ss-exit" "$WORK/ss-done"
+                    printf '%s\n' "wait 1" "waitfile $WORK/ss-begin 90" "fullscreen" "wait 5" \
+                        "waitfile $WORK/ss-hidden 90" "waitfile $WORK/ss-revealed 90" \
+                        "waitfile $WORK/ss-exit 90" "fullscreen" "wait 8" \
+                        "waitfile $WORK/ss-done 90" "wait 5" > "$WORK/styles-fs.txt"
+                    if [ "$surface" = "mirror" ]; then
+                        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
+                            --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
+                    else
+                        local driver=()
+                        [ "$VISIBLE" = "1" ] && driver=(--debug-input-script "$WORK/styles-fs.txt")
+                        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+                            ${driver[@]+"${driver[@]}"} --quit-after 90
+                    fi
+                    wait_until 30 events_have '"ev":"video"' \
+                        || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface no video"
+                    wait_until 30 chrome_frame_live \
+                        || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface never reached a live picture: $(chrome_state)"
+                    if [ "$surface" = "app" ]; then
+                        if [ "$style" = "immersive" ]; then
+                            wait_until 10 eval 'chrome_has "bar_title=1" && ! chrome_has "bar_title_tone=none"' \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style no toned bar title: $(chrome_state)"
+                        else
+                            wait_until 10 chrome_has "bar_title=1" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style no framed title: $(chrome_state)"
+                        fi
+                    fi
+                    sleep 0.3
+                    if ! chrome_frame_live; then
+                        bad "STYLES-SHOTS $appearance/$fixture/$style/$surface is not live for its shot: $(chrome_state)"
+                        stop_app
+                        continue
+                    fi
+                    if [ "$surface" = "mirror" ]; then
+                        id="$(await_window '$5 > $4')" || bad "STYLES-SHOTS $appearance/$fixture/$style no mirror window"
+                    else
+                        id="$(await_window "\$4 == $width && \$5 == $height")" \
+                            || bad "STYLES-SHOTS $appearance/$fixture/$style no $width x $height window"
+                    fi
+                    if [ -n "$id" ]; then
+                        shot_window "$id" "$shots/$style-$surface-$fixture-$appearance-windowed.png" \
+                            && ok "STYLES-SHOTS $appearance/$fixture/$style/$surface windowed" \
+                            || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface no windowed shot"
+                    fi
+                    if [ "$surface" = "mirror" ]; then
+                        chrome_has "can_fullscreen=0" \
+                            && ok "[WIN-72] STYLES-SHOTS $appearance/$fixture/$style the Phone Mirror cannot go full screen" \
+                            || bad "[WIN-72] STYLES-SHOTS $appearance/$fixture/$style the Phone Mirror offered full screen"
+                    elif [ "$VISIBLE" = "1" ]; then
+                        touch "$WORK/ss-begin"
+                        full="$win"
+                        if wait_until 20 chrome_all fullscreen=yes fullbar=hidden; then
+                            ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style full screen starts with the bar hidden ($(chrome_state))"
+                        else
+                            bad "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style never entered full screen: $(chrome_state)"
+                            stop_app
+                            continue
+                        fi
+                        sleep 0.4
+                        shot_window "$full" "$shots/$style-app-$fixture-$appearance-full-hidden.png" \
+                            && ok "STYLES-SHOTS $appearance/$fixture/$style full hidden" \
+                            || bad "STYLES-SHOTS $appearance/$fixture/$style no full-hidden shot"
+                        touch "$WORK/ss-hidden"
+                        # Inside the 8 pt edge band; below the system menu
+                        # bar's own reveal strip.
+                        cg_input moveat --x 200 --y 6
+                        sleep 0.5
+                        if wait_until 8 chrome_has "fullbar=shown"; then
+                            ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style a rest at the top edge reveals the bar ($(chrome_state))"
+                            sleep 0.3
+                            shot_window "$full" "$shots/$style-app-$fixture-$appearance-full-revealed.png" \
+                                && ok "STYLES-SHOTS $appearance/$fixture/$style full revealed" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style no full-revealed shot"
+                        else
+                            bad "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style the top edge revealed nothing: $(chrome_state)"
+                        fi
+                        touch "$WORK/ss-revealed"
+                        touch "$WORK/ss-exit"
+                        sleep 0.5
+                        wait_until 15 win_size "$id" "$width" "$height" \
+                            || bad "STYLES-SHOTS $appearance/$fixture/$style did not leave full screen"
+                        touch "$WORK/ss-done"
+                    else
+                        skip_visible "STYLES-SHOTS $appearance/$fixture/$style full screen (a real Space and pointer)"
+                    fi
+                    stop_app
+                done
+            done
+        done
+    done
+    mkdir -p "$WORK/styles-shots"
+    cp -R "$shots/." "$WORK/styles-shots/"
+    say "shots: $WORK/styles-shots"
+}
+
+# fullscreen_pair_pixels HIDDEN REVEALED W H — the full-screen bar as pixels:
+# "hidden_edges=NN revealed_edges=NN bar_edge=NN title_edges=LL/CC". W x H is
+# the full-screen window in points, never the windowed size, so `scale` is the
+# capture's own backing scale. The band is the bar's 4..24 pt, away from the
+# traffic lights and the controls row: hidden_edges is the picture's sharp
+# detail where a hidden bar lets it show; revealed_edges is the same band once
+# the acrylic is up (a material, not the picture copied); bar_edge is how far
+# the bar moved the band; title_edges is the ink the centred name drew (plain
+# left band / centre). A mirror would keep the picture's edges in the band.
+fullscreen_pair_pixels() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+hidden, revealed, wpt, hpt = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def load(path):
+    size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+    w, h = int(size[0]), int(size[1])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True).stdout
+    return w, h, raw
+def pixel(raw, w, x, y):
+    i = (y * w + x) * 3
+    return raw[i:i+3]
+def banddiff(a, b, wa, wb, y0, y1, x0, x1):
+    total = count = 0
+    for y in range(y0, y1, 2):
+        for x in range(x0, x1, 4):
+            pa, pb = pixel(a, wa, x, y), pixel(b, wb, x, y)
+            total += sum(abs(pa[c] - pb[c]) for c in range(3))
+            count += 3
+    return total / max(count, 1)
+def edges(raw, w, y0, y1, x0, x1):
+    n = 0
+    for y in range(y0, y1, 2):
+        for x in range(x0, x1, 2):
+            left, right = pixel(raw, w, x - 1, y), pixel(raw, w, x + 1, y)
+            if sum(abs(left[c] - right[c]) for c in range(3)) > 60:
+                n += 1
+    return n
+wh, hh, hr = load(hidden)
+wr, rh, rr = load(revealed)
+scale = wh / wpt
+bx0 = int(100 * scale)
+bx1 = min(int((wpt - 320) * scale), wh - 4)
+by0 = int(4 * scale)
+by1 = int(24 * scale)
+# The title's own ink must not count as material: the bar comparison is the
+# plain band on either side of the centred name.
+gx0 = max(2, int(wh / 2 - 120 * scale))
+gx1 = min(wh - 2, int(wh / 2 + 120 * scale))
+cx0 = max(2, int(wh / 2 - 90 * scale))
+cx1 = min(wh - 2, int(wh / 2 + 90 * scale))
+lx0 = int(120 * scale)
+lx1 = min(int(320 * scale), cx0 - int(10 * scale))
+ty0 = int(6 * scale)
+ty1 = int(22 * scale)
+hidden_edges = edges(hr, wh, by0, by1, bx0, gx0) + edges(hr, wh, by0, by1, gx1, bx1)
+revealed_edges = edges(rr, wr, by0, by1, bx0, gx0) + edges(rr, wr, by0, by1, gx1, bx1)
+bar_edge = (banddiff(hr, rr, wh, wr, by0, by1, bx0, gx0)
+            + banddiff(hr, rr, wh, wr, by0, by1, gx1, bx1)) / 2
+left_edges = edges(rr, wr, ty0, ty1, lx0, lx1)
+center_edges = edges(rr, wr, ty0, ty1, cx0, cx1)
+print("hidden_edges=%d revealed_edges=%d bar_edge=%d title_edges=%d/%d"
+      % (hidden_edges, revealed_edges, round(bar_edge), left_edges, center_edges))
+PY
+}
+
+# --- Styles: the full-screen bar, app by style and appearance -----------------
+#
+# The reviewer's full-screen proof: both styles × light/dark, the bar hidden at
+# entry (no bar pixels on the 28 pt line), then revealed by a rest at the top
+# edge (an acrylic band, no copied picture, the centred name with ink), then
+# hidden again and the windowed frame restored. The Phone Mirror never goes
+# full screen (WIN-72), so its cells only assert that it cannot.
+check_styles_fullscreen() {
+    local appearance style key width height win full hidden revealed pixels
+    local shots="$WORK-shots/fullscreen"
+    mkdir -p "$shots"
+    if [ "$VISIBLE" != "1" ]; then
+        skip_visible "STYLES-FULLSCREEN full screen (a real Space and pointer)"
+        return 0
+    fi
+    for appearance in light dark; do
+        for style in immersive framed; do
+            if [ "$style" = "framed" ]; then key=mat; width=910; height=643
+            else key=immersive; width=900; height=628; fi
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$key"
+            rm -f "$WORK/fs-hidden" "$WORK/fs-revealed" "$WORK/fs-left" "$WORK/fs-exit" "$WORK/fs-done"
+            printf '%s\n' "wait 1" "fullscreen" "wait 6" \
+                "waitfile $WORK/fs-hidden 90" "waitfile $WORK/fs-revealed 90" \
+                "waitfile $WORK/fs-left 90" "fullscreen" "wait 8" "waitfile $WORK/fs-exit 90" \
+                "waitfile $WORK/fs-done 90" "wait 10" > "$WORK/fs.txt"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+                --debug-input-script "$WORK/fs.txt" --quit-after 80
+            wait_until 25 events_have '"ev":"video","stream":1,' \
+                || { bad "STYLES-FULLSCREEN $appearance/$style no video"; stop_app; continue; }
+            # The previous cell may have left the pointer on the top line;
+            # take it away before the Space changes, or the bar is already
+            # revealing when the hidden shot is due.
+            cg_input moveat --x 200 --y 400
+            if wait_until 20 chrome_all fullscreen=yes fullbar=hidden fullbar_visible=0; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style full screen starts hidden ($(chrome_state))"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style never entered full screen: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            # The full screen can live in the system's full-screen window:
+            # find the window whose frame the state now reports, never the
+            # Deck's (it can be large too), and read its scale from that size.
+            local fw fh
+            fw="$(chrome_state | sed -n 's/.*geom=win:[0-9-]*,[0-9-]*,\([0-9]*\)x[0-9]*.*/\1/p')"
+            fh="$(chrome_state | sed -n 's/.*geom=win:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p')"
+            if [ -z "$fw" ] || [ -z "$fh" ]; then
+                bad "STYLES-FULLSCREEN $appearance/$style the state has no window frame: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            full="$(await_window "\$4 == $fw && \$5 == $fh")" \
+                || { bad "STYLES-FULLSCREEN $appearance/$style no $fw x $fh full-screen window"; stop_app; continue; }
+            if ! wait_until 15 chrome_frame_live; then
+                bad "STYLES-FULLSCREEN $appearance/$style is not live for the hidden shot: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            sleep 0.4
+            hidden="$shots/$style-app-busy-photo-$appearance-full-hidden.png"
+            shot_window "$full" "$hidden" \
+                && ok "STYLES-FULLSCREEN $appearance/$style hidden shot" \
+                || bad "STYLES-FULLSCREEN $appearance/$style no hidden shot"
+            touch "$WORK/fs-hidden"
+            # Inside the 8 pt edge band; below the system menu bar's strip.
+            cg_input moveat --x 200 --y 6
+            if wait_until 10 chrome_all fullbar=shown bar_title=1; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the top-edge rest reveals the bar with its name ($(chrome_state))"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the top edge revealed nothing: $(chrome_state)"
+                touch "$WORK/fs-revealed" "$WORK/fs-left" "$WORK/fs-exit" "$WORK/fs-done"
+                stop_app
+                continue
+            fi
+            sleep 0.3
+            if ! wait_until 8 chrome_frame_live; then
+                bad "STYLES-FULLSCREEN $appearance/$style is not live for the revealed shot: $(chrome_state)"
+            fi
+            revealed="$shots/$style-app-busy-photo-$appearance-full-revealed.png"
+            shot_window "$full" "$revealed" \
+                && ok "STYLES-FULLSCREEN $appearance/$style revealed shot" \
+                || bad "STYLES-FULLSCREEN $appearance/$style no revealed shot"
+            touch "$WORK/fs-revealed"
+            if pixels="$(fullscreen_pair_pixels "$hidden" "$revealed" "$fw" "$fh")"; then
+                say "STYLES-FULLSCREEN $appearance/$style pixels: $pixels"
+                local hde rde edge left center
+                hde="$(printf '%s\n' "$pixels" | sed -n 's/.*hidden_edges=\([0-9]*\).*/\1/p')"
+                rde="$(printf '%s\n' "$pixels" | sed -n 's/.*revealed_edges=\([0-9]*\).*/\1/p')"
+                edge="$(printf '%s\n' "$pixels" | sed -n 's/.*bar_edge=\([0-9]*\).*/\1/p')"
+                left="$(printf '%s\n' "$pixels" | sed -n 's/.*title_edges=\([0-9]*\)\/\([0-9]*\).*/\1/p')"
+                center="$(printf '%s\n' "$pixels" | sed -n 's/.*title_edges=\([0-9]*\)\/\([0-9]*\).*/\2/p')"
+                [ "${hde:-0}" -ge 8 ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style hidden: the top band is the picture, not the bar (edges $hde)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style hidden: no picture detail under the hidden bar (edges $hde)"
+                [ "${edge:-0}" -ge 6 ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar changed the band (edge $edge)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar did not appear in pixels (edge $edge)"
+                [ "${rde:-999}" -lt "${hde:-0}" ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar is acrylic, not a copy of the picture ($rde < $hde)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar keeps the picture's edges ($rde vs $hde)"
+                [ "${center:-0}" -ge 10 ] && [ "${center:-0}" -ge $(( ${left:-0} + 6 )) ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the title has ink edges (plain $left / centre $center)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style no readable title ink (plain $left / centre $center)"
+            else
+                bad "STYLES-FULLSCREEN $appearance/$style could not read the pixels"
+            fi
+            cg_input moveat --x 200 --y 400
+            if wait_until 8 chrome_has "fullbar=hidden"; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style leaving the bar hides it again"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar stayed: $(chrome_state)"
+            fi
+            touch "$WORK/fs-left"
+            win="$(await_window "\$4 == $width && \$5 == $height")" \
+                && ok "[WIN-14] STYLES-FULLSCREEN $appearance/$style leaving full screen restores $width x $height" \
+                || bad "[WIN-14] STYLES-FULLSCREEN $appearance/$style exit did not restore $width x $height"
+            touch "$WORK/fs-exit"
+            touch "$WORK/fs-done"
+            stop_app
+        done
+        # The Phone Mirror cannot go full screen in either style (WIN-72).
+        for style in immersive framed; do
+            if [ "$style" = "framed" ]; then key=mat; else key=immersive; fi
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
+                --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+            wait_until 20 events_have '"ev":"video"' || bad "STYLES-FULLSCREEN $appearance/$style mirror no video"
+            wait_until 12 chrome_all can_fullscreen=0 "style=$style" \
+                && ok "[WIN-72] STYLES-FULLSCREEN $appearance/$style the Phone Mirror cannot go full screen" \
+                || bad "[WIN-72] STYLES-FULLSCREEN $appearance/$style the Phone Mirror offered full screen: $(chrome_state)"
+            stop_app
+        done
+    done
+    mkdir -p "$WORK/shots/fullscreen"
+    cp -R "$shots/." "$WORK/shots/fullscreen/" 2>/dev/null || true
+    say "shots: $shots"
+}
 
 # --- Zoom: a stream window's double-click resize ----------------------------
 
@@ -18015,7 +18316,7 @@ PY
     stale_ms="$(nfr_limit stale_picture_ms)"
     for kind in immersive framed; do
         : > "$WORK/events.jsonl"
-        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$kind"
+        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$([ "$kind" = framed ] && echo mat || echo "$kind")"
         # --stall-for: the encoder restarts after the stall, so the state must
         # clear again (a pill that never goes away would fail the last check).
         FAKE_ARGS="--stall-after 3 --stall-for 6" start_fake || return 1
@@ -18051,7 +18352,7 @@ PY
     # "Not responding" pill and no frozen input block — and a real stall after
     # the grace still says so. The fake stalls and reports the press together.
     : > "$WORK/events.jsonl"
-    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string framed
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string mat
     FAKE_ARGS="--stall-after 3 --power-locked-after 3.1" start_fake || return 1
     nfr_launch --open com.android.settings
     nfr_wait_ready 30 || bad "NFR the app never paired (power press)"

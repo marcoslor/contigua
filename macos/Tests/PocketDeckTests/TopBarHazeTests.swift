@@ -1,4 +1,4 @@
-// The framed bar's system blur, tint and haze (WIN-40, WIN-67): the
+// The Immersive bar's system blur, tint and haze (WIN-40, WIN-67): the
 // extension view's backdrop filter is turned up to 30 pt, a 14 % tint and a
 // white haze fade over the bar band only. The hide rules are the cover's
 // ground, the stall overlay, immersive and full screen.
@@ -20,7 +20,7 @@ final class TopBarHazeTests: XCTestCase {
         // The extension view builds its mirror (and its backdrop) only once
         // the stream it mirrors has a size, as after the first VIDEO_CONFIG.
         video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .framed, barBlur: barBlur)
+        let chrome = StreamChromeView(video: video, style: .immersive, barBlur: barBlur)
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
         window.makeKeyAndOrderFront(nil)
@@ -143,13 +143,13 @@ final class TopBarHazeTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
         chrome.layoutChrome()
 
-        // Immersive has no bar.
-        chrome.setStyle(.immersive)
-        chrome.layoutChrome()
-        XCTAssertTrue(haze.isHidden, "immersive has no bar and no haze")
+        // Framed has no mirrored bar.
         chrome.setStyle(.framed)
         chrome.layoutChrome()
-        XCTAssertFalse(haze.isHidden, "the haze comes back with the framed bar")
+        XCTAssertTrue(haze.isHidden, "Framed has no mirror and no haze")
+        chrome.setStyle(.immersive)
+        chrome.layoutChrome()
+        XCTAssertFalse(haze.isHidden, "the haze comes back with the Immersive bar")
     }
 
     func testTheTintSpansTheBarBandAndHidesWithTheHaze() throws {
@@ -161,7 +161,7 @@ final class TopBarHazeTests: XCTestCase {
                                           width: chrome.bounds.width, height: ChromeBar.height),
                        "the tint spans the 28 pt bar and nothing below the seam")
         XCTAssertGreaterThan(tint.zPosition, 0.5, "the tint sits above the haze")
-        XCTAssertTrue(chrome.barTintVisible, "the tint shows with the framed bar")
+        XCTAssertTrue(chrome.barTintVisible, "the tint shows with the Immersive bar")
 
         chrome.openingCover.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9",
                                                        phoneMode: false), icon: nil)
@@ -178,12 +178,12 @@ final class TopBarHazeTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
         chrome.layoutChrome()
 
-        chrome.setStyle(.immersive)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTintVisible, "immersive has no bar and no tint")
         chrome.setStyle(.framed)
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTintVisible, "the tint comes back with the framed bar")
+        XCTAssertFalse(chrome.barTintVisible, "Framed has no mirror and no tint")
+        chrome.setStyle(.immersive)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTintVisible, "the tint comes back with the Immersive bar")
     }
 
     func testAMissingSystemFilterKeepsTheSystemsOwnRadiusAndSaysSoOnce() throws {

@@ -319,7 +319,7 @@ final class BarTitleViewTests: XCTestCase {
         window.appearance = NSAppearance(named: .darkAqua)
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .framed, toneSource: tone,
+        let chrome = StreamChromeView(video: video, style: .immersive, toneSource: tone,
                                       reduceMotion: reduceMotion)
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
@@ -372,7 +372,7 @@ final class BarTitleViewTests: XCTestCase {
         XCTAssertEqual(chrome.barTitleAlpha(.dark), 0, accuracy: 0.01)
     }
 
-    func testTheTitleHidesForEveryCoverAndStyleAndComesBack() {
+    func testTheTitleHidesForEveryCoverAndComesBack() {
         let tone = FakeToneSource()
         tone.range = BandRange(low: 0.8, high: 0.9)
         let (window, chrome) = makeChrome(tone: tone)
@@ -388,12 +388,12 @@ final class BarTitleViewTests: XCTestCase {
         chrome.layoutChrome()
         XCTAssertTrue(chrome.barTitleVisible)
 
-        chrome.setStyle(.immersive)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible, "immersive has no bar")
         chrome.setStyle(.framed)
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible, "the title comes back with the bar")
+        XCTAssertTrue(chrome.barTitleVisible, "Framed has its title on the frame")
+        chrome.setStyle(.immersive)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible, "Immersive has its title on the bar too")
 
         chrome.setBarTitle(nil)
         chrome.layoutChrome()

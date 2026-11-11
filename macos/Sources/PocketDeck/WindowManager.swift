@@ -244,13 +244,20 @@ final class WindowManager {
 
     /// The View menu's Window Style: toggle/switch the key stream window's
     /// style directly (the menu cannot rely on the responder chain delivering
-    /// a nil-target action).
+    /// a nil-target action). The menu tracks the key stream window itself: a
+    /// pick or a ⌥⌘F while the Deck is key must never reach the window behind
+    /// it (ISS-88, MENU-9).
+    private var keyStreamController: StreamWindowController? {
+        guard StreamMenuState.shared.hasStream, let stream = keyStream else { return nil }
+        return controller(for: stream) as? StreamWindowController
+    }
+
     func toggleKeyWindowStyle() {
-        (NSApp.keyWindow?.windowController as? StreamWindowController)?.toggleStyleMenuAction(nil)
+        keyStreamController?.toggleStyleMenuAction(nil)
     }
 
     func setKeyWindowStyle(_ style: WindowStyle) {
-        (NSApp.keyWindow?.windowController as? StreamWindowController)?.setStyle(style)
+        keyStreamController?.setStyle(style)
     }
 
     // MARK: Placement
@@ -358,8 +365,8 @@ final class WindowManager {
         }
     }
 
-    /// Settings → General "Reveal controls after": the immersive dwell, read
-    /// from the profile's defaults.
+    /// Settings → General "Reveal controls after": the full-screen bar's
+    /// reveal, read from the profile's defaults.
     var revealDelay: RevealDelay { RevealDelay.stored(in: frames) }
 
     /// The Mac's stream strategies (ISS-40) for windows opened now, read from
@@ -384,9 +391,9 @@ final class WindowManager {
     /// The setting changed: every open window takes the new delay at once, a
     /// rest already running included.
     func revealDelayChanged() {
-        let seconds = revealDelay.seconds
-        StreamMenuState.shared.revealDelay = revealDelay
-        for controller in allControllers() { controller.setRevealDelay(seconds) }
+        let delay = revealDelay
+        StreamMenuState.shared.revealDelay = delay
+        for controller in allControllers() { controller.setRevealDelay(delay) }
     }
 
     /// Write the setting and apply it (the Settings picker's path is
@@ -396,12 +403,11 @@ final class WindowManager {
         revealDelayChanged()
     }
 
-    /// View ▸ Immersive's pick: store the choice for every window and take the
-    /// focused one to immersive (as the plain "Immersive" item did).
-    func pickImmersive(_ item: ImmersiveMenuItem) {
-        guard let pick = ImmersiveMenuModel.pick(item) else { return }
-        setRevealDelay(pick.reveal)
-        setKeyWindowStyle(pick.style)
+    /// View ▸ Hide Controls' pick: store the full-screen reveal for every
+    /// window. It never changes a window's style.
+    func pickHideControls(_ item: FullScreenMenuItem) {
+        guard let pick = FullScreenMenuModel.pick(item) else { return }
+        setRevealDelay(pick)
     }
 
     /// A remembered frame may belong to a display that is gone.
