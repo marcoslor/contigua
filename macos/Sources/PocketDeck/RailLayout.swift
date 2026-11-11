@@ -235,3 +235,36 @@ enum RailLayout {
         return DeckRail.letters[slot.first + band]
     }
 }
+
+/// The rail's hit column (DECK-34): the letters' drawn column widened by at
+/// most 4 pt each side. The rail's frame is wider than its letters, and the
+/// strip right of the letters is the grid's, not the rail's.
+enum RailHit {
+    static let sidePadding: CGFloat = 4
+
+    /// The letters' drawn column at rest: the 11 pt letter box centred in the
+    /// rail's column.
+    static func letters(railWidth: CGFloat = DeckWide.railWidth) -> ClosedRange<CGFloat> {
+        let box = min(RailLayout.letterBox, railWidth)
+        let left = (railWidth - box) / 2
+        return left...(left + box)
+    }
+
+    /// The column the pointer may take. Today the rail's whole frame, plus the
+    /// magnified arc's room on the left.
+    static func column(railWidth: CGFloat = DeckWide.railWidth,
+                       magnified: CGFloat = 0) -> ClosedRange<CGFloat> {
+        (magnified > 0 ? -magnified : 0)...railWidth
+    }
+
+    /// The vertical span the pointer may take: today the rail's whole height.
+    static func vertical(railHeight: CGFloat) -> ClosedRange<CGFloat> {
+        0...railHeight
+    }
+
+    static func contains(x: CGFloat, y: CGFloat, railWidth: CGFloat,
+                         railHeight: CGFloat, magnified: CGFloat) -> Bool {
+        column(railWidth: railWidth, magnified: magnified).contains(x)
+            && vertical(railHeight: railHeight).contains(y)
+    }
+}
