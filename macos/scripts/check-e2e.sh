@@ -3225,7 +3225,9 @@ check_chrome() {
             touch "$WORK/fs-hidden"
             # The absolute point is the screen's top edge; a full-screen
             # window is not in the on-screen list cgevent's --window reads.
-            cg_input moveat --x 200 --y 1
+            # 6 pt is inside the bar's 8 pt edge band but below the system
+            # menu bar's own reveal strip, which would otherwise cover it.
+            cg_input moveat --x 200 --y 6
             if wait_until 8 chrome_has "fullbar=shown"; then
                 wait_until 4 chrome_has "lights=shown"
                 ok "[WIN-8] C14 $style_name: a rest at the top edge reveals the acrylic bar with its lights ($(chrome_state))"
@@ -12721,7 +12723,9 @@ check_styles_shots() {
                             && ok "STYLES-SHOTS $appearance/$fixture/$style full hidden" \
                             || bad "STYLES-SHOTS $appearance/$fixture/$style no full-hidden shot"
                         touch "$WORK/ss-hidden"
-                        cg_input moveat --x 200 --y 1
+                        # Inside the 8 pt edge band; below the system menu
+                        # bar's own reveal strip.
+                        cg_input moveat --x 200 --y 6
                         sleep 0.5
                         if wait_until 8 chrome_has "fullbar=shown"; then
                             ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style a rest at the top edge reveals the bar ($(chrome_state))"
@@ -12749,6 +12753,216 @@ check_styles_shots() {
     mkdir -p "$WORK/styles-shots"
     cp -R "$shots/." "$WORK/styles-shots/"
     say "shots: $WORK/styles-shots"
+}
+
+# fullscreen_pair_pixels HIDDEN REVEALED W H — the full-screen bar as pixels:
+# "hidden_edges=NN revealed_edges=NN bar_edge=NN title_edges=LL/CC". W x H is
+# the full-screen window in points, never the windowed size, so `scale` is the
+# capture's own backing scale. The band is the bar's 4..24 pt, away from the
+# traffic lights and the controls row: hidden_edges is the picture's sharp
+# detail where a hidden bar lets it show; revealed_edges is the same band once
+# the acrylic is up (a material, not the picture copied); bar_edge is how far
+# the bar moved the band; title_edges is the ink the centred name drew (plain
+# left band / centre). A mirror would keep the picture's edges in the band.
+fullscreen_pair_pixels() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+hidden, revealed, wpt, hpt = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def load(path):
+    size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+    w, h = int(size[0]), int(size[1])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True).stdout
+    return w, h, raw
+def pixel(raw, w, x, y):
+    i = (y * w + x) * 3
+    return raw[i:i+3]
+def banddiff(a, b, wa, wb, y0, y1, x0, x1):
+    total = count = 0
+    for y in range(y0, y1, 2):
+        for x in range(x0, x1, 4):
+            pa, pb = pixel(a, wa, x, y), pixel(b, wb, x, y)
+            total += sum(abs(pa[c] - pb[c]) for c in range(3))
+            count += 3
+    return total / max(count, 1)
+def edges(raw, w, y0, y1, x0, x1):
+    n = 0
+    for y in range(y0, y1, 2):
+        for x in range(x0, x1, 2):
+            left, right = pixel(raw, w, x - 1, y), pixel(raw, w, x + 1, y)
+            if sum(abs(left[c] - right[c]) for c in range(3)) > 60:
+                n += 1
+    return n
+wh, hh, hr = load(hidden)
+wr, rh, rr = load(revealed)
+scale = wh / wpt
+bx0 = int(100 * scale)
+bx1 = min(int((wpt - 320) * scale), wh - 4)
+by0 = int(4 * scale)
+by1 = int(24 * scale)
+# The title's own ink must not count as material: the bar comparison is the
+# plain band on either side of the centred name.
+gx0 = max(2, int(wh / 2 - 120 * scale))
+gx1 = min(wh - 2, int(wh / 2 + 120 * scale))
+cx0 = max(2, int(wh / 2 - 90 * scale))
+cx1 = min(wh - 2, int(wh / 2 + 90 * scale))
+lx0 = int(120 * scale)
+lx1 = min(int(320 * scale), cx0 - int(10 * scale))
+ty0 = int(6 * scale)
+ty1 = int(22 * scale)
+hidden_edges = edges(hr, wh, by0, by1, bx0, gx0) + edges(hr, wh, by0, by1, gx1, bx1)
+revealed_edges = edges(rr, wr, by0, by1, bx0, gx0) + edges(rr, wr, by0, by1, gx1, bx1)
+bar_edge = (banddiff(hr, rr, wh, wr, by0, by1, bx0, gx0)
+            + banddiff(hr, rr, wh, wr, by0, by1, gx1, bx1)) / 2
+left_edges = edges(rr, wr, ty0, ty1, lx0, lx1)
+center_edges = edges(rr, wr, ty0, ty1, cx0, cx1)
+print("hidden_edges=%d revealed_edges=%d bar_edge=%d title_edges=%d/%d"
+      % (hidden_edges, revealed_edges, round(bar_edge), left_edges, center_edges))
+PY
+}
+
+# --- Styles: the full-screen bar, app by style and appearance -----------------
+#
+# The reviewer's full-screen proof: both styles × light/dark, the bar hidden at
+# entry (no bar pixels on the 28 pt line), then revealed by a rest at the top
+# edge (an acrylic band, no copied picture, the centred name with ink), then
+# hidden again and the windowed frame restored. The Phone Mirror never goes
+# full screen (WIN-72), so its cells only assert that it cannot.
+check_styles_fullscreen() {
+    local appearance style key width height win full hidden revealed pixels
+    local shots="$WORK-shots/fullscreen"
+    mkdir -p "$shots"
+    if [ "$VISIBLE" != "1" ]; then
+        skip_visible "STYLES-FULLSCREEN full screen (a real Space and pointer)"
+        return 0
+    fi
+    for appearance in light dark; do
+        for style in immersive framed; do
+            if [ "$style" = "framed" ]; then key=mat; width=910; height=643
+            else key=immersive; width=900; height=628; fi
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$key"
+            rm -f "$WORK/fs-hidden" "$WORK/fs-revealed" "$WORK/fs-left" "$WORK/fs-exit" "$WORK/fs-done"
+            printf '%s\n' "wait 1" "fullscreen" "wait 6" \
+                "waitfile $WORK/fs-hidden 90" "waitfile $WORK/fs-revealed 90" \
+                "waitfile $WORK/fs-left 90" "fullscreen" "wait 8" "waitfile $WORK/fs-exit 90" \
+                "waitfile $WORK/fs-done 90" "wait 10" > "$WORK/fs.txt"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+                --debug-input-script "$WORK/fs.txt" --quit-after 80
+            wait_until 25 events_have '"ev":"video","stream":1,' \
+                || { bad "STYLES-FULLSCREEN $appearance/$style no video"; stop_app; continue; }
+            # The previous cell may have left the pointer on the top line;
+            # take it away before the Space changes, or the bar is already
+            # revealing when the hidden shot is due.
+            cg_input moveat --x 200 --y 400
+            if wait_until 20 chrome_all fullscreen=yes fullbar=hidden fullbar_visible=0; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style full screen starts hidden ($(chrome_state))"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style never entered full screen: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            # The full screen can live in the system's full-screen window:
+            # find the window whose frame the state now reports, never the
+            # Deck's (it can be large too), and read its scale from that size.
+            local fw fh
+            fw="$(chrome_state | sed -n 's/.*geom=win:[0-9-]*,[0-9-]*,\([0-9]*\)x[0-9]*.*/\1/p')"
+            fh="$(chrome_state | sed -n 's/.*geom=win:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p')"
+            if [ -z "$fw" ] || [ -z "$fh" ]; then
+                bad "STYLES-FULLSCREEN $appearance/$style the state has no window frame: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            full="$(await_window "\$4 == $fw && \$5 == $fh")" \
+                || { bad "STYLES-FULLSCREEN $appearance/$style no $fw x $fh full-screen window"; stop_app; continue; }
+            if ! wait_until 15 chrome_frame_live; then
+                bad "STYLES-FULLSCREEN $appearance/$style is not live for the hidden shot: $(chrome_state)"
+                stop_app
+                continue
+            fi
+            sleep 0.4
+            hidden="$shots/$style-app-busy-photo-$appearance-full-hidden.png"
+            shot_window "$full" "$hidden" \
+                && ok "STYLES-FULLSCREEN $appearance/$style hidden shot" \
+                || bad "STYLES-FULLSCREEN $appearance/$style no hidden shot"
+            touch "$WORK/fs-hidden"
+            # Inside the 8 pt edge band; below the system menu bar's strip.
+            cg_input moveat --x 200 --y 6
+            if wait_until 10 chrome_all fullbar=shown bar_title=1; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the top-edge rest reveals the bar with its name ($(chrome_state))"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the top edge revealed nothing: $(chrome_state)"
+                touch "$WORK/fs-revealed" "$WORK/fs-left" "$WORK/fs-exit" "$WORK/fs-done"
+                stop_app
+                continue
+            fi
+            sleep 0.3
+            if ! wait_until 8 chrome_frame_live; then
+                bad "STYLES-FULLSCREEN $appearance/$style is not live for the revealed shot: $(chrome_state)"
+            fi
+            revealed="$shots/$style-app-busy-photo-$appearance-full-revealed.png"
+            shot_window "$full" "$revealed" \
+                && ok "STYLES-FULLSCREEN $appearance/$style revealed shot" \
+                || bad "STYLES-FULLSCREEN $appearance/$style no revealed shot"
+            touch "$WORK/fs-revealed"
+            if pixels="$(fullscreen_pair_pixels "$hidden" "$revealed" "$fw" "$fh")"; then
+                say "STYLES-FULLSCREEN $appearance/$style pixels: $pixels"
+                local hde rde edge left center
+                hde="$(printf '%s\n' "$pixels" | sed -n 's/.*hidden_edges=\([0-9]*\).*/\1/p')"
+                rde="$(printf '%s\n' "$pixels" | sed -n 's/.*revealed_edges=\([0-9]*\).*/\1/p')"
+                edge="$(printf '%s\n' "$pixels" | sed -n 's/.*bar_edge=\([0-9]*\).*/\1/p')"
+                left="$(printf '%s\n' "$pixels" | sed -n 's/.*title_edges=\([0-9]*\)\/\([0-9]*\).*/\1/p')"
+                center="$(printf '%s\n' "$pixels" | sed -n 's/.*title_edges=\([0-9]*\)\/\([0-9]*\).*/\2/p')"
+                [ "${hde:-0}" -ge 8 ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style hidden: the top band is the picture, not the bar (edges $hde)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style hidden: no picture detail under the hidden bar (edges $hde)"
+                [ "${edge:-0}" -ge 6 ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar changed the band (edge $edge)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar did not appear in pixels (edge $edge)"
+                [ "${rde:-999}" -lt "${hde:-0}" ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar is acrylic, not a copy of the picture ($rde < $hde)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar keeps the picture's edges ($rde vs $hde)"
+                [ "${center:-0}" -ge 10 ] && [ "${center:-0}" -ge $(( ${left:-0} + 6 )) ] \
+                    && ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style the title has ink edges (plain $left / centre $center)" \
+                    || bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style no readable title ink (plain $left / centre $center)"
+            else
+                bad "STYLES-FULLSCREEN $appearance/$style could not read the pixels"
+            fi
+            cg_input moveat --x 200 --y 400
+            if wait_until 8 chrome_has "fullbar=hidden"; then
+                ok "[WIN-8] STYLES-FULLSCREEN $appearance/$style leaving the bar hides it again"
+            else
+                bad "[WIN-8] STYLES-FULLSCREEN $appearance/$style the bar stayed: $(chrome_state)"
+            fi
+            touch "$WORK/fs-left"
+            win="$(await_window "\$4 == $width && \$5 == $height")" \
+                && ok "[WIN-14] STYLES-FULLSCREEN $appearance/$style leaving full screen restores $width x $height" \
+                || bad "[WIN-14] STYLES-FULLSCREEN $appearance/$style exit did not restore $width x $height"
+            touch "$WORK/fs-exit"
+            touch "$WORK/fs-done"
+            stop_app
+        done
+        # The Phone Mirror cannot go full screen in either style (WIN-72).
+        for style in immersive framed; do
+            if [ "$style" = "framed" ]; then key=mat; else key=immersive; fi
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
+                --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+            wait_until 20 events_have '"ev":"video"' || bad "STYLES-FULLSCREEN $appearance/$style mirror no video"
+            wait_until 12 chrome_all can_fullscreen=0 "style=$style" \
+                && ok "[WIN-72] STYLES-FULLSCREEN $appearance/$style the Phone Mirror cannot go full screen" \
+                || bad "[WIN-72] STYLES-FULLSCREEN $appearance/$style the Phone Mirror offered full screen: $(chrome_state)"
+            stop_app
+        done
+    done
+    mkdir -p "$WORK/shots/fullscreen"
+    cp -R "$shots/." "$WORK/shots/fullscreen/" 2>/dev/null || true
+    say "shots: $shots"
 }
 
 # --- Zoom: a stream window's double-click resize ----------------------------
