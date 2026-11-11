@@ -4406,6 +4406,13 @@ final class ConnectionController {
             // top row's letter is the proof (DECK-7).
             guard let dy = arguments.first.flatMap(Double.init) else { return "deck-scroll needs DY" }
             return DeckGridScroll.scroll(by: CGFloat(dy))
+        case "deckwheel":
+            // [DECK-32] A real continuous wheel event at the grid's centre:
+            // the scroll view reports `.interacting`, which ends a click's
+            // emphasis. A person's wheel/trackpad is the only scroll that
+            // ends it; the pick's own `scrollTo` animation does not.
+            guard let dy = arguments.first.flatMap(Double.init) else { return "deckwheel needs DY" }
+            return DeckGridScroll.wheel(by: CGFloat(dy))
         case "deckrailenter":
             // The pointer enters the rail's rest column at LETTER's band, which
             // freezes the span there.
