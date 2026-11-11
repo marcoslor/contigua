@@ -964,6 +964,9 @@ final class StreamChromeView: NSView {
 
     /// The title's truncation and its two ink alphas, for the tests.
     var barTitleLineBreakMode: NSLineBreakMode { titleLight.lineBreakMode }
+    /// The text drawn now: the whole "<App> (<phone>)" or the app's name alone
+    /// once the suffix had to go.
+    var barTitleString: String { titleLight.stringValue }
     func barTitleAlpha(_ tone: BarTone) -> CGFloat {
         tone == .light ? titleLight.alphaValue : titleDark.alphaValue
     }

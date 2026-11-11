@@ -231,6 +231,55 @@ final class BarTitleLayoutTests: XCTestCase {
         XCTAssertNil(BarTitleName.adoptedApp(nil), "a link before its app is known has no title")
         XCTAssertNil(BarTitleName.adoptedApp("  "))
     }
+
+    /// The bar's name carries the phone: "<App> (<phone>)"; the Mirror's own
+    /// name already is the phone's and stays alone.
+    func testTheNameCarriesThePhoneAsASuffix() {
+        XCTAssertEqual(BarTitleName.withPhone("Settings", phone: "Pixel 9"), "Settings (Pixel 9)")
+        XCTAssertEqual(BarTitleName.withPhone(" Settings ", phone: " Pixel 9 "), "Settings (Pixel 9)")
+        XCTAssertEqual(BarTitleName.withPhone("Settings", phone: nil), "Settings")
+        XCTAssertEqual(BarTitleName.withPhone("Settings", phone: "  "), "Settings")
+        XCTAssertEqual(BarTitleName.withPhone("Pixel 9", phone: "Pixel 9"), "Pixel 9",
+                       "the Phone Mirror's name is the phone's already")
+        XCTAssertNil(BarTitleName.withPhone(nil, phone: "Pixel 9"))
+        XCTAssertNil(BarTitleName.withPhone("   ", phone: "Pixel 9"))
+    }
+
+    /// The suffix is dropped before the app's name is touched; then the name
+    /// keeps WIN-68's thresholds and middle truncation.
+    func testThePhoneSuffixGoesFirstWhenTheRoomIsShort() throws {
+        let full = "Settings (Pixel 9)"
+        let base = "Settings"
+        let lightsEnd: CGFloat = 100
+        let widthForBase = lightsEnd + 2 * BarTitle.sideGap + BarTitle.textWidth(base) + 0.5
+        let dropped = try XCTUnwrap(BarTitle.fitting(
+            text: full, base: base, windowWidth: 900, barHeight: barHeight, boundsHeight: 628,
+            lightsEnd: lightsEnd, rightRowStart: widthForBase))
+        XCTAssertEqual(dropped.text, base, "the phone suffix goes first")
+        XCTAssertEqual(dropped.frame.width, BarTitle.textWidth(base), accuracy: 0.5)
+
+        let whole = try XCTUnwrap(BarTitle.fitting(
+            text: full, base: base, windowWidth: 900, barHeight: barHeight, boundsHeight: 628,
+            lightsEnd: lightsEnd, rightRowStart: 700))
+        XCTAssertEqual(whole.text, full, "the whole name when it fits")
+
+        // A long app name: the phone still goes first, then the app's own name
+        // is the one that truncates.
+        let longApp = String(repeating: "A very long app name ", count: 8)
+        let longFull = longApp + " (Pixel 9)"
+        let truncated = try XCTUnwrap(BarTitle.fitting(
+            text: longFull, base: longApp, windowWidth: 900, barHeight: barHeight, boundsHeight: 628,
+            lightsEnd: lightsEnd, rightRowStart: lightsEnd + BarTitle.sideGap + 200))
+        XCTAssertEqual(truncated.text, longApp)
+        XCTAssertLessThan(truncated.frame.width, BarTitle.textWidth(longApp))
+
+        // One point under 96 pt of room with an app name that cannot fit
+        // whole: the title hides rather than showing a couple of letters.
+        XCTAssertNil(BarTitle.fitting(
+            text: longFull, base: longApp, windowWidth: 900, barHeight: barHeight, boundsHeight: 628,
+            lightsEnd: lightsEnd,
+            rightRowStart: lightsEnd + 2 * BarTitle.sideGap + BarTitle.minimumTruncatedWidth - 1))
+    }
 }
 
 final class BarTitleBandLuminanceTests: XCTestCase {
@@ -398,6 +447,60 @@ final class BarTitleViewTests: XCTestCase {
         chrome.setBarTitle(nil)
         chrome.layoutChrome()
         XCTAssertFalse(chrome.barTitleVisible, "a window with no name has no title")
+    }
+
+    func testTheTitleDrawsThePhoneSuffixAndDropsItFirst() throws {
+        let tone = FakeToneSource()
+        tone.range = BandRange(low: 0.02, high: 0.03)
+        let (window, chrome) = makeChrome(tone: tone)
+        defer { window.close() }
+        chrome.setBarTitle("Settings", phone: "Pixel 9")
+        chrome.layoutChrome()
+        XCTAssertEqual(chrome.barTitleString, "Settings (Pixel 9)")
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
+                       "the whole name fits at 900 pt")
+
+        // Room for the app's name but not the phone: only the suffix goes.
+        let chromeExtra: CGFloat = 7 + HeaderBar.liveTextSide + BarTitle.lightsEnd + 2 * BarTitle.sideGap
+        let forBase = BarTitle.textWidth("Settings") + 0.5 + chromeExtra
+        chrome.frame = NSRect(x: 0, y: 0, width: forBase, height: 628)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible)
+        XCTAssertEqual(chrome.barTitleString, "Settings", "the phone suffix goes first")
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping)
+
+        // A long app name: the phone still goes first, then the app's own name
+        // is the one that truncates; below 96 pt it hides instead.
+        let longApp = String(repeating: "A very long app name ", count: 8)
+        chrome.setBarTitle(longApp, phone: "Pixel 9")
+        chrome.frame = NSRect(x: 0, y: 0, width: 200 + chromeExtra, height: 628)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible)
+        XCTAssertEqual(chrome.barTitleString, longApp)
+        XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle)
+        chrome.frame = NSRect(x: 0, y: 0,
+                              width: BarTitle.minimumTruncatedWidth - 1 + chromeExtra,
+                              height: 628)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTitleVisible, "a name cut to two letters reads worse than none")
+
+        // The Mirror's title already is the phone's: no doubled suffix.
+        chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
+        chrome.setBarTitle("Pixel 9", phone: "Pixel 9")
+        chrome.layoutChrome()
+        XCTAssertEqual(chrome.barTitleString, "Pixel 9")
+
+        // Framed draws the same name in the system label colour.
+        chrome.setBarTitle("Settings", phone: "Pixel 9")
+        chrome.setStyle(.framed)
+        chrome.layoutChrome()
+        XCTAssertEqual(chrome.framedTitleView.titleText, "Settings (Pixel 9)")
+
+        // Minimal has no bar: nothing to draw.
+        chrome.setStyle(.minimal)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTitleVisible)
+        XCTAssertNil(chrome.barTitleRect)
     }
 
     func testTheTitleHidesBelowItsMinimumWidth() {

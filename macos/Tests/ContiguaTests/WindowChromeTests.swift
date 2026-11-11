@@ -472,6 +472,24 @@ final class StreamChromeStyleTests: XCTestCase {
                                     "the field is at least the whole line's width")
     }
 
+    func testTheBarTitleCarriesThePhoneName() throws {
+        let manager = makeManager()
+        manager.setPhoneName("Pixel 9")
+        let controller = AppWindowController(stream: 1, pkg: "com.android.settings", activity: nil,
+                                             label: "Settings", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        XCTAssertEqual(controller.chrome.framedTitleView.titleText, "Settings (Pixel 9)")
+        XCTAssertEqual(controller.window?.title, "Settings (Pixel 9)",
+                       "the window's own title already carried the phone")
+        controller.setStyle(.immersive)
+        XCTAssertEqual(controller.chrome.barTitleString, "Settings (Pixel 9)")
+        controller.setStyle(.minimal)
+        XCTAssertFalse(controller.chrome.barTitleVisible, "Minimal has no bar")
+        XCTAssertNil(controller.chrome.barTitleRect)
+    }
+
     func testSwitchingStylesKeepsTheStreamAndIsRemembered() throws {
         let manager = makeManager()
         addTeardownBlock { StreamMenuState.shared.handle(.reset) }
