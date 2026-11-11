@@ -19,7 +19,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-PIN="${1:-${POCKETDECK_PIN:-1234}}"
+PIN="${1:-${CONTIGUA_PIN:-1234}}"
 case "$SERIAL" in
   emulator-*) ;;
   *) die "refusing to run: $SERIAL is not an emulator serial" ;;
@@ -35,7 +35,7 @@ screen_awake() {
   emu shell dumpsys power 2>/dev/null | grep -q 'mWakefulness=Awake'
 }
 
-DUMP=/data/local/tmp/pocketdeck-lock.xml
+DUMP=/data/local/tmp/contigua-lock.xml
 ui_xml() {
   emu shell uiautomator dump --compressed "$DUMP" >/dev/null 2>&1 || true
   emu shell cat "$DUMP" 2>/dev/null

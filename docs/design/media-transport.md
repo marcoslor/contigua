@@ -79,18 +79,18 @@ Adversaries considered:
 ### 2.3 Mitigations
 
 - **Keys come from the session's TLS exporter, not a new exchange.** Both ends
-  already derive the 32-byte pairing exporter (`EXPORTER-pocketdeck-pair`) from
+  already derive the 32-byte pairing exporter (`EXPORTER-contigua-pair`) from
   the TLS 1.3 exporter master secret — the Mac through BoringSSL's keylog
   secret and `ExporterV2`, the phone through
   `SSLSockets.exportKeyingMaterial` and `TlsExporter`. The media keys are a
   domain-separated HKDF step on that value:
 
 ```
-context = session_id || macPin || phonePin || "EXPORTER-pocketdeck-pair"
+context = session_id || macPin || phonePin || "EXPORTER-contigua-pair"
 c2s = HKDF-SHA256(ikm = pairingExporter, salt = context,
-                  info = "pocketdeck-media-c2s", 32)
+                  info = "contigua-media-c2s", 32)
 s2c = HKDF-SHA256(ikm = pairingExporter, salt = context,
-                  info = "pocketdeck-media-s2c", 32)
+                  info = "contigua-media-s2c", 32)
 keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 ```
 

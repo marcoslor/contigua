@@ -93,7 +93,7 @@ There is no AV1 encoder, so AV1's screen-content tools are out of reach. Both en
 
 ## The strategies to test
 
-Each one is a switch whose default is today's behaviour: a `debug.pocketdeck.stream.*` property on the phone, a `defaults` key on the Mac.
+Each one is a switch whose default is today's behaviour: a `debug.contigua.stream.*` property on the phone, a `defaults` key on the Mac.
 
 | Id | Side | Strategy | What it should change |
 | --- | --- | --- | --- |
@@ -314,7 +314,7 @@ The switches had only been exercised on the emulator. On the person's Android
 17 user build the hidden `SystemProperties.get` is refused for the Shizuku
 service's classloader; every knob read as unset until the lookup fell back to
 `/system/bin/getprop` (commit 80ddab07). The same
-`setprop debug.pocketdeck.stream.*` names then applied, and the round ran three
+`setprop debug.contigua.stream.*` names then applied, and the round ran three
 arms on one source: a full-screen `requestAnimationFrame` canvas in the
 mirrored browser, its own counter printing the frames it drew.
 
@@ -381,8 +381,8 @@ switches with today's defaults.
 ### The Mac's switches
 
 The Mac's three knobs follow the same rule: a `defaults` key in the app
-profile's suite (`dev.pocketdeck.mac` for the person's app,
-`dev.pocketdeck.mac.<profile>` for the e2e), read when a window opens or
+profile's suite (`app.contigua.mac` for the person's app,
+`app.contigua.mac.<profile>` for the e2e), read when a window opens or
 resizes, never per frame. `stream.net` is read once when a session dials, so
 its arms need the app restarted between runs (`n1-mac-video`, `n1-both` in
 `arms.json`, skipped by the bench's default list). With no key set the picture
@@ -571,7 +571,7 @@ corruption. The real phone decides R4.
 
 Built on `feat/hevc` (2026-11-06) as a bench arm, never a default flip:
 
-- **Phone:** `debug.pocketdeck.stream.codec=hevc` makes the choice only when the
+- **Phone:** `debug.contigua.stream.codec=hevc` makes the choice only when the
   Mac's `hello.codecs` lists `hevc` and the HEVC encoder accepts the size;
   otherwise one line names the first failure (`codec=hevc unsupported:
   <mac|encoder|size>`). `VIDEO_CONFIG` carries codec 1 (AVC) or 2 (HEVC), NAL
@@ -656,7 +656,7 @@ What this means:
 - **The web client is different (ISS-41).** A relayed internet path does lose packets, and WebRTC's media pipeline adds a jitter buffer that typing feels. There the right shape is the game-stream one: H.264 frames over an unordered data channel with no resends (`ordered: false, maxRetransmits: 0`), or WebTransport datagrams on a direct path, decoded by WebCodecs in a worker and drawn on arrival. A frame with a lost piece is dropped, and recovery comes from a keyframe or X2.
 - **M3 becomes a preset, not the default.** An adaptive jitter buffer smooths motion by adding delay, which is wrong for typing, dragging and scrolling. The default stays M1, one frame (16 ms) of display delay. M3 is a "smooth video" preset.
 
-Raw data: the Mac's unified log, `subsystem == "dev.pocketdeck.mac"`, lines with `stats total` (not in the repo).
+Raw data: the Mac's unified log, `subsystem == "app.contigua.mac"`, lines with `stats total` (not in the repo).
 
 ## P0 — the stages, measured (2026-11-06)
 
@@ -686,10 +686,10 @@ must measure a run made of motion only.
 The `video` arm played in the person's video app at a 25–30 fps source;
 its player surface does not show up in the app's gfxinfo (6.6 fps there), so
 that number is not the video's rate. The mirror's virtual display stayed at
-60.0 Hz in every run (`dumpsys display`, the `pocketdeck-N` display).
+60.0 Hz in every run (`dumpsys display`, the `contigua-N` display).
 
 Phone health over the round: battery 81–83 %, 32.7–35.7 °C, thermal status 0
-(no throttling), PocketDeck 2–19 % of one CPU and 56–61 MB PSS, the streamed
+(no throttling), Contigua 2–19 % of one CPU and 56–61 MB PSS, the streamed
 app 0–15 % and 125–484 MB, Wi-Fi retries 13.5k → 18.3k and tx bad 167 → 187
 over the whole round (cumulative counters; the soak samples show the trend).
 The first frame after a fresh stream opened in 389–702 ms in 14 of 15 runs;
@@ -707,7 +707,7 @@ then again with `--float-windows`: 120 samples every 10 s over 24 minutes of
 wall time, the window covered for 4.6 s only. Battery 73 → 69 %, battery
 temperature 35.0–39.7 °C (median 36.5), thermal status 0 except 13 samples at
 1, the Settings process 4.3–12.0 fps (the soak's one swipe per 10 s leaves
-most of each sample idle), PocketDeck 2.8–7.5 % of a CPU and 50–60 MB PSS,
+most of each sample idle), Contigua 2.8–7.5 % of a CPU and 50–60 MB PSS,
 and the cumulative Wi-Fi retries 46.9k → 59.9k (tx bad 211 → 234). One 4.4 s
 arrival gap made the run `frozen`/`low-motion`, so it is health data, not a
 motion measurement: a motion soak wants a swipe every sample period, not one
@@ -745,7 +745,7 @@ it, `off` restores. `pdpathfault.py` also gained `delay-throttle` for the
 emulator/fake-phone version.
 
 **The 17:23 shaped read is invalid.** `pm install -r` had left the 14:59
-`:pocketdeck` service running the deleted, pre-fix base.apk, so the "no
+`:contigua` service running the deleted, pre-fix base.apk, so the "no
 artifacts, just latency" result was not this code. The sawtooth diagnosis
 above predates the fix and stands; the fix's own shaped result is still to be
 measured. Every phone read now starts with `tools/phone_install_check.py`

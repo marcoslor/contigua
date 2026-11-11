@@ -1,6 +1,6 @@
 ---
 name: spec-review
-description: Review a PocketDeck surface spec (docs/specs/<surface>.md), or a change to one, before any brief or code. It checks the spec's completeness, clarity, testability and conventions coverage, and marks every gap [NEEDS CLARIFICATION]. Use when a spec is written or changed, before dispatching implementation, or when asked to "review the spec" or "clarify requirements".
+description: Review a Contigua surface spec (docs/specs/<surface>.md), or a change to one, before any brief or code. It checks the spec's completeness, clarity, testability and conventions coverage, and marks every gap [NEEDS CLARIFICATION]. Use when a spec is written or changed, before dispatching implementation, or when asked to "review the spec" or "clarify requirements".
 ---
 
 # Spec review: unit tests for English

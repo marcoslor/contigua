@@ -2,14 +2,14 @@
 """The shell service must run the APK on disk, not a deleted one (ISS-51).
 
 `adb install -r` replaces the APK but leaves the Shizuku-hosted
-`dev.pocketdeck:pocketdeck` app_process alive; it keeps the old, deleted
+`app.contigua:contigua` app_process alive; it keeps the old, deleted
 base.apk mapped and serves the build that was installed before. This is the
 emulator half of `tools/phone_install_check.py`, which the real phone runs
 after every install.
 
 The decision is that script's (evaluate/read_maps/current_base); only the pid
 list differs: `pidof` compares the 15-character comm, which cannot hold
-`dev.pocketdeck:pocketdeck`, so the pids come from `ps` here.
+`app.contigua:contigua`, so the pids come from `ps` here.
 
     python3 tools/emulator/service-maps.py --adb <adb> --serial <serial>
 
@@ -24,7 +24,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import phone_install_check as check  # noqa: E402
 
-SERVICE = "dev.pocketdeck:pocketdeck"
+SERVICE = "app.contigua:contigua"
 
 
 def service_pids(adb, serial):

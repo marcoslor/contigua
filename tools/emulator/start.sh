@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Boot the PocketDeck emulator rig and leave it ready for deckctl/poc:
+# Boot the Contigua emulator rig and leave it ready for deckctl/poc:
 #
 #   tools/emulator/start.sh [--window] [--no-build]
 #
 # Does, in order (all idempotent):
 #   1. boot the AVD headless and wait for sys.boot_completed (unlocks the rig PIN
 #      if a previous run set one)
-#   2. install the apps: Shizuku, dev.pocketdeck (built here) and the two F-Droid
+#   2. install the apps: Shizuku, app.contigua (built here) and the two F-Droid
 #      test apps, all cached under tools/emulator/.cache/
-#   3. grant dev.pocketdeck its runtime permissions - notably the Shizuku
+#   3. grant app.contigua its runtime permissions - notably the Shizuku
 #      permission, which is a plain dangerous permission, so `pm grant` works
 #   4. start the Shizuku server through its own native starter, as the adb shell
-#      user, so the PocketDeck user service runs with UID 2000. This must happen
+#      user, so the Contigua user service runs with UID 2000. This must happen
 #      *after* the grant: the server snapshots each app's permission state when
 #      it starts (BinderSender/ShizukuConfig), and a later grant is not picked up
 #      until the server restarts.
 #   5. seed the app prefs that the UI would otherwise set by hand (enabled +
 #      onboarding done + a stable device id), launch the app and read the server
 #      port from logcat
-#   6. adb forward tcp:<POCKETDECK_PORT> -> the server port, print 127.0.0.1:<port>
+#   6. adb forward tcp:<CONTIGUA_PORT> -> the server port, print 127.0.0.1:<port>
 #
 # Run it as `bash tools/emulator/start.sh` (the exec bit is not relied on).
 set -euo pipefail
@@ -44,11 +44,11 @@ case "$EMU_PORT" in
   ''|*[!0-9]*) die "serial '$SERIAL' is not an emulator-<port> serial" ;;
 esac
 
-PKG="dev.pocketdeck"
+PKG="app.contigua"
 SHIZUKU_PKG="moe.shizuku.privileged.api"
-BROWSER_PKG="${POCKETDECK_BROWSER:-acr.browser.lightning}"
-MESSENGER_PKG="${POCKETDECK_MESSENGER:-org.fossify.messages}"
-DEVICE_ID="${POCKETDECK_DEVICE_ID:-e0e0e0e0e0e0e0e0}"
+BROWSER_PKG="${CONTIGUA_BROWSER:-acr.browser.lightning}"
+MESSENGER_PKG="${CONTIGUA_MESSENGER:-org.fossify.messages}"
+DEVICE_ID="${CONTIGUA_DEVICE_ID:-e0e0e0e0e0e0e0e0}"
 
 [ -x "$EMULATOR" ] || die "emulator not installed - run tools/emulator/setup.sh first"
 
@@ -98,7 +98,7 @@ if [ "$(emu shell locksettings get-disabled 2>/dev/null | tr -d '\r')" = "false"
   # The AVD keeps userdata across boots, so a PIN lock.sh set for a check must
   # not leave every later boot at the bouncer (ISS-71). lock.sh sets it again
   # when a check needs a locked phone.
-  RIG_PIN="${POCKETDECK_PIN:-1234}"
+  RIG_PIN="${CONTIGUA_PIN:-1234}"
   if emu shell "locksettings clear --old $RIG_PIN" >/dev/null 2>&1; then
     step "cleared the rig PIN: the next boot starts unlocked"
   else
@@ -329,9 +329,9 @@ fi
 # An existing pairing is carried over so restarts do not force a new prompt.
 step "seeding app prefs (enabled + onboarding done)"
 emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
-PREFS="$CACHE_DIR/pocketdeck_prefs.xml"
-OLD_PREFS="$CACHE_DIR/pocketdeck_prefs.old.xml"
-emu shell "run-as $PKG cat shared_prefs/pocketdeck.xml" >"$OLD_PREFS" 2>/dev/null || true
+PREFS="$CACHE_DIR/contigua_prefs.xml"
+OLD_PREFS="$CACHE_DIR/contigua_prefs.old.xml"
+emu shell "run-as $PKG cat shared_prefs/contigua.xml" >"$OLD_PREFS" 2>/dev/null || true
 python3 - "$PREFS" "$OLD_PREFS" "$DEVICE_ID" <<'PY'
 import re
 import sys
@@ -352,20 +352,20 @@ with open(out_path, "w") as fp:
     fp.write('    <boolean name="enabled" value="true" />\n')
     fp.write('    <boolean name="onboarding_done" value="true" />\n')
     fp.write('    <string name="device_id">%s</string>\n' % device_id)
-    fp.write('    <string name="device_name">PocketDeck Emulator</string>\n')
+    fp.write('    <string name="device_name">Contigua Emulator</string>\n')
     if paired:
         fp.write("    %s\n" % paired)
     fp.write("</map>\n")
 PY
 emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
-emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" <"$PREFS" ||
+emu shell "run-as $PKG sh -c 'cat > shared_prefs/contigua.xml'" <"$PREFS" ||
   die "cannot seed $PKG prefs (is the build debuggable?)"
 
-if [ "${POCKETDECK_FORCE_PANEL_OFF:-0}" = "1" ]; then
-  step "setting debug.pocketdeck.force_panel_off=1 before the server starts"
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" = "1" ] ||
-    die "debug.pocketdeck.force_panel_off did not stick"
+if [ "${CONTIGUA_FORCE_PANEL_OFF:-0}" = "1" ]; then
+  step "setting debug.contigua.force_panel_off=1 before the server starts"
+  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
+  [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" = "1" ] ||
+    die "debug.contigua.force_panel_off did not stick"
 fi
 
 emu logcat -c >/dev/null 2>&1 || true
@@ -393,18 +393,18 @@ while [ -z "$DEVPORT" ] && [ "$TRY" -le 3 ]; do
 done
 if [ -z "$DEVPORT" ]; then
   step "last app/server logs:"
-  emu logcat -d -s PocketDeckApp:I PocketDeckSvc:I | tail -20 >&2 || true
-  die "no listening socket for the PocketDeck shell service after 3 restarts (see $AGENT_DIR/emulator.log)"
+  emu logcat -d -s ContiguaApp:I ContiguaSvc:I | tail -20 >&2 || true
+  die "no listening socket for the Contigua shell service after 3 restarts (see $AGENT_DIR/emulator.log)"
 fi
 
 # The emulator is behind NAT and mDNS does not cross it, so reach the server
 # through an adb forward on the Mac's loopback.
 ensure_forward >/dev/null || die "adb forward failed"
-step "server: $(emu shell "ps -A -o USER,PID,NAME | grep 'dev.pocketdeck:pocketdeck'" | tr -s ' ' | tr -d '\r' | tr '\n' ' ')listening on $(emu shell "ss -ltnp 2>/dev/null | grep \":$DEVPORT \"" | tr -s ' ' | tr -d '\r' | head -1)"
+step "server: $(emu shell "ps -A -o USER,PID,NAME | grep 'app.contigua:contigua'" | tr -s ' ' | tr -d '\r' | tr '\n' ' ')listening on $(emu shell "ss -ltnp 2>/dev/null | grep \":$DEVPORT \"" | tr -s ' ' | tr -d '\r' | head -1)"
 
 echo
-echo "POCKETDECK_SERIAL=$SERIAL"
-echo "POCKETDECK_ADDR=127.0.0.1:$PORT"
-echo "POCKETDECK_DEVICE_PORT=$DEVPORT"
+echo "CONTIGUA_SERIAL=$SERIAL"
+echo "CONTIGUA_ADDR=127.0.0.1:$PORT"
+echo "CONTIGUA_DEVICE_PORT=$DEVPORT"
 echo
 echo "next: python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port $PORT --state $CACHE_DIR/deckctl-state.json apps"

@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.pocketdeck"
+    namespace = "app.contigua"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.pocketdeck"
+        applicationId = "app.contigua"
         minSdk = 30
         targetSdk = 36
         // Shizuku user-service version: it is the daemon's version marker, so it
@@ -113,7 +113,7 @@ val c4Harness by tasks.registering(JavaExec::class) {
         layout.buildDirectory.dir("intermediates/javac/debug/compileDebugJavaWithJavac/classes"),
     )
     classpath = configurations.getByName("debugUnitTestRuntimeClasspath") + ownClasses
-    mainClass.set("dev.pocketdeck.c4.C4Harness")
+    mainClass.set("app.contigua.c4.C4Harness")
     // Forward -Pc4args="..." to main().
     (project.findProperty("c4args") as String?)?.let { args = it.split(" ") }
 }

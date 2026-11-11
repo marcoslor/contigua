@@ -15,8 +15,8 @@ set -uo pipefail
 DECKCTL="$REPO_ROOT/tools/fakephone/deckctl.py"
 STATE="$CACHE_DIR/deckctl-state.json"
 WORK="$AGENT_DIR/fs-digest"
-A="DCIM/PocketDeck-digest-a"
-B="DCIM/PocketDeck-digest-b"
+A="DCIM/Contigua-digest-a"
+B="DCIM/Contigua-digest-b"
 PASS=0
 FAIL=0
 
@@ -25,7 +25,7 @@ bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 short() { printf '%s' "$1" | cut -c1-12; }
 
 device_present || die "$SERIAL is not running - run tools/emulator/start.sh first"
-DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $SERIAL (is the app running?)"
+DEVPORT="$(ensure_forward)" || die "cannot find the Contigua server port on $SERIAL (is the app running?)"
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 mkdir -p "$WORK"
 

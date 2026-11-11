@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fakephone - a protocol-faithful fake PocketDeck phone (protocol v2).
+"""fakephone - a protocol-faithful fake Contigua phone (protocol v2).
 
 Runs the docs/PROTOCOL.md v2 flow over TLS 1.3: its own self-signed P-256
 identity, no resumption, framing byte-identical to v1. The pairing material —
@@ -59,7 +59,7 @@ tls_server_session = proto.tls_server_session
 FFMPEG = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 DNS_SD = "/usr/bin/dns-sd"
 
-SERVICE_TYPE = "_pocketdeck._tcp"
+SERVICE_TYPE = "_contigua._tcp"
 DEVICE_MODEL = "FakePhone"
 SCREEN_W, SCREEN_H, SCREEN_DPI = 1080, 2340, 450
 BATTERY = 87
@@ -132,7 +132,7 @@ def configure_socket(sock):
         pass
     return set_notsent_lowat(sock)
 
-DEFAULT_STATE = os.path.expanduser("~/.pocketdeck-fakephone.json")
+DEFAULT_STATE = os.path.expanduser("~/.contigua-fakephone.json")
 
 # `multi` is what the phone's `apps` reply says about a second instance
 # (WIN-24): Chrome's launcher is `singleInstancePerTask` and declares the
@@ -446,7 +446,7 @@ class FakeZen(object):
     def __init__(self, person=None, supported=True):
         self.supported = supported
         self.mode = ZEN_MODES[person] if person else ZEN_MODES["off"]
-        # The mode PocketDeck turned on, or None when the DND is the person's.
+        # The mode Contigua turned on, or None when the DND is the person's.
         self.set_by_mac = None
 
     def name(self):
@@ -469,8 +469,8 @@ class FakeZen(object):
 
     def person_sets(self, name):
         """The person changed DND on the phone themselves (docs/design/focus.md):
-        their mode stands and PocketDeck no longer owns it, so the next Mac
-        command is not mistaken for a restore of PocketDeck's own DND."""
+        their mode stands and Contigua no longer owns it, so the next Mac
+        command is not mistaken for a restore of Contigua's own DND."""
         self.mode = ZEN_MODES[name]
         self.set_by_mac = None
 
@@ -845,7 +845,7 @@ LINK_MAX_BYTES = 8 * 1024
 
 APK_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 APK_MAX_BYTES = 1 << 30
-APK_FAKE_PKG = "dev.pocketdeck.fake.installed"
+APK_FAKE_PKG = "app.contigua.fake.installed"
 DROP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,100}$")
 DROP_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
 DROP_MAX_BATCH = 1000
@@ -1237,7 +1237,7 @@ FS_PAGE_BYTES = 1 << 20
 FS_CHUNK = 256 * 1024
 MAX_THUMB_BYTES = 256 * 1024
 FS_MAX_WRITE = 1 << 30
-FS_TEMP_PREFIX = ".pocketdeck-"
+FS_TEMP_PREFIX = ".contigua-"
 FS_TEMP_SUFFIX = ".part"
 
 
@@ -1572,7 +1572,7 @@ class FsWatchFake(object):
     A real phone uses one inotify watch per folder; the fake polls the tree,
     which gives the same observable behaviour: only requested folders, a
     coalesced ``fs.changes`` with the folders whose contents moved, and nothing
-    at all while the set is empty. A ``.pocketdeck-*.part`` staging file is not
+    at all while the set is empty. A ``.contigua-*.part`` staging file is not
     a change. Names never reach the log: counts only.
     """
 
@@ -1688,7 +1688,7 @@ PENDING_QR_TTL = 300  # the phone's copy expires with the Mac's sheet
 
 
 def scan_qr_uri(store, uri):
-    """Simulate the QR scan (review R2): `pocketdeck://pair?c=&n=&f=&s=`.
+    """Simulate the QR scan (review R2): `contigua://pair?c=&n=&f=&s=`.
 
     The phone pins the Mac by `f` until a Mac whose certificate fingerprint
     matches connects; it then answers with pair.qr = HMAC(s, exporter||phoneFP)
@@ -1696,8 +1696,8 @@ def scan_qr_uri(store, uri):
     from the scan itself.
     """
     parsed = urllib.parse.urlparse(uri.strip())
-    if parsed.scheme.lower() != "pocketdeck" or parsed.netloc.lower() != "pair":
-        raise ValueError("not a PocketDeck pairing URI: %r" % uri)
+    if parsed.scheme.lower() != "contigua" or parsed.netloc.lower() != "pair":
+        raise ValueError("not a Contigua pairing URI: %r" % uri)
     params = urllib.parse.parse_qs(parsed.query)
     client_id = (params.get("c") or [""])[0].strip()
     fp_hex = (params.get("f") or [""])[0].strip()
@@ -3331,7 +3331,7 @@ class Session(object):
             dbg("no exporter on %r (sock type %s)" % (self.sock, type(self.sock).__name__))
             return None
         try:
-            data = material(b"EXPORTER-pocketdeck-pair", 32)
+            data = material(b"EXPORTER-contigua-pair", 32)
         except Exception as exc:
             dbg("exporter unavailable: %s: %s" % (type(exc).__name__, exc))
             return None
@@ -3797,7 +3797,7 @@ class Session(object):
         self._send({"t": "apk.result", "id": install_id, "ok": True, "pkg": APK_FAKE_PKG,
                     "label": APK_FAKE_LABEL, "version": "1.0"})
 
-    # -- file drops (docs/design/dragdrop.md): acts like Downloads/PocketDeck; a
+    # -- file drops (docs/design/dragdrop.md): acts like Downloads/Contigua; a
     # part whose bytes carry PD_FAKE_DOWNSIZE trips the size rule, and the
     # announced sha256 decides the result like the real receiver.
     def _on_drop_start(self, msg):
@@ -3836,7 +3836,7 @@ class Session(object):
             return
         if int(msg.get("resume") or 0) > 0:
             # The fake keeps no temp between drops, so it answers like a phone
-            # with an empty Downloads/PocketDeck: the Mac starts over at zero.
+            # with an empty Downloads/Contigua: the Mac starts over at zero.
             sys.stderr.write("fakephone: drop %r resume %r ignored (no temp)\n"
                              % (drop_id, msg["resume"]))
         self._drop = {"id": drop_id, "name": name, "mime": msg.get("mime") or "application/octet-stream",
@@ -3912,7 +3912,7 @@ class Session(object):
         sys.stderr.write("fakephone: drop %r %d bytes (%s) -> %s\n"
                          % (drop_id, len(data), drop["name"], "sha ok" if ok else "checksum"))
         if ok:
-            fake_path = "/sdcard/Download/PocketDeck/%s" % drop["name"]
+            fake_path = "/sdcard/Download/Contigua/%s" % drop["name"]
             self.phone.events.drop(drop_id, [{"name": drop["name"], "size": len(data),
                                               "mime": drop["mime"], "sha256": digest,
                                               "match": True}], True, None)
@@ -6188,7 +6188,7 @@ def size_arg(raw):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="Fake PocketDeck phone (protocol-faithful).")
+    p = argparse.ArgumentParser(description="Fake Contigua phone (protocol-faithful).")
     p.add_argument("--port", type=int, default=0, help="TCP port (0 = ephemeral)")
     p.add_argument("--version", type=int, default=paths.CURRENT_VERSION, metavar="N",
                    help="protocol version in hello/welcome (default 4; 3 is the old peer)")
@@ -6350,7 +6350,7 @@ def build_parser():
                    help="deny the next N pairing prompts; each sends pair_denied and "
                         "opens the cooldown window, as the phone does")
     p.add_argument("--qr-uri", metavar="URI",
-                   help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
+                   help="simulate the v2 QR scan (R2): stage a contigua://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "
                         "the pair.qr proof, then the Allow gate still applies")
     p.add_argument("--no-tls", action="store_true",

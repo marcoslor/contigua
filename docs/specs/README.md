@@ -1,6 +1,6 @@
 # Specs
 
-PocketDeck keeps one living spec per surface. A spec says what the surface must do, so code, checks and reviews can be measured against it. It is updated in the same change as the behaviour it describes.
+Contigua keeps one living spec per surface. A spec says what the surface must do, so code, checks and reviews can be measured against it. It is updated in the same change as the behaviour it describes.
 
 Keep specs lean: a requirements table, the state/event table and the conventions answers. No prose that narrates the code, no field lists, no plans. Types, tests and code already record the implementation; a spec records intent and its proof. "Done means every surface" in AGENTS.md is the companion checklist for every change.
 

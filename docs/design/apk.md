@@ -1,13 +1,13 @@
 # APK install from the Mac (ROADMAP #10)
 
-Drop an `.apk` (or an `.apks` / `.xapk` split bundle) on PocketDeck → it installs on the
+Drop an `.apk` (or an `.apks` / `.xapk` split bundle) on Contigua → it installs on the
 phone with progress and a clear result ("Installed Example 1.2"); the app list refreshes so
 its icon appears in the grid.
 
 ## Entry points (Mac)
 - **Drop** a file on the Deck window.
-- **Open With / `open -a PocketDeck.app x.apk`**: `CFBundleDocumentTypes` for `.apk`, `.apks`,
-  `.xapk` (role Viewer); files arrive in `application(_:open:)` next to `pocketdeck://` URLs.
+- **Open With / `open -a Contigua.app x.apk`**: `CFBundleDocumentTypes` for `.apk`, `.apks`,
+  `.xapk` (role Viewer); files arrive in `application(_:open:)` next to `contigua://` URLs.
 - **Menu bar** "Install APK…" (an open panel). A menu bar extra cannot take drops reliably.
 - **Services** "Install on Phone" for the same file types (`NSSendFileTypes`).
 - Several paired phones → the links picker ("Install on which phone?"), same routing rules.
@@ -43,7 +43,7 @@ any failure or cancel → `install-abandon`. The new package = the one whose
 `lastUpdateTime` is newest since the install began → label + versionName.
 
 ## Alternatives rejected
-- `adb install` from the Mac: needs adb pairing; PocketDeck already has a session.
+- `adb install` from the Mac: needs adb pairing; Contigua already has a session.
 - Copy to `/data/local/tmp` then `pm install`: a world-readable file lingers; streaming doesn't.
 - Base64 chunks in JSON: +33 % bytes and JSON parsing per MiB; a binary frame is free.
 - PackageInstaller from the app UID: needs REQUEST_INSTALL_PACKAGES and a user prompt per install.

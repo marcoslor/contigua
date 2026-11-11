@@ -18,13 +18,13 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 | CONV-MAC-04 | Text fields support the standard editing keys: ⌘A, ⌘C/⌘X/⌘V, ⌘Z/⇧⌘Z, ⌥←/→, ⌘←/→. |
 | CONV-MAC-05 | Zoom-like content (grid size, density) uses **⌘+ / ⌘− / ⌘0**, shown in the menu that owns it. |
 | CONV-MAC-06 | Every keyboard shortcut is visible in a menu or in the control's help tag. A shortcut that is hidden is a bug. A disabled menu item must not eat a key that another window needs (MenuBar.swift). |
-| CONV-MAC-07 | The app reuses a standard shortcut for another meaning only as a listed deviation. Today's deviation is **⌘P = Phone Mirror**: PocketDeck has nothing to print. |
+| CONV-MAC-07 | The app reuses a standard shortcut for another meaning only as a listed deviation. Today's deviation is **⌘P = Phone Mirror**: Contigua has nothing to print. |
 
 ## macOS: windows, panels, menus
 
 | ID | Convention |
 |---|---|
-| CONV-MAC-10 | Clicking a menu-bar (status) item **toggles** its panel: click → open, click → close. Clicking outside or pressing Esc closes it, and so does opening a window from it. A **secondary click** (right-click or ⌃-click) opens the item's own menu instead — Settings… ⌘, · About PocketDeck · Quit PocketDeck ⌘Q — closing the panel first; the panel's gear opens the same menu. |
+| CONV-MAC-10 | Clicking a menu-bar (status) item **toggles** its panel: click → open, click → close. Clicking outside or pressing Esc closes it, and so does opening a window from it. A **secondary click** (right-click or ⌃-click) opens the item's own menu instead — Settings… ⌘, · About Contigua · Quit Contigua ⌘Q — closing the panel first; the panel's gear opens the same menu. |
 | CONV-MAC-11 | A window that represents one thing exists **once per thing**: the Deck, the Phone Mirror per phone, Settings, an app window per app per phone. Opening it again brings the existing one to the front (unminimise; switch Space if it is full screen). |
 | CONV-MAC-12 | Windows remember size and position across launches. A window never opens off-screen, and never larger than the screen it opens on. |
 | CONV-MAC-13 | View → Enter/Exit Full Screen (the system's own, fn‑F) exists exactly once; Window holds the system's tiling group and no app full-screen item. Menus have no empty menu and no duplicate title, and no leading, trailing or doubled separator. A menu item's checkmark follows the key window. |
@@ -49,16 +49,16 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 | ID | Convention |
 |---|---|
 | CONV-AND-01 | Back, Home and Recents from the Mac map to the phone's own navigation. They behave the same way under gesture and 3-button navigation. |
-| CONV-AND-02 | Any phone-side UI follows the system theme. A notification that PocketDeck posts is dismissable and names what it does. |
+| CONV-AND-02 | Any phone-side UI follows the system theme. A notification that Contigua posts is dismissable and names what it does. |
 | CONV-AND-03 | Runtime permissions are asked for in context, with a reason. A denied permission disables only its feature, and the feature says why (honest settings). |
-| CONV-AND-04 | Nothing PocketDeck does changes a phone setting the person did not ask for, and every change it makes is undone when the session ends. The lock screen stays locked (product promise). |
+| CONV-AND-04 | Nothing Contigua does changes a phone setting the person did not ask for, and every change it makes is undone when the session ends. The lock screen stays locked (product promise). |
 
-## PocketDeck's own
+## Contigua's own
 
 | ID | Convention |
 |---|---|
 | CONV-PD-01 | **Phone count.** Each surface says what it shows with **0, 1 and 2+** phones, and how to reach the other phones. |
-| CONV-PD-02 | **Connection states.** Each surface says what it shows while connecting, connected, and offline or reconnecting. It also says what it shows for a phone that **can't** do the feature (an Android version or OEM limit, or a missing permission): disabled with a reason, never hidden. No fallbacks for older PocketDeck builds during the alpha (AGENTS.md). |
+| CONV-PD-02 | **Connection states.** Each surface says what it shows while connecting, connected, and offline or reconnecting. It also says what it shows for a phone that **can't** do the feature (an Android version or OEM limit, or a missing permission): disabled with a reason, never hidden. No fallbacks for older Contigua builds during the alpha (AGENTS.md). |
 | CONV-PD-03 | **Pending actions.** An action the phone must confirm shows the pending state, then the phone's answer. A refusal shows a pill with the phone's reason. The UI never claims what the phone has not reported. |
 | CONV-PD-04 | **Live controls.** A slider or toggle follows the pointer live while dragged, sends throttled updates, and then follows the phone (the volume pattern). |
 | CONV-PD-05 | **Privacy.** No message text, notification content, file name, app list or phone number in logs or crash reports. Anything sensitive is redacted. |

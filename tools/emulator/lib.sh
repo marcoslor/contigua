@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the PocketDeck emulator rig. Sourced, never executed.
+# Shared helpers for the Contigua emulator rig. Sourced, never executed.
 #
 # Every rig script is run as `bash tools/emulator/<script>.sh`: a fresh clone or
 # an unpacked archive can arrive without the exec bit, and a script that dies on
@@ -18,27 +18,27 @@ CACHE_DIR="$EMU_DIR/.cache"
 # Downloaded fixtures (Shizuku, the F-Droid test apps) are shared by every
 # checkout: a fresh worktree's empty .cache used to fetch them again after the
 # boot and lose it to GitHub's rate limit (403). Run state stays in CACHE_DIR.
-FIXTURE_DIR="${POCKETDECK_FIXTURES:-$HOME/.cache/pocketdeck-emulator}"
+FIXTURE_DIR="${CONTIGUA_FIXTURES:-$HOME/.cache/contigua-emulator}"
 ADB="$ANDROID_HOME/platform-tools/adb"
 # shellcheck disable=SC2034 # library value: start.sh boots $AVD_NAME
 EMULATOR="$ANDROID_HOME/emulator/emulator"
 AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
 # shellcheck disable=SC2034 # library value: start.sh boots this AVD
-AVD_NAME="${POCKETDECK_AVD:-pocketdeck-api36}"
-SERIAL="${POCKETDECK_SERIAL:-emulator-5554}"
-PORT="${POCKETDECK_PORT:-47811}"
-AGENT_DIR="${POCKETDECK_AGENT_DIR:-$REPO_ROOT/.agent/emu}"
+AVD_NAME="${CONTIGUA_AVD:-contigua-api36}"
+SERIAL="${CONTIGUA_SERIAL:-emulator-5554}"
+PORT="${CONTIGUA_PORT:-47811}"
+AGENT_DIR="${CONTIGUA_AGENT_DIR:-$REPO_ROOT/.agent/emu}"
 
 CACHE_DIR="$CACHE_DIR"
 AGENT_DIR="$AGENT_DIR"
 mkdir -p "$CACHE_DIR" "$AGENT_DIR" "$FIXTURE_DIR/apks"
 
 # The v2 handshake is TLS 1.3, which the macOS system Python (3.9 + LibreSSL)
-# cannot do. Prefer an interpreter whose ssl can enforce it; POCKETDECK_PYTHON
+# cannot do. Prefer an interpreter whose ssl can enforce it; CONTIGUA_PYTHON
 # overrides. Falls back to plain python3 so the error names the real cause.
 pick_python() {
   local cand
-  for cand in "${POCKETDECK_PYTHON:-}" /opt/homebrew/bin/python3 python3; do
+  for cand in "${CONTIGUA_PYTHON:-}" /opt/homebrew/bin/python3 python3; do
     [ -n "$cand" ] || continue
     command -v "$cand" >/dev/null 2>&1 || continue
     "$cand" -c 'import ssl; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.minimum_version = ssl.TLSVersion.TLSv1_3' \
@@ -113,16 +113,16 @@ fdroid_latest_url() { # fdroid_latest_url <package>
   echo "https://f-droid.org/repo/${pkg}_${code}.apk"
 }
 
-# The PocketDeck server binds an ephemeral port and logs it (Server.kt).
+# The Contigua server binds an ephemeral port and logs it (Server.kt).
 server_port_from_logcat() {
-  emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     sed -n 's/.*listening on 0\.0\.0\.0:\([0-9][0-9]*\).*/\1/p' | tail -1
 }
 
 # The shell-UID user service process(es) that host the server.
 server_pids() {
   # grep exits 1 when there is no daemon; the rig runs under `set -euo pipefail`.
-  emu shell "ps -A -o PID,NAME 2>/dev/null | grep 'dev.pocketdeck:'" 2>/dev/null |
+  emu shell "ps -A -o PID,NAME 2>/dev/null | grep 'app.contigua:'" 2>/dev/null |
     awk '{print $1}' | tr -d '\r' | tr '\n' ' ' || true
 }
 
@@ -192,8 +192,8 @@ installed_version_code() { # installed_version_code <pkg>
 # broadcast therefore names its component.
 debug_component() { # debug_component <action>
   case "$1" in
-    dev.pocketdeck.DEBUG_MEDIA) echo "dev.pocketdeck/dev.pocketdeck.app.MediaDebugTrigger" ;;
-    dev.pocketdeck.DEBUG_NOTIFY) echo "dev.pocketdeck/dev.pocketdeck.app.NotifyDebugPoster" ;;
+    app.contigua.DEBUG_MEDIA) echo "app.contigua/app.contigua.app.MediaDebugTrigger" ;;
+    app.contigua.DEBUG_NOTIFY) echo "app.contigua/app.contigua.app.NotifyDebugPoster" ;;
     *) return 1 ;;
   esac
 }
@@ -225,7 +225,7 @@ wait_server_port() { # wait_server_port <timeout_s>
 # it (force-stop, launch, wait for a listening port). The prefs - enabled,
 # pairing - survive, so the new server answers the same key. True on success.
 restart_server() {
-  local pkg=dev.pocketdeck deadline
+  local pkg=app.contigua deadline
   step "restarting $pkg (the shell service is gone)"
   emu shell am force-stop "$pkg" >/dev/null 2>&1 || true
   for _ in $(seq 1 10); do
@@ -248,7 +248,7 @@ capture_crash() { # capture_crash <tag>
   local tag="$1"
   emu logcat -b crash -d > "$AGENT_DIR/crash-$tag.log" 2>/dev/null || true
   emu logcat -d -t 6000 2>/dev/null |
-    grep -E 'PocketDeck|dev\.pocketdeck|AndroidRuntime|FATAL|MediaScanner|MediaProvider|am_crash' |
+    grep -E 'Contigua|dev\.contigua|AndroidRuntime|FATAL|MediaScanner|MediaProvider|am_crash' |
     tail -1000 > "$AGENT_DIR/logcat-$tag.log" || true
   step "wrote $AGENT_DIR/crash-$tag.log and $AGENT_DIR/logcat-$tag.log"
 }

@@ -1,6 +1,6 @@
 // Control Center and menu bar controls (docs/design/controls.md). A widget
 // extension (com.apple.widgetkit-extension) with four controls: phone DND, Ring,
-// Ringer and Open PocketDeck. It never owns the session: it reads the snapshot
+// Ringer and Open Contigua. It never owns the session: it reads the snapshot
 // the app writes into the App Group container and sends each action as one JSON
 // line over the group socket, where the app runs the same code as the menu bar
 // and the App Intents.
@@ -178,10 +178,10 @@ struct RingerControlIntent: AppIntent {
     }
 }
 
-/// "Open PocketDeck": the one action that is allowed to take focus, because
+/// "Open Contigua": the one action that is allowed to take focus, because
 /// that is what the person asked for.
-struct OpenPocketDeckIntent: AppIntent {
-    static var title: LocalizedStringResource = "Open PocketDeck"
+struct OpenContiguaIntent: AppIntent {
+    static var title: LocalizedStringResource = "Open Contigua"
     static var openAppWhenRun = true
 
     func perform() async throws -> some IntentResult {
@@ -233,7 +233,7 @@ struct RingerValueProvider: ControlValueProvider {
 struct PhoneDndControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
-            kind: "dev.pocketdeck.mac.controls.dnd",
+            kind: "app.contigua.mac.controls.dnd",
             provider: DndValueProvider()
         ) { state in
             ControlWidgetToggle(
@@ -259,7 +259,7 @@ struct PhoneDndControl: ControlWidget {
 
 struct RingControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "dev.pocketdeck.mac.controls.ring") {
+        StaticControlConfiguration(kind: "app.contigua.mac.controls.ring") {
             ControlWidgetButton(action: RingControlIntent()) {
                 Label("Ring Phone", systemImage: "iphone.radiowaves.left.and.right")
             }
@@ -272,7 +272,7 @@ struct RingControl: ControlWidget {
 struct RingerControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
-            kind: "dev.pocketdeck.mac.controls.ringer",
+            kind: "app.contigua.mac.controls.ringer",
             provider: RingerValueProvider()
         ) { state in
             ControlWidgetButton(action: RingerControlIntent()) {
@@ -305,24 +305,24 @@ struct RingerControl: ControlWidget {
     }
 }
 
-struct OpenPocketDeckControl: ControlWidget {
+struct OpenContiguaControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "dev.pocketdeck.mac.controls.open") {
-            ControlWidgetButton(action: OpenPocketDeckIntent()) {
-                Label("Open PocketDeck", systemImage: "rectangle.stack.fill")
+        StaticControlConfiguration(kind: "app.contigua.mac.controls.open") {
+            ControlWidgetButton(action: OpenContiguaIntent()) {
+                Label("Open Contigua", systemImage: "rectangle.stack.fill")
             }
         }
-        .displayName("Open PocketDeck")
-        .description("Opens PocketDeck.")
+        .displayName("Open Contigua")
+        .description("Opens Contigua.")
     }
 }
 
 @main
-struct PocketDeckControls: WidgetBundle {
+struct ContiguaControls: WidgetBundle {
     var body: some Widget {
         PhoneDndControl()
         RingControl()
         RingerControl()
-        OpenPocketDeckControl()
+        OpenContiguaControl()
     }
 }

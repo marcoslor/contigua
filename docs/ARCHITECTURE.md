@@ -1,4 +1,4 @@
-# PocketDeck — architecture
+# Contigua — architecture
 
 Continuity-style Android ⇄ macOS: run Android apps in native, resizable Mac
 windows (one window per app, several at once) and a "phone" window — **while the
@@ -7,7 +7,7 @@ phone stays locked**. LAN only. Open source.
 ```
  macOS app (Swift)                             Android phone
 ┌──────────────────────────────┐ 1-3 paths (TLS)┌────────────────────────────────────┐
-│ ConnectionController ────────┼───────────────►│ App process (dev.pocketdeck)       │
+│ ConnectionController ────────┼───────────────►│ App process (app.contigua)       │
 │ Session (paths) + Protocol   │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
 │ Path providers: lan, direct  │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
 │ Deck (app grid, search)      │                │  PdNotificationListener, prefs     │
@@ -31,7 +31,7 @@ phone stays locked**. LAN only. Open source.
 code as UID 2000 (`com.android.shell`), the same uid as `adb shell`; with root
 privileges it runs as UID 0, which owns no package, so clipboard reads go through
 a helper started as UID 2000 (docs/design/sharein.md, SHARE-19). The app process
-(`dev.pocketdeck`) does everything a normal Android app can: UI, pairing prompt,
+(`app.contigua`) does everything a normal Android app can: UI, pairing prompt,
 the foreground service, the notification listener, NSD advertising, battery/lock
 relays. It cannot create virtual displays or read notifications at will — that is
 why the capability lives in the shell process.
@@ -132,7 +132,7 @@ system-privileged steps):
 
 - **Drop in**: Mac → `drop.start` → binary `DROP_DATA` chunks (≤ 1 MiB, paced,
   resumable via `resume:bytes`, 200 MiB cap, one active drop per phone) → the
-  phone lands the file in `Downloads/PocketDeck/`, media-scans it and offers a
+  phone lands the file in `Downloads/Contigua/`, media-scans it and offers a
   SEND chooser through `DropReceiver` + shell staging (`ShellLanding`,
   `ShareTrampoline`). The shell stages the file and opens it read-only through
   `openStaged` (the app cannot open a shell-written path, boot 5); the app
@@ -143,7 +143,7 @@ system-privileged steps):
   parsed Mac-side first (docs/design/apk.md).
 - **Share phone → Mac**: `shareFile` (AIDL) hands bytes from the phone's SHARE
   to the shell; `share.text`/`share.file` drive the Mac (browser / clipboard /
-  `~/Downloads/PocketDeck` + a Show-in-Finder notification).
+  `~/Downloads/Contigua` + a Show-in-Finder notification).
 - Clipboard text is read/written at shell uid (`ShellClipboard`), so it works
   while the phone is locked; images are read there too. A Mac image goes to the
   app process over `onClipImage` because ClipboardService refuses the shell's
@@ -151,13 +151,13 @@ system-privileged steps):
 
 ## The Mac side
 
-- **Connection**: `Discovery` (NWBrowser over `_pocketdeck._tcp`) or manual
+- **Connection**: `Discovery` (NWBrowser over `_contigua._tcp`) or manual
   address; `ConnectionController` owns pairing state and the session. Every
   session is **TLS 1.3, mutual, pinned** (NIOSSL/BoringSSL on this side): the
-  per-profile identity is `…/PocketDeck-<profile>/identity.json` (0600) and
+  per-profile identity is `…/Contigua-<profile>/identity.json` (0600) and
   each paired phone's fingerprint and certificate live in `pins.json` (0600).
   Pairing: QR (the sheet publishes
-  `pocketdeck://pair?c=…&n=…&f=…&s=…`, secret one-time) or numeric comparison
+  `contigua://pair?c=…&n=…&f=…&s=…`, secret one-time) or numeric comparison
   (six digits on both screens, derived from the TLS exporter and fresh nonces;
   the phone's **Allow** is the confirmation — the code is never typed). A
   non-default profile never dials a phone found over Bonjour on its own
@@ -186,10 +186,10 @@ system-privileged steps):
   Back button maps to one Android Back per press.
 - **Outbound features**: `ClipboardSync` (NSPasteboard ⇄ shell clipboard),
   `FileDrop` sender (chunked/resumable drops + pill UI), `OpenLink`
-  (`pocketdeck://open` + the bundled Share extension "Open on Phone"),
+  (`contigua://open` + the bundled Share extension "Open on Phone"),
   `ApkInstall`/`ApkBundle`, `AudioEngine` (menu bar volume/mute),
   `NotifyCenter`/`NowPlaying`, `DockApps` (shim bundles in
-  `~/Applications/PocketDeck Apps/` with the real icon), `Spotlight`,
+  `~/Applications/Contigua Apps/` with the real icon), `Spotlight`,
   `HandoffWindow` (⌘⇧C / menu continuing the phone's foreground task).
 - **Deck**: the launcher window — app grid, search, battery/lock chips,
   drops as AP target, per-app context menu (Add to Dock, style).
@@ -200,8 +200,8 @@ defined once in docs/PROTOCOL.md (framing, message tables, pairing rules).
 ## Repo layout
 
 ```
-android/                 Gradle project, single :app module (dev.pocketdeck)
-  app/src/main/java/dev/pocketdeck/
+android/                 Gradle project, single :app module (app.contigua)
+  app/src/main/java/app/contigua/
     app/                 MainActivity, PairingPrompt, NsdAdvertiser,
                          ShizukuClient, PdNotificationListener, prefs, share
     server/              (runs in the shell process) DeckService (AIDL),
@@ -212,8 +212,8 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
                          ApkInstaller, ShellClipboard, Hidden, ResizePlan
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
   app/src/test/          Robolectric/device-state unit tests + screenshot tests
-macos/                   SwiftPM package (macOS 26+) → PocketDeck.app
-  Sources/PocketDeck/    App/Profile, Discovery/DirectConnect, Session +
+macos/                   SwiftPM package (macOS 26+) → Contigua.app
+  Sources/Contigua/    App/Profile, Discovery/DirectConnect, Session +
                          Protocol, WindowManager + AppWindow/StreamWindow +
                          StreamChrome/WindowStyle, VideoLayerView, InputMapper
                          + gestures, DeckViews, AudioEngine, NotifyCenter,

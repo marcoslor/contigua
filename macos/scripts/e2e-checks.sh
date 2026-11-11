@@ -40,7 +40,7 @@ PATHFAULT_CTL=""
 # explicit --predicate is given, which once let a previous run's lines in.
 path_log() {
     /usr/bin/log show --last 5m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null
 }
 
 # pathfault_start <listen> <target> [mode] [delay-ms] — starts one proxy and
@@ -578,8 +578,8 @@ PY
     wait_until 10 events_have '"kind":"version_refused"' \
         && ok "[PATH-1] PATHVERSION the v3 phone refused the Mac's v4 hello" \
         || bad "[PATH-1] PATHVERSION the v3 phone never refused"
-    wait_until 5 grep -qF "Update PocketDeck on your phone." "$WORK/banner.txt" \
-        && ok "[PATH-1] PATHVERSION the Mac says \"Update PocketDeck on your phone.\"" \
+    wait_until 5 grep -qF "Update Contigua on your phone." "$WORK/banner.txt" \
+        && ok "[PATH-1] PATHVERSION the Mac says \"Update Contigua on your phone.\"" \
         || bad "[PATH-1] PATHVERSION the Mac did not name the phone's update: $(cat "$WORK/banner.txt" 2>/dev/null)"
     sleep 3
     hellos="$(grep -c '"ev":"hello"' "$WORK/events.jsonl" 2>/dev/null || true)"
@@ -1830,7 +1830,7 @@ PY
 # `chain_fed=0`, and the picture kept arriving at realtime.
 audio_log() {
     /usr/bin/log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null
 }
 
 audiogap_frames() {
@@ -2050,7 +2050,7 @@ PY
 
 switch_log() {
     /usr/bin/log show --last 8m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null
 }
 
 switch_metrics() { # <frames> <start> <end> <audio> <base> <chrome-ticks> <log> <events> <app-log>

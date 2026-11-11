@@ -16,8 +16,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "stats-summary.py")
 
 TWO_LINES = """\
-2026-11-05 10:00:05.000000+0000 PocketDeck[1]: stats stream=1 size=100x100 view=100x100 place=fit rx_fps=60.0 shown_fps=59.0 int_p95=16.0 int_p99=17.0 freeze_n=0 freeze_ms=0 hitch_n=1 hitch_ms=290 late_p99=283.0 mac_drop=0 phone_drop=0 drop_ep=1 drop_ms=280 phone_n=2 skip=0 susp_n=0 susp_ms=0 refine_n=0 kf=0 kf_req=0 kbps=1000 target_kbps=8000 qp_p50=- qp_p95=- enc_p50=- enc_p95=- queue_p95=- e2e_p50=1.0 e2e_p95=2.0
-2026-11-05 10:00:10.000000+0000 PocketDeck[1]: stats stream=1 size=100x100 view=100x100 place=fit rx_fps=60.0 shown_fps=59.0 int_p95=16.0 int_p99=17.0 freeze_n=0 freeze_ms=0 hitch_n=1 hitch_ms=300 late_p99=17.0 mac_drop=0 phone_drop=0 drop_ep=0 drop_ms=- phone_n=0 skip=0 susp_n=0 susp_ms=0 refine_n=0 kf=0 kf_req=0 kbps=- target_kbps=- qp_p50=- qp_p95=- enc_p50=- enc_p95=- queue_p95=- e2e_p50=1.0 e2e_p95=2.0
+2026-11-05 10:00:05.000000+0000 Contigua[1]: stats stream=1 size=100x100 view=100x100 place=fit rx_fps=60.0 shown_fps=59.0 int_p95=16.0 int_p99=17.0 freeze_n=0 freeze_ms=0 hitch_n=1 hitch_ms=290 late_p99=283.0 mac_drop=0 phone_drop=0 drop_ep=1 drop_ms=280 phone_n=2 skip=0 susp_n=0 susp_ms=0 refine_n=0 kf=0 kf_req=0 kbps=1000 target_kbps=8000 qp_p50=- qp_p95=- enc_p50=- enc_p95=- queue_p95=- e2e_p50=1.0 e2e_p95=2.0
+2026-11-05 10:00:10.000000+0000 Contigua[1]: stats stream=1 size=100x100 view=100x100 place=fit rx_fps=60.0 shown_fps=59.0 int_p95=16.0 int_p99=17.0 freeze_n=0 freeze_ms=0 hitch_n=1 hitch_ms=300 late_p99=17.0 mac_drop=0 phone_drop=0 drop_ep=0 drop_ms=- phone_n=0 skip=0 susp_n=0 susp_ms=0 refine_n=0 kf=0 kf_req=0 kbps=- target_kbps=- qp_p50=- qp_p95=- enc_p50=- enc_p95=- queue_p95=- e2e_p50=1.0 e2e_p95=2.0
 """
 
 

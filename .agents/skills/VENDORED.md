@@ -7,4 +7,4 @@ These are copied unmodified from their upstream repositories, at fixed commits, 
 | swiftui-expert-skill | https://github.com/AvdLee/SwiftUI-Agent-Skill (skills/swiftui-expert-skill) | 204dba7 | MIT | 10-22: the scripts only run `xctrace` locally; there are no network calls |
 | swift-concurrency | https://github.com/AvdLee/Swift-Concurrency-Agent-Skill (skills/swift-concurrency) | d577081 | MIT | 10-22: docs only; its course links are adverts and can be ignored |
 
-`spec-review` is PocketDeck's own.
+`spec-review` is Contigua's own.

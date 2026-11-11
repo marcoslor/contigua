@@ -3,7 +3,7 @@
 # helper must start under both `su` syntaxes.
 #
 #   bash tools/emulator/clip-root.sh --check    rehearsal: no device, no boot
-#   ~/dev/pocketdeck/.agent/heavy.sh bash tools/emulator/clip-root.sh
+#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/clip-root.sh
 #
 # ONE emulator boot. The APKs must already be built with the Docker K1
 # (`k1-docker.sh <android> :app:assembleDebug`):
@@ -47,21 +47,21 @@ done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47992}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/clip-life/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47992}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/clip-life/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/clip-root.log"
 APK_BUILD="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 APK_MAIN="$PWD/.agent/clip-su/app-debug-main.apk"
 APK_FIXED="$PWD/.agent/clip-su/app-debug-fixed.apk"
 APK_LIFE="$PWD/.agent/clip-life/app-debug-life.apk"
 STATE="$CACHE_DIR/deckctl-state.json"
-PKG=dev.pocketdeck
+PKG=app.contigua
 ACT="$PKG/.app.PasteDebugActivity"
 # A made-up, contentless copy: only its length is ever reported.
 TEST_TEXT="$(printf '%*s' 24 '' | tr ' ' 'q')"
@@ -72,7 +72,7 @@ TEST_LIFE_TEXT="$(printf '%*s' 31 '' | tr ' ' 'z')"
 TEST_LIFE_LEN=${#TEST_LIFE_TEXT}
 # Debug-only: this boot's helper refills its restarts after 2 s ready, so the
 # guest's own kills cannot spend the budget mid-phase. Shipped builds ignore it.
-HEALTHY_PROP=debug.pocketdeck.clip_healthy_ms
+HEALTHY_PROP=debug.contigua.clip_healthy_ms
 HEALTHY_MS=2000
 FAILED=0
 
@@ -110,7 +110,7 @@ starter_path() {
 
 service_line() {
   local line
-  line="$(emu shell "ps -A -o USER,PID,NAME 2>/dev/null | grep 'dev.pocketdeck:pocketdeck' | head -1" 2>/dev/null |
+  line="$(emu shell "ps -A -o USER,PID,NAME 2>/dev/null | grep 'app.contigua:contigua' | head -1" 2>/dev/null |
     tr -s ' ' | tr -d '\r' | sed 's/^ //; s/ $//')"
   echo "${line:-none}"
 }
@@ -132,7 +132,7 @@ start_starter() { # start_starter <label>
 
 restart_service() { # restart_service <label>
   local label="$1"
-  emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+  emu shell "pkill -f app.contigua:contigua" >/dev/null 2>&1 || true
   restart_server >"$OUT/restart-$label.log" 2>&1 ||
     { fail "the shell service did not come back for $label"; return 1; }
   ensure_forward >/dev/null || { fail "cannot forward the phone port for $label"; return 1; }
@@ -151,7 +151,7 @@ enter_root() {
 enter_shell() {
   # A root Shizuku server cannot be killed by the shell user after unroot:
   # reap it (and its root user service) while adb is still root.
-  emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+  emu shell "pkill -f app.contigua:contigua" >/dev/null 2>&1 || true
   emu shell "pkill -f shizuku_server" >/dev/null 2>&1 || true
   emu unroot >/dev/null 2>&1 || true
   wait_for_device 90 || { fail "no device after adb unroot"; return 1; }
@@ -173,7 +173,7 @@ install_apk() { # install_apk <label> <apk>
 }
 
 helper_lines() {
-  emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep 'cliphelper:' | tr -d '\r' || true
+  emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep 'cliphelper:' | tr -d '\r' || true
 }
 
 ready_form() { # ready_form <helper lines>

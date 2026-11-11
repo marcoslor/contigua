@@ -6,7 +6,7 @@
 #   bash tools/emulator/adopt.sh            # against an already booted rig
 #
 # Build the APK first (K1 in Docker, never Gradle on the host):
-#   bash ~/dev/pocketdeck/.agent/k1-docker.sh "$PWD/android" :app:assembleDebug
+#   bash ~/dev/contigua/.agent/k1-docker.sh "$PWD/android" :app:assembleDebug
 #
 # The caller owns the emulator's whole life in ONE heavy.sh call:
 #   bash tools/emulator/start.sh --no-build && bash tools/emulator/adopt.sh; r=$?
@@ -16,8 +16,8 @@
 # expects window.task once, adopts the task, proves both streams draw, runs
 # Back/close on the adopted window with the first untouched, then opens the
 # streamed app from the phone's launcher and expects moved_to_phone and no
-# second window.task. Artefacts land in $POCKETDECK_ADOPT_OUT
-# (default ~/dev/pocketdeck/.agent/adopt/emu).
+# second window.task. Artefacts land in $CONTIGUA_ADOPT_OUT
+# (default ~/dev/contigua/.agent/adopt/emu).
 set -uo pipefail
 
 MODE=boot
@@ -31,14 +31,14 @@ esac
 cd "$REPO_ROOT"
 
 WT="$REPO_ROOT"
-OUT="${POCKETDECK_ADOPT_OUT:-$HOME/dev/pocketdeck/.agent/adopt/emu}"
+OUT="${CONTIGUA_ADOPT_OUT:-$HOME/dev/contigua/.agent/adopt/emu}"
 # A fresh pairing state per run: a reused one can be on the phone's revoked
 # side and every attempt then dies on the handshake.
 STATE="$CACHE_DIR/deckctl-state-adopt-$(date +%s).json"
 find "$CACHE_DIR" -maxdepth 1 -name 'deckctl-state-adopt-*.json' -mtime +1 -delete 2>/dev/null || true
 CLIENT="$WT/tools/fakephone/deckctl.py"
 mkdir -p "$OUT"
-export POCKETDECK_AGENT_DIR="${POCKETDECK_AGENT_DIR:-$OUT/emu}"
+export CONTIGUA_AGENT_DIR="${CONTIGUA_AGENT_DIR:-$OUT/emu}"
 
 # --- rehearsal --------------------------------------------------------------
 if [ "$MODE" = check ]; then
@@ -89,8 +89,8 @@ PY
   PD_PREFLIGHT_DRY_RUN=1 bash "$WT/tools/emulator/preflight.sh" || { echo "CHECK FAIL: preflight"; rc=1; }
   echo "--- the boot start.sh will run ---"
   echo "$EMULATOR -avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -no-window -gpu swiftshader_indirect"
-  echo "--- budget: $(cat "$HOME/dev/pocketdeck/.agent/budgets/adopt" 2>/dev/null || echo '?') boot(s) ---"
-  echo "--- boots already in the ledger for adopt: $(ledger_boots /tmp/pocketdeck-boots.ledger adopt) ---"
+  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/adopt" 2>/dev/null || echo '?') boot(s) ---"
+  echo "--- boots already in the ledger for adopt: $(ledger_boots /tmp/contigua-boots.ledger adopt) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
     rc=1
@@ -129,7 +129,7 @@ device_present || { echo "[adopt] error: $SERIAL is not up; boot it with tools/e
 # which server answered (lessons, 10-28).
 DEVPORT="$(ensure_forward || true)"
 step "server: pid $(server_pid||true) port ${DEVPORT:-none} forward 127.0.0.1:$PORT"
-emu shell pkill -f "dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+emu shell pkill -f "app.contigua:contigua" >/dev/null 2>&1 || true
 for _ in $(seq 1 10); do
   [ -z "$(server_pids)" ] && break
   sleep 1
@@ -170,7 +170,7 @@ step "adopt checks"
 CLIENT_RC=${PIPESTATUS[0]}
 step "client exit $CLIENT_RC"
 
-emu logcat -d -s PocketDeckSvc:I >"$OUT/logcat-server.txt" 2>/dev/null || true
+emu logcat -d -s ContiguaSvc:I >"$OUT/logcat-server.txt" 2>/dev/null || true
 emu logcat -d >"$OUT/logcat-all.txt" 2>/dev/null || true
 emu shell dumpsys activity activities >"$OUT/activities-final.txt" 2>/dev/null || true
 emu shell dumpsys display >"$OUT/display-final.txt" 2>/dev/null || true

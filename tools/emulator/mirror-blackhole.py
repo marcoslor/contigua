@@ -304,7 +304,7 @@ def mac_lines(t0, events):
     out = []
     for at, text in events:
         stamp = datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-        out.append("%s+0000  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] %s" % (stamp, text))
+        out.append("%s+0000  localhost Contigua[1]: [app.contigua.mac:session] %s" % (stamp, text))
     return out
 
 
@@ -340,8 +340,8 @@ def self_test(out_dir):
     t0 = 1_800_000_000.0
     switch = [(t0 + 3.2, "paths: sending aaaaaaaa -> bbbbbbbb (failure)"),
               (t0 - 2.0, "paths: attached bbbbbbbb (paths 2)")]
-    phone = ["11-01 21:00:00.000 I/PocketDeckSvc( 1): session 1f8f4b53: welcome (protocol 4)",
-             "11-01 21:00:00.100 I/PocketDeckSvc( 1): paths: joined bbbbbbbb (paths 2)"]
+    phone = ["11-01 21:00:00.000 I/ContiguaSvc( 1): session 1f8f4b53: welcome (protocol 4)",
+             "11-01 21:00:00.100 I/ContiguaSvc( 1): paths: joined bbbbbbbb (paths 2)"]
     mac = mac_lines(t0, switch)
     cases = []
     cases.append(("good", frame_lines(t0), mac, chrome_lines(t0, stall=2), phone, None))

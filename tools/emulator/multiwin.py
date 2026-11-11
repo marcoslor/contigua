@@ -32,13 +32,13 @@ import threading
 import time
 import http.server
 
-PACKAGE = "dev.pocketdeck"
+PACKAGE = "app.contigua"
 CHROME = "com.android.chrome"
 CHROME_MAIN = "com.android.chrome/com.google.android.apps.chrome.Main"
 SETTINGS = "com.android.settings"
-LABEL_PAGE_TITLE = "PocketDeck multiwin"
-LABEL_PAGE_TITLE_2 = "PocketDeck second page"
-SCROLL_PAGE_TITLE = "PocketDeck scroll"
+LABEL_PAGE_TITLE = "Contigua multiwin"
+LABEL_PAGE_TITLE_2 = "Contigua second page"
+SCROLL_PAGE_TITLE = "Contigua scroll"
 # The pages paint this colour over the whole viewport, so a frame that shows it
 # is the page and not a browser surface (the omnibox, a dialog, a blank tab).
 # Chrome's own toolbar is light and fills the top of the window, so the mean of
@@ -746,7 +746,7 @@ def cost_phase(phone, dev, streams, name, out):
         "keyframes": keys,
         "interval_ms": {s: (round(1000.0 / fps[s], 1) if fps[s] else None) for s in streams},
         "cpu_swcodec": round(cpu1["procs"].get("media.swcodec", 0.0), 1),
-        "cpu_pocketdeck": round(cpu1["procs"].get(PACKAGE, 0.0), 1),
+        "cpu_contigua": round(cpu1["procs"].get(PACKAGE, 0.0), 1),
         "pss_kb": pss1, "pss_delta_kb": (pss1 - pss0) if (pss1 and pss0) else None,
         "encoders": len(streams), "codec_instances": len(codecs),
     }
@@ -754,7 +754,7 @@ def cost_phase(phone, dev, streams, name, out):
           % (row["windows"], row["encoders"], row["codec_instances"],
              " ".join("s%d %.2f" % (s, fps[s]) for s in streams),
              " ".join("s%d %s" % (s, row["interval_ms"][s]) for s in streams),
-             row["cpu_swcodec"], row["cpu_pocketdeck"], row["pss_kb"]), flush=True)
+             row["cpu_swcodec"], row["cpu_contigua"], row["pss_kb"]), flush=True)
     # The cost table is only worth reading if every window it counts was drawing
     # (round 1's zero rows came from a phase that never saw its keyframe, and
     # from a window whose app had already exited). A live window under 8 s of

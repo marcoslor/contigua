@@ -7,7 +7,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-PIN="${1:-${POCKETDECK_PIN:-1234}}"
+PIN="${1:-${CONTIGUA_PIN:-1234}}"
 case "$SERIAL" in
   emulator-*) ;;
   *) die "refusing to run: $SERIAL is not an emulator serial" ;;

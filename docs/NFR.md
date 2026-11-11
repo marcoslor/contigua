@@ -3,7 +3,7 @@
 The app must not only work; it must also stay fast, readable, honest and free
 of side effects. Every limit below lives in one machine-readable file,
 `macos/scripts/nfr-limits.json`. The Swift tests read it through
-`Tests/PocketDeckTests/NFRTestLimits.swift`; the shell checks read it through
+`Tests/ContiguaTests/NFRTestLimits.swift`; the shell checks read it through
 `nfr_limit <key>` in `macos/scripts/check-e2e.sh`. No check carries its own
 copy of a limit.
 

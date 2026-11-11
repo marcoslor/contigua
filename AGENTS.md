@@ -1,4 +1,4 @@
-# PocketDeck
+# Contigua
 
 `docs/PROTOCOL.md` (the wire) and `docs/ARCHITECTURE.md` are the contract. If code and doc disagree, the doc wins, or you propose a doc change.
 

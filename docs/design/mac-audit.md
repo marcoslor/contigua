@@ -95,14 +95,14 @@ Severity: **P0** breaks the happy path · **P1** a core feature is missing or mi
   - A wrong code is never shown: `phoneError` only sets `errorText` (`App.swift:624-626`).
 
 ### A06 — No Settings / Devices manager; "Forget" is unreachable once connected
-- **Evidence:** menu bar has only *PocketDeck, View, Navigate*; `08-connected-apps.png` has no Forget.
+- **Evidence:** menu bar has only *Contigua, View, Navigate*; `08-connected-apps.png` has no Forget.
 - **Root cause:** docs/UX.md requires Settings → Devices (`UX.md` "Pairing manager"); the app has none
   (`App.swift:720-764`). Forget exists only in the phone list while `uiState == .discovering` with a row
   selected (`LauncherWindow.swift:344-347`), so a connected or failed state cannot forget, and a remembered
   but undiscovered phone cannot be selected at all (A04).
 
 ### A07 — Menu is incomplete: ⌘W / ⌘M / paste do not work
-- **Evidence:** menu bar items are `Apple, PocketDeck, View, Navigate`; ⌘W on the launcher did nothing
+- **Evidence:** menu bar items are `Apple, Contigua, View, Navigate`; ⌘W on the launcher did nothing
   (window stayed open).
 - **Root cause:** `buildMenu` (`App.swift:720-764`) has no File/Edit/Window menus, so close, minimize,
   copy/paste (code field, search field) and window cycling have no key equivalents.
@@ -138,7 +138,7 @@ Severity: **P0** breaks the happy path · **P1** a core feature is missing or mi
 `01-first-launch-list.png`: subtitle `FakePhone · b21cd9cc8029332a · Nearby` (`LauncherWindow.swift:462`),
 status "Nearby" is meaningless, **Connect** is disabled until a row is selected, the real action is
 double-click. No Pair button per row, no empty/searching state beyond hint text. Phone shown
-while a pairing exists elsewhere ("PocketDeck Emulator", the user's SM-S936B) is indistinguishable from
+while a pairing exists elsewhere ("Contigua Emulator", the user's SM-S936B) is indistinguishable from
 the one the user wants.
 
 ### A13 — QR sheet: no countdown, no success state, probes every phone it can see
@@ -169,12 +169,12 @@ is stale while the link is down.
 - **A18** Phone-mode hover chrome is a hand-drawn dark layer 220×44 (`PhoneWindow.swift:65-83`), not glass.
 - **A19** `auth_failed` and `.closed` both return to `.discovering` (`App.swift:626,558`), so "Pair again" never
   appears for a phone whose key the phone rejected (`App.swift:367` handles only the cached-address case).
-- **A20** Hint copy: "Looking for PocketDeck phones on your network…", "Select a phone and press Connect." —
+- **A20** Hint copy: "Looking for Contigua phones on your network…", "Select a phone and press Connect." —
   procedural, not state-driven.
 
 ## Out of scope here (other tasks), listed so the redesign does not rebuild them
 
-- **Keychain wipe:** a hard-coded service `dev.pocketdeck.mac` (`Identity.swift:38`), `--reset-pairing`
+- **Keychain wipe:** a hard-coded service `app.contigua.mac` (`Identity.swift:38`), `--reset-pairing`
   and the e2e `clean()` deleting every item, and the "only key in the Keychain" fallback in
   `candidateKey` (`Identity.swift:77-79`). The profile task replaces these; the redesign consumes
   its `Profile`.
@@ -200,7 +200,7 @@ Walked again on 2026-10-13 against fakephone (port 47510, mDNS on) with a releas
 | Pair again | Nearby → code → connected | `rewalk/14-paired-again.png` |
 
 No bug found on the happy path in this walk. Not covered: **the emulator rig** — `emulator-5554` has Shizuku stopped ("Shizuku not running" on the phone app),
-so there is no PocketDeck server to talk to; restarting it means `start.sh`, which rebuilds and installs Android (out of scope). The `--no-mdns`/`--connect` path is
+so there is no Contigua server to talk to; restarting it means `start.sh`, which rebuilds and installs Android (out of scope). The `--no-mdns`/`--connect` path is
 covered by `check-e2e.sh all`.
 
 Issues found while re-walking and fixed in the same pass: the Bonjour connection was stuck for a same-host service (see A03 below), the search field

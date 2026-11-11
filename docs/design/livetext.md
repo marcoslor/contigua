@@ -133,7 +133,7 @@ script occurs — never the transcript.
   overlay offers text selection (preferred and active), keeps the supplementary
   Live Text button, and the window's hit test over the frame lands on the
   overlay or a VisionKit subview, never on the video view underneath.
-- e2e `livetext`: enter → VisionKit reads `POCKETDECK` from the fake phone's
+- e2e `livetext`: enter → VisionKit reads `CONTIGUA` from the fake phone's
   text frame within 3 s of entering, with the frame diagnostics (size, BGRA,
   mean luma) in the result, and every analysis of the run carrying text; no `INPUT` frame reaches the phone while the mode is on and the
   phone stops sending frames; `copy-image` writes a PNG at the stream's pixel

@@ -75,7 +75,7 @@ def self_test():
         "Last connected 23 hours ago", "Last connected Yesterday", "Connected now",
     ]
     # A screen without the paired list has no rows, and that is not a crash.
-    assert rows('<hierarchy><node text="PocketDeck" bounds="[0,0][10,10]" /></hierarchy>') == []
+    assert rows('<hierarchy><node text="Contigua" bounds="[0,0][10,10]" /></hierarchy>') == []
     print("SELF-TEST OK: uirows top-to-bottom status parsing")
 
 

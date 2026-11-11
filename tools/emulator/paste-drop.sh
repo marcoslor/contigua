@@ -4,7 +4,7 @@
 #   bash tools/emulator/paste-drop.sh --check    rehearsal: preflight, syntax,
 #                                                deckctl verbs, the debug activity
 #                                                in the APK; no device
-#   ~/dev/pocketdeck/.agent/heavy.sh bash tools/emulator/paste-drop.sh
+#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/paste-drop.sh
 #
 # The APK must already be built with the Docker K1
 # (`k1-docker.sh <android> :app:assembleDebug`); start.sh runs with --no-build so
@@ -18,7 +18,7 @@
 # in that step and is only a labelled control afterwards.
 #
 # SHARE-17: a drop with a target opens that installed SEND app with no chooser
-# (POCKETDECK_DROP_TARGET overrides the first installed one); the same drop
+# (CONTIGUA_DROP_TARGET overrides the first installed one); the same drop
 # without a target opens the system chooser; a 3-file batch shares once.
 set -u
 
@@ -33,14 +33,14 @@ done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47983}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47983}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/paste-drop.log"
 APK="android/app/build/outputs/apk/debug/app-debug.apk"
 STATE="$CACHE_DIR/deckctl-state.json"
@@ -128,7 +128,7 @@ bash tools/emulator/unlock.sh > "$OUT/paste-drop-unlock.log" 2>&1 \
 debug_log() { emu logcat -d -s PasteDebug:I 2>/dev/null | tr -d '\r'; }
 clear_debug_log() { emu logcat -c >/dev/null 2>&1 || true; }
 start_debug() {
-  emu shell am start -W -n dev.pocketdeck/.app.PasteDebugActivity "$@" \
+  emu shell am start -W -n app.contigua/.app.PasteDebugActivity "$@" \
     >> "$OUT/paste-drop-debug-start.log" 2>&1 || true
   sleep 1
 }
@@ -150,7 +150,7 @@ emu shell input keyevent 3 >/dev/null 2>&1 || true
 sleep 1
 A2_TOP="$(debug_top)"
 printf '  top before clipimage: %s\n' "$A2_TOP" | tee -a "$LOG"
-if printf '%s' "$A2_TOP" | grep -q 'dev.pocketdeck'; then
+if printf '%s' "$A2_TOP" | grep -q 'app.contigua'; then
   section a2-background FAIL "the app is on top before the clip: $A2_TOP"
 else
   section a2-background PASS "the app is in the background: $A2_TOP"
@@ -164,7 +164,7 @@ else
   section a2-clip FAIL "clipimage (see $OUT/paste-drop-a2-clip.log)"
 fi
 sleep 1
-A2_TRACE="$(emu logcat -d -s PocketDeckSvc:I ClipImageWriter:I 2>/dev/null | tr -d '\r' \
+A2_TRACE="$(emu logcat -d -s ContiguaSvc:I ClipImageWriter:I 2>/dev/null | tr -d '\r' \
   | grep -E 'clip image:|ClipImageWriter' | tail -6)"
 printf '%s\n' "$A2_TRACE" > "$OUT/paste-drop-a2-write.log"
 printf '%s\n' "$A2_TRACE" | sed 's/^/  /' | tee -a "$LOG"
@@ -241,13 +241,13 @@ back
 # --- SHARE-17 --------------------------------------------------------------
 # The target must be an app that really takes ACTION_SEND for an image on this
 # AVD: hard-coding one that is not installed proves nothing. Query the device,
-# skip the system UI and ourselves, and keep POCKETDECK_DROP_TARGET as an
+# skip the system UI and ourselves, and keep CONTIGUA_DROP_TARGET as an
 # override.
 emu shell cmd package query-activities -a android.intent.action.SEND \
   -c android.intent.category.DEFAULT -t image/png 2>/dev/null | tr -d '\r' \
   > "$OUT/paste-drop-send-apps.log" || true
 SEND_PKGS="$(sed -n 's/.*packageName=\(.*\)/\1/p' "$OUT/paste-drop-send-apps.log" \
-  | grep -Ev '^(dev\.pocketdeck|android|com\.android\.systemui)$' | awk '!seen[$0]++')"
+  | grep -Ev '^(dev\.contigua|android|com\.android\.systemui)$' | awk '!seen[$0]++')"
 INSTALLED="$(printf '%s\n' "$SEND_PKGS" | head -1)"
 # The built-in print service hands its SEND to the print spooler, so its top is
 # not its own package; prefer Messages when it is installed: its share activity
@@ -255,7 +255,7 @@ INSTALLED="$(printf '%s\n' "$SEND_PKGS" | head -1)"
 if printf '%s\n' "$SEND_PKGS" | grep -qx 'com.google.android.apps.messaging'; then
   INSTALLED=com.google.android.apps.messaging
 fi
-TARGET="${POCKETDECK_DROP_TARGET:-${INSTALLED:-org.fossify.messages}}"
+TARGET="${CONTIGUA_DROP_TARGET:-${INSTALLED:-org.fossify.messages}}"
 step "SHARE-17: a drop targeted at $TARGET (SEND apps: $(tr '\n' ' ' < "$OUT/paste-drop-send-apps.log" | cut -c1-160))"
 emu logcat -c >/dev/null 2>&1 || true
 if "${DC[@]}" drop "$PNG" --target "$TARGET" --id 9002 \
@@ -266,7 +266,7 @@ else
   section drop-target FAIL "deckctl drop --target (see $OUT/paste-drop-target.log)"
 fi
 sleep 2
-SHARE_LOG="$(emu logcat -d -s PocketDeckDrop:I PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
+SHARE_LOG="$(emu logcat -d -s ContiguaDrop:I ContiguaSvc:I 2>/dev/null | tr -d '\r' \
   | grep -E 'share offered|share: target|share: chooser|trampoline: started|drop: (SEND|am start|staging)' \
   | tail -5 | tr '\n' ' | ')"
 if printf '%s' "$SHARE_LOG" | grep -q "to $TARGET"; then
@@ -312,7 +312,7 @@ else
   section batch-drop FAIL "dropbatch (see $OUT/paste-drop-batch.log)"
 fi
 sleep 2
-BATCH_SHARE="$(emu logcat -d -s PocketDeckDrop:I PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
+BATCH_SHARE="$(emu logcat -d -s ContiguaDrop:I ContiguaSvc:I 2>/dev/null | tr -d '\r' \
   | grep -E 'share offered for 3 file|share: chooser for 3 file|share refused' | tail -3 | tr '\n' ' | ')"
 printf '%s\n' "$BATCH_SHARE" > "$OUT/paste-drop-batch-share.log"
 if printf '%s' "$BATCH_SHARE" | grep -Eq 'share offered for 3 file|share: chooser for 3 file'; then
@@ -325,7 +325,7 @@ back
 
 # The logcat is always kept: a diagnosis run needs the trace even when every
 # section passed, and a proof run needs it when one did not.
-emu logcat -d -s PocketDeckSvc:I PocketDeckDrop:I PasteDebug:I ClipImageWriter:I 2>/dev/null \
+emu logcat -d -s ContiguaSvc:I ContiguaDrop:I PasteDebug:I ClipImageWriter:I 2>/dev/null \
   | tr -d '\r' > "$OUT/paste-drop-logcat.txt" || true
 printf 'SECTION logcat INFO %s lines in %s\n' \
   "$(wc -l < "$OUT/paste-drop-logcat.txt" | tr -d ' ')" "paste-drop-logcat.txt" | tee -a "$LOG"

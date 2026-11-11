@@ -5,8 +5,8 @@
 #
 #   tools/device-checks/dark-panel.sh <serial> [package]
 #
-# Env: ADB, POCKETDECK_PORT (host forward port), POCKETDECK_STATE (deckctl state
-# file), POCKETDECK_SECONDS.
+# Env: ADB, CONTIGUA_PORT (host forward port), CONTIGUA_STATE (deckctl state
+# file), CONTIGUA_SECONDS.
 #
 # Read-only with respect to the phone: it never unlocks, never changes lock
 # settings, never installs anything. It only opens a window through the normal
@@ -16,11 +16,11 @@ set -uo pipefail
 SERIAL="${1:?usage: dark-panel.sh <serial> [package]}"
 APP="${2:-com.whatsapp}"
 ADB="${ADB:-adb}"
-HOST_PORT="${POCKETDECK_PORT:-47819}"
-STATE="${POCKETDECK_STATE:-$HOME/.pocketdeck-deckctl.json}"
-SECONDS_OPEN="${POCKETDECK_SECONDS:-20}"
+HOST_PORT="${CONTIGUA_PORT:-47819}"
+STATE="${CONTIGUA_STATE:-$HOME/.contigua-deckctl.json}"
+SECONDS_OPEN="${CONTIGUA_SECONDS:-20}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP="${TMPDIR:-/tmp}/pocketdeck-dark-panel.$$"
+TMP="${TMPDIR:-/tmp}/contigua-dark-panel.$$"
 mkdir -p "$TMP"
 
 FAILS=0
@@ -55,8 +55,8 @@ panel_group_interactive() {
   adb_ shell dumpsys power 2>/dev/null | tr -d '\r' |
     awk '/powerGroupId: 0/,/powerGroupId: 1/' | grep -m1 'mIsInteractive:' | sed 's/.*mIsInteractive: *//'
 }
-our_wake_lock() { adb_ shell dumpsys power 2>/dev/null | grep -c "'pocketdeck:streams'" | tr -d '\r'; }
-server_log() { adb_ logcat -d 2>/dev/null | grep 'PocketDeckSvc'; }
+our_wake_lock() { adb_ shell dumpsys power 2>/dev/null | grep -c "'contigua:streams'" | tr -d '\r'; }
+server_log() { adb_ logcat -d 2>/dev/null | grep 'ContiguaSvc'; }
 
 # --- preflight -------------------------------------------------------------
 
@@ -66,7 +66,7 @@ fi
 note "== $SERIAL :: $(adb_ shell getprop ro.product.model | tr -d '\r') API $(adb_ shell getprop ro.build.version.sdk | tr -d '\r')"
 
 PORT="$(server_log | sed -n 's/.*listening on 0.0.0.0:\([0-9]*\).*/\1/p' | tail -1)"
-INSTANCE="PocketDeck $(adb_ shell getprop ro.product.model | tr -d '\r')"
+INSTANCE="Contigua $(adb_ shell getprop ro.product.model | tr -d '\r')"
 DISCOVER=0
 if [ -n "$PORT" ]; then
   adb_ forward --remove tcp:"$HOST_PORT" >/dev/null 2>&1 || true
@@ -83,7 +83,7 @@ if [ -z "$PORT" ]; then
   DISCOVER=1
   deckctl() { python3 "$ROOT/tools/fakephone/deckctl.py" --discover --instance "$INSTANCE" --state "$STATE" "$@"; }
   deckctl latency >/dev/null 2>&1 || {
-    note "FAIL: cannot reach the phone server (is PocketDeck running and paired? state: $STATE)"
+    note "FAIL: cannot reach the phone server (is Contigua running and paired? state: $STATE)"
     exit 2
   }
 fi
@@ -112,7 +112,7 @@ D_SCREEN="$(screen_state)"
 D_WAKE="$(wakefulness)"
 D_GROUP="$(panel_group_interactive)"
 D_LOCK="$(our_wake_lock)"
-note "during: wakefulness=$D_WAKE screen=$D_SCREEN panelGroupInteractive=$D_GROUP sfModes=[$D_MODES] pocketdeck-wakelocks=$D_LOCK"
+note "during: wakefulness=$D_WAKE screen=$D_SCREEN panelGroupInteractive=$D_GROUP sfModes=[$D_MODES] contigua-wakelocks=$D_LOCK"
 wait $OPEN; OPEN_RC=$?
 cat "$TMP/open.log"
 LOG="$(server_log | tail -40)"
@@ -157,10 +157,10 @@ AFTER_MODES="$(physical_power_modes)"
 AFTER_WAKE="$(wakefulness)"
 AFTER_LOCK="$(our_wake_lock)"
 LOG="$(server_log | tail -40)"
-note "after: wakefulness=$AFTER_WAKE screen=$(screen_state) sfModes=[$AFTER_MODES] pocketdeck-wakelocks=$AFTER_LOCK"
+note "after: wakefulness=$AFTER_WAKE screen=$(screen_state) sfModes=[$AFTER_MODES] contigua-wakelocks=$AFTER_LOCK"
 check "phone asleep after close" "^(Asleep|Dozing)$" "$AFTER_WAKE"
 check "panel dark after close" "^Off( Off)*$" "$AFTER_MODES"
-check "no leftover pocketdeck wake lock" "^0$" "$AFTER_LOCK"
+check "no leftover contigua wake lock" "^0$" "$AFTER_LOCK"
 if printf '%s' "$LOG" | grep -q "panel power mode -> OFF"; then
   check "fallback restored and slept the phone" "phone back to sleep after the last stream" "$(printf '%s' "$LOG" | grep 'phone back to sleep' | tail -1)"
 else

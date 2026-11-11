@@ -1,9 +1,9 @@
 #!/bin/bash
-# Reinstall the debug APK and restart PocketDeck's root/Shizuku shell service.
+# Reinstall the debug APK and restart Contigua's root/Shizuku shell service.
 #
 #   ANDROID_ADB_SERVER_PORT=5038 tools/phone_install.sh <apk> [serial]
 #
-# `adb install -r` does not restart `:pocketdeck`: the old process keeps the
+# `adb install -r` does not restart `:contigua`: the old process keeps the
 # deleted base.apk and the LAN listener, and the Mac times out on SYN while the
 # phone looks healthy. This script installs, kills every service pid with su
 # (KernelSU), else as adb's shell (a uid-2000 service), else stops the app, launches MainActivity once, and
@@ -21,7 +21,7 @@ if [ -n "$SERIAL" ]; then adb_cmd+=(-s "$SERIAL"); fi
 "${adb_cmd[@]}" install -r "$APK"
 
 pids_of_service() {
-  "${adb_cmd[@]}" shell pidof dev.pocketdeck:pocketdeck 2>/dev/null \
+  "${adb_cmd[@]}" shell pidof app.contigua:contigua 2>/dev/null \
     | tr ' ' '\n' | sed '/^$/d'
 }
 
@@ -39,12 +39,12 @@ if [ -n "$PIDS" ]; then
   done
   if [ "$kill_failed" -ne 0 ]; then
     echo "su kill failed for at least one pid; stopping the app instead"
-    "${adb_cmd[@]}" shell am force-stop dev.pocketdeck >/dev/null 2>&1 || true
+    "${adb_cmd[@]}" shell am force-stop app.contigua >/dev/null 2>&1 || true
   fi
   sleep 1
 fi
 
-"${adb_cmd[@]}" shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null
+"${adb_cmd[@]}" shell am start -n app.contigua/.app.MainActivity >/dev/null
 
 for _ in $(seq 1 20); do
   if [ -n "$(pids_of_service || true)" ]; then break; fi

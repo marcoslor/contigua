@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check that every running PocketDeck shell service maps the current base.apk.
+"""Check that every running Contigua shell service maps the current base.apk.
 
 `adb install -r` replaces the APK but does not restart the root/Shizuku
-`:pocketdeck` service. The old process keeps the deleted base.apk mapped and
+`:contigua` service. The old process keeps the deleted base.apk mapped and
 keeps the LAN listener, so the Mac's SYN never gets an answer while the phone
 looks healthy. Run this after every install; it fails with the reinstall steps.
 
@@ -17,8 +17,8 @@ import argparse
 import subprocess
 import sys
 
-PACKAGE = "dev.pocketdeck"
-SERVICE = PACKAGE + ":pocketdeck"
+PACKAGE = "app.contigua"
+SERVICE = PACKAGE + ":contigua"
 
 
 def deleted_base(maps_text, package=PACKAGE):

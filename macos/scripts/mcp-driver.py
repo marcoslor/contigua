@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP end-to-end driver for the `mcp` check (docs/design/mcp.md).
 
-Speaks MCP to PocketDeck through the built stdio shim, then reads the fakephone
+Speaks MCP to Contigua through the built stdio shim, then reads the fakephone
 event log to prove what reached the phone: INPUT frames, the link and a dropped
 file, plus a screenshot decoded from the image content it got back.
 
@@ -232,7 +232,7 @@ def main():
         initialize = client.request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "pocketdeck-e2e", "version": "1"},
+            "clientInfo": {"name": "contigua-e2e", "version": "1"},
         }, timeout=30)
         result = initialize.get("result") or {}
         report(result.get("protocolVersion") == "2025-06-18",

@@ -118,7 +118,7 @@ whole feature:
 
 | # | Where (file: symbol) | What it holds | Read by | What breaks with two connected phones | Size |
 |---|---|---|---|---|---|
-| F1 | `FilesDomain.swift: FilesDomain.identifier`, `FilesDomain.displayName`, `FilesDomainController` | One File Provider domain per profile; its display name is built from `RememberedPhones.active`; one reconnect/disconnect state | Finder's PocketDeck location, Settings ▸ General, the Deck | Only one phone's storage can be mounted. Switching phones renames the one domain and reattaches the one bridge, so the first phone's cached files and identifiers are presented as the second phone's. The name follows `remembered.active`, not the live session, so a connected phone that is not active is named on the location that another phone serves. | L |
+| F1 | `FilesDomain.swift: FilesDomain.identifier`, `FilesDomain.displayName`, `FilesDomainController` | One File Provider domain per profile; its display name is built from `RememberedPhones.active`; one reconnect/disconnect state | Finder's Contigua location, Settings ▸ General, the Deck | Only one phone's storage can be mounted. Switching phones renames the one domain and reattaches the one bridge, so the first phone's cached files and identifiers are presented as the second phone's. The name follows `remembered.active`, not the live session, so a connected phone that is not active is named on the location that another phone serves. | L |
 | F2 | `FilesBridge.swift: FilesBridge.shared`, `SessionBridgeHost` | One app-group socket, one accepted client set, one `FsClient`, one watch set, one thumbnail queue; `attach` cancels the previous host | The File Provider extension, the app's bridge | A second phone's `ready` calls `attach` and cancels the first host: its watch set, thumbnails and in-flight reads are abandoned. Requests carry only an item id, so the second phone's id 5 can answer the first phone's request 5. | L |
 | F3 | `FilesCore.swift: FilesIdMap`, `FilesReplica`, `FilesChanges` | One id ↔ path map and one durable replica/change log per profile, keyed by path and inode | The bridge and the extension | Both phones use path strings such as `DCIM/Camera/IMG_0001.jpg`; one map and one replica cannot tell them apart. A deletion or rename on one phone can delete or repoint the other phone's item in Finder. | L |
 | F4 | `macos/` File Provider extension (`NSFileProviderReplicatedExtension`) and `FilesDomain.domain(profile:)` | One domain whose identifier is the profile name; the extension asks the one app socket | Finder, the system's File Provider daemon | The extension has no way to name a phone. A second domain cannot be added without a second identifier and a way for the extension to choose the right socket or phone. | L |
@@ -138,7 +138,7 @@ whole feature:
 |---|---|---|---|---|---|
 | C1 | `ClipboardSync.swift: ClipboardSync`, `ConnectionController.startClipboardSync` | One poll of the general pasteboard, bound to one session; one global `shareClipboard` switch | Clipboard sync, ⌘V with text, `clip.set` | `startClipboardSync` stops the previous sync and starts one for the new session, so only one phone can sync. A window on the other phone has no clipboard path; a copy on the Mac cannot be routed by window. | M |
 | C2 | `AudioEngine.swift: AudioEngine`, `ConnectionController.syncAudio` | One `AVAudioEngine`, one output route, one jitter buffer; audio starts for the one session with any open window; the audio event closure ignores a non-current session | Phone audio in the Mac's output, the menu-bar volume/mute | Only the current phone's audio is captured or played. If it were wired for two, both phones' PCM would mix into one route with one gain. `audio.stop` on any window close stops the one engine. | M |
-| C3 | `OpenLink.swift: LinkRoute`, `PhonePicker`; `ConnectionController.openLink(_:on:)` | The route is already per phone (named, one, picker, wait); the send path switches with `use` | Share extension, Services, a dropped URL, `pocketdeck://open` | A link to the second phone calls `use`, which closes the first phone's windows and session. A pending link is one queue. Routing itself needs no new model. | M |
+| C3 | `OpenLink.swift: LinkRoute`, `PhonePicker`; `ConnectionController.openLink(_:on:)` | The route is already per phone (named, one, picker, wait); the send path switches with `use` | Share extension, Services, a dropped URL, `contigua://open` | A link to the second phone calls `use`, which closes the first phone's windows and session. A pending link is one queue. Routing itself needs no new model. | M |
 | C4 | `ShareIn.swift: ShareInbox`, `ShareFileReceiver` | One inbox; `phoneName` and `phoneId` are mutable fields set just before an event; the file receiver is keyed by file id | Share phone → Mac: browser, clipboard, Downloads, notification | A file from the second phone assembling while the first phone shares is attributed to whichever phone set the fields last; file ids are per session and collide, so one phone's bytes can be written under the other phone's share. | M |
 | C5 | `FileDrop.swift: FileDropSender` | One active drop, one id counter, one session, one resume-hint map | A drop on a window or the Deck, the drop pill | A drop to the second phone is refused `busy` behind the first, or is sent to the first session. Ids and resume hints are not phone-scoped. | M |
 | C6 | `ApkInstall.swift: ApkInstaller` | One install, one id, one session; `onInstalled` asks the current session for its app list | Install APK, a dropped package, Open With | An install on the second phone waits behind the first or goes to the first session. One install at a time per Mac instead of one per phone. | M |
@@ -291,7 +291,7 @@ phone-side change for the target model.
 | Thing | Scope | Why |
 |---|---|---|
 | App process, profile, identity, pins | shared | One Mac app, one trust store; pins are already per phone |
-| Menu-bar status item | shared | One icon should mean "PocketDeck", not one icon per phone |
+| Menu-bar status item | shared | One icon should mean "Contigua", not one icon per phone |
 | Deck window | shared, showing the current phone | One home window; a phone switcher, not a second Deck |
 | Settings window | shared, every phone a row | One management window; already built that way |
 | MCP server | shared | One automation endpoint; calls take a phone |
@@ -714,7 +714,7 @@ the per-phone retry backoff are enough.
 ### 9.3 Privacy on a shared Mac
 
 The pins, cached files, File Provider domains and notification settings live in
-the macOS user's home (`~/Library/Application Support/PocketDeck…`, the user's
+the macOS user's home (`~/Library/Application Support/Contigua…`, the user's
 defaults and caches). Another macOS account cannot read them: the OS account is
 the boundary. A household that shares one macOS account shares every paired
 phone: both phones' notifications, Finder locations, media and clipboard are
@@ -854,7 +854,7 @@ question; this replacement is the recommended one.
 
 **`docs/specs/files.md:128`** (the 2+ row). It says the one location follows
 the phone in use and the other phones are not mounted. Replace it with: "Every
-phone with the switch on has its own location, 'PocketDeck (<name>)'; a
+phone with the switch on has its own location, 'Contigua (<name>)'; a
 location's listings, thumbnails, drops and installs act on that phone." The
 same change reaches three requirement rows: `FILES-1` (`:28`) makes the domain
 identifier the profile **and** the phone id instead of the profile name;

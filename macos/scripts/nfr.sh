@@ -7,17 +7,17 @@
 #   macos/scripts/nfr.sh
 #
 # Environment: PD_E2E_PORT (default 47980) and PD_E2E_PROFILE (default nfr1);
-# POCKETDECK_NFR_LIMITS overrides the limits file for both tiers.
+# CONTIGUA_NFR_LIMITS overrides the limits file for both tiers.
 
 set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
 # .agent is not part of a checkout's git tree; the lock lives in the main one.
-HEAVY="${POCKETDECK_HEAVY:-$HOME/dev/pocketdeck/.agent/heavy.sh}"
+HEAVY="${CONTIGUA_HEAVY:-$HOME/dev/contigua/.agent/heavy.sh}"
 [ -x "$HEAVY" ] || HEAVY="$ROOT/.agent/heavy.sh"
 if [ ! -x "$HEAVY" ]; then
-    echo "nfr: no heavy.sh at $HEAVY (set POCKETDECK_HEAVY)" >&2
+    echo "nfr: no heavy.sh at $HEAVY (set CONTIGUA_HEAVY)" >&2
     exit 3
 fi
 PORT="${PD_E2E_PORT:-47980}"

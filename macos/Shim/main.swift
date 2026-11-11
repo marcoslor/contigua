@@ -1,11 +1,11 @@
 // A Dock app's executable (docs/design/dock.md): a windowless regular app whose
-// only job is to be one phone app's Dock/⌘-Tab identity. It asks PocketDeck to
+// only job is to be one phone app's Dock/⌘-Tab identity. It asks Contigua to
 // open the window, shows the app's window menu on a secondary click, and exits
 // when the window closes. The lifecycle itself is DockShimMachine
 // (DockMessages.swift), which is also unit-tested by K2: this file only reads
 // the bundle, drives the machine and performs its actions.
 //
-// The menu's content is the host's: PocketDeck sends the app's rows (New <App>
+// The menu's content is the host's: Contigua sends the app's rows (New <App>
 // Window, then one item per open window with the front one checked — WIN-26)
 // whenever they change, and this shim only renders them. A pick goes back as
 // one message; the host raises or opens. That keeps one rule for the menu in
@@ -15,7 +15,7 @@ import AppKit
 import Dispatch
 import os
 
-private let shimLog = Logger(subsystem: "dev.pocketdeck.mac", category: "shim")
+private let shimLog = Logger(subsystem: "app.contigua.mac", category: "shim")
 
 final class ShimDelegate: NSObject, NSApplicationDelegate {
     private let center = DistributedNotificationCenter.default()

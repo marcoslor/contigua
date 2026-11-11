@@ -20,8 +20,8 @@ esac
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
 
-PKG=dev.pocketdeck
-SHOTS="${POCKETDECK_SHOTS:-$HOME/dev/pocketdeck/.agent/phone-reset/shots}"
+PKG=app.contigua
+SHOTS="${CONTIGUA_SHOTS:-$HOME/dev/contigua/.agent/phone-reset/shots}"
 
 ui_text() {
   emu shell uiautomator dump --compressed "$1" >/dev/null 2>&1 || true
@@ -64,7 +64,7 @@ shot() { # shot <name>
 }
 
 pref_enabled() {
-  emu shell "run-as $PKG cat shared_prefs/pocketdeck.xml" 2>/dev/null |
+  emu shell "run-as $PKG cat shared_prefs/contigua.xml" 2>/dev/null |
     tr -d '\r' | grep -o 'name="enabled" value="[a-z]*"' | sed 's/.*value="//;s/"//' | head -1
 }
 
@@ -76,11 +76,11 @@ seed_prefs() { # seed_prefs <enabled> <onboarding_done>
     <boolean name="enabled" value="$1" />
     <boolean name="onboarding_done" value="$2" />
     <string name="device_id">e0e0e0e0e0e0e0e0</string>
-    <string name="device_name">PocketDeck Emulator</string>
+    <string name="device_name">Contigua Emulator</string>
 </map>
 XML
   emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
-  emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" < "$file"
+  emu shell "run-as $PKG sh -c 'cat > shared_prefs/contigua.xml'" < "$file"
 }
 
 stop_app() {

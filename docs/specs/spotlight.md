@@ -84,4 +84,4 @@ A person searches Spotlight for an app that lives on their phone: the Mac keeps 
 
 ## Open questions
 
-- [NEEDS CLARIFICATION] Should a test build carry its own bundle id so the release id's LaunchServices claimant list stays short? See `.agent/spotlight-fix/ask.md`; today every checkout registers a copy under `dev.pocketdeck.mac`, and macOS 27 refuses CoreSpotlight for an ad-hoc build once that list is long.
+- [NEEDS CLARIFICATION] Should a test build carry its own bundle id so the release id's LaunchServices claimant list stays short? See `.agent/spotlight-fix/ask.md`; today every checkout registers a copy under `app.contigua.mac`, and macOS 27 refuses CoreSpotlight for an ad-hoc build once that list is long.

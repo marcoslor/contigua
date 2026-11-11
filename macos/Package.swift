@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "PocketDeck",
+    name: "Contigua",
     platforms: [.macOS("26.0")],
     dependencies: [
         // v2 TLS transport (docs/design/e2ee.md §1): SwiftNIO-SSL vendoring
@@ -19,18 +19,18 @@ let package = Package(
         // The app is a single executable target so its wiring (AppKit views,
         // windows, session) can be exercised directly by the test target.
         .executableTarget(
-            name: "PocketDeck",
+            name: "Contigua",
             dependencies: [
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
-            path: "Sources/PocketDeck",
+            path: "Sources/Contigua",
             // Debug builds keep the e2e launch hooks (tests and local runs);
             // release builds only get them when bundle.sh passes the same
             // define for an e2e bundle (sec L-6).
             swiftSettings: [.define("PD_TEST_HOOKS", .when(configuration: .debug))]
         ),
-        .testTarget(name: "PocketDeckTests", dependencies: ["PocketDeck"], path: "Tests/PocketDeckTests"),
+        .testTarget(name: "ContiguaTests", dependencies: ["Contigua"], path: "Tests/ContiguaTests"),
     ]
 )

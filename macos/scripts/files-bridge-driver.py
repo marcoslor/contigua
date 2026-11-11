@@ -865,7 +865,7 @@ def staging_files(root):
     found = []
     for base, _dirs, names in os.walk(root):
         for name in names:
-            if name.startswith(".pocketdeck-") and name.endswith(".part"):
+            if name.startswith(".contigua-") and name.endswith(".part"):
                 found.append(os.path.join(base, name))
     return found
 

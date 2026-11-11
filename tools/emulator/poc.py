@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(ROOT, "..", "fakephone"))
 import deckctl  # noqa: E402
 import proto  # noqa: E402
 
-APP_PKG = "dev.pocketdeck"
+APP_PKG = "app.contigua"
 MAIN_ACTIVITY = APP_PKG + "/.app.MainActivity"
 DEFAULT_ADB = os.path.join(os.path.expanduser("~"), "Library/Android/sdk/platform-tools/adb")
 
@@ -68,7 +68,7 @@ class Adb:
 
 # --- pairing prompt --------------------------------------------------------
 CODE_RE = re.compile(r"\b(\d{3})\s(\d{3})\b")
-UI_DUMP = "/sdcard/pocketdeck-ui.xml"
+UI_DUMP = "/sdcard/contigua-ui.xml"
 
 
 def ui_dump(adb, timeout=30):
@@ -108,9 +108,9 @@ def notification_code(adb):
 # app/shell logged. Without these a `session failed: tls` on the Mac cannot be
 # told from a dropped session, a dead server or a crash.
 EVIDENCE_RE = re.compile(
-    r"PocketDeckSvc|PocketDeckApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|"
+    r"ContiguaSvc|ContiguaApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|"
     r"tombstone|am_crash|am_anr|lowmemorykiller|Force finishing|"
-    r"Process dev\.pocketdeck|Killing [0-9]+:dev\.pocketdeck")
+    r"Process dev\.contigua|Killing [0-9]+:dev\.contigua")
 
 
 def write_evidence(directory, name, text):
@@ -130,12 +130,12 @@ def phone_evidence(adb, directory, label):
         return None
     lines = ["== phone evidence: %s at %s ==" %
              (label, time.strftime("%Y-%m-%d %H:%M:%S"))]
-    for name in (APP_PKG, APP_PKG + ":pocketdeck"):
+    for name in (APP_PKG, APP_PKG + ":contigua"):
         lines.append("pidof %s: %s" % (name, adb.out("pidof", name)))
     ps = adb.sh("ps", "-A", "-o", "PID,PPID,USER,NAME")
-    lines.append("-- ps (pocketdeck/shizuku) --")
+    lines.append("-- ps (contigua/shizuku) --")
     lines.extend(line for line in ps.stdout.splitlines()
-                 if "pocketdeck" in line or "shizuku" in line.lower())
+                 if "contigua" in line or "shizuku" in line.lower())
     acts = adb.sh("dumpsys", "activity", "activities")
     lines.append("-- activity --")
     lines.extend(line for line in acts.stdout.splitlines()
@@ -386,10 +386,10 @@ def cmd_verify(args):
 # --- CLI -------------------------------------------------------------------
 def build_parser():
     p = argparse.ArgumentParser(
-        description="Emulator-rig helper for PocketDeck (pairing + frame checks).")
-    p.add_argument("--addr", default=os.environ.get("POCKETDECK_ADDR", "127.0.0.1:47811"),
+        description="Emulator-rig helper for Contigua (pairing + frame checks).")
+    p.add_argument("--addr", default=os.environ.get("CONTIGUA_ADDR", "127.0.0.1:47811"),
                    help="phone address, host:port (default %(default)s)")
-    p.add_argument("--serial", default=os.environ.get("POCKETDECK_SERIAL", "emulator-5554"))
+    p.add_argument("--serial", default=os.environ.get("CONTIGUA_SERIAL", "emulator-5554"))
     p.add_argument("--adb", default=os.environ.get("ADB", DEFAULT_ADB))
     p.add_argument("--state", default=os.path.join(ROOT, ".cache", "deckctl-state.json"),
                    help="deckctl state file to pair into (default: the rig cache)")

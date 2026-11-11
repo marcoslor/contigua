@@ -43,7 +43,7 @@ done
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
 
-PKG=dev.pocketdeck
+PKG=app.contigua
 SHIZUKU_PKG=moe.shizuku.privileged.api
 APK="${APK:-$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
 
@@ -72,11 +72,11 @@ shizuku_starter() {
 }
 
 pref_enabled() {
-  emu shell "run-as $PKG cat shared_prefs/pocketdeck.xml" 2>/dev/null |
+  emu shell "run-as $PKG cat shared_prefs/contigua.xml" 2>/dev/null |
     tr -d '\r' | grep -o 'name="enabled" value="[a-z]*"' | sed 's/.*value="//;s/"//' | head -1
 }
 
-linked_line() { emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep 'app link: .*--> linked' | tail -1 || true; }
+linked_line() { emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep 'app link: .*--> linked' | tail -1 || true; }
 
 if [ "$CHECK" = 1 ]; then
   PD_PREFLIGHT_DRY_RUN=1 bash "$EMU_DIR/preflight.sh" || die "preflight failed"
@@ -102,7 +102,7 @@ fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 # The evidence a failed round leaves behind: bounded, the app's and the
 # service's own lines (closed tokens only).
 dump_lines() {
-  emu logcat -d -s PocketDeckApp:I PocketDeckSvc:I 2>/dev/null | tail -20 | sed 's/^/    /' >&2 || true
+  emu logcat -d -s ContiguaApp:I ContiguaSvc:I 2>/dev/null | tail -20 | sed 's/^/    /' >&2 || true
 }
 
 step "APK: $APK (versionCode $(apk_version_code "$APK"))"
@@ -186,7 +186,7 @@ for round in $(seq 1 "$RUNS"); do
     sleep 0.5
   done
   ELAPSED=$(( $(date +%s) - S0 ))
-  APP_START="$(emu logcat -d -s PocketDeckApp:I 2>/dev/null | grep 'app start:' | tail -2 | tr '\n' '|' || true)"
+  APP_START="$(emu logcat -d -s ContiguaApp:I 2>/dev/null | grep 'app start:' | tail -2 | tr '\n' '|' || true)"
 
   if [ -n "$PORT" ] && [ -n "$LINKED" ]; then
     pass "round $round: linked and listening ${ELAPSED}s after the binder (port $PORT)"

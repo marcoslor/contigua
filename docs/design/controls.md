@@ -1,8 +1,8 @@
 # Control Center controls (ROADMAP v0.2 #4)
 
-macOS 26 Control Center and the menu bar can carry four PocketDeck controls:
+macOS 26 Control Center and the menu bar can carry four Contigua controls:
 **Phone Do Not Disturb** (toggle), **Ring Phone**, **Phone Ringer**
-(normal / vibrate / silent), and **Open PocketDeck**. A hotspot control is
+(normal / vibrate / silent), and **Open Contigua**. A hotspot control is
 research only (below) because the shell UID cannot toggle it without replacing
 the person's hotspot configuration.
 
@@ -13,7 +13,7 @@ app (owns the session)
   ├─ controls.json      snapshot, atomic write, 0600
   ├─ controls.sock      UNIX socket, peer uid checked (MCPSocketServer)
   └─ ControlCenter.shared.reloadControls(ofKind:)
-Controls.appex (widget extension, sandboxed, App Group group.dev.pocketdeck.mac.controls)
+Controls.appex (widget extension, sandboxed, App Group group.app.contigua.mac.controls)
   ├─ ControlValueProvider reads controls.json
   └─ AppIntent.perform() sends one JSON line to controls.sock
 ```
@@ -50,7 +50,7 @@ there is no `ringer`.
 | `{"t":"ring"}` | `phone.ring`, 30 s |
 | `{"t":"ring.stop"}` | `phone.ring.stop` |
 | `{"t":"ringer","mode":"normal"\|"vibrate"\|"silent"}` | `phone.ringer` |
-| `{"t":"open"}` | bring PocketDeck forward |
+| `{"t":"open"}` | bring Contigua forward |
 
 Answer: `{"ok":true}` or `{"ok":false,"error":"<code>","message":"<sentence>"}`.
 Stable codes: `not_connected`, `no_dnd`, `no_ringer`, `dnd_on`, `bad_request`.
@@ -97,7 +97,7 @@ The extension logs the pid and executable in `perform()` (`controls-ext.log` in
 the group container) and sends every action over the socket. A run that proves
 the route decides whether this stays; if the system never runs extension-hosted
 actions, the intents move into the app (`openAppWhenRun` is already set on Open
-PocketDeck) and the other three controls fall back to opening the app.
+Contigua) and the other three controls fall back to opening the app.
 
 ## Phone side: ringer (spike 0b)
 
@@ -148,8 +148,8 @@ recorded here rather than hidden). The bundle was the `e2e` variant built with
 - The App Group container exists and the app writes `controls.json` into it:
   `{"connected":true,"phone":"FakePhone","dnd":"off","ringer":"normal",…}` while
   fakephone was connected.
-- The appex registers. `pluginkit -m -i dev.pocketdeck.mac.controls-e2e` lists it
-  after `lsregister -f PocketDeck.app` and
+- The appex registers. `pluginkit -m -i app.contigua.mac.controls-e2e` lists it
+  after `lsregister -f Contigua.app` and
   `pluginkit -a …/Contents/PlugIns/Controls.appex`, both from `~/pd-e2e` and from
   `/Applications`. In the `pluginkit -m -p com.apple.widgetkit-extension` list it
   appeared only after the app was copied to `/Applications` and opened once.
@@ -161,7 +161,7 @@ recorded here rather than hidden). The bundle was the `e2e` variant built with
 
 **What did not work.**
 
-- PocketDeck had no category or item in the gallery, and ControlCenter never
+- Contigua had no category or item in the gallery, and ControlCenter never
   launched `Controls.appex` (only the system control extensions were running).
   No `controls-ext.log` appeared, so no `perform()` ran and the route is
   unproven.
@@ -183,7 +183,7 @@ ControlCenter and pkd restarted:
 - The gallery's search for "Pocket" is empty, and Control Center shows none of
   the four controls.
 - System Settings › General › Login Items & Extensions › **Extensions** lists
-  only Books; there is no PocketDeck row at all, so there is no switch to turn
+  only Books; there is no Contigua row at all, so there is no switch to turn
   on (not even the app's Share extension appears for this e2e copy).
 - No `controls-ext.log` was created; the extension was never launched.
 
@@ -191,7 +191,7 @@ ControlCenter and pkd restarted:
 VM**, and the control catalogue does not accept this ad-hoc, e2e-variant
 extension in the guest. What is left for a person to check on a machine where
 the app is installed normally: build with `--with-controls`, open Control
-Center › Edit Controls; if PocketDeck is absent there and in Login Items &
+Center › Edit Controls; if Contigua is absent there and in Login Items &
 Extensions, the remaining cause is the extension's signing/registration (ad-hoc
 signing is enough for the File Provider extension, but not proven for a
 ControlCenter control).
@@ -211,7 +211,7 @@ CTRL-1/3/8). Every value the Mac sets on the phone, audited on 2026-10-28:
 | Panel restore (`phone.panel off:false`) | the same click off, the phone's power press, the window closing, the session ending | The restore is a Mac-side or phone-side edge; nothing re-sends it. | `PhoneWindow`, `PanelHold.kt` |
 | Keep-awake (display wake locks, keep-alive pokes) | while at least one stream is unpaused | n/a: not a value, a hold that ends with the last stream. It pokes the streaming display's group; where the panel shares that group (the S25+ virtual display is group 0) the pokes keep it interactive too, which is why CTRL-7 watches the person's unlock, not only a screen edge. | `AndroidPower.kt`, `DarkPanelPolicy.kt` |
 | Panel yield (the panel the streams forced dark) | the person's unlock, a touch or a key on display 0, or the power key | n/a: never re-darkened while the person uses the phone. The next dark episode starts only when the phone goes idle by itself with streams up (CTRL-11/12). | `AndroidPower.panelYielded`, `DarkPanelPolicy.personUsed` |
-| Phone sleep after the last stream | the last stream closes, and only while PocketDeck's own wake still owns the phone | n/a: never on a timer. Left alone when the person unlocked, used or woke the phone (docs/specs/controls.md CTRL-7). | `AndroidPower.restoreAfterStop`, `WakeOwnership.kt` |
+| Phone sleep after the last stream | the last stream closes, and only while Contigua's own wake still owns the phone | n/a: never on a timer. Left alone when the person unlocked, used or woke the phone (docs/specs/controls.md CTRL-7). | `AndroidPower.restoreAfterStop`, `WakeOwnership.kt` |
 | Clipboard gate (`clip.enable`) | the Settings toggle, and every ready session | Yes, on every connect: the phone's gate starts off and holds no memory. The person's choice is the Mac's; there is no phone-side override to lose. | `ConnectionController.clipboardSettingChanged`, `sessionReady` |
 | Notification gate (`notify.enable`) | the per-phone Settings toggle, and every ready session | Yes, on every connect, for the same reason as the clipboard gate. | `ConnectionController.notifySettingChanged`, `sessionReady` |
 | Audio routing (`audio.start`/`stop`) | the first unpaused stream, an unpause, and the last stream stopping | No: it follows the window lifecycle, not a connect. | `Session.startAudio`, `updatePower` |

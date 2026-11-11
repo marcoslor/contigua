@@ -1,9 +1,9 @@
-// menubar-item.swift — the menu bar item of one PocketDeck process, for the
+// menubar-item.swift — the menu bar item of one Contigua process, for the
 // real-click check (scripts/menubar-toggle.sh).
 //
 // The item is not in the app's window list: it is an accessibility child of
 // AXExtrasMenuBar. Finding it by the process id (never by its title) is the
-// rule the checks follow: the person's own PocketDeck item is right next to it.
+// rule the checks follow: the person's own Contigua item is right next to it.
 //
 // Usage:
 //   swift scripts/menubar-item.swift frame PID

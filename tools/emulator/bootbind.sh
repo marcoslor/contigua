@@ -4,7 +4,7 @@
 # sat in NoBinder until it was force-stopped, and a new app pid was what made the
 # surviving server push a binder. This round reproduces that state and checks the
 # recovery: the app's own process restarts once, the surviving server serves
-# PocketDeck again, and nobody touches Shizuku.
+# Contigua again, and nobody touches Shizuku.
 #
 #   bash tools/emulator/bootbind.sh [--runs N] [--wait S] [--check]
 #
@@ -31,9 +31,9 @@ done
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
 
-PKG=dev.pocketdeck
+PKG=app.contigua
 DUMP=/data/local/tmp/pd-bootbind.xml
-PERMISSION_CARD='Allow PocketDeck to use Shizuku'
+PERMISSION_CARD='Allow Contigua to use Shizuku'
 SHIZUKU_PKG=moe.shizuku.privileged.api
 
 app_pid() { emu shell "pidof $PKG" 2>/dev/null | tr -d '\r' || true; }
@@ -95,7 +95,7 @@ pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 
 dump_app_lines() {
-  emu logcat -d -s PocketDeckApp:I 2>/dev/null | tail -15 | sed 's/^/    /' >&2 || true
+  emu logcat -d -s ContiguaApp:I 2>/dev/null | tail -15 | sed 's/^/    /' >&2 || true
 }
 
 STARTER="$(shizuku_starter)"
@@ -172,12 +172,12 @@ for round in $(seq 1 "$RUNS"); do
     sleep 1
   done
   ELAPSED=$(( $(date +%s) - T0 ))
-  LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep -c 'listening on' || true)"
-  RECORD="$(emu logcat -d 2>/dev/null | grep -c 'New service record dev.pocketdeck:pocketdeck' || true)"
+  LINE="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep -c 'listening on' || true)"
+  RECORD="$(emu logcat -d 2>/dev/null | grep -c 'New service record app.contigua:contigua' || true)"
   if [ -n "$PORT" ] && [ "$LINE" -ge 1 ] && [ "$NEW_PID" != "$P0" ]; then
     pass "round $round: the shell service serves again in ${ELAPSED}s with no tap (pid $NEW_PID, port $PORT)"
   else
-    fail "round $round: no recovery within ${WAIT_S}s (app pid '${NEW_PID:-none}', was $P0, port '${PORT:-none}', PocketDeckSvc lines ${LINE:-0})"
+    fail "round $round: no recovery within ${WAIT_S}s (app pid '${NEW_PID:-none}', was $P0, port '${PORT:-none}', ContiguaSvc lines ${LINE:-0})"
     dump_app_lines
   fi
   if [ "${RECORD:-0}" -ge 1 ]; then
@@ -186,7 +186,7 @@ for round in $(seq 1 "$RUNS"); do
     fail "round $round: no 'New service record' line from the surviving server"
   fi
   if [ "$NEW_PID" != "$P0" ]; then
-    pass "round $round: PocketDeck restarted its own process for a binder ($P0 -> $NEW_PID)"
+    pass "round $round: Contigua restarted its own process for a binder ($P0 -> $NEW_PID)"
   else
     fail "round $round: the app process never restarted, so a live server could not push (pid $P0)"
   fi

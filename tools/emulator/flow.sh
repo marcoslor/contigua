@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The core PocketDeck POC check against the running emulator rig:
+# The core Contigua POC check against the running emulator rig:
 #
 #   tools/emulator/flow.sh
 #
@@ -16,22 +16,22 @@ DECKCTL="$REPO_ROOT/tools/fakephone/deckctl.py"
 POC="$EMU_DIR/poc.py"
 STATE="$CACHE_DIR/deckctl-state.json"
 FRAMES="$AGENT_DIR/frames"
-BROWSER="${POCKETDECK_BROWSER:-acr.browser.lightning}"
-MESSENGER="${POCKETDECK_MESSENGER:-org.fossify.messages}"
+BROWSER="${CONTIGUA_BROWSER:-acr.browser.lightning}"
+MESSENGER="${CONTIGUA_MESSENGER:-org.fossify.messages}"
 # Widget targets of a first launch at the rig's window sizes (see README).
-STEPS1="${POCKETDECK_STEPS1:-tap:0.92,0.06;back;tap:0.50,0.056;text:example.com}"
+STEPS1="${CONTIGUA_STEPS1:-tap:0.92,0.06;back;tap:0.50,0.056;text:example.com}"
 # `wait:` steps let a screen finish appearing before the next input is judged.
-STEPS2="${POCKETDECK_STEPS2:-tap:0.93,0.78;wait:5;text:5551234;scroll:-6}"
+STEPS2="${CONTIGUA_STEPS2:-tap:0.93,0.78;wait:5;text:5551234;scroll:-6}"
 # Seconds each phase waits before its snapshot; a WebView app on a software GPU
 # needs a while to finish its first layout before it can answer a resize.
-SETTLE="${POCKETDECK_SETTLE:-12}"
-PHASE_SECONDS="${POCKETDECK_PHASE_SECONDS:-6}"
+SETTLE="${CONTIGUA_SETTLE:-12}"
+PHASE_SECONDS="${CONTIGUA_PHASE_SECONDS:-6}"
 
 device_present || die "$SERIAL is not running - run tools/emulator/start.sh first"
 
 # adb forward rules vanish when the adb server restarts (a wireless device
 # reconnecting is enough), so re-assert the rig's forward before every run.
-DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $SERIAL (is the app running?)"
+DEVPORT="$(ensure_forward)" || die "cannot find the Contigua server port on $SERIAL (is the app running?)"
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 
 deckctl() { "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"; }
@@ -43,11 +43,11 @@ deckctl() { "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE
 # authenticates. (To pair by hand instead: `deckctl --pair` with
 # `poc.py wait-prompt` in the background; see README.)
 bring_app_forward() {
-  emu shell am start -n "dev.pocketdeck/.app.MainActivity" >/dev/null 2>&1 || true
+  emu shell am start -n "app.contigua/.app.MainActivity" >/dev/null 2>&1 || true
   local deadline=$(( $(date +%s) + 60 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if emu shell dumpsys activity activities 2>/dev/null |
-      grep -q "ResumedActivity.*dev.pocketdeck/dev.pocketdeck.app.MainActivity"; then
+      grep -q "ResumedActivity.*app.contigua/app.contigua.app.MainActivity"; then
       break
     fi
     sleep 2

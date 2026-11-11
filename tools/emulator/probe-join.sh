@@ -39,8 +39,8 @@ done
 
 WORK="${PD_PROBE_WORK:-/tmp/pd-probe-join-emu}"
 PROFILE="probejoinemu$$"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+APP="$ROOT/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua"
 LIMITS="$ROOT/macos/scripts/nfr-limits.json"
 LISTEN=47821
 FAIL=0
@@ -119,7 +119,7 @@ PROXY_PID=""
 TAP_PID=""
 CHROME_PID=""
 CLOCK_PID=""
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 
@@ -150,9 +150,9 @@ release_e2e_lock() {
 }
 
 disable_dock_auto() {
-    defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || return 1
+    defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || return 1
     DOCK_DEFAULT_SET=1
-    [ "$(defaults read "dev.pocketdeck.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
+    [ "$(defaults read "app.contigua.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
 }
 
 stop_app() {
@@ -191,22 +191,22 @@ stream_log() { # stream_log <pid> <file>
 
 refresh_log() { # refresh_log <pid> <file>
     /usr/bin/log show --last 10m --info --style syslog \
-        --predicate "processID == $1 AND subsystem == \"dev.pocketdeck.mac\"" \
+        --predicate "processID == $1 AND subsystem == \"app.contigua.mac\"" \
         2>/dev/null >> "$2"
 }
 
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 3
             return 0
         fi
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -219,7 +219,7 @@ wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
     local log="$1" cap="$2" label="$3"
     local deadline=$(( $(date +%s) + cap ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
+        emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$log"
         if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
             say "$label: the phone slot is free"
             return 0
@@ -342,14 +342,14 @@ cleanup() {
     if [ "$CLEANED" = 1 ]; then return 0; fi
     CLEANED=1
     # Evidence first, while the phone is still up.
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log" || true
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-final.log" || true
     [ -n "$CHROME_PID" ] && kill "$CHROME_PID" 2>/dev/null || true
     [ -n "$CLOCK_PID" ] && kill "$CLOCK_PID" 2>/dev/null || true
     stop_app
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
     stop_proxy
     if [ "$DOCK_DEFAULT_SET" = 1 ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
         DOCK_DEFAULT_SET=0
     fi
     release_e2e_lock
@@ -370,8 +370,8 @@ if [ $? -ne 0 ]; then
     bad "start.sh --no-build failed"
     exit 1
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 emu logcat -c >/dev/null 2>&1 || true
@@ -507,7 +507,7 @@ PY
 # frames and the phone's reader-fault signature are checked.
 say "switch at $t_switch; holding the new path for 30 s"
 wait_for_epoch "$("$PYTHON" -c "print(float('$t_switch') + 30.0)")"
-emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-blip.log"
+emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-blip.log"
 joins="$(grep -c 'paths: joined [0-9a-f]* (paths 2)' "$WORK/phone-blip.log" 2>/dev/null || true)"
 [ "${joins:-0}" -eq 1 ] \
     && ok "the phone handled exactly one join" \

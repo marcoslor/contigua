@@ -40,18 +40,18 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_STATS_WORK:-/tmp/pd-stats-emu}"
-OUT="${POCKETDECK_STATS_OUT:-$HOME/dev/pocketdeck/.agent/stats/emu}"
-BUNDLE="$ROOT/macos/build/e2e/PocketDeck.app"
-APP="$BUNDLE/Contents/MacOS/PocketDeck"
-SHIM="$BUNDLE/Contents/Helpers/pocketdeck-mcp"
+OUT="${CONTIGUA_STATS_OUT:-$HOME/dev/contigua/.agent/stats/emu}"
+BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
+APP="$BUNDLE/Contents/MacOS/Contigua"
+SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
 CLIENT="$ROOT/tools/fakephone/deckctl.py"
 BENCH="$ROOT/tools/stream-bench/bench.py"
 ARMS="$ROOT/tools/stream-bench/arms.json"
 POC="$ROOT/tools/emulator/poc.py"
 STATE="$CACHE_DIR/deckctl-state-stats-$$.json"
 PROFILE="statsemu$$"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 APP_PID=""
@@ -179,7 +179,7 @@ cleanup() {
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
     [ -n "$CAT_PID" ] && kill "$CAT_PID" 2>/dev/null || true
     if [ "$DOCK_DEFAULT_SET" = "1" ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     fi
     release_e2e_lock
     "$ADB" -s "$SERIAL" forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
@@ -193,17 +193,17 @@ trap 'exit 130' INT
 
 # The phone's app must be the resumed activity for the pairing prompt.
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 2
             return 0
         fi
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -249,7 +249,7 @@ pair_mac_once() { # pair_mac_once <attempt>
 
 app_connected() {
     /usr/bin/log show --last 3m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null |
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null |
         grep -q "hello --welcome--> welcomed"
 }
 
@@ -261,14 +261,14 @@ if [ $? -ne 0 ]; then
     bad "start.sh --no-build failed"
     exit 1
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 emu logcat -c >/dev/null 2>&1 || true
 # The phone's own lines for the whole run: the QP sample is a logcat line the
 # reviewer reads on the real phone.
-emu logcat -v brief -s PocketDeckSvc:I > "$WORK/logcat.txt" 2>&1 &
+emu logcat -v brief -s ContiguaSvc:I > "$WORK/logcat.txt" 2>&1 &
 CAT_PID=$!
 
 # C1 asks what the AVD's own MediaCodecList offers. A device without an HEVC
@@ -336,7 +336,7 @@ messages="$(grep -c '^stream.stats ' "$WORK/deckctl-stats.log" || true)"
 pongs="$(grep -c '^pong ' "$WORK/deckctl-stats.log" || true)"
 # The live capture is a pipe; read the device's ring buffer so the lines the
 # phone wrote during this phase are surely in (a live `logcat` can lag).
-emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-deckctl.txt" 2>&1 || true
+emu logcat -d -v brief -s ContiguaSvc:I > "$WORK/logcat-deckctl.txt" 2>&1 || true
 SENT_LINES="$(grep -o 'stream [0-9]* stats sent=[0-9]*' "$WORK/logcat-deckctl.txt" 2>/dev/null || true)"
 [ -n "$SENT_LINES" ] && printf 'phone: %s\n' "$(printf '%s\n' "$SENT_LINES" | sort -u | tr '\n' ' ')"
 [ "$STATS_OK" = 1 ] && ok "deckctl stats completed" || bad "deckctl stats did not complete"
@@ -360,7 +360,7 @@ sleep 3
 section bench
 rm -rf "$SUPPORT"
 mkdir -p "$SUPPORT"
-defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
+defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
 DOCK_DEFAULT_SET=1
 PAIRED_MAC=0
 for attempt in 1 2; do
@@ -394,7 +394,7 @@ BENCH_RC=$?
 sleep 2
 # The live capture can lose its last buffer block when killed; the device's
 # ring buffer is the authority for the phone's own lines.
-emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
+emu logcat -d -v brief -s ContiguaSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
 [ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"
 [ "$BENCH_RC" = 0 ] && ok "the bench run completed" || bad "the bench run failed (rc=$BENCH_RC)"
@@ -402,7 +402,7 @@ cat "$WORK/bench.log"
 # carries only its table fields.
 bench_stats_lines() {
     /usr/bin/log show --last 20m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         | grep -E " stats stream="
 }
 PHONE_N="$(bench_stats_lines | grep -o 'phone_n=[0-9]*' | cut -d= -f2 | tr '\n' ',' | sed 's/,$//')"
@@ -430,7 +430,7 @@ done
 # counters; K1's fixture holds the parser's proof.
 section tcp
 /usr/bin/log show --last 20m --info --style syslog \
-    --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+    --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
     | grep -E " stats (total )?stream=" > "$WORK/stats-lines.txt" || true
 TCP_LINE="$(grep -E ' stats stream=' "$WORK/stats-lines.txt" | grep -E 'tcp_srtt=[0-9]' | tail -1)"
 TCP_TOTAL="$(grep -E ' stats total stream=' "$WORK/stats-lines.txt" | tail -1)"

@@ -1,17 +1,17 @@
-# Try PocketDeck: Android apps in Mac windows, phone locked
+# Try Contigua: Android apps in Mac windows, phone locked
 
-Same Wi-Fi; Shizuku running on the phone, PocketDeck running and "Allow connections" on.
+Same Wi-Fi; Shizuku running on the phone, Contigua running and "Allow connections" on.
 
 ```bash
 # phone (USB or wireless debugging)
 cd android && export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/Library/Android/sdk
 ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 # Mac: build a release copy and install it to /Applications (quits a running copy first).
-cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
+cd macos && ./scripts/install.sh && open /Applications/Contigua.app
 # Phone files in Finder are part of the install: it carries the File Provider
 # extension and registers the installed copy and its extension. For a copy
 # without them, with a warning saying what is missing:
-# cd macos && ./scripts/install.sh --without-files && open /Applications/PocketDeck.app
+# cd macos && ./scripts/install.sh --without-files && open /Applications/Contigua.app
 ```
 
 0. **Upgrading from a plaintext build? Pair once more.** Sessions are now TLS 1.3
@@ -20,9 +20,9 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    phone's "This Mac's certificate changed; pair again" or the Mac's "This
    phone's identity changed. Pair again."). Code and QR pairing both work;
    after that, reconnects are silent as before.
-1. Phone: PocketDeck → **Pair new Mac** (first run: onboarding → **Scan QR code**).
+1. Phone: Contigua → **Pair new Mac** (first run: onboarding → **Scan QR code**).
 2. Mac: **Pair with QR** → point the phone at the sheet (the phone's camera app
-   works too — the link opens PocketDeck). The sheet closes itself when paired
+   works too — the link opens Contigua). The sheet closes itself when paired
    and the Mac shows the app list; the QR key expires after 5 minutes.
 3. Lock the phone. It never needs to be unlocked.
 4. Mac: double-click an app (or ⌘K → type → ↩). Each app gets its own window.
@@ -43,30 +43,30 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
 8. Send a link to the phone: in Safari, Chrome, Notes or any app, **Share → Open on
    Phone** (also: right-click → Services → Open on Phone, or drop a link on the Deck). It
    opens in its Android app (Maps, YouTube, the browser…) in a new window; with several
-   phones PocketDeck asks which. If "Open on Phone" isn't in the Share menu, turn it on in
+   phones Contigua asks which. If "Open on Phone" isn't in the Share menu, turn it on in
    System Settings → General → Login Items & Extensions → Sharing.
 9. Install an Android app: drop an `.apk` (or an `.apks` / `.xapk` split bundle) on the Deck,
-   or use the menu bar's **Install APK…** (also: Finder → Open With → PocketDeck, or
+   or use the menu bar's **Install APK…** (also: Finder → Open With → Contigua, or
    right-click → Services → Install on Phone). The Deck shows the progress and the result
    ("Installed Example 1.2", or why the phone refused it).
 10. Send something from the phone to the Mac: in any Android app, **Share → Send to Mac**.
    A link opens in the Mac's default browser; other text goes on the Mac clipboard
    ("Copied from <phone>"); an image (one or several, up to 50 MB each) is saved to
-   `~/Downloads/PocketDeck/` and put on the clipboard, with a "Show in Finder" notification.
+   `~/Downloads/Contigua/` and put on the clipboard, with a "Show in Finder" notification.
    Select text (or long-press a link) → **Open on Mac** in the text menu does the same; when an
    app offers a choice of browsers for a link, **Open on Mac** opens it on the Mac.
    With no Mac connected the phone says "No Mac connected".
 11. Give a phone app its own Mac app: in the Deck, right-click it → **Add to Dock**. "WhatsApp
    (Phone)" appears in the Dock with the app's icon (Options → Keep in Dock to pin it), in
-   Launchpad, Spotlight and ⌘-Tab (it lives in `~/Applications/PocketDeck Apps/`). Launching it
+   Launchpad, Spotlight and ⌘-Tab (it lives in `~/Applications/Contigua Apps/`). Launching it
    opens that app's window, or brings it forward; quitting it closes the window. Right-click →
    **Remove from Dock App** removes it; uninstalling the app on the phone or forgetting the phone
    removes it too.
-12. Audio phone → Mac: with a window open, PocketDeck captures the phone's media/game audio
+12. Audio phone → Mac: with a window open, Contigua captures the phone's media/game audio
    (REMOTE_SUBMIX, via Shizuku at shell UID) and plays it on the Mac through AVAudioEngine (Opus
    or AAC, 20 ms frames) with the per-device volume slider and mute in the menu bar. Media apps
    playing on the phone are silenced on the phone speaker; added latency is under 150 ms. Try it
-   by opening a music or video app in a PocketDeck window and playing something.
+   by opening a music or video app in a Contigua window and playing something.
 
 ## No phone? Use the emulator rig
 
@@ -94,7 +94,7 @@ dry run without starting anything. The boot itself is one call, because the
 emulator holds the machine-wide heavy lock for its whole life:
 
 ```sh
-~/dev/pocketdeck/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+~/dev/contigua/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
 That boots once and runs media control, screen off/wake and the icon renders in
@@ -180,7 +180,7 @@ step prints `SKIP` there (`PD_E2E_TALL_SCREEN=0`); a host run always runs it.
 nothing on the host calls it, since there it would resize the person's own
 screen.
 
-`vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
+`vm-e2e.sh` builds `build/e2e/Contigua.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check
 in the VM's console session, copies the log and the run's work dir back to
 `macos/build/vm-e2e/<check>/` (`run.log`, `work/`) and stops the VM; a list

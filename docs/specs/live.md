@@ -125,7 +125,7 @@ Ignored events, stated so nobody builds them: a post for a phone whose switch is
 | CONV-MAC-25 | applies: LIVE-11 — every row, action and control has a hover highlight and a pressed state; a disabled Start Timer is dimmed neutral. |
 | CONV-MAC-26 | applies: LIVE-11 — one side inset and one 8/12/16 pt rhythm in the card; the reason for a disabled control sits with it. |
 | CONV-AND-01 | n/a: no phone navigation. |
-| CONV-AND-02 | applies: LIVE-6 — the phone starts the Clock's own timer and posts no new PocketDeck notification; the Clock's card follows the system theme. |
+| CONV-AND-02 | applies: LIVE-6 — the phone starts the Clock's own timer and posts no new Contigua notification; the Clock's card follows the system theme. |
 | CONV-AND-03 | applies: the listener grant is asked for in context by the main switch (`NOTIFY-2`); `SET_ALARM` is a normal permission; a missing Clock app disables only Start Timer with a sentence (`LIVE-21`). |
 | CONV-AND-04 | applies: LIVE-6 and LIVE-14 — the only phone change is the timer the person asked for; hiding a card or ending the Mac session changes no phone setting, the lock screen stays locked and the phone's DND is untouched. |
 | CONV-PD-01 | applies: the phone-count table above (0, 1, 2+; per phone items, per-app switches and history). |
@@ -163,7 +163,7 @@ Ignored events, stated so nobody builds them: a post for a phone whose switch is
 - A desktop widget in this round. The research says an ad-hoc app's WidgetKit extension is unproven; a VM spike must prove registration before the plan promises one.
 - macOS Live Activities / ActivityKit: the app targets macOS 26, and ActivityKit for Mac apps is macOS 27.3 beta.
 - Reading a custom `RemoteViews` by reflection, OCR or the Clock app's private provider.
-- A phone-side UI beyond the Clock's own timer screen; no new PocketDeck notification on the phone.
+- A phone-side UI beyond the Clock's own timer screen; no new Contigua notification on the phone.
 - Any third-party service: nothing leaves the two devices.
 
 ## Open questions

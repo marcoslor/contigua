@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">PocketDeck</string>
+    <string name="app_name">Contigua</string>
     <string name="share_label">Send to Mac</string>
     <string name="open_on_mac_label">Open on Mac</string>
 
@@ -20,11 +20,11 @@
 
     <!-- onboarding -->
     <string name="onboarding_welcome_title">Your Android apps, on your Mac</string>
-    <string name="onboarding_welcome_body">Open PocketDeck on your Mac and pick this phone — it stays locked.</string>
+    <string name="onboarding_welcome_body">Open Contigua on your Mac and pick this phone — it stays locked.</string>
     <string name="onboarding_get_started">Get started</string>
 
     <string name="onboarding_shizuku_title">Start Shizuku</string>
-    <string name="onboarding_shizuku_body">Shizuku gives PocketDeck the access it needs to show your apps on the Mac. It stays on this phone.</string>
+    <string name="onboarding_shizuku_body">Shizuku gives Contigua the access it needs to show your apps on the Mac. It stays on this phone.</string>
     <string name="shizuku_status_not_installed">Not installed</string>
     <string name="shizuku_status_not_running">Not running</string>
     <string name="shizuku_status_permission">Permission needed</string>
@@ -40,16 +40,16 @@
 
     <string name="onboarding_notifications_title">Allow notifications</string>
     <string name="onboarding_notifications_body">Needed for pairing prompts.</string>
-    <string name="onboarding_notifications_battery_body">Keeps PocketDeck reachable while your screen is off.</string>
+    <string name="onboarding_notifications_battery_body">Keeps Contigua reachable while your screen is off.</string>
 
     <string name="onboarding_pair_title">Pair your Mac</string>
-    <string name="onboarding_pair_body">Open PocketDeck on your Mac. It will find this phone.</string>
+    <string name="onboarding_pair_body">Open Contigua on your Mac. It will find this phone.</string>
     <string name="onboarding_pair_scan">Scan QR code</string>
     <string name="onboarding_pair_waiting">Waiting for your Mac…</string>
 
     <!-- home -->
     <string name="status_ready">Ready</string>
-    <string name="status_ready_until_closed_body">Stops when you close PocketDeck from recent apps.</string>
+    <string name="status_ready_until_closed_body">Stops when you close Contigua from recent apps.</string>
     <string name="wifi_default">Wi-Fi</string>
     <string name="status_visible_on">Visible to Macs on %1$s</string>
     <string name="status_connected">Connected to %1$s</string>
@@ -58,21 +58,21 @@
     <string name="status_shizuku_not_running">Shizuku not running</string>
     <string name="status_shizuku_not_running_body">Start it in the Shizuku app.</string>
     <string name="status_shizuku_not_installed">Shizuku isn\'t installed</string>
-    <string name="status_shizuku_not_installed_body">Install Shizuku to use PocketDeck.</string>
+    <string name="status_shizuku_not_installed_body">Install Shizuku to use Contigua.</string>
     <string name="status_permission">Shizuku permission needed</string>
-    <string name="status_permission_body">Allow PocketDeck to use Shizuku.</string>
+    <string name="status_permission_body">Allow Contigua to use Shizuku.</string>
     <string name="status_connections_off">Connections are off</string>
     <string name="status_connections_off_body">Turn on Allow connections.</string>
     <string name="status_notify_access">Notification access is off</string>
-    <string name="status_notify_access_body">Allow PocketDeck to read notifications on this phone.</string>
+    <string name="status_notify_access_body">Allow Contigua to read notifications on this phone.</string>
     <string name="status_pair_notify">Notifications are off</string>
     <string name="status_pair_notify_body">Allow notifications so your Mac can ask to pair.</string>
     <string name="status_version">Versions don\'t match</string>
-    <string name="status_version_body">Update PocketDeck on the other device.</string>
+    <string name="status_version_body">Update Contigua on the other device.</string>
     <string name="status_error">Couldn\'t start</string>
-    <string name="status_error_body">Something stopped PocketDeck\'s connection.</string>
+    <string name="status_error_body">Something stopped Contigua\'s connection.</string>
     <string name="status_shell_not_answering">Shizuku isn\'t answering</string>
-    <string name="status_shell_not_answering_body">PocketDeck can\'t reach Shizuku. Try again restarts PocketDeck\'s connection.</string>
+    <string name="status_shell_not_answering_body">Contigua can\'t reach Shizuku. Try again restarts Contigua\'s connection.</string>
     <string name="action_open_shizuku">Open Shizuku</string>
     <string name="action_allow">Allow</string>
     <string name="action_turn_on">Turn on</string>
@@ -80,12 +80,12 @@
     <string name="action_try_again">Try again</string>
 
     <string name="home_keep_running">Keep running in the background</string>
-    <string name="home_keep_running_off">Runs only while PocketDeck is open.</string>
+    <string name="home_keep_running_off">Runs only while Contigua is open.</string>
     <string name="home_keep_running_on">Keeps running after you swipe it away and starts when the phone restarts.</string>
     <string name="home_keep_running_restricted">Battery restriction still on — Android may stop it.</string>
     <string name="action_open_battery_settings">Open battery settings</string>
-    <string name="keep_running_settings_failed">Couldn\'t open battery settings. Open Settings › Apps › PocketDeck › Battery.</string>
-    <string name="onboarding_keep_running_on">On — PocketDeck keeps running in the background</string>
+    <string name="keep_running_settings_failed">Couldn\'t open battery settings. Open Settings › Apps › Contigua › Battery.</string>
+    <string name="onboarding_keep_running_on">On — Contigua keeps running in the background</string>
     <string name="onboarding_keep_running_restricted">Battery restriction still on</string>
     <string name="home_allow_connections">Allow connections</string>
     <string name="home_allow_pairings">Allow new pairings</string>
@@ -98,7 +98,7 @@
     <string name="home_no_paired">No Macs paired yet.</string>
     <string name="home_forget_all">Forget All Macs…</string>
     <string name="home_forget_all_title">Forget all Macs?</string>
-    <string name="home_forget_all_body">PocketDeck will create a new identity for this phone. Every Mac must pair again.</string>
+    <string name="home_forget_all_body">Contigua will create a new identity for this phone. Every Mac must pair again.</string>
     <string name="home_forget_all_confirm">Forget All</string>
     <string name="cancel">Cancel</string>
     <string name="home_pair_new">Pair new Mac</string>
@@ -111,10 +111,10 @@
     <string name="ring_body">Asked for by your Mac</string>
 
     <!-- QR pairing feedback -->
-    <string name="qr_not_pairing">That QR code isn\'t a PocketDeck pairing code.</string>
+    <string name="qr_not_pairing">That QR code isn\'t a Contigua pairing code.</string>
     <string name="qr_incomplete">That QR code is missing pairing details.</string>
     <string name="qr_bad_key">That pairing key isn\'t valid.</string>
-    <string name="qr_repair">PocketDeck updated its connection security — pair from the Mac\'s Pair screen again.</string>
+    <string name="qr_repair">Contigua updated its connection security — pair from the Mac\'s Pair screen again.</string>
     <string name="qr_waiting">Scanned %1$s — waiting for it to connect…</string>
     <string name="qr_paired">Paired with %1$s.</string>
     <string name="qr_scan_failed">Couldn\'t scan the code.</string>

@@ -5,7 +5,7 @@
 # Every display macOS sees gets a per-display profile in
 # /Library/ColorSync/Profiles/Displays, named "<name>-<display UUID>.icc". The
 # e2e rig adds a virtual display per run and macOS names its profile
-# "PocketDeck e2e-<UUID>.icc" (older runs: "PD test-<UUID>.icc"); the file
+# "Contigua e2e-<UUID>.icc" (older runs: "PD test-<UUID>.icc"); the file
 # outlives the display and nothing removes it, so they pile up one per run.
 #
 # A file is a ghost only when it carries one of those prefixes AND its UUID is
@@ -22,7 +22,7 @@
 set -uo pipefail
 
 DIR="${PD_COLORSYNC_DIR:-/Library/ColorSync/Profiles/Displays}"
-PREFIXES=("PocketDeck e2e-" "PD test-")
+PREFIXES=("Contigua e2e-" "PD test-")
 APPLY=0
 
 case "${1:-}" in

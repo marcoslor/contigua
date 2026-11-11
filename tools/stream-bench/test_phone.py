@@ -78,7 +78,7 @@ CPU = """Load: 2.1 / 2.0 / 1.9
 CPU usage from 1000ms to 2000ms ago (2026-11-06 10:00:00.000 to 2026-11-06 10:00:01.000):
   12.3% 1000/com.example.app: 7.0% user + 5.3% kernel
    4.0% 1000/com.example.app:remote: 1.0% user + 3.0% kernel
-   1.2% 2000/dev.pocketdeck: 0.5% user + 0.7% kernel
+   1.2% 2000/app.contigua: 0.5% user + 0.7% kernel
    0.4% 1/init: 0.1% user + 0.3% kernel
 """
 
@@ -99,10 +99,10 @@ WifiInfo: SSID: "Test Network", BSSID: 02:00:00:00:00:01, MAC: 02:00:00:00:00:02
 WifiLinkLayerStats: txRetries=7 txBad=3
 """
 
-LOG = """2026-11-06 10:00:01.000000-0300 mac PocketDeck[7]: stream 3: first frame, opening cover off
-2026-11-06 10:00:01.250000-0300 mac PocketDeck[7]: stream 3: first frame 123.5 ms
-2026-11-06 10:00:05.000000-0300 mac PocketDeck[7]: stream 3 resize ack 720x1280 dpi=320 (applied) 42 ms
-2026-11-06 10:00:06.000000-0300 mac PocketDeck[7]: stream 4: first frame 200 ms
+LOG = """2026-11-06 10:00:01.000000-0300 mac Contigua[7]: stream 3: first frame, opening cover off
+2026-11-06 10:00:01.250000-0300 mac Contigua[7]: stream 3: first frame 123.5 ms
+2026-11-06 10:00:05.000000-0300 mac Contigua[7]: stream 3 resize ack 720x1280 dpi=320 (applied) 42 ms
+2026-11-06 10:00:06.000000-0300 mac Contigua[7]: stream 4: first frame 200 ms
 """
 
 
@@ -159,11 +159,11 @@ class DisplayTest(unittest.TestCase):
         self.assertIsNone(self.phone.display_refresh("", 0))
 
     def test_the_mirror_virtual_display_is_the_default(self):
-        # The phone names its mirror VD "pocketdeck-N" with a virtual uniqueId;
+        # The phone names its mirror VD "contigua-N" with a virtual uniqueId;
         # that is the display whose rate the stream sets.
         text = DISPLAY + (
-            '    DisplayDeviceInfo{"pocketdeck-2": '
-            'uniqueId="virtual:com.android.shell,0,pocketdeck-2,145", '
+            '    DisplayDeviceInfo{"contigua-2": '
+            'uniqueId="virtual:com.android.shell,0,contigua-2,145", '
             '1800 x 1200, modeId 254, renderFrameRate 60.0, defaultModeId 254, '
             'density 320}\n')
         values = self.phone.display_refresh(text)
@@ -213,7 +213,7 @@ class CpuTest(unittest.TestCase):
     def test_each_package_sums_its_processes(self):
         values = self.phone.cpu(CPU)
         self.assertAlmostEqual(values["com.example.app"], 16.3)
-        self.assertAlmostEqual(values["dev.pocketdeck"], 1.2)
+        self.assertAlmostEqual(values["app.contigua"], 1.2)
 
     def test_a_zero_share_with_a_plus_prefix_is_zero_not_nil(self):
         # `dumpsys cpuinfo` prints an idle process as `+0%`, not ` 0%`.
@@ -223,7 +223,7 @@ class CpuTest(unittest.TestCase):
     def test_an_absent_package_is_nil(self):
         values = self.phone.cpu("Load: 0.0 / 0.0 / 0.0\n")
         self.assertIsNone(values["com.example.app"])
-        self.assertIsNone(values["dev.pocketdeck"])
+        self.assertIsNone(values["app.contigua"])
 
     def test_a_custom_package_can_be_asked_for(self):
         values = self.phone.cpu(CPU, ("com.example.app",))
@@ -274,7 +274,7 @@ class AppLinesTest(unittest.TestCase):
         self.assertEqual(self.phone.first_frame_ms(LOG, 4), 200.0)
 
     def test_an_older_first_frame_line_without_a_number_is_none(self):
-        text = "2026-11-06 10:00:01.000000-0300 mac PocketDeck[7]: stream 3: first frame, opening cover off\n"
+        text = "2026-11-06 10:00:01.000000-0300 mac Contigua[7]: stream 3: first frame, opening cover off\n"
         self.assertIsNone(self.phone.first_frame_ms(text, 3))
         self.assertIsNone(self.phone.first_frame_ms(LOG, 9))
 

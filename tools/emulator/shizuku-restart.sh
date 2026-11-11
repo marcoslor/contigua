@@ -8,13 +8,13 @@
 # nothing: the caller owns the emulator's whole life inside ONE heavy.sh call.
 #
 # Each round is the person's 10-28 sequence: Shizuku's server dies (wireless
-# debugging dropped), which takes the PocketDeck shell service with it, then the
+# debugging dropped), which takes the Contigua shell service with it, then the
 # server is started again the way the rig starts it. Nothing touches the app:
 # no tap, no relaunch. Within WAIT_S the shell service must be listening again
 # and the app must not ask for the Shizuku permission again.
 #
 # The pre-fix build never rebinds: the server dies, the app is never told it is
-# back, and no PocketDeckSvc process ever appears. Exits non-zero when any
+# back, and no ContiguaSvc process ever appears. Exits non-zero when any
 # round failed.
 set -euo pipefail
 
@@ -34,12 +34,12 @@ done
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
 
-PKG=dev.pocketdeck
-SVC_PROCESS="dev.pocketdeck:pocketdeck"
+PKG=app.contigua
+SVC_PROCESS="app.contigua:contigua"
 DUMP=/data/local/tmp/pd-shizuku.xml
 # The app's card while it thinks the permission is missing, and the manager's
 # own dialog package: either one means the app asked again (PHONE-20).
-PERMISSION_CARD='Allow PocketDeck to use Shizuku'
+PERMISSION_CARD='Allow Contigua to use Shizuku'
 SHIZUKU_PKG=moe.shizuku.privileged.api
 
 app_pid() { emu shell "pidof $PKG" 2>/dev/null | tr -d '\r'; }
@@ -88,7 +88,7 @@ fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 
 # The evidence a failed round leaves behind: the app's own lines, bounded.
 dump_app_lines() {
-  emu logcat -d -s PocketDeckApp:I 2>/dev/null | tail -15 | sed 's/^/    /' >&2 || true
+  emu logcat -d -s ContiguaApp:I 2>/dev/null | tail -15 | sed 's/^/    /' >&2 || true
 }
 
 # --- round 0: the rig is where start.sh left it ------------------------------
@@ -105,7 +105,7 @@ step "baseline: app pid $P0, shell service pid(s) $BASE_PIDS, listening on $BASE
 for round in $(seq 1 "$RUNS"); do
   # --- Shizuku's server dies, and the shell service goes with it ------------
   # On a real phone the user service is forked by the server and cannot outlive
-  # it (the person's 13:38 capture: no PocketDeckSvc line ever again). On the
+  # it (the person's 13:38 capture: no ContiguaSvc line ever again). On the
   # emulator the daemon can be left orphaned, so it is reaped explicitly: the
   # round must start from the state the person's phone was in.
   emu shell "pkill -f shizuku_server" >/dev/null 2>&1 || true
@@ -156,11 +156,11 @@ for round in $(seq 1 "$RUNS"); do
 
   # The shell service's own first line ("listening on …") has to be this
   # round's: logcat was cleared just before the server restarted.
-  LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep -c 'listening on' || true)"
+  LINE="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep -c 'listening on' || true)"
   if [ "$SVC_LINE" = 1 ] && [ "${LINE:-0}" -ge 1 ]; then
-    pass "round $round: the shell service serves again in ${ELAPSED}s with no tap (pid $SVC_PID, port $PORT, $LINE PocketDeckSvc line(s))"
+    pass "round $round: the shell service serves again in ${ELAPSED}s with no tap (pid $SVC_PID, port $PORT, $LINE ContiguaSvc line(s))"
   else
-    fail "round $round: the shell service did not come back within ${WAIT_S}s (pid '${SVC_PID}', port '${PORT}', PocketDeckSvc lines ${LINE:-0})"
+    fail "round $round: the shell service did not come back within ${WAIT_S}s (pid '${SVC_PID}', port '${PORT}', ContiguaSvc lines ${LINE:-0})"
     dump_app_lines
   fi
 

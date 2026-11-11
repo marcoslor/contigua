@@ -12,7 +12,7 @@ Six intents, all optional-phone (default: the connected phone, else the only pai
 | `OpenPhoneAppIntent` | opens one phone app in a window, connecting first if needed — the Spotlight click path |
 | `OpenPhoneScreenIntent` | opens the Phone Mirror |
 | `SendLinkToPhoneIntent` | sends a URL through the Mac → phone link path |
-| `SendFileToPhoneIntent` | drops files into `Download/PocketDeck` |
+| `SendFileToPhoneIntent` | drops files into `Download/Contigua` |
 | `PhoneBatteryIntent` | answers from the last `state`, never wakes the phone |
 | `RingPhoneIntent` | `phone.ring`: the phone's own app plays the alarm over its lock screen (≤ 30 s) |
 
@@ -22,7 +22,7 @@ phone, the shell service forwards `phone.ring` to the app process, whose foregro
 plays the default alarm sound (alarm stream, alarm volume) for up to 30 s and posts a
 high-importance notification with a Stop action. The lock-screen Stop screen (`RingActivity`)
 rides on that notification's full-screen intent, which Android 14+ only honours when the person
-has allowed full-screen notifications for PocketDeck. Without that grant, or when the system
+has allowed full-screen notifications for Contigua. Without that grant, or when the system
 refuses a background activity start, the phone still rings and the notification still stops it.
 
 `PhoneApp` is an `AppEntity` with an `EntityStringQuery` over the app list Spotlight also
@@ -50,10 +50,10 @@ The exact invocation the Xcode 27 phase used (read from `xcodebuild`'s log while
 throwaway probe target):
 
 ```
-appintentsmetadataprocessor --toolchain-dir <toolchain> --module-name PocketDeck \
+appintentsmetadataprocessor --toolchain-dir <toolchain> --module-name Contigua \
   --sdk-root <sdk> --xcode-version <build> --platform-family macOS --deployment-target 26.0 \
-  --bundle-identifier dev.pocketdeck.mac --output <app>/Contents/Resources \
-  --target-triple arm64-apple-macos26.0 --binary-file <app>/Contents/MacOS/PocketDeck \
+  --bundle-identifier app.contigua.mac --output <app>/Contents/Resources \
+  --target-triple arm64-apple-macos26.0 --binary-file <app>/Contents/MacOS/Contigua \
   --source-file-list <module>.SwiftFileList --swift-const-vals-list <list of *.swiftconstvalues> \
   --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
 ```
@@ -69,7 +69,7 @@ stays green.
 -Xswiftc scripts/appintents-protocols.json` to `swift build -c release`, then runs the
 processor against the `Release` intermediate folder before codesigning. SwiftPM applies
 `-Xswiftc` to every Swift target it compiles, dependencies included, so const-values files
-for NIO/ASN.1 are written too; the processor is handed only PocketDeck's own (they carry the
+for NIO/ASN.1 are written too; the processor is handed only Contigua's own (they carry the
 module's mangled names). If the toolchain has no `appintentsmetadataprocessor`,
 `bundle.sh` warns and builds without metadata rather than failing.
 
@@ -96,14 +96,14 @@ identifier and mangled type name, so the route is the same for SwiftPM bundles.
 - The e2e `intents` check reads the built bundle's metadata before it starts anything and
   runs all six intents through the debug bridge; it passes 11/11.
 - The emulator ring was checked once: `phone.ring` answered `ring.state` `ringing=true`,
-  `dumpsys activity` showed `dev.pocketdeck/.app.RingActivity` resumed over the rig's
-  keyguard, `dumpsys audio` showed `dev.pocketdeck` holding `GAIN_TRANSIENT` with
+  `dumpsys activity` showed `app.contigua/.app.RingActivity` resumed over the rig's
+  keyguard, `dumpsys audio` showed `app.contigua` holding `GAIN_TRANSIENT` with
   `usage=USAGE_ALARM`, and `phone.ring.stop` answered `ringing=false` with the activity gone.
   The rig granted `USE_FULL_SCREEN_INTENT` through `appops` (the one-tap Settings grant a
   person would give); nothing was granted on the host.
 - The VM indexing check was **not run**: the guest boot needs swap below 2 GB, and the host
   sat at 2.4 GB for the whole session (free memory 60–67% throughout). To run it later:
-  boot the `pd-e2e` VM, copy `build/e2e/PocketDeck.app` in, `open -g -a` it once with
+  boot the `pd-e2e` VM, copy `build/e2e/Contigua.app` in, `open -g -a` it once with
   `--profile intents --background`, then read
-  `log show --last 5m --predicate '(process == "appintentsd" OR process == "linkd") AND eventMessage CONTAINS "pocketdeck"'`
+  `log show --last 5m --predicate '(process == "appintentsd" OR process == "linkd") AND eventMessage CONTAINS "contigua"'`
   and `shortcuts list` in the guest.

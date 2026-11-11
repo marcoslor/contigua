@@ -7,7 +7,7 @@ import collections
 
 PATH = sys.argv[1] if len(sys.argv) > 1 else "data/stream-lines.txt"
 KV = re.compile(r"(\w+)=(-?[\d.]+|-)")
-ROW = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+).*\[dev\.pocketdeck\.mac:video\] stats stream=(\d+) (.*)$")
+ROW = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+).*\[dev\.contigua\.mac:video\] stats stream=(\d+) (.*)$")
 
 
 def load(path):
@@ -17,7 +17,7 @@ def load(path):
         if not m:
             continue
         d = {"ts": m.group(1), "stream": int(m.group(2)),
-             "pid": re.search(r"PocketDeck\[(\d+)", line).group(1)}
+             "pid": re.search(r"Contigua\[(\d+)", line).group(1)}
         for k, v in KV.findall(m.group(3)):
             d[k] = None if v == "-" else float(v)
         rows.append(d)

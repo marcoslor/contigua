@@ -103,7 +103,7 @@ The window's own state is one selection over its pages (`SettingsSelection` in m
 | `phone(id)` | `forgot(id)` | `phone(in use)`, else `phone(first)`, else `General` |
 | other than `phone(id)` | `forgot(other)` | the page stays |
 
-A phone's page is the shipped `PhoneSettingsPage`: its header (state, last seen, In Use, Use This Phone / Pair Again…), then the sections of the table below. Every per-phone state is `Link`'s (`macOS/Sources/PocketDeck/Link.swift`, and UX.md's "Status/feedback").
+A phone's page is the shipped `PhoneSettingsPage`: its header (state, last seen, In Use, Use This Phone / Pair Again…), then the sections of the table below. Every per-phone state is `Link`'s (`macOS/Sources/Contigua/Link.swift`, and UX.md's "Status/feedback").
 
 | State | Event | Result |
 |---|---|---|

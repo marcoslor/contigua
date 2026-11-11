@@ -29,7 +29,7 @@ phone has no second switch: its notification-listener grant is the phone-side ha
 (person's decision, 2026-10-27).
 
 - `notify.enable on` → if the listener is not granted, the phone asks the shell service to run
-  `cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener`
+  `cmd notification allow_listener app.contigua/app.contigua.app.PdNotificationListener`
   (verified above). If that fails the phone answers `notify.state {on:false, reason:"no_access"}`,
   its home shows a "Notification access is off" attention item that opens
   `ACTION_NOTIFICATION_LISTENER_SETTINGS`, and the Mac's Devices row says "Allow notification
@@ -231,7 +231,7 @@ without a badge, and with no picture there is nothing to attach. A composed PNG 
 would exceed 200 KiB (or the `NotifyImageCaps` caps) falls back to the phone's picture as
 sent, today's behaviour; an undecodable picture keeps the phone's bytes too. The record carries facts only — `composed shape=… badge=yes|no
 side=… class=…`, or `composed fallback=over_cap|no_icon` — never pixels or text
-(R-PRIV-1). There is no setting, and the banner's own icon stays PocketDeck's.
+(R-PRIV-1). There is no setting, and the banner's own icon stays Contigua's.
 
 ### Live Updates
 
@@ -558,12 +558,12 @@ notification):
   nothing. The emulator had to be killed at the end of the run (the boot budget), so no
   logcat survived. The likely cause is the implicit `am broadcast` for the debug poster
   never reaching the manifest receiver; `.agent/notify3/emu.sh` now sends it with
-  `-p dev.pocketdeck`, keeps each broadcast's output in `broadcast.log`, and its
+  `-p app.contigua`, keeps each broadcast's output in `broadcast.log`, and its
   assertions pass against a synthetic log (`--self-test`). So on a real listener
   **unverified**: reply/button mapping, RemoteInput fill, `cancelNotification`, the
   ongoing refusal, the picture extraction and the promoted flag the system sets.
 - **VM (1 session used)**: the guest showed its own system banner ("App Background
-  Activity") but no PocketDeck banner in any phase, so every AX press found nothing
+  Activity") but no Contigua banner in any phase, so every AX press found nothing
   (`notfound`) and the screenshots are of the same plain screen. The run's app log was
   overwritten by the next phase, which failed to start fakephone because the previous one
   still held the port (the check now stops the fake between phases), so the extended
@@ -615,7 +615,7 @@ Not verified:
   the rig booted, installed 102 (the versionCode check passed), paired over v2
   and the icon section passed, but the media section got no media messages at
   all. The three debug broadcasts were delivered to the explicit component
-  (`cmp=dev.pocketdeck/.app.MediaDebugTrigger`, `Broadcast completed:
+  (`cmp=app.contigua/.app.MediaDebugTrigger`, `Broadcast completed:
   result=0`), `notify.enable on=true` went out, and then the phone sent nothing
   for 40 s: no `media.sessions`, no `media.state`, no `media.art`, and no
   `PdMediaDebug` seek/volume lines. `media.sh` reports 12 failed assertions and

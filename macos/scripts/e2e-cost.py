@@ -18,7 +18,7 @@ At the end it prints one line (and writes it to --summary):
     COST wall=… launches=N builds=N cpu_app=… cpu_fake=… cpu_ws=… cpu_build=…
          cpu_helpers=… cpu_run=… cpu_daemons=… machine_busy=… peak_load=…
 
-  launches     — distinct PocketDeck processes of the profile's e2e bundle
+  launches     — distinct Contigua processes of the profile's e2e bundle
   builds       — distinct swift-build / swift-test / swiftc invocations
   cpu_app      — the e2e app and its Dock shims
   cpu_fake     — fakephone and its ffmpeg encoders
@@ -97,9 +97,9 @@ BUILD_TOOLS = ("swift-frontend", "swift-driver", "swift-build", "swift-test", "s
 
 def category(command, profile):
     exe = command.split(" --", 1)[0]
-    if "/build/e2e/PocketDeck.app/" in exe and ("--profile " + profile) in command:
+    if "/build/e2e/Contigua.app/" in exe and ("--profile " + profile) in command:
         return "app"
-    if "PocketDeckShim" in command or exe.endswith("/Contents/MacOS/PocketDeck"):
+    if "ContiguaShim" in command or exe.endswith("/Contents/MacOS/Contigua"):
         return "app"
     if "fakephone.py" in command:
         return "fake"
@@ -130,7 +130,7 @@ def daemon_name(command):
 
 def is_launch(command, profile):
     exe = command.split(" --", 1)[0]
-    return "/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck" in exe and ("--profile " + profile) in command
+    return "/build/e2e/Contigua.app/Contents/MacOS/Contigua" in exe and ("--profile " + profile) in command
 
 
 def is_build(command):

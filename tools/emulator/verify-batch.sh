@@ -34,14 +34,14 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47982}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47982}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/verify-batch.log"
 ICONS="$REPO_ROOT/.agent/rig-verify/icons"
 FAILED=0
@@ -62,8 +62,8 @@ icons_section() { # icons_section <port> <state> <outdir> <layers-dir> <log>
   # The --check rehearsal runs this against a stub that drives fakephone's own
   # icon renderer (fakephone's TLS needs pyOpenSSL, which the host may lack);
   # everywhere else it is the real deckctl.
-  if [ -n "${POCKETDECK_DECKCTL_STUB:-}" ]; then
-    dc=("$POCKETDECK_DECKCTL_STUB" --host 127.0.0.1 --port "$port" --state "$state")
+  if [ -n "${CONTIGUA_DECKCTL_STUB:-}" ]; then
+    dc=("$CONTIGUA_DECKCTL_STUB" --host 127.0.0.1 --port "$port" --state "$state")
   else
     dc=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" --state "$state")
   fi
@@ -173,7 +173,7 @@ paired_row_section() { # paired_row_section <port> <state> <log>
   # The shade may be open from an earlier step: it would be the only window
   # uiautomator dumps, hiding the app's text.
   emu shell cmd statusbar collapse >/dev/null 2>&1 || true
-  emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+  emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
   sleep 3
   if ! wait_for_text "$dump" 'Paired Macs' 15; then
     echo "paired-row: the home screen is not on top"
@@ -454,7 +454,7 @@ print("icon %s px=%s png=%dpx/%dB %s total_ms=%d -> %s"
          int((time.time() - started) * 1000), out))
 PY
   chmod +x "$WORK/deckctl-stub.py"
-  DETAIL="$(PD_REPO="$REPO_ROOT" POCKETDECK_DECKCTL_STUB="$WORK/deckctl-stub.py" \
+  DETAIL="$(PD_REPO="$REPO_ROOT" CONTIGUA_DECKCTL_STUB="$WORK/deckctl-stub.py" \
     icons_section 0 "$WORK/state.json" "$WORK" "$WORK/layers" "$WORK/icons.log")"
   ICONS_RC=$?
   if [ "$ICONS_RC" -ne 0 ]; then

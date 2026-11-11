@@ -1,4 +1,4 @@
-# PocketDeck — UX spec (v0)
+# Contigua — UX spec (v0)
 
 Principle: **only what's necessary.** One primary action per screen, short copy, no
 settings the user doesn't need. Status is shown, not explained. macOS uses Liquid
@@ -13,7 +13,7 @@ paired-clients list). Pairings are remembered; reconnection is automatic and sil
 | Method | Mac | Phone |
 |---|---|---|
 | **Automatic (default)** | Phone appears in "Nearby" via Bonjour → click **Pair** → the sheet shows a 6-digit code | Notification/sheet: "Pair with *Studio Mac*?" shows the same code · **Allow** / Deny |
-| **QR code** | "Pair with QR" shows a QR (`pocketdeck://pair?c=<clientId>&n=<mac name>&k=<64-hex one-time key>`) | **Scan QR** → the app registers that client + key with the server → done (scanning is the consent; no code, no Allow) |
+| **QR code** | "Pair with QR" shows a QR (`contigua://pair?c=<clientId>&n=<mac name>&k=<64-hex one-time key>`) | **Scan QR** → the app registers that client + key with the server → done (scanning is the consent; no code, no Allow) |
 | **Manual** | "Connect manually…" → host + port fields → then the same comparison | same as Automatic |
 
 Automatic flow detail (numeric comparison, nothing is typed): the Mac sheet reads **"Pair with *phone name*"**, the code in
@@ -55,12 +55,12 @@ work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
    field and selects its text). What it shows is chosen by what this Mac remembers:
-   - **Welcome** (first run only): glass card over a soft gradient. App icon, "PocketDeck", "Your Android apps, on your
-     Mac.", three compact steps (*Install PocketDeck on your phone* · *Start Shizuku* with "How?" · *Be on the same
+   - **Welcome** (first run only): glass card over a soft gradient. App icon, "Contigua", "Your Android apps, on your
+     Mac.", three compact steps (*Install Contigua on your phone* · *Start Shizuku* with "How?" · *Be on the same
      Wi-Fi*), primary **Find my phone**.
    - **Nearby** (nothing paired yet; also the "Add a phone" sheet): phones on the network as glass rows (name, model,
      **Pair**), footer **Pair with QR** · **Connect manually…**. Empty: spinner "Looking for phones on this network…" +
-     "Make sure PocketDeck is open on your phone." Pairing runs in sheets: the 6-digit code to compare (inline errors, Cancel) or the QR
+     "Make sure Contigua is open on your phone." Pairing runs in sheets: the 6-digit code to compare (inline errors, Cancel) or the QR
      (countdown, success check).
    - **Phone** (a phone is paired, including while it is away): toolbar with one group packed at the left — the traffic
      lights, the connection chip (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline /
@@ -137,7 +137,7 @@ work is disabled, never hidden.
    in a popover, without the gear.
 
    The status item's **secondary click** (a right-click, or ⌃-click) opens the app's command menu under the icon:
-   **Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q, with a separator before Quit. The card closes
+   **Settings…** ⌘, · **About Contigua** · **Quit Contigua** ⌘Q, with a separator before Quit. The card closes
    first if it is open. The card's **gear** opens that same menu, anchored under the gear rather than under the status item, so
    both are one path; its help tag is
    "Settings, About and Quit" and VoiceOver calls it "Settings and more". The panel has no Settings…/Quit rows of
@@ -167,7 +167,7 @@ work is disabled, never hidden.
    mark on apps that sent a notification this session, "System UI" for `com.android.systemui` and the package
    name for an app with no name. When the phone has not been granted notification access, the page says
    **Allow notification access on the phone.** under the switch. When this Mac's own notifications are off for
-   PocketDeck, it says **Notifications are turned off for PocketDeck in System Settings.** with **Open System
+   Contigua, it says **Notifications are turned off for Contigua in System Settings.** with **Open System
    Settings** and **Check Again**. The Dock shims rebuild on a rename. Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
@@ -186,7 +186,7 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 1. **Onboarding** (first run, pager with a progress indicator, each step auto-advances
    when its condition becomes true):
    1. *Welcome* — illustration/icon, "Your Android apps, on your Mac", one line on
-      how ("Open PocketDeck on your Mac and pick this phone — it stays locked."),
+      how ("Open Contigua on your Mac and pick this phone — it stays locked."),
       **Get started**.
    2. *Shizuku* — live status row: Not installed (button **Get Shizuku**) → Not running
       (button **Open Shizuku** + 3-line "How to start it" with wireless debugging) →
@@ -194,24 +194,24 @@ Material 3, edge-to-edge, dynamic color, light/dark.
    3. *Notifications* — needed for pairing prompts → **Allow** (POST_NOTIFICATIONS);
       also offers **Keep running in the background** once, with one line why (the home's
       own words for that switch).
-   4. *Pair your Mac* — "Open PocketDeck on your Mac. It will find this phone." +
+   4. *Pair your Mac* — "Open Contigua on your Mac. It will find this phone." +
       **Scan QR code** (outlined) — completes on first successful pairing.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
      **Shizuku isn't installed** with **Get Shizuku** when the app is absent. When
      Shizuku runs but its shell service keeps timing out the card says
-     **Shizuku isn't answering** · "PocketDeck can't reach Shizuku. Try again
-     restarts PocketDeck's connection." with **Try again**. While
+     **Shizuku isn't answering** · "Contigua can't reach Shizuku. Try again
+     restarts Contigua's connection." with **Try again**. While
      a pairing prompt waits and this phone's notifications are off the card says
      **Notifications are off** · "Allow notifications so your Mac can ask to pair."
      with **Allow** (the runtime permission). With the background switch off the
      card still says **Ready**, with
-     "Stops when you close PocketDeck from recent apps." — information, not a
+     "Stops when you close Contigua from recent apps." — information, not a
      warning, and no button.
    - Switch: "Keep running in the background". On: the service survives the app
      being swiped away from Recents and starts at boot. Off: it runs only while
-     PocketDeck's task is open, then stops (and closes its listening socket)
+     Contigua's task is open, then stops (and closes its listening socket)
      when the task is swiped away; no boot start. Default off.
    - Divider, then the connection switches:
    - Switch: "Allow connections" (master: off refuses every Mac, paired or not,
@@ -267,7 +267,7 @@ state looks the same in Framed and Immersive; the stored style does not change.
 - The Phone Mirror wears the same cover: **Phone — opening on <phone>** and
   **<phone> can't open the phone screen.** A phone that cannot capture its
   screen (`mirror_unavailable`) puts its sentence on the reason line:
-  **This phone can't share its screen with PocketDeck.**
+  **This phone can't share its screen with Contigua.**
 - The cover is a frozen mode: no input reaches the phone, and the bar's
   phone-side controls are dimmed. The "Not responding" watchdog runs only after
   the first frame.
@@ -362,6 +362,6 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
 | ⌘1–⌘9 | Open the first nine visible tiles in reading order (the sections included) | Deck |
 | ⌘, | Settings | Icon menu, Deck |
-| ⌘Q | Quit PocketDeck | Icon menu, app menu |
+| ⌘Q | Quit Contigua | Icon menu, app menu |
 | ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |
 | ⎋ | Cancel button: Cancel, Done | Pairing sheets |

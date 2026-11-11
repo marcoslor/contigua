@@ -9,10 +9,10 @@
 # It never schedules itself: whoever wants a run starts it (and may leave it
 # waiting for the idle period).
 #
-# The run's output is kept in the log (default /tmp/pocketdeck-idle-e2e-<time>.log);
+# The run's output is kept in the log (default /tmp/contigua-idle-e2e-<time>.log);
 # the log ends with the run's cost (scripts/e2e-cost.py: DAEMONS, BYCHECK per
 # check, COST), and one summary line is appended to the summary file (default
-# /tmp/pocketdeck-idle-e2e.txt):
+# /tmp/contigua-idle-e2e.txt):
 #
 #   2026-10-18T23:10:04 all passed=222 failed=3 | QUIET … | LOAD … | COST … | log=…
 #
@@ -24,8 +24,8 @@ set -uo pipefail
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 IDLE_MINUTES=10
 MAX_LOAD=2
-SUMMARY="/tmp/pocketdeck-idle-e2e.txt"
-LOG="/tmp/pocketdeck-idle-e2e-$(date +%Y%m%d-%H%M%S).log"
+SUMMARY="/tmp/contigua-idle-e2e.txt"
+LOG="/tmp/contigua-idle-e2e-$(date +%Y%m%d-%H%M%S).log"
 SHARD=()
 
 while [ $# -gt 0 ]; do
@@ -62,7 +62,7 @@ done
 echo "idle $(idle_seconds)s, load $(load_1m): running check-e2e.sh all ${SHARD[*]:-}; log: $LOG"
 
 started="$(date +%Y-%m-%dT%H:%M:%S)"
-cost="$(mktemp -t pocketdeck-idle-cost)"
+cost="$(mktemp -t contigua-idle-cost)"
 ${PD_HEAVY:+"$PD_HEAVY"} python3 -I "$MACOS/scripts/e2e-cost.py" --profile "${PD_E2E_PROFILE:-e2e}" --summary "$cost" --by-check -- \
     "$MACOS/scripts/check-e2e.sh" all ${SHARD[@]+"${SHARD[@]}"} > "$LOG" 2>&1
 status=$?

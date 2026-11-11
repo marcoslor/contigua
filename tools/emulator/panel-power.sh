@@ -6,14 +6,14 @@
 #                                            and the boot budget)
 #   tools/emulator/panel-power.sh --no-boot  the same checks on a rig that is
 #                                            already up, paired and built with
-#                                            debug.pocketdeck.force_panel_off=1
+#                                            debug.contigua.force_panel_off=1
 #   tools/emulator/panel-power.sh --check    a dry run: syntax, preflight, the
 #                                            deckctl verbs, the log parser's
 #                                            fixtures, the serial — no device
 #
 # Run it as `bash tools/emulator/panel-power.sh` (the exec bit is not relied on).
 #
-# What it proves (debug.pocketdeck.force_panel_off=1 forces the shared-group path,
+# What it proves (debug.contigua.force_panel_off=1 forces the shared-group path,
 # where AOSP would give the VD its own group):
 #   (a) an app window open on a sleeping phone, covered for 4 s and resumed: one
 #       panel take-over only — no second take-over after the resume, no hand-back
@@ -46,18 +46,18 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47812}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47812}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
 # start.sh sets this property before it launches the server, so the policy is
 # built forced. Setting it after the boot (the old order) left the Shizuku
 # user-service process alive and unforced; the init-line check below catches it.
-export POCKETDECK_FORCE_PANEL_OFF=1
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_FORCE_PANEL_OFF=1
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 RESULT="$OUT/panel-power.log"
 # start.sh's failed-install diagnostic lands here; the start-failure path below
 # copies it into panel-power.log before the trap kills the emulator.
@@ -226,15 +226,15 @@ PY
   # sleep present.
   FIX="$OUT/panel-power-fixture.log"
   cat > "$FIX" <<'FIXTURE'
-14:25:08.400 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
-14:25:10.455 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:16.694 I/PocketDeckSvc: phone back to sleep after the last stream
-14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
-14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
+14:25:08.400 I/ContiguaSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:10.455 I/ContiguaSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:16.694 I/ContiguaSvc: phone back to sleep after the last stream
+14:25:17.602 I/ContiguaSvc: closed stream 1 (display 2)
+14:25:20.536 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:23.500 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:25.511 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:29.514 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:29.630 I/ContiguaSvc: closed stream 1 (display 4)
 FIXTURE
   GOOD="$(read_plans "$FIX")"
   plans_shape_ok "$GOOD" ||
@@ -246,16 +246,16 @@ FIXTURE
   # One extra transitional plan after the pause is a resume re-take (item 1's
   # bug); the pinned shape must reject it.
   cat > "$FIX" <<'FIXTURE'
-14:25:08.400 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
-14:25:10.455 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:16.694 I/PocketDeckSvc: phone back to sleep after the last stream
-14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
-14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-14:25:21.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
-14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
-14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
+14:25:08.400 I/ContiguaSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:10.455 I/ContiguaSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:16.694 I/ContiguaSvc: phone back to sleep after the last stream
+14:25:17.602 I/ContiguaSvc: closed stream 1 (display 2)
+14:25:20.536 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:21.000 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:23.500 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:25.511 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:29.514 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:29.630 I/ContiguaSvc: closed stream 1 (display 4)
 FIXTURE
   BAD="$(read_plans "$FIX")"
   if plans_shape_ok "$BAD"; then
@@ -268,11 +268,11 @@ FIXTURE
   esac
   # And a log where the pause slept the phone (the bug) must read the other way.
   cat > "$FIX" <<'FIXTURE'
-10-21 10:00:00.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-21 10:00:02.000 I/PocketDeckSvc: all windows paused for 30s; handing the phone back
-10-21 10:00:02.100 I/PocketDeckSvc: phone back to sleep after the last stream
-10-21 10:00:05.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-21 10:00:06.000 I/PocketDeckSvc: closed stream 1 (display 57)
+10-21 10:00:00.000 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+10-21 10:00:02.000 I/ContiguaSvc: all windows paused for 30s; handing the phone back
+10-21 10:00:02.100 I/ContiguaSvc: phone back to sleep after the last stream
+10-21 10:00:05.000 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+10-21 10:00:06.000 I/ContiguaSvc: closed stream 1 (display 57)
 FIXTURE
   BAD="$(read_plans "$FIX")"
   case "$BAD" in
@@ -288,32 +288,32 @@ FIXTURE
   # the power press ends it with NORMAL) and the reported bug (the hold stopped
   # by itself, no NORMAL after the on).
   cat > "$FIX" <<'FIXTURE'
-10-21 15:33:29.322 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
-10-21 15:33:29.327 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-21 15:33:31.327 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
-10-21 15:33:33.327 I/PocketDeckSvc: keepalive step 3 interval=2000ms displayLocks=0
-10-21 15:33:35.327 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
-10-21 15:33:35.330 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
-10-21 15:33:40.000 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
-10-21 15:33:40.100 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-21 15:33:42.100 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
-10-21 15:33:44.100 I/PocketDeckSvc: keepalive step 3 interval=2000ms displayLocks=0
-10-21 15:33:46.000 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
-10-21 15:33:46.200 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
-10-21 15:33:50.000 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
-10-21 15:33:50.100 I/PocketDeckSvc: panelhold: Held --powerPress--> Restoring
-10-21 15:33:50.300 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
-10-21 15:33:50.400 I/PocketDeckSvc: power: user pressed power while the panel was dark; panel given back
+10-21 15:33:29.322 I/ContiguaSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:29.327 I/ContiguaSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:31.327 I/ContiguaSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:33.327 I/ContiguaSvc: keepalive step 3 interval=2000ms displayLocks=0
+10-21 15:33:35.327 I/ContiguaSvc: phone.panel on: the mirrored panel comes back
+10-21 15:33:35.330 I/ContiguaSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:40.000 I/ContiguaSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:40.100 I/ContiguaSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:42.100 I/ContiguaSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:44.100 I/ContiguaSvc: keepalive step 3 interval=2000ms displayLocks=0
+10-21 15:33:46.000 I/ContiguaSvc: phone.panel on: the mirrored panel comes back
+10-21 15:33:46.200 I/ContiguaSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:50.000 I/ContiguaSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:50.100 I/ContiguaSvc: panelhold: Held --powerPress--> Restoring
+10-21 15:33:50.300 I/ContiguaSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:50.400 I/ContiguaSvc: power: user pressed power while the panel was dark; panel given back
 FIXTURE
   GOOD="$(read_hold "$FIX")"
   hold_shape_ok "$GOOD" ||
     { echo "CHECK FAIL: the good hold fixture does not meet the shape ($GOOD)"; exit 1; }
   cat > "$FIX" <<'FIXTURE'
-10-21 15:33:29.322 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
-10-21 15:33:29.327 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-21 15:33:30.391 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
-10-21 15:33:30.394 I/PocketDeckSvc: power: no hold and no stream left; keep-alive stopped
-10-21 15:33:42.558 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
+10-21 15:33:29.322 I/ContiguaSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:29.327 I/ContiguaSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:30.391 I/ContiguaSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:30.394 I/ContiguaSvc: power: no hold and no stream left; keep-alive stopped
+10-21 15:33:42.558 I/ContiguaSvc: phone.panel on: the mirrored panel comes back
 FIXTURE
   BAD="$(read_hold "$FIX")"
   if hold_shape_ok "$BAD"; then
@@ -366,9 +366,9 @@ if [ "$BOOT" -eq 1 ]; then
   fi
   # The shared-group path, as on the person's One UI build. It is read when the
   # power policy is built, so the app restarts once (the session is not up yet).
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ]; then
-    fail "debug.pocketdeck.force_panel_off did not stick"
+  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
+  if [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" != "1" ]; then
+    fail "debug.contigua.force_panel_off did not stick"
   fi
   if ! restart_server; then
     echo "panel-power: the app did not come back with the forced path (unverified)"
@@ -378,7 +378,7 @@ if [ "$BOOT" -eq 1 ]; then
   # The init line is the only proof the running policy was built forced. The
   # old order set the property after the server had started, and the Shizuku
   # user service survived the app restart, so every plan came out unforced.
-  INIT_LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  INIT_LINE="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     grep 'power: panel power control' | tail -1 | tr -d '\r')"
   case "$INIT_LINE" in
     *"forcing the panel-dark path"*)
@@ -398,7 +398,7 @@ if [ "$BOOT" -eq 1 ]; then
   echo "panel-power: up and paired"
 else
   device_present || { echo "panel-power: $SERIAL is not up (--no-boot needs a booted, paired rig)"; exit 1; }
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ]; then
+  if [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" != "1" ]; then
     echo "panel-power: the rig is not running with force_panel_off=1"
     exit 1
   fi
@@ -448,7 +448,7 @@ fi
 wait "$PRESS_PID"
 PRESS_RC=$?
 
-emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I PocketDeckPower:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
+emu logcat -d -s ContiguaSvc:I ContiguaApp:I ContiguaPower:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
 
 if [ "$PAUSE_RC" -ne 0 ]; then
   fail "the pause phase failed (rc=$PAUSE_RC): $(head -2 "$SESSION" | tr '\n' ' ')"

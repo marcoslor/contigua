@@ -7,12 +7,12 @@
 # frame a still surface never submits), so this build sends
 # `{"t":"window.still","stream":N}` once a second instead.
 #
-# With `debug.pocketdeck.ignore_repeat_frame=1` the server never sets the
+# With `debug.contigua.ignore_repeat_frame=1` the server never sets the
 # repeat heartbeat, so a static Settings screen produces no frames at all:
 #
 #   after   this branch's APK: no stall for 30 s, a `still` count of ~29 on the
 #           phone and the Mac
-#   stall   `debug.pocketdeck.freeze_drain=1`: the drain stops taking output,
+#   stall   `debug.contigua.freeze_drain=1`: the drain stops taking output,
 #           so no still goes out, and the Mac says stall=1 within 1.5-2.5 s of
 #           the last still
 #
@@ -21,26 +21,26 @@
 # script only installs, drives, judges and kills. Run it as
 #
 #   bash tools/emulator/static-stall.sh --check     # no device, no boot
-#   ~/dev/pocketdeck/.agent/heavy.sh timeout 2400 bash tools/emulator/static-stall.sh
+#   ~/dev/contigua/.agent/heavy.sh timeout 2400 bash tools/emulator/static-stall.sh
 set -uo pipefail
 
 WT="$(cd "$(dirname "$0")/../.." && pwd)"
 E="$WT/.agent/static-stall"
-PORT="${POCKETDECK_PORT:-47994}"
-SERIAL="${POCKETDECK_SERIAL:-emulator-5554}"
-export POCKETDECK_PORT="$PORT" POCKETDECK_SERIAL="$SERIAL"
-export POCKETDECK_AGENT_DIR="$E"
+PORT="${CONTIGUA_PORT:-47994}"
+SERIAL="${CONTIGUA_SERIAL:-emulator-5554}"
+export CONTIGUA_PORT="$PORT" CONTIGUA_SERIAL="$SERIAL"
+export CONTIGUA_AGENT_DIR="$E"
 . "$WT/tools/emulator/lib.sh"
 
-PKG=dev.pocketdeck
+PKG=app.contigua
 PROFILE=staticstall
-APP="$WT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
+APP="$WT/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua"
 STATE="$E/chrome-state.txt"
 AFTER_APK="${PD_STATIC_STALL_AFTER_APK:-$E/after-app-debug.apk}"
 BUILT_APK="$WT/android/app/build/outputs/apk/debug/app-debug.apk"
 APP_PID=0
 FAILS=0
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 
@@ -104,14 +104,14 @@ release_e2e_lock() {
 cleanup() {
   stop_app
   if [ "$DOCK_DEFAULT_SET" = "1" ]; then
-    defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+    defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     DOCK_DEFAULT_SET=0
   fi
   release_e2e_lock
   # The e2e bundle registers its Share extension when it runs (RULES 5).
-  pluginkit -r "$WT/macos/build/e2e/PocketDeck.app/Contents/PlugIns/Share.appex" >/dev/null 2>&1 || true
+  pluginkit -r "$WT/macos/build/e2e/Contigua.app/Contents/PlugIns/Share.appex" >/dev/null 2>&1 || true
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-    -u "$WT/macos/build/e2e/PocketDeck.app" >/dev/null 2>&1 || true
+    -u "$WT/macos/build/e2e/Contigua.app" >/dev/null 2>&1 || true
   "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
 }
 
@@ -155,10 +155,10 @@ watch_state() {
   return 1
 }
 
-# mac_log <pid> <regex>: the app's own os_log lines (subsystem dev.pocketdeck.mac).
+# mac_log <pid> <regex>: the app's own os_log lines (subsystem app.contigua.mac).
 mac_log() {
   log show --last 6m --info --style syslog \
-    --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $1" 2>/dev/null |
+    --predicate "subsystem == \"app.contigua.mac\" AND processID == $1" 2>/dev/null |
     grep -E "$2" || true
 }
 
@@ -168,7 +168,7 @@ mac_log() {
 # with no code to tap.
 app_foreground() {
   emu shell dumpsys activity activities 2>/dev/null |
-    grep -E '(topResumedActivity|mResumedActivity)' | grep -q 'dev\.pocketdeck/'
+    grep -E '(topResumedActivity|mResumedActivity)' | grep -q 'dev\.contigua/'
 }
 
 wait_app_foreground() {
@@ -191,8 +191,8 @@ wait_app_foreground() {
 capture_pair_failure() {
   emu logcat -d -v time > "$E/logcat-pair.txt" 2>/dev/null || true
   emu shell dumpsys notification --noredact > "$E/notifications-pair.txt" 2>/dev/null || true
-  emu shell uiautomator dump /sdcard/pocketdeck-pair.xml >/dev/null 2>&1 || true
-  emu shell cat /sdcard/pocketdeck-pair.xml > "$E/ui-pair.xml" 2>/dev/null || true
+  emu shell uiautomator dump /sdcard/contigua-pair.xml >/dev/null 2>&1 || true
+  emu shell cat /sdcard/contigua-pair.xml > "$E/ui-pair.xml" 2>/dev/null || true
   emu exec-out screencap -p > "$E/pair-fail.png" 2>/dev/null || true
 }
 
@@ -211,9 +211,9 @@ pair_mac() {
 # to show phone apps in the Dock, so it turns the setting off for its profile
 # and restores it in cleanup. Turn it back on once fix/dock-ack is merged.
 disable_dock_auto() {
-  defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || return 1
+  defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || return 1
   DOCK_DEFAULT_SET=1
-  [ "$(defaults read "dev.pocketdeck.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
+  [ "$(defaults read "app.contigua.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
 }
 
 # assert_no_dock_bound <tag>: no shim may be bound to this app's pid during the
@@ -228,7 +228,7 @@ assert_no_dock_bound() {
 }
 
 phone_stills() { # the stream's own count of sent window.still messages
-  emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     grep -c 'heartbeat: still [0-9]'
 }
 
@@ -238,7 +238,7 @@ mac_stills() { # the Mac's count of received stills, from the debug state line
 }
 
 last_still_line() { # "<phone epoch> <n>" of the newest still-log line
-  emu logcat -d -v epoch -s PocketDeckSvc:I 2>/dev/null |
+  emu logcat -d -v epoch -s ContiguaSvc:I 2>/dev/null |
     grep 'heartbeat: still ' | tail -1
 }
 
@@ -246,12 +246,12 @@ last_still_line() { # "<phone epoch> <n>" of the newest still-log line
 # line the phone stamps itself (no cross-clock truncation).
 phone_offset() {
   local host_at="$1"
-  emu shell log -t PocketDeckSvc -p i "static-stall clock $host_at" >/dev/null 2>&1 || true
+  emu shell log -t ContiguaSvc -p i "static-stall clock $host_at" >/dev/null 2>&1 || true
   "$PYTHON" - "$host_at" <<PY
 import subprocess, sys
 host = float(sys.argv[1])
 out = subprocess.run(["$ADB", "-s", "$SERIAL", "logcat", "-d", "-v", "epoch",
-                      "-s", "PocketDeckSvc:I"], capture_output=True, text=True).stdout
+                      "-s", "ContiguaSvc:I"], capture_output=True, text=True).stdout
 for line in reversed(out.splitlines()):
     if "static-stall clock" in line:
         print("%.3f" % (float(line.split()[0]) - host))
@@ -270,13 +270,13 @@ phase_after() {
   fi
   # The Shizuku shell service survives a reinstall (10-28): kill it so the new
   # build's server answers.
-  emu shell pkill -f "$PKG:pocketdeck" >/dev/null 2>&1 || true
+  emu shell pkill -f "$PKG:contigua" >/dev/null 2>&1 || true
   restart_server || { fail "the after build's server did not come up"; return; }
   ensure_forward >/dev/null || { fail "no port forward after the restart"; return; }
   # The prompt needs the app's main process, not only the shell server.
   wait_app_foreground || { fail "the app is not the resumed activity before pairing"; capture_pair_failure; return; }
-  emu shell setprop debug.pocketdeck.ignore_repeat_frame 1 >/dev/null 2>&1 || true
-  [ "$(emu shell getprop debug.pocketdeck.ignore_repeat_frame | tr -d '\r')" = "1" ] ||
+  emu shell setprop debug.contigua.ignore_repeat_frame 1 >/dev/null 2>&1 || true
+  [ "$(emu shell getprop debug.contigua.ignore_repeat_frame | tr -d '\r')" = "1" ] ||
     { fail "the ignore-repeat property did not stick"; return; }
   emu logcat -c >/dev/null 2>&1 || true
 
@@ -289,7 +289,7 @@ phase_after() {
   # encoder stays silent. Without this line the old build may still be serving.
   local proved=""
   for _ in $(seq 1 150); do
-    emu logcat -d -s PocketDeckSvc:I 2>/dev/null | grep -q 'heartbeat: ' && { proved=yes; break; }
+    emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep -q 'heartbeat: ' && { proved=yes; break; }
     sleep 0.1
   done
   [ -n "$proved" ] || { fail "no 'heartbeat:' line: the old server may still be serving"; stop_app; return; }
@@ -303,7 +303,7 @@ phase_after() {
     "$PYTHON" -c "import sys; sys.exit(0 if $elapsed >= 30 else 1)" && break
     if [ -s "$STATE" ] && grep -q 'stall=1' "$STATE"; then
       fail "the fixed build stalled at ${elapsed}s on a still screen"
-      emu logcat -d -v time -s PocketDeckSvc:I > "$E/logcat-after.txt" 2>/dev/null || true
+      emu logcat -d -v time -s ContiguaSvc:I > "$E/logcat-after.txt" 2>/dev/null || true
       grep -E 'heartbeat|no repeat' "$E/logcat-after.txt" | tail -20 || true
       stop_app
       return
@@ -324,7 +324,7 @@ phase_after() {
     ''|*[!0-9]*) fail "no still count on the Mac" ;;
     *) [ "$mac" -ge 25 ] && [ "$mac" -le 35 ] || fail "Mac stills $mac is not about 29" ;;
   esac
-  emu logcat -d -v time -s PocketDeckSvc:I > "$E/logcat-after.txt" 2>/dev/null || true
+  emu logcat -d -v time -s ContiguaSvc:I > "$E/logcat-after.txt" 2>/dev/null || true
   say "AFTER RESULT: done (the window stays open for the stall phase)"
 }
 
@@ -333,8 +333,8 @@ phase_stall() {
   local offset
   offset="$(phone_offset "$(now)")"
   say "phone clock offset ${offset}s"
-  emu shell setprop debug.pocketdeck.freeze_drain 1 >/dev/null 2>&1 || true
-  [ "$(emu shell getprop debug.pocketdeck.freeze_drain | tr -d '\r')" = "1" ] ||
+  emu shell setprop debug.contigua.freeze_drain 1 >/dev/null 2>&1 || true
+  [ "$(emu shell getprop debug.contigua.freeze_drain | tr -d '\r')" = "1" ] ||
     { fail "the freeze property did not stick"; stop_app; return; }
   app_alive || { fail "the Mac app is gone before the stall phase"; stop_app; return; }
   local frozen at last_phone last_count delta
@@ -342,7 +342,7 @@ phase_stall() {
   if ! at="$(watch_state 'stall=1' 20 "$frozen")"; then
     fail "a frozen drain never stalled"
     app_alive || say "the Mac app had exited"
-    emu logcat -d -v time -s PocketDeckSvc:I > "$E/logcat-stall.txt" 2>/dev/null || true
+    emu logcat -d -v time -s ContiguaSvc:I > "$E/logcat-stall.txt" 2>/dev/null || true
     mac_log "$APP_PID" 'stall|still|closed' | tail -5
     stop_app
     return
@@ -356,7 +356,7 @@ phase_stall() {
     fail "the stall came ${delta}s after the last still, outside 1.5-2.5 s"
   mac_log "$APP_PID" 'stall=1' | tail -1
   assert_no_dock_bound "STALL"
-  emu logcat -d -v time -s PocketDeckSvc:I > "$E/logcat-stall.txt" 2>/dev/null || true
+  emu logcat -d -v time -s ContiguaSvc:I > "$E/logcat-stall.txt" 2>/dev/null || true
   stop_app
   say "STALL RESULT: done"
 }
@@ -374,13 +374,13 @@ main() {
 
   if [ ! -x "$APP" ]; then
     say "building the e2e Mac bundle"
-    bash "$WT/macos/scripts/bundle.sh" "$WT/macos/build/e2e/PocketDeck.app" --variant e2e ||
+    bash "$WT/macos/scripts/bundle.sh" "$WT/macos/build/e2e/Contigua.app" --variant e2e ||
       { say "the Mac bundle did not build"; exit 1; }
   fi
 
   # A clean profile: the first launch pairs (and must), the rest reuse the pins.
-  defaults delete "dev.pocketdeck.mac.$PROFILE" >/dev/null 2>&1 || true
-  rm -rf "$HOME/Library/Application Support/PocketDeck-$PROFILE"
+  defaults delete "app.contigua.mac.$PROFILE" >/dev/null 2>&1 || true
+  rm -rf "$HOME/Library/Application Support/Contigua-$PROFILE"
   disable_dock_auto || { say "could not turn the Dock identity off for this profile"; exit 1; }
 
   say "staging the after APK as the boot's own APK"

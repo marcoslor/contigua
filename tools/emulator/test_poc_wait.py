@@ -39,7 +39,7 @@ class FakeAdb(object):
             stderr = ""
         result = Result()
         if args and args[0] == "uiautomator":
-            result.stdout = "UI hierarchy dumped to /sdcard/pocketdeck-ui.xml"
+            result.stdout = "UI hierarchy dumped to /sdcard/contigua-ui.xml"
         elif args and args[0] == "cat":
             result.stdout = DIALOG
         return result

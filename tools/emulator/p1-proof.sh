@@ -64,8 +64,8 @@ if [ "$MODE" = dry ] && [ -z "${PD_PROOF_WORK:-}" ]; then
     WORK=/tmp/pd-direct-p1-dry
 fi
 PROFILE="pathsemu$$"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+APP="$ROOT/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua"
 FAIL=0
 PHASE=""
 # --dry-run coverage marks (see the dry section below); a no-op otherwise.
@@ -111,15 +111,15 @@ wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
     # made that fatal at boot 10 (pair PASS, then a dead boot).
     local deadline=$(( $(date +%s) + cap ))
     if [ "$MODE" = dry ]; then
-        printf '10-31 08:14:47.870 I/PocketDeckSvc( 3679): session slot: live --ended--> free\n' > "$log"
+        printf '10-31 08:14:47.870 I/ContiguaSvc( 3679): session slot: live --ended--> free\n' > "$log"
         printf '[p1-proof] %s: the phone slot is free (dry)\n' "$label"
         return 0
     fi
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
+        emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$log"
         if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
             printf '[p1-proof] %s: the phone slot is free (%s)\n' "$label" \
-                "$(grep -E 'session slot: .*--> free' "$log" | tail -1 | sed 's/^.*PocketDeckSvc([^)]*): //')"
+                "$(grep -E 'session slot: .*--> free' "$log" | tail -1 | sed 's/^.*ContiguaSvc([^)]*): //')"
             return 0
         fi
         sleep 0.25
@@ -316,7 +316,7 @@ if [ "$MODE" = check ]; then
         # an empty log runs the 1 s cap out and returns 1.
         SLOT_LINE=''
         emu() { printf '%s\n' "$SLOT_LINE"; }
-        SLOT_LINE='10-31 09:00:00.000  123  123 I PocketDeckSvc(  123): session slot: live --ended--> free'
+        SLOT_LINE='10-31 09:00:00.000  123  123 I ContiguaSvc(  123): session slot: live --ended--> free'
         if wait_slot_free "$checkdir/slot-free.log" 5 pair >/dev/null 2>&1; then
             printf 'P1-PROOF CHECK: wait_slot_free sees a free slot\n'
         else
@@ -431,14 +431,14 @@ if [ "$MODE" = dry ]; then
     # and `paths: sending`, added after it).
     mkdir -p "$WORK/dry"
     cat > "$WORK/dry/mac-join.log" <<'EOF'
-2026-10-31 08:14:11.263548-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] tls connected (path 1a8a3f7c); hello v4
-2026-10-31 08:14:13.283628-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] tls connected (path f7fcdb99); hello v4
-2026-10-31 08:14:13.300000-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] paths: attached f7fcdb99 (paths 2)
+2026-10-31 08:14:11.263548-0300  localhost Contigua[59172]: [app.contigua.mac:session] tls connected (path 1a8a3f7c); hello v4
+2026-10-31 08:14:13.283628-0300  localhost Contigua[59172]: [app.contigua.mac:session] tls connected (path f7fcdb99); hello v4
+2026-10-31 08:14:13.300000-0300  localhost Contigua[59172]: [app.contigua.mac:session] paths: attached f7fcdb99 (paths 2)
 EOF
     : > "$WORK/dry/mac-grace.log"
     cp "$DRY_EVIDENCE/phone-join.log" "$WORK/dry/phone-join.log" 2>/dev/null ||
-        printf '%s\n' '10-31 08:14:11.522 I/PocketDeckSvc( 3679): session slot: free --adopted--> live' \
-            '10-31 08:14:14.764 I/PocketDeckSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
+        printf '%s\n' '10-31 08:14:11.522 I/ContiguaSvc( 3679): session slot: free --adopted--> live' \
+            '10-31 08:14:14.764 I/ContiguaSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
             > "$WORK/dry/phone-join.log"
     # Boot 8 predates the `(paths N)` suffix on the phone's joined line; the
     # canned log carries the line the current build prints.
@@ -450,19 +450,19 @@ text = re.sub(r'(paths: joined [0-9a-f]+)(?! \(paths )', r'\1 (paths 2)', text)
 open(path, "w").write(text)
 PY
     cp "$DRY_EVIDENCE/phone-drop.log" "$WORK/dry/phone-drop.log" 2>/dev/null ||
-        printf '%s\n' '10-31 08:14:27.698 I/PocketDeckSvc( 3679): drop 153630531: streaming 33554432 bytes' \
-            '10-31 08:14:28.281 I/PocketDeckSvc( 3679): drop 153630531: saved /sdcard/Download/PocketDeck/pd-direct-p1.bin' \
+        printf '%s\n' '10-31 08:14:27.698 I/ContiguaSvc( 3679): drop 153630531: streaming 33554432 bytes' \
+            '10-31 08:14:28.281 I/ContiguaSvc( 3679): drop 153630531: saved /sdcard/Download/Contigua/pd-direct-p1.bin' \
             > "$WORK/dry/phone-drop.log"
     cp "$DRY_EVIDENCE/phone-grace.log" "$WORK/dry/phone-grace.log" 2>/dev/null ||
-        printf '%s\n' '10-31 08:14:47.923 I/PocketDeckSvc( 3679): paths: joined 1ece914d (paths 2)' \
-            '10-31 08:15:25.185 I/PocketDeckSvc( 3679): paths: ended graceExpired' \
-            '10-31 08:15:25.227 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
+        printf '%s\n' '10-31 08:14:47.923 I/ContiguaSvc( 3679): paths: joined 1ece914d (paths 2)' \
+            '10-31 08:15:25.185 I/ContiguaSvc( 3679): paths: ended graceExpired' \
+            '10-31 08:15:25.227 I/ContiguaSvc( 3679): session slot: live --ended--> free' \
             > "$WORK/dry/phone-grace.log"
-    printf '%s\n' '10-31 08:14:11.522 I/PocketDeckSvc( 3679): session slot: free --adopted--> live' \
-        '10-31 08:14:14.764 I/PocketDeckSvc( 3679): session 1f8f4b53: welcome (protocol 4)' \
-        '10-31 08:14:14.764 I/PocketDeckSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
+    printf '%s\n' '10-31 08:14:11.522 I/ContiguaSvc( 3679): session slot: free --adopted--> live' \
+        '10-31 08:14:14.764 I/ContiguaSvc( 3679): session 1f8f4b53: welcome (protocol 4)' \
+        '10-31 08:14:14.764 I/ContiguaSvc( 3679): paths: joined f7fcdb99 (paths 2)' \
         > "$WORK/dry/phone-grace2.log"
-    printf '%s\n' '10-31 08:14:47.870 I/PocketDeckSvc( 3679): session slot: live --ended--> free' \
+    printf '%s\n' '10-31 08:14:47.870 I/ContiguaSvc( 3679): session slot: live --ended--> free' \
         > "$WORK/dry/phone-pair.log"
     printf '%s\n' '-- phone evidence (dry-run: no device) --' \
         > "$WORK/dry/phone-evidence.log"
@@ -490,9 +490,9 @@ PY
                     sleep 0.1
                 done
                 {
-                    printf '2026-10-31 08:14:27.719496-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:app] drop: sending 33554432 bytes\n'
-                    printf '2026-10-31 08:14:27.900000-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:session] paths: sending 1a8a3f7c -> f7fcdb99 (failure)\n'
-                    printf '2026-10-31 08:14:28.317404-0300  localhost PocketDeck[59172]: [dev.pocketdeck.mac:app] drop: ok: saved\n'
+                    printf '2026-10-31 08:14:27.719496-0300  localhost Contigua[59172]: [app.contigua.mac:app] drop: sending 33554432 bytes\n'
+                    printf '2026-10-31 08:14:27.900000-0300  localhost Contigua[59172]: [app.contigua.mac:session] paths: sending 1a8a3f7c -> f7fcdb99 (failure)\n'
+                    printf '2026-10-31 08:14:28.317404-0300  localhost Contigua[59172]: [app.contigua.mac:app] drop: ok: saved\n'
                 } >> "$WORK/mac-join.log"
                 ;;
             grace|grace-rejoin)
@@ -510,9 +510,9 @@ PY
                 fi
                 sleep 0.3
                 {
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] attempt: ready --hello--> hello (path aaaaaaaa)\n' "$(dry_stamp)"
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] attempt: hello --welcome--> welcomed (path aaaaaaaa)\n' "$(dry_stamp)"
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: attached bbbbbbbb (paths 2)\n' "$(dry_stamp)"
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] attempt: ready --hello--> hello (path aaaaaaaa)\n' "$(dry_stamp)"
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] attempt: hello --welcome--> welcomed (path aaaaaaaa)\n' "$(dry_stamp)"
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: attached bbbbbbbb (paths 2)\n' "$(dry_stamp)"
                 } >> "$mac_log"
                 # The first black-hole demotes the current path (a lost pong).
                 for _ in $(seq 1 600); do
@@ -520,20 +520,20 @@ PY
                     sleep 0.1
                 done
                 {
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n' "$(dry_stamp)"
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: live --pong-lost--> live\n' "$(dry_stamp)"
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n' "$(dry_stamp)"
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: live --pong-lost--> live\n' "$(dry_stamp)"
                 } >> "$mac_log"
                 # The second one leaves only standbys: the grace starts.
                 for _ in $(seq 1 600); do
                     grep -q 'mode blackhole' "$ctl_b" 2>/dev/null && break
                     sleep 0.1
                 done
-                printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: live --pong-lost--> orphaned\n' "$(dry_stamp)" \
+                printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: live --pong-lost--> orphaned\n' "$(dry_stamp)" \
                     >> "$mac_log"
                 printf 'bar_offline=1\n' > "$WORK/chrome-grace.txt"
                 if [ "$PHASE" = grace ]; then
                     sleep 30
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: orphaned --grace--> ended\n' "$(dry_stamp)" \
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: orphaned --grace--> ended\n' "$(dry_stamp)" \
                         >> "$mac_log"
                 else
                     # The route comes back: the sockets reset, the Mac dials joins.
@@ -542,7 +542,7 @@ PY
                         sleep 0.1
                     done
                     sleep 0.3
-                    printf '%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: orphaned --up--> live\n' "$(dry_stamp)" \
+                    printf '%s  localhost Contigua[1]: [app.contigua.mac:session] paths: orphaned --up--> live\n' "$(dry_stamp)" \
                         >> "$mac_log"
                     # The brief's 20 s of frames, canned: one every 500 ms.
                     "$PYTHON" - "$WORK/grace2-frames.tsv" <<'PY'
@@ -553,9 +553,9 @@ with open(sys.argv[1], "a") as f:
         f.write("%.6f\t1\tcccccccc\n" % (t + i * 0.5))
 PY
                     {
-                        printf '11-01 21:00:05.000 I/PocketDeckSvc( 1): paths: joined cccccccc (paths 2)\n'
-                        printf '11-01 21:00:05.010 I/PocketDeckSvc( 1): paths: orphaned --up--> live cccccccc\n'
-                        printf '11-01 21:00:05.010 I/PocketDeckSvc( 1): session slot: live --join(own session)--> live\n'
+                        printf '11-01 21:00:05.000 I/ContiguaSvc( 1): paths: joined cccccccc (paths 2)\n'
+                        printf '11-01 21:00:05.010 I/ContiguaSvc( 1): paths: orphaned --up--> live cccccccc\n'
+                        printf '11-01 21:00:05.010 I/ContiguaSvc( 1): session slot: live --join(own session)--> live\n'
                     } >> "$phone_log"
                 fi
                 ;;
@@ -593,15 +593,15 @@ PY
                 esac ;;
             shell)
                 case "$*" in
-                    *"ls -la /sdcard/Download/PocketDeck"*)
+                    *"ls -la /sdcard/Download/Contigua"*)
                         printf '%s\n' 'total 32768' \
                             '-rw------- 1 u0_a200 u0_a200 12582912 Jan  1 00:00 .part-33554432-0123456789ab' ;;
                     *sha256sum*)
-                        printf '%s  /sdcard/Download/PocketDeck/dry.bin\n' \
+                        printf '%s  /sdcard/Download/Contigua/dry.bin\n' \
                             "$(shasum -a 256 "$WORK"/pd-direct-p1-*.bin 2>/dev/null | awk '{print $1}')" ;;
                     *"dumpsys power"*) printf '  mWakefulness=Awake\n' ;;
                     *"dumpsys display"*) printf '  mScreenState=ON\n' ;;
-                    *"dumpsys activity"*) printf '  ResumedActivity: ActivityRecord{1 u0 dev.pocketdeck/.app.MainActivity t1}\n' ;;
+                    *"dumpsys activity"*) printf '  ResumedActivity: ActivityRecord{1 u0 app.contigua/.app.MainActivity t1}\n' ;;
                     *"pidof"*) printf '1234\n' ;;
                     *"dumpsys meminfo"*) printf 'Total RAM: 2,532,116K\n' ;;
                     *) : ;;
@@ -655,7 +655,7 @@ refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream sta
         return 0
     fi
     /usr/bin/log show --last 10m --info --style syslog \
-        --predicate "processID == $1 AND subsystem == \"dev.pocketdeck.mac\"" \
+        --predicate "processID == $1 AND subsystem == \"app.contigua.mac\"" \
         2>/dev/null >> "$2"
 }
 
@@ -664,14 +664,14 @@ refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream sta
 # wait-prompt does not read. flow.sh waits for the activity to be resumed before
 # pairing; this is the same step, and the proof cannot pair without it.
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
-        # Android prints `ResumedActivity: ActivityRecord{… dev.pocketdeck/.app.MainActivity …}`
+        # Android prints `ResumedActivity: ActivityRecord{… app.contigua/.app.MainActivity …}`
         # (the short component form); the old full-name pattern never matched.
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 3
             return 0
         fi
@@ -679,7 +679,7 @@ bring_app_forward() {
         # prompt that is only a notification is invisible to wait-prompt
         # (static-stall lost a boot to this). One relaunch at 10 s.
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -699,7 +699,7 @@ SWIPE_PID=""
 CHROME_PID=""
 # The Mac window is real: another agent's visible run could close it with a
 # stray key, so the run holds the machine-wide e2e lock while it is up.
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 # The automatic Dock identity (fix/dock-ack, in progress) quits an
 # automatically launched shim 30 s after launch and Quit ↔ close then closes the
@@ -737,9 +737,9 @@ release_e2e_lock() {
 }
 
 disable_dock_auto() {
-    defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || return 1
+    defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || return 1
     DOCK_DEFAULT_SET=1
-    [ "$(defaults read "dev.pocketdeck.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
+    [ "$(defaults read "app.contigua.mac.$PROFILE" showAppsInDock 2>/dev/null)" = "0" ]
 }
 
 # assert_no_dock_bound — the other half of the Dock bug: a shim bound to this
@@ -773,15 +773,15 @@ phone_evidence() {
     {
         printf '== phone evidence: %s at %s ==\n' "$label" "$(date '+%Y-%m-%d %H:%M:%S')"
         printf '%s\n' '-- pids --'
-        printf 'pidof dev.pocketdeck: %s\n' "$(emu shell "pidof dev.pocketdeck" 2>/dev/null | tr -d '\r')"
-        printf 'pidof dev.pocketdeck:pocketdeck: %s\n' "$(emu shell "pidof dev.pocketdeck:pocketdeck" 2>/dev/null | tr -d '\r')"
+        printf 'pidof app.contigua: %s\n' "$(emu shell "pidof app.contigua" 2>/dev/null | tr -d '\r')"
+        printf 'pidof app.contigua:contigua: %s\n' "$(emu shell "pidof app.contigua:contigua" 2>/dev/null | tr -d '\r')"
         printf '%s\n' '-- ps --'
-        emu shell "ps -A -o PID,PPID,USER,NAME 2>/dev/null | grep -Ei 'pocketdeck|shizuku'" 2>/dev/null | tr -d '\r'
+        emu shell "ps -A -o PID,PPID,USER,NAME 2>/dev/null | grep -Ei 'contigua|shizuku'" 2>/dev/null | tr -d '\r'
         printf '%s\n' '-- captured picks --'
         emu shell "dumpsys activity activities 2>/dev/null | grep -E 'ResumedActivity|mFocusedApp|topResumedActivity'" 2>/dev/null | tr -d '\r'
         printf '%s\n' '-- logcat (app, crash, process death, Shizuku) --'
         ADB_TIMEOUT=60 emu logcat -d -v time -b all 2>/dev/null | grep -E \
-            'PocketDeckSvc|PocketDeckApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|tombstone|am_crash|am_anr|lowmemorykiller|Force finishing|Process dev\.pocketdeck|Killing [0-9]+:dev\.pocketdeck'
+            'ContiguaSvc|ContiguaApp|AndroidRuntime|FATAL| DEBUG |Shizuku|shizuku|tombstone|am_crash|am_anr|lowmemorykiller|Force finishing|Process dev\.contigua|Killing [0-9]+:dev\.contigua'
         printf '%s\n' '-- end --'
     } > "$log" 2>&1
     printf '[p1-proof] %s: wrote %s (%s lines)\n' "$label" "$log" "$(wc -l < "$log" | tr -d ' ')"
@@ -958,7 +958,7 @@ cleanup() {
     done
     stop_proxies
     if [ "$DOCK_DEFAULT_SET" = 1 ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
         DOCK_DEFAULT_SET=0
     fi
     release_e2e_lock
@@ -983,7 +983,7 @@ start_rig() {
         if [ -s "$DRY_EVIDENCE/start.log" ]; then
             cat "$DRY_EVIDENCE/start.log" > "$WORK/start.log"
         else
-            printf 'POCKETDECK_ADDR=127.0.0.1:47811\nPOCKETDECK_DEVICE_PORT=34567\n' \
+            printf 'CONTIGUA_ADDR=127.0.0.1:47811\nCONTIGUA_DEVICE_PORT=34567\n' \
                 > "$WORK/start.log"
         fi
         return 0
@@ -996,9 +996,9 @@ if ! start_rig; then
     # different signing key, which -r -d cannot replace, so uninstall it and
     # let start.sh install this tree's APK. (The adb error itself lands in
     # .agent/emu/install-failure.log, not in start.log's last line.)
-    if device_present && grep -q 'could not install dev.pocketdeck' "$WORK/start.log"; then
-        printf '[p1-proof] removing the AVD copy of dev.pocketdeck so this tree signs it\n'
-        "$ADB" -s "$SERIAL" uninstall dev.pocketdeck >/dev/null 2>&1 || true
+    if device_present && grep -q 'could not install app.contigua' "$WORK/start.log"; then
+        printf '[p1-proof] removing the AVD copy of app.contigua so this tree signs it\n'
+        "$ADB" -s "$SERIAL" uninstall app.contigua >/dev/null 2>&1 || true
         if ! start_rig; then
             tail -40 "$WORK/start.log"
             grep -q 'shizuku_server is not running' "$WORK/start.log" &&
@@ -1014,8 +1014,8 @@ if ! start_rig; then
         exit 1
     fi
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 emu logcat -c >/dev/null 2>&1 || true
@@ -1110,7 +1110,7 @@ sleep 3
 section join
 emu logcat -c >/dev/null 2>&1 || true
 # A .part-* from an earlier rig run would trip the 8 MiB "drop started" check.
-emu shell "rm -f /sdcard/Download/PocketDeck/.part-*" >/dev/null 2>&1 || true
+emu shell "rm -f /sdcard/Download/Contigua/.part-*" >/dev/null 2>&1 || true
 # Each proxy gets its own adb forward: two concurrent TLS handshakes must not
 # share one forward's socket path (path A kept failing parse on the phone).
 emu forward --remove tcp:47812 >/dev/null 2>&1 || true
@@ -1134,7 +1134,7 @@ start_second_path join delay 1500 "$WORK/mac-join.log"
 
 JOINED=0
 for _ in $(seq 1 160); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-join.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-join.log"
     grep -q 'paths: joined' "$WORK/phone-join.log" && { JOINED=1; break; }
     sleep 0.25
 done
@@ -1231,7 +1231,7 @@ PART_AT_BLACKHOLE=""
 # 4 s transfer, so the size came from nowhere and the cut landed after the
 # file was already saved.
 part_size() {
-    emu shell "ls -la /sdcard/Download/PocketDeck 2>&1" 2>/dev/null | tr -d '\r' |
+    emu shell "ls -la /sdcard/Download/Contigua 2>&1" 2>/dev/null | tr -d '\r' |
         awk '/\.part-/ { print $5; exit }'
 }
 for _ in $(seq 1 240); do
@@ -1241,7 +1241,7 @@ for _ in $(seq 1 240); do
 done
 if [ "$STARTED" = 0 ]; then
     # Keep what the folder really held at the cut, for the next boot.
-    emu shell "ls -la /sdcard/Download/PocketDeck 2>&1" > "$WORK/drop-listing.log" 2>&1 || true
+    emu shell "ls -la /sdcard/Download/Contigua 2>&1" > "$WORK/drop-listing.log" 2>&1 || true
 fi
 if [ "$STARTED" = 1 ]; then
     ok "the drop reached 8 MiB on the founder (.part $PART_AT_BLACKHOLE bytes at the cut)"
@@ -1266,13 +1266,13 @@ SAVED=0
 # Two 60 s pieces: a single wait may never be longer than the debug-input cap.
 for _piece in 1 2; do
     for _ in $(seq 1 240); do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-drop.log"
+        emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-drop.log"
         grep -q 'drop [0-9]*: saved' "$WORK/phone-drop.log" && { SAVED=1; break; }
         sleep 0.25
     done
     [ "$SAVED" = 1 ] && break
 done
-TARGET="/sdcard/Download/PocketDeck/$NAME"
+TARGET="/sdcard/Download/Contigua/$NAME"
 if [ "$SAVED" = 1 ]; then
     ok "the phone saved the file after the black-hole: $(grep -o 'drop [0-9]*: saved .*' "$WORK/phone-drop.log" | tail -1)"
 else
@@ -1453,18 +1453,18 @@ def stamp(epoch):
         "%Y-%m-%d %H:%M:%S.%f") + "+0000"
 
 with open(mac_path, "w") as fp:
-    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] tls connected (path aaaaaaaa); hello v4\n" % stamp(t0 - 9.0))
-    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] tls connected (path bbbbbbbb); hello v4\n" % stamp(t0 - 7.5))
-    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: attached bbbbbbbb (paths 2)\n" % stamp(t0 - 7.4))
-    fp.write("%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n" % stamp(t0 + 3.2))
+    fp.write("%s  localhost Contigua[1]: [app.contigua.mac:session] tls connected (path aaaaaaaa); hello v4\n" % stamp(t0 - 9.0))
+    fp.write("%s  localhost Contigua[1]: [app.contigua.mac:session] tls connected (path bbbbbbbb); hello v4\n" % stamp(t0 - 7.5))
+    fp.write("%s  localhost Contigua[1]: [app.contigua.mac:session] paths: attached bbbbbbbb (paths 2)\n" % stamp(t0 - 7.4))
+    fp.write("%s  localhost Contigua[1]: [app.contigua.mac:session] paths: sending aaaaaaaa -> bbbbbbbb (pong-lost)\n" % stamp(t0 + 3.2))
 with open(chrome_path, "w") as fp:
     for offset in range(-12, 62):
         state = "stall=1 stall_pill=1 bar_offline=0 loading=0" if offset == 2 else \
             "stall=0 stall_pill=0 bar_offline=0 loading=0"
         fp.write("%.6f\t%s\n" % (t0 + offset, state))
 with open(phone_path, "w") as fp:
-    fp.write("11-01 21:00:00.000 I/PocketDeckSvc( 1): session 1f8f4b53: welcome (protocol 4)\n")
-    fp.write("11-01 21:00:00.100 I/PocketDeckSvc( 1): paths: joined bbbbbbbb (paths 2)\n")
+    fp.write("11-01 21:00:00.000 I/ContiguaSvc( 1): session 1f8f4b53: welcome (protocol 4)\n")
+    fp.write("11-01 21:00:00.100 I/ContiguaSvc( 1): paths: joined bbbbbbbb (paths 2)\n")
 PY
     MIRROR_RC=0
     "$PYTHON" "$HERE/mirror-blackhole.py" --frames "$WORK/mirror-frames.tsv" \
@@ -1503,7 +1503,7 @@ else
     start_second_path mirror pass 0 "$WORK/mac-mirror.log"
     MIRROR_JOINED=0
     for _ in $(seq 1 160); do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
+        emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
         grep -q 'paths: joined .* (paths 2)' "$WORK/phone-mirror.log" && { MIRROR_JOINED=1; break; }
         sleep 0.25
     done
@@ -1558,7 +1558,7 @@ PY
         wait "$CHROME_PID" 2>/dev/null || true
         CHROME_PID=""
         printf '[p1-proof] the black-hole was set at %s; 60 s watched\n' "$T0"
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
+        emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-mirror.log"
         grep -E 'paths:|session [0-9a-f]+: welcome|session slot:' "$WORK/phone-mirror.log" \
             > "$WORK/phone-paths-mirror.log" 2>/dev/null || true
         cp "$WORK/phone-paths-mirror.log" "$MIRROR_CONFIRM/phone-paths.log" 2>/dev/null || true
@@ -1575,7 +1575,7 @@ PY
             bad "the mirror analyser did not run (rc=$MIRROR_RC): $(tail -3 "$WORK/mirror-blackhole.txt" | tr '\n' ' ')"
         fi
         cp "$WORK/mirror-frames.tsv" "$MIRROR_CONFIRM/mirror-frames-raw.tsv" 2>/dev/null || true
-        emu shell "dumpsys meminfo dev.pocketdeck:pocketdeck 2>/dev/null" 2>/dev/null | tr -d '\r' |
+        emu shell "dumpsys meminfo app.contigua:contigua 2>/dev/null" 2>/dev/null | tr -d '\r' |
             grep -E 'TOTAL|Java Heap|Native Heap' > "$WORK/phone-mirror-meminfo.txt" || true
     fi
     : > "$WORK/mirror-stop"
@@ -1637,7 +1637,7 @@ wait_for 25 grep -q 'hello --welcome--> welcomed' "$WORK/mac-grace.log" \
 start_second_path grace pass 1500 "$WORK/mac-grace.log"
 GRACE_JOINED=0
 for _ in $(seq 1 160); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace.log"
     grep -q 'paths: joined' "$WORK/phone-grace.log" && { GRACE_JOINED=1; break; }
     sleep 0.25
 done
@@ -1696,7 +1696,7 @@ else
 fi
 SLOT_FREE=0
 for _ in $(seq 1 160); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace.log"
     grep -q 'session slot: .*--> free' "$WORK/phone-grace.log" && { SLOT_FREE=1; break; }
     sleep 0.25
 done
@@ -1709,7 +1709,7 @@ grep -q 'paths: ended graceExpired' "$WORK/phone-grace.log" \
     && ok "the phone's own path machine also reached its grace end" \
     || printf '[p1-proof] note: the phone session tore down before its path-machine grace\n'
 sleep 2
-emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace.log"
 grep -E 'power:|panel given back|phone back to sleep' "$WORK/phone-grace.log" > "$WORK/phone-power.log" 2>/dev/null || true
 emu shell dumpsys power 2>/dev/null | grep -E 'mWakefulness|Display Power' > "$WORK/dumpsys-power.txt" 2>/dev/null || true
 emu shell dumpsys display 2>/dev/null | grep -E 'mScreenState|mState=' | head -5 > "$WORK/dumpsys-display.txt" 2>/dev/null || true
@@ -1757,7 +1757,7 @@ wait_for 25 grep -q 'hello --welcome--> welcomed' "$WORK/mac-grace2.log" \
 start_second_path grace2 pass 1500 "$WORK/mac-grace2.log"
 GRACE_JOINED=0
 for _ in $(seq 1 160); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
     grep -q 'paths: joined' "$WORK/phone-grace2.log" && { GRACE_JOINED=1; break; }
     sleep 0.25
 done
@@ -1815,7 +1815,7 @@ else
 fi
 GRACE_JOINED2=0
 for _ in $(seq 1 40); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
     grep -q 'paths: joined' "$WORK/phone-grace2.log" && [ "$(grep -c 'paths: joined' "$WORK/phone-grace2.log")" -ge 2 ] && { GRACE_JOINED2=1; break; }
     sleep 0.25
 done
@@ -1855,7 +1855,7 @@ fi
 # path and every later marker was ignored.
 GRACE_PHONE_LIVE=""
 for _ in $(seq 1 20); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
+    emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-grace2.log"
     GRACE_LAST_LINE="$(grep -E 'paths: .* --(up|switch|down|failed|pong-lost)--> ' "$WORK/phone-grace2.log" 2>/dev/null | tail -1)"
     GRACE_PHONE_LIVE="$(sed -n 's/.*--> live \([0-9a-f]\{8\}\).*/\1/p' <<<"$GRACE_LAST_LINE")"
     [ -n "$GRACE_PHONE_LIVE" ] && break
@@ -1943,7 +1943,7 @@ cert, key = proto.identity_paths(identity)
 host, port = os.environ["ADDR"].rsplit(":", 1)
 raw = socket.create_connection((host, int(port)), timeout=10)
 context = proto.tls_client_context(cert, key)
-sock = context.wrap_socket(raw, server_hostname="pocketdeck")
+sock = context.wrap_socket(raw, server_hostname="contigua")
 sock.sendall(proto.pack_json({"t": "hello", "v": 3, "clientId": "v3-probe",
                               "name": "v3 probe"}))
 frame = proto.recv_frame(sock)
@@ -1988,7 +1988,7 @@ if poc --addr "$ADDR" --serial "$SERIAL" \
 else
     bad "the paired probe did not check out: $(tail -2 "$WORK/deckctl-check.log")"
 fi
-emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log"
+emu logcat -d -v time -s ContiguaSvc:I 2>/dev/null > "$WORK/phone-final.log"
 
 # --- evidence, on success too ----------------------------------------------
 section evidence

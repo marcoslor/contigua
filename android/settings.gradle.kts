@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "pocketdeck"
+rootProject.name = "contigua"
 include(":app")

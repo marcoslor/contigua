@@ -2,7 +2,7 @@
 
 In any Android app, Share → **Send to Mac** sends the item to the connected Mac: a link
 opens in the Mac's default browser, other text lands on the Mac clipboard, an image is
-saved to `~/Downloads/PocketDeck/` and put on the clipboard.
+saved to `~/Downloads/Contigua/` and put on the clipboard.
 
 ## Phone: share target → session
 - `app/ShareActivity`: exported, `Theme.NoDisplay`, no history. Filters: `SEND` text/plain
@@ -63,7 +63,7 @@ same gate before any probe.
      no `-c` of its own, so it runs the command through `sh` instead.
 
   The command is `CLASSPATH=<apk path> exec app_process /system/bin
-  dev.pocketdeck.server.ClipHelperMain`, with the APK path the watchdog already uses
+  app.contigua.server.ClipHelperMain`, with the APK path the watchdog already uses
   (`appApkPath`).
 - One explicit machine, `Off → Starting → Ready → Failed(reason)`. A death before ready
   tries the next form at once and spends no restart; when every form has died the state
@@ -101,7 +101,7 @@ same gate before any probe.
 ## Mac: validation (the Mac never trusts the phone)
 - Text: trimmed; if it is exactly one `http`/`https` URL with a host, or contains exactly one
   such URL among other words, that URL is opened with `NSWorkspace.open`. Everything else —
-  `file:`, `javascript:`, `pocketdeck:`, `intent:`, custom schemes, two URLs — goes to the
+  `file:`, `javascript:`, `contigua:`, `intent:`, custom schemes, two URLs — goes to the
   clipboard as text. Same URL syntax rules as `LinkPolicy` (≤ 8 KiB, no whitespace/control).
 - Clipboard writes from a share are recorded in the clipboard sync's hash first, so they are
   not echoed back as `clip.set`. Notification: "Copied from <phone name>".
@@ -111,7 +111,7 @@ same gate before any probe.
   `[A-Za-z0-9 ._-]`, no leading dot, ≤ 100 chars, extension from the MIME type if missing;
   an existing name gets " 2", " 3"… before the extension. The image goes on the pasteboard
   as a file URL plus image data; notification "Image from <phone>" with "Show in Finder".
-- Folder: `~/Downloads/PocketDeck/` (created on demand); `--share-dir DIR` overrides it.
+- Folder: `~/Downloads/Contigua/` (created on demand); `--share-dir DIR` overrides it.
   `--share-log FILE` records "would open <url>" / notifications instead of acting (e2e).
 
 ## "Open on Mac": text menu and Open with
@@ -125,7 +125,7 @@ Mac"); both send through the same `share.text` pipeline, so the Mac classifies a
 - Both are exported, so the intent is untrusted: the activity dispatches on the alias name, reads
   only that string extra / data URI, and never opens streams.
 - No `autoVerify`, no host: we never claim a domain, we're just one more browser choice.
-- Loop guard: if the user makes PocketDeck the default browser, a Mac → phone `link.open` must not
+- Loop guard: if the user makes Contigua the default browser, a Mac → phone `link.open` must not
   come back. `AndroidLauncher.view` resolves the handlers itself and `LoopGuard.pick` drops our
   package and the resolver, keeping the default when it's another app (`MATCH_ALL`: a default browser otherwise hides the rest); the launch (binder or
   `am start -n`) is always explicit. Only us → `view` fails and the Mac gets the usual error.

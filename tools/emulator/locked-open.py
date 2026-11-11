@@ -16,8 +16,8 @@ shell decides pass or fail. `--self-test` checks the gap and tap arithmetic on
 fixtures, no device.
 
 Why the log markers: the phone's logcat is the only clock both the phone and
-this process share. Before each tap the driver writes `PocketDeckLockedOpen tapN`
-and after the first frame `PocketDeckLockedOpen first-frame`; the shell then
+this process share. Before each tap the driver writes `ContiguaLockedOpen tapN`
+and after the first frame `ContiguaLockedOpen first-frame`; the shell then
 reads that log in order, so "the tap opened a screen" and "the take-over ran
 before the launch" are ordering facts, not clock comparisons between machines.
 """
@@ -30,7 +30,7 @@ sys.path.insert(0, "tools/fakephone")
 import deckctl  # noqa: E402
 import proto  # noqa: E402
 
-TAG = "PocketDeckLockedOpen"
+TAG = "ContiguaLockedOpen"
 
 
 def frame_gaps(times):

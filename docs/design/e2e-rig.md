@@ -10,7 +10,7 @@ records the rules that keep both bounded (ISS-28).
 ## One display identity for every test run
 
 A virtual display's identity is its vendor, product and serial numbers. The
-test display is vendor `0x5044`, product `0xE2E0`, named `PocketDeck e2e`.
+test display is vendor `0x5044`, product `0xE2E0`, named `Contigua e2e`.
 
 - `macos/scripts/pd-vdisplay.swift` (the helper the run holds for its whole
   life) always uses serial `FNV-1a("e2e")`.
@@ -36,7 +36,7 @@ display is not online now.
 
 ## Sweeping test registrations
 
-A test copy registered with LaunchServices can claim `pocketdeck://`, and a
+A test copy registered with LaunchServices can claim `contigua://`, and a
 test build's Share extension can appear in the person's Share menu. A killed
 run never reaches a clean-exit unregister, so the sweep runs at both ends:
 
@@ -49,8 +49,8 @@ run never reaches a clean-exit unregister, so the sweep runs at both ends:
   it lands on `main`.
 - It reads `lsregister -dump` `path:` lines and `pluginkit -m -A -v` paths,
   keeps only paths under an allow-list, and never uses a deny-list:
-  `~/dev/pd-wt/`, `~/dev/pocketdeck/`, `/private/tmp/`, `/tmp/`, `~/.t3/`, and
-  `~/Library/Application Support/PocketDeck-<profile>/` for a non-empty
+  `~/dev/pd-wt/`, `~/dev/contigua/`, `/private/tmp/`, `/tmp/`, `~/.t3/`, and
+  `~/Library/Application Support/Contigua-<profile>/` for a non-empty
   profile suffix (the Dock shims of test profiles).
 - An app's PlugIns' appexes are removed with `pluginkit -r` first, then the
   app with `lsregister -u`; an `.appex` found on its own is removed with
@@ -61,6 +61,6 @@ run never reaches a clean-exit unregister, so the sweep runs at both ends:
   extension; the exit sweep and the next run's start sweep remove it. The
   check's own `unregister_share` stays as the fast path for a clean exit.
 
-The person's `/Applications/PocketDeck.app`, its two extensions, the default
-profile folder `~/Library/Application Support/PocketDeck/` and every display
+The person's `/Applications/Contigua.app`, its two extensions, the default
+profile folder `~/Library/Application Support/Contigua/` and every display
 that is not the rig's are outside the allow-list and are never touched.

@@ -36,7 +36,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PocketDeck">
+        android:theme="@style/Theme.Contigua">
 
         <activity
             android:name=".app.MainActivity"
@@ -47,13 +47,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!-- The Mac's pairing QR, opened by a camera app or by
-                 `am start -a android.intent.action.VIEW -d pocketdeck://pair?...`.
+                 `am start -a android.intent.action.VIEW -d contigua://pair?...`.
                  Scanning is the consent: it takes the same path as the scanner. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="pocketdeck" android:host="pair" />
+                <data android:scheme="contigua" android:host="pair" />
             </intent-filter>
         </activity>
 
@@ -177,7 +177,7 @@
              (.drop.ShareTrampoline). -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="dev.pocketdeck.fileprovider"
+            android:authorities="app.contigua.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

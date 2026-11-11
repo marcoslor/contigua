@@ -8,7 +8,7 @@ every video frame's arrival time is on disk.
 
     python3 tools/netem/losslab.py <condition> [--runs N]
 
-Run it through ~/dev/pocketdeck/.agent/heavy.sh: it starts a container.
+Run it through ~/dev/contigua/.agent/heavy.sh: it starts a container.
 Data: /tmp/pd-losslab-<condition>/run<N>/ (frames.tsv, audio.json, ss.txt,
 timeline.json, events.jsonl, app.log, phone.log). Nothing personal is read.
 """
@@ -24,7 +24,7 @@ import threading
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-APP = os.path.join(ROOT, "macos", "build", "e2e", "PocketDeck.app", "Contents", "MacOS", "PocketDeck")
+APP = os.path.join(ROOT, "macos", "build", "e2e", "Contigua.app", "Contents", "MacOS", "Contigua")
 FAKEPHONE_DIR = os.path.join(ROOT, "tools", "fakephone")
 PORT = 47691
 PROFILE = "losslab"
@@ -32,8 +32,8 @@ IMAGE = "pd-losslab-phone:local"
 CONTAINER = "pd-losslab-phone"
 RUN_SECONDS = 30.0
 MEASURE_AFTER_FRAMES = 10
-KEYCHAIN_SERVICE = "dev.pocketdeck.mac." + PROFILE
-DEFAULTS_SUITE = "dev.pocketdeck.mac." + PROFILE
+KEYCHAIN_SERVICE = "app.contigua.mac." + PROFILE
+DEFAULTS_SUITE = "app.contigua.mac." + PROFILE
 
 # name -> (qdisc setup, timeline). Every qdisc is a root netem unless `tbf`.
 # The timeline is a list of (at_s, hold_ms, tc params) pulses: change the
@@ -88,7 +88,7 @@ def run(cmd, **kw):
 def clear_profile():
     while run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE]).returncode == 0:
         pass
-    support = os.path.expanduser("~/Library/Application Support/PocketDeck-" + PROFILE)
+    support = os.path.expanduser("~/Library/Application Support/Contigua-" + PROFILE)
     for name in ("identity.json", "pins.json"):
         try:
             os.remove(os.path.join(support, name))
@@ -255,7 +255,7 @@ def vdisplay_start():
     """One virtual display per batch: the app adopts it instead of creating and
     destroying one per launch (each is a system-wide reconfiguration)."""
     src = os.path.join(ROOT, "macos", "scripts", "pd-vdisplay.swift")
-    tools = "/tmp/pocketdeck-e2e-tools"
+    tools = "/tmp/contigua-e2e-tools"
     os.makedirs(tools, exist_ok=True)
     binary = os.path.join(tools, "pd-vdisplay-%x" % (hash(open(src).read()) & 0xFFFFFFFF))
     if not os.path.exists(binary):

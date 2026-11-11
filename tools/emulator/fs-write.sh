@@ -15,7 +15,7 @@ set -uo pipefail
 DECKCTL="$REPO_ROOT/tools/fakephone/deckctl.py"
 STATE="$CACHE_DIR/deckctl-state.json"
 WORK="$AGENT_DIR/fs-write"
-FOLDER="DCIM/PocketDeck-test"
+FOLDER="DCIM/Contigua-test"
 NAME="pd-test.jpg"
 RENAMED="pd-test-renamed.jpg"
 PASS=0
@@ -25,7 +25,7 @@ ok() { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
 device_present || die "$SERIAL is not running - run tools/emulator/start.sh first"
-DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $SERIAL (is the app running?)"
+DEVPORT="$(ensure_forward)" || die "cannot find the Contigua server port on $SERIAL (is the app running?)"
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 mkdir -p "$WORK"
 
@@ -101,7 +101,7 @@ GOT_SHA="$(emu shell "sha256sum /sdcard/$FOLDER/$NAME" 2>/dev/null | tr -d '\r' 
     || bad "the phone's bytes differ (want $WANT_SHA got ${GOT_SHA:-none})"
 check_alive "the sha256 check"
 
-STAGING="$(emu shell "ls -a /sdcard/$FOLDER" 2>/dev/null | tr -d '\r' | grep -c '^\.pocketdeck-')"
+STAGING="$(emu shell "ls -a /sdcard/$FOLDER" 2>/dev/null | tr -d '\r' | grep -c '^\.contigua-')"
 [ "$STAGING" = "0" ] && ok "no staging file left in the folder" || bad "a staging file is left"
 
 # --- MediaStore -------------------------------------------------------------

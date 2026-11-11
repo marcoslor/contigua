@@ -1,0 +1,2097 @@
+// Shared behaviour for the two window kinds: video routing, resize debounce,
+// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the
+// window chrome (StreamChrome.swift).
+
+import AppKit
+import SwiftUI
+
+/// A stream window whose zoom the app can run itself. AppKit's zoom animation
+/// holds the main run loop for its whole length; while it runs no decoded
+/// frame reaches the display layer, the phone's sender backs up and re-attaches
+/// its encoder when the backlog clears (measured in .agent/zoom-jank). The
+/// controller animates the same frame sequence from its display link instead,
+/// as a live resize, and the window keeps streaming.
+final class StreamWindow: NSWindow {
+    /// Returns true when the window handled the zoom itself.
+    var customZoom: (() -> Bool)?
+
+    override func zoom(_ sender: Any?) {
+        if customZoom?() == true { return }
+        super.zoom(sender)
+    }
+}
+
+class StreamWindowController: NSWindowController, NSWindowDelegate {
+    /// The stream this window shows.
+    let stream: UInt32
+    let videoView: VideoLayerView
+    let chrome: StreamChromeView
+    unowned let manager: WindowManager
+
+    /// This window's chrome style: read from the profile's per-package key on
+    /// open (WindowStyleStore); a window with nothing remembered opens framed.
+    private(set) var style: WindowStyle
+    /// This window's stream strategy (ISS-40), read when it opens and again
+    /// when it resizes. Every key defaults to today's behaviour.
+    private(set) var strategy = MacStreamStrategy()
+    /// The full-screen bar's reveal machine (WIN-8): pure state; this file
+    /// feeds it pointer, menu, timer and full-screen events and runs its
+    /// actions on the chrome.
+    private(set) var fullBar = FullScreenBarMachine()
+    
+    /// The app whose density override this window follows; nil for the phone
+    /// window (its dpi keeps the phone's dp width) and for a link or handoff
+    /// window before the phone names its package.
+    var densityPackage: String? { nil }
+
+    /// The package a drop on this window shares to (SHARE-17). Only an app
+    /// window has one; everywhere else the phone shows its chooser.
+    var dropTargetPackage: String? { nil }
+
+    /// This window's ⌘V image flow (SHARE-16); one per window.
+    private(set) var pasteFlow: PasteFlow?
+
+    /// Where this window's density override lives (WindowDensityStore).
+    var densityKey: String? { densityPackage.flatMap { WindowDensityStore.key(forPackage: $0) } }
+
+    /// The app's stored override; nil means the Settings default applies.
+    var densityOverride: Double? { manager.densityStore.override(forKey: densityKey) }
+
+    /// Whether the window's dpi follows the density setting at all. The phone
+    /// window's does not.
+    var usesDensity: Bool { true }
+
+    /// UI scale: dpi = 160 × backingScale × density (0.75…1.5). The app's
+    /// override, else Settings → General's default.
+    var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
+
+    private(set) var isPaused = false
+
+    /// The opening cover (OpeningCover, docs/UX.md): from the window's open
+    /// until the stream's first frame, then for the retry/failure wording.
+    private(set) var opening = OpeningCover(startedAt: 0)
+    private var openingTimer: Timer?
+    /// The phase on screen, so the timer only redraws when it changes.
+    private var openingPhase: OpeningCover.Phase?
+
+    /// The kinds with an opening cover; a link or handoff window has no icon
+    /// or name to show before its first frame.
+    var showsOpeningCover: Bool { false }
+    var openingName: String { "" }
+    var openingIcon: NSImage? { nil }
+    var openingIsPhone: Bool { false }
+
+    /// The cover is over the window: no input to the phone, and no live
+    /// picture for the watchdog to call stale yet.
+    var isOpening: Bool { showsOpeningCover && opening.isUp }
+
+    /// What freezes the phone-side actions: Live Text (the frame is frozen),
+    /// a stalled picture, the opening cover, a dropped link (WIN-16/PATH-17:
+    /// input is dropped, not queued), or, in the phone window, a cover over
+    /// the mirror. One predicate for the shortcuts, the bar's buttons, the
+    /// Navigate menu and the input mapper.
+    var frozen: Bool { liveText.isActive || isStalled || isOpening || isLinkDown }
+
+    /// The mirror's bar from the keyboard (MIRROR-13): picture ↔ bar(index).
+    /// One machine decides, one place applies it, and every transition is
+    /// logged so a field log shows the path.
+    private(set) var barFocus = BarFocus()
+
+    /// The window's appearance, by name, for the chrome state: the shot check
+    /// and the review read whether a capture really was dark.
+    var barAppearanceName: String {
+        guard let match = window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) else {
+            return "aqua"
+        }
+        return match == .darkAqua ? "darkAqua" : "aqua"
+    }
+
+    /// The bar's focused button for the chrome state (`none` on the picture).
+    var barFocusState: String {
+        barFocus.index.map(String.init) ?? "none"
+    }
+
+    /// The picture watchdog (FrameWatchdog): frames counted from the session
+    /// queue, the decision on the main thread. `window.still` messages are a
+    /// second heartbeat for encoders that drop the repeat on a still screen.
+    @ObservationIgnored let frameClock = FrameClock()
+    /// This window's stats window (ISS-40): frames in, frames shown, freezes,
+    /// delays and the phone's latest counters. Fed from the video and main
+    /// queues; the 5 s line reads it.
+    let stats: StreamStatsRecorder
+    private var statsTimer: Timer?
+    private var watchdog = FrameWatchdog()
+    /// `window.still` messages seen for this stream: a count, never content.
+    private(set) var stills = 0
+    private var stallTimer: Timer?
+    /// The local key monitor that gives the bar its keys before AppKit's own
+    /// Tab handling (see `handleBarKey`).
+    private var barKeyMonitor: Any?
+    /// The picture's state (WIN-39): live, stalled, or the link's two down
+    /// steps. One machine, whose presentation is the disconnection overlay.
+    private(set) var picture = PictureState()
+    var isStalled: Bool { picture.isStalled }
+    /// The link is down: the bar's phone-side controls are dimmed, with the
+    /// reason, so a click cannot vanish into a dead session (M3, item 8).
+    private(set) var phoneControlsOffline = false
+    /// Read by the manager's per-window reconcile, so one window that missed
+    /// the broadcast is fixed without touching the others.
+    var isLinkDown: Bool { picture.isLinkDown }
+
+    /// The watchdog's rule: a live session, the window on screen, and a picture
+    /// that is wanted (not paused, not Live Text, no cover). While it is false
+    /// the clock is idle and any stall is dropped: a covered or paused picture
+    /// has no "live" claim to be wrong about.
+    var expectsFrames: Bool {
+        guard !isPaused, !liveText.isActive, !isLinkDown, !isOpening,
+              let window, window.isVisible, !window.isMiniaturized,
+              !isWindowOccluded else { return false }
+        return true
+    }
+
+    /// Tests and the e2e replace the WindowServer's occlusion state (a test
+    /// process cannot cover its own window, and the quiet e2e run may not put
+    /// another app's window over it). nil means the real state.
+    var occlusionVisibleOverride: Bool?
+
+    /// The WindowServer's answer, with the test override on top. A covered
+    /// window keeps its last frame on screen but is not a live picture: AppKit
+    /// throttles an occluded app, so its silence says nothing about the phone.
+    var isWindowOccluded: Bool {
+        if let occlusionVisibleOverride { return !occlusionVisibleOverride }
+        guard let window else { return true }
+        return !window.occlusionState.contains(.visible)
+    }
+
+    /// The e2e's `occlude` command: the WindowServer state a quiet run cannot
+    /// produce. Tests set `occlusionVisibleOverride` and drive the clock.
+    func setOcclusionVisible(_ visible: Bool?) {
+        occlusionVisibleOverride = visible
+        tickFrameWatchdog()
+    }
+
+    /// The mode was active at the last change, and the phone is paused for it.
+    private var liveTextWasActive = false
+    private var liveTextPaused = false
+    /// The standard buttons' slots before the chrome moved them, as an x and a
+    /// distance from the window's top edge (the titlebar's anchor).
+    private var standardLightSlots: [NSWindow.ButtonType: (x: CGFloat, fromTop: CGFloat, size: NSSize)] = [:]
+    /// The windowed frame to come back to: AppKit restores a standard
+    /// titlebar's 28 pt even though this window's titlebar is hidden and clear,
+    /// which would grow the window and its stream on every full-screen exit.
+    private var windowedFrame: NSRect?
+    private var resizeWork: DispatchWorkItem?
+    private var closingFromRemote = false
+    /// The machine's one timer: a reveal rest or a hide grace.
+    private var fullBarTimer: Timer?
+    /// The pointer's last membership of the top band, so only crossings feed
+    /// the machine, not every move.
+    private var pointerAtTopEdge = false
+    /// Menu tracking ends the bar's hide grace (WIN-8).
+    private var menuObservers: [NSObjectProtocol] = []
+    /// Rewrites the chrome state when the picture's own size changes, so the
+    /// e2e's `video=` rect is the settled one, not the pre-answer rectangle.
+    private var videoSizeObserver: NSObjectProtocol?
+
+    init(stream: UInt32, contentSize: NSSize, manager: WindowManager, styleKey: String?) {
+        self.stream = stream
+        self.stats = StreamStatsRecorder(stream: stream)
+        self.manager = manager
+        self.style = manager.styleStore.style(forKey: styleKey)
+        self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
+        // `contentSize` is the stream's; the window adds the style's bar above
+        // it (WindowStyle.swift). The content view fills the whole window,
+        // under a transparent titlebar, and is transparent itself outside
+        // the stream.
+        let frameSize = style.windowSize(stream: contentSize)
+        let window = StreamWindow(contentRect: NSRect(origin: .zero, size: frameSize),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        // The app sets this window's frame itself (a stream's size, a phone's
+        // turn): the backstop leaves those frames to the delegate above.
+        WindowFrameLimit.owns(window)
+        window.acceptsMouseMovedEvents = true
+        window.titlebarAppearsTransparent = true
+        // The title still names the window in the Window menu and Mission Control.
+        window.titleVisibility = .hidden
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
+        chrome = StreamChromeView(video: videoView, style: style)
+        super.init(window: window)
+        // The phone's encoder limits decide how the picture is drawn and what
+        // the window asks for (ISS-39).
+        videoView.encoder = manager.phone?.encoder
+        // The Mac strategy switches (ISS-40): read once when the window opens,
+        // and again when it resizes. No key set is today's path.
+        let openedWith = manager.streamStrategy
+        strategy = openedWith
+        videoView.strategy = openedWith
+        Log.video.notice("\(openedWith.windowLine(stream: stream), privacy: .public)")  // log-ok: closed strategy tokens and a stream id
+        // The view's pending-fill rule must compare the phone's answer with the
+        // same request `window.resize` carries, panel cap included (M2).
+        videoView.requestedPixelsOverride = { [weak self] in self?.displayPixels() ?? .zero }
+        videoSizeObserver = NotificationCenter.default.addObserver(
+            forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.writeChromeState() }
+        }
+        window.delegate = self
+        window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
+        window.contentView = chrome
+        // The cover's coming or going changes the windowed chrome's geometry
+        // (WIN-11); the chrome already relaid out, so only the state follows.
+        chrome.onCoverVisibilityChange = { [weak self] in self?.writeChromeState() }
+        chrome.onBarToneChange = { [weak self] in self?.writeChromeState() }
+        // Where AppKit put the standard buttons before the chrome moves them;
+        // full screen gives them back (applyChromeConfig).
+        captureStandardLights()
+        chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
+        chrome.onLiveTextToggle = { [weak self] in self?.toggleLiveText() }
+        chrome.liveTextDragProvider = { [weak self] in self?.liveText.dragFileURL() }
+        chrome.setActions(headerActions())
+        refreshBarTitle()
+        // The overlay's setting before the first state write: the file reports it.
+        videoView.showsTouches = manager.showTouches
+        opening = OpeningCover(startedAt: now())
+        stateFile = manager.chromeStateFile
+        // `stateFile`'s observer does not run during init: start the e2e
+        // refresh here as well, or the file stays at its first-line values.
+        startStateRefresh()
+        startOpeningCover()
+        writeChromeState()
+        let mapper = InputMapper(stream: stream)
+        mapper.videoRectProvider = { [weak self] in self?.videoView.videoRect() ?? .zero }
+        mapper.locationProvider = { [weak self] event in
+            self?.videoView.convert(event.locationInWindow, from: nil) ?? .zero
+        }
+        mapper.viewIsFlipped = { [weak self] in self?.videoView.isFlipped ?? false }
+        mapper.videoSizeProvider = { [weak self] in self?.videoView.videoSize ?? .zero }
+        mapper.escapeAllowed = { [weak self] in
+            guard let window = self?.window else { return false }
+            return window.isKeyWindow && window.attachedSheet == nil
+        }
+        // Live Text mode receives nothing: pointer, keys, scroll, hover and
+        // trackpad all stop at the mapper (Esc leaves the mode instead).
+        mapper.inputSuspended = { [weak self] in self?.frozen ?? false }
+        mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
+        mapper.onStyleToggle = { [weak self] in self?.toggleStyle() }
+        mapper.send = { [weak self] command in self?.handle(command) }
+        // The bar's own keys, before the phone's: ⌃Tab takes the keyboard to
+        // the bar, and while it is there the bar's keys never reach the phone
+        // (MIRROR-13).
+        mapper.barKey = { [weak self] event in self?.handleBarKey(event) ?? false }
+        mapper.barKeyUp = { [weak self] event in self?.handleBarKey(event) ?? false }
+        mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
+        mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
+        // ⌘V's image flow: the phone writes the clip, one paste key, a pill.
+        let paste = PasteFlow()
+        paste.sendImage = { [weak self, weak paste] id, data, mime in
+            guard let self else { return }
+            if ClipImageSend.run(data, mime: mime, session: self.session, id: id, paste: true) {
+                paste?.sent(id)
+            } else {
+                paste?.handle(.sendFailed(id))
+            }
+        }
+        paste.sendKey = { [weak self] event in
+            guard let self else { return }
+            self.session.key(event, stream: self.stream)
+        }
+        paste.cancelImage = { [weak self] id in self?.session.clipImageAbort(id: id) }
+        paste.share = { [weak self] data, mime in self?.sharePastedImage(data, mime: mime) }
+        paste.pill = { [weak self] state in self?.setPastePill(state) }
+        self.pasteFlow = paste
+
+        // ⌘V with files is the drop path with this window's app as the target
+        // (SHARE-17); an image takes the paste flow above.
+        mapper.onPaste = { [weak self] paste in
+            guard let self else { return false }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+                return true
+            case .image(let data, let mime):
+                guard !data.isEmpty, ClipImagePolicy.valid(mime: mime),
+                      data.count <= ClipImagePolicy.maxBytes else { return false }
+                self.startPaste(data: data, mime: mime)
+                return true
+            }
+        }
+        // ⇧⌘V shares the same content through the drop path (SHARE-16/17).
+        mapper.onShareInstead = { [weak self] paste in
+            guard let self else { return }
+            switch paste {
+            case .files(let urls):
+                self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+            case .image(let data, let mime):
+                self.sharePastedImage(data, mime: mime)
+            }
+        }
+        // Esc leaves the paste pill before it can become the phone's Back.
+        mapper.overlayKey = { [weak self] event in
+            guard let self, event.keyCode == InputMapper.keyCodeEscape,
+                  self.pasteFlow?.isPillVisible == true else { return false }
+            self.pasteFlow?.dismiss()
+            return true
+        }
+        mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
+        videoView.onDroppedFiles = { [weak self] urls in
+            guard let self else { return }
+            self.manager.onFilesDropped?(urls, self.dropTargetPackage)
+        }
+        videoView.onDroppedDrag = { [weak self] drag in
+            guard let self else { return }
+            self.manager.onDropDrag?(drag, self.dropTargetPackage)
+        }
+        videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
+        videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
+        videoView.inputMapper = mapper
+        videoView.macUIAtWindowPoint = { [weak self] point in
+            guard let self else { return false }
+            // Window point to the chrome's own space: the chrome decides for
+            // clicks (hitTest) and hover alike (WIN-61).
+            return self.chrome.ownsPoint(self.chrome.convert(point, from: nil))
+        }
+        videoView.onRequestKeyframe = { [weak self] in
+            guard let self else { return }
+            self.manager.session.requestKeyframe(stream: self.stream)
+        }
+        videoView.onFrameEnqueued = { [weak self] ptsUs in
+            guard let self else { return }
+            self.stats.noteEnqueued(now: ProcessInfo.processInfo.systemUptime,
+                                    ptsUs: ptsUs, offsetUs: self.manager.clockOffsetUs)
+        }
+        videoView.onFrameDiscarded = { [weak self] reason in
+            self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
+        }
+        videoView.onChainFed = { [weak self] in
+            self?.stats.noteChainFed(now: ProcessInfo.processInfo.systemUptime)
+        }
+        videoView.onKeyFrame = { [weak self] nalTypes, codec in
+            self?.stats.noteKeyFrame(nalTypes: nalTypes, codec: codec)
+        }
+        videoView.onCodecRefused = { [weak self] token in
+            self?.codecRefused(token)
+        }
+        // One notice line per visible window every 5 s (ISS-40). Numbers only.
+        let statsTimer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logStats() }
+        }
+        RunLoop.main.add(statsTimer, forMode: .common)
+        self.statsTimer = statsTimer
+        videoView.liveText.onStateChange = { [weak self] state, reason in
+            self?.liveTextChanged(state, reason)
+        }
+        // The picture watchdog's clock.
+        let stall = Timer(timeInterval: FrameWatchdog.tickInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickFrameWatchdog() }
+        }
+        RunLoop.main.add(stall, forMode: .common)
+        stallTimer = stall
+        startBarKeyMonitor()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    deinit {
+        stallTimer?.invalidate()
+        openingTimer?.invalidate()
+        settleTimer?.invalidate()
+        stateTimer?.cancel()
+        if let barKeyMonitor { NSEvent.removeMonitor(barKeyMonitor) }
+    }
+
+    /// The defaults key this window's style is remembered under; nil while the
+    /// window does not know the app it shows (a link window before the phone
+    /// reports it). Written by every switch the window itself makes.
+    var styleKey: String? { nil }
+
+    /// The window kind's actions, at the bar's right end (the phone window's
+    /// Back/Home/Recents), also inside the immersive pill.
+    func headerActions() -> [HeaderAction] { [] }
+
+    /// What the Framed bar names: an app window's app, the Mirror's phone, or
+    /// an adopted app for a link/handoff; nil hides the title (WIN-68).
+    var barTitle: String? { nil }
+
+    /// The bar's name follows every retitle path (the phone's nickname, the
+    /// app list, a task, an adopted package).
+    func refreshBarTitle() {
+        chrome.setBarTitle(barTitle)
+    }
+
+    // MARK: Opening cover
+
+    /// The cover is up from the open: its clock moves it from the opening
+    /// state to the slow one at 5 s and to the failure at 20 s; the first
+    /// frame, the phone's refusal and Cancel are the other events.
+    private func startOpeningCover() {
+        guard showsOpeningCover else { return }
+        chrome.openingCover.onCancel = { [weak self] in self?.cancelOpening() }
+        chrome.openingCover.onClose = { [weak self] in self?.window?.close() }
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickOpeningCover() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        openingTimer = timer
+    }
+
+    private func tickOpeningCover() {
+        guard isOpening else {
+            openingTimer?.invalidate()
+            openingTimer = nil
+            return
+        }
+        guard let actions = opening.handle(.tick(now()), at: now()) else { return }
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
+        writeChromeState()
+        run(actions)
+    }
+
+    /// The title and the failure's wording use the phone's display name.
+    private var openingPhone: String { manager.phoneName }
+
+    /// The app's label or the phone's name arrived while the cover is up: the
+    /// title says it now instead of at the next phase change.
+    func refreshOpeningCover() {
+        guard showsOpeningCover, opening.isUp else { return }
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
+    }
+
+    private func showOpeningPhase() {
+        let display = OpeningCover.display(openingPhase, name: openingName,
+                                           phone: openingPhone, phoneMode: openingIsPhone)
+        // No frame is held before the first one, so the shared cover uses its
+        // last picture's colours (none yet) or black (WIN-65).
+        chrome.openingCover.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
+        // The cover's ground takes the bar's haze with it (WIN-40).
+        chrome.updateBarHaze()
+        // The cover is a frozen mode: the bar's phone-side controls dim with
+        // it, from the first moment to a refusal (WIN-22, item M9).
+        updateFrozen()
+    }
+
+    /// The stream's first frame arrived (WindowManager); once per window.
+    func noteFirstFrame() {
+        let at = now()
+        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: at) else { return }
+        openingTimer?.invalidate()
+        openingTimer = nil
+        openingPhase = nil
+        showOpeningPhase()
+        let ms = max(0, at - opening.startedAt) * 1000
+        Log.video.notice("stream \(self.stream, privacy: .public): first frame \(String(format: "%.1f", ms), privacy: .public) ms after open, opening cover off")
+        // The extension view builds its backdrop once the stream it mirrors has
+        // a frame: turn its radius up now that it exists (WIN-40). This is also
+        // where a macOS without the filter gets its one fact line.
+        chrome.reapplyBarBlur(reportMissing: true)
+        updateFrozen()
+        tickFrameWatchdog()
+        run(actions)
+    }
+
+    /// Cancel on the slow cover: closing the window cancels the open on the
+    /// phone too (its `window.close`), so the phone does not keep launching.
+    func cancelOpening() {
+        guard showsOpeningCover, let actions = opening.handle(.cancel, at: now()) else { return }
+        Log.video.notice("stream \(self.stream, privacy: .public): opening cancelled by the person")
+        run(actions)
+    }
+
+    /// The phone refused the open (an `error` code): the cover greys out, says
+    /// why once and offers Close alone. A code the cover cannot explain has no
+    /// reason line; nothing is resent.
+    func refuseOpening(_ code: String) {
+        guard showsOpeningCover, let actions = opening.handle(.refused(code), at: now()) else { return }
+        openingTimer?.invalidate()
+        openingTimer = nil
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
+        writeChromeState()
+        updateFrozen()
+        Log.video.notice("stream \(self.stream, privacy: .public): opening refused")
+        run(actions)
+    }
+
+    /// A VIDEO_CONFIG named a codec this Mac cannot decode (WIN-60). The
+    /// bytes never reach a decoder; the window shows its existing refusal:
+    /// the opening cover while it opens, a closed window once the picture is
+    /// live. Never the stall overlay: the phone is not stuck.
+    func codecRefused(_ token: String) {
+        Log.video.notice("stream \(self.stream, privacy: .public) codec \(token, privacy: .public) refused")  // log-ok: closed codec token
+        if isOpening {
+            refuseOpening("codec_unsupported")
+        } else {
+            window?.close()
+        }
+    }
+
+    /// Runs the machine's actions: the transition never touches a window.
+    private func run(_ actions: [OpeningCover.Action]) {
+        for action in actions {
+            switch action {
+            case .closeWindow:
+                window?.close()
+            }
+        }
+    }
+
+    /// The chrome state's `loading=`: 1 while the cover is up, failed when it
+    /// gave up or the phone refused, 0 once the frame is in (or for a window
+    /// with no cover).
+    private var openingState: String {
+        guard showsOpeningCover else { return "0" }
+        switch opening.phase(at: now()) {
+        case .opening?, .slow?: return "1"
+        case .failed?: return "failed"
+        case nil: return "0"
+        }
+    }
+
+    /// The cover's buttons, as the view shows them: `none`, `cancel` or
+    /// `close`. The e2e's proof that a failure cannot be asked again.
+    private var openingButtons: String {
+        guard showsOpeningCover, let phase = opening.phase(at: now()) else { return "none" }
+        switch phase {
+        case .opening: return "none"
+        case .slow: return "cancel"
+        case .failed: return "close"
+        }
+    }
+
+    /// The cover's phase on screen: opening, slow, failed, 0 for no cover.
+    private var openingCoverPhase: String {
+        guard showsOpeningCover, let phase = opening.phase(at: now()) else { return "0" }
+        switch phase {
+        case .opening: return "opening"
+        case .slow: return "slow"
+        case .failed: return "failed"
+        }
+    }
+
+    // MARK: Bar keyboard focus
+
+    /// ⌃Tab, ←/→, Tab, Return, Space and Esc while the bar has the keyboard
+    /// (MIRROR-13). True when the bar took the event: it never reaches the
+    /// phone. Keys the machine ignores in that state are still the bar's, so a
+    /// focused bar cannot type on the phone by accident.
+    ///
+    /// Called from a local key monitor, before AppKit's own Tab and key-view
+    /// handling (a Mac with Full Keyboard Access on takes Tab in the window's
+    /// focus machinery, so it never reaches the view's keyDown), and from the
+    /// mapper for an event the monitor let through.
+    func handleBarKey(_ event: NSEvent) -> Bool {
+        guard let barEvent = BarFocus.event(keyCode: event.keyCode,
+                                            control: event.modifierFlags.contains(.control),
+                                            shift: event.modifierFlags.contains(.shift))
+        else { return false }
+        // A release is the bar's only while the bar has the focus: the phone
+        // must never see an up without its down.
+        if event.type == .keyUp { return barFocus.isOnBar }
+        let before = barFocus
+        let routing = barFocus.route(barEvent, focusable: chrome.focusableBarIndices)
+        if barFocus != before {
+            let fromIndex = before.index ?? -1
+            let toIndex = barFocus.index ?? -1
+            Log.video.notice("bar focus: from=\(fromIndex, privacy: .public) to=\(toIndex, privacy: .public)")
+        }
+        applyBarFocus(routing.action)
+        return routing.consumed
+    }
+
+    /// The local monitor that sees the bar's keys first (MIRROR-13).
+    private func startBarKeyMonitor() {
+        guard barKeyMonitor == nil else { return }
+        barKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) {
+            [weak self] event in
+            guard let self, let window = self.window, window.isKeyWindow else { return event }
+            return self.handleBarKey(event) ? nil : event
+        }
+    }
+
+    /// The ring follows the machine, and Return/Space run the button it names
+    /// (the action the mouse runs, through the same policy gate).
+    private func applyBarFocus(_ action: BarFocus.Action?) {
+        switch action {
+        case .focus(let index):
+            chrome.setBarFocus(index)
+            writeChromeState()
+        case .picture:
+            chrome.setBarFocus(nil)
+            writeChromeState()
+        case .press(let index):
+            guard let action = chrome.barAction(at: index),
+                  HeaderActionPolicy.isEnabled(action.kind, frozen: frozen,
+                                               offline: phoneControlsOffline) else { return }
+            Log.video.notice("bar focus: press \(index, privacy: .public)")
+            action.perform()
+        case nil:
+            // No transition: the ring is where the machine already put it.
+            chrome.setBarFocus(barFocus.index)
+        }
+    }
+
+    /// A click on the picture, or the window losing the keyboard, gives it back
+    /// to the phone: the bar's ring goes.
+    func resetBarFocus() {
+        guard barFocus.isOnBar else { return }
+        barFocus = BarFocus()
+        chrome.setBarFocus(nil)
+        writeChromeState()
+        Log.video.notice("bar focus: from=\(-1, privacy: .public) to=\(-1, privacy: .public) (reset)")
+    }
+
+    // MARK: Style switching
+
+    /// View ▸ Window Style's switch (and the scripted driver's toggle): the
+    /// window grows or shrinks by the bar above the stream (the stream keeps its place;
+    /// `WindowStyle.frame` nudges it down when the bar would poke above the
+    /// screen), the choice is remembered under this window's key. In full
+    /// screen only the memory moves: the layout applies on exit (no bar there
+    /// in either style).
+    func setStyle(_ next: WindowStyle) {
+        guard let window, next != style else { return }
+        let fullScreen = isFullScreen
+        if !fullScreen {
+            let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect.zero
+            let target = style.frame(switchedTo: next, current: window.frame, visible: visible)
+            window.setFrame(target, display: true)
+        }
+        style = next
+        if let key = styleKey { manager.styleStore.set(style, forKey: key) }
+        refreshMenuState()
+        chrome.setStyle(style)
+        writeChromeState()
+    }
+
+    /// The menu selectors (View ▸ Window Style's radio items).
+    @objc func useFramedStyle(_ sender: Any?) { setStyle(.framed) }
+    @objc func useImmersiveStyle(_ sender: Any?) { setStyle(.immersive) }
+
+    /// View ▸ Toggle Window Style (⌥⌘F); the scripted driver's toggle is the
+    /// same action.
+    @objc func toggleStyleMenuAction(_ sender: Any?) { toggleStyle() }
+
+    func toggleStyle() { setStyle(style == .framed ? .immersive : .framed) }
+    /// A link or handoff window learned the app it shows: the stored choice
+    /// for that package now applies (a no-op when it agrees).
+    func reapplyStoredStyle() {
+        guard let key = styleKey else { return }
+        let stored = manager.styleStore.style(forKey: key)
+        if stored != style { setStyle(stored) }
+    }
+
+    // MARK: Full screen bar (WIN-8)
+
+    /// The pointer feed that watches the screen's top edge in full screen.
+    private var pointerMonitors: [Any] = []
+
+    /// The window entered native full screen: no windowed chrome, the bar
+    /// hidden and its machine ready.
+    private func enterFullScreenBar() {
+        chrome.fullScreenOverride = true
+        fullBar = FullScreenBarMachine(reveal: manager.revealDelay)
+        startPointerFeed()
+        let before = fullBar.mode
+        let actions = fullBar.handle(.enterFullScreen)
+        runFullBar(actions)
+        logFullBarChange(from: before, event: "enterFullScreen")
+        chrome.setFullBarShown(fullBar.mode == .shown)
+        chrome.layoutChrome()
+        writeChromeState()
+    }
+
+    /// The window left full screen: the bar and its timers go.
+    private func exitFullScreenBar() {
+        chrome.fullScreenOverride = false
+        stopPointerFeed()
+        let before = fullBar.mode
+        let actions = fullBar.handle(.exitFullScreen)
+        runFullBar(actions)
+        logFullBarChange(from: before, event: "exitFullScreen")
+        chrome.setFullBarShown(false)
+        chrome.layoutChrome()
+        pointerAtTopEdge = false
+        writeChromeState()
+    }
+
+    /// Folds one event into the machine, runs its actions and logs a change of
+    /// state as `full-screen bar: <from> --<event>--> <to>`.
+    private func updateFullBar(_ event: FullScreenBarEvent, name: String) {
+        guard isFullScreen else { return }
+        let before = fullBar.mode
+        let actions = fullBar.handle(event)
+        runFullBar(actions)
+        logFullBarChange(from: before, event: name)
+        writeChromeState()
+    }
+
+    private func logFullBarChange(from before: FullScreenBarMode, event: String) {
+        let after = fullBar.mode
+        guard before != after else { return }
+        let line = "full-screen bar: \(before.rawValue) --\(event)--> \(after.rawValue)"
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: three closed state names
+    }
+
+    /// Runs the machine's actions on the chrome and the clock. Effects only;
+    /// the state is already the machine's.
+    private func runFullBar(_ actions: [FullScreenBarAction]) {
+        for action in actions {
+            switch action {
+            case .cancelTimer:
+                fullBarTimer?.invalidate()
+                fullBarTimer = nil
+            case .scheduleReveal(let seconds), .scheduleHide(let seconds):
+                fullBarTimer?.invalidate()
+                let timer = Timer(timeInterval: max(seconds, 0), repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateFullBar(.delayElapsed, name: "delayElapsed") }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                fullBarTimer = timer
+            case .reveal(let animated):
+                chrome.revealFullBar(animated: animated) { [weak self] in
+                    guard let self else { return }
+                    self.updateFullBar(.animationFinished, name: "animationFinished")
+                }
+            case .hide(let animated):
+                if animated {
+                    chrome.hideFullBar(animated: true) { [weak self] in
+                        guard let self else { return }
+                        self.updateFullBar(.animationFinished, name: "animationFinished")
+                    }
+                } else {
+                    chrome.setFullBarShown(false)
+                    updateFullBar(.animationFinished, name: "animationFinished")
+                }
+            }
+        }
+    }
+
+    /// The screen's top-edge feed: a global and a local monitor, so a pointer
+    /// approaching the edge from another space or the menu bar counts.
+    private func startPointerFeed() {
+        guard pointerMonitors.isEmpty else { return }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            self?.pointerMovedForFullScreen(NSEvent.mouseLocation)
+            return event
+        }) { pointerMonitors.append(local) }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            self?.pointerMovedForFullScreen(NSEvent.mouseLocation)
+        }) { pointerMonitors.append(global) }
+        for notification in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
+            menuObservers.append(NotificationCenter.default.addObserver(
+                forName: notification, object: nil, queue: .main) { [weak self] note in
+                    MainActor.assumeIsolated {
+                        let tracking = notification == NSMenu.didBeginTrackingNotification
+                        self?.updateFullBar(.menuTracking(tracking),
+                                            name: tracking ? "menuTracking(true)" : "menuTracking(false)")
+                    }
+                    _ = note
+                })
+        }
+    }
+
+    private func stopPointerFeed() {
+        pointerMonitors.forEach(NSEvent.removeMonitor)
+        pointerMonitors = []
+        menuObservers.forEach(NotificationCenter.default.removeObserver)
+        menuObservers = []
+        fullBarTimer?.invalidate()
+        fullBarTimer = nil
+    }
+
+    /// A real pointer move: feeds the bar's top band only in full screen, and
+    /// only when the pointer crosses into or out of it.
+    func pointerMovedForFullScreen(_ screenPoint: NSPoint) {
+        guard let window, isFullScreen, window.isVisible else { return }
+        let point = window.convertPoint(fromScreen: screenPoint)
+        let fromTop = window.frame.height - point.y
+        let band = (fullBar.mode == .hidden ? FullScreenBar.edgeHeight : FullScreenBar.height)
+        let atTop = fromTop >= 0 && fromTop <= band
+        guard atTop != pointerAtTopEdge else { return }
+        pointerAtTopEdge = atTop
+        updateFullBar(atTop ? .pointerAtTopEdge : .pointerLeaves,
+                      name: atTop ? "pointerAtTopEdge" : "pointerLeaves")
+    }
+
+    /// Tests and the chrome state can drive the full-screen bar without a
+    /// Space switch (a test process must not change the person's Space).
+    var fullScreenOverride: Bool?
+
+    /// True in native full screen, or its test override.
+    private var isFullScreen: Bool {
+        fullScreenOverride ?? (window?.styleMask.contains(.fullScreen) ?? false)
+    }
+
+    /// The unit tests' path into the full-screen bar: the same entry and exit
+    /// actions the delegate runs, without AppKit's Space switch.
+    func simulateFullScreenForTesting(_ on: Bool) {
+        fullScreenOverride = on
+        if on {
+            enterFullScreenBar()
+        } else {
+            exitFullScreenBar()
+        }
+    }
+
+    /// Settings → General "Reveal controls after" / View ▸ Hide Controls
+    /// changed: the full-screen bar re-times (or shows at once for Always
+    /// Visible), and every other window already took the new setting too.
+    func setRevealDelay(_ delay: RevealDelay) {
+        guard delay != fullBar.reveal else { return }
+        updateFullBar(.configurationChanged(delay), name: "configurationChanged(\(delay.rawValue))")
+    }
+
+    /// The chrome state reports the full-screen bar's mode for the e2e.
+    var fullBarStateName: String { fullBar.mode.rawValue }
+
+    // MARK: Sizing
+
+    var session: Session { manager.session }
+
+    /// The stream in points: the window minus the style's bar, whether the bar
+    /// shows or not. This is what the virtual display is sized from.
+    func videoBounds() -> CGSize {
+        guard let window, let chrome = window.contentView as? StreamChromeView else { return .zero }
+        return style.streamSize(window: chrome.bounds.size, fullScreen: isFullScreen)
+    }
+
+    /// Virtual-display pixels for the video area: the window's exact backing
+    /// pixels inside the phone's encoder limits (ISS-39), or at most the panel's
+    /// pixels on a scaled display when `stream.pixels=panel` (M2).
+    func displayPixels() -> CGSize {
+        guard let window else { return .zero }
+        let cap = strategy.pixels == .panel ? panelFactor(for: window.screen) : 1
+        return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor),
+                                       encoder: manager.phone?.encoder, panelFactor: cap)
+    }
+
+    /// The display's cap, cached per display and backing size: `requestedPixels`
+    /// asks during a live resize, and the mode list must not be rebuilt then.
+    private var panelCache: (displayID: CGDirectDisplayID, backingWidth: Int, factor: Double)?
+
+    private func panelFactor(for screen: NSScreen?) -> Double {
+        guard let values = PanelCap.values(for: screen) else { return 1 }
+        if let panelCache, panelCache.displayID == values.displayID,
+           panelCache.backingWidth == values.backingWidth {
+            return panelCache.factor
+        }
+        let factor = PanelCap.factor(panelWidth: values.panelWidth, backingWidth: values.backingWidth)
+        panelCache = (values.displayID, values.backingWidth, factor)
+        return factor
+    }
+
+    func dpi() -> Double {
+        guard window != nil else { return 160 * density }
+        return VideoSize.dpi(pixels: displayPixels(), bounds: videoBounds(), density: density)
+    }
+
+    func sendOpen() {}
+    /// The window closed: what the phone is told, before it is forgotten.
+    func sendClose() { session.closeWindow(stream: stream) }
+    /// Reapply the window's title after the phone's display name changed.
+    func retitle() {}
+
+    /// The window's resize requests, coalesced: one in flight, at most one
+    /// waiting (ResizeCoalescer). A person's burst of ⌘+/⌘- presses used to
+    /// send every value, and every request re-attaches the phone's encoder.
+    private var resizes = ResizeCoalescer()
+
+    /// How long the Mac waits for the phone to answer one resize before it
+    /// counts it settled (ResizeCoalescer `.settleTimeout`). The NFR stall limit
+    /// (`density_burst_stall_ms`), the same 1.5 s the window's own "Not
+    /// responding" rule uses. A bound on a protocol wait, not a debounce of
+    /// layout input: a request still goes out the moment the machine allows.
+    static let resizeSettleTimeout: TimeInterval = FrameWatchdog.staleAfter
+
+    /// Posts `.settleTimeout` while a request is in flight; restarted by every
+    /// send and dropped when nothing is in flight.
+    private var settleTimer: Timer?
+    /// The stall was said once for this window: a phone that never answers must
+    /// not fill the log with the same line.
+    private var resizeStallLogged = false
+    /// When the in-flight resize request went out, for the ack's own latency.
+    private var resizeSentAt: TimeInterval?
+
+    private func resizeRequest() -> ResizeRequest {
+        let pixels = displayPixels()
+        return ResizeRequest(w: Int(pixels.width), h: Int(pixels.height),
+                             dpi: Int(dpi().rounded()))
+    }
+
+    func sendResize() {
+        #if PD_TEST_HOOKS
+        // Every coalescer event is applied on main (WindowManager.handleVideo
+        // hops): the window's view state is main-thread state.
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
+        // A resize is the other moment the switches are read (ISS-40).
+        refreshStreamStrategy()
+        send(resizes.apply(.request(resizeRequest())))
+    }
+
+    /// Reads the profile's strategy keys again and hands them to the view: the
+    /// presenter (M1) and the pixel cap (M2) apply from the next request. No key
+    /// set is today's path.
+    private func refreshStreamStrategy() {
+        strategy = manager.streamStrategy
+        videoView.strategy = strategy
+    }
+
+    /// The phone answered a resize: its `window.resize.ack`, or the
+    /// VIDEO_CONFIG that follows one. The value that waited goes out now.
+    func resizeSettled(_ request: ResizeRequest? = nil) {
+        #if PD_TEST_HOOKS
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
+        guard let settled = request ?? resizes.inFlight else { return }
+        send(resizes.apply(.settled(settled)))
+    }
+
+    private func send(_ actions: [ResizeCoalescer.Action]) {
+        for action in actions {
+            switch action {
+            case .send(let request):
+                resizeSentAt = now()
+                session.resizeWindow(stream: stream, width: request.w, height: request.h,
+                                     dpi: Double(request.dpi))
+                armSettleTimer()
+            }
+        }
+        if resizes.inFlight == nil {
+            settleTimer?.invalidate()
+            settleTimer = nil
+        }
+    }
+
+    /// The ms from the resize request this ack settles to the ack; nil when
+    /// none is in flight. The ack's log line reads it once.
+    func takeResizeAckMs() -> Double? {
+        guard let sent = resizeSentAt else { return nil }
+        resizeSentAt = nil
+        return max(0, now() - sent) * 1000
+    }
+
+    private func armSettleTimer() {
+        settleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.resizeSettleTimeout, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleTimedOut() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+    }
+
+    /// The phone did not answer in time: the machine counts the request as
+    /// settled and sends what waited (a phone that predates the ack sends none,
+    /// and a paused or refused resize carries no new CONFIG either).
+    private func settleTimedOut() {
+        settleTimer = nil
+        guard resizes.inFlight != nil else { return }
+        resizeSentAt = nil
+        if !resizeStallLogged {
+            resizeStallLogged = true
+            Log.video.notice("stream \(self.stream, privacy: .public): resize unanswered, moving on")
+        }
+        send(resizes.apply(.settleTimeout))
+    }
+
+    /// Programmatic stream size change (test hook); the top-left stays put.
+    func setContentSize(_ streamSize: NSSize) {
+        guard let window else { return }
+        let size = style.windowSize(stream: streamSize)
+        let top = window.frame.maxY
+        window.setFrame(NSRect(x: window.frame.minX, y: top - size.height, width: size.width, height: size.height),
+                        display: true)
+    }
+
+    // MARK: Presence
+
+    /// Where this window opens: the frame it had last time, else a cascade
+    /// step from the previous stream window (never on top of the Deck). An
+    /// added window of an app opens where the caller placed it, 28 pt from the
+    /// app's front window (WIN-13).
+    func present() {
+        if let window {
+            if let placed = placementOverride {
+                window.setFrame(manager.clampedToScreen(placed), display: false)
+            } else if remembersFrame,
+                      let saved = manager.savedFrame(forKey: frameKey),
+                      saved.size.width >= 240, saved.size.height >= 160 {
+                window.setFrame(openingFrame(manager.clampedToScreen(saved)), display: false)
+            } else {
+                window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
+            }
+        }
+        if manager.floatWindows { window?.level = .floating }
+        window?.makeKeyAndOrderFront(nil)
+        if let forced = ProcessInfo.processInfo.environment["PD_APPEARANCE"], let window {
+            // Debug-only (bisect/screenshot runs): force the window's look.
+            window.appearance = NSAppearance(named: forced == "light" ? .aqua : .darkAqua)
+        }
+        captureStandardLights()
+        chrome.placeTrafficLights()
+        if manager.floatWindows { window?.orderFrontRegardless() }
+        window?.makeFirstResponder(videoView)
+        BackgroundMode.activateApp()
+        // M2 with the switch on: what the display reports and what the cap did,
+        // once per window. Numbers only (R-PRIV-1).
+        if strategy.pixels == .panel, let screen = window?.screen,
+           let values = PanelCap.values(for: screen) {
+            let cap = panelFactor(for: screen)
+            Log.video.info("stream \(self.stream, privacy: .public) mac pixels: panel=\(values.panelWidth, privacy: .public) backing=\(values.backingWidth, privacy: .public) cap=\(String(format: "%.3f", cap), privacy: .public)")  // log-ok: sizes and a ratio
+        }
+    }
+
+    /// Frames are remembered per app (or "phone") in the profile's defaults.
+    var frameKey: String { "stream" }
+
+    /// The frame a window opens at from its remembered one. A window kind whose
+    /// shape belongs to the phone re-shapes it (the mirror, ISS-63).
+    func openingFrame(_ frame: NSRect) -> NSRect { frame }
+
+    /// Whether this window's frame is remembered for its subject. Only an
+    /// app's first window is: an added window cascades from it and forgets its
+    /// own place (WIN-13).
+    var remembersFrame: Bool { true }
+
+    /// Where this window opens when a caller placed it relative to another (an
+    /// added window of an app): read by `present()` (WIN-13).
+    var placementOverride: NSRect? { nil }
+
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    private func rememberFrame() {
+        // Never the screen-sized frame full screen moves the window to: the
+        // next open would come back too big. A resize in progress (a drag's
+        // steps, a zoom's animation) is not a frame to come back to either:
+        // its end remembers the settled one. An added window of an app is not
+        // the app's frame either (WIN-13).
+        guard remembersFrame, let window, window.isVisible, !closingFromRemote, !isLiveResizing,
+              !window.styleMask.contains(.fullScreen), windowedFrame == nil else { return }
+        manager.saveFrame(window.frame, forKey: frameKey)
+    }
+
+    func closeFromRemote() {
+        closingFromRemote = true
+        window?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        liveText.exit(.close)
+        stopZoomAnimation()
+        openingTimer?.invalidate()
+        openingTimer = nil
+        // One complete line for the window's whole life, whatever its state:
+        // the bench reads these, not the 5 s samples (WIN-55/56).
+        logStatsTotal()
+        statsTimer?.invalidate()
+        statsTimer = nil
+        stopPointerFeed()
+        resizeWork?.cancel()
+        settleTimer?.invalidate()
+        settleTimer = nil
+        if let videoSizeObserver { NotificationCenter.default.removeObserver(videoSizeObserver) }
+        videoSizeObserver = nil
+        manager.noteKeyLost(stream)
+        // A closed window is not a key window, whether or not AppKit sent a
+        // resign first.
+        performMenuKey(.streamResigned(stream: stream))
+        if !closingFromRemote { sendClose() }
+        let count = stills
+        Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
+        // AppKit keeps a closed window in `NSApp.windows`, and with it the whole
+        // layer tree under its content view — including the display layer and
+        // the picture it holds. A closed window holds no picture (WIN-33).
+        chrome.releaseGraphics()
+        videoView.releasePicture()
+        window?.contentView = nil
+        window?.delegate = nil
+        manager.remove(stream: stream)
+    }
+
+    // MARK: Zoom
+
+    /// Whether this window's zoom runs as an app-driven live resize. Every
+    /// stream window does — an app, a link, a handoff or the phone mirror —
+    /// because all of them show a live picture that AppKit's own zoom would
+    /// freeze for the animation's whole length. The target is the delegate's
+    /// standard frame: the screen's visible frame, or the phone's fit.
+    var zoomsAsLiveResize: Bool { true }
+
+    /// The standard frame the window is showing, and the frame a second zoom
+    /// returns to (WindowZoom).
+    private(set) var zoom = WindowZoom.State.normal
+    private var zoomLink: CADisplayLink?
+    /// A display link pauses with its screen: the timer finishes the animation
+    /// even when no frame drives it (a hidden or occluded window).
+    private var zoomTimer: Timer?
+    private var zoomFrom: NSRect = .zero
+    private var zoomTo: NSRect = .zero
+    private var zoomStarted: CFTimeInterval = 0
+    /// AppKit's own zoom takes about a third of a second; the app-driven one
+    /// keeps that so a double-click feels the same.
+    private static let zoomDuration: CFTimeInterval = 0.3
+
+    /// The window's own zoom path (double-click on the bar, the green light,
+    /// Window ▸ Zoom): animate the frame from the display link as a live
+    /// resize, so the picture keeps arriving. Returns false when the window
+    /// does not run its own zoom.
+    func zoomAsLiveResize() -> Bool {
+        guard zoomsAsLiveResize, zoomLink == nil, !isLiveResizing,
+              let window, let screen = window.screen else { return false }
+        let standard = zoomStandardFrame(on: screen)
+        let (state, target) = WindowZoom.onZoom(zoom, frame: window.frame, standard: standard)
+        zoom = state
+        // The state is a closed set; no person data.
+        Log.app.notice("window zoom: \(state.name, privacy: .public)")  // log-ok: closed state set
+        guard !sameFrame(window.frame, target) else { return true }
+        zoomFrom = window.frame
+        zoomTo = target
+        beginLiveResize()
+        zoomStarted = CACurrentMediaTime()
+        let link = window.contentView?.displayLink(target: self, selector: #selector(zoomTick(_:)))
+        link?.add(to: .main, forMode: .common)
+        zoomLink = link
+        if link == nil {
+            finishZoom()
+            return true
+        }
+        let timer = Timer(timeInterval: Self.zoomDuration + 0.2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishZoom() }
+        }
+        zoomTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        return true
+    }
+
+    /// The frame AppKit would zoom to: the screen's visible frame, or what the
+    /// window's delegate makes of it (the phone window's phone-shaped fit).
+    private func zoomStandardFrame(on screen: NSScreen) -> NSRect {
+        var frame = screen.visibleFrame
+        if let window, let delegate = window.delegate,
+           delegate.responds(to: #selector(NSWindowDelegate.windowWillUseStandardFrame(_:defaultFrame:))) {
+            frame = delegate.windowWillUseStandardFrame?(window, defaultFrame: frame) ?? frame
+        }
+        return frame
+    }
+
+    /// One animation step, driven by the display link: the same delegate calls
+    /// a person's live drag makes, with AppKit's ease-out curve.
+    @objc private func zoomTick(_ link: CADisplayLink) {
+        guard let window else { finishZoom(); return }
+        let raw = min(1, max(0, (CACurrentMediaTime() - zoomStarted) / Self.zoomDuration))
+        let t = 1 - pow(1 - raw, 3)
+        let frame = NSRect(x: zoomFrom.minX + (zoomTo.minX - zoomFrom.minX) * t,
+                           y: zoomFrom.minY + (zoomTo.minY - zoomFrom.minY) * t,
+                           width: zoomFrom.width + (zoomTo.width - zoomFrom.width) * t,
+                           height: zoomFrom.height + (zoomTo.height - zoomFrom.height) * t)
+        liveResizeFrame(frame)
+        if raw >= 1 { finishZoom() }
+    }
+
+    private func finishZoom() {
+        stopZoomAnimation()
+        if let window {
+            // A display link that never ticked (no link, or a hidden window
+            // whose link paused) still owes the zoom its frame.
+            if !sameFrame(window.frame, zoomTo) { liveResizeFrame(zoomTo) }
+            zoom = WindowZoom.settled(zoom, at: window.frame)
+        }
+        // The same delegate call a drag's end makes, so a kind with its own
+        // end work (the phone mirror's rotation) runs it.
+        if let window {
+            windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+        } else {
+            endLiveResize()
+        }
+    }
+
+    private func stopZoomAnimation() {
+        zoomLink?.invalidate()
+        zoomLink = nil
+        zoomTimer?.invalidate()
+        zoomTimer = nil
+    }
+
+    private func sameFrame(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) <= 0.5 && abs(a.minY - b.minY) <= 0.5
+            && abs(a.width - b.width) <= 0.5 && abs(a.height - b.height) <= 0.5
+    }
+
+    // MARK: Resize
+
+    /// The person is dragging a corner: only the drag sets the frame until it
+    /// ends. A stream event (a rotation) must not move the window under the
+    /// hand; it waits for `windowDidEndLiveResize`. The same state covers the
+    /// app's own zoom animation: both are one shape change the phone hears
+    /// about once, at the end.
+    private(set) var isLiveResizing = false
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        // A hand on the window takes over from a zoom animation in flight.
+        stopZoomAnimation()
+        beginLiveResize()
+    }
+
+    /// A drag's or the zoom's first frame: the last picture starts filling the
+    /// window before the first size change, so no letterbox frame shows.
+    private func beginLiveResize() {
+        isLiveResizing = true
+        videoView.isWindowLiveResizing = true
+        videoView.liveResizeBegan()
+        liveText.exit(.resize)
+    }
+
+    /// The shape change is over: the phone is asked once, now, and the settled
+    /// frame is the one to come back to.
+    private func endLiveResize() {
+        isLiveResizing = false
+        videoView.isWindowLiveResizing = false
+        videoView.liveResizeEnded()
+        scheduleResize(after: 0)
+        rememberFrame()
+    }
+
+    /// The proposed size a person's drag or an Accessibility resize asks for,
+    /// kept inside the screen the window is on (CONV-MAC-12). The app's own
+    /// `setFrame` — a stream's size, the phone's turn — does not come through
+    /// here and keeps its size on the e2e's virtual display.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let size = WindowFrameLimit.size(frameSize, for: sender)
+        // The next size's picture layers go down before the window takes it:
+        // WindowServer can composite the new frame against the previous
+        // surface, which must already cover the new size (WIN-58).
+        if isLiveResizing {
+            let fullScreen = sender.styleMask.contains(.fullScreen)
+            videoView.prepareLiveResize(to: style.streamSize(window: size, fullScreen: fullScreen))
+        }
+        return size
+    }
+
+    /// One step of the e2e's scripted drag: the same delegate call AppKit makes
+    /// for a mouse move, then the frame it returns.
+    func liveResizeStep(to proposed: NSSize) {
+        guard let window else { return }
+        let snapped = windowWillResize(window, to: proposed)
+        window.setFrame(NSRect(origin: window.frame.origin, size: snapped), display: true)
+    }
+
+    /// One step of the zoom animation: the size is the person's drag rule, the
+    /// origin moves with it (a zoom centres the window on the screen).
+    private func liveResizeFrame(_ frame: NSRect) {
+        guard let window else { return }
+        let size = windowWillResize(window, to: frame.size)
+        window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+    }
+
+    /// The e2e's scripted drag (`--debug-control resize-drag`). A quiet run
+    /// cannot post real mouse events without moving the person's pointer, so
+    /// the frame view's own live-resize sequence runs here instead: the same
+    /// beginLiveResize, one windowWillResize/setFrame a display refresh, then
+    /// endLiveResize. `edge` is the edge the person grabs; `amount` is how far
+    /// it moves.
+    func debugResizeDrag(edge: String, amount: CGFloat, steps: Int, stepMs: Int) -> String? {
+        guard let window else { return "no window" }
+        guard steps > 0, stepMs > 0, amount != 0, ["right", "bottom", "top"].contains(edge) else {
+            return "resize-drag needs right|bottom|top AMOUNT STEPS STEP_MS"
+        }
+        let start = window.frame
+        beginLiveResize()
+        var step = 0
+        let timer = Timer(timeInterval: Double(stepMs) / 1000, repeats: true) {
+            [weak self] timer in
+            guard let self, let window = self.window else { timer.invalidate(); return }
+            step += 1
+            let fraction = CGFloat(step) / CGFloat(steps)
+            var frame = start
+            switch edge {
+            case "right":
+                frame.size.width = start.width + amount * fraction
+            case "bottom":
+                // The bottom edge moves down: the top edge stays where it is.
+                frame.origin.y = start.origin.y - amount * fraction
+                frame.size.height = start.height + amount * fraction
+            default:
+                // The top edge moves up: AppKit's origin is the bottom-left,
+                // so the origin stays and the height grows.
+                frame.size.height = start.height + amount * fraction
+            }
+            let size = self.windowWillResize(window, to: frame.size)
+            window.setFrame(NSRect(origin: frame.origin, size: size), display: true)
+            if step >= steps {
+                timer.invalidate()
+                self.endLiveResize()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return nil
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        // A stream window changing shape cannot keep a frozen frame: the new
+        // picture would be a different size under the same overlay.
+        liveText.exit(.resize)
+        chrome.placeTrafficLights()
+        scheduleResize(after: 0.3)
+        writeChromeState()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        endLiveResize()
+    }
+
+    private func scheduleResize(after delay: TimeInterval) {
+        // The window's shape changed: until the phone's frame at that size
+        // arrives the last one fills it (VideoLayerView's pending rule). The
+        // message itself is debounced below; the fill starts with the drag.
+        videoView.noteResizeRequested()
+        resizeWork?.cancel()
+        if delay <= 0 {
+            sendResize()
+            videoView.needsLayout = true
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.sendResize() }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        videoView.needsLayout = true
+    }
+
+    // MARK: Occlusion / minimize
+
+    func windowDidMiniaturize(_ notification: Notification) { setPaused(true) }
+    func windowDidDeminiaturize(_ notification: Notification) { setPaused(shouldPause) }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        let w = window
+        let sp = shouldPause
+        Log.video.info("occlusion changed: visible=\(w?.isVisible ?? false) mini=\(w?.isMiniaturized ?? false) occl.hasVisible=\(w?.occlusionState.contains(.visible) ?? false) raw=\(String(describing: w?.occlusionState.rawValue)) -> pause=\(sp)")
+        setPaused(sp)
+        // The watchdog's clock must not carry the covered time across: the
+        // notification also reaches a window whose timer AppKit has throttled.
+        tickFrameWatchdog()
+    }
+
+    /// Minimized windows are never "visible", and AppKit can briefly report a
+    /// visible occlusion state while miniaturizing; both fold into one flag.
+    /// `occlusionState` can spuriously report !visible for the frontmost window,
+    /// which would detach its encoder; the key/main window never pauses.
+    private var shouldPause: Bool {
+        guard let window else { return false }
+        return StreamPause.shouldPause(miniaturized: window.isMiniaturized,
+                                       key: window.isKeyWindow,
+                                       main: window.isMainWindow,
+                                       occludedVisible: window.occlusionState.contains(.visible),
+                                       menuTracking: MenuTracking.isTracking)
+    }
+
+    func setPaused(_ paused: Bool) {
+        let changed = paused != self.isPaused
+        Log.video.info("setPaused paused=\(paused) was=\(self.isPaused) changed=\(changed) mini=\(self.window?.isMiniaturized ?? false) key=\(self.window?.isKeyWindow ?? false)")
+        guard !manager.shuttingDown, !closingFromRemote else { return }
+        guard changed else { return }
+        self.isPaused = paused
+        // Paced presentation's display link follows the picture's liveness:
+        // a hidden or covered window stops it with the phone.
+        videoView.isPaused = paused
+        stats.notePaused(paused, now: ProcessInfo.processInfo.systemUptime)
+        if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
+    }
+
+    /// Re-decides pause (a menu stopped tracking, or the app came back): the
+    /// caller has no new state of its own.
+    func reevaluatePause() {
+        setPaused(shouldPause)
+    }
+
+    // MARK: Focus
+
+    /// The values the stream-only menu items show for this window (MENU-4,
+    /// MENU-6, MENU-9).
+    var menuValues: StreamMenuValues {
+        StreamMenuValues(stream: stream, style: style, liveText: liveText.isActive,
+                         frozen: frozen, phoneOffline: phoneControlsOffline,
+                         phoneWindow: self is PhoneWindowController,
+                         panelOff: (self as? PhoneWindowController)?.panelOffShown ?? false,
+                         densityPackage: densityPackage, densityOverride: densityOverride)
+    }
+
+    /// Publishes this window's values after one of them moved. The machine
+    /// ignores them unless this is the key stream window, so a change in a
+    /// window behind the Deck cannot reach the menu.
+    func refreshMenuState() {
+        performMenuKey(.streamValuesChanged(menuValues))
+    }
+
+    private func performMenuKey(_ event: StreamMenuKeyMachine.Event) {
+        let actions = StreamMenuState.shared.handle(event)
+        if actions.contains(.correctMenu) { MenuMarks.apply(to: NSApp.mainMenu) }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        manager.noteFront(stream)
+        manager.noteKey(stream)
+        // The key window changed: its values replace whatever the last stream
+        // window left, whole.
+        performMenuKey(.streamBecameKey(menuValues))
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // The keyboard left the window: the bar's ring goes with it, and its
+        // keys are the phone's again when the window comes back.
+        manager.noteKeyLost(stream)
+        resetBarFocus()
+        // No stream window is key now (the Deck or another window took it):
+        // every stream-only item is off and disabled until one is.
+        performMenuKey(.streamResigned(stream: stream))
+        videoView.windowResignedKey()
+    }
+
+    // MARK: View menu
+
+    /// View → Show Touches: one setting for every stream window.
+    @objc func toggleShowTouches(_ sender: Any?) {
+        manager.showTouches.toggle()
+    }
+
+    // MARK: Live Text
+
+    var liveText: LiveTextSession { videoView.liveText }
+
+    /// View ▸ Live Text (⌘⇧T) and the bar button: enter from idle, leave from
+    /// any other state.
+    @objc func toggleLiveTextMenuAction(_ sender: Any?) { toggleLiveText() }
+
+    func toggleLiveText() {
+        if liveText.isActive { liveText.exit(.toggle) } else { enterLiveText() }
+    }
+
+    /// Enter the mode. False when there is no displayed frame yet (the window
+    /// keeps showing live video) or it is already on.
+    @discardableResult
+    func enterLiveText() -> Bool {
+        liveText.enter()
+    }
+
+    func exitLiveText(_ reason: LiveTextExitReason) {
+        liveText.exit(reason)
+    }
+
+    /// The mode's state moves the phone and the chrome: the stream pauses at
+    /// the phone while the frame is frozen, and the status pill and menu check
+    /// follow. A close or a lost link resumes nothing: the stream is gone.
+    private func liveTextChanged(_ state: LiveTextState, _ reason: LiveTextExitReason?) {
+        let active = state.isActive
+        if active, !liveTextWasActive {
+            videoView.inputMapper?.dropPendingInput()
+        }
+        if state == .analyzing, !liveTextPaused {
+            // The frame is frozen and the overlay is up: the picture can stop
+            // arriving. (While capturing, the keyframe route is still asking
+            // the phone for that frame, so the stream keeps running.)
+            if !isPaused { session.pauseWindow(stream: stream) }
+            liveTextPaused = true
+        } else if !active, liveTextPaused {
+            let streamEnded = reason == .close || reason == .disconnect
+            if !streamEnded, !isPaused { session.resumeWindow(stream: stream) }
+            liveTextPaused = false
+        }
+        liveTextWasActive = active
+        chrome.setLiveText(active: active)
+        refreshMenuState()
+        updateFrozen()
+    }
+
+    /// Applies `frozen` everywhere it is read: the bar's action buttons, the
+    /// Navigate menu, and the chrome state file. The cover (phone window) and
+    /// Live Text both call it.
+    func updateFrozen() {
+        chrome.setFrozen(frozen)
+        if window?.isKeyWindow ?? false {
+            refreshMenuState()
+        }
+        writeChromeState()
+    }
+
+    /// The pointer moved to a point in the window (also the scripted driver's
+    /// hover): the phone's mouse hover, unless the point is Mac UI (WIN-61).
+    func pointerMoved(toWindowPoint point: CGPoint) {
+        if videoView.bounds.contains(videoView.convert(point, from: nil)) {
+            videoView.hoverPointerMoved(toWindowPoint: point)
+        } else {
+            videoView.inputMapper?.hoverExit()
+        }
+    }
+
+    private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    // MARK: Chrome state (e2e)
+
+    private var barPresses = 0
+
+    /// The scripted check reads what the chrome is doing here; `--debug-chrome-state
+    /// FILE` puts the file on the manager.
+    private var stateTimer: DispatchSourceTimer?
+    var stateFile: URL? { didSet { startStateRefresh() } }
+
+    /// The state is e2e evidence: a stale line must never pass the liveness
+    /// test (frame_age_ms under a second, the cover gone), so it is refreshed
+    /// a few times a second while `--debug-chrome-state` is set. A dispatch
+    /// source, not a run-loop Timer, so the refresh is not tied to the modes
+    /// an AppKit loop happens to run in.
+    private func startStateRefresh() {
+        stateTimer?.cancel()
+        stateTimer = nil
+        guard stateFile != nil else { return }
+        writeChromeState()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: 0.25)
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.writeChromeState() }
+        }
+        stateTimer = timer
+        timer.resume()
+    }
+
+    func writeChromeState() {
+        guard let stateFile else { return }
+        // The state reports the picture as the window is now: the view must
+        // have taken the new size before the gap is measured (a did-resize
+        // notification can arrive before AppKit's layout pass).
+        videoView.layoutSubtreeIfNeeded()
+        let lights = window?.standardWindowButton(.closeButton).map { !$0.isHidden } ?? false
+        let titleUp = window?.titleVisibility == .visible
+        let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
+        let fullScreen = isFullScreen
+        // The disconnection overlay is the visible part of a stall or a
+        // dropped link: it must be in the view tree, with its icon and its
+        // lines (the state's `stall=` is only the flag). The e2e asserts this,
+        // so a window that stops the picture without telling the person fails.
+        let overlay = chrome.stallOverlay
+        // The picture's drawn rect in window points, top-left origin: the band
+        // check reads the screenshot inside it.
+        let picture = videoView.convert(videoView.videoRect(), to: nil)
+        let pictureTop = (window?.frame.height ?? 0) - picture.maxY
+        let line = "style=\(style.label.lowercased()) lights=\(lights ? "shown" : "hidden")"
+            + " fullbar=\(fullBarStateName) fullbar_visible=\(chrome.fullBarVisible ? 1 : 0)"
+            + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
+            + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
+            + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
+            + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
+            + " collection=\(window?.collectionBehavior.rawValue ?? 0)"
+            + " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
+            + " can_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
+            + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
+            + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
+            + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
+            + " panel_off=\(chrome.panelOff ? 1 : 0) panel_pill=\(chrome.showsPanelStatus ? 1 : 0)"
+            + " panel_pill_failed=\(chrome.showsPanelStatus && chrome.panelPillText == PhoneScreenOverlay.panelFailedText ? 1 : 0)"
+            + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
+            + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
+            + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
+            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
+            + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
+            + " paused=\(isPaused ? 1 : 0) expecting=\(expectsFrames ? 1 : 0) opening=\(isOpening ? 1 : 0)"
+            + " frame_age_ms=\(frameClock.lastFrame.map { Int(((now() - $0) * 1000).rounded()) } ?? -1)"
+            + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
+            + " drop_refusal=\(dropFailure ?? "none")"
+            + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
+            + " loading=\(openingState)"
+            + " cover_phase=\(openingCoverPhase) cover_buttons=\(openingButtons)"
+            + " cover_visible=\(chrome.openingCover.isVisiblyShowing ? 1 : 0)"
+            + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
+            + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
+            + " bar_focus=\(barFocusState)"
+            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+            + " bar_tint=\(String(format: "%.2f", BarTitle.tintAlpha))"
+            + " tint=\(chrome.barTintVisible ? 1 : 0)"
+            + " bar_title=\(chrome.barTitleVisible ? 1 : 0)"
+            + " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
+            + " bar_title_rect=\(barTitleRectState())"
+            + " haze=\(chrome.hazeVisible ? 1 : 0)"
+            + " key=\(window?.isKeyWindow == true ? 1 : 0)"
+            + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
+            + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
+            + " geom=\(geometryLine())"
+            + " video_gap=\(Int(videoView.videoGap().rounded()))"
+            + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
+        try? Data(line.utf8).write(to: stateFile, options: .atomic)
+    }
+
+    /// The title's rect in window points, top-left origin (the e2e maps it
+    /// onto the capture); none while hidden. The text itself is never here.
+    private func barTitleRectState() -> String {
+        guard let window, let rect = chrome.barTitleRect else { return "none" }
+        let inWindow = chrome.convert(rect, to: nil)
+        return "\(Int(inWindow.minX.rounded())),\(Int((window.frame.height - inWindow.maxY).rounded())),\(Int(inWindow.width.rounded())),\(Int(inWindow.height.rounded()))"
+    }
+
+    /// The e2e's geometry: the window, the content and the chrome, the mirror
+    /// and the titlebar, so a check can see which band a click lands in.
+    private func geometryLine() -> String {
+        func rect(_ r: NSRect) -> String {
+            "\(Int(r.minX.rounded())),\(Int(r.minY.rounded())),\(Int(r.width.rounded()))x\(Int(r.height.rounded()))"
+        }
+        guard let window else { return "none" }
+        let titlebar = window.standardWindowButton(.closeButton)?.superview?.frame ?? .zero
+        return "win:\(rect(window.frame)) content:\(rect(window.contentView?.frame ?? .zero))"
+            + " chrome:\(rect(chrome.frame)) ext:\(rect(chrome.mirrorFrame))"
+            + " video:\(rect(chrome.video.frame)) layout:\(rect(window.contentLayoutRect))"
+            + " tb:\(rect(titlebar)) mask:\(window.styleMask.rawValue)"
+            + " bar:\(Int(chrome.barHeight.rounded()))"
+    }
+
+    /// The standard buttons' slots before the chrome moved them. AppKit lays
+    /// them out at the window's top-left; only their distance from the top
+    /// edge survives a window that grows to the screen.
+    private func captureStandardLights() {
+        guard let window else { return }
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+        where standardLightSlots[type] == nil {
+            guard let light = window.standardWindowButton(type), let superview = light.superview,
+                  light.frame.width > 0, light.frame.height > 0 else { continue }
+            let inWindow = superview.convert(light.frame, to: nil)
+            standardLightSlots[type] = (inWindow.minX, window.frame.height - inWindow.maxY, inWindow.size)
+        }
+    }
+
+    private func restoreStandardLights() {
+        guard let window else { return }
+        for (type, slot) in standardLightSlots {
+            guard let light = window.standardWindowButton(type), let superview = light.superview else { continue }
+            let frame = NSRect(x: slot.x, y: window.frame.height - slot.fromTop - slot.size.height,
+                               width: slot.size.width, height: slot.size.height)
+            light.frame = superview.convert(frame, from: nil)
+            light.isHidden = false
+            light.alphaValue = 1
+        }
+    }
+
+    /// The titlebar and the buttons by state (ChromeConfig): in both states
+    /// the system's title is hidden and the chrome places the buttons itself.
+    private func applyChromeConfig(fullScreen: Bool) {
+        guard let window else { return }
+        let config = ChromeConfig.forState(fullScreen: fullScreen)
+        window.titleVisibility = config.titleVisible ? .visible : .hidden
+        window.titlebarAppearsTransparent = config.titlebarTransparent
+        chrome.lightsManagedByAppKit = config.lightsManagedByAppKit
+        chrome.placeTrafficLights()
+    }
+
+    /// Before the transition, so the bar is already parked out of sight (and
+    /// the windowed chrome's lights are the ones that come back).
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        if let window, !window.styleMask.contains(.fullScreen) {
+            windowedFrame = window.frame
+        }
+        applyChromeConfig(fullScreen: true)
+        enterFullScreenBar()
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        chromeLayoutChanged()
+        chrome.setFullBarShown(fullBar.mode == .shown)
+        chrome.placeTrafficLights()
+        writeChromeState()
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        // The titlebar goes back to hidden before the window starts back;
+        // waiting for did-exit would flash the standard title.
+        window?.titleVisibility = .hidden
+        window?.titlebarAppearsTransparent = true
+        exitFullScreenBar()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        applyChromeConfig(fullScreen: false)
+        if let window, let frame = windowedFrame, window.frame != frame {
+            window.setFrame(frame, display: true)
+        }
+        windowedFrame = nil
+        chromeLayoutChanged()
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        windowedFrame = nil
+        exitFullScreenBar()
+        applyChromeConfig(fullScreen: false)
+        chromeLayoutChanged()
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        applyChromeConfig(fullScreen: true)
+        chromeLayoutChanged()
+    }
+
+    /// Full screen drops the windowed chrome in either style: the stream is
+    /// then the whole screen and the bar's own machine owns its band.
+    private func chromeLayoutChanged() {
+        chrome.layoutChrome()
+        chrome.placeTrafficLights()
+        scheduleResize(after: 0)
+        writeChromeState()
+    }
+
+    // MARK: Picture watchdog
+
+    /// One watchdog tick: fold in any frame the clock saw, then ask whether the
+    /// silence has lasted long enough to call the picture stalled.
+    private func tickFrameWatchdog() {
+        tickFrameWatchdog(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// `window.still` from the phone (PHONE-21): the stream is live and its
+    /// encoder has produced nothing for a second. It counts as a heartbeat and
+    /// ends a shown stall; it is not a frame, so the opening cover stays up.
+    func noteStill() {
+        noteStill(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives it without waiting.
+    func noteStill(at now: TimeInterval) {
+        stills += 1
+        if watchdog.still(at: now) { setStalled(false) }
+        writeChromeState()
+    }
+
+    /// ISS-40: one numbers-only `notice` line per visible window every 5 s.
+    /// A paused (hidden, minimized or covered) window logs nothing: no frame
+    /// flow means no picture to describe.
+    func logStats() {
+        guard let window, window.isVisible, !window.isMiniaturized, !isPaused else { return }
+        let stats = stats.snapshot(now: ProcessInfo.processInfo.systemUptime,
+                                   tcpInfo: session.currentTCPInfo())
+        let line = StreamStatsLine.text(stream: stream,
+                                        size: videoView.framePixelSize,
+                                        view: videoView.backingPixelSize,
+                                        place: videoView.placementName,
+                                        stats: stats)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: counts, sizes, rates and timings only; no content
+    }
+
+    /// The closing line: complete counters over the window's whole life, so a
+    /// short run is not described by its last 2 s sample.
+    private func logStatsTotal() {
+        let total = stats.total(now: ProcessInfo.processInfo.systemUptime,
+                                tcpInfo: session.currentTCPInfo())
+        let line = StreamStatsLine.totalText(stream: stream, total: total)
+        Log.video.notice("\(line, privacy: .public)")  // log-ok: counts and timings only; no content
+    }
+
+    /// The tick with the clock passed in, so a test can drive the window's
+    /// rule (expectation changes included) without waiting in real time.
+    func tickFrameWatchdog(at now: TimeInterval) {
+        if let last = frameClock.lastFrame {
+            if watchdog.frame(at: last) { setStalled(false) }
+        }
+        let expecting = expectsFrames
+        if !expecting {
+            // Paused, covered, Live Text or the link down: the picture is not
+            // presented as live, so there is nothing to call stale.
+            setStalled(false)
+        }
+        if watchdog.tick(at: now, expecting: expecting) { setStalled(true) }
+        tickPicture(at: now)
+    }
+
+    /// The link's clock: the same 0.25 s tick moves "Reconnecting…" and "Phone
+    /// offline", so a test drives them without waiting (WIN-16).
+    func tickPicture(at now: TimeInterval) {
+        applyPicture(.tick(now), at: now)
+    }
+
+    /// The phone reported `power.locked` (its own power press with our streams
+    /// up): the VD group re-lights and the picture can be quiet for a moment.
+    /// Hold the last frame — no "Not responding" pill, no input block — for
+    /// the watchdog's grace; a real stall after it still says so.
+    func powerLocked() {
+        powerLocked(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives the rule without waiting.
+    func powerLocked(at now: TimeInterval) {
+        setStalled(false)
+        watchdog.powerLocked(at: now)
+        writeChromeState()
+    }
+
+    /// The picture stopped (or came back): the machine's stall event. A stall
+    /// is a frozen mode: input and the phone-side actions stop too.
+    private func setStalled(_ stalled: Bool) {
+        applyPicture(.stall(stalled), at: now())
+    }
+
+    /// One transition of the picture's machine: log the path, run its actions
+    /// and let the frozen state and the chrome state follow.
+    private func applyPicture(_ event: PictureState.Event, at time: TimeInterval) {
+        let from = PictureState.label(picture.state)
+        guard let actions = picture.handle(event, at: time) else { return }
+        let state = "\(from) --\(event)--> \(PictureState.label(picture.state))"
+        Log.video.notice("picture: \(state, privacy: .public)")
+        for action in actions { run(action) }
+        // `updateFrozen` writes the chrome state, so the transition lands there
+        // once.
+        updateFrozen()
+    }
+
+    /// The overlay came or went (WIN-39).
+    private func run(_ action: PictureState.Action) {
+        switch action {
+        case .present(let kind):
+            let display = StallOverlayDisplay(kind: kind, phone: manager.phoneName)
+            // The shared cover blurs the picture held at the moment it comes up.
+            chrome.stallOverlay.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
+            chrome.layoutChrome()
+            Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
+        case .dismiss:
+            chrome.stallOverlay.hide()
+            chrome.layoutChrome()
+            Log.video.notice("stream \(self.stream, privacy: .public): stall=0")
+        }
+    }
+
+    // MARK: Link state
+
+    /// The link dropped or came back: the overlay says so after 1 s (a blip
+    /// shows nothing), and "Phone offline" 15 s after the drop.
+    func setLinkDown(_ down: Bool) {
+        setLinkDown(down, at: now())
+    }
+
+    /// The clock-explicit half, so a test drives the two steps without waiting.
+    func setLinkDown(_ down: Bool, at time: TimeInterval) {
+        phoneControlsOffline = down
+        chrome.setOffline(down)
+        if down {
+            liveText.exit(.disconnect)
+            applyPicture(.linkDown, at: time)
+        } else {
+            applyPicture(.linkUp, at: time)
+        }
+        writeChromeState()
+    }
+
+    // MARK: File-drop pill (docs/design/dragdrop.md)
+
+    private var dropPill: GlassPillView?
+    private var dropFailure: String?
+
+    /// Over the last frame: "Sending report.pdf… 43 %", then the outcome.
+    /// nil hides the pill (a finished transfer fades when the state times out).
+    /// The source refusal's closed token for the chrome state (SHARE-18).
+    func setDropFailure(_ token: String?) {
+        dropFailure = token
+        writeChromeState()
+    }
+
+    func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
+        guard let state else {
+            dropPill?.fade(to: 0)
+            writeChromeState()
+            return
+        }
+        let pill = dropPill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress)
+        if dropPill == nil {
+            dropPill = pill
+            videoView.addSubview(pill)
+            pill.alphaValue = 0
+        }
+        pill.setText(state.text, showsProgress: state.showsProgress)
+        layoutDropPill()
+        pill.fade(to: 1)
+        writeChromeState()
+    }
+
+    private func layoutDropPill() {
+        guard let dropPill else { return }
+        let size = dropPill.fittingSize
+        dropPill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2,
+                                y: videoView.bounds.height - size.height - 24,
+                                width: size.width, height: size.height)
+        dropPill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+    }
+
+    // MARK: The ⌘V image pill (SHARE-16)
+
+    private var pastePill: GlassPillView?
+
+    /// The chrome state's token: the three pill states, `hidden` between them.
+    private var pastePillState: String {
+        switch pasteFlow?.phase {
+        case .sending?, .awaitingConfirmation?: return "pasting"
+        case .pasted?: return "pasted"
+        case .failed?: return "failed"
+        case .idle?, nil: return "hidden"
+        }
+    }
+
+    private var pasteButtonShown: Bool {
+        switch pasteFlow?.phase {
+        case .pasted?, .failed?: return true
+        case .idle?, .sending?, .awaitingConfirmation?, nil: return false
+        }
+    }
+
+    /// Over the last frame: the paste flow's three states. The outcome pills
+    /// carry the one button that shares the image through the drop path.
+    func setPastePill(_ state: PastePillState?) {
+        guard let state else {
+            pastePill?.fade(to: 0)
+            writeChromeState()
+            return
+        }
+        let button = state == .pasting ? nil : GlassPillButton(
+            title: "Share Instead",
+            help: "Share this image with the app instead of pasting it (⇧⌘V)",
+            action: { [weak self] in self?.pasteFlow?.shareInstead() }
+        )
+        let pill = pastePill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress,
+                                              button: button)
+        if pastePill == nil {
+            pastePill = pill
+            videoView.addSubview(pill)
+            pill.alphaValue = 0
+        }
+        pill.setText(state.text, showsProgress: state.showsProgress, button: button)
+        layoutPastePill()
+        pill.fade(to: 1)
+        writeChromeState()
+    }
+
+    private func layoutPastePill() {
+        guard let pastePill else { return }
+        let size = pastePill.fittingSize
+        pastePill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2,
+                                 y: videoView.bounds.height - size.height - 24,
+                                 width: size.width, height: size.height)
+        pastePill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+    }
+
+    /// Starts one ⌘V's image; the id is the wire transfer's, so the phone's
+    /// answer and this flow meet.
+    private func startPaste(data: Data, mime: String) {
+        pasteFlow?.paste(image: data, mime: mime, id: ClipImageSend.nextId())
+    }
+
+    /// ⇧⌘V and the pill's button: the image becomes a temp file on the drop
+    /// path, aimed at this window's app like any other drop (SHARE-17).
+    private func sharePastedImage(_ data: Data, mime: String) {
+        let ext = mime.lowercased() == "image/jpeg" ? "jpg" : "png"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("contigua-paste-\(UUID().uuidString).\(ext)")
+        guard (try? data.write(to: url)) != nil else {
+            Log.app.info("paste: could not write the share temp")
+            return
+        }
+        manager.onFilesDropped?([url], dropTargetPackage)
+    }
+
+    // MARK: The phone's answer
+
+    func clipImageDone(id: UInt32, ok: Bool) {
+        pasteFlow?.done(id: id, ok: ok)
+    }
+
+    func pasteSessionEnded() {
+        pasteFlow?.sessionEnded()
+    }
+
+    // MARK: Density
+
+    /// ⌘+/⌘-: one step on the focused window's app override, created from the
+    /// value it shows now when the app had none (View ▸ Density does the same
+    /// for an exact option).
+    func adjustDensity(_ delta: Double) {
+        guard usesDensity, let pkg = densityPackage else { return }
+        let next = DensityRules.stepped(from: density, by: delta)
+        guard next != density else {
+            // At the clamp the press cannot change anything, and a request
+            // equal to the last one re-attached the phone's encoder for nothing
+            // (the 10-27 burst). The press is a no-op: nothing is sent.
+            Log.video.info("density press: the window is at the clamp, nothing to send")
+            return
+        }
+        manager.setDensity(next, forPackage: pkg)
+    }
+
+    /// ⌘0: back to the Settings default (the app's override is cleared).
+    func resetDensity() {
+        setDensityOverride(nil)
+    }
+
+    /// The View ▸ Density pick (nil is "Default") for this window's app.
+    func setDensityOverride(_ value: Double?) {
+        guard let pkg = densityPackage else { return }
+        manager.setDensity(value, forPackage: pkg)
+    }
+
+    /// The app's override or the Settings default changed: the phone gets the
+    /// new dpi. The value itself is computed, so this only re-sends.
+    func applyStoredDensity() {
+        guard window != nil else { return }
+        sendResize()
+    }
+
+    /// Settings → General's default changed: apps without an override follow
+    /// it at once.
+    func defaultDensityChanged() {
+        guard usesDensity, densityOverride == nil else { return }
+        applyStoredDensity()
+    }
+
+    /// A link or handoff window learned the app it shows: that app's override
+    /// (if it has one) now applies.
+    func reapplyStoredDensity() {
+        guard densityOverride != nil else { return }
+        applyStoredDensity()
+    }
+
+    // MARK: Navigation
+
+    /// Menu action (target nil, responder chain). Enabled in every stream window.
+    /// Live Text freezes it: the phone behind the frozen frame is paused.
+    @objc func navigateBack(_ sender: Any?) {
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
+                                                     offline: phoneControlsOffline) else { return }
+        session.nav(stream: stream, action: "back")
+    }
+
+    // MARK: Input routing
+
+    private func handle(_ command: InputMapper.Command) {
+        switch command {
+        case .touch(let event):
+            session.touch(event, stream: stream)
+        case .scroll(let event):
+            session.scroll(event, stream: stream)
+        case .hover(let event):
+            session.hover(event, stream: stream)
+        case .key(let event):
+            session.key(event, stream: stream)
+        case .text(let text):
+            session.text(stream: stream, text: text)
+        case .nav(let action):
+            session.nav(stream: stream, action: action)
+        case .adjustDensity(let delta):
+            adjustDensity(delta)
+        case .resetDensity:
+            resetDensity()
+        }
+    }
+}
+
+extension Double {
+    func rounded(toPlaces places: Int) -> Double {
+        let factor = pow(10.0, Double(places))
+        return (self * factor).rounded() / factor
+    }
+}

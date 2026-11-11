@@ -10,8 +10,8 @@
 #   adb -s emulator-5554 emu kill; exit $r
 #
 # Exit status is non-zero when any PASS/FAIL line failed. Screenshots, the cost
-# phase files, the logcat and summary.json land in $POCKETDECK_MW_OUT (default
-# ~/dev/pocketdeck/.agent/mw-phone).
+# phase files, the logcat and summary.json land in $CONTIGUA_MW_OUT (default
+# ~/dev/contigua/.agent/mw-phone).
 set -uo pipefail
 
 MODE=boot
@@ -25,7 +25,7 @@ esac
 cd "$REPO_ROOT"
 
 WT="$REPO_ROOT"
-OUT="${POCKETDECK_MW_OUT:-$HOME/dev/pocketdeck/.agent/mw-phone}"
+OUT="${CONTIGUA_MW_OUT:-$HOME/dev/contigua/.agent/mw-phone}"
 # A fresh pairing state per run: boot 4 was lost because a reused state file made
 # every attempt die on the phone's "handshake timeout" (a key it had revoked).
 # A new file pairs like a new Mac, so no earlier pairing can poison the run.
@@ -33,7 +33,7 @@ STATE="$CACHE_DIR/deckctl-state-$(date +%s).json"
 find "$CACHE_DIR" -maxdepth 1 -name 'deckctl-state-*.json' -mtime +1 -delete 2>/dev/null || true
 CLIENT="$WT/tools/emulator/multiwin.py"
 mkdir -p "$OUT"
-export POCKETDECK_AGENT_DIR="${POCKETDECK_AGENT_DIR:-$OUT/emu}"
+export CONTIGUA_AGENT_DIR="${CONTIGUA_AGENT_DIR:-$OUT/emu}"
 
 # --- rehearsal --------------------------------------------------------------
 if [ "$MODE" = check ]; then
@@ -56,8 +56,8 @@ PY
   PD_PREFLIGHT_DRY_RUN=1 bash "$WT/tools/emulator/preflight.sh" || { echo "CHECK FAIL: preflight"; rc=1; }
   echo "--- the boot start.sh will run ---"
   echo "$EMULATOR -avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -no-window -gpu swiftshader_indirect"
-  echo "--- budget: $(cat "$HOME/dev/pocketdeck/.agent/budgets/mw-phone" 2>/dev/null || echo '?') boot(s) ---"
-  echo "--- boots already in the ledger for mw-phone: $(ledger_boots /tmp/pocketdeck-boots.ledger mw-phone) ---"
+  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/mw-phone" 2>/dev/null || echo '?') boot(s) ---"
+  echo "--- boots already in the ledger for mw-phone: $(ledger_boots /tmp/contigua-boots.ledger mw-phone) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
     rc=1
@@ -94,7 +94,7 @@ device_present || { echo "[multiwin] error: $SERIAL is not up; boot it with tool
 # then prove which server answered.
 DEVPORT="$(ensure_forward || true)"
 step "server: pid $(server_pid||true) port ${DEVPORT:-none} forward 127.0.0.1:$PORT"
-emu shell pkill -f "dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+emu shell pkill -f "app.contigua:contigua" >/dev/null 2>&1 || true
 for _ in $(seq 1 10); do
   [ -z "$(server_pids)" ] && break
   sleep 1
@@ -131,7 +131,7 @@ step "multiwin checks"
 CLIENT_RC=${PIPESTATUS[0]}
 step "client exit $CLIENT_RC"
 
-emu logcat -d -s PocketDeckSvc:I >"$OUT/logcat-server.txt" 2>/dev/null || true
+emu logcat -d -s ContiguaSvc:I >"$OUT/logcat-server.txt" 2>/dev/null || true
 emu logcat -d >"$OUT/logcat-all.txt" 2>/dev/null || true
 emu shell dumpsys display >"$OUT/display-final.txt" 2>/dev/null || true
 

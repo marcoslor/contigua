@@ -38,14 +38,14 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47982}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47982}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 RESULT="$OUT/media.log"
 WATCH="$OUT/watch.log"
 FAKEV="$OUT/fake-volume.log"
@@ -210,8 +210,8 @@ PY
   # The receiver checks the intent's action first: a helper that sends only the
   # component delivers a broadcast the debug code ignores (this is how the
   # fake sessions stayed at zero on two boots).
-  ( emu() { echo "$@"; }; debug_broadcast dev.pocketdeck.DEBUG_MEDIA --es op start ) |
-    grep -q -- "-a dev.pocketdeck.DEBUG_MEDIA" \
+  ( emu() { echo "$@"; }; debug_broadcast app.contigua.DEBUG_MEDIA --es op start ) |
+    grep -q -- "-a app.contigua.DEBUG_MEDIA" \
     || { echo "CHECK FAIL: debug_broadcast drops the action"; exit 1; }
   echo "CHECK OK: preflight, deckctl media, fakephone flags; $SERIAL free"
   exit 0
@@ -238,7 +238,7 @@ fi
 
 # --- the phone's own notify opt-in (media travels under the same gate) ------
 PREFS="$OUT/prefs.xml"
-emu shell "run-as dev.pocketdeck cat shared_prefs/pocketdeck.xml" > "$PREFS" 2>/dev/null || {
+emu shell "run-as app.contigua cat shared_prefs/contigua.xml" > "$PREFS" 2>/dev/null || {
   echo "media: cannot read prefs"; exit 1; }
 "$PYTHON" - "$PREFS" <<'PY'
 import sys
@@ -248,31 +248,31 @@ if 'name="notify_shared"' not in text:
     text = text.replace("</map>", '    <boolean name="notify_shared" value="true" />\n</map>')
 open(path, "w").write(text)
 PY
-emu shell "run-as dev.pocketdeck sh -c 'cat > shared_prefs/pocketdeck.xml'" < "$PREFS" || {
+emu shell "run-as app.contigua sh -c 'cat > shared_prefs/contigua.xml'" < "$PREFS" || {
   echo "media: cannot write prefs"; exit 1; }
-emu shell am force-stop dev.pocketdeck >/dev/null 2>&1 || true
+emu shell am force-stop app.contigua >/dev/null 2>&1 || true
 sleep 1
-emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do
-  [ -n "$(emu shell "pidof dev.pocketdeck" 2>/dev/null | tr -d '\r')" ] && break
+  [ -n "$(emu shell "pidof app.contigua" 2>/dev/null | tr -d '\r')" ] && break
   sleep 1
 done
 for _ in $(seq 1 90); do
   ensure_forward >/dev/null 2>&1 && break
   sleep 1
 done
-emu shell cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener >/dev/null 2>&1 || true
+emu shell cmd notification allow_listener app.contigua/app.contigua.app.PdNotificationListener >/dev/null 2>&1 || true
 # Without the bound listener the phone has no media sessions to list, and the
 # whole section would time out with nothing to show. Wait for the setting, and
 # say so loudly when it never appears (component names only, no content).
 listener_enabled() {
   emu shell settings get secure enabled_notification_listeners 2>/dev/null |
-    tr -d '\r' | grep -q 'dev.pocketdeck'
+    tr -d '\r' | grep -q 'app.contigua'
 }
 LISTENER=0
 for _ in $(seq 1 20); do
   if listener_enabled; then LISTENER=1; break; fi
-  emu shell cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener >/dev/null 2>&1 || true
+  emu shell cmd notification allow_listener app.contigua/app.contigua.app.PdNotificationListener >/dev/null 2>&1 || true
   sleep 1
 done
 if [ "$LISTENER" -ne 1 ]; then
@@ -292,7 +292,7 @@ fi
 
 # --- two fake media sessions, the debug build's own ------------------------
 start_fake() {
-  debug_broadcast dev.pocketdeck.DEBUG_MEDIA \
+  debug_broadcast app.contigua.DEBUG_MEDIA \
     --es op start --ei index "$1" >> "$OUT/broadcast.log" || true
 }
 start_fake 1
@@ -341,7 +341,7 @@ wait_chosen() {
 wait_chosen || fail "media.choose did not switch the chosen session"
 
 # Stop the second fake session: the list shrinks to one.
-debug_broadcast dev.pocketdeck.DEBUG_MEDIA --es op stop --ei index 2 \
+debug_broadcast app.contigua.DEBUG_MEDIA --es op stop --ei index 2 \
   >> "$OUT/broadcast.log" || true
 wait_watch '^media.sessions n=1 ' 20 || fail "the list did not shrink after a session stopped"
 
@@ -356,7 +356,7 @@ if [ "$FAILED" -ne 0 ]; then
   # are enabled (component names only).
   media_evidence "failed"
   EMULOG="$OUT/media-logcat.log"
-  emu logcat -d -s PdMediaDebug:I PocketDeckSvc:I PocketDeckApp:I 2>/dev/null |
+  emu logcat -d -s PdMediaDebug:I ContiguaSvc:I ContiguaApp:I 2>/dev/null |
     tr -d '\r' | tail -60 > "$EMULOG" || true
   echo "media: logcat evidence ($EMULOG):"
   tail -12 "$EMULOG"

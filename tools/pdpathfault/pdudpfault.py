@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pdudpfault - a UDP datagram fault relay for one PocketDeck media plane.
+"""pdudpfault - a UDP datagram fault relay for one Contigua media plane.
 
 The TCP twin (pdpathfault.py) shapes a path's request bytes; this one shapes
 the datagram media plane's packets, without terminating anything. It sits on a

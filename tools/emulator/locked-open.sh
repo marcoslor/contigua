@@ -16,8 +16,8 @@
 #
 # Run it as `bash tools/emulator/locked-open.sh` (the exec bit is not relied on).
 #
-# What it proves (debug.pocketdeck.force_panel_off=1 and
-# debug.pocketdeck.vd_panel_group=1 give AOSP the One UI shape, where the VD
+# What it proves (debug.contigua.force_panel_off=1 and
+# debug.contigua.vd_panel_group=1 give AOSP the One UI shape, where the VD
 # shares display 0's power group):
 #   (1) an app window opened with the phone locked and its screen off reaches
 #       its first frame without paying for the locked screen: within the awake
@@ -71,17 +71,17 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47996}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/locked-input"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47996}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/locked-input"
 # start.sh sets this property before it launches the server, so the policy is
 # built forced. vd_panel_group is set below, before the server restarts.
-export POCKETDECK_FORCE_PANEL_OFF=1
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_FORCE_PANEL_OFF=1
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 RESULT="$OUT/locked-open.log"
 PD_INSTALL_LOG="$OUT/install-failure.log"
 export PD_INSTALL_LOG
@@ -131,13 +131,13 @@ def index_of(pred, start=0):
 def show(v):
     return "none" if v is None else str(v)
 
-created = index_of(lambda l: "Creating virtual display: pocketdeck-1" in l)
-started_off = index_of(lambda l: "Changing state of virtual display pocketdeck-1 from UNKNOWN to OFF" in l)
+created = index_of(lambda l: "Creating virtual display: contigua-1" in l)
+started_off = index_of(lambda l: "Changing state of virtual display contigua-1 from UNKNOWN to OFF" in l)
 takeover = index_of(lambda l: "power: episode take-over:" in l)
-first = index_of(lambda l: "PocketDeckLockedOpen: first-frame" in l)
+first = index_of(lambda l: "ContiguaLockedOpen: first-frame" in l)
 launch = index_of(lambda l: "START u0" in l and pkg in l)
 sinks = [l for l in lines if "NO_INPUT_CHANNEL" in l]
-taps = [i for i, l in enumerate(lines) if "PocketDeckLockedOpen: tap" in l]
+taps = [i for i, l in enumerate(lines) if "ContiguaLockedOpen: tap" in l]
 # Any activity start after a tap is the app reacting. The row may hand the tap
 # to another process (the emulator's Settings opens a Google settings screen),
 # so the package filter would miss a real reaction; the window's own launch is
@@ -147,8 +147,8 @@ tap_started = 1 if any(s > t for t in taps for s in starts) else 0
 panel_off = sum(1 for l in lines if "panel power mode -> OFF" in l)
 dark_plan = index_of(lambda l: "PanelPlan(" in l and "panelOff=true" in l)
 wake_lock = index_of(lambda l: "display wake lock held" in l)
-display_off = index_of(lambda l: 'Display device changed state: "pocketdeck-1", OFF' in l)
-display_on = index_of(lambda l: 'Display device changed state: "pocketdeck-1", ON' in l)
+display_off = index_of(lambda l: 'Display device changed state: "contigua-1", OFF' in l)
+display_on = index_of(lambda l: 'Display device changed state: "contigua-1", ON' in l)
 # The first ON edge before the first-frame marker is the one that made the
 # picture possible; an ON only after it would be the app drawing into an
 # already-lit display.
@@ -226,18 +226,18 @@ if [ "$MODE" = "check" ]; then
   # started OFF, the wake came after the launch, the taps fell into a sink.
   FIX="$OUT/locked-open-fixture.log"
   cat > "$FIX" <<'FIXTURE'
-10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: pocketdeck-1
-10-30 15:25:30.158 D/VirtualDisplayAdapter( 2328): Changing state of virtual display pocketdeck-1 from UNKNOWN to OFF
-10-30 15:25:30.194 I/DisplayDeviceRepository( 2328): Display device changed state: "pocketdeck-1", OFF
+10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: contigua-1
+10-30 15:25:30.158 D/VirtualDisplayAdapter( 2328): Changing state of virtual display contigua-1 from UNKNOWN to OFF
+10-30 15:25:30.194 I/DisplayDeviceRepository( 2328): Display device changed state: "contigua-1", OFF
 10-30 15:25:41.379 I/ActivityTaskManager( 2328): START u0 {act=android.intent.action.MAIN flg=0x10000000 cmp=com.samsung.android.app.contacts/com.samsung.android.contacts.contactslist.PeopleActivity} from uid 2000
-10-30 15:25:41.385 I/PocketDeckSvc(12981): display wake lock held (display 45, SCREEN_BRIGHT, display-scoped)
-10-30 15:25:41.391 I/PocketDeckSvc(12981): power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-30 15:25:41.392 I/PocketDeckSvc(12981): panel power mode -> OFF (1 physical display)
-10-30 15:25:41.393 I/DisplayDeviceRepository( 2328): Display device changed state: "pocketdeck-1", ON
-10-30 15:25:42.159 I/PocketDeckLockedOpen: first-frame
+10-30 15:25:41.385 I/ContiguaSvc(12981): display wake lock held (display 45, SCREEN_BRIGHT, display-scoped)
+10-30 15:25:41.391 I/ContiguaSvc(12981): power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+10-30 15:25:41.392 I/ContiguaSvc(12981): panel power mode -> OFF (1 physical display)
+10-30 15:25:41.393 I/DisplayDeviceRepository( 2328): Display device changed state: "contigua-1", ON
+10-30 15:25:42.159 I/ContiguaLockedOpen: first-frame
 10-30 15:26:13.000 W/InputDispatcher( 2328): Not sending touch gesture to ActivityRecordInputSink com.samsung.android.app.contacts/com.samsung.android.contacts.contactslist.PeopleActivity because it has config NO_INPUT_CHANNEL
-10-30 15:26:13.100 I/PocketDeckLockedOpen: tap1
-10-30 15:26:13.200 I/PocketDeckLockedOpen: tap2
+10-30 15:26:13.100 I/ContiguaLockedOpen: tap1
+10-30 15:26:13.200 I/ContiguaLockedOpen: tap2
 FIXTURE
   BAD="$(read_phone "$FIX" com.samsung.android.app.contacts)"
   bad_value() { printf '%s\n' "$BAD" | sed -n "s/^$1=//p"; }
@@ -253,19 +253,19 @@ FIXTURE
   # And a good run: the take-over before the launch, the wake light already on,
   # a tap that opened a screen, no sink line.
   cat > "$FIX" <<'FIXTURE'
-10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: pocketdeck-1
-10-30 15:25:30.158 D/VirtualDisplayAdapter( 2328): Changing state of virtual display pocketdeck-1 from UNKNOWN to OFF
-10-30 15:25:30.194 I/DisplayDeviceRepository( 2328): Display device changed state: "pocketdeck-1", OFF
-10-30 15:25:30.420 I/PocketDeckSvc(12981): power: episode take-over: display 45 woken before the launch; panel off owed
-10-30 15:25:30.430 I/PocketDeckSvc(12981): display wake lock held (display 45, SCREEN_BRIGHT, display-scoped)
+10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: contigua-1
+10-30 15:25:30.158 D/VirtualDisplayAdapter( 2328): Changing state of virtual display contigua-1 from UNKNOWN to OFF
+10-30 15:25:30.194 I/DisplayDeviceRepository( 2328): Display device changed state: "contigua-1", OFF
+10-30 15:25:30.420 I/ContiguaSvc(12981): power: episode take-over: display 45 woken before the launch; panel off owed
+10-30 15:25:30.430 I/ContiguaSvc(12981): display wake lock held (display 45, SCREEN_BRIGHT, display-scoped)
 10-30 15:25:30.450 I/ActivityTaskManager( 2328): START u0 {act=android.intent.action.MAIN cmp=com.android.settings/.Settings} from uid 2000
-10-30 15:25:30.700 I/PocketDeckSvc(12981): power: panel OFF -> PanelPlan(wake=false, panelOff=true, transitional=true)
-10-30 15:25:30.701 I/PocketDeckSvc(12981): panel power mode -> OFF (1 physical display)
-10-30 15:25:30.702 I/DisplayDeviceRepository( 2328): Display device changed state: "pocketdeck-1", ON
-10-30 15:25:31.010 I/PocketDeckLockedOpen: first-frame
-10-30 15:25:34.100 I/PocketDeckLockedOpen: tap1
+10-30 15:25:30.700 I/ContiguaSvc(12981): power: panel OFF -> PanelPlan(wake=false, panelOff=true, transitional=true)
+10-30 15:25:30.701 I/ContiguaSvc(12981): panel power mode -> OFF (1 physical display)
+10-30 15:25:30.702 I/DisplayDeviceRepository( 2328): Display device changed state: "contigua-1", ON
+10-30 15:25:31.010 I/ContiguaLockedOpen: first-frame
+10-30 15:25:34.100 I/ContiguaLockedOpen: tap1
 10-30 15:25:34.500 I/ActivityTaskManager( 2328): START u0 {act=android.intent.action.MAIN cmp=com.android.settings/.SubSettings} from uid 2000
-10-30 15:25:36.100 I/PocketDeckLockedOpen: tap2
+10-30 15:25:36.100 I/ContiguaLockedOpen: tap2
 FIXTURE
   GOOD="$(read_phone "$FIX" com.android.settings)"
   good_value() { printf '%s\n' "$GOOD" | sed -n "s/^$1=//p"; }
@@ -277,10 +277,10 @@ FIXTURE
   # emulator's Settings opens a Google settings screen): the package filter
   # would read that as no reaction.
   cat > "$FIX" <<'FIXTURE'
-10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: pocketdeck-1
+10-30 15:25:30.148 D/SurfaceFlinger( 1872): Creating virtual display: contigua-1
 10-30 15:25:30.450 I/ActivityTaskManager( 2328): START u0 {act=android.intent.action.MAIN cmp=com.android.settings/.Settings} from uid 2000
-10-30 15:25:31.010 I/PocketDeckLockedOpen: first-frame
-10-30 15:25:34.100 I/PocketDeckLockedOpen: tap1
+10-30 15:25:31.010 I/ContiguaLockedOpen: first-frame
+10-30 15:25:34.100 I/ContiguaLockedOpen: tap1
 10-30 15:25:34.500 I/ActivityTaskManager( 2328): START u0 {cmp=com.google.android.gms/.googlesettings.ui.GoogleSettingsActivity} from uid 10144
 FIXTURE
   OTHER="$(read_phone "$FIX" com.android.settings)"
@@ -355,23 +355,23 @@ if [ "$BOOT" -eq 1 ]; then
   fi
   # The two shapes One UI has and AOSP does not: the panel-dark policy and a VD
   # in display 0's power group. Both are read when the policy/VD is built.
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  emu shell setprop debug.pocketdeck.vd_panel_group 1 >/dev/null 2>&1 || true
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ] \
-    || [ "$(emu shell getprop debug.pocketdeck.vd_panel_group | tr -d '\r')" != "1" ]; then
+  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
+  emu shell setprop debug.contigua.vd_panel_group 1 >/dev/null 2>&1 || true
+  if [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" != "1" ] \
+    || [ "$(emu shell getprop debug.contigua.vd_panel_group | tr -d '\r')" != "1" ]; then
     fail "the debug properties did not stick"
   fi
   # start.sh installed a new APK: the Shizuku shell service can survive it, and
   # an old daemon would answer with the old policy (10-28 lesson). Kill it so
   # the restart proves which server runs.
-  emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+  emu shell "pkill -f app.contigua:contigua" >/dev/null 2>&1 || true
   sleep 1
   if ! restart_server; then
     echo "locked-open: the app did not come back with the forced path (unverified)"
     echo "failed: 1 (restart)" > "$RESULT"
     exit 1
   fi
-  INIT_LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  INIT_LINE="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     grep 'power: panel power control' | tail -1 | tr -d '\r')"
   case "$INIT_LINE" in
     *"forcing the panel-dark path"*) echo "locked-open: init: $INIT_LINE" ;;
@@ -515,7 +515,7 @@ cat "$RESULT"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "locked-open: logcat evidence ($LOGCAT):"
-  grep -E 'power:|keepalive|stream 1|pocketdeck-1|InputDispatcher|START u0|PROCESS_STATE|LockedOpen' "$LOGCAT" |
+  grep -E 'power:|keepalive|stream 1|contigua-1|InputDispatcher|START u0|PROCESS_STATE|LockedOpen' "$LOGCAT" |
     tail -40 | sed 's/^/  /'
 fi
 

@@ -1,9 +1,9 @@
 #!/bin/bash
-# sweep-test-registrations.sh — remove the test copies of PocketDeck that
+# sweep-test-registrations.sh — remove the test copies of Contigua that
 # LaunchServices and PlugInKit remember, so a run leaves nothing of its own in
-# the person's Share menu, `pocketdeck://` handlers or LaunchServices database.
+# the person's Share menu, `contigua://` handlers or LaunchServices database.
 #
-# A test copy can claim `pocketdeck://`, and a test build's Share extension can
+# A test copy can claim `contigua://`, and a test build's Share extension can
 # appear in the person's Share menu; the check's own unregister only runs on a
 # clean exit, so a killed run leaks it. check-e2e.sh therefore runs this at the
 # start and on the exit of every run (while it holds the run lock), and the
@@ -12,13 +12,13 @@
 # The allow-list, never a deny-list: a registration is ours only when its path
 # is under one of
 #   ~/dev/pd-wt/                      other agents' worktrees
-#   ~/dev/pocketdeck/                 the main checkout's test builds
+#   ~/dev/contigua/                 the main checkout's test builds
 #   /private/tmp/ and /tmp/           temp builds
 #   ~/.t3/                            harness scratch checkouts
-#   ~/Library/Application Support/PocketDeck-<profile>/   for a non-empty
+#   ~/Library/Application Support/Contigua-<profile>/   for a non-empty
 #                                     profile suffix (test profiles' Dock Apps)
-# The person's /Applications/PocketDeck.app, the default profile's folder
-# (PocketDeck/, no hyphen) and every other app are outside the list.
+# The person's /Applications/Contigua.app, the default profile's folder
+# (Contigua/, no hyphen) and every other app are outside the list.
 #
 # An app's PlugIns' appexes are removed with `pluginkit -r` first, then the app
 # with `lsregister -u`; an appex found by itself goes to `pluginkit -r`. Then
@@ -52,20 +52,20 @@ HOME_DIR="${HOME:-/Users/$(id -un)}"
 # is_test_path PATH — the allow-list above.
 is_test_path() {
     case "$1" in
-        "$HOME_DIR"/dev/pd-wt/*|"$HOME_DIR"/dev/pocketdeck/*|/private/tmp/*|/tmp/*|"$HOME_DIR"/.t3/*)
+        "$HOME_DIR"/dev/pd-wt/*|"$HOME_DIR"/dev/contigua/*|/private/tmp/*|/tmp/*|"$HOME_DIR"/.t3/*)
             return 0 ;;
-        "$HOME_DIR"/Library/Application\ Support/PocketDeck-*)
-            local rest="${1#"$HOME_DIR"/Library/Application Support/PocketDeck-}"
+        "$HOME_DIR"/Library/Application\ Support/Contigua-*)
+            local rest="${1#"$HOME_DIR"/Library/Application Support/Contigua-}"
             # A non-empty profile suffix and no slash straight after the hyphen:
-            # ~/Library/Application Support/PocketDeck/ (the person's) never matches.
+            # ~/Library/Application Support/Contigua/ (the person's) never matches.
             [ -n "$rest" ] && [ "${rest#/}" = "$rest" ] && return 0 ;;
     esac
     return 1
 }
 
-is_pocketdeck_path() {
+is_contigua_path() {
     case "$1" in
-        *PocketDeck*|*pocketdeck*) return 0 ;;
+        *Contigua*|*contigua*) return 0 ;;
     esac
     return 1
 }
@@ -82,7 +82,7 @@ pluginkit -m -A -v 2>/dev/null | awk -F'\t' 'NF >= 4 { print $NF }' > "$WORK/pk-
 while IFS= read -r path; do
     [ -n "$path" ] || continue
     is_test_path "$path" || continue
-    is_pocketdeck_path "$path" || continue
+    is_contigua_path "$path" || continue
     case "$path" in
         *.app) printf '%s\n' "$path" >> "$WORK/apps" ;;
         *.appex) printf '%s\n' "$path" >> "$WORK/appexes" ;;

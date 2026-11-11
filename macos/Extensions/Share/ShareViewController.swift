@@ -1,7 +1,7 @@
 // The "Open on Phone" Share extension (docs/design/links.md). No UI of its own:
-// it takes the shared link, hands it to the containing PocketDeck app (which
+// it takes the shared link, hands it to the containing Contigua app (which
 // picks the phone) and closes. Built by scripts/bundle.sh with swiftc together
-// with Sources/PocketDeck/LinkShare.swift.
+// with Sources/Contigua/LinkShare.swift.
 
 import AppKit
 import UniformTypeIdentifiers

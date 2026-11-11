@@ -1,7 +1,7 @@
-# PocketDeck — Android app
+# Contigua — Android app
 
-The phone side of PocketDeck: run Android apps in native, resizable Mac windows
-while the phone stays **locked**. Single Gradle `:app` module, `dev.pocketdeck`.
+The phone side of Contigua: run Android apps in native, resizable Mac windows
+while the phone stays **locked**. Single Gradle `:app` module, `app.contigua`.
 
 The wire contract is `docs/PROTOCOL.md`; the design is `docs/ARCHITECTURE.md`.
 Where this code and the docs disagree, the docs win (or the doc gets a proposal).
@@ -9,7 +9,7 @@ Where this code and the docs disagree, the docs win (or the doc gets a proposal)
 ## Layout
 
 ```
-app/src/main/java/dev/pocketdeck/
+app/src/main/java/app/contigua/
   proto/     frame codec + minimal JSON + hex/HMAC (pure Kotlin, no Android)
   server/    the shell process: DeckService (AIDL), Server, Session, WindowStream,
              InputInjector, AppLauncher, Power, AndroidPower/PanelPower/DisplayProbe,
@@ -40,13 +40,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 after an install unless the number grows, so bump it on every device install.
 
 Shizuku must be running. The first-run onboarding walks through installing and
-starting it, granting the app permission and turning **Keep PocketDeck running** on
+starting it, granting the app permission and turning **Keep Contigua running** on
 (**Allow connections** stays on unless someone turns it off).
 
 ## How it works
 
 - The app process only does UI, pairing and mDNS advertising
-  (`_pocketdeck._tcp`, TXT `v/id/name/model`).
+  (`_contigua._tcp`, TXT `v/id/name/model`).
 - `DeckForegroundService` binds the Shizuku **user service** (`DeckService`,
   shell UID 2000), calls `startServer()` and pushes the paired-client list over
   AIDL. The service reports its ephemeral port back.
@@ -89,7 +89,7 @@ bound to its virtual display (hidden `PowerManager.newWakeLock(levelAndFlags,
 tag, displayId)`, API 33+), so the VD's power group holds itself awake instead of
 depending on the timer. While those locks are held the keep-alive timer slows to
 60 s (it is a safety net, and it still drives the panel policy); without the
-hidden call it stays at 10 s. `debug.pocketdeck.force_timer_keepalive=1` skips
+hidden call it stays at 10 s. `debug.contigua.force_timer_keepalive=1` skips
 the display wake locks, for measuring the timer path.
 
 The *physical* panel is a separate story, and the server picks one of two
@@ -119,8 +119,8 @@ below):
   GO_TO_SLEEP_REASON_APPLICATION)` puts the phone back to its normal locked-off
   state. Never called when the user has the phone.
 - **Crash guard.** While the override is live, a marker file
-  (`/data/local/tmp/pocketdeck/panel-off`) is written and a tiny second
-  `app_process` (`pocketdeck-watchdog`, the same APK) holds a loopback socket to
+  (`/data/local/tmp/contigua/panel-off`) is written and a tiny second
+  `app_process` (`contigua-watchdog`, the same APK) holds a loopback socket to
   the server and blocks on a read. If the server dies (crash, `kill -9`, Shizuku
   restart), the read returns without the clean-shutdown byte: the watchdog then
   restores `POWER_MODE_NORMAL` (only when the marker exists and the platform
@@ -129,7 +129,7 @@ below):
   own-group builds never pay for it. Orphan VDs are released by system_server
   when their owner dies; no wake lock survives a dead process.
 
-`debug.pocketdeck.force_panel_off=1` forces the panel-dark path (used by the
+`debug.contigua.force_panel_off=1` forces the panel-dark path (used by the
 emulator checks, where AOSP gives the VD its own group).
 
 Every VD creation logs the requested flags, the creation path

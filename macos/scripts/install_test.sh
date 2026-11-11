@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TMP="$(mktemp -d -t pocketdeck-install-test)"
+TMP="$(mktemp -d -t contigua-install-test)"
 trap 'rm -rf "$TMP"' EXIT
 FAILS=0
 pass() { echo "PASS $*"; }
@@ -46,28 +46,28 @@ set -e
 
 # A stage without the extension must not replace a working installed copy.
 mkdir -p "$TMP/stage-bad/Contents/PlugIns"
-mkdir -p "$TMP/dest/PocketDeck.app"
-echo keep > "$TMP/dest/PocketDeck.app/marker"
+mkdir -p "$TMP/dest/Contigua.app"
+echo keep > "$TMP/dest/Contigua.app/marker"
 set +e
-out="$(POCKETDECK_INSTALL_DIR="$TMP/dest" POCKETDECK_INSTALL_STAGE="$TMP/stage-bad" \
-    POCKETDECK_INSTALL_NO_BUILD=1 POCKETDECK_E2E_LOCK="$TMP/no-e2e-lock" \
+out="$(CONTIGUA_INSTALL_DIR="$TMP/dest" CONTIGUA_INSTALL_STAGE="$TMP/stage-bad" \
+    CONTIGUA_INSTALL_NO_BUILD=1 CONTIGUA_E2E_LOCK="$TMP/no-e2e-lock" \
     bash scripts/install.sh 2>&1)"
 code=$?
 set -e
 [ "$code" = 1 ] && pass "a stage without Files.appex is refused" || fail "exit $code, want 1"
 expect_contains "$out" "has no Contents/PlugIns/Files.appex" "the refusal names the extension"
-[ -f "$TMP/dest/PocketDeck.app/marker" ] \
+[ -f "$TMP/dest/Contigua.app/marker" ] \
     && pass "the installed copy is untouched" || fail "the installed copy was replaced"
 
 # --without-files installs the same stage, with the warning.
 set +e
-out="$(POCKETDECK_INSTALL_DIR="$TMP/dest2" POCKETDECK_INSTALL_STAGE="$TMP/stage-bad" \
-    POCKETDECK_INSTALL_NO_BUILD=1 POCKETDECK_E2E_LOCK="$TMP/no-e2e-lock" \
+out="$(CONTIGUA_INSTALL_DIR="$TMP/dest2" CONTIGUA_INSTALL_STAGE="$TMP/stage-bad" \
+    CONTIGUA_INSTALL_NO_BUILD=1 CONTIGUA_E2E_LOCK="$TMP/no-e2e-lock" \
     bash scripts/install.sh --without-files 2>&1)"
 code=$?
 set -e
 [ "$code" = 0 ] && pass "--without-files installs the stage" || fail "--without-files exit $code: $out"
-[ -d "$TMP/dest2/PocketDeck.app" ] && pass "the destination exists" || fail "no destination"
+[ -d "$TMP/dest2/Contigua.app" ] && pass "the destination exists" || fail "no destination"
 expect_contains "$out" "without Finder files" "the install warns what is missing"
 
 echo

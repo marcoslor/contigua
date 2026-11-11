@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
+# Builds Contigua.app from the SwiftPM package and ad-hoc codesigns it.
 #
 #   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls]
 #
-# APP defaults to build/PocketDeck.app; only that path is ever replaced.
+# APP defaults to build/Contigua.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
-# and the Dock app executable (Contents/MacOS/PocketDeckShim). --with-files adds
+# and the Dock app executable (Contents/MacOS/ContiguaShim). --with-files adds
 # the "Phone files in Finder" File Provider extension (Contents/PlugIns/Files.appex)
 # and the App Group the app shares with it; only the vm-e2e files-domain bundle
 # uses it.
@@ -13,12 +13,12 @@
 # and its App Group; only the VM controls bundle uses it, because a host run
 # must have nothing to register.
 # Only `--variant release` (install.sh) gets the real extension id; every other
-# bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
+# bundle (default `dev`, check-e2e's `e2e`) gets `app.contigua.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="build/PocketDeck.app"
+APP="build/Contigua.app"
 VARIANT="dev"
 WITH_FILES=0
 WITH_CONTROLS=0
@@ -31,14 +31,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 case "$VARIANT" in
-    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files"
-             FILES_GROUP="group.dev.pocketdeck.mac.files"
-             CONTROLS_ID="dev.pocketdeck.mac.controls"; CONTROLS_TITLE="PocketDeck Controls" ;;
+    release) SHARE_ID="app.contigua.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="app.contigua.mac.files"; FILES_TITLE="Contigua Files"
+             FILES_GROUP="group.app.contigua.mac.files"
+             CONTROLS_ID="app.contigua.mac.controls"; CONTROLS_TITLE="Contigua Controls" ;;
     *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
-    *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
-       FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)"
-       FILES_GROUP="group.dev.pocketdeck.mac.files-$VARIANT"
-       CONTROLS_ID="dev.pocketdeck.mac.controls-$VARIANT"; CONTROLS_TITLE="PocketDeck Controls ($VARIANT)" ;;
+    *) SHARE_ID="app.contigua.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
+       FILES_ID="app.contigua.mac.files-$VARIANT"; FILES_TITLE="Contigua Files ($VARIANT)"
+       FILES_GROUP="group.app.contigua.mac.files-$VARIANT"
+       CONTROLS_ID="app.contigua.mac.controls-$VARIANT"; CONTROLS_TITLE="Contigua Controls ($VARIANT)" ;;
 esac
 
 # The e2e/debug launch hooks are compiled in only for non-release bundles:
@@ -65,11 +65,11 @@ else
 fi
 
 swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"}
-BIN="$(swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} --show-bin-path)/PocketDeck"
+BIN="$(swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} --show-bin-path)/Contigua"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/PocketDeck"
+cp "$BIN" "$APP/Contents/MacOS/Contigua"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -79,13 +79,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>PocketDeck</string>
+	<string>Contigua</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.pocketdeck.mac</string>
+	<string>app.contigua.mac</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>PocketDeck</string>
+	<string>Contigua</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -101,15 +101,15 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>PocketDeck connects to Android phones on your local network to run their apps in Mac windows.</string>
+	<string>Contigua connects to Android phones on your local network to run their apps in Mac windows.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>dev.pocketdeck.mac.open</string>
+			<string>app.contigua.mac.open</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>pocketdeck</string>
+				<string>contigua</string>
 			</array>
 		</dict>
 	</array>
@@ -124,7 +124,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 			<key>NSMessage</key>
 			<string>openOnPhone</string>
 			<key>NSPortName</key>
-			<string>PocketDeck</string>
+			<string>Contigua</string>
 			<key>NSSendTypes</key>
 			<array>
 				<string>public.url</string>
@@ -142,12 +142,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 			<key>NSMessage</key>
 			<string>installOnPhone</string>
 			<key>NSPortName</key>
-			<string>PocketDeck</string>
+			<string>Contigua</string>
 			<key>NSSendFileTypes</key>
 			<array>
 				<string>com.android.package-archive</string>
-				<string>dev.pocketdeck.apks</string>
-				<string>dev.pocketdeck.xapk</string>
+				<string>app.contigua.apks</string>
+				<string>app.contigua.xapk</string>
 			</array>
 			<key>NSRequiredContext</key>
 			<dict/>
@@ -177,7 +177,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 		</dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>dev.pocketdeck.apks</string>
+			<string>app.contigua.apks</string>
 			<key>UTTypeDescription</key>
 			<string>Android app bundle (split APKs)</string>
 			<key>UTTypeConformsTo</key>
@@ -195,7 +195,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 		</dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>dev.pocketdeck.xapk</string>
+			<string>app.contigua.xapk</string>
 			<key>UTTypeDescription</key>
 			<string>Android app bundle (XAPK)</string>
 			<key>UTTypeConformsTo</key>
@@ -224,14 +224,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>com.android.package-archive</string>
-				<string>dev.pocketdeck.apks</string>
-				<string>dev.pocketdeck.xapk</string>
+				<string>app.contigua.apks</string>
+				<string>app.contigua.xapk</string>
 			</array>
 		</dict>
 	</array>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_pocketdeck._tcp</string>
+		<string>_contigua._tcp</string>
 	</array>
 </dict>
 </plist>
@@ -243,28 +243,28 @@ plutil -insert PDBuildVariant -string "$VARIANT" "$APP/Contents/Info.plist"
 [ "$VARIANT" = "e2e" ] && plutil -insert LSUIElement -bool true "$APP/Contents/Info.plist"
 
 # ExtractAppIntentsMetadata, second half: the const-values files the compiler
-# wrote above (PocketDeck's own, not the dependencies') become
+# wrote above (Contigua's own, not the dependencies') become
 # Resources/Metadata.appintents. Same arguments Xcode's phase passes, bar the
 # per-source dependency files it only uses to decide whether to re-run.
 if [ -x "$APPINTENTS_TOOL" ]; then
-    CONST_LIST="$(find .build/out/Intermediates.noindex/PocketDeck.build -path "*/Release/*" \
-        -name "PocketDeck.SwiftFileList" 2>/dev/null | head -1)"
+    CONST_LIST="$(find .build/out/Intermediates.noindex/Contigua.build -path "*/Release/*" \
+        -name "Contigua.SwiftFileList" 2>/dev/null | head -1)"
     CONST_DIR="$(dirname "${CONST_LIST:-.}")"
-    CONST_VALUES="$(mktemp -t pocketdeck-constvals)"
+    CONST_VALUES="$(mktemp -t contigua-constvals)"
     trap 'rm -f "$CONST_VALUES"' EXIT
     if [ -f "$CONST_LIST" ]; then
         find "$CONST_DIR" -maxdepth 1 -name "*.swiftconstvalues" > "$CONST_VALUES"
         "$APPINTENTS_TOOL" \
             --toolchain-dir "$APPINTENTS_TOOLCHAIN" \
-            --module-name PocketDeck \
+            --module-name Contigua \
             --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
             --xcode-version "$(xcodebuild -version | tail -1)" \
             --platform-family macOS \
             --deployment-target 26.0 \
-            --bundle-identifier dev.pocketdeck.mac \
+            --bundle-identifier app.contigua.mac \
             --output "$APP/Contents/Resources" \
             --target-triple "$(uname -m)-apple-macos26.0" \
-            --binary-file "$APP/Contents/MacOS/PocketDeck" \
+            --binary-file "$APP/Contents/MacOS/Contigua" \
             --source-file-list "$CONST_LIST" \
             --swift-const-vals-list "$CONST_VALUES" \
             --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
@@ -279,7 +279,7 @@ fi
 APPEX="$APP/Contents/PlugIns/Share.appex"
 mkdir -p "$APPEX/Contents/MacOS"
 swiftc -O -application-extension -module-name Share -target "$(uname -m)-apple-macos26.0" \
-    -swift-version 5 Extensions/Share/ShareViewController.swift Sources/PocketDeck/LinkShare.swift \
+    -swift-version 5 Extensions/Share/ShareViewController.swift Sources/Contigua/LinkShare.swift \
     -Xlinker -e -Xlinker _NSExtensionMain -o "$APPEX/Contents/MacOS/Share"
 cat > "$APPEX/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -339,15 +339,15 @@ if [ "$WITH_FILES" = 1 ]; then
     # its own, so one copy's domain and socket never meet another's.
     /usr/libexec/PlistBuddy -c "Add :PDFilesGroup string $FILES_GROUP" "$APP/Contents/Info.plist"
     FILES_ENTITLEMENTS="build/Files-$VARIANT.entitlements"
-    APP_ENTITLEMENTS="build/PocketDeckFiles-$VARIANT.entitlements"
+    APP_ENTITLEMENTS="build/ContiguaFiles-$VARIANT.entitlements"
     sed -e "s/__FILES_GROUP__/$FILES_GROUP/" Extensions/Files/Files.entitlements > "$FILES_ENTITLEMENTS"
-    sed -e "s/__FILES_GROUP__/$FILES_GROUP/" Extensions/Files/PocketDeckFiles.entitlements > "$APP_ENTITLEMENTS"
+    sed -e "s/__FILES_GROUP__/$FILES_GROUP/" Extensions/Files/ContiguaFiles.entitlements > "$APP_ENTITLEMENTS"
     FILES_APPEX="$APP/Contents/PlugIns/Files.appex"
     mkdir -p "$FILES_APPEX/Contents/MacOS"
     swiftc -O -application-extension -module-name Files -target "$(uname -m)-apple-macos26.0" \
-        -swift-version 5 Extensions/Files/Files.swift Sources/PocketDeck/FilesCore.swift \
-        Sources/PocketDeck/FilesChanges.swift Sources/PocketDeck/FilesThumbPolicy.swift \
-        Sources/PocketDeck/FilesThumbScheduler.swift Sources/PocketDeck/FilesPageCache.swift \
+        -swift-version 5 Extensions/Files/Files.swift Sources/Contigua/FilesCore.swift \
+        Sources/Contigua/FilesChanges.swift Sources/Contigua/FilesThumbPolicy.swift \
+        Sources/Contigua/FilesThumbScheduler.swift Sources/Contigua/FilesPageCache.swift \
         -Xlinker -e -Xlinker _NSExtensionMain -o "$FILES_APPEX/Contents/MacOS/Files"
     sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
         -e "s/__FILES_GROUP__/$FILES_GROUP/" \
@@ -366,8 +366,8 @@ if [ "$WITH_CONTROLS" = 1 ]; then
     # Compile to objects first so the const-values files exist: the extension's
     # control actions are App Intents, and the system learns them only from
     # Resources/Metadata.appintents (the same processor the app uses).
-    CONTROLS_SRC=("$PWD/Extensions/Controls/Controls.swift" "$PWD/Sources/PocketDeck/ControlsCore.swift")
-    CONTROLS_OBJ="$(mktemp -d -t pocketdeck-controls)"
+    CONTROLS_SRC=("$PWD/Extensions/Controls/Controls.swift" "$PWD/Sources/Contigua/ControlsCore.swift")
+    CONTROLS_OBJ="$(mktemp -d -t contigua-controls)"
     (
         cd "$CONTROLS_OBJ"
         swiftc -c -O -parse-as-library -application-extension -module-name Controls \
@@ -405,22 +405,22 @@ fi
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
 # AppWindows.swift is the window-menu rule the shim renders (WIN-26), shared with
 # the host so the two cannot disagree.
-swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
-    Shim/main.swift Sources/PocketDeck/DockMessages.swift Sources/PocketDeck/AppWindows.swift \
-    -o "$APP/Contents/MacOS/PocketDeckShim"
+swiftc -O -module-name ContiguaShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
+    Shim/main.swift Sources/Contigua/DockMessages.swift Sources/Contigua/AppWindows.swift \
+    -o "$APP/Contents/MacOS/ContiguaShim"
 
 # MCP stdio shim (docs/design/mcp.md): MCP clients launch this, and it relays to
 # the app's private socket. It is signed before the bundle so signing the app
 # seals its nested code.
 mkdir -p "$APP/Contents/Helpers"
-swiftc -O -module-name PocketDeckMCP -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
-    Shim/mcp.swift -o "$APP/Contents/Helpers/pocketdeck-mcp"
-codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
+swiftc -O -module-name ContiguaMCP -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
+    Shim/mcp.swift -o "$APP/Contents/Helpers/contigua-mcp"
+codesign --force --sign - "$APP/Contents/Helpers/contigua-mcp"
 
 if [ "$WITH_CONTROLS" = 1 ]; then
     # The app carries the App Group the controls extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
-    codesign --force --sign - --entitlements Extensions/Controls/PocketDeckControls.entitlements "$APP"
+    codesign --force --sign - --entitlements Extensions/Controls/ContiguaControls.entitlements "$APP"
 elif [ "$WITH_FILES" = 1 ]; then
     # The app carries the App Group the Files extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).

@@ -5,7 +5,7 @@
 # (ContentResolver.loadThumbnail), for the same camera-sized JPEGs.
 #
 #   tools/emulator/start.sh            # or let this script boot the AVD
-#   ~/dev/pocketdeck/.agent/heavy.sh bash tools/emulator/mediathumb.sh
+#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/mediathumb.sh
 #
 # Pushes 200 generated 4032x3024 JPEGs, scans them, then runs Spike.java as
 # app_process at UID 2000 and prints p50/p95 for both APIs (cold and warm),
@@ -18,8 +18,8 @@ set -uo pipefail
 WORK="$AGENT_DIR/mediathumb"
 FOLDER="DCIM/Camera"
 PREFIX="pd-spike"
-COUNT="${POCKETDECK_SPIKE_COUNT:-200}"
-SIZE="${POCKETDECK_SPIKE_SIZE:-512}"
+COUNT="${CONTIGUA_SPIKE_COUNT:-200}"
+SIZE="${CONTIGUA_SPIKE_SIZE:-512}"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 mkdir -p "$WORK"

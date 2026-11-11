@@ -26,7 +26,7 @@ import Foundation
 import os
 import UniformTypeIdentifiers
 
-private let log = Logger(subsystem: "dev.pocketdeck.mac", category: "files")
+private let log = Logger(subsystem: "app.contigua.mac", category: "files")
 
 /// The read and write cap (design §3: a write body is at most 1 GiB; reads
 /// follow the file, and anything this large is refused with a clear error).
@@ -414,7 +414,7 @@ final class WriteState: @unchecked Sendable {
 @objc(FilesExtension)
 final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
     let domain: NSFileProviderDomain
-    private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
+    private let work = DispatchQueue(label: "app.contigua.mac.files-extension", qos: .utility)
     /// One thumbnail pool for this extension process, shared by every Finder
     /// batch it is asked for (FILES-25).
     private let thumbs = FilesThumbScheduler()

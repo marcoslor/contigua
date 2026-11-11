@@ -64,22 +64,22 @@ class ArmSettingsTest(unittest.TestCase):
         return invocations
 
     def test_apply_then_restore_sets_and_clears_each_key(self):
-        settings = self.bench.ArmSettings(self.adb, "emulator-5554", "dev.pocketdeck.mac.test")
+        settings = self.bench.ArmSettings(self.adb, "emulator-5554", "app.contigua.mac.test")
         settings.apply({"phone": {"overflow": "suspend", "queue_ms": "100"}, "mac": {}})
         settings.restore()
         calls = self.calls()
         commands = [" ".join(call) for call in calls]
         self.assertIn(
-            "-s emulator-5554 shell setprop debug.pocketdeck.stream.overflow suspend", commands)
+            "-s emulator-5554 shell setprop debug.contigua.stream.overflow suspend", commands)
         self.assertIn(
-            "-s emulator-5554 shell setprop debug.pocketdeck.stream.queue_ms 100", commands)
+            "-s emulator-5554 shell setprop debug.contigua.stream.queue_ms 100", commands)
         # The clear is one quoted remote command; a bare empty argv is dropped.
         self.assertIn(
-            '-s emulator-5554 shell setprop debug.pocketdeck.stream.overflow ""', commands)
+            '-s emulator-5554 shell setprop debug.contigua.stream.overflow ""', commands)
         self.assertIn(
-            '-s emulator-5554 shell setprop debug.pocketdeck.stream.queue_ms ""', commands)
+            '-s emulator-5554 shell setprop debug.contigua.stream.queue_ms ""', commands)
         self.assertNotIn("-s emulator-5554 shell setprop", commands)
-        self.assertNotIn("-s emulator-5554 shell setprop debug.pocketdeck.stream.overflow", commands)
+        self.assertNotIn("-s emulator-5554 shell setprop debug.contigua.stream.overflow", commands)
 
 
 class MacArmTest(unittest.TestCase):
@@ -130,7 +130,7 @@ esac
             return handle.read()
 
     def test_mac_keys_write_to_the_profile_domain_and_restore(self):
-        domain = "dev.pocketdeck.mac.e2e"
+        domain = "app.contigua.mac.e2e"
         settings = self.bench.ArmSettings(None, "fake-phone", domain)
         settings.apply({"phone": {}, "mac": {"stream.present": "paced",
                                              "stream.pixels": "panel"}})
@@ -140,14 +140,14 @@ esac
         self.assertIsNone(self.read_state(domain, "stream.present"))
         self.assertIsNone(self.read_state(domain, "stream.pixels"))
         # Every read/write/delete names this profile's suite, never the
-        # person's own `dev.pocketdeck.mac`.
+        # person's own `app.contigua.mac`.
         domains = [command[1] for command in self.commands()
                    if len(command) > 2 and command[0] in ("read", "write", "delete")]
         self.assertTrue(domains)
         self.assertEqual(set(domains), {domain})
 
     def test_an_existing_value_comes_back_after_the_arm(self):
-        domain = "dev.pocketdeck.mac.e2e"
+        domain = "app.contigua.mac.e2e"
         path = os.path.join(self.state, "%s.stream.pixels" % domain)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("backing")
@@ -158,10 +158,10 @@ esac
         self.assertEqual(self.read_state(domain, "stream.pixels"), "backing")
 
     def test_the_profile_selects_the_persons_domain_or_its_suite(self):
-        self.assertEqual(self.bench.profile_domain("default"), "dev.pocketdeck.mac")
-        self.assertEqual(self.bench.profile_domain("e2e"), "dev.pocketdeck.mac.e2e")
+        self.assertEqual(self.bench.profile_domain("default"), "app.contigua.mac")
+        self.assertEqual(self.bench.profile_domain("e2e"), "app.contigua.mac.e2e")
         self.assertEqual(self.bench.profile_domain("stratmac"),
-                         "dev.pocketdeck.mac.stratmac")
+                         "app.contigua.mac.stratmac")
 
     def test_the_mac_arms_exist_and_n1_needs_a_fresh_session(self):
         arms = self.bench.read_arms(os.path.join(HERE, "arms.json"))
@@ -237,7 +237,7 @@ class ResendSummaryTest(unittest.TestCase):
 
     def test_the_totals_carry_the_longest_gap_into_the_run(self):
         total = self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             "secs=10.0 rx_frames=600 max_gap_ms=1830\n", 1)
         self.assertEqual(self.bench.run_metrics(total)["max_gap_ms"], 1830)
 
@@ -245,7 +245,7 @@ class ResendSummaryTest(unittest.TestCase):
         # The Mac's own count and the phone's, both on the closing totals line
         # (the phone's arrives through its 2 s messages).
         total = self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             "secs=10.0 rx_frames=600 key_not_idr=4 ph_key_not_idr=9\n", 1)
         run = self.bench.run_metrics(total)
         self.assertEqual(run["key_not_idr"], 4)
@@ -260,7 +260,7 @@ class ResendSummaryTest(unittest.TestCase):
 
     def test_the_totals_carry_the_new_fields_into_the_run(self):
         total = self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             "secs=10.0 rx_frames=600 tcp_ooo_kb=3.5 tcp_srtt_max=42 "
             "ph_retrans=9 ph_rto=2 ph_lost=1\n", 1)
         run = self.bench.run_metrics(total)
@@ -312,7 +312,7 @@ class RunMetricsTest(unittest.TestCase):
 
     def total(self, **fields):
         row = self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             + " ".join("%s=%s" % item for item in fields.items()) + "\n", 1)
         return row
 
@@ -359,7 +359,7 @@ class FrozenTest(unittest.TestCase):
         self.bench = load_bench()
 
     def total(self, **fields):
-        parts = ["2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]:",
+        parts = ["2026-11-05 10:00:10.000000-0300 mac Contigua[7]:",
                  "stats", "total", "stream=14"]
         for key, value in fields.items():
             parts.append("%s=%s" % (key, value))
@@ -375,13 +375,13 @@ class FrozenTest(unittest.TestCase):
         # Round 2's stream 14: about 50 fps for 10.7 s, then a still picture
         # for the rest of the window, and no late frame to count as a hitch.
         text = (
-            "2026-11-05 15:57:30.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 15:57:30.000000-0300 mac Contigua[7]: "
             "stats stream=14 rx_fps=60 shown_fps=60 phone_n=2\n"
-            "2026-11-05 15:57:35.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 15:57:35.000000-0300 mac Contigua[7]: "
             "stats stream=14 rx_fps=0 shown_fps=0 phone_n=0\n"
-            "2026-11-05 15:57:40.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 15:57:40.000000-0300 mac Contigua[7]: "
             "stats stream=14 rx_fps=0 shown_fps=0 phone_n=0\n"
-            "2026-11-05 15:57:50.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 15:57:50.000000-0300 mac Contigua[7]: "
             "stats total stream=14 secs=21.6 rx_frames=540 shown_frames=540 "
             "hitch_n=0 hitch_ms=0 drop_ep=0 drop_ms=0 susp_n=0 susp_ms=0 "
             "phone_n=10 phone_frames=540 max_gap_ms=10800\n"
@@ -474,7 +474,7 @@ class TotalsTest(unittest.TestCase):
         self.bench = load_bench()
 
     def totals_line(self, stream=1, **fields):
-        parts = ["2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]:",
+        parts = ["2026-11-05 10:00:10.000000-0300 mac Contigua[7]:",
                  "stats", "total", "stream=%d" % stream]
         for key, value in fields.items():
             parts.append("%s=%s" % (key, value))
@@ -544,7 +544,7 @@ class TotalsTest(unittest.TestCase):
 
     def test_the_totals_line_is_parsed_and_other_streams_are_ignored(self):
         text = (
-            "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 10:00:05.000000-0300 mac Contigua[7]: "
             "stats stream=1 rx_fps=60 shown_fps=60 phone_n=2\n"
             + self.totals_line(secs=10.0, rx_frames=300, shown_frames=290,
                                hitch_n=2, hitch_ms=80, late_p99=20.5,
@@ -601,10 +601,10 @@ class TotalsTest(unittest.TestCase):
 
     def test_the_pid_is_found_from_the_profiles_app_only(self):
         ps_text = (
-            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck --profile default\n"
-            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench2\n"
-            "  303 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench20\n"
-            "  404 /Users/x/PocketDeckShim.app/Contents/MacOS/PocketDeckShim --profile bench2\n"
+            "  101 /Applications/Contigua.app/Contents/MacOS/Contigua --profile default\n"
+            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua --profile bench2\n"
+            "  303 /Users/x/pd-wt/bench2/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua --profile bench20\n"
+            "  404 /Users/x/ContiguaShim.app/Contents/MacOS/ContiguaShim --profile bench2\n"
         )
         self.assertEqual(self.bench.profile_app_pid(ps_text, "bench2"), 202)
         self.assertIsNone(self.bench.profile_app_pid(ps_text, "bench3"))
@@ -613,44 +613,44 @@ class TotalsTest(unittest.TestCase):
         # The person's installed app is opened from Finder or `open -a`: its
         # command line carries no --profile at all, and that is the default.
         ps_text = (
-            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck\n"
-            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck --profile bench2\n"
+            "  101 /Applications/Contigua.app/Contents/MacOS/Contigua\n"
+            "  202 /Users/x/pd-wt/bench2/macos/build/e2e/Contigua.app/Contents/MacOS/Contigua --profile bench2\n"
         )
         self.assertEqual(self.bench.profile_app_pid(ps_text, "default"), 101)
         self.assertEqual(self.bench.profile_app_pid(
-            "  105 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck --profile default\n",
+            "  105 /Applications/Contigua.app/Contents/MacOS/Contigua --profile default\n",
             "default"), 105)
         self.assertIsNone(self.bench.profile_app_pid(ps_text, "bench3"))
         # A flagless app is never another profile's.
         self.assertIsNone(self.bench.profile_app_pid(
-            "  101 /Applications/PocketDeck.app/Contents/MacOS/PocketDeck\n", "bench2"))
+            "  101 /Applications/Contigua.app/Contents/MacOS/Contigua\n", "bench2"))
 
     def test_the_log_predicate_names_the_pid(self):
         self.assertIn("processID == 202", self.bench.log_predicate(202))
-        self.assertIn('subsystem == "dev.pocketdeck.mac"',
+        self.assertIn('subsystem == "app.contigua.mac"',
                       self.bench.log_predicate(202))
 
     def test_another_windows_stats_line_refuses_the_run(self):
-        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+        text = ("2026-11-05 10:00:05.000000-0300 mac Contigua[7]: "
                 "stats stream=1 rx_fps=60 phone_n=2\n")
         self.assertTrue(self.bench.has_open_window(text))
         self.assertFalse(self.bench.has_open_window(
-            "2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+            "2026-11-05 10:00:05.000000-0300 mac Contigua[7]: "
             "stats total stream=1 secs=10.0\n"))
 
     def test_a_stats_line_followed_by_that_streams_close_is_not_open(self):
-        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+        text = ("2026-11-05 10:00:05.000000-0300 mac Contigua[7]: "
                 "stats stream=1 rx_fps=60 phone_n=2\n"
-                "2026-11-05 10:00:06.000000-0300 mac PocketDeck[7]: "
+                "2026-11-05 10:00:06.000000-0300 mac Contigua[7]: "
                 "stream 1: closed, stills=3\n")
         self.assertFalse(self.bench.has_open_window(text))
 
     def test_one_closed_stream_does_not_hide_another_open_one(self):
-        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[7]: "
+        text = ("2026-11-05 10:00:05.000000-0300 mac Contigua[7]: "
                 "stats stream=1 rx_fps=60 phone_n=2\n"
-                "2026-11-05 10:00:06.000000-0300 mac PocketDeck[7]: "
+                "2026-11-05 10:00:06.000000-0300 mac Contigua[7]: "
                 "stream 1: closed, stills=3\n"
-                "2026-11-05 10:00:07.000000-0300 mac PocketDeck[7]: "
+                "2026-11-05 10:00:07.000000-0300 mac Contigua[7]: "
                 "stats stream=2 rx_fps=60 phone_n=2\n")
         self.assertTrue(self.bench.has_open_window(text))
 
@@ -670,7 +670,7 @@ class TotalsTest(unittest.TestCase):
 class ParseRowsTest(unittest.TestCase):
     def test_the_line_timestamp_is_an_absolute_instant(self):
         bench = load_bench()
-        text = ("2026-11-05 10:00:05.000000-0300 mac PocketDeck[1]: "
+        text = ("2026-11-05 10:00:05.000000-0300 mac Contigua[1]: "
                 "stats stream=1 rx_fps=60 drop_ms=- drop_ep=0\n")
         row = bench.parse_rows(text, 1)[0]
         moment = datetime.datetime.fromtimestamp(row["at"], datetime.timezone.utc)
@@ -751,7 +751,7 @@ class ScriptPlanTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["x"], self.bench.TYPING_POINT["x"])
         self.assertEqual(calls[0][1]["y"], self.bench.TYPING_POINT["y"])
         self.assertEqual(calls[0][1]["window"], 3)
-        self.assertIn("pocketdeck", calls[1][1]["text"])
+        self.assertIn("contigua", calls[1][1]["text"])
         self.assertEqual([name for name, _ in phases], ["typing"])
 
     def test_the_typing_point_can_follow_the_apps_search_field(self):
@@ -850,7 +850,7 @@ class NewFieldsTest(unittest.TestCase):
 
     def test_the_totals_carry_rx_fps_and_the_interval_levels(self):
         total = self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             "secs=10.0 rx_frames=600 int_p50=12 int_p95=20 int_p99=30 "
             "shown_p50=8 shown_p95=16 shown_p99=24\n", 1)
         values = self.bench.run_metrics(total)
@@ -860,14 +860,14 @@ class NewFieldsTest(unittest.TestCase):
         self.assertEqual((values["shown_p50"], values["shown_p95"], values["shown_p99"]),
                          (8, 16, 24))
         missing = self.bench.run_metrics(self.bench.parse_totals(
-            "2026-11-05 10:00:10.000000-0300 mac PocketDeck[7]: stats total stream=1 "
+            "2026-11-05 10:00:10.000000-0300 mac Contigua[7]: stats total stream=1 "
             "secs=10.0 rx_frames=600\n", 1))
         self.assertIsNone(missing["int_p50"])
 
     def test_the_app_lines_fill_first_frame_and_resize(self):
-        text = ("2026-11-06 10:00:01.000000-0300 mac PocketDeck[7]: "
+        text = ("2026-11-06 10:00:01.000000-0300 mac Contigua[7]: "
                 "stream 3: first frame, 123.5 ms\n"
-                "2026-11-06 10:00:02.000000-0300 mac PocketDeck[7]: "
+                "2026-11-06 10:00:02.000000-0300 mac Contigua[7]: "
                 "stream 3 resize ack 720x1280 dpi=320 (applied) 42 ms\n")
         values = self.bench.app_line_values(text, 3)
         self.assertEqual(values["first_frame_ms"], 123.5)
@@ -890,14 +890,14 @@ class PhoneValuesTest(unittest.TestCase):
             "---PROFILEDATA---\n"),
         "display": '    DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", '
                    '1080 x 2400, modeId 1, renderFrameRate 48.0}\n'
-                   '    DisplayDeviceInfo{"pocketdeck-1": '
-                   'uniqueId="virtual:com.android.shell,0,pocketdeck-1,145", '
+                   '    DisplayDeviceInfo{"contigua-1": '
+                   'uniqueId="virtual:com.android.shell,0,contigua-1,145", '
                    '1800 x 1200, modeId 254, renderFrameRate 60.0}\n',
         "battery": "  level: 73\n  temperature: 291\n  voltage: 4021\n"
                    "  USB powered: true\n",
         "thermal": "  Thermal Status: 2\n  Temperature{mValue=35.5, mType=0}\n",
         "cpu": "  12.0% 1000/com.example.app: 8.0% user + 4.0% kernel\n"
-               "   1.5% 2000/dev.pocketdeck: 1.0% user + 0.5% kernel\n",
+               "   1.5% 2000/app.contigua: 1.0% user + 0.5% kernel\n",
         "app_mem": "TOTAL PSS:    8000\n",
         "shell_mem": "TOTAL PSS:   24000\n",
         "wifi": "RSSI: -55, Link speed: 433Mbps, Frequency: 5180MHz "
@@ -944,7 +944,7 @@ class PhoneValuesTest(unittest.TestCase):
                 ("dumpsys", "thermalservice"): "thermal",
                 ("dumpsys", "cpuinfo"): "cpu",
                 ("dumpsys", "meminfo", "com.example.app"): "app_mem",
-                ("dumpsys", "meminfo", "dev.pocketdeck"): "shell_mem",
+                ("dumpsys", "meminfo", "app.contigua"): "shell_mem",
                 ("dumpsys", "wifi"): "wifi",
             }.get(args), "")
 
@@ -954,7 +954,7 @@ class PhoneValuesTest(unittest.TestCase):
         sampler.sample(10.0)
         self.assertIn(("dumpsys", "gfxinfo", "com.example.app", "reset"), commands)
         self.assertIn(("dumpsys", "gfxinfo", "com.example.app", "framestats"), commands)
-        self.assertIn(("dumpsys", "meminfo", "dev.pocketdeck"), commands)
+        self.assertIn(("dumpsys", "meminfo", "app.contigua"), commands)
         for command in commands:
             self.assertEqual(command[0], "dumpsys")
             for forbidden in ("setprop", "settings", "cmd", "input", "screencap"):
@@ -1076,8 +1076,8 @@ class ActivateAppTest(unittest.TestCase):
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
 
-        bench.activate_app("/x/PocketDeck.app", run=run)
-        self.assertEqual(calls[0][0], ["open", "-a", "/x/PocketDeck.app"])
+        bench.activate_app("/x/Contigua.app", run=run)
+        self.assertEqual(calls[0][0], ["open", "-a", "/x/Contigua.app"])
         self.assertFalse(calls[0][1].get("check", True))
 
     def test_an_activation_failure_is_best_effort(self):
@@ -1086,20 +1086,20 @@ class ActivateAppTest(unittest.TestCase):
         def boom(argv, **kwargs):
             raise OSError("open is gone")
 
-        bench.activate_app("/x/PocketDeck.app", run=boom)
+        bench.activate_app("/x/Contigua.app", run=boom)
 
 
 class BenchMainStillTest(unittest.TestCase):
     """One `still` run through main(): table, phone line, stages, CSV cells."""
 
     LOG = (
-        "2026-11-06 10:00:05.000000-0300 mac PocketDeck[7]: "
+        "2026-11-06 10:00:05.000000-0300 mac Contigua[7]: "
         "stats stream=1 rx_fps=60 shown_fps=60 phone_n=2\n"
-        "2026-11-06 10:00:06.000000-0300 mac PocketDeck[7]: "
+        "2026-11-06 10:00:06.000000-0300 mac Contigua[7]: "
         "stream 1: first frame, 123.5 ms\n"
-        "2026-11-06 10:00:07.000000-0300 mac PocketDeck[7]: "
+        "2026-11-06 10:00:07.000000-0300 mac Contigua[7]: "
         "stream 1 resize ack 720x1280 dpi=320 (applied) 42 ms\n"
-        "2026-11-06 10:00:10.000000-0300 mac PocketDeck[7]: "
+        "2026-11-06 10:00:10.000000-0300 mac Contigua[7]: "
         "stats total stream=1 secs=10.0 rx_frames=600 shown_frames=590 "
         "phone_frames=600 hitch_n=0 hitch_ms=0 drop_ep=0 drop_ms=0 "
         "susp_n=0 susp_ms=0 phone_n=5 int_p50=12 int_p95=20 int_p99=30 "
@@ -1139,16 +1139,16 @@ case "$*" in
     echo "Janky frames: 1 (10.00%)" ;;
   *"dumpsys display"*)
     echo 'DisplayDeviceInfo{"Built-in Screen": uniqueId="local:0", 1080 x 2400, renderFrameRate 48.0}'
-    echo 'DisplayDeviceInfo{"pocketdeck-1": uniqueId="virtual:com.android.shell,0,pocketdeck-1,145", 1800 x 1200, renderFrameRate 60.0}' ;;
+    echo 'DisplayDeviceInfo{"contigua-1": uniqueId="virtual:com.android.shell,0,contigua-1,145", 1800 x 1200, renderFrameRate 60.0}' ;;
   *"dumpsys battery"*)
     printf '  level: 73\\n  temperature: 291\\n  USB powered: true\\n' ;;
   *"dumpsys thermalservice"*)
     printf '  Thermal Status: 2\\n  Temperature{mValue=35.5, mType=0}\\n' ;;
   *"dumpsys cpuinfo"*)
     printf '  12.0%% 1000/com.android.settings: 8.0%% user + 4.0%% kernel\\n'
-    printf '   1.5%% 2000/dev.pocketdeck: 1.0%% user + 0.5%% kernel\\n' ;;
+    printf '   1.5%% 2000/app.contigua: 1.0%% user + 0.5%% kernel\\n' ;;
   *"dumpsys meminfo com.android.settings"*) echo "TOTAL PSS:    8000" ;;
-  *"dumpsys meminfo dev.pocketdeck"*) echo "TOTAL PSS:   24000" ;;
+  *"dumpsys meminfo app.contigua"*) echo "TOTAL PSS:   24000" ;;
   *"dumpsys wifi"*)
     echo "RSSI: -55, Link speed: 433Mbps, Frequency: 5180MHz txRetries=7 txBad=3" ;;
 esac
@@ -1187,7 +1187,7 @@ esac
                 "--adb", adb, "--shim", shim, "--script", "still",
                 "--still-seconds", "0", "--repeats", "1",
                 "--arms-filter", "baseline", "--out", out,
-                "--app", "/x/PocketDeck.app",
+                "--app", "/x/Contigua.app",
                 "--package", "com.android.settings"]
         activated = []
         output = io.StringIO()
@@ -1202,7 +1202,7 @@ esac
                 mock.patch("sys.argv", argv), \
                 contextlib.redirect_stdout(output):
             self.assertEqual(bench.main(), 0)
-        self.assertEqual(activated, ["/x/PocketDeck.app"])
+        self.assertEqual(activated, ["/x/Contigua.app"])
         self.assertLess(order.index("sample"), order.index("close_window"),
                         "the phone is sampled while the app is alive")
 

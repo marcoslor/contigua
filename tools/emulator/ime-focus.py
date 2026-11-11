@@ -28,15 +28,15 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import zlib
 
-WT = os.environ["POCKETDECK_WT"]
+WT = os.environ["CONTIGUA_WT"]
 ADB = os.environ["ADB_BIN"]
 SERIAL = "emulator-5554"
-HOST = os.environ.get("POCKETDECK_HOST", "127.0.0.1")
-PORT = int(os.environ.get("POCKETDECK_PORT", "47996"))
+HOST = os.environ.get("CONTIGUA_HOST", "127.0.0.1")
+PORT = int(os.environ.get("CONTIGUA_PORT", "47996"))
 STATE = os.environ["DECKCTL_STATE"]
 OUT = os.environ["IME_FOCUS_OUT"]
-MESSENGER = os.environ.get("POCKETDECK_MESSENGER", "org.fossify.messages")
-BROWSER = os.environ.get("POCKETDECK_BROWSER", "acr.browser.lightning")
+MESSENGER = os.environ.get("CONTIGUA_MESSENGER", "org.fossify.messages")
+BROWSER = os.environ.get("CONTIGUA_BROWSER", "acr.browser.lightning")
 
 sys.path.insert(0, os.path.join(WT, "tools", "fakephone"))
 import deckctl  # noqa: E402
@@ -347,7 +347,7 @@ def display_flags(stream):
     """The created display's raw virtual-display flags from `dumpsys display`."""
     out = sh("dumpsys", "display")
     lines = out.splitlines()
-    name = "pocketdeck-%d" % stream
+    name = "contigua-%d" % stream
     start = None
     for index, line in enumerate(lines):
         if 'DisplayDeviceInfo{"%s"' % name in line:
@@ -393,7 +393,7 @@ def clear_logcat():
 
 # --- the window's own input ------------------------------------------------
 def start_debug(display, field):
-    component = "dev.pocketdeck/.app.PasteDebugActivity"
+    component = "app.contigua/.app.PasteDebugActivity"
     for attempt in (0, 1):
         clear_logcat()
         # CLEAR_TOP: a previous instance of the same activity would otherwise
@@ -754,7 +754,7 @@ def run(link, page_port):
     # 3d. a drop on the window still lands in its app.
     result = drop_file(link, png, 9602, MESSENGER)
     time.sleep(1.5)
-    share = sh("logcat", "-d", "-s", "PocketDeckDrop:I", "PocketDeckSvc:I")
+    share = sh("logcat", "-d", "-s", "ContiguaDrop:I", "ContiguaSvc:I")
     share = [line for line in share.splitlines()
              if "share offered" in line or "share: chooser" in line or "share: target" in line]
     offered = [line for line in share if "share offered" in line]

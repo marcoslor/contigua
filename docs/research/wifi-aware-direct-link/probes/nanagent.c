@@ -359,7 +359,7 @@ static int cmd_ping(const char *ifn, const char *peer_ip, const char *peer_mac) 
 	uint8_t *e = pkt;
 	memcpy(e, dmac, 6); memcpy(e + 6, smac, 6); e[12] = 0x86; e[13] = 0xdd;
 	uint8_t *ip = e + 14;
-	const char *payload = "pocketdeck-aware";
+	const char *payload = "contigua-aware";
 	size_t plen = strlen(payload);
 	size_t icmp_len = 8 + plen;
 	ip[0] = 0x60; ip[4] = (icmp_len >> 8) & 0xff; ip[5] = icmp_len & 0xff;

@@ -8,7 +8,7 @@
 #   bash tools/emulator/netshape.sh reset           # full speed, no delay
 #   bash tools/emulator/netshape.sh --check throttle 3 100   # print, don't run
 #
-# One serial, always named: POCKETDECK_SERIAL (default emulator-5554). A
+# One serial, always named: CONTIGUA_SERIAL (default emulator-5554). A
 # serial that is not an emulator is refused, so the person's phone can never be
 # shaped by a test. No root, no host network change: the console shapes the
 # emulator's own virtual NIC. Measured 2026-11-09: the Mac's e2e reaches the

@@ -12,19 +12,19 @@
 # quiet mode: it takes the e2e lock itself and is run by hand (or from a
 # visible run), one run at a time:
 #
-#   macos/scripts/bundle.sh macos/build/e2e/PocketDeck.app --variant e2e
-#   ~/dev/pocketdeck/.agent/heavy.sh macos/scripts/menubar-toggle.sh
+#   macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
+#   ~/dev/contigua/.agent/heavy.sh macos/scripts/menubar-toggle.sh
 #
 # It prints one line per step, check-e2e style, and exits non-zero on a FAIL.
-# Never touches /Applications/PocketDeck.app or the person's own item: the app
+# Never touches /Applications/Contigua.app or the person's own item: the app
 # it clicks is the e2e bundle, and its item is the one AXExtrasMenuBar reports
 # for that process.
 set -u
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${PD_E2E_APP:-$MACOS/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck}"
+APP="${PD_E2E_APP:-$MACOS/build/e2e/Contigua.app/Contents/MacOS/Contigua}"
 PROFILE="${PD_E2E_PROFILE:-mirrorsingle}"
-LOCK=/tmp/pocketdeck-e2e.lock
-WORK="${PD_E2E_WORK:-${TMPDIR:-/tmp}}/pocketdeck-menubar-toggle"
+LOCK=/tmp/contigua-e2e.lock
+WORK="${PD_E2E_WORK:-${TMPDIR:-/tmp}}/contigua-menubar-toggle"
 PASS=0
 FAIL=0
 

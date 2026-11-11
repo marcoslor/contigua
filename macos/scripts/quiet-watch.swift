@@ -31,7 +31,7 @@ guard let summaryPath = values("--summary").first, let detailsPath = values("--d
 let prefixes = values("--prefix")
 let inputMarker = values("--input-marker").first
 
-/// The PocketDeck e2e virtual display's ids (VirtualDisplay.swift).
+/// The Contigua e2e virtual display's ids (VirtualDisplay.swift).
 let virtualVendor: UInt32 = 0x5044
 let virtualModel: UInt32 = 0xE2E0
 

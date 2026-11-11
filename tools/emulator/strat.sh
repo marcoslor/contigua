@@ -8,7 +8,7 @@
 # Build the APK first, in Docker only:
 #   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
 # and the e2e Mac bundle (once per tree):
-#   bash macos/scripts/bundle.sh <worktree>/macos/build/e2e/PocketDeck.app --variant e2e
+#   bash macos/scripts/bundle.sh <worktree>/macos/build/e2e/Contigua.app --variant e2e
 #
 # What it does on the one boot:
 #   * boots the rig (tools/emulator/start.sh --no-build);
@@ -36,16 +36,16 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_STRAT_WORK:-/tmp/pd-strat-emu}"
-OUT="${POCKETDECK_STRAT_OUT:-$HOME/dev/pocketdeck/.agent/strat/emu}"
-BUNDLE="$ROOT/macos/build/e2e/PocketDeck.app"
-APP="$BUNDLE/Contents/MacOS/PocketDeck"
-SHIM="$BUNDLE/Contents/Helpers/pocketdeck-mcp"
+OUT="${CONTIGUA_STRAT_OUT:-$HOME/dev/contigua/.agent/strat/emu}"
+BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
+APP="$BUNDLE/Contents/MacOS/Contigua"
+SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
 BENCH="$ROOT/tools/stream-bench/bench.py"
 POC="$ROOT/tools/emulator/poc.py"
 ARMS="$ROOT/tools/stream-bench/arms.json"
 PROFILE="strat$$"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 APP_PID=""
@@ -164,7 +164,7 @@ cleanup() {
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
     [ -n "$CAT_PID" ] && kill "$CAT_PID" 2>/dev/null || true
     if [ "$DOCK_DEFAULT_SET" = "1" ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     fi
     # A bundle this run launched must not stay registered in the person's menus.
     if [ -d "$BUNDLE/Contents/PlugIns/Share.appex" ]; then
@@ -183,17 +183,17 @@ trap 'exit 130' INT
 
 # The phone's app must be the resumed activity for the pairing prompt.
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 2
             return 0
         fi
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -239,7 +239,7 @@ pair_mac_once() { # pair_mac_once <attempt>
 
 app_connected() {
     /usr/bin/log show --last 3m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null |
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null |
         grep -q "hello --welcome--> welcomed"
 }
 
@@ -251,8 +251,8 @@ if [ $? -ne 0 ]; then
     bad "start.sh --no-build failed"
     exit 1
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 emu logcat -c >/dev/null 2>&1 || true
@@ -264,7 +264,7 @@ acquire_e2e_lock || bad "no e2e lock: the Mac window is exposed to another agent
 section pair
 rm -rf "$SUPPORT"
 mkdir -p "$SUPPORT"
-defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
+defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
 DOCK_DEFAULT_SET=1
 PAIRED_MAC=0
 for attempt in 1 2; do
@@ -294,7 +294,7 @@ fi
 section bench
 # Only the bench's own configure lines: the pair phase above opened a mirror.
 emu logcat -c >/dev/null 2>&1 || true
-emu logcat -v brief -s PocketDeckSvc:I > "$WORK/logcat.txt" 2>&1 &
+emu logcat -v brief -s ContiguaSvc:I > "$WORK/logcat.txt" 2>&1 &
 CAT_PID=$!
 
 "$PYTHON" "$BENCH" --profile "$PROFILE" --serial "$SERIAL" --adb "$ADB" \
@@ -304,7 +304,7 @@ BENCH_RC=$?
 sleep 2
 # The live capture can lose its last buffer block when killed; the device's
 # ring buffer is the authority for the strategy lines.
-emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
+emu logcat -d -v brief -s ContiguaSvc:I > "$WORK/logcat-dump.txt" 2>&1 || true
 cp "$WORK/logcat.txt" "$WORK/logcat-live.txt" 2>/dev/null || true
 [ -s "$WORK/logcat-dump.txt" ] && cp "$WORK/logcat-dump.txt" "$WORK/logcat.txt"
 cat "$WORK/bench.log"

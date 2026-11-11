@@ -41,7 +41,7 @@ if ((flags & VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR) != 0
 }
 ```
 
-So the flag is dropped only for **mirror** displays. PocketDeck sets
+So the flag is dropped only for **mirror** displays. Contigua sets
 `OWN_CONTENT_ONLY` (which suppresses the automatic `AUTO_MIRROR` that
 `PUBLIC` would otherwise add — 16:1869ff / 14:1420ff), so this rule never fires
 for us.

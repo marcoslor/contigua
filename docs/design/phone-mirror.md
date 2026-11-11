@@ -84,7 +84,7 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   screen.
 - Failure → `error` `mirror_unavailable` (pre-14 phones).
 
-The old phone mode (a VD running PocketDeck's own launcher activity) was
+The old phone mode (a VD running Contigua's own launcher activity) was
 deleted with its activity: nothing else used it.
 
 ## Screen off and wake
@@ -111,7 +111,7 @@ Android does not let a screen capture read a secure surface: the lock screen's
 PIN/password pad, the keyguard bouncer and any app window with `FLAG_SECURE`
 come back black. `state` carries `secure` (`true` while display 0 shows such a
 surface). The Phone Mirror shows the same blurred, dimmed cover as screen-off,
-with "Android doesn't let PocketDeck show this screen." and **no button**: there
+with "Android doesn't let Contigua show this screen." and **no button**: there
 is nothing to wake, and a click must never reach the PIN pad. The cover clears
 when the phone reports `secure` false again.
 

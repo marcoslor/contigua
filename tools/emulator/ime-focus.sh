@@ -31,14 +31,14 @@ done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47996}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47996}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR/ime-focus"
+OUT="$CONTIGUA_AGENT_DIR/ime-focus"
 LOG="$OUT/ime-focus.log"
 APK="android/app/build/outputs/apk/debug/app-debug.apk"
 STATE="$CACHE_DIR/deckctl-state.json"
@@ -52,8 +52,8 @@ check_mode() {
     || { echo "CHECK FAIL: py_compile ime-focus.py"; return 1; }
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; return 1; }
   [ -f "$APK" ] || { echo "CHECK FAIL: no $APK (k1-docker :app:assembleDebug)"; return 1; }
-  echo "--- budget: $(cat "$HOME/dev/pocketdeck/.agent/budgets/ime-focus" 2>/dev/null || echo '?')"
-  echo "--- boots in the ledger for ime-focus: $(ledger_boots /tmp/pocketdeck-boots.ledger ime-focus)"
+  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/ime-focus" 2>/dev/null || echo '?')"
+  echo "--- boots in the ledger for ime-focus: $(ledger_boots /tmp/contigua-boots.ledger ime-focus)"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
     return 1
@@ -106,14 +106,14 @@ else
   device_present || { echo "ime-focus: $SERIAL is not up (--no-boot needs a booted, paired rig)"; exit 1; }
 fi
 
-export POCKETDECK_WT="$PWD"
+export CONTIGUA_WT="$PWD"
 export ADB_BIN="$ADB"
 export DECKCTL_STATE="$STATE"
 export IME_FOCUS_OUT="$OUT"
-export POCKETDECK_HOST="127.0.0.1"
-export POCKETDECK_PORT="$PORT"
-export POCKETDECK_BROWSER="${POCKETDECK_BROWSER:-acr.browser.lightning}"
-export POCKETDECK_MESSENGER="${POCKETDECK_MESSENGER:-org.fossify.messages}"
+export CONTIGUA_HOST="127.0.0.1"
+export CONTIGUA_PORT="$PORT"
+export CONTIGUA_BROWSER="${CONTIGUA_BROWSER:-acr.browser.lightning}"
+export CONTIGUA_MESSENGER="${CONTIGUA_MESSENGER:-org.fossify.messages}"
 
 "$PYTHON" tools/emulator/ime-focus.py 2>&1 | tee -a "$LOG"
 FAILED=${PIPESTATUS[0]}

@@ -1,4 +1,4 @@
-"""PocketDeck wire-protocol codec (v1).
+"""Contigua wire-protocol codec (v1).
 
 Mirrors docs/PROTOCOL.md. Everything here is transport-agnostic: it only turns
 messages into bytes and back. Big-endian everywhere; f32 = IEEE-754 single BE.
@@ -497,7 +497,7 @@ def identity_paths(dirpath):
     return os.path.join(dirpath, "cert.pem"), os.path.join(dirpath, "key.pem")
 
 
-def make_identity(dirpath, cn="PocketDeck", fresh=False):
+def make_identity(dirpath, cn="Contigua", fresh=False):
     """Generates the self-signed identity once per dir; returns the fp hex."""
     cert_path, key_path = identity_paths(dirpath)
     if not fresh and os.path.exists(cert_path) and os.path.exists(key_path):

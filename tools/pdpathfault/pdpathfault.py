@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pdpathfault - a TCP fault proxy in front of one PocketDeck path listener.
+"""pdpathfault - a TCP fault proxy in front of one Contigua path listener.
 
 Sits between the Mac and the phone so a check can break a path exactly as a
 person's Wi-Fi would, without touching the other paths:
@@ -509,7 +509,7 @@ class Connection(object):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="A TCP fault proxy for one PocketDeck path.")
+    p = argparse.ArgumentParser(description="A TCP fault proxy for one Contigua path.")
     p.add_argument("--listen", type=int, required=True, help="port to listen on")
     p.add_argument("--connect", required=True, metavar="HOST:PORT",
                    help="the path listener behind the proxy")

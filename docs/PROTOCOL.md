@@ -1,4 +1,4 @@
-# PocketDeck wire protocol — v4
+# Contigua wire protocol — v4
 
 The single source of truth for Mac ⇄ phone traffic. Both sides MUST implement
 exactly this. Change it here first, then in code.
@@ -9,7 +9,7 @@ exactly this. Change it here first, then in code.
   build compiled with the direct provider can also carry the session over
   Wi-Fi Aware (see "Paths"). The phone always listens on TCP (ephemeral port)
   on the LAN and advertises it over mDNS/DNS-SD as service type
-  `_pocketdeck._tcp.` with TXT records:
+  `_contigua._tcp.` with TXT records:
   `v=1` (the discovery record's generation), `id=<deviceId>` (stable random
   hex, 16 chars), `name=<device name>`, `model=<Build.MODEL>`. No fingerprint
   or other tracking identifier rides in the TXT. While the phone's "Allow
@@ -491,16 +491,16 @@ nothing from datagrams once video no longer blocks it. Type 2 is reserved. The d
   does, the Mac verifies it is unchanged). Either side missing the field means
   TCP only — no probe, no error.
 - Both sides already hold the session's 32-byte TLS exporter
-  (`EXPORTER-pocketdeck-pair`: the Mac from BoringSSL's keylog secret and
+  (`EXPORTER-contigua-pair`: the Mac from BoringSSL's keylog secret and
   `ExporterV2`, the phone from `SSLSockets.exportKeyingMaterial` and
   `TlsExporter`). There is no key-exchange message. Each derives:
 
 ```
-context = session_id || macPin || phonePin || "EXPORTER-pocketdeck-pair"
+context = session_id || macPin || phonePin || "EXPORTER-contigua-pair"
 c2s = HKDF-SHA256(ikm = pairingExporter, salt = context,
-                  info = "pocketdeck-media-c2s", 32)
+                  info = "contigua-media-c2s", 32)
 s2c = HKDF-SHA256(ikm = pairingExporter, salt = context,
-                  info = "pocketdeck-media-s2c", 32)
+                  info = "contigua-media-s2c", 32)
 keyId = lowercase hex of SHA-256(c2s || s2c)[0..4]
 ```
 
@@ -621,7 +621,7 @@ Only a build compiled with the direct provider offers this
 (`docs/design/direct-link.md`); a public build never dials it and never sends
 these messages. The path itself is ordinary: one more TLS connection, pinned the
 same way, ranked like any other. The phone publishes the Wi-Fi Aware service
-`_pocketdeck-nan._tcp` and listens on the Aware network; the Mac dials it.
+`_contigua-nan._tcp` and listens on the Aware network; the Mac dials it.
 
 | t | dir | fields | meaning |
 |---|---|---|---|
@@ -659,7 +659,7 @@ channel against a man in the middle (docs/design/e2ee.md §4).
 5. Both sides derive the code (docs/design/e2ee.md §4/§4b):
 
 ```
-exporter = TLS-Exporter("EXPORTER-pocketdeck-pair", empty context, 32 bytes)
+exporter = TLS-Exporter("EXPORTER-contigua-pair", empty context, 32 bytes)
 code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
                              || Nm || Np)[0..8]) mod 1_000_000   // "123 456"
 ```
@@ -690,7 +690,7 @@ code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
 
 ### QR flow (Mac shows, phone scans)
 
-The Mac shows `pocketdeck://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`,
+The Mac shows `contigua://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`,
 where `s` is a one-time 128-bit secret that expires with the QR and is consumed
 the first time the phone answers with `pair.qr` (a second hello in that window
 gets no `pair.qr`). The phone scans it, pins `f` (the Mac fingerprint), and
@@ -974,14 +974,14 @@ these; the phone never answers `drop.*` other than below.
    drop, the phone replies `{"t":"drop.progress","id":N,"bytes":verified}` (the offset) and
    appends from there; anything else answers `bytes:0` and restarts.
 4. Phone → `drop.progress {id, bytes}` at most 4 per second (plus once with the last byte),
-   then exactly one `drop.result`: success `{"ok":true,"path":"/sdcard/Download/PocketDeck/<name>"}`
+   then exactly one `drop.result`: success `{"ok":true,"path":"/sdcard/Download/Contigua/<name>"}`
    (the sanitised name, " 2", " 3"… on collision), failure `code`/`message` from `bad_request`,
    `too_large`, `busy`, `checksum` (the finished bytes' SHA-256 differs; the file is removed),
    `cancelled`, `failed`.
 5. Mac → `drop.cancel {id}` any time; the phone abandons, removes partial data and replies
    `drop.result` `cancelled`. A session that ends abandons its drop.
 
-The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDeck/`, renames
+The phone writes every byte to a hidden temp file in `/sdcard/Download/Contigua/`, renames
 only after the SHA-256 matches, and media-scans the file. A gesture's files are collected as
 they land; after the **last** one (`index` = `count`) the phone offers one SEND for the batch
 with the app's FileProvider content URIs (docs/design/dragdrop.md): `ACTION_SEND` for one file,
@@ -1011,7 +1011,7 @@ running transfers.
   which also carries the folder's `digest` (below).
 - **Android's transient entries** — `.trashed-*` (a file moving into the Trash)
   and `.pending-*` (a staged delete) — are left out of every listing and every
-  digest, at any depth, like our own `.pocketdeck-*.part` staging files. They
+  digest, at any depth, like our own `.contigua-*.part` staging files. They
   are not items, so they neither fill a page nor move the cursor.
 - **Items** are `{"name","dir","size","mtime","ino","etag"}`: `size` and
   `mtime` (ms) are the file's own, `ino` its inode (0 when unknown), `etag`
@@ -1116,7 +1116,7 @@ Rules:
 `FS_DATA` also travels Mac → phone: `stream` = the request `id`, each frame
 ≤ 256 KiB, paced like a drop (at most 1 MiB queued, so at most four frames in
 flight). The phone writes into a hidden temp in the target folder
-(`.pocketdeck-<random>.part`, never listed), verifies size and SHA-256, then
+(`.contigua-<random>.part`, never listed), verifies size and SHA-256, then
 renames over the target — through the MediaProvider path where the platform
 has one, `renameTo` plus a media scan of both paths otherwise — and scans the
 final path so the file appears in Files/Photos. A cancel or a session end
@@ -1204,7 +1204,7 @@ Rules:
   messages are at most 4 per second. A change in a folder nobody watches is
   never reported.
 - A watch is one folder, non-recursively (inotify semantics); the Mac must ask
-  for a child folder itself. Our own staging writes (`.pocketdeck-*.part`) never
+  for a child folder itself. Our own staging writes (`.contigua-*.part`) never
   produce a change.
 - At most 256 folders are watched per session. Past that, or when a watch cannot
   start, the phone falls back to a 5 s media-generation poll while anything is
@@ -1409,7 +1409,7 @@ ringer modes. It never touches a volume level, the lock settings or any other se
    1 vibrate, 2 normal).
 2. A mode other than the three above answers `error` `bad_request`; nothing changes.
 3. The phone refuses the write while its Do Not Disturb is on (`error` `dnd_on`): on
-   Android 16 a ringer change can end an "alarms" DND, and PocketDeck does not turn off a
+   Android 16 a ringer change can end an "alarms" DND, and Contigua does not turn off a
    DND on the side. The Mac checks `state.dnd` first and does not send.
 4. A phone that predates the field omits `ringer` from `state`, and `phone.ringer` is an
    unknown message to it. An older Mac ignores the new field.
@@ -1518,8 +1518,8 @@ mode (docs/design/focus.md):
    `Settings.Global.zen_mode` with `cmd notification set_dnd` at shell UID and sends `state`
    again with `dnd` set to the mode it now reports.
 2. A mode other than the four above answers `error` `bad_request`; nothing changes.
-3. The phone remembers whether PocketDeck turned DND on. `phone.dnd off` turns it off only
-   when that is still the mode PocketDeck set; a mode the person chose is never turned off.
+3. The phone remembers whether Contigua turned DND on. `phone.dnd off` turns it off only
+   when that is still the mode Contigua set; a mode the person chose is never turned off.
    The memory lives in the shell service, survives a disconnect and is cleared on reboot.
 4. Every `state` carries `dnd` while the phone supports it; a person's change on the phone
    arrives as the next `state`. A phone that predates this field omits it, and the Mac reads
@@ -1540,7 +1540,7 @@ then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then c
 `pair_exporter` (the phone's TLS stack exposed no exporter, so it cannot derive
 the pairing code: the phone refuses to pair instead of substituting a zero key
 — shipped Android 11 cannot expose one, so the Mac says to update Android or
-PocketDeck),
+Contigua),
 `no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
 the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
 window still opening is refused on its cover, a live one closes as on `window.closed`),
@@ -1553,7 +1553,7 @@ not allowed), `bad_size` (`task.continue` without w/h) — plus the device comma
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
 (the phone would not write the ringer setting or the music volume), `connections_off` (the phone's
 "Allow connections" switch is off: the Mac shows "Connections are turned off on
-<phone name>." with the line "Turn on Allow connections in PocketDeck on your
+<phone name>." with the line "Turn on Allow connections in Contigua on your
 phone." and slows to one attempt per 30 s), `pairing_off` (the phone's "Allow new pairings" switch is off and
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
 `not_available` (the phone can't
@@ -1584,8 +1584,8 @@ there is no older-peer mode: a peer that does not serve 4 replies
 `{"t":"error","code":"version","v":4}` and closes, in both directions.
 `v` is the refusing side's own version, so the other side can compare it with
 its own and say which app to update: the phone's `v` below the Mac's (or absent,
-as from a v3 phone) means "Update PocketDeck on your phone."; above means
-"Update PocketDeck on this Mac.". The Mac stops retrying. The phone's own screen
+as from a v3 phone) means "Update Contigua on your phone."; above means
+"Update Contigua on this Mac.". The Mac stops retrying. The phone's own screen
 names the Mac's side the same way from the `hello`'s `v`. There is no v1
 negotiation, no plaintext fallback and no reduced transport (v2 and v3 are
 TLS-only). The mDNS TXT `v` is the discovery record's own generation (`1`), a

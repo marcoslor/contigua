@@ -24,15 +24,15 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47811}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47811}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR/mirror-frames"
-LOG="$POCKETDECK_AGENT_DIR/mirror-frames.log"
+OUT="$CONTIGUA_AGENT_DIR/mirror-frames"
+LOG="$CONTIGUA_AGENT_DIR/mirror-frames.log"
 STATE="$CACHE_DIR/deckctl-state.json"
 
 # ---- --check: everything that can be wrong before a boot -------------------

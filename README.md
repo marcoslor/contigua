@@ -1,6 +1,6 @@
-# PocketDeck
+# Contigua
 
-PocketDeck runs Android apps in **native Mac windows** over your home network —
+Contigua runs Android apps in **native Mac windows** over your home network —
 one window per Android app, several at once, plus a phone-sized window that
 mirrors the phone's screen — **while the phone stays locked in your pocket**.
 No cables, no cloud: the phone runs a tiny server inside
@@ -63,19 +63,19 @@ window you give it.
   on the Deck; it opens in the Android app that handles it, in a new window.
 - **Share phone → Mac** — Android Share → **Send to Mac**: links open in the
   Mac's browser, text lands on the Mac clipboard, images up to 50 MB each are
-  saved to `~/Downloads/PocketDeck/` (and the clipboard).
+  saved to `~/Downloads/Contigua/` (and the clipboard).
 - **Drag and drop** — drop files from Finder on any phone window; the phone
-  writes them to `Downloads/PocketDeck/`, scans them and offers the app's Send
+  writes them to `Downloads/Contigua/`, scans them and offers the app's Send
   chooser. Up to 200 MiB per file, resumable.
 - **Install APKs from the Mac** — drop an `.apk` / `.apks` / `.xapk` bundle on
   the Deck, or use Open With, Services or the menu bar. The Deck shows
   progress and the result.
-- **Focus sync** — a Mac Focus with the PocketDeck filter turns the phone's Do
+- **Focus sync** — a Mac Focus with the Contigua filter turns the phone's Do
   Not Disturb on (priority, alarms only or nothing) and back when it ends. A DND
   you set yourself is never turned off. The menu bar toggles the phone's DND by
   hand, and a Shortcut can too.
 - **Phone files in Finder** — the phone's shared storage appears as a
-  **PocketDeck** location in Finder: browse, open and Quick Look files, copy
+  **Contigua** location in Finder: browse, open and Quick Look files, copy
   them out, and copy files in, edit, rename, move, make folders and delete.
   Writes are verified on the phone and MediaStore is kept in step, so a new
   photo shows up in the Gallery. While a folder has been open the phone keeps
@@ -86,12 +86,12 @@ window you give it.
   so. Cached files stay readable while the phone is away, and edits made then
   upload when it is back; when both sides changed a file, both copies are kept
   (`name (from Mac).ext`). A copy onto a name the phone already has is refused,
-  never silently replaced. The first time, turn PocketDeck on in System
+  never silently replaced. The first time, turn Contigua on in System
   Settings › General › Login Items & Extensions (Settings › General has the
   switch and the link).
 - **Control Center controls** (in progress, opt-in build: the controls do not yet appear in Control Center) —
   Phone Do Not Disturb as a toggle, Ring Phone, a ringer-mode control and Open
-  PocketDeck, built as a small widget extension that reads a snapshot the app
+  Contigua, built as a small widget extension that reads a snapshot the app
   writes and sends its actions over a private socket in the app's group. A
   hotspot control is not included: at shell UID Android offers no way to toggle
   the person's existing hotspot without replacing its configuration.
@@ -128,7 +128,7 @@ window you give it.
 **Security**
 
 - One LAN-only TCP session per phone, one Bonjour advertisement
-  (`_pocketdeck._tcp`), and direct connect by address. Pairing shows a
+  (`_contigua._tcp`), and direct connect by address. Pairing shows a
   six-digit code on both screens (numeric comparison) or exchanges a QR code;
   sessions are authenticated with keys created at pairing (docs/PROTOCOL.md).
 
@@ -147,7 +147,7 @@ pairing walk-through and an emulator rig for phoneless testing, is in
 
 ## Pairing
 
-1. On the phone: PocketDeck → **Pair new Mac** (first run: **Scan QR code**).
+1. On the phone: Contigua → **Pair new Mac** (first run: **Scan QR code**).
 2. On the Mac: **Pair with QR**, or connect by address and compare the
    six-digit code.
 3. Tap **Allow** on the phone. Lock it — it never needs to be unlocked.
@@ -164,21 +164,21 @@ Every detail: [docs/TRY-IT.md](docs/TRY-IT.md).
   no key material outside the two devices.
 - **Notifications and Now Playing are off by default on both sides** and need
   a per-phone opt-in (Android's notification-listener consent *and* a switch
-  in PocketDeck's UI) before anything is read or shown.
-- The phone's screen stays locked. PocketDeck never unlocks it, never
+  in Contigua's UI) before anything is read or shown.
+- The phone's screen stays locked. Contigua never unlocks it, never
   dismisses the keyguard, and never opens the phone's panel; apps run on a
   virtual display Android treats as unlocked (docs/ARCHITECTURE.md).
 
 ## Use with AI agents (MCP)
 
-PocketDeck can hand the connected phone to an AI agent on the same Mac over a
+Contigua can hand the connected phone to an AI agent on the same Mac over a
 local MCP server: see what a window shows, tap, type, swipe, open apps, send
 links and files, read the phone's state. It is **off by default** —
 Settings › Automation › **Allow AI agents to control your phone**. While an
 agent is connected the menu bar shows a small indicator, and its menu has
 **Disconnect agent**.
 
-Everything stays local: a private UNIX socket in the PocketDeck support folder,
+Everything stays local: a private UNIX socket in the Contigua support folder,
 same user only, no network listener. The app logs a tool call as name and
 duration only — never arguments, typed text, URLs, file names or pixels.
 [Setting up an MCP client](docs/design/mcp.md).
@@ -186,14 +186,14 @@ duration only — never arguments, typed text, URLs, file names or pixels.
 Point an MCP client at the shim that ships inside the app:
 
 ```json
-{"command": "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"}
+{"command": "/Applications/Contigua.app/Contents/Helpers/contigua-mcp"}
 ```
 
 Settings › Automation shows this snippet with a Copy button (it adds
 `"args": ["--profile", "NAME"]` for a non-default profile). With Claude Code:
 
 ```sh
-claude mcp add pocketdeck -- /Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp
+claude mcp add contigua -- /Applications/Contigua.app/Contents/Helpers/contigua-mcp
 ```
 
 The agent gets 13 tools: phone status, list apps, open an app, list windows,
@@ -221,6 +221,8 @@ plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE). You may use, change and share PocketDeck for
-personal and other noncommercial purposes; commercial use is not licensed. Third-party
-dependencies (SwiftNIO, swift-crypto, …) keep their own licenses.
+Source-available under the [Functional Source License 1.1, Apache 2.0 future license](LICENSE)
+(FSL-1.1-ALv2). You may use, change and share Contigua for any purpose except offering a
+product or service that competes with it. Each release becomes available under the Apache
+License 2.0 two years after it is published. Third-party dependencies (SwiftNIO,
+swift-crypto, …) keep their own licenses.

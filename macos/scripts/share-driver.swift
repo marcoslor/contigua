@@ -1,5 +1,5 @@
 // share-driver.swift — test driver for the "Open on Phone" Share extension.
-// Compiled by check-e2e.sh together with Sources/PocketDeck/LinkShare.swift.
+// Compiled by check-e2e.sh together with Sources/Contigua/LinkShare.swift.
 //
 //   share-driver handoff <App.app> <shared text or URL>
 //       runs the extension's own extraction + hand-off code (ShareInput, ShareHandoff)
