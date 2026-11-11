@@ -1,7 +1,7 @@
 # Automation server (MCP)
 
 An AI agent on this Mac (Claude Code, Claude Desktop, any MCP client) drives the
-connected phone through PocketDeck: see what a window shows, tap/type/swipe, open
+connected phone through Contigua: see what a window shows, tap/type/swipe, open
 apps, send links and files, read the phone's state. Everything stays local, is
 off by default, and is visible while it is in use.
 
@@ -10,26 +10,26 @@ off by default, and is visible while it is in use.
 The app listens on a UNIX socket in the profile's Application Support folder:
 
 ```
-~/Library/Application Support/PocketDeck/mcp.sock          (default profile)
-~/Library/Application Support/PocketDeck-<profile>/mcp.sock (any other profile)
+~/Library/Application Support/Contigua/mcp.sock          (default profile)
+~/Library/Application Support/Contigua-<profile>/mcp.sock (any other profile)
 ```
 
 The folder is `0700` and the socket `0600`; the app checks the connecting
 process's uid with `getpeereid(2)` and closes the connection unless it is our
 own uid. There is no TCP listener and no network exposure.
 
-A small stdio shim, `pocketdeck-mcp`, ships inside the app as
-`Contents/Helpers/pocketdeck-mcp` (compiled by `bundle.sh` with `swiftc`, like
+A small stdio shim, `contigua-mcp`, ships inside the app as
+`Contents/Helpers/contigua-mcp` (compiled by `bundle.sh` with `swiftc`, like
 the Dock shim, and codesigned with the bundle). It relays bytes between its
 stdin/stdout and the socket without interpreting them. `--profile NAME` chooses
 the socket; without it the default profile is used. When the socket is missing
 or refuses the connection the shim writes
-`Turn on Settings › Automation in PocketDeck` to stderr and exits non-zero.
+`Turn on Settings › Automation in Contigua` to stderr and exits non-zero.
 
 The MCP client configuration is:
 
 ```json
-{"command": "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"}
+{"command": "/Applications/Contigua.app/Contents/Helpers/contigua-mcp"}
 ```
 
 Settings › Automation shows this snippet with a Copy button (with
@@ -57,7 +57,7 @@ pure `MCPCore` (parse, dispatch, schemas, argument validation) with unit tests;
 no third-party MCP SDK is used. Up to four clients may be connected at once.
 
 `initialize` answers with protocol version `2025-06-18`, `tools: {}` and
-`serverInfo` naming PocketDeck. `tools/call` results are
+`serverInfo` naming Contigua. `tools/call` results are
 `{"content": [...], "isError": false}`; errors caused by the moment a tool runs
 (no phone connected, no such window, a file that vanished) are tool results with
 `isError: true` and a human sentence, not JSON-RPC errors. JSON-RPC errors are

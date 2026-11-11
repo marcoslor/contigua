@@ -2,22 +2,22 @@
 
 Each phone app can get its own Mac app identity: a Dock icon with the app's real
 icon and Launchpad, Spotlight and ⌘-Tab entries named "WhatsApp (Phone name)".
-Launching it opens (or focuses) that app's PocketDeck window; quitting it closes it.
+Launching it opens (or focuses) that app's Contigua window; quitting it closes it.
 
 ## Shim bundle
 
 ```
 <folder>/WhatsApp (Pixel).app/Contents/
-  Info.plist           CFBundleIdentifier dev.pocketdeck.dock.<profile.>?<deviceId>.<pkg>
+  Info.plist           CFBundleIdentifier app.contigua.dock.<profile.>?<deviceId>.<pkg>
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
-                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it),
+                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the Contigua.app that made it),
                        PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts),
                        PDShimHash (the shim executable it was built from; §Lifecycle)
-  MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
+  MacOS/ContiguaShim the shim binary, copied from the host's Contents/MacOS
   Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
 
-- The folder is `~/Applications/PocketDeck Apps/` for the default profile (where Launchpad
+- The folder is `~/Applications/Contigua Apps/` for the default profile (where Launchpad
   and Spotlight find apps), the profile's Application Support folder otherwise, or
   `--dock-dir DIR` (the e2e check uses a temp folder).
 - Bundle ids are built only from `[A-Za-z0-9-]` pieces (`_` and anything else → `-`), so a
@@ -132,14 +132,14 @@ Mac has no `actool` either (it ships with Xcode). So the shim keeps a shape-perf
 
 The shim is a regular AppKit app with no windows. It registers its observers before
 `NSApp.run`. On a manual launch, on a Dock click (reopen) and when it is activated (⌘-Tab)
-it posts the distributed notification `dev.pocketdeck.dock.open` (object = profile name;
-userInfo deviceId, pkg, pid, token). The host answers `dev.pocketdeck.dock.opened` (pid) and
+it posts the distributed notification `app.contigua.dock.open` (object = profile name;
+userInfo deviceId, pkg, pid, token). The host answers `app.contigua.dock.opened` (pid) and
 opens the window, or brings an open one to the front. Until that answer arrives the shim
 re-posts every second; after 2 s with no host running from PDHostPath it launches that
 bundle (`--profile <profile>`); after 30 s with no answer it quits.
 
 A shim started by the automatic path (`--no-open`) has its window already open, so it does
-not ask for one: it posts `dev.pocketdeck.dock.ready` at once, and again every second until
+not ask for one: it posts `app.contigua.dock.ready` at once, and again every second until
 answered. The host answers `ready` from a pid it has bound with `opened`, and only when the
 message carries the bundle's token; a pid that is not bound yet gets no answer, because its
 bind posts `opened` itself — either order reaches a shim that is listening. A bound shim
@@ -153,7 +153,7 @@ deterministic: the bind's one `opened` lands before the shim listens.
 
 Why distributed notifications: both sides are unsandboxed, they need no registration or
 entitlement, and the profile name as `object` keeps a test copy from ever reaching the
-user's app. The `pocketdeck://` scheme was rejected because LaunchServices picks *one*
+user's app. The `contigua://` scheme was rejected because LaunchServices picks *one*
 app for a scheme (with several copies registered — the installed app, a dev build, the e2e
 build — the wrong one would get it) and it gives no way to answer. XPC/Mach services need a
 launchd job; Apple Events need an automation permission prompt.
@@ -162,7 +162,7 @@ launchd job; Apple Events need an automation permission prompt.
 
 A secondary click on the shim's Dock icon shows the app's own window menu. The
 content is the host's: whenever the app's windows change (opened, closed,
-retitled, raised) the host posts `dev.pocketdeck.dock.menu` (userInfo pid, rows)
+retitled, raised) the host posts `app.contigua.dock.menu` (userInfo pid, rows)
 with the rows as values — **New <App> Window** ⌘N first, then one **<App> — <task
 label>** row per open window front to back, the front one checked. The shim only
 renders them (`Shim/main.swift`), so the Dock menu and the Deck cell's menu are
@@ -171,7 +171,7 @@ host's sentence as its tooltip — **<App> opens one window at a time.**, **Clos
 <App> window to open another.**, **Opening on your phone…**, **Reconnecting…** or
 **Phone offline** — and sends nothing.
 
-A pick posts `dev.pocketdeck.dock.pick` with the shim's token and the chosen row;
+A pick posts `app.contigua.dock.pick` with the shim's token and the chosen row;
 the host raises that window, or opens one more for the New row. The e2e's
 `--debug-control` build also has the shim write the menu it built and press one
 of its items through the item's own target and action (a quiet run cannot
@@ -179,20 +179,20 @@ right-click a Dock icon); a person's click takes the same path.
 
 ## Quit ↔ close
 
-- Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `dev.pocketdeck.dock.quit`;
+- Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `app.contigua.dock.quit`;
   the host also watches `NSWorkspace.didTerminateApplication` for the shim's pid, so a force
   quit or crash closes the window too.
 - The shim watches the host in return (DOCK-19): `NSWorkspace.didTerminateApplicationNotification`
   matched on `PDHostPath`, plus a process source on the host pid because a host started by
   exec (the e2e) gets no LaunchServices termination notice. When the host ends — quit, crash
   or force quit — a bound shim, or one still waiting after it has seen the host running,
-  quits at once (`hostExited`), so no Dock icon outlives PocketDeck. A waiting shim that has
+  quits at once (`hostExited`), so no Dock icon outlives Contigua. A waiting shim that has
   not seen the host keeps its 30 s self-quit; a host relaunch starts its own shims again.
 - Closing the window (or the phone closing the stream, forgetting the phone) posts
-  `dev.pocketdeck.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
+  `app.contigua.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
 - An automatic identity still building or launching when its window closes is dropped
   (nothing built) or quit the moment its pid arrives, and is never bound: a shim bound to a
-  closed stream has no event left that would ever stop it. Quitting PocketDeck likewise
+  closed stream has no event left that would ever stop it. Quitting Contigua likewise
   stops any automatic shim it launched that no window owns, including one whose launch is
   in flight at quit.
 
@@ -201,7 +201,7 @@ right-click a Dock icon); a person's click takes the same path.
 The host owns the window (it owns the session and the video layer); the shim stays running as
 the window's Dock and ⌘-Tab identity. Selecting the shim (Dock click or ⌘-Tab) forwards
 `open` and the host brings the window forward, so the shim acts as the switcher for it.
-PocketDeck itself keeps its own Dock icon. Rejected: rendering the stream inside the shim
+Contigua itself keeps its own Dock icon. Rejected: rendering the stream inside the shim
 (a second session or frame forwarding, double the cost) and swapping the host's Dock tile per
 window (`NSApp.applicationIconImage` is per process, not per window).
 
@@ -258,14 +258,14 @@ record without an origin set has none.
   ones whose origins hold only `window` — their windows stay open, the bundles
   stay on disk), while ones added by hand keep running with their windows.
 - Manual: Deck → app context menu → **Add to Dock** creates and launches the shim
-  regardless of the setting; the person chooses Options → Keep in Dock. PocketDeck
+  regardless of the setting; the person chooses Options → Keep in Dock. Contigua
   never writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.
 - The shim's process lives while a window of its app is open: the host posts
   `closed` when the window closes, and while two windows of one app are open the
   identity follows the one that is left. The bundles stay on disk, so a later
   window only launches the identity again.
-- Updating PocketDeck updates the shims: a bundle records the SHA-256 of the
-  `PocketDeckShim` it was built from, and the next app-list refresh — or the
+- Updating Contigua updates the shims: a bundle records the SHA-256 of the
+  `ContiguaShim` it was built from, and the next app-list refresh — or the
   relaunch of an idle bundle — rebuilds one whose hash differs. A running shim
   is left alone; it is replaced on a later refresh after it exits.
 - One set per phone: the id and file name include the phone, so the same app on two phones

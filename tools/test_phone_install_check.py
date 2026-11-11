@@ -27,14 +27,14 @@ def maps(*paths):
 
 
 def main():
-    base = "/data/app/~~abc/dev.pocketdeck-def/base.apk"
-    other = "/data/app/~~old/dev.pocketdeck-old/base.apk"
+    base = "/data/app/~~abc/app.contigua-def/base.apk"
+    other = "/data/app/~~old/app.contigua-old/base.apk"
     check("a deleted base is named", deleted_base(maps(base + " (deleted)")), base)
     check("a live base is not deleted", deleted_base(maps(base)), None)
     check("another package's deleted base is ignored",
           deleted_base(maps("/data/app/~~x/com.example-y/base.apk (deleted)")), None)
     check("a split is not the base",
-          deleted_base(maps("/data/app/~~x/dev.pocketdeck-y/split_config.arm64_v8a.apk (deleted)")), None)
+          deleted_base(maps("/data/app/~~x/app.contigua-y/split_config.arm64_v8a.apk (deleted)")), None)
     check("the live base is reported", mapped_base(maps(base)), base)
     check("a deleted base is not a live mapping",
           mapped_base(maps(base + " (deleted)")), None)

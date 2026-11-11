@@ -27,7 +27,7 @@ FIELD = re.compile(r"^(stats|[a-z0-9_]+)=([^\s]+)$")
 CLOCK_FIELDS = ("freeze_n", "hitch_n", "hitch_ms", "drop_ep", "drop_ms",
                 "phone_n", "kf", "key_not_idr", "ph_key_not_idr",
                 "susp_n", "susp_ms", "refine_n")
-SUBSYSTEM = "dev.pocketdeck.mac"
+SUBSYSTEM = "app.contigua.mac"
 
 
 def parse_lines(text):
@@ -100,7 +100,7 @@ def read_range(start, end, predicate):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Summarise PocketDeck stats lines.")
+    parser = argparse.ArgumentParser(description="Summarise Contigua stats lines.")
     parser.add_argument("--file", metavar="PATH",
                         help="read this saved log output (default: run log show)")
     parser.add_argument("--start", metavar="TIME", help="log show --start")

@@ -4,7 +4,7 @@ Status, 2026-11-06: **research for the requirements gate. No product code, no de
 
 ## What today's path does, and what it cannot see
 
-PocketDeck forwards a notification only when it is **ongoing and promoted** (`FLAG_PROMOTED_ONGOING`), and then reads `progress`, `chip`, `chrono` and `countDown` from the notification's extras (`NotifyEvents.promoted`, `NotifyEvents.liveWire`, `PdNotificationListener.liveFor`). Everything else ongoing is treated as service chrome and dropped. A notification with neither a title nor text is dropped as contentless (`NOTIFY-3`).
+Contigua forwards a notification only when it is **ongoing and promoted** (`FLAG_PROMOTED_ONGOING`), and then reads `progress`, `chip`, `chrono` and `countDown` from the notification's extras (`NotifyEvents.promoted`, `NotifyEvents.liveWire`, `PdNotificationListener.liveFor`). Everything else ongoing is treated as service chrome and dropped. A notification with neither a title nor text is dropped as contentless (`NOTIFY-3`).
 
 That rule cannot see a stock Android timer. AOSP DeskClock's running timer is ongoing and has a custom `RemoteViews` layout, and on Android N and later it sets **no title and no text** in the extras; the numbers live only inside the custom view. It is therefore skipped twice: as unpromoted ongoing chrome, and as contentless. The same is true of the stopwatch. This is the central gap for the "timers first" story.
 
@@ -137,7 +137,7 @@ The flag `FLAG_FOREGROUND_SERVICE` is not a negative on its own: a navigation or
 
 ### Rendering a card's RemoteViews
 
-`RemoteViews.apply(context, parent)` is public. It inflates the layout and applies the actions. The listener can call it in PocketDeck's process; the `RemoteViews` carries the posting package's name and resource ids, so the package's resources must still be installed. The view set is restricted: `FrameLayout`, `LinearLayout`, `RelativeLayout`, `GridLayout`, `GridView`, `ListView`, `AdapterViewFlipper`, `StackView`, `ViewFlipper`, and the standard `TextView`, `ImageView`, `Button`, `ImageButton`, `ProgressBar`, `Chronometer`, `AnalogClock`, `TextClock`, plus (API 31+) `CheckBox`, `RadioButton`, `RadioGroup` and `Switch`. Descendants are not supported.
+`RemoteViews.apply(context, parent)` is public. It inflates the layout and applies the actions. The listener can call it in Contigua's process; the `RemoteViews` carries the posting package's name and resource ids, so the package's resources must still be installed. The view set is restricted: `FrameLayout`, `LinearLayout`, `RelativeLayout`, `GridLayout`, `GridView`, `ListView`, `AdapterViewFlipper`, `StackView`, `ViewFlipper`, and the standard `TextView`, `ImageView`, `Button`, `ImageButton`, `ProgressBar`, `Chronometer`, `AnalogClock`, `TextClock`, plus (API 31+) `CheckBox`, `RadioButton`, `RadioGroup` and `Switch`. Descendants are not supported.
 
 Cost and failure modes:
 
@@ -185,7 +185,7 @@ The action requires `com.android.alarm.permission.SET_ALARM` (a normal permissio
 
 Two practical limits:
 
-- **Background activity launch.** The intent is handled by an activity. A phone-side app cannot always start an activity from the background on Android 10 and later. PocketDeck's session has a foreground service while connected, which may or may not be enough on One UI 8. The safe implementation starts the intent from a phone-side component that is already in the foreground, or asks the person to open the app once; this is a spike item. **(unverified)**
+- **Background activity launch.** The intent is handled by an activity. A phone-side app cannot always start an activity from the background on Android 10 and later. Contigua's session has a foreground service while connected, which may or may not be enough on One UI 8. The safe implementation starts the intent from a phone-side component that is already in the foreground, or asks the person to open the app once; this is a spike item. **(unverified)**
 - **"The phone's own Clock app" is not a single target.** The intent goes to whichever app handles it. On the person's phone that is presumably Samsung Clock; if a third-party Clock is the default, the timer rings there instead. The Mac should say which app it used, or show the system chooser once.
 
 `AlarmClock.ACTION_DISMISS_TIMER` only dismisses an **expired** timer; it is not a way to stop a running one. There is no public "pause timer" or "reset timer" intent. The notification's actions are the supported control surface.
@@ -223,7 +223,7 @@ The page does not state a limit on how many activities show at once, nor what ha
 
 ### Can a Mac app post a Live Activity?
 
-`ActivityKit` lists macOS **27.3 beta** as its first macOS platform; iOS, iPadOS and Mac Catalyst have had it since 16.1. PocketDeck's deployment target is **macOS 26.0** and the person's Mac runs macOS 26. So a Mac app cannot post a Live Activity today, and the app cannot use ActivityKit even on macOS 27.0 or 27.1. The framework's macOS support is a future path, not a current one.
+`ActivityKit` lists macOS **27.3 beta** as its first macOS platform; iOS, iPadOS and Mac Catalyst have had it since 16.1. Contigua's deployment target is **macOS 26.0** and the person's Mac runs macOS 26. So a Mac app cannot post a Live Activity today, and the app cannot use ActivityKit even on macOS 27.0 or 27.1. The framework's macOS support is a future path, not a current one.
 
 The public model is also iPhone-first: Apple's support page is about an iPhone's activities appearing on the Mac. Where a Mac-originated ActivityKit activity would appear on macOS 27.3 is not documented in a form this note could verify. **(unverified.)**
 
@@ -247,13 +247,13 @@ The public model is also iPhone-first: Apple's support page is about an iPhone's
 
 **WidgetKit desktop widget.** Widgets are a separate extension process. The timeline budget is dynamic: a frequently viewed widget typically gets **40 to 70 reloads per 24 hours**, roughly every 15 to 60 minutes; the budget does not reset at midnight and is per widget instance. A countdown can tick without reloads by using SwiftUI's timer-based `Text` and `ProgressView(timerInterval:)`, but the data behind it only refreshes on the timeline's schedule or an explicit reload.
 
-PocketDeck is **ad-hoc signed**; release builds are ad-hoc (AGENTS.md, `docs/design/mac-audit.md`). The repo's Control Center extension experiment (`docs/design/controls.md`) built an ad-hoc, sandboxed `Controls.appex`; `pluginkit` listed it, but the Control Center gallery never showed it and the extension never launched in the VM. The File Provider extension did register, so extension registration is not uniformly broken; it is per extension kind and per install. There is no public Apple statement that an ad-hoc Mac app's WidgetKit extension can be discovered and added like an App Store app's. **(unverified; a VM spike is the only way to know.)**
+Contigua is **ad-hoc signed**; release builds are ad-hoc (AGENTS.md, `docs/design/mac-audit.md`). The repo's Control Center extension experiment (`docs/design/controls.md`) built an ad-hoc, sandboxed `Controls.appex`; `pluginkit` listed it, but the Control Center gallery never showed it and the extension never launched in the VM. The File Provider extension did register, so extension registration is not uniformly broken; it is per extension kind and per install. There is no public Apple statement that an ad-hoc Mac app's WidgetKit extension can be discovered and added like an App Store app's. **(unverified; a VM spike is the only way to know.)**
 
 The roadmap already lists widgets for later (ROADMAP #11), using a snapshot the Mac app keeps. That is compatible with the Live surface, but a widget is **not** a shippable part of the first round on the current signing and install story. The prototype can include a mock to compare the idea; the plan should not claim it ships.
 
 ## Power and traffic
 
-- The listener is push-based: the system calls `onNotificationPosted` when the app posts. PocketDeck does not poll the phone. A tick from a timer app is one Binder callback, one extras read and one `notify.post`; the phone-side app already pays for its own notification update.
+- The listener is push-based: the system calls `onNotificationPosted` when the app posts. Contigua does not poll the phone. A tick from a timer app is one Binder callback, one extras read and one `notify.post`; the phone-side app already pays for its own notification update.
 - The Mac must not ask the phone for a tick. A countdown is computed from a deadline and a local 1 Hz timer. `NOTIFY-12` already coalesces updates to one per second per id; that is the right ceiling for wire traffic, not a reason to send one per second.
 - The existing `chrono` is an absolute epoch. If the phone's clock is 3 seconds off, the Mac's countdown is 3 seconds off, and the error is invisible. Send the phone's `now` with the post (or send `remainingMs`) and start a monotonic local deadline when the post arrives. The same applies to a `when` that is a future wall-clock time. This is a correctness fix, not a nicety.
 - A menu-bar title that counts down redraws a status item every second; with several items that is several redraws. A card that is only visible in the panel can tick only while the panel is open. Measure both; the NFR has no menu-bar redraw budget yet.
@@ -275,7 +275,7 @@ Live cards carry exactly what makes them useful: a restaurant and a driver's nam
 This ran on an APK of main plus `spike/liveany`, against Samsung's Clock on the person's S25+ (One UI 9). The timer was a silent 300 s one, started with `SET_TIMER` + `SKIP_UI`, and cancelled at the end. The captures read only the timer's own fields.
 
 - **Running:** the classifier said `live:chrono_views`. The deadline came from the `Chronometer` in the extras' `RemoteViews`, `countDown=true`, and landed 0.7 s after the start plus 300 s. `usesChronometer` is false and the standard fields carry no clock.
-- **Paused** (PocketDeck sent the card's second action, by index):
+- **Paused** (Contigua sent the card's second action, by index):
   - the same `Chronometer` stays visible, but `countDown` turns false and its text is the frozen remaining time (`04:37`);
   - a second capture 60 s later still read `04:37`, with a base 60 s later;
   - the classifier kept it live, and the extractor reported no deadline;

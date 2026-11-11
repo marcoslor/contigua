@@ -1,7 +1,7 @@
 # Drag & drop + clipboard images (ROADMAP #8)
 
 Drag files from Finder onto a phone window → the phone writes them to
-`/sdcard/Download/PocketDeck/`, media-scans them and offers a SEND chooser; clipboard
+`/sdcard/Download/Contigua/`, media-scans them and offers a SEND chooser; clipboard
 images travel both ways. Dragging **out** of a phone window is design only (§Drag out).
 
 ## Protocol
@@ -19,17 +19,17 @@ images travel both ways. Dragging **out** of a phone window is design only (§Dr
 - Names: `[A-Za-z0-9 ._-]`, ≤ 100 chars, no leading dot, collisions " 2", " 3"… — the share-in receiver's rules, on both sides.
 
 ## Phone side (shell UID, like the APK path) — progress in the window
-A glass pill like the reconnect pill shows "Sending report.pdf… 43 %" and the outcome for 5 s. All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on demand;
+A glass pill like the reconnect pill shows "Sending report.pdf… 43 %" and the outcome for 5 s. All bytes stream into a hidden temp file in `/sdcard/Download/Contigua/` (`mkdir -p` on demand;
 the only path we create), renamed after a SHA-256 match. Then a media scan
 (`MediaScannerConnection.scanFile`, best effort) and — where sensible: one file, a context and our provider
-available — the SEND step, whose URI grant must come from the UID that owns `dev.pocketdeck.fileprovider`.
+available — the SEND step, whose URI grant must come from the UID that owns `app.contigua.fileprovider`.
 Shell (UID 2000) does not own it, so an `am start -a SEND --grant-read-uri-permission` from shell has the grant
 silently dropped and the receiver crashes on a URI it cannot open. Instead the shell process stages the finished
 file in its own external media folder, `/storage/emulated/0/Android/media/<pkg>/shared`: in the uid-2000 process
 both `getExternalMediaDirs()` and `Environment.getExternalStorageDirectory()` are refused (boots 3/4),
 so it is computed from the real root and the app's package. The shell records the bare name in
 `ShareStaging` (60 s, one open) and starts the exported, UI-less
-`dev.pocketdeck.drop.ShareTrampoline` with that name. The app can stat a shell-written file there but not
+`app.contigua.drop.ShareTrampoline` with that name. The app can stat a shell-written file there but not
 open it (boot 5, H2: `EACCES`), so the trampoline asks the shell for the bytes: `IDeckService.openStaged(name)`
 opens the staged file read-only at uid 2000, unlinks it and returns the descriptor. `ShareCopies` copies from
 that descriptor into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB); the trampoline never opens the staged path
@@ -65,7 +65,7 @@ a file over 1 MiB is read and decoded off the main thread. Everything else sends
   newest file is kept), builds the FileProvider URI at its own uid and sets A2's URI-only item,
   then answers `IDeckService.clipImageDone(id, ok)`. That answer is the only source of
   `clip.image.done`; no callback, no answer within 3 s or a failed write is `ok:false`.
-  A clip whose URI authority is `dev.pocketdeck.fileprovider` is the app's own write, and the poll
+  A clip whose URI authority is `app.contigua.fileprovider` is the app's own write, and the poll
   never syncs it back (the echo rule). A2, measured on the emulator (boot 7): the URI-only item
   pastes nothing in a plain field (a content URI that cannot serve text coerces to null;
   `plain text length=0`) and reaches a field whose content listener takes image types
@@ -109,12 +109,12 @@ optional `drop.start.target` field, with the file's place in the gesture in `ind
 (A3). `AppWindowController.pkg` is the source (the phone's `window.title.pkg` is what named the
 window). `WindowManager.onFilesDropped` and `ConnectionController.dropFiles` grow a target
 argument; the Deck, a phone-mode window and a link window pass none. On the phone
-`android/app/src/main/java/dev/pocketdeck/server/ShellLanding.kt` collects a gesture's finished
+`android/app/src/main/java/app/contigua/server/ShellLanding.kt` collects a gesture's finished
 files in `ShareBatch` and offers one SEND after the last one: `ACTION_SEND` for one file,
 `ACTION_SEND_MULTIPLE` for 2–5, each with `FLAG_GRANT_READ_URI_PERMISSION` and the same
 `ClipData`; over 5 files are saved but never shared. It adds `--esa names`, `--esa mimes` and
 `--es target <pkg>` to the `am start` of
-`android/app/src/main/java/dev/pocketdeck/drop/ShareTrampoline.kt`; the trampoline gets each
+`android/app/src/main/java/app/contigua/drop/ShareTrampoline.kt`; the trampoline gets each
 staged file's bytes through `IDeckService.openStaged` (the shell opens it; the app cannot open
 the shell-written path, boot 5), copies them into `cacheDir/shared`, and its `offer` builds the SEND,
 calls `setPackage(pkg)`, and shows the intent only when `resolveActivity` returns a component for
@@ -135,7 +135,7 @@ image data or promises). Each source becomes a temp file for the drop path:
 - a file promise: `NSFilePromiseReceiver.receivePromisedFiles` into the same temp folder,
   awaited up to 30 s.
 
-Temp files live in `FileManager.default.temporaryDirectory/PocketDeck-drop-<uuid>/`, one folder
+Temp files live in `FileManager.default.temporaryDirectory/Contigua-drop-<uuid>/`, one folder
 per gesture. The folder is deleted when every file of that gesture has its `drop.result`, on a
 cancel, and on session end; folders older than 24 h are swept at launch. Nothing about a file's
 name, path or URL is logged: the source kind and byte count only.

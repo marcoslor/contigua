@@ -110,7 +110,7 @@ Mac Wi-Fi Aware stack, 5 layers, 1 gate closed (green = works, red = blocked, am
 
 ## Probe sources
 
-All in [`probes/`](probes/). Built by hand with `swiftc`/`clang`; Mac programs are signed ad hoc with the entitlements in the `.plist` files (for example `codesign -f -s - -i dev.pocketdeck.awaretest --entitlements ent-pub.plist pub`). Pass a passphrase as an argument, never in the source.
+All in [`probes/`](probes/). Built by hand with `swiftc`/`clang`; Mac programs are signed ad hoc with the entitlements in the `.plist` files (for example `codesign -f -s - -i app.contigua.awaretest --entitlements ent-pub.plist pub`). Pass a passphrase as an argument, never in the source.
 
 | File | What it does |
 | --- | --- |

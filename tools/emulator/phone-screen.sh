@@ -35,14 +35,14 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47811}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47811}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 RESULT="$OUT/phone-screen.log"
 WAKE="$OUT/phone-screen-wake.log"
 POWER="$OUT/phone-screen-power.log"
@@ -222,7 +222,7 @@ if [ "$FAILED" -ne 0 ]; then
   # Evidence for the next boot: the phone's own phone.wake lines and the
   # session's last output (states only, never any content).
   EMULOG="$OUT/phone-screen-logcat.log"
-  emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I 2>/dev/null |
+  emu logcat -d -s ContiguaSvc:I ContiguaApp:I 2>/dev/null |
     tr -d '\r' | tail -40 > "$EMULOG" || true
   echo "phone-screen: logcat evidence ($EMULOG):"
   tail -10 "$EMULOG"

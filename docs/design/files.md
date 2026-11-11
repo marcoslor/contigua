@@ -10,7 +10,7 @@ This document is a design: no code was written and nothing was run. Every protoc
 below is a **proposal** — the wire lives in `docs/PROTOCOL.md` once it is agreed.
 
 Shape in one line: the Mac side is a **replicated File Provider extension** (`NSFileProviderReplicatedExtension`);
-it asks the running PocketDeck app over a local socket, and the app asks the phone over the
+it asks the running Contigua app over a local socket, and the app asks the phone over the
 existing mutual-TLS session (`docs/PROTOCOL.md` framing), where a shell-uid service does
 `File`/`Os.stat` work under `/sdcard`. One session, reused; no second listener, no new port.
 
@@ -55,12 +55,12 @@ fetches and local changes. That is exactly the feature we were asked for.
 - **An App Group** so the sandboxed extension and the unsandboxed app share one directory —
   a UNIX socket and nothing else. `com.apple.security.application-groups` in both targets
   (Apple says app groups on macOS do not require a provisioning profile; see
-  forums/thread/672554). The identifier would be `group.dev.pocketdeck.mac.files`
-  (`group.dev.pocketdeck.mac.files.<profile>` for a non-default profile, mirroring
-  `Profile.supportDirectoryName`, `macos/Sources/PocketDeck/Profile.swift:62`).
+  forums/thread/672554). The identifier would be `group.app.contigua.mac.files`
+  (`group.app.contigua.mac.files.<profile>` for a non-default profile, mirroring
+  `Profile.supportDirectoryName`, `macos/Sources/Contigua/Profile.swift:62`).
   If a profile-less ad-hoc signature refuses the group container, the fallback is a
   `com.apple.security.temporary-exception.files.home-relative-path.read-only` on
-  `~/Library/Application Support/PocketDeck[-<profile>]/` for the extension — an ad-hoc
+  `~/Library/Application Support/Contigua[-<profile>]/` for the extension — an ad-hoc
   signature may carry any entitlement, since no profile validates it. Both forms are
   experiments E1/E2 below.
 - **No File Provider *capability*.** The portal capability for this feature is
@@ -82,9 +82,9 @@ under the 104-byte `sun_path`). The app runs a `FilesBridge` listener on the ses
 terms and answers extension requests by translating them into `fs.*` messages on the session.
 
 The reverse path already exists and proves a sandboxed extension can reach the app: the Share
-extension calls `NSWorkspace.open` on a `pocketdeck://` URL (`macos/Sources/PocketDeck/LinkShare.swift:107`,
+extension calls `NSWorkspace.open` on a `contigua://` URL (`macos/Sources/Contigua/LinkShare.swift:107`,
 `ShareHandoff.send`). If the app is not running when Finder opens the domain, the same trick
-launches it (`pocketdeck://files?profile=…`) and the extension retries the socket with a
+launches it (`contigua://files?profile=…`) and the extension retries the socket with a
 short timeout; until then the domain's items are the cached ones and dataless items get
 `serverUnreachable`.
 
@@ -120,7 +120,7 @@ short timeout; until then the domain's items are the cached ones and dataless it
      `codesign --force --sign - --entitlements …`).
   2. Add a debug flag `--files-domain add|remove` that calls `NSFileProviderManager.add(NSFileProviderDomain(identifier:displayName:))`
      and prints the `NSError` domain/code.
-  3. Run `build/…/PocketDeck.app --profile files-design --files-domain add`; then
+  3. Run `build/…/Contigua.app --profile files-design --files-domain add`; then
      `pluginkit -m -p com.apple.fileprovider-nonui` (extension registered?),
      `NSFileProviderManager.getDomains` (domain there?), Finder ▸ sidebar (location shown?),
      open it (3 items?), Space on one (Quick Look materializes a real file?), and
@@ -155,25 +155,25 @@ Run in the `pd-e2e` VM, `macos/scripts/check-e2e.sh files-exp` with `PD_E2E_VISI
 enable path).
 
 **E1 — pass, with one one-time switch.** The ad-hoc-signed, sandboxed replicated
-extension (`Files.appex`, bundle id `dev.pocketdeck.mac.files-e2e`, App Group
-`group.dev.pocketdeck.mac.files.filesexp`) registers (`pluginkit -m -p
+extension (`Files.appex`, bundle id `app.contigua.mac.files-e2e`, App Group
+`group.app.contigua.mac.files.filesexp`) registers (`pluginkit -m -p
 com.apple.fileprovider-nonui` lists it), `NSFileProviderManager.add` returns ok, and
-the domain mounts at `~/Library/CloudStorage/PocketDeck-PocketDeckFiles`. A **new
+the domain mounts at `~/Library/CloudStorage/Contigua-ContiguaFiles`. A **new
 domain starts `user-disabled`**: every job fails with `FP -2011 "Sync is not enabled"`
 and any `ls` on the mount times out. Nothing non-GUI moves that switch:
 `fileproviderctl` has no enable/approve command (`fileproviderctl help`: dump,
 diagnose, evaluate, check/repair, obfuscate), and `pluginkit -e use -i
-dev.pocketdeck.mac.files-e2e`, before or after the domain exists, leaves
+app.contigua.mac.files-e2e`, before or after the domain exists, leaves
 `Enabled` false in `~/Library/Application Support/FileProvider/
-dev.pocketdeck.mac.files-e2e/Domains.plist`.
+app.contigua.mac.files-e2e/Domains.plist`.
 
 The enable path that works is System Settings › **General › Login Items &
 Extensions › Extensions**:
 
-- *By App* (the default): the app's row (PocketDeck) → its ⓘ button → the sheet
+- *By App* (the default): the app's row (Contigua) → its ⓘ button → the sheet
   lists **File Provider** and **Sharing** → switch File Provider on. This is the
   shortest and the one `check-e2e.sh files-exp` now takes.
-- *By Category* → **File Providers** → PocketDeck → switch on. Same result.
+- *By Category* → **File Providers** → Contigua → switch on. Same result.
 
 The app can take the person to the right pane: `open
 "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?Extensions"`
@@ -196,7 +196,7 @@ shows `socket group=pong` and every enumeration served through it.
 hard-coded tree has one root item); `DCIM` has `big.bin` and `notes.txt`;
 `cat DCIM/notes.txt` returns the 39 bytes the fake phone serves; a `cp` out of the
 domain writes the same bytes; Quick Look (`qlmanage -t`) writes a thumbnail for
-`notes.txt`; Finder shows PocketDeck under Locations and the folder's contents.
+`notes.txt`; Finder shows Contigua under Locations and the folder's contents.
 `fileproviderctl dump` has `enabled: yes` and `errors: 0` for the domain (the
 remaining `user-disabled` line belongs to the hidden default domain).
 
@@ -215,7 +215,7 @@ reconnect; the check accepts either ordering.
 per-person step: the Deck must explain it and deep-link
 `x-apple.systempreferences:com.apple.LoginItems-Settings.extension?Extensions`;
 until the switch is on, the domain is mounted but empty/timing out, so the app
-should say "turn PocketDeck on in Login Items & Extensions" rather than show an
+should say "turn Contigua on in Login Items & Extensions" rather than show an
 empty folder. No WebDAV fallback (E6) is needed for this reason. The e2e check
 flips the same switch through the accessibility tree, so a VM run is green end to
 end.
@@ -243,11 +243,11 @@ The experiment's code becomes the slice's product code; this is what it does.
   most 8 live ids.
 - **Names**: bundle.sh writes `PDFilesGroup` into the app's and the extension's
   Info.plist and the same id into both entitlements. Production
-  `group.dev.pocketdeck.mac.files`; every non-release bundle keeps its own
+  `group.app.contigua.mac.files`; every non-release bundle keeps its own
   (`…files-<variant>`). The socket is `files.sock` for the default profile and
   `files-<profile>.sock` otherwise. The domain identifier is the profile name
   (production: `default`); its display name is the phone's nickname, else
-  "PocketDeck".
+  "Contigua".
 - **Identifiers**: `ino:<st_ino>:<relative path>`, or `path:<relative path>`
   when the phone reports `ino: 0`; `.rootContainer` for the root. The ino is
   the identity, and the path rides along (percent-encoded, so an id is one
@@ -337,7 +337,7 @@ path rule canonicalizes anyway (§4).
 One session, one feature multiplexed on it. Every request is one JSON message with an `id`
 (u32 ≠ 0, chosen by the Mac); binary bodies use `FS_DATA` frames with `stream` = that `id`,
 exactly the way `drop.start`/`DROP_DATA` do (`docs/PROTOCOL.md` "Drop Mac → phone") and with
-the same pacing: **256 KiB chunks, at most 4 in flight** (`macos/Sources/PocketDeck/FileDrop.swift:134-135`),
+the same pacing: **256 KiB chunks, at most 4 in flight** (`macos/Sources/Contigua/FileDrop.swift:134-135`),
 the producer blocking past 1 MiB queued (the share-in rule). The phone is **stateless across
 requests**: it keeps no index, no cache, no lock table beyond the running request.
 
@@ -646,7 +646,7 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
 - **Coalescing:** events only add a folder to a pending set; the set is flushed
   at most once per 250 ms as one `fs.changes` (≤ 4 per second per session). A
   write storm in one folder is one message.
-- **Our own temp files never signal.** A `.pocketdeck-*.part` staging name is
+- **Our own temp files never signal.** A `.contigua-*.part` staging name is
   dropped by the watch source before it reaches the coalescer, so a create from
   the Mac does not echo back as a change.
 - **Teardown:** `fs.unwatch` closes that watch; a session end closes every watch
@@ -727,7 +727,7 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   taken there is still a collision for the person to resolve.
 
 **Done (watching).** What shipped: the phone's `FsWatcher` (one `FileObserver`
-per folder, 256 cap, 250 ms coalescing, `.pocketdeck-*.part` dropped, the 5 s
+per folder, 256 cap, 250 ms coalescing, `.contigua-*.part` dropped, the 5 s
 `MediaStore.getGeneration()` poll while any wanted folder is unwatched),
 `fs.watch`/`fs.unwatch`/`fs.changes` on the wire (bridge v3) and the session
 re-applying its counted watches after a reconnect; on the Mac the ref-counted
@@ -1151,16 +1151,16 @@ Mac + phone pass stays with the reviewer).
   ask about a file (a preview did); the phone answered `fs_not_a_dir` and the
   logging-only failure hid it. A touch now resolves the item and, when it is a
   file, watches its folder instead. The 64-folder cap is unchanged.
-- **The location is "PocketDeck (<phone name>)".** `FilesDomain.displayName`
+- **The location is "Contigua (<phone name>)".** `FilesDomain.displayName`
   now uses the one name every other surface uses (`RememberedPhones.displayName`:
-  the nickname, else the phone's own name) and composes "PocketDeck (<name>)";
-  with no phone it stays "PocketDeck". A rename, or the phone's name arriving
+  the nickname, else the phone's own name) and composes "Contigua (<name>)";
+  with no phone it stays "Contigua". A rename, or the phone's name arriving
   after the domain was added, re-adds the same identifier with the new display
   name, which macOS updates in place: the Finder location and its
   CloudStorage folder (with the cached files) stay.
 - **Settings are honest about the build.** A bundle without the App Group or
   `Contents/PlugIns/Files.appex` shows a disabled switch and "This copy of
-  PocketDeck was built without Finder files."; the controller never tries to
+  Contigua was built without Finder files."; the controller never tries to
   add a domain and logs one line. Real failures say to turn the switch off and
   on again instead of promising that a restart helps. `scripts/install.sh`
   builds the extension by default (`bundle.sh --with-files`), refuses to replace

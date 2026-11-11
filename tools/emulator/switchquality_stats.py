@@ -6,7 +6,7 @@ transitions and the `--audio-stats` snapshots, then prints one PASS/FAIL line
 per bound. The green arm must adapt (the target falls within PATH-36's
 85%-of-goodput cap without a repeated drop cycle and climbs back within 10% of
 its pre-step value inside five minutes); the red arm is the same timeline with
-`debug.pocketdeck.stream.quality=off`, where the check must fail.
+`debug.contigua.stream.quality=off`, where the check must fail.
 
     switchquality_stats.py --arm green --mac mac-green.log \
         --phases phases.txt --audio-a audio-green-a.json \
@@ -319,7 +319,7 @@ def self_test():
     def mac_line(at, **fields):
         stamp = datetime.fromtimestamp(at).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f%z")
         body = " ".join("%s=%s" % (key, value) for key, value in fields.items())
-        return "%s  localhost PocketDeck[1]: [dev.pocketdeck.mac:stream] stats stream=1 %s\n" % (stamp, body)
+        return "%s  localhost Contigua[1]: [app.contigua.mac:stream] stats stream=1 %s\n" % (stamp, body)
 
     def run(label, lines, episodes, expect_rc):
         work = tempfile.mkdtemp(prefix="switchquality-")
@@ -331,7 +331,7 @@ def self_test():
         with open(phone, "w") as handle:
             for at, _ in episodes:
                 # The real `adb logcat -v epoch` line is right-aligned.
-                handle.write("         %.3f  1 1 I PocketDeckSvc: stream 1 drop episode: "
+                handle.write("         %.3f  1 1 I ContiguaSvc: stream 1 drop episode: "
                              "flowing --dropped(3)--> waiting\n" % at)
         phase = {"base_start": 100, "base_end": 110, "step_start": 111,
                  "step_end": 171, "back_start": 172, "back_end": 190,

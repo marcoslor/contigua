@@ -10,7 +10,7 @@ changes the Mac app.
     tools/stream-bench/bench.py --profile default --serial R58M1234 \
         --repeats 3 --out .agent/stats/bench.csv
 
-Arms are named in arms.json: phone properties (`debug.pocketdeck.stream.*` via
+Arms are named in arms.json: phone properties (`debug.contigua.stream.*` via
 `adb -s <serial> shell setprop`) and Mac defaults (`defaults write <domain>`)
 are set before a run and restored after it. An arm with `"restart": true` is
 left out of the default run: its key is read when the app dials, and the bench
@@ -18,7 +18,7 @@ never relaunches or reconnects the app (`--include-restart-arms` overrides).
 
 The phone is addressed only through the given serial; the script refuses an
 unreachable one and never runs `adb kill-server`. Nothing is changed on the
-phone except the named `debug.pocketdeck.stream.*` properties, and those are
+phone except the named `debug.contigua.stream.*` properties, and those are
 put back the way they were.
 """
 
@@ -36,9 +36,9 @@ import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MACOS = os.path.join(ROOT, "macos")
-DEFAULT_SHIM = "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"
-PROFILE_DOMAIN = "dev.pocketdeck.mac"
-STATS_PREFIX = "debug.pocketdeck.stream."
+DEFAULT_SHIM = "/Applications/Contigua.app/Contents/Helpers/contigua-mcp"
+PROFILE_DOMAIN = "app.contigua.mac"
+STATS_PREFIX = "debug.contigua.stream."
 
 # The scripts are composable: swipe is today's exact sequence, and the others
 # exercise one stage or one input path each.
@@ -49,7 +49,7 @@ VIDEO_SECONDS = 8.0
 SOAK_SECONDS = 20 * 60.0
 SAMPLE_SECONDS = 10.0
 TYPING_POINT = {"x": 0.5, "y": 0.08}
-TYPING_TEXT = "pocketdeck bench typing"
+TYPING_TEXT = "contigua bench typing"
 PLAY_POINT = {"x": 0.5, "y": 0.5}
 TAP_POINT = {"x": 0.5, "y": 0.5}
 
@@ -269,14 +269,14 @@ def recent_lines(predicate, seconds=10):
 
 
 def log_predicate(pid):
-    """The app's own lines only: another PocketDeck process must never mix in.
+    """The app's own lines only: another Contigua process must never mix in.
     The pid comes from the profile's process, never from the subsystem alone."""
     return 'subsystem == "%s" AND processID == %d' % (PROFILE_DOMAIN, pid)
 
 
 def profile_app_pid(ps_text, profile):
     """The pid of the app running this profile: the command starts with the
-    bundle's `Contents/MacOS/PocketDeck` and carries `--profile <profile>`.
+    bundle's `Contents/MacOS/Contigua` and carries `--profile <profile>`.
     A Dock shim or another profile's app never matches."""
     marker = re.compile(r"--profile\s+%s(?:\s|$)" % re.escape(profile))
     any_profile = re.compile(r"--profile(?:\s|=|$)")
@@ -288,7 +288,7 @@ def profile_app_pid(ps_text, profile):
         if not command:
             continue
         executable = command.split()[0]
-        if not executable.endswith("/Contents/MacOS/PocketDeck"):
+        if not executable.endswith("/Contents/MacOS/Contigua"):
             continue
         if marker.search(command):
             return int(parts[0])
@@ -852,7 +852,7 @@ def phone_values(texts, seconds, package, display_id=None):
     display = phone.display_refresh(texts.get("display", ""), display_id) or {}
     battery = phone.battery(texts.get("battery", "")) or {}
     thermal = phone.thermal(texts.get("thermal", "")) or {}
-    cpu = phone.cpu(texts.get("cpu", ""), (package, "dev.pocketdeck"))
+    cpu = phone.cpu(texts.get("cpu", ""), (package, "app.contigua"))
     wifi_values = phone.wifi(texts.get("wifi", "")) or {}
     return {
         "app_fps": frames["fps"] if gfx.strip() else None,
@@ -863,7 +863,7 @@ def phone_values(texts, seconds, package, display_id=None):
         "thermal_status": thermal.get("status"),
         "thermal_max_c": thermal.get("max_c"),
         "app_cpu_pct": cpu.get(package),
-        "shell_cpu_pct": cpu.get("dev.pocketdeck"),
+        "shell_cpu_pct": cpu.get("app.contigua"),
         "app_pss_kb": phone.meminfo(texts.get("app_mem", "")),
         "shell_pss_kb": phone.meminfo(texts.get("shell_mem", "")),
         "wifi_rssi_dbm": wifi_values.get("rssi_dbm"),
@@ -904,7 +904,7 @@ class PhoneSampler:
             "thermal": self._shell("dumpsys", "thermalservice"),
             "cpu": self._shell("dumpsys", "cpuinfo"),
             "app_mem": self._shell("dumpsys", "meminfo", self.package),
-            "shell_mem": self._shell("dumpsys", "meminfo", "dev.pocketdeck"),
+            "shell_mem": self._shell("dumpsys", "meminfo", "app.contigua"),
             "wifi": self._shell("dumpsys", "wifi"),
         }
         return phone_values(texts, seconds, self.package, self.display_id)
@@ -934,7 +934,7 @@ def median_fields(rows, fields):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PocketDeck stream bench (ISS-40).")
+    parser = argparse.ArgumentParser(description="Contigua stream bench (ISS-40).")
     parser.add_argument("--profile", required=True,
                         help="Mac profile whose automation socket to drive "
                              "(default is the person's own app)")
@@ -966,9 +966,9 @@ def main():
                         help="tap script's normalized probe point (default: 0.5,0.5)")
     parser.add_argument("--display-id", type=int, default=None,
                         help="physical display id; default reads the mirror's "
-                             "pocketdeck virtual display")
+                             "contigua virtual display")
     parser.add_argument("--shim", default=DEFAULT_SHIM,
-                        help="pocketdeck-mcp stdio shim (default: the installed app's)")
+                        help="contigua-mcp stdio shim (default: the installed app's)")
     parser.add_argument("--app", default=None,
                         help="app bundle to bring to the front after opening a window "
                              "(a hidden stream pauses); e.g. a profile build's .app")
@@ -1014,7 +1014,7 @@ def main():
     domain = profile_domain(args.profile)
     pid = find_app_pid(args.profile)
     if pid is None:
-        fail("no PocketDeck app is running the profile %r" % args.profile)
+        fail("no Contigua app is running the profile %r" % args.profile)
     predicate = log_predicate(pid)
     if has_open_window(recent_lines(predicate, 10)):
         fail("another window is open")

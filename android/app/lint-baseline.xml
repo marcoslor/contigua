@@ -13,7 +13,7 @@
         errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
         errorLine2="                                                                            ~~~~~">
         <location
-            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            file="src/main/java/app/contigua/server/ShellContext.kt"
             line="19"
             column="77"/>
     </issue>
@@ -24,7 +24,7 @@
         errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
         errorLine2="                                        ~~~~~~~~~~~~~~">
         <location
-            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            file="src/main/java/app/contigua/server/ShellContext.kt"
             line="19"
             column="41"/>
     </issue>
@@ -35,7 +35,7 @@
         errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
         errorLine2="                          ~~~~~~~">
         <location
-            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            file="src/main/java/app/contigua/server/ShellContext.kt"
             line="19"
             column="27"/>
     </issue>

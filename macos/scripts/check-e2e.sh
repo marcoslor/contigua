@@ -4,13 +4,13 @@
 #   ./scripts/check-e2e.sh [qr|pair|gates|forgot|pairflow|tls|render|resize|crisp|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|paste|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|zoom|nfr|bar-title|phones|chain|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
-# "The shared app" below): no PocketDeck or fakephone processes
+# "The shared app" below): no Contigua or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
 # the Keychain (a key created by a *different* build would make macOS prompt
 # for Keychain access, which is why C4 asks for the key to be deleted first).
 #
 # Runs are serialized by a lock: they share the port, the work dir and the
-# PocketDeck/fakephone processes, so an overlapping run would kill the other.
+# Contigua/fakephone processes, so an overlapping run would kill the other.
 #
 # Input (C7, C11) is scripted in-process (--debug-input-script): the NSEvents
 # are delivered to the stream's view, so no focus change, window stacking or
@@ -26,11 +26,11 @@
 # synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
 #
 # The app runs under its own profile (`--profile e2e`) from its own bundle,
-# build/e2e/PocketDeck.app, rebuilt from the current tree when it changed
+# build/e2e/Contigua.app, rebuilt from the current tree when it changed
 # (PD_E2E_PREBUILT names a bundle built elsewhere, e.g. the host side of a VM
 # run, and skips the rebuild). The
 # default profile (the user's pairings, cached phones and defaults) and the
-# user's build/PocketDeck.app are never read, rebuilt or killed here.
+# user's build/Contigua.app are never read, rebuilt or killed here.
 #
 # The run's virtual display (pd-vdisplay, PD_E2E_PROFILE's serial): one display
 # is created before the first launch and held for the whole run, so the app in
@@ -50,10 +50,10 @@ FAKE_PY="${PD_FAKE_TLS_PYTHON:-$(command -v python3.11 || echo /usr/bin/python3)
     say "$FAKE_PY cannot serve TLS 1.3; set PD_FAKE_TLS_PYTHON to a python3.11+ built on OpenSSL 3"
     exit 3
 }
-E2E_BUNDLE="${PD_E2E_PREBUILT:-$MACOS/build/e2e/PocketDeck.app}"
-APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
+E2E_BUNDLE="${PD_E2E_PREBUILT:-$MACOS/build/e2e/Contigua.app}"
+APP="$E2E_BUNDLE/Contents/MacOS/Contigua"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
-TOOLS="/tmp/pocketdeck-e2e-tools"
+TOOLS="/tmp/contigua-e2e-tools"
 # Named by the source's hash: other checkouts share $TOOLS, and a helper built from
 # their (older or newer) source must not be taken for this one.
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
@@ -74,9 +74,9 @@ WATCHDOG="$MACOS/scripts/pd-watchdog.sh"
 # and the checks that need real input run too (debugging). Otherwise the run is
 # quiet: see "Running the e2e checks while you work" in docs/TRY-IT.md.
 VISIBLE="${PD_E2E_VISIBLE:-0}"
-LOCK_DIR="/tmp/pocketdeck-e2e.lock"
-KEYCHAIN_SERVICE="dev.pocketdeck.mac.$PROFILE"
-DEFAULTS_SUITE="dev.pocketdeck.mac.$PROFILE"
+LOCK_DIR="/tmp/contigua-e2e.lock"
+KEYCHAIN_SERVICE="app.contigua.mac.$PROFILE"
+DEFAULTS_SUITE="app.contigua.mac.$PROFILE"
 
 PASS=0
 FAIL=0
@@ -96,7 +96,7 @@ ok()   { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
 # The one machine-readable place for NFR limits (docs/NFR.md).
-NFR_LIMITS="${POCKETDECK_NFR_LIMITS:-$MACOS/scripts/nfr-limits.json}"
+NFR_LIMITS="${CONTIGUA_NFR_LIMITS:-$MACOS/scripts/nfr-limits.json}"
 
 # nfr_limit KEY — that limit from nfr-limits.json. A missing key is a broken
 # check, not a pass: it stops the run instead of silently disabling a limit.
@@ -116,7 +116,7 @@ PY
 }
 
 # PIDs of the e2e app only: the command line must start with the e2e executable.
-# The user's build/PocketDeck.app is a different path and never matches.
+# The user's build/Contigua.app is a different path and never matches.
 e2e_app_pids() {
     ps -axww -o pid=,command= | awk -v exe="$APP --profile $PROFILE" '{
         pid = $1
@@ -180,7 +180,7 @@ clear_profile_state() {
     done
     # Pairing state = the Mac identity + per-phone pins in the profile
     # folder; the checks pair from scratch each run, so both must go.
-    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    local support="$HOME/Library/Application Support/Contigua-$PROFILE"
     rm -f "$support/identity.json" "$support/pins.json"
     defaults delete "$DEFAULTS_SUITE" >/dev/null 2>&1
     return 0
@@ -688,7 +688,7 @@ release_lock() {
 }
 
 # A run from another checkout or an older copy of this script does not take
-# the lock, and its clean-up kills every PocketDeck process it finds. Wait for
+# the lock, and its clean-up kills every Contigua process it finds. Wait for
 # any such run to finish before starting one of our own.
 wait_for_other_runs() {
     local waited=0 others
@@ -709,7 +709,7 @@ wait_for_other_runs() {
 }
 
 # Each run gets its own port and work dir: other harnesses on this Mac use the
-# fixed 47000 and /tmp/pocketdeck-e2e, and their clean-up would break this run.
+# fixed 47000 and /tmp/contigua-e2e, and their clean-up would break this run.
 pick_run() {
     PORT="${PD_E2E_PORT:-$(python3 - <<'PY'
 import socket
@@ -725,7 +725,7 @@ for port in range(47000, 47200):
     break
 PY
 )}"
-    WORK="/tmp/pocketdeck-e2e-$PORT"
+    WORK="/tmp/contigua-e2e-$PORT"
     # A check's screenshots outlive its phases: clean() empties WORK, and the
     # shots a check takes in an early phase are still the record of it.
     SHOTS="$WORK-shots"
@@ -788,8 +788,8 @@ wait_for_menu() {
 # keeps that in the accessibility server, not in the views a probe can walk.
 ax_tree() { "$AXDUMPBIN" "$APP_PID" 2>&1; }
 
-# windows() — the CGWindow list of PocketDeck's own windows without a title:
-# Only this run's app: the installed app and other checkouts put PocketDeck
+# windows() — the CGWindow list of Contigua's own windows without a title:
+# Only this run's app: the installed app and other checkouts put Contigua
 # windows on the same screen, and a check must never match theirs (a phone
 # window of the person's own app is portrait and never turns).
 windows() {
@@ -809,7 +809,7 @@ popup_windows() {
 }
 
 # window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
-# line. A pid pins this run's app: other checkouts run their own PocketDeck.
+# line. A pid pins this run's app: other checkouts run their own Contigua.
 window_titles() { if [ -n "$1" ]; then "$CGBIN" titles --pid "$1"; else "$CGBIN" titles; fi; }
 
 titles_have() { window_titles "$APP_PID" | grep -qF -- "$1"; }
@@ -861,7 +861,7 @@ await_app() {
     stop_app
 }
 
-# await_window <awk-condition> — prints the id of the first PocketDeck window
+# await_window <awk-condition> — prints the id of the first Contigua window
 # matching the condition, once it exists.
 await_window() {
     local condition="$1" tries=160 id
@@ -983,7 +983,7 @@ check_qr() {
         && ok "[PAIR-9] C3 QR sheet is on screen (launcher + sheet)" \
         || bad "[PAIR-9] C3 no sheet window: $(windows | tr '\n' ' ')"
     case "$(cat "$WORK/qr.txt")" in
-        pocketdeck://pair?c=*"&n="*"&f="*"&s="*) ok "[PAIR-9] C3 payload is a pocketdeck://pair c/n/f/s URI" ;;
+        contigua://pair?c=*"&n="*"&f="*"&s="*) ok "[PAIR-9] C3 payload is a contigua://pair c/n/f/s URI" ;;
         *) bad "[PAIR-9] C3 payload shape: $(cat "$WORK/qr.txt")" ;;
     esac
     [ "$(grep -o 'f=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "64" ] \
@@ -1053,7 +1053,7 @@ check_pair() {
         && bad "[PAIR-3] C4 sent pair.confirm (the code is never typed)" || ok "[PAIR-3] C4 no pair.confirm"
     mac_code() {
         log show --last 4m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -o 'pairing code derived for this screen: [0-9]*' | grep -o '[0-9]*' | tail -1
     }
     wait_until 25 [ -n "$(mac_code)" ] || true
@@ -1120,7 +1120,7 @@ check_pair() {
         && ok "[PAIR-6] C4 the notifications hint waits for the 20 s mark" \
         || bad "[PAIR-6] C4 the notifications hint appeared too early"
     sleep 21
-    pair_ax | grep -qF "Check your phone: PocketDeck's notifications may be turned off." \
+    pair_ax | grep -qF "Check your phone: Contigua's notifications may be turned off." \
         && ok "[PAIR-6] C4 at 20 s the Mac names the phone's notifications as the possible cause" \
         || bad "[PAIR-6] C4 the 20 s notifications hint is missing ($(ax_tree | tr '\n' '|' | cut -c1-260))"
     stop_app
@@ -1192,7 +1192,7 @@ check_gates() {
     wait_until 10 grep -qF "Connections are turned off on FakePhone." "$banner" \
         && ok "[PAIR-13] B3 connections off: Mac shows \"$(cat "$banner")\"" \
         || bad "[PAIR-13] B3 connections off: banner '$(cat "$banner" 2>/dev/null)'"
-    grep -qF "Turn on Allow connections in PocketDeck on your phone." "$banner" \
+    grep -qF "Turn on Allow connections in Contigua on your phone." "$banner" \
         && ok "[PAIR-35] B3 connections off: the banner names the phone's switch" \
         || bad "[PAIR-35] B3 connections off: no switch line in '$(cat "$banner" 2>/dev/null)'"
     # PAIR-35: one attempt per 30 s, never the 1/2/4 s loop.
@@ -1479,7 +1479,7 @@ check_pairflow() {
     # SIGPIPE, and `set -o pipefail` would read the pipeline as a miss.
     app_log_has() {
         [ "$(log show --last 6m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -cF "$1")" -gt 0 ]
     }
     wait_until 5 app_log_has "ui: pair-again source=deck" \
@@ -1501,7 +1501,7 @@ check_pairflow() {
 # mac_failed_line — the last `session failed:` detail this run's app logged.
 mac_failed_line() {
     log show --last 5m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         | grep -o 'session failed: [a-z_-]*' | tail -1
 }
 
@@ -1576,7 +1576,7 @@ check_tls() {
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "TLS7 the second session completed" || bad "TLS7 no second session"
     exporters="$(log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND (processID == $pidA OR processID == $pidB)" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND (processID == $pidA OR processID == $pidB)" 2>/dev/null \
         | grep -oE 'v2 exporter ready [0-9a-f]{8}' | sort -u | wc -l | tr -d ' ')"
     [ "$exporters" -ge 2 ] \
         && ok "TLS7 $exporters distinct exporters over 2 sessions (full handshakes, no resumption)" \
@@ -1604,7 +1604,7 @@ check_tls() {
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "TLS3 pairing traffic hit the rotated phone" \
         || ok "TLS3 no pairing traffic under a stale pin"
-    [ -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" ] \
+    [ -f "$HOME/Library/Application Support/Contigua-$PROFILE/pins.json" ] \
         && ok "TLS3 the pin record survived the refusal (re-pair keeps it, §7)" \
         || bad "TLS3 the pin record vanished on a refused session"
     stop_app
@@ -1618,14 +1618,14 @@ check_tls() {
     launch --reset-pairing --connect "127.0.0.1:$PORT" --quit-after 18
     rotated_pinned() {
         events_have '"state":"auth_ok"' && [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
-            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null
+            "$HOME/Library/Application Support/Contigua-$PROFILE/pins.json" 2>/dev/null
     }
     await_app 18 rotated_pinned
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "TLS3 the re-pair reconnect authenticated" \
         || bad "TLS3 the re-pair never reconnected"
     if [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
-            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null; then
+            "$HOME/Library/Application Support/Contigua-$PROFILE/pins.json" 2>/dev/null; then
         ok "TLS3 the rotated phone's fingerprint is the stored pin now"
     else
         bad "TLS3 the pin store does not hold the rotated phone's fingerprint"
@@ -1668,7 +1668,7 @@ check_tls() {
     stop_fakephone
     wait_until 5 no_fakephone
     start_fake || return 1
-    "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/PocketDeck-$PROFILE/identity.json" <<'PY'
+    "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/Contigua-$PROFILE/identity.json" <<'PY'
 import json, os, subprocess, sys
 identity_dir, identity_file = sys.argv[1], sys.argv[2]
 os.makedirs(identity_dir, exist_ok=True)
@@ -1678,7 +1678,7 @@ subprocess.run(["/usr/bin/openssl", "ecparam", "-name", "prime256v1", "-genkey",
                 "-noout", "-out", key], check=True,
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 subprocess.run(["/usr/bin/openssl", "req", "-new", "-x509", "-key", key, "-days", "366",
-                "-subj", "/CN=PocketDeck rotated", "-out", cert], check=True,
+                "-subj", "/CN=Contigua rotated", "-out", cert], check=True,
                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 os.chmod(key, 0o600)
 der = subprocess.run(["/usr/bin/openssl", "pkcs8", "-topk8", "-nocrypt", "-in", key],
@@ -1713,7 +1713,7 @@ PY
 
     # (8) log hygiene: no key material, no exporter bytes, no secrets in any
     # log this run produced (R3 hygiene; hashes and fingerprints are allowed).
-    if grep -IHnE 'BEGIN [A-Z ]*PRIVATE|-----BEGIN CERTIFICATE|EXPORTER_SECRET|exportKeyingMaterial|pocketdeck-memory-only' "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null | grep -q .; then
+    if grep -IHnE 'BEGIN [A-Z ]*PRIVATE|-----BEGIN CERTIFICATE|EXPORTER_SECRET|exportKeyingMaterial|contigua-memory-only' "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null | grep -q .; then
         bad "TLS8 key material in a log"
     else
         ok "TLS8 no key material, exporter bytes or secrets in any log"
@@ -3444,7 +3444,7 @@ problems = []
 for line in root.get("problems") or []:
     problems.append("shape " + line)
 titles = [i["title"] for i in root["items"]]
-if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
+if titles != ["Contigua", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
     problems.append("menus: %r" % (titles,))
 WANT = {
     "View": ["Find Apps", "—", "Immersive", "Framed", "—", "Hide Controls", "—",
@@ -3993,12 +3993,12 @@ PY
     rm -f "$WORK/menus-icon.json"
     control iconmenu "$WORK/menus-icon.json" \
         || bad "MENUS iconmenu: $CONTROL_REPLY"
-    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-3] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
+    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-3] the icon's menu is Settings… ⌘, · About Contigua · rule · Quit Contigua ⌘Q" \
         || bad "[PANEL-3] the icon's menu is not Settings…/About/Quit"
 import json, sys
 rows = json.load(open(sys.argv[1]))
 titles = [row["title"] for row in rows]
-if titles != ["Settings…", "About PocketDeck", "-", "Quit PocketDeck"]:
+if titles != ["Settings…", "About Contigua", "-", "Quit Contigua"]:
     print("titles:", titles); sys.exit(1)
 keys = [row["key"] for row in rows]
 if keys != [",", "", "", "q"]:
@@ -4338,7 +4338,7 @@ PY
     sleep 4
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
-    # the phone card, not the old status line and its "Open PocketDeck"/"Phone
+    # the phone card, not the old status line and its "Open Contigua"/"Phone
     # screen" items.
     control panelopen || bad "MENUS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menus-panel.json" || bad "MENUS paneldump: $CONTROL_REPLY"
@@ -4371,7 +4371,7 @@ focus = next(row["label"] for row in root["items"] if row["kind"] == "dnd")
 if focus != "Focus":
     print("the Focus module is named", repr(focus)); sys.exit(1)
 labels = [row["label"] for row in root["items"]]
-for gone in ["Open PocketDeck", "Phone screen"]:
+for gone in ["Open Contigua", "Phone screen"]:
     if gone in labels:
         print("the old menu item survived:", gone); sys.exit(1)
 if len(root["controls"]) < 6:
@@ -5186,7 +5186,7 @@ check_direct() {
     wait_app
     mac_pin_refusal() {
         log show --last 4m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -qF 'session failed: pin-mismatch'
     }
     wait_until 20 mac_pin_refusal \
@@ -5781,7 +5781,7 @@ PY
     # A secure surface (fakephone --secure-after): Android blanks the phone's
     # PIN pad, keyguard bouncer or a FLAG_SECURE app, so the phone reports
     # state.secure and sends black frames. The window shows the same blurred
-    # cover with "Android doesn't let PocketDeck show this screen." and no
+    # cover with "Android doesn't let Contigua show this screen." and no
     # button, within 2 s of the phone's report, and clears when it reports the
     # surface gone.
     stop_app
@@ -5996,7 +5996,7 @@ PY
         bad "[MIRROR-2] the refused cover offers Try Again ($(chrome_state))"
     fi
     if log show --last 2m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "video"' 2>/dev/null \
         | grep -q "opening refused"; then
         ok "[MIRROR-21] the app logged the refusal as a state, nothing about content"
     else
@@ -6028,7 +6028,7 @@ PY
 
 # secure_log_count — how many secure-cover lines the app wrote in the last 2 minutes.
 secure_log_count() { log show --last 2m --info \
-    --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null |
+    --predicate 'subsystem == "app.contigua.mac" AND category == "video"' 2>/dev/null |
     grep -c 'phone window: secure=1 overlay=1' ; }
 
 # nav_rx_count <action> — stream 1's `nav` messages of that action, as the
@@ -6081,7 +6081,7 @@ chrome_all() {
 # phone_screen_log — how many times the app logged the sleeping-panel line in
 # the last 2 minutes (states only, never pixels).
 phone_screen_log() { log show --last 2m --info \
-    --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null |
+    --predicate 'subsystem == "app.contigua.mac" AND category == "video"' 2>/dev/null |
     grep -c 'phone window: screen=off overlay=1' ; }
 
 wake_done_ok() { [ "$(cat "$WORK/control/wake.done" 2>/dev/null)" = "ok" ]; }
@@ -6159,7 +6159,7 @@ no_fakephone() { ! pgrep -f -- "--events $WORK/events.jsonl" >/dev/null; }
 # the door being shut on this build.
 spotlight_line() {
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND process == "Contigua"' 2>/dev/null \
         | grep -o 'spotlight: [A-Za-z][^"]*' | tail -1
 }
 
@@ -6274,7 +6274,7 @@ intents = {"OpenPhoneAppIntent", "OpenPhoneScreenIntent", "PhoneBatteryIntent",
            "SendLinkToPhoneIntent", "SendFileToPhoneIntent", "RingPhoneIntent"}
 shortcuts = data.get("autoShortcuts") or []
 phrases = [p.get("key", "") for s in shortcuts for p in (s.get("phraseTemplates") or [])]
-ok = actions == intents | {"PocketDeckFocusFilter", "SetPhoneDNDIntent"} \
+ok = actions == intents | {"ContiguaFocusFilter", "SetPhoneDNDIntent"} \
     and set(data.get("entities") or {}) >= {"PhoneEntity", "PhoneAppEntity"} \
     and set(data.get("queries") or {}) >= {"PhoneEntityQuery", "PhoneAppEntityQuery"} \
     and {s.get("actionIdentifier") for s in shortcuts} == intents | {"SetPhoneDNDIntent"} \
@@ -6417,11 +6417,11 @@ PY
 # cannot be exercised without a second local account; the unit tests cover the
 # server, this run notes the skip.
 check_mcp() {
-    local shim="$E2E_BUNDLE/Contents/Helpers/pocketdeck-mcp"
-    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    local shim="$E2E_BUNDLE/Contents/Helpers/contigua-mcp"
+    local support="$HOME/Library/Application Support/Contigua-$PROFILE"
     local sock="$support/mcp.sock"
     if [ ! -x "$shim" ]; then
-        bad "MCP the bundle has no Contents/Helpers/pocketdeck-mcp"
+        bad "MCP the bundle has no Contents/Helpers/contigua-mcp"
         return 1
     fi
     clean
@@ -6434,7 +6434,7 @@ check_mcp() {
     else
         local status=0
         "$shim" --profile "$PROFILE" </dev/null > "$WORK/shim-off.out" 2> "$WORK/shim-off.err" || status=$?
-        if [ "$status" -ne 0 ] && grep -q "Turn on Settings › Automation in PocketDeck" "$WORK/shim-off.err"; then
+        if [ "$status" -ne 0 ] && grep -q "Turn on Settings › Automation in Contigua" "$WORK/shim-off.err"; then
             ok "MCP with the setting off the shim prints the Settings hint and exits non-zero"
         else
             bad "MCP off: status $status, stderr: $(head -1 "$WORK/shim-off.err")"
@@ -6631,7 +6631,7 @@ check_focus() {
 
 # --- the person's own change on the phone wins (docs/specs/controls.md) ---
 
-# check_dnd_edge — the person's report of 10-28: "PocketDeck keeps turning DND
+# check_dnd_edge — the person's report of 10-28: "Contigua keeps turning DND
 # on after I turned it off on the phone". A Focus applies DND; the person turns
 # it off on the phone; the session drops and comes back. The reconnect must send
 # no phone.dnd (the Mac's memory already holds that value for this phone), and a
@@ -6845,7 +6845,7 @@ check_controls() {
         && ok "CONTROLS dnd off accepted" \
         || bad "CONTROLS dnd off was refused"
     wait_until 5 dnd_is off \
-        && ok "CONTROLS dnd off restored the DND PocketDeck set" \
+        && ok "CONTROLS dnd off restored the DND Contigua set" \
         || bad "CONTROLS dnd off did not restore the phone"
 
     # (2) Ring and Ringer.
@@ -7185,7 +7185,7 @@ check_clip() {
 
     # A Finder copy carries the file's name as text next to its URL (SHARE-2).
     # The name must never reach the phone; a non-image file sends nothing.
-    printf 'PocketDeck e2e fixture' > "$WORK/pd-finder-copy.txt"
+    printf 'Contigua e2e fixture' > "$WORK/pd-finder-copy.txt"
     PD_PB_PATH="$WORK/pd-finder-copy.txt" xcrun swift -e '
 import AppKit
 let path = ProcessInfo.processInfo.environment["PD_PB_PATH"]!
@@ -7272,11 +7272,11 @@ PY2
     wait_until 5 no_fakephone
 }
 
-# check_links — links Mac -> phone (docs/design/links.md). A pocketdeck://open URL
+# check_links — links Mac -> phone (docs/design/links.md). A contigua://open URL
 # goes to the running e2e app, which sends link.open: the fakephone logs it and a
 # stream window opens with video. A file: link is refused on the Mac and never
 # reaches the phone. `open -a` names the e2e bundle so LaunchServices cannot hand the
-# URL to another PocketDeck copy; the check first makes sure LaunchServices knows the
+# URL to another Contigua copy; the check first makes sure LaunchServices knows the
 # running e2e process by that bundle, so `open` delivers to it instead of starting a
 # second instance (which would run without --profile).
 check_links() {
@@ -7311,7 +7311,7 @@ PY
     }
     stream_video() { events_have '"ev":"video"'; }
 
-    open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=https%3A%2F%2Fexample.com"
+    open_quiet -a "$E2E_BUNDLE" "contigua://open?url=https%3A%2F%2Fexample.com"
     wait_until 30 link_logged "https://example.com" \
         && ok "[SHARE-8] LINKS fakephone logs link.open https://example.com" \
         || bad "[SHARE-8] LINKS fakephone did not log link.open https://example.com"
@@ -7323,7 +7323,7 @@ PY
         && ok "[WIN-5] LINKS the link window asked for its 900x600 pt stream ($link_want)" \
         || bad "[WIN-5] LINKS link.open asked for $(rx_size link.open), not $link_want"
 
-    open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
+    open_quiet -a "$E2E_BUNDLE" "contigua://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
     sleep 3
     ! events_have 'file:///etc/hosts' \
         && ok "[SHARE-7] LINKS a file: link never reaches the phone" \
@@ -7331,7 +7331,7 @@ PY
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
         && ok "[SHARE-9] LINKS the URL went to the running e2e app (one instance)" \
-        || bad "[SHARE-9] LINKS open started another PocketDeck instance"
+        || bad "[SHARE-9] LINKS open started another Contigua instance"
     pkill -fx "$APP" >/dev/null 2>&1
     stop_app
     stop_fakephone
@@ -7343,7 +7343,7 @@ PY
 # PD_FAKE_DOWNGRADE fails with INSTALL_FAILED_VERSION_DOWNGRADE).
 apk_log() {
     log show --last 3m --info \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         | grep -o 'apk: .*'
 }
 
@@ -7453,7 +7453,7 @@ PY
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "[FILES-16] APK the files went to the running e2e app (one instance)" \
-        || bad "[FILES-16] APK open started another PocketDeck instance"
+        || bad "[FILES-16] APK open started another Contigua instance"
 
     # FILES-16: the phone is paired but away. The install waits, on screen,
     # with Cancel, and lands when the link returns.
@@ -7581,7 +7581,7 @@ def visible(path):
     return sorted((name for name in os.listdir(path)
                    if not name.startswith(".trashed-")
                    and not name.startswith(".pending-")
-                   and not (name.startswith(".pocketdeck-") and name.endswith(".part"))),
+                   and not (name.startswith(".contigua-") and name.endswith(".part"))),
                   key=lambda name: name.encode("utf-8"))
 
 def independent_digest(path):
@@ -7715,11 +7715,11 @@ PY
 # check_drop — a file dropped on a window (docs/design/dragdrop.md). The scripted
 # `dropfile` feeds the same handler a Finder drag ends in, so the path under test
 # is the window's own drop destination -> FileDropSender; fakephone acts like
-# Downloads/PocketDeck (a chunk holding PD_FAKE_DOWNSIZE trips the 200 MiB rule).
+# Downloads/Contigua (a chunk holding PD_FAKE_DOWNSIZE trips the 200 MiB rule).
 # Clipboard images have no DebugInput action, so nothing is scripted for them.
 drop_log() {
     log show --last 3m --info \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         | grep -o 'drop: .*'
 }
 
@@ -8181,7 +8181,7 @@ PY
 
 # --- Share extension ------------------------------------------------------
 
-SHARE_ID="dev.pocketdeck.mac.share-e2e"
+SHARE_ID="app.contigua.mac.share-e2e"
 SHARE_TITLE="Open on Phone (e2e)"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -8189,11 +8189,11 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 # name hashes both sources.
 build_share_driver() {
     local hash
-    hash="$(cat "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/PocketDeck/LinkShare.swift" | shasum | cut -c1-12)"
+    hash="$(cat "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/Contigua/LinkShare.swift" | shasum | cut -c1-12)"
     SHAREBIN="$TOOLS/share-driver-$hash"
     if [ ! -x "$SHAREBIN" ]; then
         mkdir -p "$TOOLS"
-        swiftc -O -parse-as-library "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/PocketDeck/LinkShare.swift" \
+        swiftc -O -parse-as-library "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/Contigua/LinkShare.swift" \
             -o "$SHAREBIN" >/dev/null 2>&1 || { say "could not build share-driver.swift"; return 1; }
     fi
 }
@@ -8266,7 +8266,7 @@ check_share() {
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
         && ok "[SHARE-9] SHARE the links went to the running e2e app (one instance)" \
-        || bad "[SHARE-9] SHARE the hand-off started another PocketDeck instance"
+        || bad "[SHARE-9] SHARE the hand-off started another Contigua instance"
     pkill -fx "$APP" >/dev/null 2>&1
     stop_app
     stop_fakephone
@@ -8434,7 +8434,7 @@ THUMBCOUNT
     BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver thumb-slow --thumb-fixture "$WORK/thumb.jpg"
     cp "$WORK/fake.err" "$WORK/fake-thumb-slow.err" 2>/dev/null || true
     log show --last 6m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null \
         | grep -oE 'thumb: .*|fs: cancel.*|bridge: fs cancel|session: fs.cancel sent.*' > "$WORK/thumb-log.txt" 2>/dev/null || true
     say "thumb queue log: $(tail -6 "$WORK/thumb-log.txt" | tr '\n' ' ')"
     sends="$(grep -c 'session: fs.cancel sent ok=true' "$WORK/thumb-log.txt" 2>/dev/null || true)"
@@ -8459,7 +8459,7 @@ THUMBCOUNT
     # Nothing about the bridge may put a name, a path or bytes in the app log:
     # os_log carries op names, counts and lengths only (design §4).
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null \
         | grep -o 'bridge: .*' > "$WORK/bridge-log.txt" 2>/dev/null || true
     if grep -q "bridge: list page" "$WORK/bridge-log.txt"; then
         ok "BRIDGE the app logged op names and counts only"
@@ -8528,7 +8528,7 @@ PY
 import os, sys
 root = sys.argv[1]
 staging = [os.path.join(base, name) for base, _d, names in os.walk(root)
-           for name in names if name.startswith(".pocketdeck-") and name.endswith(".part")]
+           for name in names if name.startswith(".contigua-") and name.endswith(".part")]
 partial = os.path.exists(os.path.join(root, "PDWrite-kill.bin"))
 print("staging=%d partial=%s" % (len(staging), partial))
 sys.exit(1 if staging or partial else 0)
@@ -8540,7 +8540,7 @@ PY
     fi
     # Nothing about a write may put a name or a byte value in the app log.
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null \
         | grep -o 'bridge: write.*' > "$WORK/write-log.txt" 2>/dev/null || true
     if grep -q "bridge: write" "$WORK/write-log.txt"; then
         ok "WRITE the app logged write op names and sizes only"
@@ -8603,8 +8603,8 @@ PY
     WATCH_FOLDERS="$(python3 -c 'print(",".join("W%02d" % i for i in range(65)))')"
     # The record and log are per profile and outlive a run: start from none so
     # the first listing's diff is this run's.
-    rm -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/files-ids.json" \
-          "$HOME/Library/Application Support/PocketDeck-$PROFILE/files-replica.json"
+    rm -f "$HOME/Library/Application Support/Contigua-$PROFILE/files-ids.json" \
+          "$HOME/Library/Application Support/Contigua-$PROFILE/files-replica.json"
     FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || return 1
     # The ten minutes are shortened for this run only (design "S5 round 3").
     PD_FILES_WATCH_TTL=20 launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
@@ -8657,7 +8657,7 @@ PY
     fi
     # Names never reach the app log; counts and ids only (design §4).
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null \
         | grep -o 'bridge: .*' > "$WORK/watch-log.txt" 2>/dev/null || true
     if python3 - "$WORK/watch-log.txt" <<'PY'
 import sys
@@ -8690,7 +8690,7 @@ PY
         || bad "PERSIST no bridge socket after the restart: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
     files_bridge_driver persist --stage after
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null \
         | grep -o 'bridge: .*' > "$WORK/persist-log.txt" 2>/dev/null || true
     if python3 - "$WORK/persist-log.txt" <<'PY'
 import sys
@@ -8738,8 +8738,8 @@ PY
 
 # The e2e bundle is built with --variant e2e, so its extension and group carry
 # that name; the domain identifier is the profile name.
-FILES_ID="dev.pocketdeck.mac.files-e2e"
-FILES_GROUP="group.dev.pocketdeck.mac.files-e2e"
+FILES_ID="app.contigua.mac.files-e2e"
+FILES_GROUP="group.app.contigua.mac.files-e2e"
 # Rig waits for the files-domain check, not product limits: no nfr-limits.json
 # entry. The one-time System Settings switch writes the File Provider's
 # user-enabled flag and the system then launches the extension, and after a
@@ -8816,7 +8816,7 @@ file_has() { grep -qF -- "$1" "$2" 2>/dev/null; }
 # files_log — every line this app's files subsystems logged in the last minutes.
 files_log() {
     log show --last 10m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null
+        --predicate 'subsystem == "app.contigua.mac" AND category == "files"' 2>/dev/null
 }
 
 # files_root_lists <path> — the domain answers a listing (not a disabled or
@@ -8857,7 +8857,7 @@ tell application "System Events"
 		delay 0.5
 		-- Its info button sits on the same row as the app name.
 		tell group 4 of scroll area 1 of group 1 of group 3 of splitter group 1 of group 1 of window "Login Items & Extensions"
-			set rowY to item 2 of (get position of static text "PocketDeck")
+			set rowY to item 2 of (get position of static text "Contigua")
 			repeat with b in (get buttons)
 				set btnY to item 2 of (get position of b)
 				if btnY > (rowY - 4) and btnY < (rowY + 4) then
@@ -8979,7 +8979,7 @@ PY
     pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
     files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
     files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
-    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/Contigua-* >/dev/null 2>&1; }
     wait_until 60 eval '! stale_domain_folder' \
         || bad "FILES-THUMBS the removed domain's folder is still in CloudStorage after 60 s"
 
@@ -9249,7 +9249,7 @@ PY
     pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
     files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
     files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
-    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/Contigua-* >/dev/null 2>&1; }
     wait_until 60 eval '! stale_domain_folder' \
         || bad "FILES-THUMBS-SCALE the removed domain's folder is still in CloudStorage after 60 s"
 
@@ -9264,10 +9264,10 @@ PY
     files_list
     local root; root="$(files_domain_path)"
     files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
-    # The domain becomes "PocketDeck (<phone>)" once the session knows the
+    # The domain becomes "Contigua (<phone>)" once the session knows the
     # phone, and its CloudStorage folder is renamed under the URL cached at add.
     # The first run waited its whole window on the old name (the folder was
-    # already "PocketDeck-PocketDeck(FakePhone)" and the extension listed fine).
+    # already "Contigua-Contigua(FakePhone)" and the extension listed fine).
     # Re-read the URL on every try, and take the folder the rename left.
     domain_root_lists() {
         if [ ! -d "$root" ]; then
@@ -9275,13 +9275,13 @@ PY
             local fresh; fresh="$(files_domain_path)"
             [ -n "$fresh" ] && root="$fresh"
             [ -d "$root" ] \
-                || root="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+                || root="$(ls -d "$HOME"/Library/CloudStorage/Contigua-* 2>/dev/null | head -1)"
         fi
         files_root_lists "$root"
     }
     wait_until "$FILES_SWITCH_WAIT_S" domain_root_lists \
         && ok "FILES-THUMBS-SCALE the extension is enabled and the domain enumerates" \
-        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch (folder $(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1))"; stop_app; stop_fakephone; return 1; }
+        || { bad "FILES-THUMBS-SCALE still user-disabled after the System Settings switch (folder $(ls -d "$HOME"/Library/CloudStorage/Contigua-* 2>/dev/null | head -1))"; stop_app; stop_fakephone; return 1; }
 
     # -- The listing's weight ------------------------------------------------
     # 120 s, not 20: the first run killed `ls` at 20 s and recorded 0 names for
@@ -9703,7 +9703,7 @@ check_files_domain() {
     # The removal deletes the domain's CloudStorage folder after its completion
     # handler: an add before that finds the old folder and imports it from disk
     # (every listing then stalls). Wait for the folder to go.
-    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/Contigua-* >/dev/null 2>&1; }
     wait_until 60 eval '! stale_domain_folder' \
         || bad "FILES the removed domain's folder is still in CloudStorage after 60 s"
 
@@ -9776,10 +9776,10 @@ check_files_domain() {
     # -- The location names the phone (user request, "Fixes 10-20") -----------
     # The domain was added at launch, before any phone was known; the session
     # then remembered the phone and its name, and the domain was updated in
-    # place. The location is "PocketDeck (<the name every surface uses>)".
-    wait_until 60 files_display_is "PocketDeck (FakePhone)" \
-        && ok "FILES the Finder location is \"PocketDeck (FakePhone)\"" \
-        || bad "FILES the location is \"$(files_display_name)\", wanted \"PocketDeck (FakePhone)\""
+    # place. The location is "Contigua (<the name every surface uses>)".
+    wait_until 60 files_display_is "Contigua (FakePhone)" \
+        && ok "FILES the Finder location is \"Contigua (FakePhone)\"" \
+        || bad "FILES the location is \"$(files_display_name)\", wanted \"Contigua (FakePhone)\""
 
     # -- A fetch is one round trip, not twenty seconds ("Fixes 10-20") --------
     # The extension used to wait for a terminal reply that never came, until
@@ -10280,23 +10280,23 @@ PY
         || bad "FILES screencapture (Documents) failed"
     # -- A rename updates the location in place ("Fixes 10-20") ---------------
     # The nickname path Settings ▸ Phones ▸ Rename uses (`--set-nickname`),
-    # on a second launch so the first one's "PocketDeck (FakePhone)" above is a
+    # on a second launch so the first one's "Contigua (FakePhone)" above is a
     # settled state. The domain is re-added with the same identifier and the
     # new display name: macOS updates it, so the CloudStorage folder and its
     # cached files stay (the same inode, and the root still lists).
     local folder_before inode_before
-    folder_before="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+    folder_before="$(ls -d "$HOME"/Library/CloudStorage/Contigua-* 2>/dev/null | head -1)"
     inode_before="$(stat -f%i "$folder_before" 2>/dev/null || true)"
     kill_e2e_app
     wait_until 20 eval '[ -z "$(e2e_app_pids)" ]' || true
     launch --connect "127.0.0.1:$PORT" --files-domain add --set-nickname "Nicky"
     wait_until 30 eval 'events_have "\"state\":\"auth_ok\"" || events_have "\"state\":\"paired\""' \
         || bad "FILES the rename launch never authenticated"
-    wait_until 60 files_display_is "PocketDeck (Nicky)" \
-        && ok "FILES a nickname rename updates the location to \"PocketDeck (Nicky)\"" \
-        || bad "FILES the location after the rename is \"$(files_display_name)\", wanted \"PocketDeck (Nicky)\""
+    wait_until 60 files_display_is "Contigua (Nicky)" \
+        && ok "FILES a nickname rename updates the location to \"Contigua (Nicky)\"" \
+        || bad "FILES the location after the rename is \"$(files_display_name)\", wanted \"Contigua (Nicky)\""
     local folder_after inode_after root_after
-    folder_after="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+    folder_after="$(ls -d "$HOME"/Library/CloudStorage/Contigua-* 2>/dev/null | head -1)"
     inode_after="$(stat -f%i "$folder_after" 2>/dev/null || true)"
     [ -n "$inode_before" ] && [ "$inode_before" = "$inode_after" ] \
         && ok "FILES the rename kept the CloudStorage folder (inode ${inode_before:-?})" \
@@ -10332,7 +10332,7 @@ PY
 # Dock apps of this run live only in $WORK/dock-apps, never in ~/Applications.
 dock_dir() { echo "$WORK/dock-apps"; }
 
-dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
+dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/ContiguaShim"; }
 
 # dock_shim_ready — the first built bundle is complete: icon written and signed
 # (the directory appears while the build is still writing into it).
@@ -10349,7 +10349,7 @@ window_close_count() { awk '/"ev":"rx"/ && /"t":"window.close"/ {n++} END {print
 
 # Dock apps made from the profile folder are the automatic ones (a check that
 # opens app windows without --dock-dir). Every run cleans its own.
-profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
+profile_dock_dir() { echo "$HOME/Library/Application Support/Contigua-$PROFILE/Dock Apps"; }
 
 # icon_pixel <png> <x> <y> — "R G B A" of one pixel of a rendered icon.
 icon_pixel() {
@@ -10371,7 +10371,7 @@ remove_dock_apps() {
     local pids app
     pids="$(dock_shim_pids)"
     [ -n "$pids" ] && kill $pids >/dev/null 2>&1
-    pids="$(pgrep -f -- "$(profile_dock_dir)/.*/Contents/MacOS/PocketDeckShim")"
+    pids="$(pgrep -f -- "$(profile_dock_dir)/.*/Contents/MacOS/ContiguaShim")"
     [ -n "$pids" ] && kill $pids >/dev/null 2>&1
     for app in "$(dock_dir)"/*.app "$(profile_dock_dir)"/*.app; do
         [ -d "$app" ] || continue
@@ -10491,7 +10491,7 @@ check_dock() {
     wait_until 30 shim_made || { bad "DOCK no Dock app created in $dir"; stop_app; stop_fakephone; return 1; }
     shim="$(ls -d "$dir"/*.app | head -1)"
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$shim/Contents/Info.plist" 2>/dev/null)"
-    [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "dev.pocketdeck.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
+    [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "app.contigua.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
         && ok "DOCK created $(basename "$shim") ($id)" || bad "DOCK unexpected bundle $(basename "$shim") ($id)"
     wait_until 15 dock_shim_ready
     [ -s "$shim/Contents/Resources/AppIcon.icns" ] && codesign --verify --strict "$shim" 2>/dev/null \
@@ -10593,7 +10593,7 @@ check_dock() {
         || bad "[DOCK-17] dock ack: a window disappeared ($ack_windows -> $(windows | wc -l | tr -d ' '))"
     # Read the whole dump first: under pipefail, grep -q closing the pipe early fails the pipeline.
     ack_dump="$(log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null)"
+        --predicate 'subsystem == "app.contigua.mac" AND category == "app"' 2>/dev/null)"
     if [ -n "$ack_pid" ] && grep -qF "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump"; then
         bad "[DOCK-17] dock ack: the host closed the shim's stream (shim $ack_pid quit)"
         grep -F "dock: shim $ack_pid quit; closing stream" <<< "$ack_dump" | tail -1 | sed 's/^/  /'
@@ -10601,7 +10601,7 @@ check_dock() {
         ok "[DOCK-17] dock ack: no 'shim quit; closing stream' for it"
     fi
     # The handshake lands at once: the shim logs how long after listening it was bound.
-    ack_dump="$(log show --last 3m --info --predicate 'process == "PocketDeckShim"' 2>/dev/null)"
+    ack_dump="$(log show --last 3m --info --predicate 'process == "ContiguaShim"' 2>/dev/null)"
     ack_ms="$(grep -oE "dock shim $ack_pid bound, [0-9]+ ms after listening" <<< "$ack_dump" \
         | head -1 | grep -oE '[0-9]+ ms' | tr -dc '0-9')"
     if [ -n "$ack_ms" ] && [ "$ack_ms" -le 1500 ]; then
@@ -10644,7 +10644,7 @@ check_dock() {
     wait "$APP_PID" 2>/dev/null
     remove_dock_apps
 
-    # A shim bundle from an older PocketDeck carries an older executable, which
+    # A shim bundle from an older Contigua carries an older executable, which
     # still loses the bind's answer. The next app list replaces it while its
     # shim is not running (docs/design/dock.md §Lifecycle). The installed copy
     # is re-signed per bundle, so the bundle records the source shim's hash.
@@ -10657,22 +10657,22 @@ check_dock() {
     stop_app
     refresh_pids="$(dock_shim_pids)"
     [ -n "$refresh_pids" ] && kill $refresh_pids >/dev/null 2>&1
-    refresh_hash="$(shasum -a 256 "$E2E_BUNDLE/Contents/MacOS/PocketDeckShim" | awk '{print $1}')"
+    refresh_hash="$(shasum -a 256 "$E2E_BUNDLE/Contents/MacOS/ContiguaShim" | awk '{print $1}')"
     [ -n "$refresh_hash" ] \
         || { bad "[DOCK-18] dock refresh: no shim executable in the e2e bundle"; stop_app; stop_fakephone; return 1; }
     /usr/libexec/PlistBuddy -c 'Delete :PDShimHash' "$refresh_shim/Contents/Info.plist" >/dev/null 2>&1
-    printf 'old shim' > "$refresh_shim/Contents/MacOS/PocketDeckShim"
-    [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" = "8" ] \
+    printf 'old shim' > "$refresh_shim/Contents/MacOS/ContiguaShim"
+    [ "$(stat -f%z "$refresh_shim/Contents/MacOS/ContiguaShim" 2>/dev/null)" = "8" ] \
         && ok "[DOCK-18] dock refresh: aged the bundle (no shim hash, old executable)" \
         || bad "[DOCK-18] dock refresh: could not age the bundle (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --quit-after 40
     wait_until 30 eval '[ -n "$refresh_hash" ] && [ "$(/usr/libexec/PlistBuddy -c "Print :PDShimHash" "$refresh_shim/Contents/Info.plist" 2>/dev/null)" = "$refresh_hash" ]' \
         && ok "[DOCK-18] dock refresh: an older bundle was rebuilt with this build's shim" \
         || bad "[DOCK-18] dock refresh: the old bundle was not rebuilt (hash $(/usr/libexec/PlistBuddy -c 'Print :PDShimHash' "$refresh_shim/Contents/Info.plist" 2>/dev/null))"
-    [ -x "$refresh_shim/Contents/MacOS/PocketDeckShim" ] \
-        && [ "$(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null)" -gt 1000 ] \
+    [ -x "$refresh_shim/Contents/MacOS/ContiguaShim" ] \
+        && [ "$(stat -f%z "$refresh_shim/Contents/MacOS/ContiguaShim" 2>/dev/null)" -gt 1000 ] \
         && ok "[DOCK-18] dock refresh: the replaced executable is this build's" \
-        || bad "[DOCK-18] dock refresh: the executable was not replaced ($(stat -f%z "$refresh_shim/Contents/MacOS/PocketDeckShim" 2>/dev/null) bytes)"
+        || bad "[DOCK-18] dock refresh: the executable was not replaced ($(stat -f%z "$refresh_shim/Contents/MacOS/ContiguaShim" 2>/dev/null) bytes)"
     stop_app
     remove_dock_apps
 
@@ -10719,7 +10719,7 @@ check_dock() {
         && ok "DOCK auto race: a launch landing after its window closed is quit, not bound" \
         || bad "DOCK auto race: a shim outlived the window it was launched for"
     log show --last 3m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND category == "app"' 2>/dev/null \
         | grep -q "dock auto: late launch for closed stream 1" \
         && ok "DOCK auto race: the late launch was logged as a decision" \
         || bad "DOCK auto race: no 'late launch for closed stream' line"
@@ -11101,7 +11101,7 @@ check_shortcuts() {
     [ -n "$dev" ] || bad "[DOCK-8] no device id in the shim"
     sleep 2
     spot="$(/usr/bin/log show --last 5m --info \
-        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        --predicate 'subsystem == "app.contigua.mac" AND process == "Contigua"' 2>/dev/null \
         | grep -o "spotlight: indexing [0-9]* apps for $dev" | tail -1)"
     [ "$spot" = "spotlight: indexing 0 apps for $dev" ] \
         && ok "[DOCK-9] no app with a shortcut is also a CoreSpotlight item (last index: $spot)" \
@@ -12362,7 +12362,7 @@ check_windows() {
     wait_until 10 ax_has "FakePhone can't open the phone screen." \
         && ok "[MIRROR-2] the Mirror's sentence uses the phone-screen wording" \
         || bad "[MIRROR-2] the Mirror's sentence: $(ax_tree | grep -i 'phone screen' | head -2 | tr '\n' '|')"
-    wait_until 10 ax_has "This phone can't share its screen with PocketDeck." \
+    wait_until 10 ax_has "This phone can't share its screen with Contigua." \
         && ok "[MIRROR-2] conv-fixes-1's sentence is the refusal's reason line" \
         || bad "[MIRROR-2] the refusal's reason line is missing"
     if [ "$VISIBLE" = 1 ]; then
@@ -13014,7 +13014,7 @@ check_stats() {
     fi
     stats_log() {
         /usr/bin/log show --last 5m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -F " stats stream="
     }
     stats_lines_file() {
@@ -13220,7 +13220,7 @@ PY
     # episode in a second message, so a duplicate line would show here).
     no_frame_log() {
         /usr/bin/log show --last 5m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -F " no frame "
     }
     local no_frame_lines no_frame_open no_frame_ended
@@ -13242,7 +13242,7 @@ PY
     # these, so the check proves every field and a lifetime counter.
     stats_total_log() {
         /usr/bin/log show --last 5m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -F " stats total stream=1 "
     }
     stats_total_ready() { [ -n "$(stats_total_log)" ]; }
@@ -13344,7 +13344,7 @@ check_chain() {
     stop_app
     stop_fakephone
     /usr/bin/log show --last 4m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         > "$WORK/chain-baseline.txt"
     python3 - "$WORK/chain-baseline.txt" > "$WORK/chain-baseline-summary.txt" <<'PY'
 import sys
@@ -13400,7 +13400,7 @@ PY
     stop_app
     stop_fakephone
     /usr/bin/log show --last 6m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
         > "$WORK/chain-log.txt"
     python3 - "$WORK/chain-log.txt" > "$WORK/chain-summary.txt" <<'PY'
 import re
@@ -13458,7 +13458,7 @@ check_netvideo() {
     launch --connect "127.0.0.1:$PORT" --quit-after 60
     net_strategy() {
         /usr/bin/log show --last 2m --info --style syslog \
-            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null \
             | grep -F "session mac strategy:"
     }
     video_line() { net_strategy | grep -F "net=video net_svc=3"; }
@@ -13748,7 +13748,7 @@ check_settings() {
     # Pixel 9 was chosen above and the selection was stored; a relaunch with the
     # same staged phones keeps it. The pin is in place before this launch so
     # the Forget check below removes a pin the app actually holds.
-    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    local support="$HOME/Library/Application Support/Contigua-$PROFILE"
     mkdir -p "$support"
     printf '[{"deviceId":"preview-2","phoneFingerprintHex":"%s","certPem":"fixture-pin"}]' \
         "$(printf 'a%.0s' $(seq 1 64))" > "$support/pins.json"
@@ -14219,7 +14219,7 @@ EOF
     wait_until 25 windows_at_least 2 || bad "NOTIFY denied: the Settings window never opened"
     sleep 1
     control settings-report "$WORK/denied.txt" >/dev/null 2>&1 || bad "NOTIFY denied: settings-report: $CONTROL_REPLY"
-    grep -qF "Notifications are turned off for PocketDeck in System Settings." "$WORK/denied.txt" 2>/dev/null \
+    grep -qF "Notifications are turned off for Contigua in System Settings." "$WORK/denied.txt" 2>/dev/null \
         && ok "[NOTIFY-4] NOTIFY a denied macOS permission shows the one line under the phone's Notifications" \
         || bad "[NOTIFY-4] NOTIFY the denied line is missing: $(grep -E 'notifications|accessHint' "$WORK/denied.txt" 2>/dev/null | tr '\n' '|')"
     grep -qF "notificationsDenied=1" "$WORK/denied.txt" 2>/dev/null \
@@ -14619,7 +14619,7 @@ EOF
             && ok "NOTIFY-MEDIA its directory is 0700" \
             || bad "NOTIFY-MEDIA its directory is $mode, not 700"
         case "$path" in
-            */Caches/PocketDeck-"$PROFILE"/notify/*) ok "NOTIFY-MEDIA the temp file is in the profile's caches" ;;
+            */Caches/Contigua-"$PROFILE"/notify/*) ok "NOTIFY-MEDIA the temp file is in the profile's caches" ;;
             *) bad "NOTIFY-MEDIA the temp file is outside the profile's caches ($path)" ;;
         esac
     else
@@ -14748,7 +14748,7 @@ PY
     wait_until 10 no_fakephone
     # A disconnect deletes the attachment directory (nothing outlives the phone).
     sleep 2
-    [ -z "$(ls -A "$HOME/Library/Caches/PocketDeck-$PROFILE/notify" 2>/dev/null)" ] \
+    [ -z "$(ls -A "$HOME/Library/Caches/Contigua-$PROFILE/notify" 2>/dev/null)" ] \
         && ok "NOTIFY-MEDIA the disconnect left no attachment behind" \
         || bad "NOTIFY-MEDIA an attachment survived the disconnect"
     stop_app
@@ -14919,7 +14919,7 @@ volume_index = next(i for i, row in enumerate(enabled) if row["kind"] == "volume
 volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
-if any("Open PocketDeck" in row["label"] or "Phone screen" in row["label"] for row in root["items"]):
+if any("Open Contigua" in row["label"] or "Phone screen" in row["label"] for row in root["items"]):
     print("a menu item survived in the panel"); sys.exit(1)
 PY
     # The slider was at 1.0 (15/15); drag it to a fifth of the track: the
@@ -15007,7 +15007,7 @@ PY
 # is a `.window` panel now: it opens the card, not a menu (there is no `menu 1`
 # to read).
 panel_open() {
-    # PID-targeted: the person's installed PocketDeck can be running too, and
+    # PID-targeted: the person's installed Contigua can be running too, and
     # its status item is not ours to click.
     osascript - "$APP_PID" <<'OSA' 2>/dev/null
 on run argv
@@ -15309,13 +15309,13 @@ OSA
     # The first real banner may come with the system's permission prompt.
     sleep 2
     # The system asks once per guest image; "Allow" may belong to any of these.
-    for proc in NotificationCenter UserNotificationCenter PocketDeck "PocketDeck Notifications"; do
+    for proc in NotificationCenter UserNotificationCenter Contigua "Contigua Notifications"; do
         ax_press "Allow" "$proc" >/dev/null
     done
     wait_until 10 grep -q "notify authorization" "$WORK/app.log" 2>/dev/null || true
     grep -q "notify authorization granted=true" "$WORK/app.log" 2>/dev/null \
-        && ok "NOTIFY-VM macOS authorized PocketDeck's notifications" \
-        || bad "NOTIFY-VM the guest refuses PocketDeck's notifications (no banner can appear; reset the guest's TCC answer)"
+        && ok "NOTIFY-VM macOS authorized Contigua's notifications" \
+        || bad "NOTIFY-VM the guest refuses Contigua's notifications (no banner can appear; reset the guest's TCC answer)"
     wait_until 20 events_have '"id":"pd-a1"' \
         || { bad "NOTIFY-VM the phone never posted"; stop_app; stop_fakephone; return 1; }
     sleep 3
@@ -15539,7 +15539,7 @@ check_menubar_vm() {
         bad "MENUBAR-VM the panel did not open for the right-click check"
     fi
     # The icon's menu (CONV-MAC-10): a real right-click opens Settings… ·
-    # About PocketDeck · Quit PocketDeck. Down highlights the first item and
+    # About Contigua · Quit Contigua. Down highlights the first item and
     # Return runs it, so Settings opens through the menu a person uses. Never
     # Down-Down-Return: that would quit the app.
     close_panel
@@ -15877,9 +15877,9 @@ check_deckstart() {
 # display: the press and the click's linger at 760 and 1000 wide, light and
 # dark. PD_RAILPRESS_SHOT_TAG names the build (feat/main); PD_RAILPRESS_SHOT_MODE
 # hover captures main's hover-driven emphasis instead (it has no press state).
-# The shots go to ~/dev/pocketdeck/.agent/railpress/shots/ and are judged by eye.
+# The shots go to ~/dev/contigua/.agent/railpress/shots/ and are judged by eye.
 railpress_shots() {
-    local out="$HOME/dev/pocketdeck/.agent/railpress/shots"
+    local out="$HOME/dev/contigua/.agent/railpress/shots"
     local tag="${PD_RAILPRESS_SHOT_TAG:-feat}"
     local mode="${PD_RAILPRESS_SHOT_MODE:-press}"
     mkdir -p "$out"
@@ -17612,7 +17612,7 @@ PY
     # poll (a $( ) inside a wait_until argument is evaluated once, at the call).
     idle_count() { grep -c '"op":"idle"' "$WORK/app.log" 2>/dev/null; }
     two_idles() { [ "$(idle_count)" -ge 2 ]; }
-    FAKE_ARGS="--text-frame POCKETDECK --frame-events" start_fake || return 1
+    FAKE_ARGS="--text-frame CONTIGUA --frame-events" start_fake || return 1
     FAKE_ARGS=""
     rm -f "$WORK/lt-copy-go" "$WORK/livetext.png"
     # The phone window's Back button and the Navigate shortcut run the same
@@ -17620,7 +17620,7 @@ PY
     printf '%s\n' \
         "wait-warm 180" \
         "enter 1" \
-        "wait-analysis POCKETDECK" \
+        "wait-analysis CONTIGUA" \
         "drag-check" \
         "nav back" \
         "waitfile $WORK/lt-copy-go 120" \
@@ -17648,7 +17648,7 @@ PY
         bad "LT the warm-up never reported"
     fi
 
-    # Enter + VisionKit: the frozen frame carries POCKETDECK.
+    # Enter + VisionKit: the frozen frame carries CONTIGUA.
     if wait_until 120 grep -q '"ok":true,"op":"analysis"' "$WORK/app.log"; then
         local line
         line="$(grep '"ok":true,"op":"analysis"' "$WORK/app.log" | tail -1)"
@@ -17661,8 +17661,8 @@ PY
             *) bad "LT no text in the frozen frame ($line)" ;;
         esac
         case "$line" in
-            *'"contains":true'*) ok "LT the analysis reads POCKETDECK" ;;
-            *) bad "LT the analysis does not contain POCKETDECK ($line)" ;;
+            *'"contains":true'*) ok "LT the analysis reads CONTIGUA" ;;
+            *) bad "LT the analysis does not contain CONTIGUA ($line)" ;;
         esac
         # Entry starts with VisionKit's Live Text button on: every recognised
         # item is highlighted. (Before v103's hotfix it started off, so the
@@ -18156,7 +18156,7 @@ PY
     launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 90 --debug-control "$WORK-control"
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the dot session never started"; stop_app; stop_fakephone; return 1; }
-    local sock="$HOME/Library/Application Support/PocketDeck-$PROFILE/mcp.sock" agent_pid dot=0
+    local sock="$HOME/Library/Application Support/Contigua-$PROFILE/mcp.sock" agent_pid dot=0
     if ! wait_until 20 test -S "$sock"; then
         bad "MENUBAR-SHOTS no automation socket for the dot"
     else
@@ -18766,7 +18766,7 @@ check_orphans() {
     sleep 1
     local n
     n="$(e2e_app_pids | wc -l | tr -d ' ')"
-    [ "$n" = "0" ] && ok "C9 no orphan PocketDeck processes" || bad "C9 $n orphan PocketDeck processes"
+    [ "$n" = "0" ] && ok "C9 no orphan Contigua processes" || bad "C9 $n orphan Contigua processes"
     n="$(pgrep -f -- "--events $WORK/events.jsonl" | wc -l | tr -d ' ')"
     [ "$n" = "0" ] && ok "C9 no orphan fakephone processes" || bad "C9 $n orphan fakephone processes"
 }
@@ -18828,7 +18828,7 @@ newer_than() {
 APP_SOURCES=("$MACOS/Sources" "$MACOS/Shim" "$MACOS/Extensions" "$MACOS/Package.swift"
              "$MACOS/Package.resolved" "$MACOS/scripts/bundle.sh")
 
-# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app, once per
+# build_e2e_app — bundles the current tree to build/e2e/Contigua.app, once per
 # run and only when a source changed since the bundle was made (bundle.sh's
 # `swift build` costs half a minute of CPU even when it has nothing to do).
 # PD_E2E_REBUILD=1 bundles anyway. PD_E2E_PREBUILT names a bundle built

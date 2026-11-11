@@ -13,7 +13,7 @@ VM_PORT="${PD_VM_PORT:-47890}"   # the run's port inside the guest
 VM_MEMORY="${PD_VM_MEMORY:-4096}"  # MB; the tahoe image rejects less than 4 GB
 VM_STATE="${PD_VM_STATE:-$HOME/.tart/pd-e2e}"  # ssh key + prepared marker (host)
 VM_KEY="$VM_STATE/id_ed25519"
-HEAVY_LOCK="/tmp/pocketdeck-heavy.lock"
+HEAVY_LOCK="/tmp/contigua-heavy.lock"
 
 say() { printf '%s\n' "$*"; }
 

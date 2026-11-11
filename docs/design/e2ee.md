@@ -80,7 +80,7 @@ Evidence (spike s1-mac, two rounds):
   `enabledProtocols = ["TLSv1.3"]`, `setNeedClientAuth(true)`.
 - **Where the phone's identity lives**: the app process generates it (key + cert)
   once per provisioning (v2 first run), stores it in **the app's own private files
-  dir** (mode 0600, belongs to UID dev.pocketdeck, FBE-encrypted at rest while the
+  dir** (mode 0600, belongs to UID app.contigua, FBE-encrypted at rest while the
   device is locked), and **passes it over the existing AIDL** to the shell service
   the same way pairing keys travel today (`setPairedClients` JSON gains
   `self: {certPem, keyP8}`), so the UID 2000 server never touches a file it cannot
@@ -163,7 +163,7 @@ The code is derived from material the attacker cannot fix *before it commits*:
 4. Both sides then derive the same number:
 
 ```
-exporter = TLS-Exporter("EXPORTER-pocketdeck-pair", empty context, 32 bytes)
+exporter = TLS-Exporter("EXPORTER-contigua-pair", empty context, 32 bytes)
            (RFC 8446 §7.5, from exporter_master_secret — see section 4b)
 code = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
                           || Nm || Np)[0..8]) mod 1_000_000     // 6 digits, shown "123 456"
@@ -222,10 +222,10 @@ HKDF-Expand-Label(Derive-Secret(Secret, label, ""), "exporter",
 Hash(context_value), key_length)`, `Secret = exporter_master_secret`,
 `Derive-Secret(S, l, "") = HKDF-Expand-Label(S, l, Hash(""), Hash.length)`.
 No context: `context_value` is zero-length and Hash("") is used both places
-(same value as an empty context in TLS 1.3). So, label `EXPORTER-pocketdeck-pair`:
+(same value as an empty context in TLS 1.3). So, label `EXPORTER-contigua-pair`:
 
 ```
-inner     = HKDF-Expand-Label(exporter_secret, "EXPORTER-pocketdeck-pair", SHA-256(""), 32)
+inner     = HKDF-Expand-Label(exporter_secret, "EXPORTER-contigua-pair", SHA-256(""), 32)
 exporter  = HKDF-Expand-Label(inner, "exporter", SHA-256(""), 32)      // 32 bytes
 ```
 
@@ -241,7 +241,7 @@ Acquisition per stack (both are named by the review):
   the two HKDF-Expand-Label steps above with CryptoKit. Pure math = unit vectors
   (K2). Use: only on the freshly-completed pairing session, consumed in memory.
 - **Phone (Conscrypt)**: `android.net.ssl.SSLSockets.exportKeyingMaterial(
-  sslSocket, "EXPORTER-pocketdeck-pair", empty context, 32)` on the platform
+  sslSocket, "EXPORTER-contigua-pair", empty context, 32)` on the platform
   `SSLSocket` (public SDK API, **API 31+**; `isSupportedSocket` guard, plus a
   `Build.VERSION.SDK_INT >= 31` guard because minSdk is 30). JVM unit vector
   (K1) pins the HKDF math; the on-device engine call is K4.
@@ -279,7 +279,7 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
 - **App (key gen + pin store + UI)**: Prefs.kt stores identity + per-Mac pin
   (fp→clientId,name); the pairing prompt shows the §4 code; the phone
   **scans** the Mac's QR (unchanged direction, QrScan.kt) which now carries
-  `pocketdeck://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`
+  `contigua://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`
   (R2: f = the pin the phone stores for the Mac; s = one-time 128-bit secret,
   regenerated each time the Mac opens the QR and expired with it). The phone's
   Allow prompt stays the human confirmation.
@@ -321,7 +321,7 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
      4) a cert ROTATED on either side refused (re-pair needed),
      5) code equal on both screens (spike + K4 emulator),
      6) relay sees ciphertext only (relay-loopback session; the relay's byte
-        counters must show no readable `hello`/`_pocketdeck` strings),
+        counters must show no readable `hello`/`_contigua` strings),
      7) resumption attempt does a FULL handshake: fakephone replays a stale
         ticket/PSK identity; the session must complete with a fresh,
         non-resumed handshake (observable: new exporter, `pairing` prompt, no
@@ -404,7 +404,7 @@ UI (a re-pair covers it).
 
 Requirement (R1): BOTH stacks must expose the RFC 8446 exporter with the same 32
 bytes for the same session, Swift client ↔ JVM server, label
-`EXPORTER-pocketdeck-pair`, empty context.
+`EXPORTER-contigua-pair`, empty context.
 
 Spike modes added (kept in .agent/e2ee/spikes/, uncommitted):
 - s1-mac: `Spike exporter-client --port P` — NIOSSL client, keylog callback,

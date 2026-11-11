@@ -27,7 +27,7 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 . tools/emulator/lib.sh
 
 APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-MAIN_REPO="$HOME/dev/pocketdeck"
+MAIN_REPO="$HOME/dev/contigua"
 FAILED=0
 fail() { echo "PREFLIGHT FAIL: $*"; FAILED=1; }
 ok() { echo "PREFLIGHT OK: $*"; }
@@ -77,17 +77,17 @@ manifest_names() {
 check_components() {
   local names="$1" ref refs pkg cls count=0
   # Every `pkg/Class` a script starts or broadcasts to. Scripts spell them as
-  # "$PKG/.app.MainActivity" or as the literal dev.pocketdeck/... of the debug
+  # "$PKG/.app.MainActivity" or as the literal app.contigua/... of the debug
   # receiver table, so both spellings are resolved here.
   refs="$(
-    grep -hoE '(dev\.pocketdeck|moe\.shizuku\.privileged\.api)/[A-Za-z0-9_.$]+' \
+    grep -hoE '(dev\.contigua|moe\.shizuku\.privileged\.api)/[A-Za-z0-9_.$]+' \
       tools/emulator/lib.sh tools/emulator/start.sh tools/emulator/unlock.sh \
       tools/emulator/media.sh tools/emulator/phone-screen.sh tools/emulator/flow.sh \
       tools/emulator/lock.sh tools/emulator/poc.py tools/emulator/fs-watch.sh \
       tools/emulator/fs-write.sh 2>/dev/null
     grep -hoE '\$PKG/[A-Za-z0-9_.$]+' tools/emulator/lib.sh tools/emulator/start.sh \
       tools/emulator/media.sh tools/emulator/phone-screen.sh 2>/dev/null |
-      sed 's|^\$PKG/|dev.pocketdeck/|'
+      sed 's|^\$PKG/|app.contigua/|'
   )"
   refs="$(printf '%s\n' "$refs" | sort -u | grep . || true)"
   [ -n "$refs" ] || fail "no component references found in the rig scripts (the extractor broke)"
@@ -105,7 +105,7 @@ check_components() {
   ok "$count components named by the scripts are in the APK's manifest"
   # The debug receivers the broadcasts target, with their actions.
   local action
-  for action in dev.pocketdeck.DEBUG_MEDIA dev.pocketdeck.DEBUG_NOTIFY; do
+  for action in app.contigua.DEBUG_MEDIA app.contigua.DEBUG_NOTIFY; do
     ref="$(debug_component "$action")" || { fail "no debug component for $action"; continue; }
     cls="${ref#*/}"
     if printf '%s\n' "$names" | grep -qx "$cls"; then
@@ -158,7 +158,7 @@ PY
 "$PYTHON" tools/fakephone/fakephone.py --help >/dev/null 2>&1 ||
   fail "fakephone.py --help"
 "$PYTHON" -c 'import ssl; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.minimum_version = ssl.TLSVersion.TLSv1_3' \
-  >/dev/null 2>&1 || fail "$PYTHON cannot enforce TLS 1.3 (the v2 handshake needs it); set POCKETDECK_PYTHON"
+  >/dev/null 2>&1 || fail "$PYTHON cannot enforce TLS 1.3 (the v2 handshake needs it); set CONTIGUA_PYTHON"
 ok "python $("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])') with TLS 1.3"
 
 # --- 6. boot budget ---------------------------------------------------------
@@ -169,7 +169,7 @@ if [ "${PD_PREFLIGHT_DRY_RUN:-0}" = "1" ]; then
 else
   NAME="$(basename "$REPO_ROOT")"
   BUDGET_FILE="$MAIN_REPO/.agent/budgets/$NAME"
-  LEDGER=/tmp/pocketdeck-boots.ledger
+  LEDGER=/tmp/contigua-boots.ledger
   if [ -f "$BUDGET_FILE" ]; then
     LIMIT="$(sed -n 's/^emulator=\([0-9][0-9]*\)$/\1/p' "$BUDGET_FILE" | head -1)"
     USED="$(ledger_boots "$LEDGER" "$NAME")"

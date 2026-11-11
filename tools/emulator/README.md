@@ -1,6 +1,6 @@
-# emulator rig — the real PocketDeck server on a local Android emulator
+# emulator rig — the real Contigua server on a local Android emulator
 
-The test phone can be offline; this rig boots the **real** `dev.pocketdeck` server
+The test phone can be offline; this rig boots the **real** `app.contigua` server
 (the Shizuku shell-process user service, uid 2000) on an Apple-silicon Android 16
 emulator, so pairing, the locked-phone virtual displays, resizes and input
 injection can be verified without the hardware.
@@ -13,7 +13,7 @@ own serial (`emulator-5554`), so a phone plugged in next to it is never touched.
 `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=~/Library/Android/sdk`
 (cmdline-tools present), `ffmpeg`, and a `python3` with TLS 1.3 (3.11+ /
 OpenSSL 3; `lib.sh` tries `/opt/homebrew/bin/python3`, override with
-`POCKETDECK_PYTHON` — the macOS 3.9 cannot do the v2 handshake), and the SDK
+`CONTIGUA_PYTHON` — the macOS 3.9 cannot do the v2 handshake), and the SDK
 `emulator`/`system-images;android-36;google_apis;arm64-v8a` packages that
 `setup.sh` installs.
 
@@ -28,9 +28,9 @@ tools/emulator/flow.sh     # the core POC check, writes PNGs to .agent/emu/frame
 `start.sh` prints the address to use:
 
 ```
-POCKETDECK_SERIAL=emulator-5554
-POCKETDECK_ADDR=127.0.0.1:47811       # adb forward -> the device-side port
-POCKETDECK_DEVICE_PORT=42945
+CONTIGUA_SERIAL=emulator-5554
+CONTIGUA_ADDR=127.0.0.1:47811       # adb forward -> the device-side port
+CONTIGUA_DEVICE_PORT=42945
 ```
 
 Then the usual client works by address:
@@ -42,18 +42,18 @@ python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 \
 
 Other scripts and flags: `lock.sh` (test PIN + screen off), `unlock.sh` (wake +
 PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
-(skip Gradle), `POCKETDECK_SETTLE` / `POCKETDECK_PHASE_SECONDS` /
-`POCKETDECK_STEPS1` / `POCKETDECK_STEPS2` (flow timings and input steps),
-`POCKETDECK_BROWSER` / `POCKETDECK_MESSENGER` (test apps),
-`POCKETDECK_DEVICE_ID` (the rig's stable device id, default
-`e0e0e0e0e0e0e0e0`), `POCKETDECK_SERIAL` / `POCKETDECK_PORT` (address).
+(skip Gradle), `CONTIGUA_SETTLE` / `CONTIGUA_PHASE_SECONDS` /
+`CONTIGUA_STEPS1` / `CONTIGUA_STEPS2` (flow timings and input steps),
+`CONTIGUA_BROWSER` / `CONTIGUA_MESSENGER` (test apps),
+`CONTIGUA_DEVICE_ID` (the rig's stable device id, default
+`e0e0e0e0e0e0e0e0`), `CONTIGUA_SERIAL` / `CONTIGUA_PORT` (address).
 
 ### One boot, all the checks
 
 ```sh
 bash tools/emulator/preflight.sh              # no device: syntax, APK, manifest, budget
 bash tools/emulator/verify-batch.sh --check   # the rehearsal of the boot command
-~/dev/pocketdeck/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+~/dev/contigua/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
 `verify-batch.sh` boots once, pairs once, then runs six sections that do not
@@ -76,7 +76,7 @@ is already up and paired).
 
 ```sh
 bash tools/emulator/p1-proof.sh --check
-~/dev/pocketdeck/.agent/heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
+~/dev/contigua/.agent/heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
 ```
 
 `p1-proof.sh` is the direct-p1 item-7 proof of the **real** shell server (not
@@ -91,7 +91,7 @@ device and no boot. Results and the table go to
 `.agent/direct-link/p1-emulator.md`; the per-phase logs are under
 `/tmp/pd-direct-p1-emu/` (copy them before another `--check`). The boot budget
 is in `.agent/budgets/<worktree>` and the ledger is
-`/tmp/pocketdeck-boots.ledger`; one boot per run, `adb -s emulator-5554 emu
+`/tmp/contigua-boots.ledger`; one boot per run, `adb -s emulator-5554 emu
 kill` only.
 
 ### Reliability rules (each one cost a boot once)
@@ -104,7 +104,7 @@ kill` only.
   versionCode (`dumpsys package`) and the APK's (`aapt2 dump badging`) and stops
   with one line if they differ, instead of testing a stale build.
 - **Name the component in every debug broadcast** (`am broadcast -n
-  dev.pocketdeck/dev.pocketdeck.app.MediaDebugTrigger`). An implicit broadcast
+  app.contigua/app.contigua.app.MediaDebugTrigger`). An implicit broadcast
   is dropped while the app is in the background, and nothing says so.
 - **Wait for the shell service's listening port, then retry it.** The first
   launch after a boot sometimes leaves the Shizuku user service without a socket;
@@ -114,32 +114,32 @@ kill` only.
   show: `bash -n` on every rig script, the APK's versionCode against the build
   file, every component the scripts name against the APK's merged manifest,
   deckctl's subcommands (parser and handler) and TLS 1.3, and the boot budget in
-  `.agent/budgets/<worktree>` against `/tmp/pocketdeck-boots.ledger`.
+  `.agent/budgets/<worktree>` against `/tmp/contigua-boots.ledger`.
 
 ## What start.sh does
 
-1. Boots the AVD `pocketdeck-api36` headless (`-no-window -no-audio -no-boot-anim
+1. Boots the AVD `contigua-api36` headless (`-no-window -no-audio -no-boot-anim
    -gpu swiftshader_indirect`) and waits for `sys.boot_completed`. If a rig PIN
    is set it unlocks first: userdata (and so `run-as`) is only reachable after
    the first unlock.
-2. Installs, from `~/.cache/pocketdeck-emulator/` (`$POCKETDECK_FIXTURES`; downloaded once and shared by every checkout, so a new worktree needs no network):
+2. Installs, from `~/.cache/contigua-emulator/` (`$CONTIGUA_FIXTURES`; downloaded once and shared by every checkout, so a new worktree needs no network):
    - **Shizuku** — newest release APK from its GitHub release feed;
-   - **dev.pocketdeck** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
+   - **app.contigua** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
      where the installed versionCode must then equal the APK's;
    - two F-Droid test apps standing in for a browser and a messenger:
      `acr.browser.lightning` (small WebView browser, renders immediately) and
-     `org.fossify.messages`. Override with `POCKETDECK_BROWSER` /
-     `POCKETDECK_MESSENGER`.
+     `org.fossify.messages`. Override with `CONTIGUA_BROWSER` /
+     `CONTIGUA_MESSENGER`.
    The messenger is given the SMS role (`cmd role add-role-holder`) so its
    first-run "set as default" dialog does not sit on top of the app's widgets.
-3. Grants `dev.pocketdeck` the Shizuku permission and POST_NOTIFICATIONS with
+3. Grants `app.contigua` the Shizuku permission and POST_NOTIFICATIONS with
    plain `pm grant`. The Shizuku permission is a *dangerous* runtime permission,
    so no dialog and no root are needed:
-   `pm grant dev.pocketdeck moe.shizuku.manager.permission.API_V23`.
+   `pm grant app.contigua moe.shizuku.manager.permission.API_V23`.
 4. Starts the Shizuku server **after** the grant, through its documented adb
    entry point (the starter in the app's native lib dir):
    `adb shell $codePath/lib/arm64/libshizuku.so`. It runs as the adb shell user,
-   so the PocketDeck user service is uid 2000, exactly like on the phone. Running
+   so the Contigua user service is uid 2000, exactly like on the phone. Running
    the starter again kills any daemon left over from a previous install.
    *Order matters:* the Shizuku server snapshots each app's permission state when
    it starts, so granting the permission after it is up leaves the app stuck on
@@ -152,7 +152,7 @@ kill` only.
    because a sleeping screen freezes the app and a frozen app never draws the
    pairing prompt — `lock.sh` still sleeps the panel explicitly).
 7. Finds the server port from the kernel (`ss -ltnp`, filtered by the
-   `dev.pocketdeck:pocketdeck` pid; falls back to the `PocketDeckSvc: listening on
+   `app.contigua:contigua` pid; falls back to the `ContiguaSvc: listening on
    0.0.0.0:<port>` logcat line). If nothing listens within 60 s it restarts the
    shell service (up to three times, one log line each) and then fails with the
    service's own logcat lines; a first launch that never binds is a known flake,
@@ -182,7 +182,7 @@ Two things make this harder on a loaded machine, and both are handled:
 
 - the app must be *drawing* for the prompt to exist, so `flow.sh` wakes the rig
   (`unlock.sh` — a screen that slept can report "keyguard not showing") and waits
-  until `dev.pocketdeck` is the resumed activity before pairing;
+  until `app.contigua` is the resumed activity before pairing;
 - on a slow boot the prompt can take long to appear, so the real flow can time
   out. After two failed attempts `flow.sh` stops with an error; re-run it (or
   pair by hand, below) once the rig is awake.
@@ -234,7 +234,7 @@ Frames and raw H.264 land in `.agent/emu/frames/` (gitignored).
   deliberately never roots: Shizuku and the server must run as the shell user.
 - `tools/emulator/.cache/` holds one checkout's run state (the seeded prefs,
   deckctl's state) and is gitignored. The downloads (Shizuku APK, F-Droid
-  APKs) live in the shared `~/.cache/pocketdeck-emulator/`.
+  APKs) live in the shared `~/.cache/contigua-emulator/`.
 - The first device run of the media section (2026-10-20) delivered its three
   debug broadcasts and got no media messages back at all, so media control on a
   real listener is still unverified (docs/design/notify.md says what is open).

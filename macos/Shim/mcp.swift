@@ -1,8 +1,8 @@
 // The MCP stdio shim (docs/design/mcp.md): relays bytes between an MCP client's
-// stdin/stdout and PocketDeck's private UNIX socket. It never interprets the
+// stdin/stdout and Contigua's private UNIX socket. It never interprets the
 // JSON-RPC, so the app's MCPCore is the only implementation of the protocol.
 //
-// Built by macos/scripts/bundle.sh into Contents/Helpers/pocketdeck-mcp.
+// Built by macos/scripts/bundle.sh into Contents/Helpers/contigua-mcp.
 
 import Darwin
 import Dispatch
@@ -37,33 +37,33 @@ while index < CommandLine.arguments.count {
     switch CommandLine.arguments[index] {
     case "--profile":
         index += 1
-        guard index < CommandLine.arguments.count else { fail("pocketdeck-mcp: --profile needs a name") }
+        guard index < CommandLine.arguments.count else { fail("contigua-mcp: --profile needs a name") }
         profile = CommandLine.arguments[index]
     default:
-        fail("pocketdeck-mcp: unknown argument \(CommandLine.arguments[index])")
+        fail("contigua-mcp: unknown argument \(CommandLine.arguments[index])")
     }
     index += 1
 }
 let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-")
 guard (1...32).contains(profile.count), profile.allSatisfy({ allowed.contains($0) }) else {
-    fail("pocketdeck-mcp: --profile takes 1-32 of a-z, 0-9 and -")
+    fail("contigua-mcp: --profile takes 1-32 of a-z, 0-9 and -")
 }
 
 guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                           in: .userDomainMask).first else {
-    fail("pocketdeck-mcp: no Application Support folder")
+    fail("contigua-mcp: no Application Support folder")
 }
-let folder = profile == "default" ? "PocketDeck" : "PocketDeck-\(profile)"
+let folder = profile == "default" ? "Contigua" : "Contigua-\(profile)"
 let path = base.appendingPathComponent(folder, isDirectory: true)
     .appendingPathComponent("mcp.sock").path
 
 let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
-guard socketFD >= 0 else { fail("pocketdeck-mcp: socket: \(String(cString: strerror(errno)))") }
+guard socketFD >= 0 else { fail("contigua-mcp: socket: \(String(cString: strerror(errno)))") }
 var address = sockaddr_un()
 address.sun_family = sa_family_t(AF_UNIX)
 let nameBytes = Array(path.utf8)
 guard nameBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-    fail("pocketdeck-mcp: socket path is too long")
+    fail("contigua-mcp: socket path is too long")
 }
 withUnsafeMutableBytes(of: &address.sun_path) { destination in
     destination.copyBytes(from: nameBytes)
@@ -78,7 +78,7 @@ let connected = withUnsafePointer(to: &address) {
 guard connected == 0 else {
     // Missing (setting off) and refused (stale file) look the same to a client:
     // there is no server to talk to.
-    fail("Turn on Settings › Automation in PocketDeck")
+    fail("Turn on Settings › Automation in Contigua")
 }
 signal(SIGPIPE, SIG_IGN)
 

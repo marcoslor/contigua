@@ -4,10 +4,10 @@
 # screen, then the AWDL stall pattern at 20 Mbit/s (PATH-46).
 #
 #   bash tools/emulator/switchquality.sh --check     # rehearse: no device, no boot
-#   heavy.sh bash -c 'POCKETDECK_SERIAL=emulator-5584 bash tools/emulator/switchquality.sh'
+#   heavy.sh bash -c 'CONTIGUA_SERIAL=emulator-5584 bash tools/emulator/switchquality.sh'
 #
 # One boot runs both arms. The red arm sets
-# `debug.pocketdeck.stream.quality=off` (the debug switch in StreamStrategy /
+# `debug.contigua.stream.quality=off` (the debug switch in StreamStrategy /
 # QualityAdaptation) and must show the broken build: the target never falls,
 # the 3 Mbit/s step repeats its drop cycle. The green arm sets it back on and
 # must pass every PATH-46 bound. The forwarded leg is shaped by pdpathfault:
@@ -18,10 +18,10 @@
 # Build the APK in Docker first:
 #   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
 # and the e2e Mac bundle once per tree:
-#   bash macos/scripts/bundle.sh macos/build/e2e/PocketDeck.app --variant e2e
+#   bash macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
 set -uo pipefail
 
-export POCKETDECK_SERIAL="${POCKETDECK_SERIAL:-emulator-5584}"
+export CONTIGUA_SERIAL="${CONTIGUA_SERIAL:-emulator-5584}"
 
 MODE=run
 for arg in "$@"; do
@@ -37,18 +37,18 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_SWITCHQUALITY_WORK:-/tmp/pd-switch-quality}"
-OUT="${PD_SWITCHQUALITY_OUT:-$HOME/dev/pocketdeck/.agent/switch/quality}"
-BUNDLE="$ROOT/macos/build/e2e/PocketDeck.app"
-APP="$BUNDLE/Contents/MacOS/PocketDeck"
-SHIM="$BUNDLE/Contents/Helpers/pocketdeck-mcp"
+OUT="${PD_SWITCHQUALITY_OUT:-$HOME/dev/contigua/.agent/switch/quality}"
+BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
+APP="$BUNDLE/Contents/MacOS/Contigua"
+SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
 FAULT="$ROOT/tools/pdpathfault/pdpathfault.py"
 STATS="$HERE/switchquality_stats.py"
 POC="$HERE/poc.py"
 NETSHAPE="$HERE/netshape.sh"
-BROWSER="${POCKETDECK_BROWSER:-acr.browser.lightning}"
+BROWSER="${CONTIGUA_BROWSER:-acr.browser.lightning}"
 PROFILE="${PD_SWITCHQUALITY_PROFILE:-switchq$$}"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+E2E_LOCK=/tmp/contigua-e2e.lock
 BASELINE_SECONDS="${PD_SWITCHQUALITY_BASELINE:-15}"
 STEP_SECONDS="${PD_SWITCHQUALITY_STEP:-60}"
 RECOVERY_MAX="${PD_SWITCHQUALITY_RECOVERY_MAX:-300}"
@@ -249,9 +249,9 @@ cleanup() {
     for pid in "$MACLOG_PID" "$PHONELOG_PID" "$PROXY_PID" "$HTTP_PID" "$TAP_PID"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
-    emu shell setprop debug.pocketdeck.stream.quality "" >/dev/null 2>&1 || true
+    emu shell setprop debug.contigua.stream.quality "" >/dev/null 2>&1 || true
     if [ "$DOCK_DEFAULT_SET" = "1" ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     fi
     if [ -d "$BUNDLE/Contents/PlugIns/Share.appex" ]; then
         pluginkit -r "$BUNDLE/Contents/PlugIns/Share.appex" >/dev/null 2>&1 || true
@@ -268,17 +268,17 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 2
             return 0
         fi
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -324,7 +324,7 @@ pair_mac_once() { # pair_mac_once <attempt>
 
 app_connected() {
     /usr/bin/log show --last 3m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null |
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null |
         grep -q "hello --welcome--> welcomed"
 }
 
@@ -387,7 +387,7 @@ PY
 motion_watch() {
     local i line id
     for i in $(seq 1 60); do
-        line="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+        line="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
             grep -o 'stream [0-9]* vd=[0-9]*' | tail -1)"
         [ -n "$line" ] && break
         sleep 1
@@ -469,8 +469,8 @@ run_arm() { # run_arm <tag> <on|off>
     local tag="$1" quality="$2" red=0
     [ "$quality" = "off" ] && red=1
     section "arm $tag (quality=$quality)"
-    emu shell setprop debug.pocketdeck.stream.quality "$quality" >/dev/null 2>&1 || true
-    say "debug.pocketdeck.stream.quality=$(emu shell getprop debug.pocketdeck.stream.quality | tr -d '\r')"
+    emu shell setprop debug.contigua.stream.quality "$quality" >/dev/null 2>&1 || true
+    say "debug.contigua.stream.quality=$(emu shell getprop debug.contigua.stream.quality | tr -d '\r')"
     if ! restart_server > "$WORK/restart-$tag.log" 2>&1; then
         tail -10 "$WORK/restart-$tag.log"
         bad "the phone server did not restart"
@@ -491,7 +491,7 @@ run_arm() { # run_arm <tag> <on|off>
     /usr/bin/log stream --info --style syslog --predicate "processID == $APP_PID" \
         > "$WORK/mac-$tag.log" 2>&1 &
     MACLOG_PID=$!
-    "$ADB" -s "$SERIAL" logcat -v epoch -s PocketDeckSvc:I > "$WORK/phone-$tag.log" 2>&1 &
+    "$ADB" -s "$SERIAL" logcat -v epoch -s ContiguaSvc:I > "$WORK/phone-$tag.log" 2>&1 &
     PHONELOG_PID=$!
 
     if wait_for 120 app_connected; then
@@ -616,8 +616,8 @@ if [ $? -ne 0 ]; then
     bad "start.sh --no-build failed"
     exit 1
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted on $SERIAL, real server at $ADDR (device $DEVPORT)"
 
@@ -643,7 +643,7 @@ fi
 section pair
 rm -rf "$SUPPORT"
 mkdir -p "$SUPPORT"
-defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
+defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
 DOCK_DEFAULT_SET=1
 PAIRED=0
 for attempt in 1 2; do
@@ -658,7 +658,7 @@ else
     bad "the Mac app did not pair/store a pin"
     exit 1
 fi
-defaults write "dev.pocketdeck.mac.$PROFILE" streamFrames \
+defaults write "app.contigua.mac.$PROFILE" streamFrames \
     "{ 'app.$BROWSER' = '{{20, 20}, {1600, 1260}}'; }" \
     && say "the app window will open at 1600x1260" \
     || bad "could not seed the app window frame"

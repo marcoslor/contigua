@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install the Android SDK bits for the PocketDeck emulator rig and create the
+# Install the Android SDK bits for the Contigua emulator rig and create the
 # AVD. Idempotent: re-running only fills in whatever is missing.
 #
 #   tools/emulator/setup.sh
 #
-# Env overrides: ANDROID_HOME, JAVA_HOME, POCKETDECK_AVD, POCKETDECK_API.
+# Env overrides: ANDROID_HOME, JAVA_HOME, CONTIGUA_AVD, CONTIGUA_API.
 set -euo pipefail
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
@@ -12,10 +12,10 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 SDKROOT="$ANDROID_HOME"
 SDKMANAGER="$SDKROOT/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$SDKROOT/cmdline-tools/latest/bin/avdmanager"
-AVD_NAME="${POCKETDECK_AVD:-pocketdeck-api36}"
-WANT_API="${POCKETDECK_API:-36}"
-DEVICE_PROFILE="${POCKETDECK_DEVICE:-}"
-RAM_MB="${POCKETDECK_RAM_MB:-4096}"
+AVD_NAME="${CONTIGUA_AVD:-contigua-api36}"
+WANT_API="${CONTIGUA_API:-36}"
+DEVICE_PROFILE="${CONTIGUA_DEVICE:-}"
+RAM_MB="${CONTIGUA_RAM_MB:-4096}"
 
 export PATH="$SDKROOT/platform-tools:$SDKROOT/emulator:$PATH"
 

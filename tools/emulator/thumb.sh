@@ -7,7 +7,7 @@
 # the screen is asleep before the asks and still asleep after them.
 #
 #   tools/emulator/start.sh
-#   ~/dev/pocketdeck/.agent/heavy.sh bash tools/emulator/thumb.sh
+#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/thumb.sh
 #
 # The files are generated (ffmpeg + sips for HEIC), never a real photo, and are
 # removed at the end. No File Provider and no Mac app are involved.
@@ -26,7 +26,7 @@ ok() { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
 device_present || die "$SERIAL is not running - run tools/emulator/start.sh first"
-DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $SERIAL (is the app running?)"
+DEVPORT="$(ensure_forward)" || die "cannot find the Contigua server port on $SERIAL (is the app running?)"
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 mkdir -p "$WORK"
 
@@ -68,7 +68,7 @@ wake_state() { power_dump | grep -m1 'mWakefulness=' | sed 's/.*mWakefulness=//'
 # The held locks only: `dumpsys power` also keeps an ACQ/REL history, and a
 # notification post there is not a lock the app holds.
 app_wake_locks() {
-    power_dump | sed -n '/Wake Locks: size=/,/^$/p' | grep -ci 'pocketdeck' || true
+    power_dump | sed -n '/Wake Locks: size=/,/^$/p' | grep -ci 'contigua' || true
 }
 display_state() {
     local tag="$1"
@@ -140,7 +140,7 @@ if [ "$LOCKS_AFTER" -le "$LOCKS_BEFORE" ] && [ "$LOCKS_AFTER" -eq 0 ]; then
 else
     bad "THUMB the app's wake locks changed ($LOCKS_BEFORE -> $LOCKS_AFTER)"
 fi
-STREAMS="$(emu logcat -d 2>/dev/null | grep -c 'PocketDeckSvc.*\(opened stream=\|display wake lock held\)' || true)"
+STREAMS="$(emu logcat -d 2>/dev/null | grep -c 'ContiguaSvc.*\(opened stream=\|display wake lock held\)' || true)"
 if [ "$STREAMS" -eq 0 ]; then
     ok "THUMB no stream opened and no display wake lock taken during the asks"
 else

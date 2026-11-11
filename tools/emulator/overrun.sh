@@ -11,7 +11,7 @@
 # Build the APK first, in Docker only:
 #   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
 # and the e2e Mac bundle (once per tree):
-#   bash macos/scripts/bundle.sh macos/build/e2e/PocketDeck.app --variant e2e
+#   bash macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
 #
 # The pass bar (overrun_stats.py): over 120 s, at most one drop episode after
 # the first 10 s, the Mac's shown fps at least 80 % of the source's on arm A,
@@ -37,15 +37,15 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_OVERRUN_WORK:-/tmp/pd-overrun-emu}"
-OUT="${PD_OVERRUN_OUT:-$HOME/dev/pocketdeck/.agent/overrun/emu}"
-BUNDLE="$ROOT/macos/build/e2e/PocketDeck.app"
-APP="$BUNDLE/Contents/MacOS/PocketDeck"
-SHIM="$BUNDLE/Contents/Helpers/pocketdeck-mcp"
+OUT="${PD_OVERRUN_OUT:-$HOME/dev/contigua/.agent/overrun/emu}"
+BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
+APP="$BUNDLE/Contents/MacOS/Contigua"
+SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
 BENCH="$ROOT/tools/stream-bench/bench.py"
 POC="$ROOT/tools/emulator/poc.py"
 STATS="$ROOT/tools/emulator/overrun_stats.py"
 FAULT="$ROOT/tools/pdpathfault/pdpathfault.py"
-BROWSER="${POCKETDECK_BROWSER:-acr.browser.lightning}"
+BROWSER="${CONTIGUA_BROWSER:-acr.browser.lightning}"
 SECONDS_RUN="${PD_OVERRUN_SECONDS:-120}"
 # The emulator's software encoder and page reach far less than the phone's
 # 24 Mbps at 3x, so the emulator's arm A needs a larger factor to put a key
@@ -54,8 +54,8 @@ OVERSHOOT="${PD_OVERRUN_A_OVERSHOOT:-16}"
 LINK_MBIT="${PD_OVERRUN_LINK_MBIT:-3}"
 DELAY_MS="${PD_OVERRUN_DELAY_MS:-100}"
 PROFILE="overrun$$"
-SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
-E2E_LOCK=/tmp/pocketdeck-e2e.lock
+SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
+E2E_LOCK=/tmp/contigua-e2e.lock
 HOLDS_E2E=0
 DOCK_DEFAULT_SET=0
 APP_PID=""
@@ -242,7 +242,7 @@ cleanup() {
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
     if [ "$DOCK_DEFAULT_SET" = "1" ]; then
-        defaults delete "dev.pocketdeck.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
+        defaults delete "app.contigua.mac.$PROFILE" showAppsInDock >/dev/null 2>&1 || true
     fi
     if [ -d "$BUNDLE/Contents/PlugIns/Share.appex" ]; then
         pluginkit -r "$BUNDLE/Contents/PlugIns/Share.appex" >/dev/null 2>&1 || true
@@ -259,17 +259,17 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 bring_app_forward() {
-    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
     local start relaunched=0
     start="$(date +%s)"
     while [ $(( $(date +%s) - start )) -lt 60 ]; do
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.contigua/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.contigua/[^ ]*app\.MainActivity'; then
             sleep 2
             return 0
         fi
         if [ "$relaunched" -eq 0 ] && [ $(( $(date +%s) - start )) -ge 10 ]; then
-            emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+            emu shell am start -n app.contigua/.app.MainActivity >/dev/null 2>&1 || true
             relaunched=1
         fi
         sleep 1
@@ -315,7 +315,7 @@ pair_mac_once() { # pair_mac_once <attempt>
 
 app_connected() {
     /usr/bin/log show --last 3m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null |
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" 2>/dev/null |
         grep -q "hello --welcome--> welcomed"
 }
 
@@ -350,7 +350,7 @@ PY
 motion_watch() {
     local arm="$1" i line id
     for i in $(seq 1 90); do
-        line="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+        line="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
             grep -o 'stream [0-9]* vd=[0-9]*' | tail -1)"
         [ -n "$line" ] && break
         sleep 1
@@ -410,9 +410,9 @@ run_arm() { # run_arm <a|b> <tag> <connect host:port>
     kill "$WATCH_PID" 2>/dev/null || true
     WATCH_PID=""
     /usr/bin/log show --last 12m --info --style syslog \
-        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" \
+        --predicate "subsystem == \"app.contigua.mac\" AND processID == $APP_PID" \
         2>/dev/null | grep -E " stats (total )?stream=" > "$WORK/arm-$tag-stats.log" || true
-    emu logcat -d -v brief -s PocketDeckSvc:I > "$WORK/arm-$tag-phone.log" 2>&1 || true
+    emu logcat -d -v brief -s ContiguaSvc:I > "$WORK/arm-$tag-phone.log" 2>&1 || true
     cat "$WORK/bench-$tag.log"
     stop_app
     [ "$rc" -eq 0 ] && ok "the bench run completed on arm $arm ($tag)" \
@@ -434,7 +434,7 @@ install_apk() { # install_apk <apk> <tag>
         return 1
     fi
     # The Shizuku user service keeps the deleted APK until it is killed.
-    emu shell pkill -f dev.pocketdeck:pocketdeck >/dev/null 2>&1 || true
+    emu shell pkill -f app.contigua:contigua >/dev/null 2>&1 || true
     sleep 1
     if ! restart_server > "$WORK/restart-$tag.log" 2>&1; then
         tail -10 "$WORK/restart-$tag.log"
@@ -490,8 +490,8 @@ if [ $? -ne 0 ]; then
     bad "start.sh --no-build failed"
     exit 1
 fi
-ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
-DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
+ADDR="$(sed -n 's/^CONTIGUA_ADDR=//p' "$WORK/start.log" | tail -1)"
+DEVPORT="$(sed -n 's/^CONTIGUA_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
 
@@ -502,7 +502,7 @@ acquire_e2e_lock || bad "no e2e lock: the Mac window is exposed to another agent
 section pair
 rm -rf "$SUPPORT"
 mkdir -p "$SUPPORT"
-defaults write "dev.pocketdeck.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
+defaults write "app.contigua.mac.$PROFILE" showAppsInDock -bool NO || bad "could not turn the Dock identity off"
 DOCK_DEFAULT_SET=1
 PAIRED=0
 for attempt in 1 2; do
@@ -520,7 +520,7 @@ fi
 # The phone's report is a ~1800x1200 app window; the Mac's default 900x600
 # is too small to put a key frame near the queue's 256 KB budget. The window
 # frame is remembered per app in the profile's defaults.
-defaults write "dev.pocketdeck.mac.$PROFILE" streamFrames \
+defaults write "app.contigua.mac.$PROFILE" streamFrames \
     "{ 'app.$BROWSER' = '{{20, 20}, {1600, 1260}}'; }" \
     && say "the app window will open at 1600x1260" \
     || bad "could not seed the app window frame"

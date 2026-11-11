@@ -46,7 +46,7 @@ Any other mode answers `error` `bad_request`; nothing is changed.
   a `ContentObserver` on the same setting. Where a shell-UID observer is not
   reachable, it polls at most every 5 s while a session is up. Lock and battery
   events keep their existing sources.
-- **Remember what PocketDeck did.** `setByMac` holds the mode PocketDeck last
+- **Remember what Contigua did.** `setByMac` holds the mode Contigua last
   turned on. The memory belongs to the shell service, not the session: a Mac
   that disconnects and reconnects does not forget it. It is cleared on reboot,
   which is fine.
@@ -65,17 +65,17 @@ The restore rule, in both directions:
    - `setByMac` is set but the phone is now in another mode → the person
      changed it; clear `setByMac` and leave the phone alone;
    - `setByMac` is not set → leave the phone alone. A person's own DND is never
-     turned off by PocketDeck.
+     turned off by Contigua.
 
 An observed mode that differs from `setByMac` clears `setByMac` as soon as it
 is seen, so a person's change between two Mac commands is not mistaken for
-PocketDeck's DND. Logs carry mode names only.
+Contigua's DND. Logs carry mode names only.
 
 ## Mac side
 
 ### Focus filter
 
-`PocketDeckFocusFilter` is a `SetFocusFilterIntent` (macOS 13+) with two
+`ContiguaFocusFilter` is a `SetFocusFilterIntent` (macOS 13+) with two
 parameters:
 
 - **Silence my phone** — Bool, default on. Off means "not wanted".
@@ -91,11 +91,11 @@ id, docs/specs/controls.md); repeated `state` messages never send again, and the
 same Focus on a new connection is not re-asserted. A DND the person changed on
 the phone thus stands until the next Focus start or end. "Not wanted" is sent
 as `phone.dnd off`, which the phone's restore rule turns into a no-op when the
-DND is not PocketDeck's.
+DND is not Contigua's.
 
 The system only calls `perform()` for a Focus that has the filter; the app also
 refreshes `SetFocusFilterIntent.current` when it starts and before reconciling a
-connection, so a Focus that ended while PocketDeck was not running is read as
+connection, so a Focus that ended while Contigua was not running is read as
 "not wanted". No Focus = not wanted.
 
 ### Manual control

@@ -1,6 +1,6 @@
 # Remote access — relay protocol (v1)
 
-Status: specification for `relay/` (`pocketdeck-relay`) and `relay/cmd/relayctl`.
+Status: specification for `relay/` (`contigua-relay`) and `relay/cmd/relayctl`.
 Phone and Mac integration comes after end-to-end encryption (ROADMAP, "End-to-end
 encryption (P0)"). The E2E layer (mutual TLS 1.3, keys pinned at pairing) runs
 **inside** the byte stream this protocol provides, and is specified separately.
@@ -11,7 +11,7 @@ the key behind its id, then connects two TCP streams that asked for the same id.
 
 ## 1. Roles
 
-- **Phone**: the PocketDeck server inside the Shizuku shell process. It keeps one
+- **Phone**: the Contigua server inside the Shizuku shell process. It keeps one
   outbound *control connection* to the relay, kept alive by pings. When the relay says
   `incoming`, it opens a second connection to *accept*.
 - **Mac**: opens one connection, asks the relay to connect it to a phone id, and then
@@ -211,12 +211,12 @@ open mode, and the relay logs a warning at startup.
 **Metrics.** The admin listener (`--admin`, default `127.0.0.1:9090`, `""` disables it)
 serves plain text in Prometheus exposition format at `/metrics`:
 
-- `pocketdeck_relay_registered_phones` (gauge)
-- `pocketdeck_relay_pending_sessions` (gauge)
-- `pocketdeck_relay_active_sessions` (gauge, spliced)
-- `pocketdeck_relay_sessions_spliced_total` (counter)
-- `pocketdeck_relay_errors_total{code="..."}` (counter)
-- `pocketdeck_relay_bytes_total{token="..."}` (counter, both directions; label =
+- `contigua_relay_registered_phones` (gauge)
+- `contigua_relay_pending_sessions` (gauge)
+- `contigua_relay_active_sessions` (gauge, spliced)
+- `contigua_relay_sessions_spliced_total` (counter)
+- `contigua_relay_errors_total{code="..."}` (counter)
+- `contigua_relay_bytes_total{token="..."}` (counter, both directions; label =
   first 12 hex chars of SHA-256(token), or `open`)
 
 The admin listener is for the operator only. Bind it to loopback, or keep it on a private

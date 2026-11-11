@@ -12,8 +12,8 @@
 #
 # Run it as `bash tools/emulator/power-lock.sh` (the exec bit is not relied on).
 #
-# What it proves (debug.pocketdeck.force_panel_off=1 and
-# debug.pocketdeck.vd_panel_group=1 give AOSP the One UI shape, where the VD
+# What it proves (debug.contigua.force_panel_off=1 and
+# debug.contigua.vd_panel_group=1 give AOSP the One UI shape, where the VD
 # shares display 0's power group):
 #   (a) KEYCODE_POWER while a window streams: the phone sees the
 #       not-interactive edge and takes the panel over at once;
@@ -39,20 +39,20 @@ done
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47813}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-export POCKETDECK_FORCE_PANEL_OFF=1
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47813}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_FORCE_PANEL_OFF=1
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 RESULT="$OUT/power-lock.log"
 PD_INSTALL_LOG="$OUT/install-failure.log"
 export PD_INSTALL_LOG
 LOGCAT="$OUT/power-lock-logcat.log"
-# The run's whole PocketDeckSvc log, saved before the emulator is killed (the
+# The run's whole ContiguaSvc log, saved before the emulator is killed (the
 # next run's evidence, and the field log's shape for whoever reads it).
 LOGCAT_FULL="$OUT/power-lock-logcat.txt"
 DISPLAY="$OUT/power-lock-display.log"
@@ -124,11 +124,11 @@ PY
   # the three step times, and one max-gap line under the goal...
   FIX="$OUT/power-lock-fixture.log"
   cat > "$FIX" <<'FIXTURE'
-10-27 02:10:00.000 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2044ms panel off returned
-10-27 02:10:03.030 I/PocketDeckSvc: power.locked: telling the Mac the screen went off
-10-27 02:10:03.120 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 234ms around the screen-off edge (frames=9)
+10-27 02:10:00.000 I/ContiguaSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-27 02:10:03.000 I/ContiguaSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2044ms panel off returned
+10-27 02:10:03.030 I/ContiguaSvc: power.locked: telling the Mac the screen went off
+10-27 02:10:03.120 I/ContiguaSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+10-27 02:10:06.500 I/ContiguaSvc: power: display 57 max frame gap 234ms around the screen-off edge (frames=9)
 FIXTURE
   PRESS="$(read_press "$FIX")"
   GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
@@ -141,15 +141,15 @@ FIXTURE
   # A gap of 600 ms (or a window with a single frame) must be rejected: the
   # goal is under 500 ms and a gap needs two frames to mean anything.
   cat > "$FIX" <<'FIXTURE'
-10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
-10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 600ms around the screen-off edge (frames=9)
+10-27 02:10:03.000 I/ContiguaSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
+10-27 02:10:06.500 I/ContiguaSvc: power: display 57 max frame gap 600ms around the screen-off edge (frames=9)
 FIXTURE
   PRESS="$(read_press "$FIX")"
   GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
   if gap_ok; then echo "CHECK FAIL: a 600 ms gap passed the rule ($PRESS)"; exit 1; fi
   cat > "$FIX" <<'FIXTURE'
-10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
-10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 0ms around the screen-off edge (frames=1)
+10-27 02:10:03.000 I/ContiguaSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
+10-27 02:10:06.500 I/ContiguaSvc: power: display 57 max frame gap 0ms around the screen-off edge (frames=1)
 FIXTURE
   PRESS="$(read_press "$FIX")"
   GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
@@ -157,8 +157,8 @@ FIXTURE
   # ...and a press that was only handled at the next keep-alive step (no
   # relight line, no gap line) must read as no evidence, not as zero.
   cat > "$FIX" <<'FIXTURE'
-10-27 02:10:00.000 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-27 02:10:03.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+10-27 02:10:00.000 I/ContiguaSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-27 02:10:03.000 I/ContiguaSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
 FIXTURE
   PRESS="$(read_press "$FIX")"
   [ "$(press_value edge)" = "0" ] && [ "$(press_value gap_ms)" = "none" ] \
@@ -193,10 +193,10 @@ if [ "$BOOT" -eq 1 ]; then
   fi
   # The two shapes One UI has and AOSP does not: the panel-dark policy and a
   # VD in display 0's power group. Both are read when the policy/VD is built.
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  emu shell setprop debug.pocketdeck.vd_panel_group 1 >/dev/null 2>&1 || true
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ] \
-    || [ "$(emu shell getprop debug.pocketdeck.vd_panel_group | tr -d '\r')" != "1" ]; then
+  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
+  emu shell setprop debug.contigua.vd_panel_group 1 >/dev/null 2>&1 || true
+  if [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" != "1" ] \
+    || [ "$(emu shell getprop debug.contigua.vd_panel_group | tr -d '\r')" != "1" ]; then
     fail "the debug properties did not stick"
   fi
   if ! restart_server; then
@@ -204,7 +204,7 @@ if [ "$BOOT" -eq 1 ]; then
     echo "failed: 1 (restart)" > "$RESULT"
     exit 1
   fi
-  INIT_LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  INIT_LINE="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     grep 'power: panel power control' | tail -1 | tr -d '\r')"
   case "$INIT_LINE" in
     *"forcing the panel-dark path"*) echo "power-lock: init: $INIT_LINE" ;;
@@ -250,7 +250,7 @@ for _ in $(seq 1 80); do
   # The VD line, not "first frame": that line only prints when the redraw
   # guard nudged an app, so a healthy stream can run without it (boot 3 of this
   # rig waited 30 s on it and pressed after the window had closed).
-  if emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' |
+  if emu logcat -d -s ContiguaSvc:I 2>/dev/null | tr -d '\r' |
       grep -q 'stream 1 vd='; then
     STREAMING=1
     break
@@ -273,9 +273,9 @@ emu shell dumpsys window policy 2>/dev/null | tr -d '\r' > "$DISPLAY" || true
 wait "$OPEN_PID"
 OPEN_RC=$?
 
-emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
+emu logcat -d -s ContiguaSvc:I ContiguaApp:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
 # The full service log, kept even when the run fails: the next boot's evidence.
-emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' > "$LOGCAT_FULL" || true
+emu logcat -d -s ContiguaSvc:I 2>/dev/null | tr -d '\r' > "$LOGCAT_FULL" || true
 PRESS="$(read_press "$LOGCAT")"
 EDGE="$(press_value edge)"
 ISSUED="$(press_value issued_ms)"

@@ -1,4 +1,4 @@
-// cgevent-input.swift — synthesize real mouse/keyboard events at a PocketDeck
+// cgevent-input.swift — synthesize real mouse/keyboard events at a Contigua
 // window's coordinates so the automated checks exercise the same code path as a
 // human (NSEvent -> InputMapper -> protocol).
 //
@@ -73,7 +73,7 @@ func doubleArgument(_ name: String) -> Double? { argument(name).flatMap(Double.i
 
 func numberArgument(_ name: String) -> Int? { argument(name).flatMap(Int.init) }
 
-func pocketDeckWindows(owner: String, pid: Int? = nil) -> [Target] {
+func contiguaWindows(owner: String, pid: Int? = nil) -> [Target] {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return [] }
     var targets: [Target] = []
@@ -92,7 +92,7 @@ func pocketDeckWindows(owner: String, pid: Int? = nil) -> [Target] {
 }
 
 func windowWithID(_ id: CGWindowID, owner: String, pid: Int?) -> Target? {
-    pocketDeckWindows(owner: owner, pid: pid).first { $0.id == id }
+    contiguaWindows(owner: owner, pid: pid).first { $0.id == id }
 }
 
 /// The accessible titles (the Dock/⌘-Tab names) of the app's on-screen windows.
@@ -345,7 +345,7 @@ func releaseAll() {
     usleep(100_000)
 }
 
-let owner = argument("--owner") ?? "PocketDeck"
+let owner = argument("--owner") ?? "Contigua"
 let inset = doubleArgument("--inset") ?? 28
 let pid = numberArgument("--pid")
 
@@ -374,7 +374,7 @@ switch CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "" {
 case "release-all":
     releaseAll()
 case "list":
-    for target in pocketDeckWindows(owner: owner, pid: pid) {
+    for target in contiguaWindows(owner: owner, pid: pid) {
         print("\(target.id)\t\(Int(target.x)) \(Int(target.y)) \(Int(target.width)) \(Int(target.height))")
     }
 case "titles":

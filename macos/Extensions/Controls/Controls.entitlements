@@ -8,7 +8,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.dev.pocketdeck.mac.controls</string>
+		<string>group.app.contigua.mac.controls</string>
 	</array>
 </dict>
 </plist>

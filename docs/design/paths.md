@@ -41,7 +41,7 @@ exactly as today. There is no dual mode, no reduced transport, and no fallback
 to the one-connection session: a v3 peer is refused, not served. The alpha's
 rule is the reason (AGENTS.md — both apps ship together, and a protocol change
 may require a field); naming the side is the reason the person sees "Update
-PocketDeck on your phone." or "…on this Mac." instead of a session that
+Contigua on your phone." or "…on this Mac." instead of a session that
 half-works.
 
 So the session layer is always on in a v4 session. Nothing in this document has
@@ -59,7 +59,7 @@ that never offers a direct path is simply never asked to join one.
 | `Session` (one per phone) | Mac | the session id, the path set, seq/ack/replay, the session machine (§6), the ranking machine (§7), the one writer that picks the current path | dial TLS itself |
 | `PathConnection` (one per path; today's transport half of `Session`) | Mac | the endpoint, the TLS handshake and pin check, the `FrameDecoder`, the per-path reader, the per-path 2 s ping | see a message before the path layer |
 | `PathProvider` (`lan`, `direct`, `wan` later) | Mac | dialing a path to a phone (or a listener, for the phone's side), its throughput class, "is available" | see a plaintext byte |
-| `DirectLinkd` (direct builds only) | Mac | the UNIX-socket client of `pocketdeck-directd` | see a plaintext byte |
+| `DirectLinkd` (direct builds only) | Mac | the UNIX-socket client of `contigua-directd` | see a plaintext byte |
 | `Server` | phone | the LAN listener, the TLS wrap of every socket it is handed, the accept gate | keep a second session |
 | `AwareAcceptor` (direct build, app process) | phone | attach, publish, the NDP, the Aware `ServerSocket`, `accept`, and the hand-off of each accepted socket to the shell (`docs/design/direct-link.md` §4.5) | see a frame, hold the key in the shell |
 | `Session` | phone | the session id, the path set, the same path layer, the shell-side features (windows, files, notifications) | decide a switch |
@@ -170,7 +170,7 @@ section explains it.
   `{"t":"error","code":"version","v":4}` — its own version — and closes before
   it sends `welcome`; the Mac compares that with its own and says which app to
   update: a phone `v` below its own, or absent (a v3 phone sends none), means
-  "Update PocketDeck on your phone."; above means "Update PocketDeck on this
+  "Update Contigua on your phone."; above means "Update Contigua on this
   Mac.". It then stops retrying. The phone's screen names the Mac's side the
   same way from the `hello`'s `v`. A v4 Mac dialing a v3 phone gets the refusal
   from the phone's own check (a v3 phone refuses 4, with no `v`), and a v3 Mac
@@ -785,7 +785,7 @@ carry the same cases:
 | `PathStartTests` | two providers started at once: exactly one plain hello, the other holds and then joins with the winner's id; the plain hello moves to the other attempt when the first fails; the attempt fails only when every provider did; a direct-only start founds the session |
 | `SessionSlotTest` (K1) | the join table of §4, every state; a join never supersedes; `no_session` only for the live Mac; `too_many_paths` |
 | `PathIdsTests` | 32-hex session ids are random per session; 8-hex path ids are unique per live set |
-| `VersionTests` (K2) / `VersionTest` (K1) | `hello.v` is 4 on both sides; a `v` of 3 or 5 gets `error version` carrying the refusing side's `v` and a close before `welcome`; the Mac says "Update PocketDeck on your phone." for a lower or absent `v` and "…on this Mac." for a higher one, the phone says the same from the hello's `v`, and both stop retrying; no path frame, `join` or `session` field is sent to a peer that was refused |
+| `VersionTests` (K2) / `VersionTest` (K1) | `hello.v` is 4 on both sides; a `v` of 3 or 5 gets `error version` carrying the refusing side's `v` and a close before `welcome`; the Mac says "Update Contigua on your phone." for a lower or absent `v` and "…on this Mac." for a higher one, the phone says the same from the hello's `v`, and both stop retrying; no path frame, `join` or `session` field is sent to a peer that was refused |
 | `NoFallbackTests` | there is no reduced mode: no code path builds a session without seq/ack/replay, and a refused version is never retried as a one-connection session |
 
 ### 10.2 `fakephone`
@@ -870,7 +870,7 @@ the S3 check shapes the forwarded leg with `pdpathfault --rate-mbit` and uses
 | `pathbulk` | a 16 Mbit/s path carries a 32 MiB drop with a fast standby: no lost pong, no path down, both paths open, the hash exact; then, on a 400 Mbit/s path, a KEY typed 0.6 s into a 64 MiB drop reaches the fake phone within `input_latency_ms` | PATH-23, PATH-7, PATH-10 |
 | `switchpath` | one window streams video and audio while numbered probes run; the margin rule makes a planned switch across two paths through the fault proxy. From 2 s before to 5 s after: no frame gap over 150 ms, `chain_fed=0`, no chain break, zero audio underrun/conceal/drop, every probe once and in order, one session and no reconnect banner. Red with `--debug-no-margin-switch` | PATH-44 |
 | `switchlink` | one path follows the link's own timeline through `pdpathfault --script`: 10 s pass, 10 s at 3 Mbit/s, 10 s of the 100 ms-per-second off-channel pattern, a 3 s black hole, then pass. Pass and recovery keep the picture within 150 ms and the audio clean (up to 20 stale packets in the first second back); the black hole withholds only its own 3 s, the first frame returns within 1 s, the session never reconnects, and every probe sent while a path was usable arrives once and in order. Red against the fake-phone commit before its dead-path send fix | PATH-45 |
-| `switchquality` | the emulator behind the shaped leg: 20 → 3 → 20 Mbit/s with motion on screen, then the 100 ms off-channel pattern at 20 Mbit/s. The phone steps its bitrate within PATH-36's cap without a repeated drop/key cycle and climbs back within 10 % (the stall step is reported, not bounded). One boot runs the red arm (`debug.pocketdeck.stream.quality=off`: no down-step, repeated drop cycle) and the green arm; `tools/emulator/switchquality_stats.py` judges the Mac's own stats lines against the phone's `drop episode` transitions. Measured 2026-11-09: the policy moves (red target flat 7533 kbps; green 7533 → 1000 → 7400 kbps in 108 s) but the emulator's software encoder ignores the live key (6.0-6.7 Mbps at a 1.0 Mbps target, 15-18 fps), so the picture/cycle bounds stay red on this rig (ISS-48; round 2: real phone or a codec with working runtime rate control) | PATH-46 |
+| `switchquality` | the emulator behind the shaped leg: 20 → 3 → 20 Mbit/s with motion on screen, then the 100 ms off-channel pattern at 20 Mbit/s. The phone steps its bitrate within PATH-36's cap without a repeated drop/key cycle and climbs back within 10 % (the stall step is reported, not bounded). One boot runs the red arm (`debug.contigua.stream.quality=off`: no down-step, repeated drop cycle) and the green arm; `tools/emulator/switchquality_stats.py` judges the Mac's own stats lines against the phone's `drop episode` transitions. Measured 2026-11-09: the policy moves (red target flat 7533 kbps; green 7533 → 1000 → 7400 kbps in 108 s) but the emulator's software encoder ignores the live key (6.0-6.7 Mbps at a 1.0 Mbps target, 15-18 fps), so the picture/cycle bounds stay red on this rig (ISS-48; round 2: real phone or a codec with working runtime rate control) | PATH-46 |
 
 `[PATH-n]` tags go on the `ok`/`bad` lines of those checks.
 

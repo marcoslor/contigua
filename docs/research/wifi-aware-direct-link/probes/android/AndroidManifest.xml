@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.pocketdeck.awaretest">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.contigua.awaretest">
     <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36"/>
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>

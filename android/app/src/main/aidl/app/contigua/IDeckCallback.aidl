@@ -1,0 +1,85 @@
+package app.contigua;
+
+import android.os.ParcelFileDescriptor;
+
+/** One-way events from the shell service to the app process. */
+oneway interface IDeckCallback {
+
+    /** A Mac asked to pair; the app should show `code` and let the user answer. */
+    void onPairingRequest(String requestId, String macName, String code);
+
+    /** A Mac was paired; the app must persist {clientId,name,macFp} (v2 pins). */
+    void onPaired(String clientId, String name, String macFp);
+
+    /** Session state changed: connected, which Mac (paired client id and name), how many windows are open. */
+    void onSessionChanged(boolean connected, String clientId, String macName, int windows);
+
+    /** The pairing request ended unanswered; the app should dismiss its prompt. */
+    void onPairingEnded(String requestId);
+
+    /**
+     * The Mac's hello named another protocol version (R-8/D-4): `macV` is the
+     * Mac's version, -1 when its hello carried none. The app shows the
+     * sentence naming which side to update until a session succeeds.
+     */
+    void onVersionRefused(int macV);
+
+    /**
+     * The notification gate's answer (docs/design/notify.md): `forwarding` is
+     * live, and `reason` is "no_access" when the Mac asked but the phone's
+     * listener grant is missing (null otherwise).
+     */
+    void onNotifyState(boolean forwarding, String reason);
+
+    /**
+     * The Mac drove Now Playing (`media.command`): `json` is the validated
+     * command — `{"action":"play"|"pause"|"next"|"prev"|"seek"|"volume",
+     * "key"?,"positionMs"?,"level"?}` (docs/design/notify.md).
+     */
+    void onMediaCommand(String json);
+
+    /** The Mac picked which phone session Now Playing follows (`media.choose`). */
+    void onMediaChoose(String key);
+
+    /**
+     * The Mac asked this phone to ring (docs/PROTOCOL.md "Ring"): the app shows
+     * the alarm over the lock screen for at most `seconds` (1..30).
+     */
+    void onRing(int seconds);
+
+    /** The Mac stopped the ring (or it timed out on the Mac's side). */
+    void onRingStop();
+
+    /**
+     * A Mac clicked the forwarded notification `id` (docs/design/notify.md).
+     * The app looks up the action it kept for that id and hands the
+     * PendingIntent back to the server with `openNotification`; an unknown id
+     * is answered with a null intent.
+     */
+    void onNotifyOpen(String id, int displayId);
+
+    /**
+     * A Mac pressed the forwarded notification's advertised action `index`
+     * (`notify.action`). The listener fills its RemoteInput with `text` when it
+     * is a reply action and sends the PendingIntent itself; nothing is answered.
+     */
+    void onNotifyAction(String id, int index, String text);
+
+    /** A Mac cleared the forwarded notification `id` (`notify.dismiss`). */
+    void onNotifyDismiss(String id);
+
+    /**
+     * A clipboard image from the Mac (SHARE-2/16): `data` is a pipe the app
+     * copies into its own cache, sets as A2's URI-only clip and answers with
+     * `clipImageDone`. The shell never sets an image clip itself.
+     */
+    void onClipImage(String id, String mime, in ParcelFileDescriptor data);
+
+    /**
+     * WIN-66: one no-frame episode for the app's private ring. `json` carries
+     * ids, counts, durations and closed tokens only. The app upserts by
+     * `episode` (a recorded episode is updated when it ends) and keeps the
+     * newest 20.
+     */
+    void onNoFrameEpisode(int episode, String json);
+}

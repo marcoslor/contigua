@@ -27,15 +27,15 @@ esac
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
 
-PKG=dev.pocketdeck
-PORT="${POCKETDECK_PORT:-47997}"
+PKG=app.contigua
+PORT="${CONTIGUA_PORT:-47997}"
 # A fresh fake-Mac identity per run (the store lives in a directory, and a
 # stale pin from an earlier run would change what this check proves).
 RUN="$(date +%s)"
 STATE="$CACHE_DIR/phone-reset-$RUN-a.json"
 CODE="$CACHE_DIR/phone-reset-code.txt"
 WATCH="$CACHE_DIR/phone-reset-watch.log"
-SHOTS="${POCKETDECK_SHOTS:-$HOME/dev/pocketdeck/.agent/phone-reset/shots}"
+SHOTS="${CONTIGUA_SHOTS:-$HOME/dev/contigua/.agent/phone-reset/shots}"
 MAX_CLOSE_S=5
 
 dc() {
@@ -75,12 +75,12 @@ seed_prefs() { # seed_prefs <enabled> <onboarding_done> [paired-json]
     echo "    <boolean name=\"enabled\" value=\"$enabled\" />"
     echo "    <boolean name=\"onboarding_done\" value=\"$done_flag\" />"
     echo "    <string name=\"device_id\">e0e0e0e0e0e0e0e0</string>"
-    echo "    <string name=\"device_name\">PocketDeck Emulator</string>"
+    echo "    <string name=\"device_name\">Contigua Emulator</string>"
     [ -n "$paired" ] && echo "    <string name=\"paired\">$paired</string>"
     echo "</map>"
   } > "$file"
   emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
-  emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" < "$file"
+  emu shell "run-as $PKG sh -c 'cat > shared_prefs/contigua.xml'" < "$file"
 }
 
 stop_app() {
@@ -101,7 +101,7 @@ start_app() {
 wait_app_push() { # wait_app_push <timeout_s>
   local deadline=$(( $(date +%s) + $1 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    emu logcat -d -s PocketDeckSvc 2>/dev/null | grep -q -- '--push(' && return 0
+    emu logcat -d -s ContiguaSvc 2>/dev/null | grep -q -- '--push(' && return 0
     sleep 1
   done
   return 1
@@ -133,8 +133,8 @@ fi
 
 device_present || die "no emulator on $SERIAL"
 emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
-emu shell setprop debug.pocketdeck.auto_approve 1 >/dev/null
-[ "$(emu shell getprop debug.pocketdeck.auto_approve | tr -d '\r')" = "1" ] ||
+emu shell setprop debug.contigua.auto_approve 1 >/dev/null
+[ "$(emu shell getprop debug.contigua.auto_approve | tr -d '\r')" = "1" ] ||
   die "could not turn on the rig's pairing auto-approve"
 step "auto-approve pairing on (rig only)"
 
@@ -296,13 +296,13 @@ fi
 # or keygen work there ANRs 5 s after this tap (the reviewer's run did).
 ANR=0
 for _ in $(seq 1 8); do
-  emu logcat -d 2>/dev/null | grep -q 'ANR in dev.pocketdeck' && { ANR=1; break; }
+  emu logcat -d 2>/dev/null | grep -q 'ANR in app.contigua' && { ANR=1; break; }
   sleep 1
 done
 if [ "$ANR" = 1 ]; then
   fail "forget all: the app ANR'd while the session was dropped"
 else
-  pass "forget all: no ANR in dev.pocketdeck in the 8s after the tap"
+  pass "forget all: no ANR in app.contigua in the 8s after the tap"
 fi
 if wait_for_text /data/local/tmp/pd-reset.xml 'No Macs paired yet.' 10; then
   pass "forget all: the list is empty"

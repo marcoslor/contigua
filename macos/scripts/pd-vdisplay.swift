@@ -232,7 +232,7 @@ guard let descriptor = make("CGVirtualDisplayDescriptor"),
       let makeDisplay = displayMaker() else {
     fail("no CGVirtualDisplay on this macOS")
 }
-descriptor.setValue("PocketDeck e2e", forKey: "name")
+descriptor.setValue("Contigua e2e", forKey: "name")
 descriptor.setValue(size.width * scale, forKey: "maxPixelsWide")
 descriptor.setValue(size.height * scale, forKey: "maxPixelsHigh")
 // HiDPI is only recognised at 200 PPI or more, so the physical size shrinks

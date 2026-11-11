@@ -6,7 +6,7 @@ paired, and leaves the phone as it found it: the caller owns the boot and the
 log parsing. It gathers the state dumps and markers that the shell check reads:
 
   display-*.txt   `dumpsys display` at the named moment (raw)
-  markers         `log -t PocketDeckLockedMulti` lines on the phone's clock
+  markers         `log -t ContiguaLockedMulti` lines on the phone's clock
 
 The scenario is the 11-01 field log: window 1 opens on the locked phone; the Mac
 covers it (window.pause) when window 2 takes the focus; window 2 closes; the Mac
@@ -23,7 +23,7 @@ sys.path.insert(0, "tools/fakephone")
 import deckctl  # noqa: E402
 import proto  # noqa: E402
 
-TAG = "PocketDeckLockedMulti"
+TAG = "ContiguaLockedMulti"
 
 
 def mark(adb, serial, what):

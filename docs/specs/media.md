@@ -4,7 +4,7 @@ Prefix: `MEDIA`. Owner docs: [design/notify.md](../design/notify.md) § "Media p
 
 ## Purpose
 
-What the phone plays, on the Mac: the chosen media session becomes the Mac's own Now Playing (so the system's player, Control Center and the keyboard's media keys drive the phone), and the audio of an open stream window plays on the Mac while the phone's speaker goes quiet. The person sees no track text in PocketDeck's own windows — the system's Now Playing shows it — except one picker naming which app follows when several play. The panel's layout, its volume row and where the picker sits are panel.md's (`PANEL-5`, `PANEL-13`, `PANEL-14`); the notification gate that permits all of this is notifications.md's (`NOTIFY-1`) and settings.md's (`SET-DEV-09`).
+What the phone plays, on the Mac: the chosen media session becomes the Mac's own Now Playing (so the system's player, Control Center and the keyboard's media keys drive the phone), and the audio of an open stream window plays on the Mac while the phone's speaker goes quiet. The person sees no track text in Contigua's own windows — the system's Now Playing shows it — except one picker naming which app follows when several play. The panel's layout, its volume row and where the picker sits are panel.md's (`PANEL-5`, `PANEL-13`, `PANEL-14`); the notification gate that permits all of this is notifications.md's (`NOTIFY-1`) and settings.md's (`SET-DEV-09`).
 
 ## User stories
 
@@ -40,7 +40,7 @@ The media volume row is the **phone's music stream** (`phone.volume`, panel.md `
 | MEDIA-9 | THE phone SHALL prefer Opus and fall back to AAC-LC only when its Opus encoder is missing, SHALL send 48 kHz stereo with one Opus frame (20 ms) or one AAC-LC access unit (1024 samples) per AUDIO_FRAME, SHALL drop old audio beyond ~250 ms rather than block JSON or video, and SHALL capture only while at least one window is open and unpaused; the Mac SHALL decode both codecs to 48 kHz stereo, SHALL play digital silence without stalling if it cannot decode a packet, and SHALL keep the played audio within 185 ms of the picture (CONV-PD-06). | e2e `audio` `[MEDIA-9]` (AAC 48 kHz stereo accepted); K2 `AudioEngineTests` (the format gate); e2e `audiogap` (the real-time AAC pacing, late_p95 92 ms, depth ≤ 200 ms); review of `AudioCapture`; DAC/Opus decode on the real phone is **untested** on this Mac |
 | MEDIA-10 | THE phone SHALL capture only what an open window shows where it can attribute the app (one loop-back mix of those app UIDs), SHALL capture the whole device when a phone-mode window is open or a window cannot be attributed, SHALL capture nothing when no window plays anything, and SHALL keep every other app on the phone speaker in the per-app mode; only one capture path SHALL be registered at a time and it SHALL end with the session. | K1 `AudioFollowTest` (six transition cases), `SessionAudioFollowTest`; the swap's sub-second gap and the real-speaker routing are **untested** (the e2e host has no phone audio) |
 | MEDIA-11 | THE phone's chosen session SHALL carry `volume`/`volumeMax`; a `media.command {action:"volume", level}` SHALL be clamped to `[0, volumeMax]` on the Mac and again on the phone, and the Mac SHALL send no volume command for a session that reports no maximum; no person-facing control SHALL send it (the `media` check drives it through the debug route). | e2e `media` `[MEDIA-11]` (99 asked of a 15 max, 15 at the phone, the confirming state); K2 `NotifyMacTests.testAVolumeCommandNeedsTheSessionsMaximum`; K1 `MediaControlTest` (`a volume level is clamped to the session maximum`) |
-| MEDIA-12 | THE forwarded sound SHALL play through the Mac's current default output at unity gain with no PocketDeck volume or mute control; WHEN the output device changes THE Mac SHALL stop the engine, discard the pre-buffer and restart on the next frame without aborting the process; there SHALL be one capture and one playback per phone. | K2 `AudioEngineTests.testVolumeAndMuteDriveGain`, `testMayPlayRequiresRunningEngineAndUsableOutputFormat`, `testJitterStartsAfterTargetAndCapsAtMax`; review of `AudioEngine.configurationChanged`; the device-change restart is **untested** |
+| MEDIA-12 | THE forwarded sound SHALL play through the Mac's current default output at unity gain with no Contigua volume or mute control; WHEN the output device changes THE Mac SHALL stop the engine, discard the pre-buffer and restart on the next frame without aborting the process; there SHALL be one capture and one playback per phone. | K2 `AudioEngineTests.testVolumeAndMuteDriveGain`, `testMayPlayRequiresRunningEngineAndUsableOutputFormat`, `testJitterStartsAfterTargetAndCapsAtMax`; review of `AudioEngine.configurationChanged`; the device-change restart is **untested** |
 | MEDIA-13 | THE Mac SHALL write no media title, artist, album or artwork bytes to a log, a crash report or the e2e share log: session keys, field lengths, sizes, dimensions and hash prefixes only. | e2e `media` `[MEDIA-13]` (no track text or picture bytes in any log); e2e `notify` (the media record's fields); K2 `NotifyMacTests.testMediaStateCarriesThePartTwoFieldsWithoutText` |
 | MEDIA-14 | WHILE the person only watches media — no control used — the Mac SHALL send no write to the phone. | **untested** — the check to write: an `nfr` phase that lets two `media.state`s arrive with no command and asserts the fake phone's `writes` counter unchanged |
 | MEDIA-15 | WHILE audio plays THE Mac SHALL buffer decoded audio to an adaptive target of the last 10 s p99 arrival lateness + 20 ms margin + one 20 ms frame, clamped to 60–180 ms (9 × 20 ms frames) so the played audio never trails the picture by more than the 185 ms A/V limit; the AAC fallback's 1024-sample packets make its queue 192 ms, within the codec's frame granularity and still under the video pipeline's delay, SHALL start playback only when that target is filled, SHALL count one underrun per dry spell and conceal it from the last real PCM with a decaying crossfade (at most 160 ms), SHALL drain a backlog above the target by time-compressing with a crossfade rather than cutting audio, and SHALL count underrun, late, concealed and dropped packets. | K2 `AudioJitterTests` (`testTargetFollowsTheMeasuredLateness`, `testTargetStaysInRange`, `testStarvationCountsOneUnderrunAndConceals`, `testConcealmentIsBounded`, `testStretchDrainsABacklogAndStopsAtTheTarget`, `testStretchKeepsPitchAndLength`, `testTheMeasuredArrivalPatternNeverStarves`); e2e `audiogap` `[MEDIA-15]` |
@@ -55,7 +55,7 @@ Priority note: MEDIA-1, 2, 5, 6, 8, 12, 13, 15, 16, 17, 18, 19 and 20 are P1; se
 
 ## States and events
 
-The Mac's media model is one small machine (`NowPlayingController`, `macOS/Sources/PocketDeck/NowPlaying.swift`): the phone's reports are the only truth, and a click only asks.
+The Mac's media model is one small machine (`NowPlayingController`, `macOS/Sources/Contigua/NowPlaying.swift`): the phone's reports are the only truth, and a click only asks.
 
 | State | Event | Result |
 |---|---|---|
@@ -160,7 +160,7 @@ Ignored events: a retransmission of a unit already handed over (chunks are lossy
 - The phone's notification-listener grant is the gate's other half (NOTIFY-2); a phone without it sends no media and the Mac's Now Playing stays empty.
 - Opus decodes through the system's AudioToolbox on macOS 26; AAC-LC is the fallback when the phone has no Opus encoder.
 - Audio follows open stream windows; the phone's own mixer decides which usages follow the capture (design/audio.md's risk).
-- The system's Now Playing is the Mac's only visible track surface; PocketDeck's own windows deliberately show none.
+- The system's Now Playing is the Mac's only visible track surface; Contigua's own windows deliberately show none.
 
 ## Non-goals
 
@@ -169,7 +169,7 @@ Ignored events: a retransmission of a unit already handed over (chunks are lossy
 - Per-window audio capture by itself: capture is per app UID or device-wide (MEDIA-10).
 - Media from a phone that is not in use, or several phones at once.
 - A person-facing session-volume control: the panel's slider is the phone's music stream (PANEL-13).
-- Artwork or titles in PocketDeck's own windows or logs.
+- Artwork or titles in Contigua's own windows or logs.
 
 ## Open questions
 

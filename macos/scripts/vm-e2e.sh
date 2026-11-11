@@ -109,7 +109,7 @@ if vm_running; then
     vm_stop
 fi
 
-say "building build/e2e/PocketDeck.app on the host"
+say "building build/e2e/Contigua.app on the host"
 # The File Provider extension is opt-in: only the bundle for a files-domain
 # run carries it (a host run must have nothing to register).
 files_flag=()
@@ -120,7 +120,7 @@ for c in "${CHECKS[@]}"; do
         controls) controls_flag=(--with-controls) ;;
     esac
 done
-if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e \
+if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/Contigua.app" --variant e2e \
         ${files_flag[@]+"${files_flag[@]}"} ${controls_flag[@]+"${controls_flag[@]}"} > "$OUT/host-build.log" 2>&1; then
     say "host build failed; see $OUT/host-build.log"; tail -5 "$OUT/host-build.log"; exit 3
 fi
@@ -162,7 +162,7 @@ export PD_E2E_VISIBLE="$visible"
 # PD_E2E_IN_VM: the checks that need something this guest lacks (XCTest) can
 # skip instead of failing; a host run never sets it.
 export PD_E2E_IN_VM=1
-export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/PocketDeck.app"
+export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/Contigua.app"
 export PD_FAKE_TLS_PYTHON=/opt/homebrew/bin/python3
 # PD_VM_FAKE_DEBUG=1 makes the guest's fakephone print its session diagnostics
 # to fake.err (the shared phone keeps them for the whole run), for diagnosing a
@@ -212,14 +212,14 @@ for check in "$@"; do
     wait "$watchdog_pid" 2>/dev/null
     cat "$log"
     [ "$last" = 0 ] || failed=$((failed + 1))
-    work="/tmp/pocketdeck-e2e-$port"
+    work="/tmp/contigua-e2e-$port"
     [ -d "$work" ] && cp -R "$work" "$art/$check/work"
     echo "vm-check $check exit=$last"
 done
 # The guest's session log for the run, for a post-mortem: state changes,
 # transport errors and watchdog lines only (no clipboard or notification
 # text). The checks' own logs are already in $art.
-log show --last 45m --style compact --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null \
+log show --last 45m --style compact --predicate 'subsystem == "app.contigua.mac"' 2>/dev/null \
     | grep -E 'session|tls|watchdog|connect' | grep -vE 'clip|notif' > "$art/session.log" || true
 if [ "$#" = 1 ]; then exit "$last"; fi
 exit "$failed"

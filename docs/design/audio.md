@@ -18,7 +18,7 @@ at amplitude 8000 (RMS 5657) in a separate process:
   the AudioPolicy/AudioMix route then failed on API 36 (`legacy2aidl_AudioMix
   BAD_VALUE`) and is gone.
 - The record's attribution must be uid 2000 + `com.android.shell`
-  (`AudioRecord.Builder().setContext(ShellContext)`); `dev.pocketdeck` at uid
+  (`AudioRecord.Builder().setContext(ShellContext)`); `app.contigua` at uid
   2000 is rejected by AudioFlinger (`invalid attr`).
 - With nothing playing the submix input synthesizes silence ~25% faster than
   realtime; the capture loop drops chunks that run >40 ms ahead of the clock.
@@ -32,7 +32,7 @@ aligned per run, ±30 ms): 79, 81, 95, 103, 126 ms; 0 dropped.
 
 ## Approach
 
-Phone (shell service, `dev.pocketdeck:…`):
+Phone (shell service, `app.contigua:…`):
 
 - New `AudioStream`: one device-wide capture, not per-window (submix is a
   single mixer tap). Lifecycle tied to session windows: start on first
@@ -55,7 +55,7 @@ Phone (shell service, `dev.pocketdeck:…`):
   Backpressure: drop oldest audio beyond ~250ms (same budget as video), never
   block JSON/video. No retransmit.
 
-Mac (`PocketDeck`):
+Mac (`Contigua`):
 
 - New `AudioEngine`: `AVAudioEngine` + `AVAudioPlayerNode` with an adaptive
   jitter buffer. The target is the last 10 s p99 arrival lateness + 20 ms

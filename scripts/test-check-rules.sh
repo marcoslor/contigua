@@ -13,8 +13,8 @@ CHECK="$HERE/check-rules.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-rules-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-SRC=macos/Sources/PocketDeck
-TESTS=macos/Tests/PocketDeckTests
+SRC=macos/Sources/Contigua
+TESTS=macos/Tests/ContiguaTests
 KT_TEST=android/app/src/test/java/x
 KT_MAIN=android/app/src/main/java/x
 
@@ -32,7 +32,7 @@ bad() {
 }
 
 # The UX table that check-rules.sh parses for R-KEY-1 (docs/UX.md).
-UX_TABLE='# PocketDeck — UX spec
+UX_TABLE='# Contigua — UX spec
 
 ## Keyboard shortcuts
 

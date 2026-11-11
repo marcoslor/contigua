@@ -31,7 +31,7 @@ machine (§4), which also fixes the root causes of A01–A03.
 
 | Window | Kind | Opens | Notes |
 |---|---|---|---|
-| **Deck** | SwiftUI `Window("PocketDeck", id: "deck")` | launch; Dock click; ⌘K; menu-bar "Open PocketDeck" | The only main window. Default 760×600, min 560×420, single instance. Closing hides it; the app keeps running. |
+| **Deck** | SwiftUI `Window("Contigua", id: "deck")` | launch; Dock click; ⌘K; menu-bar "Open Contigua" | The only main window. Default 760×600, min 560×420, single instance. Closing hides it; the app keeps running. |
 | **App window** | AppKit `NSWindow` per stream (`AppWindowController`) | click an app in the Deck / ↩ | Content only (§3.7). |
 | **Phone Mirror** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
 | **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
@@ -62,8 +62,8 @@ and with Reduce Transparency / Increase Contrast (system fallbacks only).
   toolbar hidden. Content frame 560×520 (window `contentSize` for this mode; the Deck animates to its
   resizable size when it leaves Welcome).
 - Centered glass card, 440 wide, padding 32, `glassEffect(.regular, in: .rect(cornerRadius: 28))`,
-  VStack spacing 24: app icon 96 · "PocketDeck" `.largeTitle.bold()` · "Your Android apps, on your Mac."
-  `.title3 .secondary` · three step rows (`iphone.and.arrow.forward` "Install PocketDeck on your phone",
+  VStack spacing 24: app icon 96 · "Contigua" `.largeTitle.bold()` · "Your Android apps, on your Mac."
+  `.title3 .secondary` · three step rows (`iphone.and.arrow.forward` "Install Contigua on your phone",
   `bolt.badge.checkmark` "Start Shizuku" + `Link("How?")`, `wifi` "Be on the same Wi-Fi") ·
   **Find my phone** `.glassProminent .controlSize(.large)`, full width.
 - Action → Nearby (cross-fade, 0.3 s `.smooth`). ↩ triggers the primary button.
@@ -83,11 +83,11 @@ size 480×460) from Settings ▸ Phones ▸ **Add Phone…** and ⇧⌘N when a 
   Whole row is also clickable (= Pair). No device ids.
 - Footer (`GlassEffectContainer`): **Pair with QR** (`qrcode`) · **Connect manually…** (`network`), `.glass`.
 - **Empty/searching:** centered `ProgressView().controlSize(.small)`, "Looking for phones on this
-  network…", `.callout .tertiary` "Make sure PocketDeck is open on your phone." Appears 0.4 s after the
+  network…", `.callout .tertiary` "Make sure Contigua is open on your phone." Appears 0.4 s after the
   view (no flash for phones that are found instantly). After 15 s with nothing, line 2 becomes
   "Still nothing? Try Pair with QR." (no error).
 - **Browse failure** (Local Network denied: `NWBrowser` `.failed`/`.waiting(PolicyDenied)`): one red-less
-  `.callout` line replacing the empty-state text: "PocketDeck needs Local Network access. Open System
+  `.callout` line replacing the empty-state text: "Contigua needs Local Network access. Open System
   Settings → Privacy & Security → Local Network." with a **Open Settings** `.glass` button (opens the pane).
 - Tapping **Pair** → §4.3 (code flow). The sheet-hosted variant dismisses itself on success.
 - Esc closes the sheet variant.
@@ -172,7 +172,7 @@ backgrounds), window background default.
   | offline (≥ 15 s) | "Can't reach *name*. Check that it's on the same Wi-Fi." | Try now |
   | busy | "Another Mac is connected to *name*." | Try now |
   | needsPairing | "*name* no longer trusts this Mac." | **Pair again** (`.glassProminent`) |
-  | versionMismatch | "*name* runs an incompatible version of PocketDeck." | — |
+  | versionMismatch | "*name* runs an incompatible version of Contigua." | — |
   | Local Network denied | as §3.2 | Open Settings |
   | open failed (`launch_failed`) | "Couldn't open *app* on the phone." (auto-clears 5 s) | — |
 
@@ -300,7 +300,7 @@ toolbar item group:
   row of two normal-text buttons: **Phone Mirror** ⌘P · **Apps** ⌘K (VoiceOver "Find Apps") · a **gear** at the
   card's top-right. **Install APK…** is not on the card: it stays in the Phone menu, the Deck's drop and Finder's
   Open With. The panel's own commands are the icon's: a secondary click (right-click, or ⌃-click) opens **Settings…**
-  ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q under the icon, closing the card first, and the gear opens the
+  ⌘, · **About Contigua** · **Quit Contigua** ⌘Q under the icon, closing the card first, and the gear opens the
   same menu anchored under the gear. The Deck popover has neither the gear nor a footer.
 - **Ringer** opens a menu (**Ring** / **Vibrate** / **Silent**) with the phone's current mode checked; it never
   cycles on click. The module's second line names the current mode. It is disabled, with a reason, when the phone sends
@@ -326,7 +326,7 @@ toolbar item group:
   another (SwiftUI emits one at a group's edge). It runs when the bar changes (debounced, so never on a menu SwiftUI is still
   building) and at once when a menu opens; it never removes a separator at a menu's edge and never adds, moves or
   retitles an item.
-  *PocketDeck* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
+  *Contigua* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
   *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density › · ── · Enter Full Screen fn‑F) ·
@@ -484,7 +484,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 
 | Piece | Tech | Why |
 |---|---|---|
-| `@main PocketDeckApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`; the menu bar is an AppKit status item | SwiftUI + AppKit | scenes, sheets, glass, `.searchable`, `SMAppService`, `NSStatusItem` |
+| `@main ContiguaApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`; the menu bar is an AppKit status item | SwiftUI + AppKit | scenes, sheets, glass, `.searchable`, `SMAppService`, `NSStatusItem` |
 | Deck / Welcome / Nearby / Phone grid / Code / QR / Manual / Settings / banner / chip | SwiftUI | pure view state |
 | Stream windows (`StreamWindowController`, `AppWindow`, `PhoneWindow`), `VideoLayerView`, `InputMapper`, `DebugInput`, gestures | **AppKit (unchanged)** | NSEvent fidelity, `AVSampleBufferDisplayLayer`, resize/occlusion |
 | Link-down pill, stream hover chrome | AppKit host (`NSGlassEffectView`) + SwiftUI content | lives inside the video window |
@@ -518,7 +518,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 
 ### 6.3 Files (suggested)
 
-`App/PocketDeckApp.swift`, `App/AppDelegate.swift`, `App/MenuBuilder.swift` · `Connection/{ConnectionController, Link, ReconnectPolicy, Session, Discovery, ConnectionFailure}.swift` ·
+`App/ContiguaApp.swift`, `App/AppDelegate.swift`, `App/MenuBuilder.swift` · `Connection/{ConnectionController, Link, ReconnectPolicy, Session, Discovery, ConnectionFailure}.swift` ·
 `Store/{Profile, RememberedPhones, AppsCache, PairKeyStore}.swift` · `Deck/{DeckView, WelcomeView, NearbyView, AppGridView, StatusChip, BannerView}.swift` ·
 `Pairing/{CodeSheet, QRSheet, ManualSheet, PairingModel, QRPairingModel}.swift` · `Settings/{SettingsView, DevicesTab}.swift` · `Windows/` (existing stream files + `LinkPill`, `WindowChrome`).
 Phase B may keep the flat layout if moving files would make the diff hard to review.

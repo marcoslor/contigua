@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""deckctl - fake Mac client and conformance tester for PocketDeck phones.
+"""deckctl - fake Mac client and conformance tester for Contigua phones.
 
 Talks docs/PROTOCOL.md v1 to any phone server (this repo's fake phone today,
 the real Android server later). Exits non-zero with a clear message on any
@@ -35,8 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import proto  # noqa: E402
 
 DNS_SD = "/usr/bin/dns-sd"
-SERVICE_TYPE = "_pocketdeck._tcp"
-DEFAULT_STATE = os.path.expanduser("~/.pocketdeck-deckctl.json")
+SERVICE_TYPE = "_contigua._tcp"
+DEFAULT_STATE = os.path.expanduser("~/.contigua-deckctl.json")
 DEFAULT_TIMEOUT = 10.0
 HANDSHAKE_TIMEOUT = 20.0
 # A second session must fail with `busy` immediately (test_selfcheck.sh asserts
@@ -103,7 +103,7 @@ class ClientState(object):
     def ensure_identity(self, name):
         """The TLS identity (P-256 self-signed) in a dir beside this state file."""
         self.identity_dir = self.path + ".identity"
-        self.fp_hex = proto.make_identity(self.identity_dir, cn="PocketDeck deckctl")
+        self.fp_hex = proto.make_identity(self.identity_dir, cn="Contigua deckctl")
         if not self.client_id:
             self.client_id = str(uuid.uuid4())
         if name:
@@ -603,7 +603,7 @@ def _browse_instances(timeout, want_name=None):
             line = browser.readline(deadline - time.time())
             if line is None:
                 break
-            m = re.search(r"\bAdd\b.*_pocketdeck\._tcp\.\s+(.+?)\s*$", line)
+            m = re.search(r"\bAdd\b.*_contigua\._tcp\.\s+(.+?)\s*$", line)
             if not m:
                 continue
             name = m.group(1).strip()
@@ -2978,7 +2978,7 @@ def cmd_fs(client, args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="Fake Mac client / conformance tester for PocketDeck.",
+    p = argparse.ArgumentParser(description="Fake Mac client / conformance tester for Contigua.",
                                 allow_abbrev=False)
     p.add_argument("--host", help="phone host")
     p.add_argument("--port", type=int, help="phone port")

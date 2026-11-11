@@ -1,4 +1,4 @@
-# fakephone — fake PocketDeck phone + conformance client
+# fakephone — fake Contigua phone + conformance client
 
 A protocol-faithful test harness for [docs/PROTOCOL.md](../../docs/PROTOCOL.md)
 v4 (TLS 1.3 client certificates, pins, reliable paths). Python 3.11+ for the TLS parts (3.9's
@@ -86,7 +86,7 @@ speaks protocol N (default 4; `3` refuses a v4 Mac with `error version`);
 time (`pong ID on|off|delay [MS]`, `slow ID MS`, `drop ID`).
 
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
-`--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.pocketdeck-fakephone.json`),
+`--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.contigua-fakephone.json`),
 `--events` (JSON Lines log, flushed per line), `--no-labels` (skip the stream
 label overlay), `--image-frame PATH` (encode that still picture in every
 stream, cover-cropped to the stream's size and with no label: a visual
@@ -97,7 +97,7 @@ restarting the encoder: the real phone's config on a resume, followed by deltas
 against the pre-config chain), `--demo-apps N` (pads the app list to N apps for grid screenshots;
 `--no-icon-every K` leaves every K-th one without an icon, answered with an empty
 `png` like the real phone), `--qr-uri URI` (simulates a QR scan: registers the client id and
-key from a `pocketdeck://pair?c=&n=&k=` URI as paired, so the next `auth`
+key from a `contigua://pair?c=&n=&k=` URI as paired, so the next `auth`
 succeeds without any `pair.request`). The pairing code is sent in `pair.code_shown`
 and printed to the terminal; Allow (`--auto-allow` or the y/n prompt) is the only
 step, there is no `pair.confirm`. Paired clients are persisted, so a second
@@ -200,7 +200,7 @@ python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 apps
 python3 tools/fakephone/deckctl.py --discover apps
 ```
 
-`--state` (default `~/.pocketdeck-deckctl.json`) stores the client id and per-device
+`--state` (default `~/.contigua-deckctl.json`) stores the client id and per-device
 keys; `--pair` pairs on first contact: it prints the code the phone shows (`--code-file F`
 also writes it to `F`) and waits for Allow on the phone.
 Subcommands:

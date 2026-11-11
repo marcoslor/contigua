@@ -4,7 +4,7 @@
 `dumpsys display` gives each logical display a `Display <id>:` block with
 `mState=`; the virtual displays created by the session are logical displays too.
 The log facts are the episode's own lines and SurfaceFlinger's physical power
-mode writes, plus the driver's `PocketDeckLockedMulti` markers.
+mode writes, plus the driver's `ContiguaLockedMulti` markers.
 
     locked-multi-read.py --state <dump> <displayId>
     locked-multi-read.py --facts <logcat> <display1> <display2>
@@ -14,7 +14,7 @@ mode writes, plus the driver's `PocketDeckLockedMulti` markers.
 import re
 import sys
 
-TAG = "PocketDeckLockedMulti"
+TAG = "ContiguaLockedMulti"
 INDEX_STATES = {0: "OFF", 1: "ON", 2: "DOZE", 3: "DOZE_SUSPEND", 4: "ON_SUSPEND"}
 SF_MODE = re.compile(r"Setting power mode (\d+) on physical display")
 # logcat's `MM-DD HH:MM:SS.mmm`; parsed by hand because a day without a year is
@@ -61,7 +61,7 @@ def stamp(line):
     return ((day * 24 + hour) * 60 + minute) * 60 + second + millis / 1000.0
 
 
-VD_STATE = re.compile(r'Display device changed state: "pocketdeck-(\d+)", ([A-Z_]+)')
+VD_STATE = re.compile(r'Display device changed state: "contigua-(\d+)", ([A-Z_]+)')
 
 
 def vd_states(lines, stream=1):
@@ -169,33 +169,33 @@ FIXTURE_DISPLAY = """Logical Displays: size=2
     mState=OFF
   Display 69:
     mDisplayId=69
-    mBaseDisplayInfo=DisplayInfo{"pocketdeck-1", displayId 69, displayGroupId 0, real 640 x 480, state ON, committedState UNKNOWN, type VIRTUAL}
+    mBaseDisplayInfo=DisplayInfo{"contigua-1", displayId 69, displayGroupId 0, real 640 x 480, state ON, committedState UNKNOWN, type VIRTUAL}
   Display 70:
     mDisplayId=70
     mState=OFF
 """
 
-FIXTURE_LOG = """11-01 12:30:25.886 I/PocketDeckSvc(10429): stream 7 vd=70 1792x1200 dpi=319
-11-01 12:30:25.890 I/PocketDeckLockedMulti: one-open
-11-01 12:30:25.895 I/DisplayDeviceRepository( 636): Display device changed state: "pocketdeck-1", ON
-11-01 12:30:25.891 I/PocketDeckLockedMulti: one-paused
-11-01 12:30:25.892 I/PocketDeckLockedMulti: two-open
-11-01 12:30:25.893 I/PocketDeckSvc(10429): display wake lock released (display 69)
-11-01 12:30:25.894 I/PocketDeckSvc(10429): display wake lock held (display 70, SCREEN_BRIGHT, display-scoped)
-11-01 12:30:25.900 I/PocketDeckSvc(10429): power: episode take-over: display 70 woken before the launch; panel off owed
+FIXTURE_LOG = """11-01 12:30:25.886 I/ContiguaSvc(10429): stream 7 vd=70 1792x1200 dpi=319
+11-01 12:30:25.890 I/ContiguaLockedMulti: one-open
+11-01 12:30:25.895 I/DisplayDeviceRepository( 636): Display device changed state: "contigua-1", ON
+11-01 12:30:25.891 I/ContiguaLockedMulti: one-paused
+11-01 12:30:25.892 I/ContiguaLockedMulti: two-open
+11-01 12:30:25.893 I/ContiguaSvc(10429): display wake lock released (display 69)
+11-01 12:30:25.894 I/ContiguaSvc(10429): display wake lock held (display 70, SCREEN_BRIGHT, display-scoped)
+11-01 12:30:25.900 I/ContiguaSvc(10429): power: episode take-over: display 70 woken before the launch; panel off owed
 11-01 12:30:25.955 D/SurfaceFlinger( 1872): Setting power mode 2 on physical display 42
 11-01 12:30:26.454 D/SurfaceFlinger( 1872): Setting power mode 0 on physical display 42
-11-01 12:30:29.694 I/PocketDeckSvc(10429): power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
-11-01 12:30:30.000 I/PocketDeckLockedMulti: tap
-11-01 12:30:50.560 I/PocketDeckLockedMulti: two-close
-11-01 12:30:51.300 I/DisplayDeviceRepository( 636): Display device changed state: "pocketdeck-1", OFF
-11-01 12:30:50.560 I/PocketDeckLockedMulti: one-resume
-11-01 12:30:50.546 I/PocketDeckSvc(10429): phone back to sleep after the last stream
-11-01 12:30:51.560 I/PocketDeckSvc(10429): keepalive step 2 interval=2000ms displayLocks=1
+11-01 12:30:29.694 I/ContiguaSvc(10429): power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+11-01 12:30:30.000 I/ContiguaLockedMulti: tap
+11-01 12:30:50.560 I/ContiguaLockedMulti: two-close
+11-01 12:30:51.300 I/DisplayDeviceRepository( 636): Display device changed state: "contigua-1", OFF
+11-01 12:30:50.560 I/ContiguaLockedMulti: one-resume
+11-01 12:30:50.546 I/ContiguaSvc(10429): phone back to sleep after the last stream
+11-01 12:30:51.560 I/ContiguaSvc(10429): keepalive step 2 interval=2000ms displayLocks=1
 11-01 12:30:53.570 I/ActivityManager( 2328): START u0 {cmp=com.android.settings/.Settings}
 11-01 12:30:53.580 W/InputDispatcher( 2328): Not sending touch gesture to x ActivityRecordInputSink com.android.settings because it has config NO_INPUT_CHANNEL
-11-01 12:30:53.590 I/PocketDeckLockedMulti: settled
-11-01 12:30:53.600 I/PocketDeckLockedMulti: closed
+11-01 12:30:53.590 I/ContiguaLockedMulti: settled
+11-01 12:30:53.600 I/ContiguaLockedMulti: closed
 """
 
 

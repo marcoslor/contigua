@@ -1,7 +1,7 @@
 # Links Mac → phone (ROADMAP #5)
 
 Send a link from any Mac app to a phone; it opens in the Android app that handles it,
-in a new PocketDeck window (its own virtual display).
+in a new Contigua window (its own virtual display).
 
 ## Entry points (Mac)
 - **Share menu** "Open on Phone": a Share extension (`Share.appex`, `com.apple.share-services`)
@@ -10,14 +10,14 @@ in a new PocketDeck window (its own virtual display).
   (or text that is / contains exactly one link), hands it to the app and closes. Activation:
   `SupportsWebURLWithMaxCount 1` + `SupportsText`; text without a link cancels the request.
 - **Services** "Open on Phone" and **dragging** a URL / `.webloc` onto the Deck.
-- **Hand-off (internal pipe)**: the extension opens `pocketdeck://open?url=…[&phone=id]` with
+- **Hand-off (internal pipe)**: the extension opens `contigua://open?url=…[&phone=id]` with
   `NSWorkspace.open(_:withApplicationAt:)` naming its *containing* app, so LaunchServices can
-  never route it to another PocketDeck copy. The open does not activate the app: the person
+  never route it to another Contigua copy. The open does not activate the app: the person
   stays in the app they shared from and the link opens on the phone (the app's own link path
   decides what to show). The sandbox allows this (verified), and it needs no
   app group, XPC service or shared container. The scheme is plumbing, not a user feature.
-- Only `bundle.sh --variant release` (install.sh) uses the id `dev.pocketdeck.mac.share`; other
-  bundles get `dev.pocketdeck.mac.share-<variant>` titled "Open on Phone (<variant>)", and
+- Only `bundle.sh --variant release` (install.sh) uses the id `app.contigua.mac.share`; other
+  bundles get `app.contigua.mac.share-<variant>` titled "Open on Phone (<variant>)", and
   check-e2e unregisters its copy (`pluginkit -r`, `lsregister -u`) on exit.
 
 ## Validation (both sides, same rules)

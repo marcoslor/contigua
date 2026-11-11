@@ -3,7 +3,7 @@
      fakes the emulator/E2E checks drive from adb (docs/design/notify.md).
      Release builds never see any of it. DUMP is held by the shell (adb) and by
      no ordinary app, so no other app on a phone running a debug build can make
-     PocketDeck post a notification or send it a stage. -->
+     Contigua post a notification or send it a stage. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application>
@@ -13,15 +13,15 @@
              enabled SEND filter would put a test target in every share sheet.
              tools/emulator/share-display.sh runs `pm enable` on them. -->
         <activity
-            android:name="dev.pocketdeck.app.ShareDebugActivity"
+            android:name="app.contigua.app.ShareDebugActivity"
             android:enabled="false"
             android:exported="true"
-            android:theme="@style/Theme.PocketDeck" />
+            android:theme="@style/Theme.Contigua" />
         <activity
-            android:name="dev.pocketdeck.app.ShareDebugSendActivity"
+            android:name="app.contigua.app.ShareDebugSendActivity"
             android:enabled="false"
             android:exported="true"
-            android:theme="@style/Theme.PocketDeck">
+            android:theme="@style/Theme.Contigua">
             <intent-filter android:priority="1000">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -32,39 +32,39 @@
              launch with no calling activity has no task to reuse and the
              system has to choose a display for it. -->
         <activity
-            android:name="dev.pocketdeck.app.ShareDebugPickerActivity"
+            android:name="app.contigua.app.ShareDebugPickerActivity"
             android:enabled="false"
             android:exported="false"
             android:taskAffinity=""
-            android:theme="@style/Theme.PocketDeck" />
+            android:theme="@style/Theme.Contigua" />
 
         <!-- A2's two fields (SHARE-16): a plain EditText and one whose
              OnReceiveContentListener takes image/*. Debug builds only; the
              checks drive it from adb, so it is exported. -->
         <activity
-            android:name="dev.pocketdeck.app.PasteDebugActivity"
+            android:name="app.contigua.app.PasteDebugActivity"
             android:exported="true"
-            android:theme="@style/Theme.PocketDeck" />
+            android:theme="@style/Theme.Contigua" />
         <receiver
-            android:name="dev.pocketdeck.app.NotifyDebugPoster"
+            android:name="app.contigua.app.NotifyDebugPoster"
             android:exported="true"
             android:permission="android.permission.DUMP">
             <intent-filter>
-                <action android:name="dev.pocketdeck.DEBUG_NOTIFY" />
+                <action android:name="app.contigua.DEBUG_NOTIFY" />
             </intent-filter>
         </receiver>
         <receiver
-            android:name="dev.pocketdeck.app.NotifyDebugResult"
+            android:name="app.contigua.app.NotifyDebugResult"
             android:exported="false" />
 
         <!-- One or two fake media sessions (artwork, seek, volume, choosing
              between apps), driven from adb like the poster above. -->
         <receiver
-            android:name="dev.pocketdeck.app.MediaDebugTrigger"
+            android:name="app.contigua.app.MediaDebugTrigger"
             android:exported="true"
             android:permission="android.permission.DUMP">
             <intent-filter>
-                <action android:name="dev.pocketdeck.DEBUG_MEDIA" />
+                <action android:name="app.contigua.DEBUG_MEDIA" />
             </intent-filter>
         </receiver>
     </application>

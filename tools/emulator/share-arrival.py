@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One PocketDeck window and the two share triggers, ISS-51's emulator driver.
+"""One Contigua window and the two share triggers, ISS-51's emulator driver.
 
 Opens `window.open` for the debug stand-in (`ShareDebugActivity`) on a virtual
 display, then on a schedule sends the Mac's image paste (clip.image with
@@ -27,7 +27,7 @@ import deckctl  # noqa: E402
 import proto  # noqa: E402
 
 KEYCODE_PASTE = 279
-PACKAGE = "dev.pocketdeck"
+PACKAGE = "app.contigua"
 ACTIVITY = ".app.ShareDebugActivity"
 
 

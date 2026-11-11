@@ -1,4 +1,4 @@
-# PocketDeck — Design system (v0)
+# Contigua — Design system (v0)
 
 Companion to [UX.md](UX.md) (flows and copy). This file is prescriptive: use these exact
 APIs and values. If something is not specified here, use the platform default and do
@@ -31,7 +31,7 @@ not invent styling. No hard-coded colors except where a hex is given below.
 
 ### Deck (one window; Welcome, Nearby and Phone are its states)
 Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-redesign.md) §3. Values:
-- `Window("PocketDeck", id: "deck")`, default 760×600, min 640×420 (below that the toolbar's pill and Phone button fall into the overflow menu; below 592 the A–Z rail hides rather than shrink its 20 pt targets), `.windowResizability(.contentMinSize)`; the standard titled
+- `Window("Contigua", id: "deck")`, default 760×600, min 640×420 (below that the toolbar's pill and Phone button fall into the overflow menu; below 592 the A–Z rail hides rather than shrink its 20 pt targets), `.windowResizability(.contentMinSize)`; the standard titled
   window with the macOS 26 glass toolbar. No custom window backgrounds except Welcome.
 - **Welcome:** plain system window background (no gradient), toolbar hidden; centered card 440 wide, padding 32,
   `.glassEffect(.regular, in: .rect(cornerRadius: 28))`, VStack spacing 24: app icon 96 · title · tagline · three step rows
@@ -41,7 +41,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   `.subheadline .secondary` · Spacer · **Pair** `.glassProminent .controlSize(.small)` (remembered phones: "Paired" `.secondary`;
   rejected: "Pair again" `.orange` + button). Row padding 12, ≥ 52 pt, `.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`.
   Footer: **Pair with QR** · **Connect manually…** `.glass` in a `GlassEffectContainer`. Empty state: `ProgressView().controlSize(.small)` +
-  "Looking for phones on this network…" `.body .secondary` + "Make sure PocketDeck is open on your phone." `.callout .tertiary`, shown after 0.4 s.
+  "Looking for phones on this network…" `.body .secondary` + "Make sure Contigua is open on your phone." `.callout .tertiary`, shown after 0.4 s.
 - **Phone mode toolbar:** `navigationTitle` = the phone's user-visible name (Settings > About phone; the model only when the phone has none — it arrives as `welcome.device.name`);
   `ToolbarItem(.status)` pill, `.caption`, 10 pt horizontal padding, ≥ 28 pt high: 7 pt `circle.fill` (green connected, secondary connecting/offline, orange reconnecting with
   `.symbolEffect(.pulse)` or pair again). **Connected shows the dot alone** (the title names the phone); every other state adds its text. When connected: `lock.fill` `.secondary` only
@@ -124,7 +124,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - Success: `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.6 s.
 
 ### QR sheet
-- `.sheet`, width 360, padding 32, VStack spacing 16: title "Scan with PocketDeck on your phone" `.title3.weight(.semibold)`; QR rendered via `CIFilter.qrCodeGenerator()`
+- `.sheet`, width 360, padding 32, VStack spacing 16: title "Scan with Contigua on your phone" `.title3.weight(.semibold)`; QR rendered via `CIFilter.qrCodeGenerator()`
   (correctionLevel "M"), `.interpolation(.none)`, on a **white** `RoundedRectangle(cornerRadius: 16)` with 16 pt padding in both appearances (scan reliability);
   "Expires in 4:59" `.caption .secondary .monospacedDigit()`; "Waiting for your phone…" `.callout .secondary`; **Cancel** `.glass`.
 - Success: QR crossfades to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.8 s. Expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
@@ -206,7 +206,7 @@ using the phone with fingers.
   (`white` 32 % fill, 1.5 pt `white` 85 % border, soft shadow) is drawn over the video at the position the phone was told, fading out in 0.2 s when the pointer goes up. It shows what Android sees, including
   the one finger of a scroll; mouse clicks are not drawn.
 - **Compared with the Xcode Simulator.** The Simulator has a pointer and a trackpad too, and settles it differently: a click is a finger; holding Option shows two mirrored fingers around the centre for
-  pinch, and moving them (Shift locks them together) is its two-finger gesture; a trackpad scroll is converted into a drag. PocketDeck keeps the click-is-a-finger and scroll-is-a-drag parts (but keeps the
+  pinch, and moving them (Shift locks them together) is its two-finger gesture; a trackpad scroll is converted into a drag. Contigua keeps the click-is-a-finger and scroll-is-a-drag parts (but keeps the
   wheel a wheel) and drops the modifier: the trackpad's own pinch, rotate and two-finger gestures are the gestures, because the raw fingers are available, so a pinch needs no mode, follows the real finger
   distance and rotation, pans while it zooms, and is anchored at the cursor like a thumb on the glass. The Option-drag dots are what Show Touches draws, for any gesture. The mirrored-dots mode remains the
   fallback for a Mac without trackpad touches, as the magnify/rotate emulation.
@@ -225,7 +225,7 @@ using the phone with fingers.
 
 ### Menu bar
 - `NSStatusItem.variableLength` with `MenuBarPanel`/`MenuBarContent`: AppKit's own status item (SwiftUI's `MenuBarExtra` could not close on a second click), opening a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: the button's template image — Connected `apps.iphone` · Reconnecting swaps two frames of that image · Offline `iphone.slash`; the AI agent's dot is drawn into a slot the image reserves in both states.
-- `PhonePanelView` (PhonePanel.swift), one component shared with the Deck popover, 300 pt wide, 12 pt inset (P2): header (phone symbol, name — a checkmark pop-up with 2+ phones —, status dot + text, lock, battery; the last-seen line while away) · agent row ("AI agent connected" + **Disconnect**) · one full-width **Sound** module (speaker, "Sound", the phone's %, the `Slider`) · 2×2 modules (134 pt wide, ≥ 62 pt high, 8 pt gap, 12 pt corners): **Focus** (Do Not Disturb / Off), **Ringer**, **Ring Phone** / **Stop Ringing** (Plays a sound / Ringing), **Turn Off Screen** (Screen on / Screen off) · **Now playing** with the chosen app when ≥ 2 sessions play · **Live** rows, each with its own **Dismiss** · **Open <App> on Mac** only while the phone reports an app in front · one **WINDOWS** row of two normal-text buttons (**Phone Mirror** / **Apps**) · a **gear** at the card's top-right that opens the icon's own menu (**Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q) anchored under the gear, which a secondary click on the status item also opens under the item, closing the card first. While the phone is away the Sound module carries the one reason and the modules dim with no second line. **Install APK…** is not on the card; it stays in the Phone menu, the Deck's drop and Finder's Open With.
+- `PhonePanelView` (PhonePanel.swift), one component shared with the Deck popover, 300 pt wide, 12 pt inset (P2): header (phone symbol, name — a checkmark pop-up with 2+ phones —, status dot + text, lock, battery; the last-seen line while away) · agent row ("AI agent connected" + **Disconnect**) · one full-width **Sound** module (speaker, "Sound", the phone's %, the `Slider`) · 2×2 modules (134 pt wide, ≥ 62 pt high, 8 pt gap, 12 pt corners): **Focus** (Do Not Disturb / Off), **Ringer**, **Ring Phone** / **Stop Ringing** (Plays a sound / Ringing), **Turn Off Screen** (Screen on / Screen off) · **Now playing** with the chosen app when ≥ 2 sessions play · **Live** rows, each with its own **Dismiss** · **Open <App> on Mac** only while the phone reports an app in front · one **WINDOWS** row of two normal-text buttons (**Phone Mirror** / **Apps**) · a **gear** at the card's top-right that opens the icon's own menu (**Settings…** ⌘, · **About Contigua** · **Quit Contigua** ⌘Q) anchored under the gear, which a secondary click on the status item also opens under the item, closing the card first. While the phone is away the Sound module carries the one reason and the modules dim with no second line. **Install APK…** is not on the card; it stays in the Phone menu, the Deck's drop and Finder's Open With.
 - **Ringer** opens Ring / Vibrate / Silent with the current mode checked (never cycles); its second line names the mode. **Turn Off Screen** says Screen on / Screen off and needs a Phone Mirror. **Volume** is a three-state control: Idle follows the phone, Dragging follows the pointer and ignores echoes with sends capped at 10/s plus the release, Settling shows the sent value until the echo or one second, after which the phone wins.
 - The Deck's status pill opens the same view in a `.popover` (one component, one copy, no footer, no gear).
 - Nothing is modal: pairing failures are inline in the code sheet.
@@ -233,7 +233,7 @@ using the phone with fingers.
 ## 2. Android (Compose + Material 3, minSdk 30)
 
 ### Theme
-- `PocketDeckTheme`: `if (Build.VERSION.SDK_INT >= 31) dynamicLight/DarkColorScheme(context) else lightScheme/darkScheme`, dark from `isSystemInDarkTheme()`.
+- `ContiguaTheme`: `if (Build.VERSION.SDK_INT >= 31) dynamicLight/DarkColorScheme(context) else lightScheme/darkScheme`, dark from `isSystemInDarkTheme()`.
 - Fallback schemes: generate with Material Theme Builder from **seed `#5B6CF0`** (scheme "Tonal Spot"), paste all roles into `ui/theme/Color.kt`. No other hex in code.
 - Typography: default `Typography()`; used styles: `headlineMedium` (onboarding titles), `titleLarge` (status card title), `titleMedium` (list headers), `bodyLarge`/`bodyMedium`, `labelLarge` (buttons), `labelSmall` (grid labels).
 - Pairing code: `displayLarge.copy(fontFamily = FontFamily.Monospace, letterSpacing = 6.sp, fontFeatureSettings = "tnum")`, formatted "482 913", color `primary`.
@@ -255,7 +255,7 @@ using the phone with fingers.
 - Pair page: `OutlinedButton` **Scan QR code** with `ic_qr_code_scanner`; `CircularProgressIndicator` 24.dp + "Waiting for your Mac…" `bodyMedium onSurfaceVariant`.
 
 ### Home
-- `LargeTopAppBar(title = "PocketDeck")` + `exitUntilCollapsedScrollBehavior`; overflow is empty in v0 (no action).
+- `LargeTopAppBar(title = "Contigua")` + `exitUntilCollapsedScrollBehavior`; overflow is empty in v0 (no action).
 - Status `ElevatedCard(shape = extraLarge)`, padding 20.dp, Row: icon 40.dp · Column(`titleLarge` title, `bodyMedium` subtitle). Colors via `CardDefaults.elevatedCardColors(containerColor = …)`:
 
 | State | Container / content | Icon |
@@ -267,7 +267,7 @@ using the phone with fingers.
 
 - One left edge: list rows are full-bleed and keep `ListItem`'s own 16 dp start padding; the status card, the "Paired Macs" title and the dividers carry the screen inset (16 dp, 24 dp ≥ 600 dp). No double indent: the first switch label, the card's left edge and the section title all start at 16 dp.
 - Switch rows are one `SwitchRow` `ListItem` (headline, optional supporting line, `Switch` at the end; whole row toggles). Order: "Keep running in the background" | `HorizontalDivider(padding vertical 8.dp)` | "Allow connections" (master) and "Allow new pairings" (disabled while the master is off, keeping its value). Notification sharing has no switch here: the Mac holds the only one, and a missing listener grant on the phone is the status card's "Notification access is off" attention item with an **Allow** action.
-- Background switch off = `START_NOT_STICKY` and no boot start; the service still starts with the screen's task, and `onTaskRemoved` stops it and calls `stopServer()` on the shell service. On = `START_STICKY` and `BootReceiver` starts it after boot/update. The status card maps off to Ready with `untilTaskClosed = true`, so its subtitle is "Stops when you close PocketDeck from recent apps." and it has no action; the attention colours are only for Allow connections off and Shizuku problems.
+- Background switch off = `START_NOT_STICKY` and no boot start; the service still starts with the screen's task, and `onTaskRemoved` stops it and calls `stopServer()` on the shell service. On = `START_STICKY` and `BootReceiver` starts it after boot/update. The status card maps off to Ready with `untilTaskClosed = true`, so its subtitle is "Stops when you close Contigua from recent apps." and it has no action; the attention colours are only for Allow connections off and Shizuku problems.
 - "Paired Macs" header `titleMedium` `primary`; rows `ListItem` (leading `ic_laptop_mac`, headline name, supporting "Last connected *relative*", trailing `IconButton` overflow → `DropdownMenu` "Forget"), wrapped in `SwipeToDismissBox` (end-to-start, background `errorContainer` + `ic_delete`). Forget → `Snackbar` with **Undo** (4 s) before the key is deleted. Empty: `bodyMedium onSurfaceVariant` "No Macs paired yet."
 - `ExtendedFloatingActionButton(text = "Pair new Mac", icon = ic_qr_code_scanner)`, collapses (`expanded = !scrolled`).
 
@@ -287,7 +287,7 @@ using the phone with fingers.
 
 ## 4. QA checklist (verify from screenshots, light **and** dark)
 
-**Mac — Welcome:** plain window background, no toolbar · one glass card, centered · icon + "PocketDeck" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
+**Mac — Welcome:** plain window background, no toolbar · one glass card, centered · icon + "Contigua" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
 **Mac — Nearby:** "Nearby" glass rows with name, model, **Pair** (prominent), no device ids · footer has exactly **Pair with QR** + **Connect manually…** (glass, secondary) · empty state shows spinner + two lines, no other content.
 **Mac — Code sheet:** title names the phone · the code large and monospaced, 3+3 grouping · one state line under it, no raw error codes · **Cancel** always reachable (except while pairing finishes) · no input fields, no OK/submit button.
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
@@ -301,7 +301,7 @@ grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line 
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
-**Android — Home:** large title collapses on scroll · status card color matches the table for each state · "Keep PocketDeck running", "Allow connections" and "Allow new pairings" switches · Paired Macs rows with last connected · extended FAB "Pair new Mac" · content not under status/nav bars.
+**Android — Home:** large title collapses on scroll · status card color matches the table for each state · "Keep Contigua running", "Allow connections" and "Allow new pairings" switches · Paired Macs rows with last connected · extended FAB "Pair new Mac" · content not under status/nav bars.
 **Android — Pairing prompt:** heads-up notification with code + Allow/Deny · in-app dialog code in large monospace, grouped 3+3.
 **Android — Phone launcher:** only a docked search bar and the icon grid; columns increase on wider displays.
 **Copy (all):** sentence case · no "virtual display/stream/HMAC/port" outside Connect manually · max one helper line per element.

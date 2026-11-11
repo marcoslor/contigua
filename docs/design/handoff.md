@@ -1,7 +1,7 @@
 # handoff — Open <App> on Mac (docs/ROADMAP.md #9)
 
 One command, three surfaces: the menu bar panel's row, the Phone menu and ⌘⇧C
-while PocketDeck is active (`ConnectionController.continueOnMac`). Both the menu
+while Contigua is active (`ConnectionController.continueOnMac`). Both the menu
 item and the card's row read the phone's foreground app through the pull-only
 `task.front` (docs/PROTOCOL.md "Foreground app"); the card shows the row only
 while that reply names a package. It opens a
@@ -10,7 +10,7 @@ new Mac window for the app in the **foreground on the phone's own screen**
 phone's screen returns to its home screen. Excluded: our own app, the
 launcher/home, SystemUI (and the keyguard it draws) — those answer
 `nothing_to_continue` and the Mac shows "Nothing to move. Your phone is showing its home
-screen or PocketDeck."
+screen or Contigua."
 
 ## The phone side
 

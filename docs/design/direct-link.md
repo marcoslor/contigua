@@ -22,17 +22,17 @@ only ever be a self-build.
 
 ### 1.1 macOS: a compile condition, a product, and one script
 
-- `POCKETDECK_DIRECT` is a Swift compilation condition. Every direct-only file
-  is wrapped in `#if POCKETDECK_DIRECT` — the provider, its settings row, the
+- `CONTIGUA_DIRECT` is a Swift compilation condition. Every direct-only file
+  is wrapped in `#if CONTIGUA_DIRECT` — the provider, its settings row, the
   UNIX-socket client, and the helper's own sources.
-- `pocketdeck-directd` is a separate SwiftPM **product** (an executable). The
+- `contigua-directd` is a separate SwiftPM **product** (an executable). The
   app target does not depend on it.
 - `macos/scripts/direct/build.sh` is the only thing that passes the condition:
-  it builds `PocketDeck.app` with `-Xswiftc -DPOCKETDECK_DIRECT`, builds
-  `--product pocketdeck-directd` with the same flag, ad-hoc signs the helper,
+  it builds `Contigua.app` with `-Xswiftc -DCONTIGUA_DIRECT`, builds
+  `--product contigua-directd` with the same flag, ad-hoc signs the helper,
   and writes all of it to `macos/build/direct/`. `macos/scripts/bundle.sh` (the
   public bundler) never passes the flag, so `swift build`, `swift test` and the
-  public bundle compile a stub: `main` prints `built without POCKETDECK_DIRECT`
+  public bundle compile a stub: `main` prints `built without CONTIGUA_DIRECT`
   and exits 2, and no file mentions a private framework.
 - The helper's target does exist in `Package.swift` (so the product name is
   real and K2 builds it), but its gated-away body is empty. That is deliberate:
@@ -41,7 +41,7 @@ only ever be a self-build.
 
 ### 1.2 Android: one Gradle property
 
-- `-Ppocketdeck.direct=true` adds `app/src/direct/java` to the main source set
+- `-Pcontigua.direct=true` adds `app/src/direct/java` to the main source set
   and `app/src/direct/AndroidManifest.xml` to the manifest merge, using the
   variant API (`androidComponents.onVariants { variant.sources.manifests
   .addStaticSourceDirectory("src/direct") }`; AGP 8.7 already has it).
@@ -57,33 +57,33 @@ A gate that cannot fail is not a gate, so the check runs in both directions.
 
 | Where | What |
 |---|---|
-| K2 `DirectGateTests.testPublicSourcesCarryNoDirectCode` | scans `macos/Sources/**` and fails on `WiFiPeerToPeer`, `WiFiAware`, `nan0`, `wifi-aware`, `pocketdeck-directd` or `POCKETDECK_DIRECT` outside a `#if POCKETDECK_DIRECT` block (comments included: a copied line is how this leaks) |
+| K2 `DirectGateTests.testPublicSourcesCarryNoDirectCode` | scans `macos/Sources/**` and fails on `WiFiPeerToPeer`, `WiFiAware`, `nan0`, `wifi-aware`, `contigua-directd` or `CONTIGUA_DIRECT` outside a `#if CONTIGUA_DIRECT` block (comments included: a copied line is how this leaks) |
 | K2 `DirectGateTests.testPublicBuildHasNoProvider` | `DirectProvider.isCompiledIn == false`, and the app target's dependencies do not contain the helper |
 | K1 `DirectGateTest` | the source set contains no `src/direct` directory and the build flag is false |
-| K1 Gradle `verifyPublicBuildHasNoDirect` (runs inside K1's `assembleDebug`) | the merged debug manifest has no `NEARBY_WIFI_DEVICES` and the compiled class list has no `dev.pocketdeck.direct` class |
-| `macos/scripts/direct/gate.sh --public <PocketDeck.app>` | the built bundle's binary and `Info.plist` carry none of the listed strings and the bundle contains no `pocketdeck-directd`; run by the reviewer's P4 sign-off |
+| K1 Gradle `verifyPublicBuildHasNoDirect` (runs inside K1's `assembleDebug`) | the merged debug manifest has no `NEARBY_WIFI_DEVICES` and the compiled class list has no `app.contigua.direct` class |
+| `macos/scripts/direct/gate.sh --public <Contigua.app>` | the built bundle's binary and `Info.plist` carry none of the listed strings and the bundle contains no `contigua-directd`; run by the reviewer's P4 sign-off |
 | `macos/scripts/direct/gate.sh --direct <dir>` | the positive control: the direct build **does** contain the helper binary, the entitlement and the strings — so the public check is known to be able to see them |
 
-## 2. The Mac helper: `pocketdeck-directd`
+## 2. The Mac helper: `contigua-directd`
 
 ### 2.1 Process layout
 
 | Piece | Path | Notes |
 |---|---|---|
-| the daemon | `/Library/Application Support/PocketDeck/pocketdeck-directd` | `root:wheel`, `0755`, ad-hoc signed with the entitlement |
-| its plist | `/Library/LaunchDaemons/dev.pocketdeck.directd.plist` | `root:wheel 0644`, `RunAtLoad`, `KeepAlive`, `UserName` root |
-| its log | `/var/log/pocketdeck-directd.log` | `root:wheel 0640`; states, counts and codes only |
-| its socket | `/var/run/pocketdeck-directd.sock` | `SOCK_STREAM`, `0660 root:staff`, removed on unload |
+| the daemon | `/Library/Application Support/Contigua/contigua-directd` | `root:wheel`, `0755`, ad-hoc signed with the entitlement |
+| its plist | `/Library/LaunchDaemons/app.contigua.directd.plist` | `root:wheel 0644`, `RunAtLoad`, `KeepAlive`, `UserName` root |
+| its log | `/var/log/contigua-directd.log` | `root:wheel 0640`; states, counts and codes only |
+| its socket | `/var/run/contigua-directd.sock` | `SOCK_STREAM`, `0660 root:staff`, removed on unload |
 | our probe | the same binary, `--probe` | one JSON line to stdout, then exits |
 
 - **Root LaunchDaemon** because it opens `/dev/bpf` and installs a route (D7).
-  It has no UI, no network client of its own and no knowledge of PocketDeck's
+  It has no UI, no network client of its own and no knowledge of Contigua's
   protocol.
-- **Signature**: `codesign -f -s - --identifier dev.pocketdeck.directd
+- **Signature**: `codesign -f -s - --identifier app.contigua.directd
   --entitlements macos/direct/directd.entitlements <binary>`. Entitlements:
   `com.apple.developer.wifi-aware` = `["Publish","Subscribe"]` and
   `com.apple.wifip2pd` = `true` (the pair the probes used, `ent-pub.plist`).
-  Its `Info.plist` declares `WiFiAwareServices` → `_pocketdeck-nan._tcp` with
+  Its `Info.plist` declares `WiFiAwareServices` → `_contigua-nan._tcp` with
   `Publishable` and `Subscribable`, which is what makes the service name legal
   for the toolkit.
 - Ad-hoc signing is why AMFI has to be relaxed: the entitlement is restricted,
@@ -106,7 +106,7 @@ dlopen("/System/Library/PrivateFrameworks/WiFiPeerToPeer.framework/Versions/A/Wi
 **Subscribe** (as `sub.m`):
 
 1. `WiFiAwareSubscribeConfiguration` `-initWithServiceName:` with
-   `_pocketdeck-nan._tcp`; `-setAuthenticationType:0`.
+   `_contigua-nan._tcp`; `-setAuthenticationType:0`.
 2. `WiFiAwareSubscriber` `-initWithConfiguration:`, `-setDelegate:`, `-start`.
 3. The delegate's discovery callback hands over a `WiFiAwareDiscoveryResult`.
    `sub.m` does not name that selector: it forwards every selector whose name
@@ -200,7 +200,7 @@ probes used:
 
 ### 2.5 The UNIX socket API
 
-One socket, `/var/run/pocketdeck-directd.sock`, one request per line, one reply
+One socket, `/var/run/contigua-directd.sock`, one request per line, one reply
 per line. UTF-8 JSON, `\n`-terminated, request ≤ 4096 bytes, reply ≤ 4096 bytes,
 plus one file descriptor where a link is handed over.
 
@@ -208,7 +208,7 @@ plus one file descriptor where a link is handed over.
 |---|---|
 | `{"op":"hello","v":1}` | `{"ok":true,"v":1,"toolkit":{"publish":true,"subscribe":true,"dataLinks":16}}` |
 | `{"op":"probe"}` | `{"ok":true,"ready":false,"codes":["amfi_enabled"],"detail":"…"}` |
-| `{"op":"dial","peer":"<32 hex>","svc":"_pocketdeck-nan._tcp","psk":"<64 hex>","port":<u16>}` | `{"ok":true,"link":"<16 hex>","mtu":1500}` **+ one fd** |
+| `{"op":"dial","peer":"<32 hex>","svc":"_contigua-nan._tcp","psk":"<64 hex>","port":<u16>}` | `{"ok":true,"link":"<16 hex>","mtu":1500}` **+ one fd** |
 | `{"op":"close","link":"<16 hex>"}` | `{"ok":true}` |
 | `{"op":"links"}` | `{"ok":true,"links":[{"link":"<16 hex>","peer":"<32 hex>","state":"up","rttMs":11}]}` |
 | anything else | `{"ok":false,"code":"bad_request","message":"…"}` |
@@ -235,7 +235,7 @@ plus one file descriptor where a link is handed over.
 
 ### 2.6 The probe at launch, and its codes
 
-`pocketdeck-directd --probe` runs the same checks the installer runs, in the
+`contigua-directd --probe` runs the same checks the installer runs, in the
 same order, and prints one JSON line:
 
 | Code | Meaning | What the settings say |
@@ -270,8 +270,8 @@ and are the only thing that ever writes outside the app's build directory.
 ### 3.1 `install.sh`
 
 1. Refuse (with the exact line to run) when it is not root, or when it cannot
-   find `macos/build/direct/pocketdeck-directd` (i.e. `build.sh` was not run).
-2. Run `pocketdeck-directd --probe` once in the foreground **before installing
+   find `macos/build/direct/contigua-directd` (i.e. `build.sh` was not run).
+2. Run `contigua-directd --probe` once in the foreground **before installing
    anything**, and print its codes. Exit 137 is reported as
    `entitlement_denied`.
 3. Check and print, never change:
@@ -288,7 +288,7 @@ and are the only thing that ever writes outside the app's build directory.
    boilerplate):
 
    > This turns off two of macOS's own protections for the whole Mac, for every
-   > program, not only PocketDeck. With code-signing checks off, every Java
+   > program, not only Contigua. With code-signing checks off, every Java
    > program crashed at launch on this Mac — Android Studio and Gradle builds
    > included — so the phone app cannot be built here while the setting is on.
    > The phone's battery pays too: while a session is live it keeps a Wi-Fi
@@ -296,26 +296,26 @@ and are the only thing that ever writes outside the app's build directory.
    > to it.
 
 5. Take a **typed confirmation**, not a keypress: the person types
-   `install pocketdeck-directd` exactly. Anything else aborts with nothing
+   `install contigua-directd` exactly. Anything else aborts with nothing
    changed.
-6. Install: copy the binary to `/Library/Application Support/PocketDeck/`,
+6. Install: copy the binary to `/Library/Application Support/Contigua/`,
    write the plist, `chown root:wheel`, `chmod 0755` the binary and `0644` the
    plist, then `launchctl bootstrap system /Library/LaunchDaemons/
-   dev.pocketdeck.directd.plist`.
-7. Verify: `launchctl print system/dev.pocketdeck.directd` says running, the
+   app.contigua.directd.plist`.
+7. Verify: `launchctl print system/app.contigua.directd` says running, the
    socket exists with `0660 root:staff`, and `--probe` now answers `ok` (or the
    code that says what is still missing).
 8. Say the last step: the boot arguments need a restart, and after the restart
-   PocketDeck ▸ Settings ▸ Direct link shows the probe's answer.
+   Contigua ▸ Settings ▸ Direct link shows the probe's answer.
 
 The installer never sets SIP or boot-args, never reboots, and never edits
 anything else in `/Library`.
 
 ### 3.2 `uninstall.sh`
 
-1. Typed confirmation `remove pocketdeck-directd`.
-2. `launchctl bootout system/dev.pocketdeck.directd`, then remove the plist, the
-   binary, the socket and `/Library/Application Support/PocketDeck/` (when it
+1. Typed confirmation `remove contigua-directd`.
+2. `launchctl bootout system/app.contigua.directd`, then remove the plist, the
+   binary, the socket and `/Library/Application Support/Contigua/` (when it
    holds nothing else), and the log.
 3. Print the revert, without running it:
    ```
@@ -338,7 +338,7 @@ anything else in `/Library`.
 2. `WifiAwareManager.attach(callback, identityListener, handler)` →
    `WifiAwareSession` (one per app process, kept while direct is on).
 3. `WifiAwareSession.publish(PublishConfig, callback, handler)` with
-   `setServiceName("_pocketdeck-nan._tcp")`,
+   `setServiceName("_contigua-nan._tcp")`,
    `setServiceSpecificInfo(ssi8)` (§6),
    `setDataPathSecurityConfig(WifiAwareDataPathSecurityConfig.Builder(
    WIFI_AWARE_CIPHER_SUITE_NCS_SK_128).setPskPassphrase(passphrase).build())`,
@@ -353,7 +353,7 @@ anything else in `/Library`.
    a publish/republish when the platform refuses an in-place update. A failed
    update is not fatal; the next tick retries.
 
-The service name is a constant in one place per side (`_pocketdeck-nan._tcp`),
+The service name is a constant in one place per side (`_contigua-nan._tcp`),
 and the helper's `Info.plist` declares it.
 
 ### 4.2 The NDP and the listener
@@ -430,7 +430,7 @@ real state instead of assuming it.
 | all | `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`, `INTERNET`, `CHANGE_NETWORK_STATE`, `ACCESS_NETWORK_STATE` | the probe's manifest, all normal permissions |
 
 - The runtime permission is asked **when the person turns the switch on**, with
-  one sentence: "PocketDeck uses Wi-Fi Aware to reach your Mac directly, without
+  one sentence: "Contigua uses Wi-Fi Aware to reach your Mac directly, without
   your router." A denial turns the switch back off and leaves a sentence, not a
   dead switch (CONV-AND-03).
 - Location services must be on for discovery on every Android version; a phone
@@ -499,7 +499,7 @@ session, the NDP and the key.
   available"), which is why the key is handed to the helper per dial rather
   than read by it.
 - **Storage, phone**: `AES-256-GCM` with a non-exportable key in the Android
-  Keystore (alias `pocketdeck-direct-psk`); the ciphertext (`iv ‖ ct`, base64)
+  Keystore (alias `contigua-direct-psk`); the ciphertext (`iv ‖ ct`, base64)
   lives in the app's private prefs as `direct.psk.<clientId>`. The app decrypts
   it only for its own `publish` and `requestNetwork` calls (§4.5); it never
   crosses AIDL and the shell service never receives it.
@@ -524,7 +524,7 @@ session, the NDP and the key.
   (±10 minutes) so a clock that is a few minutes off still matches, and ignores
   every discovery result whose 8 bytes match neither.
 - What an observer on the air sees: a service name that is the same for every
-  PocketDeck pair, 8 bytes that change every 10 minutes, and the phone's
+  Contigua pair, 8 bytes that change every 10 minutes, and the phone's
   Aware discovery MAC, which the platform itself rotates on every attach
   (Android's own behaviour, re-created per `attach`). No device id, no name, no
   fingerprint, no key: the mDNS `id`/`name`/`model` never appear here.
@@ -566,8 +566,8 @@ Yes — from the sources, not from a boot:
 
 1. `bash macos/scripts/vm-e2e.sh feth-path` (one boot, inside the heavy lock):
    the guest creates the `feth` pair, gives `feth0` a link-local
-   (`fe80::1%feth0`), and runs `pocketdeck-directd` with
-   `POCKETDECK_DIRECT_IF=feth0` (a test-only override of the interface name).
+   (`fe80::1%feth0`), and runs `contigua-directd` with
+   `CONTIGUA_DIRECT_IF=feth0` (a test-only override of the interface name).
 2. `tools/fakephone/fethphone.py` plays everything the radio would: it answers
    neighbour solicitations for `feth1`'s link-local, runs a TCP listener, and
    answers the helper's frames when the helper writes to a pinned MAC.

@@ -6,7 +6,7 @@
 #                                                    self-test, the debug
 #                                                    activities in the APK; no
 #                                                    device
-#   ~/dev/pocketdeck/.agent/heavy.sh bash tools/emulator/share-display.sh \
+#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/share-display.sh \
 #       [--second-apk PATH]
 #
 # Run it from the worktree that holds the second APK: the first APK is
@@ -15,7 +15,7 @@
 # first, in the same boot: the first APK is the before (main: the two share
 # sections must FAIL), the second the after (the fix: every section must pass).
 # The boot budget is one for the pair. The swap kills the Shizuku-hosted
-# `:pocketdeck` service (install -r leaves that uid-2000 process running the old
+# `:contigua` service (install -r leaves that uid-2000 process running the old
 # APK) and fails unless a new pid maps the new base.apk.
 #
 # The APK must already be built with the Docker K1
@@ -28,8 +28,8 @@
 # only, so the main ShareActivity's filters are untouched) and starts one
 # picker from the application context and one from its own activity context.
 #
-# The check opens ShareDebugActivity in a PocketDeck window, sends the Mac's
-# image paste and a pdf drop, and reads the task list: a dev.pocketdeck task on
+# The check opens ShareDebugActivity in a Contigua window, sends the Mac's
+# image paste and a pdf drop, and reads the task list: a app.contigua task on
 # display 0 after a trigger is the bug. State (a) is the phone unlocked;
 # state (b) is locked and screen off. A PASS needs no such task in both states.
 set -u
@@ -47,14 +47,14 @@ done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47987}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47987}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
+OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/share-display.log"
 APK="android/app/build/outputs/apk/debug/app-debug.apk"
 STATE="$CACHE_DIR/deckctl-state.json"
@@ -81,7 +81,7 @@ section() { # section <name> PASS|FAIL|INFO <detail...>
   fi
 }
 
-# The proof's own sections: a `dev.pocketdeck` task on the phone's screen after
+# The proof's own sections: a `app.contigua` task on the phone's screen after
 # the paste or the drop. On main these are the before's failures; after the fix
 # they must all pass.
 bug_section() {
@@ -162,7 +162,7 @@ else
     echo "--- listening sockets"
     emu shell "ss -ltn 2>/dev/null | grep LISTEN" 2>&1
     echo "--- app and service log"
-    emu logcat -d -s PocketDeckApp:I PocketDeckSvc:I 2>/dev/null | tail -40
+    emu logcat -d -s ContiguaApp:I ContiguaSvc:I 2>/dev/null | tail -40
   } >> "$OUT/share-display-pair.log" 2>&1
   tail -5 "$OUT/share-display-pair.log" | tee -a "$LOG"
   section pair FAIL "no session (see $OUT/share-display-pair.log)"
@@ -189,11 +189,11 @@ PY
 
 tasks() { emu shell dumpsys activity activities 2>/dev/null | tr -d '\r'; }
 
-# A `dev.pocketdeck` task on display 0 is the share screen on the phone's own
+# A `app.contigua` task on display 0 is the share screen on the phone's own
 # screen; every trigger must leave none there. The display count is printed so
 # the log says where the tasks went.
 phone_tasks() {
-  tasks | awk -v pkg="dev.pocketdeck" '
+  tasks | awk -v pkg="app.contigua" '
     /^[[:space:]]*Display #0 \(activities/ { phone = 1; next }
     /^[[:space:]]*Display #[0-9]+ \(activities/ { phone = 0; next }
     phone && /^[[:space:]]*\* Task\{/ && index($0, ":" pkg "") { n++ }
@@ -202,7 +202,7 @@ phone_tasks() {
 
 window_tasks() {
   local display="$1"
-  tasks | awk -v d="$display" -v pkg="dev.pocketdeck" '
+  tasks | awk -v d="$display" -v pkg="app.contigua" '
     $0 ~ "^[[:space:]]*Display #" d " \\(activities" { here = 1; next }
     /^[[:space:]]*Display #[0-9]+ \(activities/ { here = 0; next }
     here && /^[[:space:]]*\* Task\{/ && index($0, ":" pkg "") { n++ }
@@ -224,7 +224,7 @@ arrival_timing_ms() { # arrival_timing_ms <origin>
   [ -n "$create_line" ] || return 0
   create="$(printf '%s' "$create_line" | awk '{print $1; exit}')"
   display="$(printf '%s' "$create_line" | sed -n 's/.*display=\([0-9-]*\).*/\1/p')"
-  move="$(emu logcat -d -v epoch -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' \
+  move="$(emu logcat -d -v epoch -s ContiguaSvc:I 2>/dev/null | tr -d '\r' \
     | grep 'share arrival:' | head -1 | awk '{print $1; exit}')"
   [ -n "$move" ] || return 0
   # A picker that is created on the window's display never showed on the
@@ -241,7 +241,7 @@ PY
 
 # `adb install -r` does not restart the Shizuku-hosted shell service: it is a
 # uid-2000 app_process, not the app's own process, so it survives the install
-# and keeps serving the old APK. Kill every `:pocketdeck` pid (adb shell is the
+# and keeps serving the old APK. Kill every `:contigua` pid (adb shell is the
 # same uid), then let the app ask Shizuku for a fresh service from the APK now
 # on disk — the plain-kill path `tools/phone_install.sh` falls back to.
 kill_shell_service() {
@@ -350,7 +350,7 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
       section "$label-paste-control" INFO "$(picker_settled | grep 'origin=activity ' | tail -1)"
     fi
   fi
-  emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
+  emu logcat -d -s ContiguaSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
     > "$OUT/share-display-$label-paste-arrival.log" || true
   PASTE_LANDING_MS="$(arrival_timing_ms app)"
   section "$label-paste-timing" INFO "landing_to_move_ms=${PASTE_LANDING_MS:-unknown}"
@@ -377,7 +377,7 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
       judge_picker "$label-drop" app "$display" INFO
     fi
   fi
-  emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
+  emu logcat -d -s ContiguaSvc:I 2>/dev/null | tr -d '\r' | grep 'share arrival:' \
     > "$OUT/share-display-$label-drop-arrival.log" || true
   DROP_LANDING_MS="$(arrival_timing_ms app)"
   section "$label-drop-timing" INFO "landing_to_move_ms=${DROP_LANDING_MS:-unknown}"
@@ -397,9 +397,9 @@ run_state() { # run_state <label> <paste-after> <drop-after> <seconds> [control 
 enable_stand_ins() {
   local activity out try waited
   waited=0
-  while ! timeout 5 "$ADB" -s "$SERIAL" shell pm path dev.pocketdeck 2>/dev/null | grep -q '^package:'; do
+  while ! timeout 5 "$ADB" -s "$SERIAL" shell pm path app.contigua 2>/dev/null | grep -q '^package:'; do
     if [ "$waited" -ge 60 ]; then
-      section stand-ins FAIL "pm path dev.pocketdeck: no answer after 60 s"
+      section stand-ins FAIL "pm path app.contigua: no answer after 60 s"
       return 1
     fi
     sleep 2
@@ -408,7 +408,7 @@ enable_stand_ins() {
   for activity in ShareDebugActivity ShareDebugSendActivity ShareDebugPickerActivity; do
     out=""
     for try in 1 2; do
-      if out="$(emu_long shell pm enable "dev.pocketdeck/dev.pocketdeck.app.$activity" 2>&1)"; then
+      if out="$(emu_long shell pm enable "app.contigua/app.contigua.app.$activity" 2>&1)"; then
         out=""
         break
       fi
@@ -472,7 +472,7 @@ if [ -n "$SECOND_APK" ]; then
   fi
   step "killing the old shell service so the app binds one from the new APK"
   if kill_shell_service; then
-    section second-kill PASS "every :pocketdeck pid is gone (was ${OLD_SVC:-none})"
+    section second-kill PASS "every :contigua pid is gone (was ${OLD_SVC:-none})"
   else
     section second-kill FAIL "the old shell service survived kill -9: $(server_pids)"
     kill_emulator
@@ -534,7 +534,7 @@ else
   section proof PASS "single APK: $PHASE_FAILURES failing section(s) in the last phase (no before/after pair)"
 fi
 
-emu logcat -d -s ShareDebug:I PocketDeckSvc:I 2>/dev/null | tr -d '\r' > "$OUT/share-display-logcat.txt" || true
+emu logcat -d -s ShareDebug:I ContiguaSvc:I 2>/dev/null | tr -d '\r' > "$OUT/share-display-logcat.txt" || true
 printf 'SECTION logcat INFO %s lines in %s\n' \
   "$(wc -l < "$OUT/share-display-logcat.txt" | tr -d ' ')" "share-display-logcat.txt" | tee -a "$LOG"
 

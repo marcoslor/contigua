@@ -41,7 +41,7 @@ enum ProbeError: Error, CustomStringConvertible {
 }
 
 let probeRun = UUID().uuidString.prefix(8)
-let probeTitle = "PocketDeck Spotlight Probe \(probeRun)"
+let probeTitle = "Contigua Spotlight Probe \(probeRun)"
 
 func parseOptions() throws -> Options {
     var options = Options()
@@ -99,7 +99,7 @@ func makeItem(_ options: Options) -> CSSearchableItem {
     attributes.displayName = probeTitle
     attributes.contentDescription = "Android app on ProbePhone"
     if !options.minimal {
-        attributes.keywords = ["PocketDeckProbe", "probe.pkg", "ProbePhone", "Android"]
+        attributes.keywords = ["ContiguaProbe", "probe.pkg", "ProbePhone", "Android"]
         if let path = options.contentURL {
             attributes.contentURL = URL(fileURLWithPath: path)
         }

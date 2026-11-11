@@ -42,7 +42,7 @@ The task the app started is a **child of the split root**, not a root task.
 `IActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)` (the call behind
 `cmd activity display move-stack`) only moves root tasks and answers
 `IllegalArgumentException: moveRootTaskToTaskDisplayArea: Unknown rootTaskId=…`
-for the child. The split root itself is movable, but it also holds PocketDeck's
+for the child. The split root itself is movable, but it also holds Contigua's
 own window, so moving it is not acceptable. A root task moves with the same call
 (measured on a fullscreen task), which is why the handoff path keeps it.
 
@@ -58,7 +58,7 @@ the task list then shows the same id at depth 1, `rootTaskId=null`,
 try in two separate boots and twice inside one.
 
 The phone's split containers remain in the task list as empty roots, but the
-phone's screen is PocketDeck fullscreen again, and both streams keep drawing.
+phone's screen is Contigua fullscreen again, and both streams keep drawing.
 
 ## The first window is untouched
 

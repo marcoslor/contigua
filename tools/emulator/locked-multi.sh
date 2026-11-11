@@ -24,8 +24,8 @@
 #
 # Run it as `bash tools/emulator/locked-multi.sh` (the exec bit is not relied on).
 #
-# The run is the 11-01 field shape (debug.pocketdeck.force_panel_off=1 and
-# debug.pocketdeck.vd_panel_group=1 give AOSP One UI's shared panel group):
+# The run is the 11-01 field shape (debug.contigua.force_panel_off=1 and
+# debug.contigua.vd_panel_group=1 give AOSP One UI's shared panel group):
 #   (a) open stream 1 on the locked phone, cover it (window.pause), open stream 2,
 #       close stream 2 and resume stream 1: stream 1's display is still ON, its
 #       display wake lock was never released, the phone never went back to sleep;
@@ -76,17 +76,17 @@ fi
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
-export POCKETDECK_PORT="${POCKETDECK_PORT:-47995}"
-export POCKETDECK_SERIAL=emulator-5554
-export POCKETDECK_AGENT_DIR="$PWD/.agent/locked-multi"
+export CONTIGUA_PORT="${CONTIGUA_PORT:-47995}"
+export CONTIGUA_SERIAL=emulator-5554
+export CONTIGUA_AGENT_DIR="$PWD/.agent/locked-multi"
 # start.sh sets this before it launches the server, so the policy is built forced.
-export POCKETDECK_FORCE_PANEL_OFF=1
-mkdir -p "$POCKETDECK_AGENT_DIR"
+export CONTIGUA_FORCE_PANEL_OFF=1
+mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-OUT="$POCKETDECK_AGENT_DIR"
-APK="${POCKETDECK_APK:-$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
+OUT="$CONTIGUA_AGENT_DIR"
+APK="${CONTIGUA_APK:-$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
 STATE="$CACHE_DIR/deckctl-state-locked-multi.json"
 LIMIT_MS=350
 
@@ -144,10 +144,10 @@ ensure_service() {
 }
 
 set_props() {
-  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
-  emu shell setprop debug.pocketdeck.vd_panel_group 1 >/dev/null 2>&1 || true
-  if [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" != "1" ] \
-    || [ "$(emu shell getprop debug.pocketdeck.vd_panel_group | tr -d '\r')" != "1" ]; then
+  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
+  emu shell setprop debug.contigua.vd_panel_group 1 >/dev/null 2>&1 || true
+  if [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" != "1" ] \
+    || [ "$(emu shell getprop debug.contigua.vd_panel_group | tr -d '\r')" != "1" ]; then
     echo "locked-multi: the debug properties did not stick" >&2
     return 1
   fi
@@ -163,11 +163,11 @@ prepare_apk() { # prepare_apk <apk>
   # Clear the log before the restart so the forced init line below is this
   # server's, never a previous one's.
   emu logcat -c >/dev/null 2>&1 || true
-  emu shell "pkill -f dev.pocketdeck:pocketdeck" >/dev/null 2>&1 || true
+  emu shell "pkill -f app.contigua:contigua" >/dev/null 2>&1 || true
   sleep 1
   set_props || return 1
   ensure_service || { echo "locked-multi: the shell service did not come back" >&2; return 1; }
-  init="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+  init="$(emu logcat -d -s ContiguaSvc:I 2>/dev/null |
     grep 'power: panel power control' | tail -1 | tr -d '\r')"
   case "$init" in
     *"forcing the panel-dark path"*) echo "locked-multi: init: $init" ;;
@@ -209,8 +209,8 @@ PY
   echo "start.sh --no-build; set force_panel_off + vd_panel_group; install the APK;"
   echo "pkill the shell service; ensure Shizuku; restart_server; prove the forced init;"
   echo "(pair with the rig PIN on a boot); lock.sh; run the driver; read the dumps + logcat."
-  echo "--- budget: $(tr '\n' ' ' < "$HOME/dev/pocketdeck/.agent/budgets/locked-multi" 2>/dev/null) ---"
-  echo "--- boots already in the ledger for locked-multi: $(ledger_boots /tmp/pocketdeck-boots.ledger locked-multi) ---"
+  echo "--- budget: $(tr '\n' ' ' < "$HOME/dev/contigua/.agent/budgets/locked-multi" 2>/dev/null) ---"
+  echo "--- boots already in the ledger for locked-multi: $(ledger_boots /tmp/contigua-boots.ledger locked-multi) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
     rc=1
@@ -449,7 +449,7 @@ RC=$?
 cat "$OUT/locked-multi.log"
 if [ "$RC" -ne 0 ]; then
   echo "locked-multi: logcat evidence ($OUT/locked-multi-logcat.txt):"
-  grep -E 'power:|keepalive|stream [12]|episode|display wake lock|pocketdeck-|InputDispatcher|START u0|LockedMulti' \
+  grep -E 'power:|keepalive|stream [12]|episode|display wake lock|contigua-|InputDispatcher|START u0|LockedMulti' \
     "$OUT/locked-multi-logcat.txt" | tail -50 | sed 's/^/  /'
 fi
 exit "$RC"

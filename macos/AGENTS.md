@@ -8,4 +8,4 @@
 - **One window per thing:** open-or-raise through one function (CONV-MAC-11).
 - **Stream picture:** the encoder pads sizes; show only the content rect the phone reports. Prove picture bugs on the emulator with decoded frames, not only the fake phone.
 - **Callbacks from `Session.onVideoEvent`** run on the session queue. Hop to main before touching window or controller state.
-- Never run a PocketDeck Mac binary without `--profile <name>`: it would rewrite the person's profile.
+- Never run a Contigua Mac binary without `--profile <name>`: it would rewrite the person's profile.

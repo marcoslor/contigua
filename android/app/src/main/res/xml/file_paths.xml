@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Paths the app may hand out as dev.pocketdeck.fileprovider URIs
+<!-- Paths the app may hand out as app.contigua.fileprovider URIs
      (docs/design/dragdrop.md). Both a drop's SEND and a clipboard image share
      only app-owned copies under cache/: the shell never serves a path it wrote.
      The card at large is never addressable. -->

@@ -87,7 +87,7 @@ def display_refresh(text, display_id=None):
     """The device line for one display: refresh rate and pixel size.
 
     With no `display_id`, the mirror's virtual display (the phone names it
-    "pocketdeck-N", uniqueId "virtual:…") is the one measured: that is the
+    "contigua-N", uniqueId "virtual:…") is the one measured: that is the
     display whose rate the stream sets. A numeric id keeps the physical
     `local:<id>` lookup.
 
@@ -101,7 +101,7 @@ def display_refresh(text, display_id=None):
         if not marker.search(line):
             continue
         if display_id is None:
-            if "pocketdeck-" not in line:
+            if "contigua-" not in line:
                 continue
         elif not unique.search(line):
             continue
@@ -150,7 +150,7 @@ def thermal(text):
     }
 
 
-def cpu(text, packages=("com.example.app", "dev.pocketdeck")):
+def cpu(text, packages=("com.example.app", "app.contigua")):
     """`dumpsys cpuinfo`: each package's share of one CPU, summed over its
 
     processes. A package absent from the dump is `None`, never zero.

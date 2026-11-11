@@ -1,6 +1,6 @@
 # stream-bench — compare stream strategies run by run (ISS-40)
 
-`bench.py` drives a **running** PocketDeck Mac app through its automation socket
+`bench.py` drives a **running** Contigua Mac app through its automation socket
 with the same stdio shim `macos/scripts/mcp-driver.py` uses. It opens one app
 window, runs one named script (default: the fixed swipe script below), closes
 the window, and summarises that run's **closing `stats total stream=…` line**
@@ -15,12 +15,12 @@ on Settings › Automation) first.
 
 **`--profile default`.** The person's installed app runs without `--profile`,
 which is `Profile.default`: its support folder is `~/Library/Application
-Support/PocketDeck` and its defaults domain is `dev.pocketdeck.mac` (not a
+Support/Contigua` and its defaults domain is `app.contigua.mac` (not a
 suffixed suite). `Profile.swift` has `defaultName = "default"`,
-`supportDirectoryName` returns `PocketDeck` only for the default, and
+`supportDirectoryName` returns `Contigua` only for the default, and
 `MCPAutomation.configSnippet` prints the shim command with no `--profile` for
-it. The same file gives a named profile its own folder (`PocketDeck-<name>`)
-and defaults suite (`dev.pocketdeck.mac.<name>`), which is what the e2e rigs
+it. The same file gives a named profile its own folder (`Contigua-<name>`)
+and defaults suite (`app.contigua.mac.<name>`), which is what the e2e rigs
 use (`--profile e2e`, `--profile stats`).
 
 ## Requirements
@@ -30,19 +30,19 @@ use (`--profile e2e`, `--profile stats`).
   `python3 tools/stream-bench/test_bench.py`.
 - `adb` on `PATH` (or `--adb PATH`); `--serial` is required and has no
   default. The bench refuses a serial that is not `device`.
-- The shim at `/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp`, or
+- The shim at `/Applications/Contigua.app/Contents/Helpers/contigua-mcp`, or
   `--shim PATH` for a built bundle.
 - `--app PATH` brings that bundle to the front after each window opens. The
   phone pauses a stream whose Mac window is hidden, so a run on a window
   behind another app measures a still picture; activation is best effort and
   such a run is marked `low_motion`/`frozen`, never given a fake number.
-- `/usr/bin/log` readable for the app's `dev.pocketdeck.mac` subsystem.
+- `/usr/bin/log` readable for the app's `app.contigua.mac` subsystem.
 
 ## One run
 
 Before the first run the bench reads the app's PID from `ps` (the process whose
-command starts with `Contents/MacOS/PocketDeck --profile <profile>`) and names
-it in the `log show` predicate, so another PocketDeck process's lines never
+command starts with `Contents/MacOS/Contigua --profile <profile>`) and names
+it in the `log show` predicate, so another Contigua process's lines never
 mix in. It also refuses to start with `another window is open` when that app
 logged a `stats stream=` line in the last 10 s: the person's own visible
 window muddies every run.
@@ -70,7 +70,7 @@ comparable to the same stage in a swipe run.
 | --- | --- | --- |
 | `swipe` (default) | Today's exact sequence: 10 steady swipes, a 3 s still, 10 fast flings, a 3 s still, every swipe alternating direction. No call or pause differs from the pre-`--script` bench. | The strategy comparison the table was built for |
 | `still` | Opens the app, sends no input and holds for `--still-seconds` (default 6). | First-frame and resize baselines, settled picture, panel rate, phone idle health |
-| `typing` | Taps the opened app's search field at `--typing-point` (default `0.5,0.08`) and types `pocketdeck bench typing` through the app's own `type_text` tool, then holds 3 s. | Key input without a swipe; the text is a fixed bench string, never a person's |
+| `typing` | Taps the opened app's search field at `--typing-point` (default `0.5,0.08`) and types `contigua bench typing` through the app's own `type_text` tool, then holds 3 s. | Key input without a swipe; the text is a fixed bench string, never a person's |
 | `video` | Taps `--video-point` (default `0.5,0.5`) and plays for `--video-seconds` (default 8). | Decoder and display work on moving video rather than a scrolling list |
 | `soak` | Swipes continuously for `--soak-minutes` (default 20), one swipe per `--sample-seconds` (default 10) period, and writes one phone sample row per period. | Phone health over time: thermals, battery, CPU, PSS and Wi-Fi |
 | `tap` | Calls the Mac's `input_probe` tool once with `--tap-point` (default `0.5,0.5`) and records its `changed_ms` as `input_photon_ms` and `frames` as `input_frames`. | Input-to-photon, the number a person feels |
@@ -94,13 +94,13 @@ the medians of those samples.
 {"arms": [{"name": "baseline", "phone": {}, "mac": {}}]}
 ```
 
-- `phone` keys become `debug.pocketdeck.stream.<key>` through
+- `phone` keys become `debug.contigua.stream.<key>` through
   `adb -s <serial> shell setprop` before the run. The previous value is read
   first and written back after the run (an empty value clears it).
 - `mac` keys are written with `defaults write <domain> <key> <value>` and
   restored (or deleted when they did not exist) after the run. The domain is
-  `dev.pocketdeck.mac` for the default profile, else
-  `dev.pocketdeck.mac.<profile>`.
+  `app.contigua.mac` for the default profile, else
+  `app.contigua.mac.<profile>`.
 - An arm with `"restart": true` needs a fresh session for a key the app reads
   when it dials (N1's Mac side, `stream.net`) or the phone applies when it
   accepts the session's socket (N1's phone side, `tos`). The bench never quits,
@@ -249,7 +249,7 @@ The table gains three stage columns after the long-standing ones:
   counter before the run, samples while the app is still alive (before the
   window closes), and computes the rate over that interval.
 - `vd_hz` — the refresh rate of the mirror's virtual display (the phone names
-  it `pocketdeck-N`, a `virtual:` display) from `dumpsys display`; the panel
+  it `contigua-N`, a `virtual:` display) from `dumpsys display`; the panel
   the VD mirrors is not the stream's rate. `--display-id N` reads a physical
   `local:N` instead. A device that does not print a rate is `-`.
 - `input_photon_ms` — the `tap` script's `changed_ms`: send to the first
@@ -258,11 +258,11 @@ The table gains three stage columns after the long-standing ones:
 
 After the resend block the bench prints one **phone** line per arm: medians of
 battery level and temperature, thermal status and the hottest reported
-temperature, the streamed app's CPU share and PocketDeck's, both PSS totals,
+temperature, the streamed app's CPU share and Contigua's, both PSS totals,
 and RSSI / link speed / frequency / tx retries / tx bad. The sampler is
 read-only: `dumpsys gfxinfo` (reset before, framestats after), `dumpsys
 display`, `dumpsys battery`, `dumpsys thermalservice`, `dumpsys cpuinfo`,
-`dumpsys meminfo` for the app and for `dev.pocketdeck`, and `dumpsys wifi`. It
+`dumpsys meminfo` for the app and for `app.contigua`, and `dumpsys wifi`. It
 never runs `settings put`, `cmd wifi`, a wake, an input event outside the app
 window, a screenshot, `adb kill-server` or a `setprop` of its own. The Wi-Fi
 parser returns numeric link facts only: the SSID, BSSID, IP and MAC never
@@ -343,7 +343,7 @@ chmod +x /tmp/fake-adb
 
 tools/stream-bench/bench.py --profile stats --serial fake-phone \
     --adb /tmp/fake-adb --repeats 2 --out /tmp/bench.csv \
-    --shim macos/build/e2e/PocketDeck.app/Contents/Helpers/pocketdeck-mcp
+    --shim macos/build/e2e/Contigua.app/Contents/Helpers/contigua-mcp
 ```
 
 The fake phone's `swipe` moves nothing, but its encoder keeps producing frames
