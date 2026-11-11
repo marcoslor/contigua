@@ -65,6 +65,10 @@ final class FakeServer {
     private(set) var accepted: [Connection] = []
     private var serverChannel: Channel?
     let phoneIdentity: DeviceIdentityV2
+    /// The identity new connections present; `swapPhoneIdentity` changes it so
+    /// a test can model a phone whose certificate no longer matches the Mac's
+    /// pin at the same address.
+    private var listenerIdentity: DeviceIdentityV2
     /// The one trusted Mac client certificate (PEM).
     private let clientPem: String
     private var stopped = false
@@ -73,6 +77,10 @@ final class FakeServer {
     /// Every frame as it arrived, before the reliable unwrap (path tests).
     var onRawFrame: ((Connection, Frame) -> Void)?
     var onClosed: ((Connection) -> Void)?
+    /// Every accepted socket, before its TLS handshake: a dial counter for
+    /// tests that must see attempts the peer refuses (a bad pin, the join
+    /// guard), not only the ones that welcome.
+    var onAccepted: ((Connection) -> Void)?
     /// False models a Mac whose ping this phone never answers (liveness tests).
     var answerPings = true
     /// How long a `path.pong` waits before it goes back, per path: a slow
@@ -84,8 +92,10 @@ final class FakeServer {
     var brain: FakeV2PhoneBrain?
 
     init(phoneIdentity: DeviceIdentityV2? = nil, trustingClientPem: String) throws {
-        self.phoneIdentity = phoneIdentity ?? IdentityGeneratorV2.make(
+        let identity = phoneIdentity ?? IdentityGeneratorV2.make(
             deviceId: "phone-\(Int.random(in: 1...999))", cn: "PocketDeck Fake Phone").identity
+        self.phoneIdentity = identity
+        self.listenerIdentity = identity
         self.clientPem = trustingClientPem
         let cert = try NIOSSLCertificate(bytes: [UInt8](trustingClientPem.utf8), format: .pem)
         guard let fp = PinCheckV2.pointFingerprint(cert: cert) else {
@@ -98,6 +108,18 @@ final class FakeServer {
 
     var port: UInt16 { serverChannel?.localAddress?.port.map(UInt16.init) ?? 0 }
     var phoneFingerprintHex: String { FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "x").phoneFingerprintHex }
+
+    /// The certificate every NEW connection presents from now on. Existing
+    /// connections keep the one they completed their handshake with.
+    func swapPhoneIdentity(_ identity: DeviceIdentityV2) {
+        lock.lock(); defer { lock.unlock() }
+        listenerIdentity = identity
+    }
+
+    private func connectionIdentity() -> DeviceIdentityV2 {
+        lock.lock(); defer { lock.unlock() }
+        return listenerIdentity
+    }
 
     func stop() {
         lock.lock(); let already = stopped; stopped = true; lock.unlock()
@@ -118,14 +140,12 @@ final class FakeServer {
 
     private func startListener() throws {
         let trusted = try NIOSSLCertificate(bytes: [UInt8](clientPem.utf8), format: .pem)
-        let phoneCert = try NIOSSLCertificate(bytes: [UInt8](phoneIdentity.certPem.utf8), format: .pem)
-        let phoneKey = try NIOSSLPrivateKey(bytes: [UInt8](phoneIdentity.keyP8.utf8), format: .pem)
         let bootstrap = ServerBootstrap(group: group)
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { [weak self] ch -> EventLoopFuture<Void> in
                 guard let self else { return ch.eventLoop.makeFailedFuture(Gone()) }
                 do {
-                    return try self.childPipeline(ch, phoneCert: phoneCert, phoneKey: phoneKey, trusted: trusted)
+                    return try self.childPipeline(ch, trusted: trusted)
                 } catch {
                     return ch.eventLoop.makeFailedFuture(error)
                 }
@@ -135,8 +155,10 @@ final class FakeServer {
 
     private final class Gone: Error {}
 
-    private func childPipeline(_ ch: Channel, phoneCert: NIOSSLCertificate,
-                               phoneKey: NIOSSLPrivateKey, trusted: NIOSSLCertificate) throws -> EventLoopFuture<Void> {
+    private func childPipeline(_ ch: Channel, trusted: NIOSSLCertificate) throws -> EventLoopFuture<Void> {
+        let identity = connectionIdentity()
+        let phoneCert = try NIOSSLCertificate(bytes: [UInt8](identity.certPem.utf8), format: .pem)
+        let phoneKey = try NIOSSLPrivateKey(bytes: [UInt8](identity.keyP8.utf8), format: .pem)
         // One context per connection (what the phone does too): no session
         // tickets, no resumption state to replay (R3). The per-connection
         // keylog capture gives the fake phone its own exporter view.
@@ -167,6 +189,10 @@ final class FakeServer {
         lock.lock()
         accepted.append(connection)
         lock.unlock()
+        let acceptedHook = onAccepted
+        if let acceptedHook {
+            DispatchQueue.global().async { acceptedHook(connection) }
+        }
         ch.closeFuture.whenComplete { [weak self, weak connection] _ in
             guard let self, let connection else { return }
             self.lock.lock()
