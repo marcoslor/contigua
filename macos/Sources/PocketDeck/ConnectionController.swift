@@ -4573,7 +4573,7 @@ final class ConnectionController {
             let total = CGFloat(fit.count) * fit.pitch
             for step in 0..<steps {
                 let y = steps == 1 ? 0 : total * CGFloat(step) / CGFloat(steps - 1)
-                RailPointerModel.shared.track(dx: 0, y: y, reduceMotion: railReduceMotion)
+                RailPointerModel.shared.track(x: 13, y: y, reduceMotion: railReduceMotion)
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
             }
             return nil
