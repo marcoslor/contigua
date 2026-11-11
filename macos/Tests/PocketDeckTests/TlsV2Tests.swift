@@ -524,6 +524,92 @@ final class TlsV2Tests: XCTestCase {
         XCTAssertLessThan(result.elapsed, 1.5)
     }
 
+    // MARK: The handshake outcome is reported exactly once (PATH-50, ISS-82)
+
+    /// PATH-50: a dial that fails before the TLS handler can report anything
+    /// still ends the handshake exactly once. On the unfixed code the promise
+    /// was never completed and a debug build traps on the leak as `connect`
+    /// throws.
+    func testARefusedDialEndsTheHandshakeExactlyOnce() throws {
+        let port = try refusedPort()
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-refused-dial")
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        XCTAssertThrowsError(try connector.connect(host: "127.0.0.1", port: port,
+                                                   onFrame: { _ in }, onError: { _ in })) { error in
+            XCTAssertTrue(String(describing: error).contains("connect failed"),
+                          "a refused dial must surface as a dial failure, got: \(String(describing: error))")
+        }
+        // The cancelled deadline task is released on its event loop; a leaked
+        // promise's trap (debug builds) fires from there.
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the leak trap fires on the event loop, not in this call
+    }
+
+    /// PATH-50: a peer that accepts TCP and closes before its ServerHello ends
+    /// the attempt once, with whatever honest failure the read produced.
+    func testAPeerThatClosesBeforeItsHelloEndsTheHandshakeExactlyOnce() throws {
+        let closing = try ServerBootstrap(group: group)
+            .childChannelInitializer { ch in ch.close() }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? closing.close().wait() }
+        let port = try XCTUnwrap(closing.localAddress?.port)
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-peer-closes")
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        XCTAssertThrowsError(try connector.connect(host: "127.0.0.1", port: port,
+                                                   onFrame: { _ in }, onError: { _ in },
+                                                   handshakeTimeout: .milliseconds(800))) { error in
+            XCTAssertFalse(String(describing: error).isEmpty,
+                           "a peer that hung up must not fail silently")
+        }
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the peer's close and the deadline cancel land on their event loops
+    }
+
+    /// PATH-50: the deadline ends a silent peer's attempt, and the channel close
+    /// that follows must not complete the same outcome a second time.
+    func testASilentPeerEndsTheHandshakeOnceAtTheDeadline() throws {
+        let silent = try ServerBootstrap(group: group)
+            .childChannelInitializer { ch in ch.eventLoop.makeSucceededVoidFuture() }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? silent.close().wait() }
+        let port = try XCTUnwrap(silent.localAddress?.port)
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-silent-deadline")
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        XCTAssertThrowsError(try connector.connect(host: "127.0.0.1", port: port,
+                                                   onFrame: { _ in }, onError: { _ in },
+                                                   handshakeTimeout: .milliseconds(250))) { error in
+            XCTAssertTrue(String(describing: error).contains("handshake timed out"),
+                          "expected the deadline's failure, got: \(String(describing: error))")
+        }
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the cancelled deadline and channel events land on their event loops
+    }
+
+    /// PATH-50: a handshake that already succeeded keeps its result when the
+    /// transport errors afterwards (the phone going away mid-session).
+    func testAFinishedHandshakeIgnoresALaterChannelError() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-finished-then-error")
+        let phone = try loopbackServer(trusting: try cert(mac.identity))
+        defer { phone.channel.close(promise: nil) }
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: nil, group: group)
+        let errorBox = NSLockedBox(value: "")
+        let session = try connector.connect(host: "127.0.0.1", port: phone.port,
+                                            onFrame: { _ in }, onError: { errorBox.set($0) })
+        XCTAssertNotNil(session.exporter(), "the handshake must complete before the error")
+        session.channel.pipeline.fireErrorCaught(TlsV2Error.dialFailed("peer went away"))
+        _ = try? session.channel.close().wait()
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: channelInactive is delivered on the channel's event loop
+        XCTAssertNotNil(session.exporter(), "the finished handshake keeps its exporter material")
+    }
+
+    /// A loopback port with nothing listening: bind one, note its number, close
+    /// it. The following dial is refused by the kernel.
+    private func refusedPort() throws -> Int {
+        let listener = try ServerBootstrap(group: group)
+            .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        let port = try XCTUnwrap(listener.localAddress?.port)
+        try listener.close().wait()
+        return port
+    }
+
     private func waitForSignal(_ semaphore: DispatchSemaphore, seconds: Int) -> Bool {
         semaphore.wait(timeout: .now() + Double(seconds)) == .success
     }
