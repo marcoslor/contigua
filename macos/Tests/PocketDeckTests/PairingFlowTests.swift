@@ -2,6 +2,7 @@
 // person: nothing on the Mac may time out while the sheet is up, and Cancel
 // must hang up so the phone can dismiss its prompt. v2 peer = TLS fake phone.
 
+import AppKit
 import XCTest
 @testable import PocketDeck
 
@@ -13,6 +14,9 @@ final class PairingFlowTests: XCTestCase {
     private var profile: Profile!
 
     override func setUp() async throws {
+        // The window set's menu pass reads NSApp; a filtered run of this class
+        // is the first thing that creates a window, so create the app first.
+        _ = NSApplication.shared
         profile = Profile(name: "unit-pairing-\(UUID().uuidString.prefix(8).lowercased())")!
         controller = ConnectionController(options: LaunchOptions.parse(["PocketDeck"]), profile: profile)
         // One attempt may take 0.4 s; the person gets 30 s.
