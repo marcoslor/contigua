@@ -21,6 +21,8 @@ enum class AttentionKind {
     PAIR_NOTIFY,
     /** R-8/D-4: the Mac app is another protocol version; update that side. */
     VERSION,
+    /** ISS-100: the shell binding keeps timing out while Shizuku itself answers. */
+    SHELL_NOT_ANSWERING,
     RETRY,
 }
 
@@ -46,6 +48,8 @@ data class StatusInput(
     val pairNotifyMissing: Boolean = false,
     /** R-8/D-4: the sentence naming the other app to update; null until refused. */
     val versionSentence: String? = null,
+    /** ISS-100: the binder pings but every bind round times out. */
+    val shellNotAnswering: Boolean = false,
 )
 
 /**
@@ -58,6 +62,10 @@ fun mapStatus(input: StatusInput): DeckStatus = when {
         DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
+    // ISS-100: Shizuku answers but its shell service never bound; the card
+    // names the helper instead of "Couldn't start" and Try again restarts it.
+    input.shellNotAnswering ->
+        DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHELL_NOT_ANSWERING)
     input.notifyNoAccess -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS)
     // A prompt the person cannot see anywhere but the foreground: the home
     // names the permission that would show it (PAIR-6, M8).

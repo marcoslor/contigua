@@ -71,10 +71,13 @@
     <string name="status_version_body">Update PocketDeck on the other device.</string>
     <string name="status_error">Couldn\'t start</string>
     <string name="status_error_body">Something stopped PocketDeck\'s connection.</string>
+    <string name="status_shell_not_answering">Shizuku isn\'t answering</string>
+    <string name="status_shell_not_answering_body">PocketDeck can\'t reach Shizuku. Try again restarts PocketDeck\'s connection.</string>
     <string name="action_open_shizuku">Open Shizuku</string>
     <string name="action_allow">Allow</string>
     <string name="action_turn_on">Turn on</string>
     <string name="action_retry">Retry</string>
+    <string name="action_try_again">Try again</string>
 
     <string name="home_keep_running">Keep running in the background</string>
     <string name="home_keep_running_off">Runs only while PocketDeck is open.</string>

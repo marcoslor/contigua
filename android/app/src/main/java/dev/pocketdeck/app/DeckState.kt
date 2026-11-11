@@ -27,6 +27,9 @@ object DeckState {
     /** R-8/D-4: the sentence for a refused Mac version; null until a refusal. */
     @Volatile var versionSentence: String? = null
 
+    /** ISS-100: the shell binding's last failure, or null when it is not failed. */
+    @Volatile var shellFailure: ShellFailure? = null
+
     /**
      * The notification gate is open: the Mac asked (`notify.enable`) and the
      * phone's listener grant is live. Relayed from the shell service; the

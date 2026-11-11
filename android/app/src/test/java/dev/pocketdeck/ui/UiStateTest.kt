@@ -130,6 +130,25 @@ class UiStateTest {
     }
 
     @Test
+    fun `a shell helper that stops answering needs attention with retry`() {
+        // ISS-100: the binder answers, but every bind times out and the round is
+        // over. The card names the real problem instead of "Couldn't start".
+        val status = mapStatus(readyInput.copy(port = 0, shellNotAnswering = true))
+        assertEquals(
+            DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHELL_NOT_ANSWERING),
+            status,
+        )
+    }
+
+    @Test
+    fun `a dead shell helper outranks a notification grant`() {
+        val status = mapStatus(
+            readyInput.copy(port = 0, shellNotAnswering = true, notifyNoAccess = true),
+        )
+        assertEquals(AttentionKind.SHELL_NOT_ANSWERING, status.attention)
+    }
+
+    @Test
     fun `shizuku row follows installed, running, granted order`() {
         assertEquals(ShizukuUiState.NOT_INSTALLED, shizukuUiState(installed = false, running = false, granted = false))
         assertEquals(ShizukuUiState.NOT_RUNNING, shizukuUiState(installed = true, running = false, granted = false))
