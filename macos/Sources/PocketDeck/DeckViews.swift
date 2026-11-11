@@ -817,16 +817,18 @@ enum RailAccent: Equatable {
     case topRow
     /// A pick's jump is running toward the app at `target`, from the top row
     /// `fromTop` (nil before the grid reported a position); the accent is the
-    /// `letter` it will land on.
-    case jumping(letter: String, target: Int, fromTop: Int?)
+    /// `letter` it will land on. `landing` is the offset the scroll will
+    /// settle at, so a frame that merely crosses the target row's gutter is
+    /// not mistaken for the landing.
+    case jumping(letter: String, target: Int, fromTop: Int?, landing: CGFloat)
     /// The jump landed at `landingOffset`; the accent stays `letter` until the
     /// grid moves away from that offset.
     case picked(letter: String, landingOffset: CGFloat)
 
     enum Event: Equatable {
-        /// A rail click or drag: the letter it picks, the app it aims at and
-        /// the top row the jump starts from.
-        case pick(letter: String, target: Int, fromTop: Int?)
+        /// A rail click or drag: the letter it picks, the app it aims at, the
+        /// top row the jump starts from and the offset it will settle at.
+        case pick(letter: String, target: Int, fromTop: Int?, landing: CGFloat)
         /// A scroll position: the first app of the top row, the content
         /// offset, the drawn columns and the furthest offset the grid reaches.
         case scroll(top: Int, offset: CGFloat, columns: Int, maxOffset: CGFloat)
@@ -838,24 +840,36 @@ enum RailAccent: Equatable {
 
     static func reduce(_ state: RailAccent, _ event: Event) -> RailAccent {
         switch (state, event) {
-        case (_, .pick(let letter, let target, let fromTop)):
-            return .jumping(letter: letter, target: target, fromTop: fromTop)
+        case (_, .pick(let letter, let target, let fromTop, let landing)):
+            return .jumping(letter: letter, target: target, fromTop: fromTop,
+                            landing: landing)
         case (.topRow, .scroll):
             return .topRow
-        case (.jumping(let letter, let target, let fromTop),
+        case (.jumping(let letter, let target, let fromTop, let landing),
               .scroll(let top, let offset, let columns, let maxOffset)):
             let row = DeckRail.rowStart(containing: target, columns: columns)
-            // The row reached the top: the jump landed.
-            if top == row { return .picked(letter: letter, landingOffset: offset) }
+            // The landing is where the scroll settles: the target row's top,
+            // or the grid's end when that row cannot reach it. The gutter
+            // makes `top == row` true a few points early (the row above still
+            // shows), so the row alone is not the landing.
+            if abs(offset - landing) <= landingTolerance {
+                return .picked(letter: letter, landingOffset: landing)
+            }
+            if maxOffset > 0, landing > maxOffset - landingTolerance,
+               offset >= maxOffset - landingTolerance {
+                return .picked(letter: letter, landingOffset: maxOffset)
+            }
+            // A frame past the landing inside the target's row is the
+            // animation's own overshoot; past the row, it is the person's.
+            if top == row {
+                let downward = fromTop.map { $0 < row } ?? (offset > landing)
+                if downward ? offset > landing + landingTolerance
+                    : offset < landing - landingTolerance {
+                    return .picked(letter: letter, landingOffset: landing)
+                }
+            }
             if let fromTop, fromTop != row {
                 if fromTop < row {
-                    // A downward jump that reached the grid's end with the
-                    // row still below: X, Y and Z in the last screenful land
-                    // here, and the pick holds there. A zero end is a layout
-                    // that has not reported a size yet, not a landing.
-                    if maxOffset > 0, offset >= maxOffset - landingTolerance {
-                        return .picked(letter: letter, landingOffset: offset)
-                    }
                     // Off the jump's path (above where it started, or past
                     // the target's row): the person scrolled instead.
                     if top < fromTop || top > row { return .topRow }
@@ -878,7 +892,7 @@ enum RailAccent: Equatable {
     func letter(topRow: String?) -> String? {
         switch self {
         case .topRow: return topRow
-        case .jumping(let letter, _, _), .picked(let letter, _): return letter
+        case .jumping(let letter, _, _, _), .picked(let letter, _): return letter
         }
     }
 
@@ -1375,8 +1389,9 @@ struct AppGrid: View {
         guard let pick = DeckRail.pick(letter, in: cellApps),
               cells.indices.contains(pick.index) else { return }
         let fromTop = scrollBox.lastTop ?? currentTop
+        let landing = landingOffset(forAllApps: pick.index)
         let picked = RailAccent.reduce(railAccent, .pick(letter: pick.letter, target: pick.index,
-                                                         fromTop: fromTop))
+                                                         fromTop: fromTop, landing: landing))
         if picked != railAccent {
             Log.app.debug("rail accent: \(railAccent.name, privacy: .public) --pick--> \(picked.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
         }
@@ -1388,6 +1403,22 @@ struct AppGrid: View {
         // A target already on screen scrolls nowhere, so no geometry change
         // follows: report the landing from the position we have.
         if let last = scrollBox.last { follow(last) }
+    }
+
+    /// Where a jump to All Apps `index` settles: the cell's top in the grid's
+    /// own offset space, or the grid's end when that row cannot reach the top
+    /// (the last screenful). The page layout is the same one the width draws,
+    /// so the offset matches the scroll's own.
+    private func landingOffset(forAllApps index: Int) -> CGFloat {
+        guard let last = scrollBox.last else { return 0 }
+        let page = DeckPageLayout(width: last.width, metrics: DeckGridSize(zoom: zoom),
+                                  sections: sections)
+        guard let section = sections.firstIndex(where: { $0.kind == .allApps }),
+              page.cells.indices.contains(section),
+              page.cells[section].indices.contains(index) else { return 0 }
+        let cellTop = page.cells[section][index].minY - page.gridOrigin
+        let maxOffset = max(0, last.maxOffset - page.gridOrigin)
+        return min(cellTop, maxOffset)
     }
 
     /// The first app of the row at the last scroll position.
