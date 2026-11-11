@@ -75,20 +75,27 @@ enum MenuMarks {
         for item in items where !item.isSeparator {
             switch (menu, item.title) {
             case ("View", "Framed"):
-                // The pair acts on the key stream window: with the Deck (or
-                // nothing) key, neither may be checked or enabled.
+                // The styles act on the key stream window: with the Deck (or
+                // nothing) key, none may be checked or enabled.
                 edits.append(.mark([item.title], state.hasStream && state.style == .framed))
                 edits.append(.enable([item.title], state.hasStream))
             case ("View", "Immersive"):
                 edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
                 edits.append(.enable([item.title], state.hasStream))
+            case ("View", "Minimal"):
+                edits.append(.mark([item.title], state.hasStream && state.style == .minimal))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Hide Controls"):
-                // The full-screen reveal choice needs a key stream window in
-                // either style; the mark inside follows the stored choice.
-                edits.append(.enable([item.title], MenuModel.hideControlsEnabled(hasStream: state.hasStream)))
+                // The Minimal pill's reveal choice: present but disabled for
+                // Framed and Immersive, where it does nothing. Its own items
+                // are disabled with it; the mark inside follows the stored
+                // choice.
+                let enabled = MenuModel.hideControlsEnabled(hasStream: state.hasStream, style: state.style)
+                edits.append(.enable([item.title], enabled))
                 for child in item.children where !child.isSeparator {
                     guard let entry = FullScreenMenuModel.items.first(where: { $0.title == child.title }),
                           entry != .separator else { continue }
+                    edits.append(.enable([item.title, child.title], enabled))
                     edits.append(.mark([item.title, child.title],
                                        FullScreenMenuModel.isChecked(entry, reveal: state.revealDelay)))
                 }

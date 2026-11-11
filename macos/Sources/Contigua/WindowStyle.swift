@@ -1,13 +1,16 @@
-// The two window styles a stream window can wear, and the rules behind them.
+// The three window styles a stream window can wear, and the rules behind them.
 //
-// Immersive (the default): a permanent 28 pt bar above the stream — window
-// material over the stream's own top 28 pt, which an NSBackgroundExtensionView
-// mirrors into the bar and fades into the material by the seam/top alphas —
-// holding the traffic lights and the picture's name.
-// Framed: a real frame on all four sides — 38.5 pt above the picture and 5.5 pt
-// on the other three, a system material, a hairline, a lighter rim and the
-// picture's own 11.5 pt corners. The person's names, 2026-11-10: the bar style
-// is "Immersive", the frame is "Framed".
+// Framed (the default): a real frame on all four sides — 38 pt above the
+// picture and 5 pt on the other three, a system material, a hairline, a lighter
+// rim and the picture's own 12 pt corners. Immersive: a permanent 28 pt bar
+// above the stream — window material over the stream's own top 28 pt, which an
+// NSBackgroundExtensionView mirrors into the bar and fades into the material by
+// the seam/top alphas — holding the traffic lights and the picture's name.
+// Minimal: the old borderless style — no bar and no borders, the picture fills
+// the window, and the traffic lights and our controls live on a clear-glass
+// pill that fades in at the picture's top-left corner after a rest (DwellPill).
+// The person's names, 2026-11-11: the frame is "Framed" and the default, the
+// bar style is "Immersive", the pill style is "Minimal".
 //
 // Everything in this file is pure: the views (StreamChrome.swift) and the unit
 // tests read the same numbers, and time is always passed in.
@@ -15,28 +18,32 @@
 import AppKit
 
 enum WindowStyle: String, CaseIterable {
-    case immersive
     // Framed's stored value is deliberately not "framed": that string was the
-    // old name of today's bar style. No migration is attempted, so a stored
-    // "framed" is an unknown value and opens the default, Immersive.
+    // old name of the pill style. No migration is attempted, so a stored
+    // "framed" is an unknown value and opens the default, Framed.
     case framed = "mat"
+    case immersive
+    // The old pill style had no token of its own (it was stored as
+    // "immersive", which the bar style still uses); Minimal gets its own.
+    case minimal
 
-    /// An app with no stored choice, or an unknown one, opens Immersive.
-    static let standard = WindowStyle.immersive
+    /// An app with no stored choice, or an unknown one, opens Framed.
+    static let standard = WindowStyle.framed
 
     /// The smallest stream a window may hold; the window adds the style's chrome.
     static let minimumStream = CGSize(width: 320, height: 240)
 
-    /// The name the View menu shows.
+    /// The name the View menu shows, top to bottom in this order.
     var label: String {
         switch self {
-        case .immersive: return "Immersive"
         case .framed: return "Framed"
+        case .immersive: return "Immersive"
+        case .minimal: return "Minimal"
         }
     }
 
     /// The padding the style adds around the stream. Full screen never has
-    /// windowed chrome in either style.
+    /// windowed chrome in any style.
     func insets(fullScreen: Bool) -> NSEdgeInsets {
         guard !fullScreen else { return NSEdgeInsets() }
         switch self {
@@ -45,6 +52,8 @@ enum WindowStyle: String, CaseIterable {
         case .framed:
             return NSEdgeInsets(top: FramedChrome.topInset, left: FramedChrome.sideInset,
                                 bottom: FramedChrome.bottomInset, right: FramedChrome.sideInset)
+        case .minimal:
+            return NSEdgeInsets()
         }
     }
 
@@ -130,18 +139,23 @@ enum FramedChrome {
     }
 }
 
-/// The window's titlebar and traffic lights in a given state. In both full
-/// screen and a windowed style the chrome owns the lights and hides the
-/// system's title: the windowed bar, the Framed frame and the full-screen
-/// acrylic bar all place them themselves.
+/// The window's titlebar and traffic lights in a given state. Windowed, the
+/// chrome owns the lights and hides the system's title: the Immersive bar, the
+/// Framed frame and the Minimal pill all place them themselves. Full screen in
+/// Framed or Immersive is the acrylic bar's (WIN-73); full screen in Minimal is
+/// as it was before the three-style merge: the system's own title bar slides in
+/// with the window's title and standard lights (ChromeConfig).
 struct ChromeConfig: Equatable {
     let titleVisible: Bool
     let titlebarTransparent: Bool
     /// true: AppKit places the standard buttons; false: the chrome does.
     let lightsManagedByAppKit: Bool
 
-    static func forState(fullScreen: Bool) -> ChromeConfig {
-        ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
+    static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
+        if fullScreen, style == .minimal {
+            return ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
+        }
+        return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
     }
 }
 
@@ -161,6 +175,62 @@ enum ChromeBar {
     /// The white haze at the window's top edge; it fades to clear at the
     /// seam (WIN-40). `dark` is the window appearance.
     static func hazeTopAlpha(dark: Bool) -> CGFloat { dark ? 0.14 : 0.30 }
+}
+
+/// The Minimal style's hot zone, the dwell that brings the lights in and the
+/// pill they sit in. Restored from the pre-merge pill style: no bar, no
+/// borders, the picture fills the window and this clear-glass pill is the only
+/// chrome.
+enum DwellChrome {
+    /// At the stream's top-left.
+    static let hotZone = CGSize(width: 72, height: 32)
+    /// The pill is as tall as the Immersive bar, at the stream's top-left
+    /// corner; its width follows what is in it.
+    static var pillHeight: CGFloat { ChromeBar.height }
+    static let pillCornerRadius: CGFloat = 8
+    /// The dwell has to rest this long, without drifting more than
+    /// `tolerance` pt, before the pill fades in over `fadeIn`.
+    static let dwell: TimeInterval = 0.35
+    static let tolerance: CGFloat = 3
+    static let fadeIn: TimeInterval = 0.12
+    /// And it fades out this long after the pointer leaves the pill.
+    static let hideDelay: TimeInterval = 0.6
+    /// The pill sits this far in from the stream's top-left corner.
+    static let pillInset: CGFloat = 6
+    /// The lights ride the pill in from its edge, on the pill's centre line,
+    /// the same spacing as the bar's, with the bar's left inset mirrored.
+    static var pillLightInset: CGFloat { pillInset + ChromeBar.trafficLightInset }
+    static var pillLightSpacing: CGFloat { ChromeBar.trafficLightSpacing }
+    /// The window kind's actions 8 pts right of the zoom light's slot.
+    static var pillActionsX: CGFloat {
+        pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+    }
+    /// The pill is as tall as the Immersive bar and as wide as its contents:
+    /// the traffic lights, the window kind's action capsules, then Live Text's
+    /// capsule, then the edge.
+    static func pillWidth(actions: [HeaderAction]) -> CGFloat {
+        pillActionsX + HeaderBar.rowWidth(actions)
+            + (actions.isEmpty ? 0 : HeaderBar.capsuleGap) + HeaderBar.liveTextSide + 2
+    }
+}
+
+/// The Minimal chrome's rule. Normally the traffic lights and the bar's
+/// capsules hide at rest and the dwell pill brings them in; with Always
+/// Visible there is no hot zone and no hiding — they stay over the stream,
+/// which still fills the window.
+enum MinimalChrome {
+    static func alwaysVisible(_ delay: RevealDelay) -> Bool {
+        delay.keepsChromeVisible
+    }
+
+    /// The dwell's hot zone exists only while the chrome can hide.
+    static func usesDwell(alwaysVisible: Bool) -> Bool { !alwaysVisible }
+
+    /// The pill (the lights and the capsules) is up: always, or because the
+    /// dwell brought it in.
+    static func showsPill(alwaysVisible: Bool, dwellShown: Bool) -> Bool {
+        alwaysVisible || dwellShown
+    }
 }
 
 /// The full-screen bar both styles wear: one 28 pt acrylic bar across the
@@ -369,8 +439,9 @@ struct FullScreenBarMachine: Equatable {
 
 /// Settings → General "Reveal controls after" and View ▸ Hide Controls: how
 /// long the pointer rests at the top edge in full screen before the bar shows,
-/// or "Always Visible", which keeps it up. Short is the 350 ms default; the
-/// value lives in the profile's defaults and applies to open windows at once.
+/// or "Always Visible", which keeps it up; in Minimal it is the dwell that
+/// brings the pill in. Short is the 350 ms default; the value lives in the
+/// profile's defaults and applies to open windows at once.
 enum RevealDelay: String, CaseIterable {
     case instantly
     case short
@@ -602,7 +673,7 @@ struct WindowStyleStore {
     /// nil for a window with nothing to remember (a link window before the
     /// phone reports the package it displays). A stored value the enum does
     /// not know — the old names included — is ignored and opens the default
-    /// (Immersive); no migration is attempted.
+    /// (Framed); no migration is attempted.
     func style(forKey key: String?) -> WindowStyle {
         guard let key, let raw = defaults.string(forKey: key), let style = WindowStyle(rawValue: raw) else {
             return .standard
@@ -613,6 +684,92 @@ struct WindowStyleStore {
     func set(_ style: WindowStyle, forKey key: String?) {
         guard let key else { return }
         defaults.set(style.rawValue, forKey: key)
+    }
+}
+
+/// The Minimal hot zone's rule. The pointer has to rest still inside the zone
+/// for `dwell` before the pill shows; a click that arrives before that goes to
+/// the app as ordinary touch input (the view passes it straight through) and
+/// starts the rest again, so tapping can never summon the pill mid-tap. While
+/// the pill or the zone is under the pointer it stays; it hides `hideDelay`
+/// after the pointer leaves both.
+///
+/// Points and rects are in the stream's coordinates with a top-left origin.
+struct DwellPill: Equatable {
+    let zone: CGRect
+    let pill: CGRect
+    /// Settings → General "Reveal controls after"; `setDwell` changes it live.
+    private(set) var dwell: TimeInterval
+    let hideDelay: TimeInterval
+    let tolerance: CGFloat
+
+    private(set) var shown = false
+    /// When the pill hides unless the pointer comes back.
+    private(set) var hideAt: TimeInterval?
+    /// Where and when the current rest began; nil while no rest is running.
+    private(set) var restStart: TimeInterval?
+    private var restPoint: CGPoint = .zero
+
+    init(zone: CGRect = CGRect(origin: .zero, size: DwellChrome.hotZone),
+         pill: CGRect = CGRect(x: 0, y: 0, width: 0, height: DwellChrome.pillHeight),
+         dwell: TimeInterval = DwellChrome.dwell,
+         hideDelay: TimeInterval = DwellChrome.hideDelay,
+         tolerance: CGFloat = DwellChrome.tolerance) {
+        self.zone = zone
+        self.pill = pill
+        self.dwell = dwell
+        self.hideDelay = hideDelay
+        self.tolerance = tolerance
+    }
+
+    /// The pointer is at `point` (stream coordinates, top-left origin).
+    mutating func pointerMoved(to point: CGPoint, now: TimeInterval) {
+        if shown {
+            if pill.contains(point) || zone.contains(point) {
+                hideAt = nil
+            } else if hideAt == nil {
+                hideAt = now + hideDelay
+            }
+            return
+        }
+        guard zone.contains(point) else {
+            restStart = nil
+            return
+        }
+        let drifted = restStart.map { _ in hypot(point.x - restPoint.x, point.y - restPoint.y) > tolerance } ?? true
+        if drifted {
+            restStart = now
+            restPoint = point
+        }
+    }
+
+    /// The Settings control changed: the next rest uses `value`, and a rest
+    /// already running is re-timed from when it began (the controller folds
+    /// the time in again, so a shorter delay can show it at once).
+    mutating func setDwell(_ value: TimeInterval) {
+        dwell = max(value, 0)
+    }
+
+    /// A click reached the app through the hot zone: the rest starts again from
+    /// it, so the pill cannot appear while the finger is still tapping.
+    mutating func clickReachedApp(at point: CGPoint, now: TimeInterval) {
+        restStart = now
+        restPoint = point
+    }
+
+    /// Folds the time in: shows the pill once the rest is long enough, hides it
+    /// when the hide is due.
+    mutating func update(now: TimeInterval) {
+        if !shown, let start = restStart, now - start >= dwell {
+            shown = true
+            hideAt = nil
+            restStart = nil
+        }
+        if shown, let due = hideAt, now >= due {
+            shown = false
+            hideAt = nil
+            restStart = nil
+        }
     }
 }
 

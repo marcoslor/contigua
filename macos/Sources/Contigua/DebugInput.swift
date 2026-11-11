@@ -290,8 +290,9 @@ enum DebugInputScript {
             switch args.first {
             case "framed" where args.count == 1: return .windowStyle("framed")
             case "immersive" where args.count == 1: return .windowStyle("immersive")
+            case "minimal" where args.count == 1: return .windowStyle("minimal")
             case "toggle" where args.count == 1: return .windowStyle("toggle")
-            default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
+            default: throw LineError(message: "windowstyle needs framed, immersive, minimal or toggle")
             }
         case "hidecontrols":
             switch args.first {

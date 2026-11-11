@@ -12,6 +12,8 @@ final class BarGeometryTests: XCTestCase {
         let name = "app.contigua.tests.bar.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        defaults.set(WindowStyle.immersive.rawValue,
+                     forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
         return WindowManager(session: session, defaults: defaults)

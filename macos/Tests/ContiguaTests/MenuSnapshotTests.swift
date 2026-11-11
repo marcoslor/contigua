@@ -111,7 +111,7 @@ final class MenuSnapshotTests: XCTestCase {
         _ = gate.update(a)
         _ = gate.tracking(true)
         var b = MenuSnapshot()
-        b.style = .framed
+        b.style = .minimal
         XCTAssertNil(gate.update(b), "nothing may rebuild the items under the pointer")
         XCTAssertEqual(gate.applied, a)
         XCTAssertEqual(gate.tracking(false), b, "and it lands when the menu closes")

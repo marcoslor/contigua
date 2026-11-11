@@ -38,6 +38,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// feeds it pointer, menu, timer and full-screen events and runs its
     /// actions on the chrome.
     private(set) var fullBar = FullScreenBarMachine()
+    /// The Minimal dwell pill: pure state until its pill view exists (this
+    /// file feeds it; the scripted driver's hover reaches the same path).
+    private(set) var dwell = DwellPill()
     
     /// The app whose density override this window follows; nil for the phone
     /// window (its dpi keeps the phone's dp width) and for a link or handoff
@@ -189,6 +192,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var pointerAtTopEdge = false
     /// Menu tracking ends the bar's hide grace (WIN-8).
     private var menuObservers: [NSObjectProtocol] = []
+    /// Folds the Minimal pill's dwell in; `pointerMoved` also schedules a hide.
+    private var dwellTimer: Timer?
+    /// The last pointer point in window coordinates: when the pill appears
+    /// under a pointer that is resting in the hot zone, the hover over the
+    /// phone ends without waiting for the next move.
+    private var lastPointerWindowPoint: CGPoint?
     /// Rewrites the chrome state when the picture's own size changes, so the
     /// e2e's `video=` rect is the settled one, not the pre-answer rectangle.
     private var videoSizeObserver: NSObjectProtocol?
@@ -241,8 +250,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
         // The cover's coming or going changes the windowed chrome's geometry
-        // (WIN-11); the chrome already relaid out, so only the state follows.
-        chrome.onCoverVisibilityChange = { [weak self] in self?.writeChromeState() }
+        // (WIN-11); the chrome already relaid out, the Minimal dwell follows.
+        chrome.onCoverVisibilityChange = { [weak self] in
+            self?.configureDwell()
+            self?.writeChromeState()
+        }
         chrome.onBarToneChange = { [weak self] in self?.writeChromeState() }
         // Where AppKit put the standard buttons before the chrome moves them;
         // full screen gives them back (applyChromeConfig).
@@ -418,9 +430,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var barTitle: String? { nil }
 
     /// The bar's name follows every retitle path (the phone's nickname, the
-    /// app list, a task, an adopted package).
+    /// app list, a task, an adopted package). The active phone's display name
+    /// rides it as a suffix: "<App> (<phone>)".
     func refreshBarTitle() {
-        chrome.setBarTitle(barTitle)
+        chrome.setBarTitle(barTitle, phone: manager.phoneName)
     }
 
     // MARK: Opening cover
@@ -668,18 +681,25 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
         refreshMenuState()
         chrome.setStyle(style)
+        configureDwell()
         writeChromeState()
     }
 
     /// The menu selectors (View ▸ Window Style's radio items).
     @objc func useFramedStyle(_ sender: Any?) { setStyle(.framed) }
     @objc func useImmersiveStyle(_ sender: Any?) { setStyle(.immersive) }
+    @objc func useMinimalStyle(_ sender: Any?) { setStyle(.minimal) }
 
     /// View ▸ Toggle Window Style (⌥⌘F); the scripted driver's toggle is the
-    /// same action.
+    /// same action. The cycle walks the picker's order: Framed, Immersive,
+    /// Minimal, then Framed again.
     @objc func toggleStyleMenuAction(_ sender: Any?) { toggleStyle() }
 
-    func toggleStyle() { setStyle(style == .framed ? .immersive : .framed) }
+    func toggleStyle() {
+        let styles = WindowStyle.allCases
+        guard let index = styles.firstIndex(of: style) else { return }
+        setStyle(styles[(index + 1) % styles.count])
+    }
     /// A link or handoff window learned the app it shows: the stored choice
     /// for that package now applies (a no-op when it agrees).
     func reapplyStoredStyle() {
@@ -688,15 +708,139 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if stored != style { setStyle(stored) }
     }
 
+    // MARK: Dwell (the Minimal pill's driver)
+
+    /// The pointer feed that watches the window for the Minimal hot zone.
+    private var dwellMonitors: [Any] = []
+    private var lastPillShown = false
+    /// The chrome stays up by the Always Visible choice (not by a dwell).
+    private var chromeAlwaysVisible = false
+
+    /// Only a Minimal non-fullscreen window with no cover dwells; the feed
+    /// stops otherwise and any shown pill is taken away. With Always Visible
+    /// there is no dwell at all: the lights and the capsules stay up.
+    private func configureDwell() {
+        let minimal = style == .minimal && !isFullScreen && !chrome.openingCover.isShowing
+        let always = MinimalChrome.alwaysVisible(manager.revealDelay)
+        chromeAlwaysVisible = minimal && always
+        if minimal && MinimalChrome.usesDwell(alwaysVisible: always) {
+            dwell = DwellPill(zone: CGRect(origin: .zero, size: DwellChrome.hotZone), pill: chrome.pillStreamRect,
+                              dwell: manager.revealDelay.seconds)
+            startDwellFeed()
+            chrome.setPill(false)
+            lastPillShown = false
+        } else if chromeAlwaysVisible {
+            stopDwellFeed()
+            dwell = DwellPill(dwell: manager.revealDelay.seconds)
+            lastPillShown = true
+            chrome.setPill(true)
+        } else {
+            stopDwellFeed()
+            dwell = DwellPill(dwell: manager.revealDelay.seconds)
+            chrome.setPill(false)
+            lastPillShown = false
+        }
+        chrome.placeTrafficLights()
+    }
+
+    func startDwellFeed() {
+        guard dwellMonitors.isEmpty else { return }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            self?.pointerMoved(toScreen: NSEvent.mouseLocation)
+            return event
+        }) { dwellMonitors.append(local) }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            self?.pointerMoved(toScreen: NSEvent.mouseLocation)
+        }) { dwellMonitors.append(global) }
+    }
+
+    func stopDwellFeed() {
+        dwellMonitors.forEach(NSEvent.removeMonitor)
+        dwellMonitors = []
+        dwellTimer?.invalidate()
+        dwellTimer = nil
+    }
+
+    func pointerMoved(toScreen point: NSPoint) {
+        guard let window, window.isVisible, style == .minimal, !isFullScreen,
+              !chrome.openingCover.isShowing else { return }
+        pointerMoved(toWindowPoint: window.convertPoint(fromScreen: point))
+    }
+
+    /// Settings → General "Reveal controls after" / View ▸ Hide Controls
+    /// changed: a switch into or out of Always Visible reconfigures the
+    /// Minimal chrome; another delay re-times a rest already running (a
+    /// shorter one can show the pill at once). Framed and Immersive hand it to
+    /// the full-screen bar, as before.
+    func setRevealDelay(_ delay: RevealDelay) {
+        if style == .minimal {
+            let always = MinimalChrome.alwaysVisible(delay)
+            // Into or out of Always Visible: whether a dwell exists at all
+            // changed, so reconfigure. Another delay only re-times the rest.
+            if always || chromeAlwaysVisible {
+                configureDwell()
+                return
+            }
+            guard dwell.dwell != delay.seconds else { return }
+            dwell.setDwell(delay.seconds)
+            refreshDwell()
+            return
+        }
+        guard delay != fullBar.reveal else { return }
+        updateFullBar(.configurationChanged(delay), name: "configurationChanged(\(delay.rawValue))")
+    }
+
+    /// Folds the dwell's time in now; also what the show/hide timers call.
+    private func refreshDwell() {
+        dwell.update(now: now())
+        dwellTimer?.invalidate()
+        dwellTimer = nil
+        if let hideAt = dwell.hideAt {
+            let timer = Timer(timeInterval: max(hideAt - now(), 0), repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshDwell() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            dwellTimer = timer
+        } else if !dwell.shown, let start = dwell.restStart {
+            let timer = Timer(timeInterval: max(start + dwell.dwell - now(), 0), repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshDwell() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            dwellTimer = timer
+        }
+        if dwell.shown != lastPillShown {
+            lastPillShown = dwell.shown
+            chrome.setPill(dwell.shown)
+            // The pill came up under a pointer that has not moved: it is Mac
+            // UI now, so the phone's hover ends here rather than at the next
+            // move (ISS-49).
+            if dwell.shown, let point = lastPointerWindowPoint {
+                videoView.hoverPointerMoved(toWindowPoint: point)
+            }
+        }
+        writeChromeState()
+    }
+
     // MARK: Full screen bar (WIN-8)
 
     /// The pointer feed that watches the screen's top edge in full screen.
     private var pointerMonitors: [Any] = []
 
     /// The window entered native full screen: no windowed chrome, the bar
-    /// hidden and its machine ready.
+    /// hidden and its machine ready. Minimal hands the title and lights back to
+    /// the system and has no acrylic bar.
     private func enterFullScreenBar() {
         chrome.fullScreenOverride = true
+        if style == .minimal {
+            stopPointerFeed()
+            fullBar = FullScreenBarMachine(reveal: manager.revealDelay)
+            chrome.setFullBarShown(false)
+            configureDwell()
+            chrome.layoutChrome()
+            writeChromeState()
+            return
+        }
         fullBar = FullScreenBarMachine(reveal: manager.revealDelay)
         startPointerFeed()
         let before = fullBar.mode
@@ -708,7 +852,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         writeChromeState()
     }
 
-    /// The window left full screen: the bar and its timers go.
+    /// The window left full screen: the bar and its timers go; the windowed
+    /// Minimal chrome comes back as the stored style lays it out.
     private func exitFullScreenBar() {
         chrome.fullScreenOverride = false
         stopPointerFeed()
@@ -719,13 +864,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome.setFullBarShown(false)
         chrome.layoutChrome()
         pointerAtTopEdge = false
+        configureDwell()
         writeChromeState()
     }
 
     /// Folds one event into the machine, runs its actions and logs a change of
     /// state as `full-screen bar: <from> --<event>--> <to>`.
     private func updateFullBar(_ event: FullScreenBarEvent, name: String) {
-        guard isFullScreen else { return }
+        guard isFullScreen, style != .minimal else { return }
         let before = fullBar.mode
         let actions = fullBar.handle(event)
         runFullBar(actions)
@@ -811,7 +957,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// A real pointer move: feeds the bar's top band only in full screen, and
     /// only when the pointer crosses into or out of it.
     func pointerMovedForFullScreen(_ screenPoint: NSPoint) {
-        guard let window, isFullScreen, window.isVisible else { return }
+        guard let window, isFullScreen, style != .minimal, window.isVisible else { return }
         let point = window.convertPoint(fromScreen: screenPoint)
         let fromTop = window.frame.height - point.y
         let band = (fullBar.mode == .hidden ? FullScreenBar.edgeHeight : FullScreenBar.height)
@@ -843,12 +989,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Settings → General "Reveal controls after" / View ▸ Hide Controls
-    /// changed: the full-screen bar re-times (or shows at once for Always
-    /// Visible), and every other window already took the new setting too.
-    func setRevealDelay(_ delay: RevealDelay) {
-        guard delay != fullBar.reveal else { return }
-        updateFullBar(.configurationChanged(delay), name: "configurationChanged(\(delay.rawValue))")
-    }
+    /// changed: the Minimal pill's dwell or the full-screen bar re-times.
+    /// (The bank lives above, with the dwell driver.)
 
     /// The chrome state reports the full-screen bar's mode for the e2e.
     var fullBarStateName: String { fullBar.mode.rawValue }
@@ -1038,6 +1180,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         captureStandardLights()
         chrome.placeTrafficLights()
+        configureDwell()
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
         BackgroundMode.activateApp()
@@ -1095,6 +1238,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         statsTimer?.invalidate()
         statsTimer = nil
         stopPointerFeed()
+        stopDwellFeed()
         resizeWork?.cancel()
         settleTimer?.invalidate()
         settleTimer = nil
@@ -1522,8 +1666,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The pointer moved to a point in the window (also the scripted driver's
-    /// hover): the phone's mouse hover, unless the point is Mac UI (WIN-61).
+    /// hover): the Minimal dwell's feed, and the phone's mouse hover, unless
+    /// the point is Mac UI (WIN-61).
     func pointerMoved(toWindowPoint point: CGPoint) {
+        lastPointerWindowPoint = point
+        if style == .minimal, !chromeAlwaysVisible, !isFullScreen, !chrome.openingCover.isShowing {
+            // DwellChrome's zone is in stream coordinates, top-left origin: in
+            // Minimal the window is exactly the stream.
+            let height = chrome.bounds.height
+            dwell.pointerMoved(to: CGPoint(x: point.x, y: height - point.y), now: now())
+            refreshDwell()
+        }
         if videoView.bounds.contains(videoView.convert(point, from: nil)) {
             videoView.hoverPointerMoved(toWindowPoint: point)
         } else {
@@ -1581,6 +1734,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let picture = videoView.convert(videoView.videoRect(), to: nil)
         let pictureTop = (window?.frame.height ?? 0) - picture.maxY
         let line = "style=\(style.label.lowercased()) lights=\(lights ? "shown" : "hidden")"
+            + " pill=\(chrome.showsPill ? "shown" : "hidden")"
             + " fullbar=\(fullBarStateName) fullbar_visible=\(chrome.fullBarVisible ? 1 : 0)"
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
@@ -1679,7 +1833,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// the system's title is hidden and the chrome places the buttons itself.
     private func applyChromeConfig(fullScreen: Bool) {
         guard let window else { return }
-        let config = ChromeConfig.forState(fullScreen: fullScreen)
+        let config = ChromeConfig.forState(style: style, fullScreen: fullScreen)
         window.titleVisibility = config.titleVisible ? .visible : .hidden
         window.titlebarAppearsTransparent = config.titlebarTransparent
         chrome.lightsManagedByAppKit = config.lightsManagedByAppKit
@@ -1732,11 +1886,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chromeLayoutChanged()
     }
 
-    /// Full screen drops the windowed chrome in either style: the stream is
-    /// then the whole screen and the bar's own machine owns its band.
+    /// Full screen drops the windowed chrome in every style: in Framed and
+    /// Immersive the bar's own machine owns its band; Minimal gives the title
+    /// and lights back to AppKit. Leaving restores the windowed chrome.
     private func chromeLayoutChanged() {
         chrome.layoutChrome()
         chrome.placeTrafficLights()
+        chrome.setPill(false)
+        lastPillShown = false
+        configureDwell()
         scheduleResize(after: 0)
         writeChromeState()
     }
@@ -2067,9 +2225,26 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Input routing
 
+    /// A touch that passed through the Minimal hot zone restarts the rest, so
+    /// the pill can never appear while the finger is still tapping there
+    /// (DwellPill.clickReachedApp; the touch itself goes on as normal input,
+    /// with no added delay). Doubles as the scripted check's path.
+    func touchInHotZone(_ event: TouchEvent) {
+        guard !chromeAlwaysVisible, style == .minimal, let window, window.isVisible,
+              !isFullScreen, !chrome.openingCover.isShowing, event.action == .down else { return }
+        let bounds = videoBounds()
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let point = CGPoint(x: CGFloat(event.nx) * bounds.width, y: CGFloat(event.ny) * bounds.height)
+        if dwell.zone.contains(point) {
+            dwell.clickReachedApp(at: point, now: now())
+            refreshDwell()
+        }
+    }
+
     private func handle(_ command: InputMapper.Command) {
         switch command {
         case .touch(let event):
+            touchInHotZone(event)
             session.touch(event, stream: stream)
         case .scroll(let event):
             session.scroll(event, stream: stream)

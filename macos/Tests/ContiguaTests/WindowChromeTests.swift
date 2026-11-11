@@ -38,6 +38,9 @@ final class StreamChromeWindowTests: XCTestCase {
         let name = "app.contigua.tests.chrome.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        // These tests exercise the Immersive bar and its mirror.
+        defaults.set(WindowStyle.immersive.rawValue,
+                     forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
         return WindowManager(session: session, defaults: defaults)
@@ -135,7 +138,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=immersive lights=shown fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 key=0 responder_video=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=immersive lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 key=0 responder_video=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -171,10 +174,10 @@ final class StreamChromeWindowTests: XCTestCase {
                         "the picture rect is reported")
         // The window is still opening: the cover is one sheet over it and the
         // framed bar's mirror, blur and haze wait for the first frame (WIN-11).
-        XCTAssertEqual(withoutVideo(state), "style=immersive lights=shown fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=immersive lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
         controller.noteFirstFrame()
         let live = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(live.hasPrefix("style=immersive lights=shown fullbar=hidden fullbar_visible=0"), live)
+        XCTAssertTrue(live.hasPrefix("style=immersive lights=shown pill=hidden fullbar=hidden fullbar_visible=0"), live)
         XCTAssertTrue(live.contains("loading=0 cover_phase=0"), live)
         XCTAssertTrue(live.contains("bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1"), live)
         XCTAssertTrue(live.contains("haze=1"), live)
@@ -203,7 +206,7 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertFalse(controller.chrome.fullBarVisible, "the acrylic bar starts hidden")
         XCTAssertFalse(trafficLightsShown(window), "its lights are out of sight with it")
         let state = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(state.hasPrefix("style=immersive lights=hidden fullbar=hidden fullbar_visible=0"),
+        XCTAssertTrue(state.hasPrefix("style=immersive lights=hidden pill=hidden fullbar=hidden fullbar_visible=0"),
                       state)
 
         controller.simulateFullScreenForTesting(false)
@@ -212,7 +215,7 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertTrue(trafficLightsShown(window), "the Immersive bar takes the lights back")
         XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height)
         let back = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(back.hasPrefix("style=immersive lights=shown fullbar=hidden fullbar_visible=0"),
+        XCTAssertTrue(back.hasPrefix("style=immersive lights=shown pill=hidden fullbar=hidden fullbar_visible=0"),
                       back)
     }
 
@@ -351,9 +354,9 @@ final class StreamChromeStyleTests: XCTestCase {
         return !close.isHidden && close.alphaValue > 0.99
     }
 
-    /// The default: the stream plus the 28 pt mirrored bar, nothing at the
-    /// sides or the bottom; the virtual display is the stream's own size.
-    func testImmersiveIsTheStreamPlusTheBar() throws {
+    /// The default: Framed — the stream inside the 38/5 pt frame; the virtual
+    /// display is the stream's own size.
+    func testTheDefaultIsFramed() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -361,13 +364,63 @@ final class StreamChromeStyleTests: XCTestCase {
         controller.present()
         controller.noteFirstFrame()
         let window = try XCTUnwrap(controller.window)
-        XCTAssertEqual(controller.style, .immersive, "no stored choice opens Immersive")
+        XCTAssertEqual(controller.style, .framed, "no stored choice opens Framed")
+        XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643))
+        XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600))
+        XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
+        XCTAssertEqual(controller.chrome.barHeight, FramedChrome.topInset)
+        XCTAssertTrue(trafficLightsShown(window))
+    }
+
+    /// Immersive: the stream plus the 28 pt mirrored bar, nothing at the sides
+    /// or the bottom; the virtual display is the stream's own size.
+    func testImmersiveIsTheStreamPlusTheBar() throws {
+        let manager = makeManager(choose: .immersive)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertEqual(controller.style, .immersive)
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628))
         XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600))
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
         XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height)
         XCTAssertTrue(trafficLightsShown(window))
         XCTAssertTrue(controller.chrome.hazeVisible)
+    }
+
+    /// Minimal: the old pill style — the window is exactly the 900×600 stream,
+    /// nothing of it shows at rest, and a rest in the hot zone brings the pill
+    /// and the lights in.
+    func testMinimalIsTheStreamAloneWithTheDwellPill() throws {
+        let manager = makeManager(choose: .minimal)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertEqual(controller.style, .minimal)
+        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 600), "the window is the stream alone")
+        XCTAssertEqual(controller.videoView.frame.size, window.frame.size)
+        XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
+        XCTAssertEqual(controller.chrome.barHeight, 0, "no bar")
+        XCTAssertFalse(controller.chrome.showsPill)
+        XCTAssertFalse(trafficLightsShown(window), "no chrome at rest")
+
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.45)
+        XCTAssertTrue(controller.dwell.shown)
+        XCTAssertTrue(controller.chrome.showsPill)
+        XCTAssertTrue(trafficLightsShown(window), "the pill carries the lights")
+        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+        let frame = close.convert(close.bounds, to: nil)
+        XCTAssertEqual(frame.midX, DwellChrome.pillLightInset + ChromeBar.trafficLightButtonSide / 2,
+                       accuracy: 0.5, "the lights sit on the pill's row")
+        XCTAssertEqual(window.frame.height - frame.midY,
+                       DwellChrome.pillInset + DwellChrome.pillHeight / 2, accuracy: 0.5)
     }
 
     /// Framed: 5 pt on three sides and 38 pt above, a frame drawn in the
@@ -428,51 +481,65 @@ final class StreamChromeStyleTests: XCTestCase {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         window.orderFront(nil)
         controller.noteFirstFrame()
-        // The stream's top edge at the screen's top: the bar has nowhere to go,
-        // so the window moves down by exactly what the frame overflows.
+        // The stream's top edge at the screen's top: a taller frame has nowhere
+        // to go, so the window moves down by exactly what it overflows.
         window.setFrameTopLeftPoint(NSPoint(x: visible.minX + 200, y: visible.maxY))
         XCTAssertEqual(window.frame.maxY, visible.maxY)
-        // The menu follows the key window: the style switch below is the one a
-        // person makes while this window has the keyboard.
+        XCTAssertEqual(controller.style, .framed)
+        XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643))
+        // The menu follows the key window: the style switches below are the
+        // ones a person makes while this window has the keyboard.
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
 
-        controller.setStyle(.framed)
-        XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643), "the window gains the frame")
-        XCTAssertEqual(window.frame.minX, visible.minX + 194.5, accuracy: 1,
-                       "AppKit rounds a window frame's fractional origin")
-        XCTAssertEqual(window.frame.maxY, visible.maxY, "the frame fits under the screen's top edge")
-        XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
-                       .framed, "the choice is remembered for the package")
-        XCTAssertEqual(StreamMenuState.shared.style, .framed)
-        XCTAssertTrue(trafficLightsShown(window), "Framed shows the lights")
-
         controller.setStyle(.immersive)
-        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628), "the bar comes back")
-        XCTAssertEqual(window.frame.maxY,
-                       visible.maxY - (FramedChrome.topInset - ChromeBar.height), accuracy: 1,
-                       "the stream keeps its place: the window sheds 16 pt, 10.5 from above")
+        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628), "the window sheds the frame's sides")
+        XCTAssertEqual(window.frame.minX, visible.minX + 205, accuracy: 1,
+                       "the stream keeps its place: 5 pt of frame came off the left")
+        XCTAssertEqual(window.frame.maxY, visible.maxY - 10, accuracy: 1,
+                       "one bar's 10 pt above the stream went")
         XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
-                       .immersive)
-        XCTAssertTrue(controller.chrome.hazeVisible, "the mirror's haze is back")
+                       .immersive, "the choice is remembered for the package")
+        XCTAssertEqual(StreamMenuState.shared.style, .immersive)
+        XCTAssertTrue(trafficLightsShown(window), "Immersive shows the lights")
+        XCTAssertTrue(controller.chrome.hazeVisible)
+
+        controller.setStyle(.minimal)
+        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 600), "the window is the stream alone")
+        XCTAssertEqual(window.frame.maxY, visible.maxY - 38, accuracy: 1, "the bar is gone from above")
+        XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
+                       .minimal)
+        XCTAssertFalse(controller.chrome.barHeight > 0)
+        XCTAssertFalse(controller.chrome.showsPill, "the pill waits for a rest")
+
+        controller.setStyle(.framed)
+        XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643), "the frame comes back")
+        XCTAssertEqual(window.frame.maxY, visible.maxY, accuracy: 1,
+                       "it moves down just enough to fit under the screen's top edge")
+        XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
+                       .framed)
     }
 
-    func testToggleFlipsTheStyleAndTheWindowSizeByTheFrame() throws {
+    func testToggleCyclesTheThreeStylesAndTheirSizes() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
-        XCTAssertEqual(window.frame.height, 628)
-        controller.toggleStyle()
         XCTAssertEqual(window.frame.height, 643)
         XCTAssertEqual(controller.style, .framed)
         controller.toggleStyle()
         XCTAssertEqual(window.frame.height, 628)
         XCTAssertEqual(controller.style, .immersive)
+        controller.toggleStyle()
+        XCTAssertEqual(window.frame.height, 600)
+        XCTAssertEqual(controller.style, .minimal)
+        controller.toggleStyle()
+        XCTAssertEqual(window.frame.height, 643, "the cycle comes back to Framed")
+        XCTAssertEqual(controller.style, .framed)
     }
 
-    func testAnUnknownStoredStyleOpensImmersive() throws {
+    func testAnUnknownStoredStyleOpensFramed() throws {
         let name = "app.contigua.tests.chrome.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -485,15 +552,15 @@ final class StreamChromeStyleTests: XCTestCase {
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
-        XCTAssertEqual(controller.style, .immersive, "the old \"framed\" string is unknown and ignored")
-        XCTAssertEqual(controller.window?.frame.size, NSSize(width: 900, height: 628))
+        XCTAssertEqual(controller.style, .framed, "the old \"framed\" string is unknown and ignored")
+        XCTAssertEqual(controller.window?.frame.size, NSSize(width: 910, height: 643))
     }
 
     /// Entering full screen parks the acrylic bar out of sight (WIN-8) and
     /// leaving it restores the stored style's windowed chrome. The real Space
     /// switch is the VM run's; the machine and the chrome transitions are here.
     func testFullScreenEntersHiddenAndExitRestoresTheWindowedChrome() throws {
-        let manager = makeManager()
+        let manager = makeManager(choose: .immersive)
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
         manager.chromeStateFile = file
@@ -520,19 +587,19 @@ final class StreamChromeStyleTests: XCTestCase {
     }
 
     /// View ▸ Hide Controls stacks with the window's style: the pick stores the
-    /// full-screen reveal and leaves the style untouched.
+    /// Minimal pill's dwell delay and leaves the style untouched.
     func testHideControlsNeverChangesTheStyle() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
-        XCTAssertEqual(controller.style, .immersive)
+        XCTAssertEqual(controller.style, .framed)
         manager.pickHideControls(.alwaysVisible)
         XCTAssertEqual(manager.revealDelay, .alwaysVisible)
-        XCTAssertEqual(controller.style, .immersive, "the pick is not a style switch")
+        XCTAssertEqual(controller.style, .framed, "the pick is not a style switch")
         manager.pickHideControls(.delay(.long))
         XCTAssertEqual(manager.revealDelay, .long)
-        XCTAssertEqual(controller.style, .immersive)
+        XCTAssertEqual(controller.style, .framed)
     }
 }
 
@@ -589,12 +656,12 @@ final class StreamMenuTests: XCTestCase {
         }
         let state = StreamMenuState.shared
         key.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
-        XCTAssertEqual(state.style, .immersive, "the default is Immersive")
-        behind.setStyle(.framed)
-        XCTAssertEqual(state.style, .immersive, "a window behind the key one cannot change the menu")
-        XCTAssertEqual(behind.style, .framed, "its own style still changed")
-        key.setStyle(.framed)
-        XCTAssertEqual(state.style, .framed)
+        XCTAssertEqual(state.style, .framed, "the default is Framed")
+        behind.setStyle(.immersive)
+        XCTAssertEqual(state.style, .framed, "a window behind the key one cannot change the menu")
+        XCTAssertEqual(behind.style, .immersive, "its own style still changed")
+        key.setStyle(.minimal)
+        XCTAssertEqual(state.style, .minimal)
     }
 }
 

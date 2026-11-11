@@ -7,15 +7,19 @@
 import Foundation
 
 enum MenuModel {
-    /// View ▸ the style pair, top to bottom.
-    static let styles: [WindowStyle] = [.immersive, .framed]
+    /// View ▸ the style items, top to bottom: Framed, Immersive, Minimal.
+    static let styles: [WindowStyle] = WindowStyle.allCases
 
-    /// Exactly one of the pair is checked: the key stream window's style.
+    /// Exactly one of the styles is checked: the key stream window's style.
     static func styleChecked(_ item: WindowStyle, key: WindowStyle) -> Bool { item == key }
 
-    /// Hide Controls is the full-screen bar's reveal choice: it needs a key
-    /// stream window, and it never changes a window's style.
-    static func hideControlsEnabled(hasStream: Bool) -> Bool { hasStream }
+    /// Hide Controls is the Minimal pill's reveal choice: it needs a key
+    /// stream window wearing Minimal. The item stays in the menu (a person
+    /// finds it where it always was) but is disabled for Framed and Immersive,
+    /// where it does nothing; its stored choice is kept.
+    static func hideControlsEnabled(hasStream: Bool, style: WindowStyle) -> Bool {
+        hasStream && style == .minimal
+    }
 
     /// Hide Controls' items, top to bottom (the three delays, a separator,
     /// Always Visible).

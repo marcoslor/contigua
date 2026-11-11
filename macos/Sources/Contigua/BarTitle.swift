@@ -260,19 +260,55 @@ enum BarTitle {
                       boundsHeight: CGFloat, lightsEnd: CGFloat,
                       rightRowStart: CGFloat) -> NSRect? {
         guard let text, !text.isEmpty, barHeight > 0, windowWidth > 0 else { return nil }
-        let left = lightsEnd + sideGap
-        let right = rightRowStart - sideGap
-        guard right > left else { return nil }
-        let available = right - left
-        guard available >= minimumWidth else { return nil }
+        guard let available = availableWidth(windowWidth: windowWidth, barHeight: barHeight,
+                                             lightsEnd: lightsEnd, rightRowStart: rightRowStart),
+              available >= minimumWidth else { return nil }
         if textWidth(text) > available, available < minimumTruncatedWidth { return nil }
         let width = min(textWidth(text), available)
         let height = ceil(font().ascender - font().descender + font().leading)
         // Centred on the bar's own line (the window's centre) while the room
         // allows it; clamped into the space the controls leave otherwise.
-        let x = min(max(windowWidth / 2 - width / 2, left), right - width)
+        let x = min(max(windowWidth / 2 - width / 2, lightsEnd + sideGap),
+                    rightRowStart - sideGap - width)
         return NSRect(x: x, y: boundsHeight - barHeight + (barHeight - height) / 2,
                       width: width, height: height)
+    }
+
+    /// The text to draw and its frame, with the phone suffix dropped before the
+    /// app's name is truncated: "<App> (<phone>)" whole when it fits, else
+    /// "<App>" under the existing whole-name thresholds (96 pt to truncate,
+    /// 40 pt to show at all). `base` is the name without the suffix.
+    static func fitting(text: String?, base: String?, windowWidth: CGFloat, barHeight: CGFloat,
+                        boundsHeight: CGFloat, lightsEnd: CGFloat,
+                        rightRowStart: CGFloat) -> (text: String, frame: NSRect)? {
+        guard let text, !text.isEmpty else { return nil }
+        guard let available = availableWidth(windowWidth: windowWidth, barHeight: barHeight,
+                                             lightsEnd: lightsEnd, rightRowStart: rightRowStart),
+              available >= minimumWidth else { return nil }
+        let chosen: String
+        if textWidth(text) <= available {
+            chosen = text
+        } else if let base, !base.isEmpty, base != text {
+            // The suffix goes first, never the app's own name.
+            chosen = base
+        } else {
+            chosen = text
+        }
+        guard let frame = frame(text: chosen, windowWidth: windowWidth, barHeight: barHeight,
+                                boundsHeight: boundsHeight, lightsEnd: lightsEnd,
+                                rightRowStart: rightRowStart) else { return nil }
+        return (chosen, frame)
+    }
+
+    /// The width the title may use between the lights and the right-hand row,
+    /// nil when the bar has no room.
+    static func availableWidth(windowWidth: CGFloat, barHeight: CGFloat,
+                               lightsEnd: CGFloat, rightRowStart: CGFloat) -> CGFloat? {
+        guard barHeight > 0, windowWidth > 0 else { return nil }
+        let left = lightsEnd + sideGap
+        let right = rightRowStart - sideGap
+        guard right > left else { return nil }
+        return right - left
     }
 
     /// The right edge of the zoom light's slot: where the title's clearance
@@ -288,6 +324,15 @@ enum BarTitleName {
     /// An app window: the app's own label alone, trimmed.
     static func app(_ label: String?) -> String? {
         trimmed(label)
+    }
+
+    /// The bar's whole name for an app: "<App> (<phone>)" while the phone's
+    /// display name is known and is not already the base; a phone name alone
+    /// stays alone (the Mirror).
+    static func withPhone(_ base: String?, phone: String?) -> String? {
+        guard let base = trimmed(base) else { return nil }
+        guard let phone = trimmed(phone), phone != base else { return base }
+        return "\(base) (\(phone))"
     }
 
     /// The Phone Mirror: the phone's display name (the nickname first).

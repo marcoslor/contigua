@@ -13,6 +13,7 @@ final class MenuMarksTests: XCTestCase {
             MenuMarks.Item(title: "", isSeparator: true),
             MenuMarks.Item(title: "Framed"),
             MenuMarks.Item(title: "Immersive"),
+            MenuMarks.Item(title: "Minimal"),
             MenuMarks.Item(title: "Hide Controls", children: [
                 MenuMarks.Item(title: "Instantly"),
                 MenuMarks.Item(title: "Short"),
@@ -86,48 +87,58 @@ final class MenuMarksTests: XCTestCase {
         return MenuMarks.edits(menu: menu, items: items, state: state)
     }
 
-    // MARK: The style pair
+    // MARK: The styles
 
-    func testThePairFollowsTheKeyWindowsStyle() {
+    func testTheStylesFollowTheKeyWindowsStyle() {
         let immersive = edits(state(style: .immersive))
         XCTAssertTrue(immersive.contains(.mark(["Framed"], false)))
         XCTAssertTrue(immersive.contains(.mark(["Immersive"], true)))
-        XCTAssertTrue(immersive.contains(.enable(["Hide Controls"], true)))
+        XCTAssertTrue(immersive.contains(.enable(["Hide Controls"], false)),
+                      "Hide Controls is the Minimal pill's choice and is disabled on Immersive")
 
         let framed = edits(state(style: .framed))
         XCTAssertTrue(framed.contains(.mark(["Framed"], true)))
         XCTAssertTrue(framed.contains(.mark(["Immersive"], false)))
-        XCTAssertTrue(framed.contains(.enable(["Hide Controls"], true)),
-                      "Hide Controls follows the key stream window in either style")
+        XCTAssertTrue(framed.contains(.enable(["Hide Controls"], false)),
+                      "Hide Controls is disabled on Framed")
+
+        let minimal = edits(state(style: .minimal))
+        XCTAssertTrue(minimal.contains(.mark(["Minimal"], true)))
+        XCTAssertTrue(minimal.contains(.mark(["Framed"], false)))
+        XCTAssertTrue(minimal.contains(.enable(["Hide Controls"], true)),
+                      "Hide Controls is enabled on Minimal")
+        XCTAssertTrue(minimal.contains(.enable(["Hide Controls", "Short"], true)))
+        XCTAssertTrue(minimal.contains(.enable(["Hide Controls", "Always Visible"], true)))
     }
 
-    /// Exactly one of the pair is on, whatever the state: no state leaves both
-    /// checked or neither.
-    func testExactlyOneOfThePairIsChecked() {
+    /// Exactly one of the three is on, whatever the state: no state leaves two
+    /// checked or none.
+    func testExactlyOneOfTheStylesIsChecked() {
         for style in WindowStyle.allCases {
             let marks = edits(state(style: style)).filter {
-                if case .mark(let path, _) = $0 { return path == ["Framed"] || path == ["Immersive"] }
+                if case .mark(let path, _) = $0 { return MenuModel.styles.map(\.label).contains(path.first ?? "") }
                 return false
             }
-            XCTAssertEqual(marks.count, 2)
+            XCTAssertEqual(marks.count, 3)
             let on = marks.filter { if case .mark(_, let on) = $0 { return on }; return false }
             XCTAssertEqual(on.count, 1, "\(style) checks exactly one")
         }
     }
 
-    /// The pair acts on the key stream window. With the Deck (or nothing) key
-    /// nothing is checked and both are disabled, whatever style was last used.
-    func testThePairIsDisabledAndUncheckedWithNoStreamWindow() {
+    /// The styles act on the key stream window. With the Deck (or nothing) key
+    /// nothing is checked and all are disabled, whatever style was last used.
+    func testTheStylesAreDisabledAndUncheckedWithNoStreamWindow() {
         for style in WindowStyle.allCases {
             let rules = edits(state(style: style, hasStream: false))
-            XCTAssertTrue(rules.contains(.mark(["Framed"], false)), "\(style)")
-            XCTAssertTrue(rules.contains(.mark(["Immersive"], false)), "\(style)")
-            XCTAssertTrue(rules.contains(.enable(["Framed"], false)), "\(style)")
-            XCTAssertTrue(rules.contains(.enable(["Immersive"], false)), "\(style)")
+            for label in MenuModel.styles.map(\.label) {
+                XCTAssertTrue(rules.contains(.mark([label], false)), "\(style) \(label)")
+                XCTAssertTrue(rules.contains(.enable([label], false)), "\(style) \(label)")
+            }
         }
         let withStream = edits(state(style: .framed))
-        XCTAssertTrue(withStream.contains(.enable(["Framed"], true)))
-        XCTAssertTrue(withStream.contains(.enable(["Immersive"], true)))
+        for label in MenuModel.styles.map(\.label) {
+            XCTAssertTrue(withStream.contains(.enable([label], true)), label)
+        }
     }
 
     // MARK: The Deck (or any non-stream window) key — ISS-88
@@ -142,11 +153,13 @@ final class MenuMarksTests: XCTestCase {
         let deck = state(style: .framed, touches: true, liveText: true, hasStream: false,
                          package: "com.android.settings")
         let writes = edits(deck)
-        XCTAssertTrue(writes.contains(.mark(["Framed"], false)))
-        XCTAssertTrue(writes.contains(.mark(["Immersive"], false)))
-        XCTAssertTrue(writes.contains(.enable(["Framed"], false)))
-        XCTAssertTrue(writes.contains(.enable(["Immersive"], false)))
+        for label in MenuModel.styles.map(\.label) {
+            XCTAssertTrue(writes.contains(.mark([label], false)), label)
+            XCTAssertTrue(writes.contains(.enable([label], false)), label)
+        }
         XCTAssertTrue(writes.contains(.enable(["Hide Controls"], false)))
+        XCTAssertFalse(writes.contains(.enable(["Hide Controls", "Short"], true)),
+                       "the submenu's own items follow the parent")
         XCTAssertTrue(writes.contains(.mark(["Show Touches"], false)),
                       "Show Touches is the key stream window's; there is none")
         XCTAssertTrue(writes.contains(.enable(["Show Touches"], false)),
@@ -354,6 +367,7 @@ final class MenuMarksTests: XCTestCase {
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "Framed", action: nil, keyEquivalent: "")
         view.addItem(withTitle: "Immersive", action: nil, keyEquivalent: "")
+        view.addItem(withTitle: "Minimal", action: nil, keyEquivalent: "")
         let hide = NSMenu(title: "Hide Controls")
         for title in ["Instantly", "Short", "Long", "Always Visible"] {
             hide.addItem(withTitle: title, action: nil, keyEquivalent: "")
@@ -403,9 +417,13 @@ final class MenuMarksTests: XCTestCase {
 
         XCTAssertEqual(view.items.first { $0.title == "Framed" }?.state, .off)
         XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .on)
-        XCTAssertEqual(hideItem.isEnabled, true)
-        XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on)
+        XCTAssertEqual(view.items.first { $0.title == "Minimal" }?.state, .off)
+        XCTAssertEqual(hideItem.isEnabled, false, "Hide Controls is disabled on Immersive")
+        XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on,
+                       "the stored choice's mark still shows, greyed")
         XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
+        XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.isEnabled, false)
+        XCTAssertEqual(hide.items.first { $0.title == "Short" }?.isEnabled, false)
         XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
         XCTAssertEqual(iconSize.items.first { $0.title == "125 %" }?.state, .on)
         XCTAssertEqual(iconSize.items.first { $0.title == "100 %" }?.state, .off)

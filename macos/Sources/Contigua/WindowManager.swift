@@ -403,8 +403,9 @@ final class WindowManager {
         revealDelayChanged()
     }
 
-    /// View ▸ Hide Controls' pick: store the full-screen reveal for every
-    /// window. It never changes a window's style.
+    /// View ▸ Hide Controls' pick: store the reveal choice for every window.
+    /// It never changes a window's style, and only a Minimal window's pill
+    /// (or the full-screen bar) reads it.
     func pickHideControls(_ item: FullScreenMenuItem) {
         guard let pick = FullScreenMenuModel.pick(item) else { return }
         setRevealDelay(pick)
