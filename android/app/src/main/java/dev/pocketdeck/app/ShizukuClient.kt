@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import dev.pocketdeck.BuildConfig
 import dev.pocketdeck.IDeckService
@@ -91,6 +92,9 @@ object ShizukuClient {
         this.context = context.applicationContext
         if (!listening) {
             listening = true
+            if (Prefs.isShellRestartedForBinder(this.context!!)) {
+                Log.i(TAG, "shell restart: restarted for binder") // log-ok: closed tokens
+            }
             // Sticky: a binder that arrived before this process asked for it is
             // replayed, so an app started while Shizuku runs binds at once.
             runCatching { Shizuku.addBinderReceivedListenerSticky(binderReceived) }
@@ -99,7 +103,9 @@ object ShizukuClient {
         // The sticky listener covers a binder that is already here; this covers
         // a listener registration that never landed (a Shizuku build that does
         // not replay) without binding on a timer.
-        if (machine.state == ShellState.NoBinder && hasBinder()) send(ShellEvent.BinderReceived)
+        if (machine.state is ShellState.NoBinder) {
+            if (hasBinder()) send(ShellEvent.BinderReceived) else send(ShellEvent.Started)
+        }
     }
 
     /** Stop listening: the deck is not serving, so nothing may be bound. */
@@ -111,6 +117,7 @@ object ShizukuClient {
         main.removeCallbacks(bindTimeout)
         main.removeCallbacks(retryTick)
         machine = ShellBinding()
+        publishFailure()
         lost()
         context = null
     }
@@ -127,9 +134,9 @@ object ShizukuClient {
         when (machine.state) {
             // A caller asking now is the person's Try again or a component
             // that needs the service: a fresh bounded round.
-            is ShellState.Failed, is ShellState.WaitingRetry, ShellState.NeedsPermission ->
+            is ShellState.Failed, is ShellState.WaitingRetry, is ShellState.NeedsPermission ->
                 send(ShellEvent.RetryRequested)
-            ShellState.NoBinder ->
+            is ShellState.NoBinder ->
                 if (hasBinder()) send(ShellEvent.BinderReceived)
             is ShellState.Binding, ShellState.Ready -> Unit
         }
@@ -137,8 +144,23 @@ object ShizukuClient {
         // permission missing, the round is over) cannot answer these callers
         // later either, so they hear "no" instead of waiting for nothing.
         when (machine.state) {
-            ShellState.NoBinder, ShellState.NeedsPermission, is ShellState.Failed -> failPending()
+            is ShellState.NoBinder, is ShellState.NeedsPermission, is ShellState.Failed -> failPending()
             is ShellState.Binding, is ShellState.WaitingRetry, ShellState.Ready -> Unit
+        }
+    }
+
+    /**
+     * The person's Try again: when the binder answers but every bind times out,
+     * another round in this process loses the same way, so restart our own
+     * process and let Shizuku's server push a binder to the new pid (PHONE-23).
+     * Otherwise ask for a round as before.
+     */
+    fun retry() {
+        if (!listening) return
+        when (machine.state) {
+            is ShellState.Failed ->
+                send(if (hasBinder()) ShellEvent.RestartRequested else ShellEvent.RetryRequested)
+            else -> send(ShellEvent.RetryRequested)
         }
     }
 
@@ -153,6 +175,7 @@ object ShizukuClient {
         val actions = machine.transition(event)
         // Closed state/reason tokens only: no text, no names, no device data.
         Log.i(TAG, "shell binding: ${from.describe()} --${event.describe()}--> ${machine.state.describe()}") // log-ok: closed tokens
+        publishFailure()
         for (action in actions) perform(action)
     }
 
@@ -160,6 +183,7 @@ object ShizukuClient {
         when (action) {
             ShellAction.CheckPermission -> send(permissionEvent())
             ShellAction.BindService -> bind()
+            ShellAction.ProbeBinder -> probeBinder()
             is ShellAction.ArmTimeout -> {
                 main.removeCallbacks(bindTimeout)
                 main.postDelayed(bindTimeout, action.ms)
@@ -177,6 +201,54 @@ object ShizukuClient {
                 Log.i(TAG, "shell service gave up: ${action.failure.describe()}") // log-ok: closed reason token
                 failPending()
             }
+            is ShellAction.RestartSelf -> restartSelf(action)
+        }
+    }
+
+    /**
+     * Re-ask for the binder. A sticky re-add replays a binder Shizuku already
+     * pushed (the one case a lost registration can fix); a ping is the same
+     * answer without the listener. A live server never pushes twice to the same
+     * pid (Shizuku's BinderSender remembers it), so this cannot adopt a
+     * surviving server on its own — the 60 s step restarts our pid for that.
+     */
+    private fun probeBinder() {
+        runCatching { Shizuku.removeBinderReceivedListener(binderReceived) }
+        runCatching { Shizuku.addBinderReceivedListenerSticky(binderReceived) }
+        send(if (hasBinder()) ShellEvent.BinderReceived else ShellEvent.BinderAbsent)
+    }
+
+    /**
+     * Restart only this app's process: Shizuku and its server are never touched
+     * (PHONE-23). An automatic restart happens once per lost-binder episode (the
+     * pref survives the restart and is cleared on Ready); a tap is consent, so
+     * it skips that bound but still never loops. With the background switch off
+     * the service is not sticky, so killing the process would leave the app
+     * dead: decline.
+     */
+    private fun restartSelf(action: ShellAction.RestartSelf) {
+        val ctx = context ?: return declineRestart(action.reason, "no_context")
+        if (!Prefs.isEnabled(ctx) || !DeckState.serviceRunning) {
+            return declineRestart(action.reason, "keep_off")
+        }
+        if (action.bounded && Prefs.isShellRestartedForBinder(ctx)) {
+            return declineRestart(action.reason, "already_restarted")
+        }
+        Prefs.setShellRestartedForBinder(ctx, true)
+        Log.i(TAG, "shell restart: ${action.reason.describe()} --restart--> process") // log-ok: closed tokens
+        Process.killProcess(Process.myPid())
+    }
+
+    private fun declineRestart(reason: ShellFailure, why: String) {
+        Log.i(TAG, "shell restart: ${reason.describe()} --restart declined($why)--> waiting") // log-ok: closed tokens
+    }
+
+    /** Tell the card when the binding is failed, with the closed reason token. */
+    private fun publishFailure() {
+        val reason = (machine.state as? ShellState.Failed)?.reason
+        if (DeckState.shellFailure != reason) {
+            DeckState.shellFailure = reason
+            DeckState.notifyChanged()
         }
     }
 
@@ -225,6 +297,8 @@ object ShizukuClient {
 
     private fun onReady() {
         val bound = service ?: return
+        // Ready ends the lost-binder episode: the next one may restart once.
+        context?.let { Prefs.setShellRestartedForBinder(it, false) }
         for (callback in pending.toList()) callback(bound)
         pending.clear()
         for (listener in listeners.toList()) listener(bound)
