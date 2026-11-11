@@ -235,3 +235,46 @@ enum RailLayout {
         return DeckRail.letters[slot.first + band]
     }
 }
+
+/// The rail's hit column (DECK-34): the letters' drawn column widened by at
+/// most 4 pt each side. The rail's frame is wider than its letters, and the
+/// strip right of the letters is the grid's, not the rail's.
+enum RailHit {
+    static let sidePadding: CGFloat = 4
+
+    /// The letters' drawn column at rest: the 11 pt letter box centred in the
+    /// rail's column.
+    static func letters(railWidth: CGFloat = DeckWide.railWidth) -> ClosedRange<CGFloat> {
+        let box = min(RailLayout.letterBox, railWidth)
+        let left = (railWidth - box) / 2
+        return left...(left + box)
+    }
+
+    /// The column the pointer may take: the letters' column plus `sidePadding`
+    /// each side, and the magnified arc's room on the left while the rail is
+    /// open. The right edge never grows: the strip right of the letters is the
+    /// grid's.
+    static func column(railWidth: CGFloat = DeckWide.railWidth,
+                       magnified: CGFloat = 0) -> ClosedRange<CGFloat> {
+        let letters = letters(railWidth: railWidth)
+        return (letters.lowerBound - sidePadding - magnified)...(letters.upperBound + sidePadding)
+    }
+
+    /// The vertical span the pointer may take: the first and last letters'
+    /// 11 pt boxes plus 4 pt above and below, so the gaps between letters are
+    /// the nearest letter's; the frozen span's own ends while magnified.
+    static func vertical(count: Int, pitch: CGFloat,
+                         span: RailLayout.Span? = nil) -> ClosedRange<CGFloat> {
+        if let span { return span.top...span.bottom }
+        guard count > 0, pitch > 0 else { return 0...0 }
+        let inset = (pitch - min(RailLayout.letterBox, pitch)) / 2
+        return (inset - sidePadding)...(CGFloat(count) * pitch - inset + sidePadding)
+    }
+
+    static func contains(x: CGFloat, y: CGFloat, railWidth: CGFloat,
+                         count: Int, pitch: CGFloat, magnified: CGFloat,
+                         span: RailLayout.Span? = nil) -> Bool {
+        column(railWidth: railWidth, magnified: magnified).contains(x)
+            && vertical(count: count, pitch: pitch, span: span).contains(y)
+    }
+}

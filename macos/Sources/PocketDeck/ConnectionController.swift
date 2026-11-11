@@ -429,6 +429,27 @@ final class ConnectionController {
     private(set) var deckRailRequest: DeckRailRequest?
     private var deckRailToken = 0
 
+    /// A pointer event at a point in the rail's own coordinates, for the
+    /// quiet e2e (`deckrailclickat`, `deckrailhoverat`, `deckrailclick`,
+    /// `deckraildrag`): a background app's SwiftUI gesture does not take a
+    /// synthetic NSEvent, so the rail's view is fed the same phase a real
+    /// pointer sends. The hit column (DECK-34) is the view's own.
+    struct DeckRailPointerRequest: Equatable {
+        enum Phase: Equatable { case hover, down, drag, up }
+        let phase: Phase
+        let x: CGFloat
+        let y: CGFloat
+        let token: Int
+    }
+    private(set) var deckRailPointerRequest: DeckRailPointerRequest?
+    private var deckRailPointerToken = 0
+
+    func sendRailPointer(_ phase: DeckRailPointerRequest.Phase, x: CGFloat, y: CGFloat) {
+        deckRailPointerToken += 1
+        deckRailPointerRequest = DeckRailPointerRequest(phase: phase, x: x, y: y,
+                                                        token: deckRailPointerToken)
+    }
+
     /// The phone being renamed right now: Settings ▸ Phones ▸ Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
@@ -4385,6 +4406,13 @@ final class ConnectionController {
             // top row's letter is the proof (DECK-7).
             guard let dy = arguments.first.flatMap(Double.init) else { return "deck-scroll needs DY" }
             return DeckGridScroll.scroll(by: CGFloat(dy))
+        case "deckwheel":
+            // [DECK-32] A real continuous wheel event at the grid's centre:
+            // the scroll view reports `.interacting`, which ends a click's
+            // emphasis. A person's wheel/trackpad is the only scroll that
+            // ends it; the pick's own `scrollTo` animation does not.
+            guard let dy = arguments.first.flatMap(Double.init) else { return "deckwheel needs DY" }
+            return DeckGridScroll.wheel(by: CGFloat(dy))
         case "deckrailenter":
             // The pointer enters the rail's rest column at LETTER's band, which
             // freezes the span there.
@@ -4409,6 +4437,53 @@ final class ConnectionController {
             RailPointerModel.shared.leave(reduceMotion: railReduceMotion)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
+        case "deckrailclick":
+            // [DECK-32/33/34] A click at LETTER's drawn band, through the Deck
+            // window's event handling: the rail's own gesture picks it, and a
+            // click outside the hit column proves the strip is not the rail's.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailclick needs A-Z or #"
+            }
+            let hold = arguments.count > 1 ? (Double(arguments[1]) ?? 60) / 1000 : 0.06
+            return DeckRailInput.click(letter: letter, hold: hold, controller: self)
+        case "deckraildrag":
+            guard arguments.count >= 2, DeckRail.letters.contains(arguments[0]),
+                  DeckRail.letters.contains(arguments[1]) else {
+                return "deckraildrag needs FROM TO (A-Z or #)"
+            }
+            return DeckRailInput.drag(from: arguments[0], to: arguments[1], controller: self)
+        case "deckrailclickat":
+            guard arguments.count >= 2, let x = Double(arguments[0]), let y = Double(arguments[1]) else {
+                return "deckrailclickat needs X Y [HOLD_MS]"
+            }
+            let hold = arguments.count > 2 ? (Double(arguments[2]) ?? 60) / 1000 : 0.06
+            return DeckRailInput.click(x: CGFloat(x), y: CGFloat(y), hold: hold, controller: self)
+        case "deckrailhoverat":
+            guard arguments.count >= 2, let x = Double(arguments[0]), let y = Double(arguments[1]) else {
+                return "deckrailhoverat needs X Y"
+            }
+            return DeckRailInput.hover(x: CGFloat(x), y: CGFloat(y), controller: self)
+        case "deckrailpress":
+            // [DECK-32] The button goes down and stays down on LETTER's band,
+            // so the e2e can read the pressed emphasis mid-press.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailpress needs A-Z or #"
+            }
+            return DeckRailInput.press(letter: letter, controller: self)
+        case "deckraildragto":
+            // [DECK-32] With the button still down, the pointer moves to
+            // LETTER's band: the drag's cross-fade.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckraildragto needs A-Z or #"
+            }
+            return DeckRailInput.drag(to: letter, controller: self)
+        case "deckrailup":
+            // [DECK-32] The button goes up at LETTER's band: a click's linger
+            // or a held press's end.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailup needs A-Z or #"
+            }
+            return DeckRailInput.up(letter: letter, controller: self)
         case "deckrailanchor":
             // The rail's top-left in Quartz screen coordinates, for a visible
             // run's real pointer at a place measured from the render.
@@ -4462,14 +4537,41 @@ final class ConnectionController {
             case .hovering: state = "hovering"
             case .dragging: state = "dragging"
             }
+            // The hit column (DECK-34) and the letters' drawn column: the e2e
+            // proves the pointer's area against the letters, not the rail's
+            // frame, and that the strip right of the letters is the grid's.
+            let letters = RailHit.letters()
+            let lettersTop: CGFloat
+            let lettersBottom: CGFloat
+            if let frozen {
+                lettersTop = frozen.span.top
+                lettersBottom = frozen.span.bottom
+            } else {
+                let inset = (fit.pitch - RailLayout.letterBox) / 2
+                lettersTop = inset
+                lettersBottom = CGFloat(fit.count) * fit.pitch - inset
+            }
+            let hitGrowth: CGFloat = frozen != nil && !railReduceMotion ? model.room : 0
+            let hitColumn = RailHit.column(magnified: hitGrowth)
+            let hitVertical = RailHit.vertical(count: fit.count, pitch: fit.pitch,
+                                               span: frozen?.span)
             let line: [String: Any] = ["pitch": Double(fit.pitch),
                                        "reduceMotion": railReduceMotion,
                                        "railHeight": Double(height),
+                                       "railWidth": Double(DeckWide.railWidth),
                                        "containerHeight": Double(model.containerSize.height),
                                        "state": state,
                                        "y": Double(frozen?.y ?? -1),
                                        "spanTop": Double(frozen?.span.top ?? -1),
                                        "spanBottom": Double(frozen?.span.bottom ?? -1),
+                                       "letters": ["left": Double(letters.lowerBound),
+                                                   "right": Double(letters.upperBound),
+                                                   "top": Double(lettersTop),
+                                                   "bottom": Double(lettersBottom)],
+                                       "hit": ["left": Double(hitColumn.lowerBound),
+                                               "right": Double(hitColumn.upperBound),
+                                               "top": Double(hitVertical.lowerBound),
+                                               "bottom": Double(hitVertical.upperBound)],
                                        "tag": tag,
                                        "slots": items]
             guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
@@ -4499,7 +4601,7 @@ final class ConnectionController {
             let total = CGFloat(fit.count) * fit.pitch
             for step in 0..<steps {
                 let y = steps == 1 ? 0 : total * CGFloat(step) / CGFloat(steps - 1)
-                RailPointerModel.shared.track(dx: 0, y: y, reduceMotion: railReduceMotion)
+                RailPointerModel.shared.track(x: 13, y: y, reduceMotion: railReduceMotion)
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
             }
             return nil
