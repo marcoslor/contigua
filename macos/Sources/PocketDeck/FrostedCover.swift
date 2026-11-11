@@ -285,6 +285,10 @@ class FrostedCoverView: NSView {
     /// The fade's state, for the tests and the chrome state.
     var isShowing: Bool { content != nil }
 
+    /// The sheet is on screen now — held, fading in or still fading out. A
+    /// capture may call it evidence only when this is false.
+    var isVisiblyShowing: Bool { fade.state != .hidden }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true

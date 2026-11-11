@@ -79,19 +79,20 @@ enum WindowStyle: String, CaseIterable {
     }
 }
 
-/// The Framed style's own geometry, in points (ISS-45, WIN-71): a 0.5 pt outer
-/// hairline, a 1 pt inner rim, a 22 pt window radius and an 11.5 pt picture
-/// radius (deliberately not concentric: 22 - 5.5 is 16.5, not 11.5), 38.5 pt
-/// above the picture and 5.5 pt on the other three sides, and a white top
-/// highlight fading over the first 10 pt. Measured from the system's quick
-/// preview window, the reference in docs/DESIGN.md.
+/// The Framed style's own geometry, in points (ISS-45, WIN-71), measured off
+/// the system Quick Look window's 2× capture: a 5 pt grey material margin on
+/// the left, right and bottom (10 px at 2×), a 38 pt bar above the picture
+/// (76 px), a 21 pt window radius (42 px) and a 12 pt picture radius (24 px,
+/// deliberately not concentric: 21 - 5 is 16), with a 0.5 pt outer hairline,
+/// a 1 pt inner rim and a white top highlight fading over the first 10 pt.
+/// The reference is docs/DESIGN.md; the side-by-side is .agent/styles/.
 enum FramedChrome {
-    static let topInset: CGFloat = 38.5
-    static let sideInset: CGFloat = 5.5
-    static let bottomInset: CGFloat = 5.5
-    static let outerRadius: CGFloat = 22
+    static let topInset: CGFloat = 38
+    static let sideInset: CGFloat = 5
+    static let bottomInset: CGFloat = 5
+    static let outerRadius: CGFloat = 21
     /// The picture's own radius; deliberately not `outerRadius - sideInset`.
-    static let contentRadius: CGFloat = 11.5
+    static let contentRadius: CGFloat = 12
     static let hairline: CGFloat = 0.5
     static let rim: CGFloat = 1
     static let highlightHeight: CGFloat = 10
@@ -100,11 +101,11 @@ enum FramedChrome {
     static let titleColor: NSColor = .labelColor
 
     /// The traffic lights in the taller bar: 14 pt square, 12.25 pt in from the
-    /// window's left and top edges, centred on the 38.5 pt bar's line.
+    /// window's left and top edges, centred on the 38 pt bar's line.
     static let lightInset: CGFloat = (topInset - ChromeBar.trafficLightButtonSide) / 2
 
     /// The right end of the bar's controls mirrors the lights' inset: the
-    /// Immersive bar's 7 pt plus this style's 5.5 pt frame.
+    /// Immersive bar's 7 pt plus this style's 5 pt frame.
     static let controlsRightInset: CGFloat = sideInset + ChromeBar.trafficLightInset
 
     /// The picture's rect in the chrome's coordinates (AppKit's bottom-left

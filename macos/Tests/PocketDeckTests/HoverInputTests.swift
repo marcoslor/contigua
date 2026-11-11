@@ -258,7 +258,7 @@ final class HoverInputTests: XCTestCase {
         }
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
         XCTAssertEqual(sent.actions, [.enter])
-        // The 5.5 pt left margin is the window's, not the picture's.
+        // The 5 pt left margin is the window's, not the picture's.
         controller.pointerMoved(toWindowPoint: CGPoint(x: 2, y: 300))
         XCTAssertEqual(sent.actions, [.enter, .exit])
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))

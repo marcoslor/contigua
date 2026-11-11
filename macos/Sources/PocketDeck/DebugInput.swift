@@ -841,12 +841,13 @@ final class DebugInputDriver {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
         case .fullScreen:
-            // The menu item's action, through the responder chain: in full
-            // screen the content can live in the system's full-screen window,
-            // which is the one that has to toggle back.
-            if !NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil) {
-                view.window?.toggleFullScreen(nil)
-            }
+            // The script is this stream window's, not whichever window is
+            // key: `to: nil` once put the Deck into full screen and left this
+            // window windowed in the VM. In full screen the content can live
+            // in the system's full-screen window, which `view.window` is.
+            guard let window = view.window else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.toggleFullScreen(nil)
         case .density(let pkg, let value):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             controller.manager.setDensity(value, forPackage: pkg)

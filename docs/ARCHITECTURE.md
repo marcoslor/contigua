@@ -166,7 +166,7 @@ system-privileged steps):
 - **Windows**: `AppWindow`/`StreamWindow` + `StreamChrome`. The style system
   (`WindowStyle`, remembered per app in the profile defaults) has two shapes:
   **Immersive** (the default: a permanent 28 pt bar with the traffic lights and
-  the picture mirrored under a blur) and **Framed** (a real 38.5/5.5 pt frame
+  the picture mirrored under a blur) and **Framed** (a real 38/5 pt frame
   round the picture with the system material, hairline, rim and rounded
   corners). Full screen in either style fills the screen with the stream and
   reveals one acrylic bar from the top edge. Style flips (⌥⌘F / View menu)

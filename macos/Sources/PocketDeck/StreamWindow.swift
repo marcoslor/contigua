@@ -256,6 +256,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.showsTouches = manager.showTouches
         opening = OpeningCover(startedAt: now())
         stateFile = manager.chromeStateFile
+        // `stateFile`'s observer does not run during init: start the e2e
+        // refresh here as well, or the file stays at its first-line values.
+        startStateRefresh()
         startOpeningCover()
         writeChromeState()
         let mapper = InputMapper(stream: stream)
@@ -397,6 +400,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         stallTimer?.invalidate()
         openingTimer?.invalidate()
         settleTimer?.invalidate()
+        stateTimer?.cancel()
         if let barKeyMonitor { NSEvent.removeMonitor(barKeyMonitor) }
     }
 
@@ -1535,7 +1539,27 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// The scripted check reads what the chrome is doing here; `--debug-chrome-state
     /// FILE` puts the file on the manager.
-    var stateFile: URL? { didSet { writeChromeState() } }
+    private var stateTimer: DispatchSourceTimer?
+    var stateFile: URL? { didSet { startStateRefresh() } }
+
+    /// The state is e2e evidence: a stale line must never pass the liveness
+    /// test (frame_age_ms under a second, the cover gone), so it is refreshed
+    /// a few times a second while `--debug-chrome-state` is set. A dispatch
+    /// source, not a run-loop Timer, so the refresh is not tied to the modes
+    /// an AppKit loop happens to run in.
+    private func startStateRefresh() {
+        stateTimer?.cancel()
+        stateTimer = nil
+        guard stateFile != nil else { return }
+        writeChromeState()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: 0.25)
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.writeChromeState() }
+        }
+        stateTimer = timer
+        timer.resume()
+    }
 
     func writeChromeState() {
         guard let stateFile else { return }
@@ -1581,8 +1605,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " drop_refusal=\(dropFailure ?? "none")"
             + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
             + " loading=\(openingState)"
-            + " cover_phase=\(openingCoverPhase)"
-            + " cover_buttons=\(openingButtons)"
+            + " cover_phase=\(openingCoverPhase) cover_buttons=\(openingButtons)"
+            + " cover_visible=\(chrome.openingCover.isVisiblyShowing ? 1 : 0)"
             + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
             + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"

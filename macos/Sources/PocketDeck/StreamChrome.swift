@@ -61,17 +61,8 @@ final class FramedChromeView: NSView {
             layer?.addSublayer(shape)
         }
 
-        titleLabel.font = BarTitle.font()
-        titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingMiddle
-        titleLabel.usesSingleLineMode = true
-        titleLabel.maximumNumberOfLines = 1
-        titleLabel.isEditable = false
-        titleLabel.isSelectable = false
-        titleLabel.drawsBackground = false
-        titleLabel.isBezeled = false
+        BarTitle.configure(titleLabel)
         titleLabel.textColor = FramedChrome.titleColor
-        titleLabel.setAccessibilityElement(false)
         addSubview(titleLabel)
         titleLabel.layer?.zPosition = 5
 
@@ -147,9 +138,7 @@ final class FramedChromeView: NSView {
                                           - FramedChrome.highlightHeight,
                                       width: max(bounds.width - 2 * (FramedChrome.hairline + FramedChrome.rim), 0),
                                       height: FramedChrome.highlightHeight)
-        let frame = titleRect()
-        titleLabel.isHidden = frame == nil
-        titleLabel.frame = frame ?? .zero
+        BarTitle.layOut(titleLabel.stringValue, in: titleLabel, frame: titleRect())
         CATransaction.commit()
     }
 
@@ -189,17 +178,8 @@ final class FullScreenBarView: NSVisualEffectView {
         blendingMode = .withinWindow
         state = .active
         wantsLayer = true
-        titleLabel.font = BarTitle.font()
-        titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingMiddle
-        titleLabel.usesSingleLineMode = true
-        titleLabel.maximumNumberOfLines = 1
-        titleLabel.isEditable = false
-        titleLabel.isSelectable = false
-        titleLabel.drawsBackground = false
-        titleLabel.isBezeled = false
+        BarTitle.configure(titleLabel)
         titleLabel.textColor = FullScreenBar.titleColor
-        titleLabel.setAccessibilityElement(false)
         addSubview(titleLabel)
     }
 
@@ -225,9 +205,8 @@ final class FullScreenBarView: NSVisualEffectView {
     }
 
     func layoutTitle(rightRowStart: CGFloat) {
-        let frame = titleRect(rightRowStart: rightRowStart)
-        titleLabel.isHidden = frame == nil
-        titleLabel.frame = frame ?? .zero
+        BarTitle.layOut(titleLabel.stringValue, in: titleLabel,
+                        frame: titleRect(rightRowStart: rightRowStart))
     }
 
     override func layout() {
@@ -388,15 +367,7 @@ final class StreamChromeView: NSView {
         tintLayer.isHidden = true
         layer?.addSublayer(tintLayer)
         for field in [titleLight, titleDark] {
-            field.font = BarTitle.font()
-            field.alignment = .center
-            field.lineBreakMode = .byTruncatingMiddle
-            field.usesSingleLineMode = true
-            field.maximumNumberOfLines = 1
-            field.isBezeled = false
-            field.drawsBackground = false
-            field.isEditable = false
-            field.isSelectable = false
+            BarTitle.configure(field)
             field.alphaValue = 0
             field.isHidden = true
             field.wantsLayer = true
@@ -405,8 +376,6 @@ final class StreamChromeView: NSView {
         }
         titleLight.textColor = .white
         titleDark.textColor = .black
-        titleLight.setAccessibilityElement(false)
-        titleDark.setAccessibilityElement(false)
         addSubview(phoneOverlay)
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
@@ -755,16 +724,8 @@ final class StreamChromeView: NSView {
             }
         }
         guard let frame else { return }
-        let text = titleText ?? ""
-        if titleLight.stringValue != text {
-            titleLight.stringValue = text
-            titleDark.stringValue = text
-        }
-        let mode = BarTitle.lineBreakMode(text: text, width: frame.width)
-        titleLight.lineBreakMode = mode
-        titleDark.lineBreakMode = mode
-        titleLight.frame = frame
-        titleDark.frame = frame
+        BarTitle.layOut(titleText, in: titleLight, frame: frame)
+        BarTitle.layOut(titleText, in: titleDark, frame: frame)
     }
 
     private func immersiveBarTitleFrame(row: HeaderBar.Row?) -> NSRect? {

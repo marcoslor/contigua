@@ -203,6 +203,36 @@ enum BarTitle {
         .systemFont(ofSize: pointSize, weight: weight)
     }
 
+    /// The one title field's construction, whatever the style: 13 pt semibold,
+    /// one centred line, never editable, and the accessibility value comes from
+    /// the window, not a label. The style owns only the colour and its frame.
+    static func configure(_ field: NSTextField) {
+        field.font = font()
+        field.alignment = .center
+        field.lineBreakMode = .byTruncatingMiddle
+        field.usesSingleLineMode = true
+        field.maximumNumberOfLines = 1
+        field.isEditable = false
+        field.isSelectable = false
+        field.drawsBackground = false
+        field.isBezeled = false
+        field.setAccessibilityElement(false)
+    }
+
+    /// Puts `text` in a title field at `frame`: whole when it fits (clipping),
+    /// middle-truncated only below the text's width, hidden with no frame.
+    static func layOut(_ text: String?, in field: NSTextField, frame: NSRect?) {
+        field.stringValue = text ?? ""
+        guard let frame else {
+            field.isHidden = true
+            field.frame = .zero
+            return
+        }
+        field.isHidden = false
+        field.frame = frame
+        field.lineBreakMode = lineBreakMode(text: text, width: frame.width)
+    }
+
     /// The text's one-line width, rounded up like an AppKit field, with two
     /// points for the cell's own edges so a name that exactly fits does not
     /// truncate by a rounding step.
