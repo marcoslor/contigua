@@ -26,7 +26,7 @@ enum MenuDump {
         var enabled: Bool
         /// The class of the item's target, nil when it has none. An item the
         /// app built with AppKit and put in the menu itself is owned by one of
-        /// the app's own types ("PocketDeck.ImmersiveMenuInstaller"); a SwiftUI
+        /// the app's own types ("PocketDeck.FullScreenMenuInstaller"); a SwiftUI
         /// command's item is owned by SwiftUI. This is how the checks see the
         /// injection pattern that loses items on a rebuild.
         var targetClass: String?

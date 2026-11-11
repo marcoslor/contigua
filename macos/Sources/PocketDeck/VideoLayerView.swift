@@ -170,10 +170,6 @@ final class VideoLayerView: NSView, BarToneSource {
     /// the video's own layer (no chrome: tests and previews).
     var touchDotHost: CALayer?
 
-    /// The window's own pointer feed already reports every move (the immersive
-    /// dwell feed), so the tracking area leaves hover to it.
-    var hoverFeedActive: () -> Bool = { false }
-
     /// True at a window point that is Mac UI drawn over the video (the
     /// immersive pill): hovering there is not hovering the phone.
     var macUIAtWindowPoint: ((CGPoint) -> Bool)?
@@ -266,13 +262,12 @@ final class VideoLayerView: NSView, BarToneSource {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard !hoverFeedActive() else { return }
         hoverPointerMoved(toWindowPoint: event.locationInWindow)
     }
 
     override func mouseExited(with event: NSEvent) { inputMapper?.hoverExit() }
 
-    /// The scripted driver's `hover`/`hoverout` and the immersive dwell feed
+    /// The scripted driver's `hover`/`hoverout`
     /// reach the same decision: the chrome's own points are Mac UI, the rest is
     /// the phone. The point is in the window's base coordinates.
     func hoverPointerMoved(toWindowPoint point: CGPoint) {

@@ -8,18 +8,18 @@ import Foundation
 
 enum MenuModel {
     /// View ▸ the style pair, top to bottom.
-    static let styles: [WindowStyle] = [.framed, .immersive]
+    static let styles: [WindowStyle] = [.immersive, .framed]
 
     /// Exactly one of the pair is checked: the key stream window's style.
     static func styleChecked(_ item: WindowStyle, key: WindowStyle) -> Bool { item == key }
 
-    /// Hide Controls is the reveal choice for an immersive window only, so a
-    /// choice is never also a submenu's parent.
-    static func hideControlsEnabled(style: WindowStyle) -> Bool { style == .immersive }
+    /// Hide Controls is the full-screen bar's reveal choice: it needs a key
+    /// stream window, and it never changes a window's style.
+    static func hideControlsEnabled(hasStream: Bool) -> Bool { hasStream }
 
     /// Hide Controls' items, top to bottom (the three delays, a separator,
     /// Always Visible).
-    static let hideControls: [ImmersiveMenuItem] = ImmersiveMenuModel.items
+    static let hideControls: [FullScreenMenuItem] = FullScreenMenuModel.items
 
     /// The Density item that clears the app's override. It names the Settings
     /// default, so the person knows what "Default" restores.

@@ -1,5 +1,5 @@
 // WIN-58: a chrome layout drops the frame animations a resize step would
-// otherwise trail by ~0.25 s, and only those: a fade in flight (the dwell
+// otherwise trail by ~0.25 s, and only those: a fade in flight (the covers
 // controls, a touch dot, the cover) or the edge hint's group must survive a
 // layout that lands during it.
 
@@ -17,7 +17,7 @@ final class ChromeLayoutAnimationTests: XCTestCase {
         window.isReleasedWhenClosed = false
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .framed)
+        let chrome = StreamChromeView(video: video, style: .immersive)
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
         chrome.layoutChrome()
