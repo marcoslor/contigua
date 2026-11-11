@@ -490,6 +490,42 @@ final class StreamChromeStyleTests: XCTestCase {
         XCTAssertNil(controller.chrome.barTitleRect)
     }
 
+    func testThePillHidesAfterThePointerLeaves() throws {
+        let manager = makeManager(choose: .minimal)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.45)
+        XCTAssertTrue(controller.chrome.showsPill)
+
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 400, y: 300))
+        pump(0.7)
+        XCTAssertFalse(controller.chrome.showsPill, "600 ms after leaving both the pill and the zone")
+        XCTAssertFalse(trafficLightsShown(controller.window))
+        XCTAssertTrue(controller.chrome.pill.isHidden)
+    }
+
+    func testATouchInTheZoneRestartsTheRest() throws {
+        let manager = makeManager(choose: .minimal)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.3)
+        // The finger lands in the hot zone before the dwell is up: the touch is
+        // the app's and the rest starts again from it.
+        controller.touchInHotZone(TouchEvent(action: .down, nx: 0.02, ny: 0.02))
+        pump(0.2)
+        XCTAssertFalse(controller.chrome.showsPill, "the rest is younger than the dwell")
+        pump(0.3)
+        XCTAssertTrue(controller.chrome.showsPill, "350 ms of quiet after the tap is a rest")
+    }
+
     func testSwitchingStylesKeepsTheStreamAndIsRemembered() throws {
         let manager = makeManager()
         addTeardownBlock { StreamMenuState.shared.handle(.reset) }

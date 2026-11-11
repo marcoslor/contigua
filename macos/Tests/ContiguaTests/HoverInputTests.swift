@@ -214,6 +214,10 @@ final class HoverInputTests: XCTestCase {
         let name = "app.contigua.tests.hover.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        // These tests exercise the Immersive bar; the Framed margin test sets
+        // its own style.
+        defaults.set(WindowStyle.immersive.rawValue,
+                     forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
         return WindowManager(session: session, defaults: defaults)
@@ -339,5 +343,56 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent.actions, [.enter, .exit, .enter])
     }
 
+    /// The Minimal pill is Mac UI too: once it appears under a resting pointer,
+    /// the phone's hover ends without waiting for the next move (WIN-61).
+    func testTheMinimalPillAppearingUnderARestingPointerEndsTheHover() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.setStyle(.minimal)
+        window.orderFront(nil)
+        controller.noteFirstFrame()
+        var sent = Sent()
+        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
+        mapper.scheduleHoverMove = { _, work in work() }
+        mapper.send = { command in
+            if case .hover(let event) = command { sent.hovers.append(event) }
+        }
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 20, y: 580))
+        XCTAssertEqual(sent.actions, [.enter], "the hot zone is still the phone's while no pill shows")
+        pump(0.45)
+        XCTAssertTrue(controller.chrome.showsPill)
+        XCTAssertEqual(sent.actions, [.enter, .exit], "the pill came up under the pointer")
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 30, y: 580))
+        XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the pill")
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
+        XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "the picture below the pill is the phone's")
+    }
+
+    /// The Minimal window is the stream: only the pill it shows is Mac UI.
+    func testTheMinimalPillIsNotThePhone() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.setStyle(.minimal)
+        window.orderFront(nil)
+        controller.noteFirstFrame()
+        var sent = Sent()
+        let mapper = try XCTUnwrap(controller.videoView.inputMapper)
+        mapper.scheduleHoverMove = { _, work in work() }
+        mapper.send = { command in
+            if case .hover(let event) = command { sent.hovers.append(event) }
+        }
+
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
+        XCTAssertEqual(sent.actions, [.enter])
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 100))
+        XCTAssertEqual(sent.actions, [.enter, .move], "below the pill the picture is still the phone's")
+    }
 
 }

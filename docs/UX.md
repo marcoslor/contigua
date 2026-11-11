@@ -41,14 +41,14 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
-Find Apps · Immersive / Framed (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Icon Size › (75 %, 100 %,
+Find Apps · Framed / Immersive / Minimal (⌥⌘F cycles) · Hide Controls › (enabled only while the window is Minimal; disabled, never hidden, otherwise) · Show Touches · Live Text · Icon Size › (75 %, 100 %,
 125 %, 150 %, the current one checked; 125 % until the person picks another) · Density › (Default, the other percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0) · the
 system's Enter Full Screen (fn‑F). **Phone** holds Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items, the system's window group and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
 Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. The Dock icon's own menu (a right-click on it)
 offers **Find Apps** and **Phone Mirror**, with Phone Mirror disabled while the phone is away. The items that act on a stream
-window — Framed/Immersive, Hide Controls, Show Touches, Live Text, Density and Navigate's three — are off and disabled whenever
+window — Framed/Immersive/Minimal, Hide Controls, Show Touches, Live Text, Density and Navigate's three — are off and disabled whenever
 a window that is not a stream window (the Deck, Settings, a sheet) has the keyboard, and unchecked where they carry a mark.
 A control that cannot
 work is disabled, never hidden.
@@ -83,20 +83,24 @@ work is disabled, never hidden.
      when it was last seen. A phone that no longer trusts this Mac, or whose connections
      switch is off, keeps its banner until it is fixed: it has no close control, it survives a relaunch, and the
      connections-off banner adds one line naming the switch on the phone.
-2. **App windows**: two styles, View ▸ **Immersive** / **Framed** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
-   Style), remembered per app: **Immersive** (default) is the stream plus a permanent 28 pt bar
-   above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, with the app's name centred on
-   that line (the phone's name in the Phone Mirror, and for a link or a handoff only once the phone reports an app), the traffic lights
-   on that line; **Framed** is the stream inside a real frame on all four sides — 38 pt above and 5 pt on the other three sides, a
-   21 pt window corner radius and a 12 pt picture radius, the system's dark or light material, a hairline and a lighter rim, the app's
-   name in the system label colour, the traffic lights and our controls in the taller bar (the measured numbers and the reference are in
-   DESIGN.md). Switching grows or shrinks the window by the difference between the two insets, the stream keeps its place. Native full
+2. **App windows**: three styles, View ▸ **Framed** / **Immersive** / **Minimal** (plain radio items, no section header; ⌥⌘F cycles
+   Framed → Immersive → Minimal), remembered per app: **Framed** (default) is the stream inside a real frame on all four sides — 38 pt
+   above and 5 pt on the other three sides, a 21 pt window corner radius and a 12 pt picture radius, the system's dark or light material, a
+   hairline and a lighter rim, the app's name and phone in the system label colour, the traffic lights and our controls in the taller bar
+   (the measured numbers and the reference are in DESIGN.md); **Immersive** is the stream plus a permanent 28 pt bar
+   above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, the app's name and the phone's as
+   "<App> (<phone>)" centred on that line (the phone's name alone in the Phone Mirror, and for a link or a handoff only once the phone
+   reports an app), the traffic lights on that line; **Minimal** is the old borderless style — the window is exactly the stream, no
+   bar and no borders, and the traffic lights and our controls live on a clear-glass pill at the stream's top-left that a 350 ms rest in a
+   72×32 pt hot zone brings in and a 600 ms absence takes away (Always Visible keeps it up). Switching grows or shrinks the window by the
+   difference between the two insets, the stream keeps its place. Native full
    screen is macOS's own View item (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the
-   screen in either style and a translucent 28 pt acrylic bar holds our traffic lights, the title and our controls without the mirror. It
+   screen in every style. In Framed and Immersive a translucent 28 pt acrylic bar holds our traffic lights, the title and our controls
+   without the mirror; in Minimal the system's own revealed title bar carries the title and lights, as it did before the three styles. The bar
    stays hidden until the pointer reaches the top edge and rests there (350 ms by default; **View ▸ Hide Controls** and Settings →
    General → **Reveal controls after** pick Instantly, Short or Long) and slides in; it slides away 600 ms after the pointer leaves it, or
    goes at once on leaving full screen. **Always Visible** keeps it up; picking it never changes a window's style. A click at the top
-   edge before the bar shows is still the app's own touch. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   edge before the bar shows is still the app's own touch. **Hide Controls** and its items are disabled outside Minimal. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
@@ -251,11 +255,11 @@ dark background, a 2 pt accent line sweeping under the window's top edge
 (indeterminate, never a made-up percentage) and the title **<App> — opening on
 <phone>**.
 
-The cover is the whole window in either style: one sheet from the top edge,
+The cover is the whole window in every style: one sheet from the top edge,
 with the traffic lights and our controls on the top row, and the icon, title and
 line where Immersive puts them. The style's bar — its mirror, blur and haze — or
 frame — its material and rim — arrives with the first frame, so the loading
-state looks the same in Framed and Immersive; the stored style does not change.
+state looks the same in Framed, Immersive and Minimal; the stored style does not change.
 
 - 0–5 s: the icon, the line and the title.
 - 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel
@@ -345,7 +349,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | --- | --- | --- |
 | ⇧⌘N | Add Phone… | File |
 | ⌘K | Find Apps | View |
-| ⌥⌘F | Toggle window style (Immersive / Framed) | View |
+| ⌥⌘F | Cycle the window style (Framed → Immersive → Minimal) | View |
 | ⌃Tab | Move the keyboard into the Phone Mirror's bar; ←/→, Tab, Return and Esc act there | Phone Mirror |
 | ⇧⌘T | Live Text | View |
 | ⌘+ | Larger: the Deck's icon size, or the window's density | View, Deck |
