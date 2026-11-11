@@ -28,13 +28,38 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(DeckRail.rowLetter(rowStart: 0, apps: list, columns: 6), "J",
                        "the row holding I's first app is lettered by its later section")
 
-        let jumped = RailAccent.reduce(.topRow, .pick(letter: "I", target: 4, fromTop: 0))
-        XCTAssertEqual(jumped, .jumping(letter: "I", target: 4, fromTop: 0))
+        let jumped = RailAccent.reduce(.topRow, .pick(letter: "I", target: 4, fromTop: 0, landing: 40))
+        XCTAssertEqual(jumped, .jumping(letter: "I", target: 4, fromTop: 0, landing: 40))
         XCTAssertEqual(jumped.letter(topRow: "J"), "I", "the click lights I at once, not J")
 
         let landed = RailAccent.reduce(jumped, scroll(0, 40))
         XCTAssertEqual(landed, .picked(letter: "I", landingOffset: 40))
         XCTAssertEqual(landed.letter(topRow: "J"), "I")
+    }
+
+    /// The person's report (ISS-94): a pick on J lights K for a moment. J's
+    /// first app shares its row with K, so the row is lettered K; the animated
+    /// scroll crosses the row's gutter a few points before J's row reaches the
+    /// top, and the frames after that must still light J. The accent settles
+    /// on J at the landing, never on the row's letter.
+    func testTheJumpsFramesNeverLightTheRowsLetter() {
+        let list = apps(["Harbor 1", "Harbor 2", "Harbor 3", "Harbor 4", "Harbor 5",
+                         "Invoices", "Journal", "Kiosk"])
+        XCTAssertEqual(DeckRail.pick("J", in: list)?.index, 6)
+        XCTAssertEqual(DeckRail.rowLetter(rowStart: 6, apps: list, columns: 6), "K",
+                       "J's row is lettered by K, so the row rule can see the flash")
+        var state = RailAccent.reduce(.topRow, .pick(letter: "J", target: 6, fromTop: 0, landing: 200))
+        // The jump down to J's row: the top row becomes J's row at 195, five
+        // points before the landing, and the animation continues to 200.
+        for (top, offset) in [(0, CGFloat(60)), (0, 120), (0, 180), (6, 195)] {
+            state = RailAccent.reduce(state, scroll(top, offset))
+            XCTAssertEqual(state.letter(topRow: "K"), "J",
+                           "the jump's own frame at offset \(offset) lit another letter")
+        }
+        state = RailAccent.reduce(state, scroll(6, 200))
+        XCTAssertEqual(state.letter(topRow: "K"), "J",
+                       "the landing must keep the clicked letter, not the row's")
+        XCTAssertEqual(state, .picked(letter: "J", landingOffset: 200))
     }
 
     /// The jump's own animated scroll walks the top row toward the target and
@@ -43,7 +68,7 @@ final class RailAccentTests: XCTestCase {
     func testTheJumpsOwnScrollKeepsThePick() {
         let list = apps((0..<72).map { "Alpha \($0)" })
         XCTAssertEqual(DeckRail.pick("A", in: list)?.index, 0)
-        var state = RailAccent.reduce(.topRow, .pick(letter: "A", target: 30, fromTop: 0))
+        var state = RailAccent.reduce(.topRow, .pick(letter: "A", target: 30, fromTop: 0, landing: 626))
         // 30 is row 5 at six columns.
         for (top, offset) in [(0, CGFloat(0)), (6, 130), (12, 254), (24, 502), (30, 626)] {
             state = RailAccent.reduce(state, scroll(top, offset))
@@ -65,7 +90,7 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(DeckRail.rowLetter(rowStart: 54, apps: list, columns: 6), "Y",
                        "X shares its last row with Y")
 
-        let jumped = RailAccent.reduce(.topRow, .pick(letter: "X", target: 54, fromTop: 0))
+        let jumped = RailAccent.reduce(.topRow, .pick(letter: "X", target: 54, fromTop: 0, landing: 900))
         var state = RailAccent.reduce(jumped, scroll(48, 900, maxOffset: 900))
         XCTAssertEqual(state, .picked(letter: "X", landingOffset: 900),
                        "the grid reached its end with X's row still below")
@@ -83,14 +108,14 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(DeckRail.pick("C", in: list), DeckRail.Pick(letter: "D", index: 2))
         XCTAssertNil(DeckRail.pick("Z", in: list), "nothing after the last app to skip to")
 
-        let state = RailAccent.reduce(.topRow, .pick(letter: "D", target: 2, fromTop: 0))
+        let state = RailAccent.reduce(.topRow, .pick(letter: "D", target: 2, fromTop: 0, landing: 0))
         XCTAssertEqual(state.letter(topRow: "A"), "D")
     }
 
     /// A scroll by other means (the wheel, the trackpad, the scroll bar, the
     /// keys) moves the grid off the landing: the top row's letter is back.
     func testAScrollByOtherMeansHandsTheAccentBackToTheTopRow() {
-        let landed = RailAccent.reduce(.topRow, .pick(letter: "I", target: 30, fromTop: 0))
+        let landed = RailAccent.reduce(.topRow, .pick(letter: "I", target: 30, fromTop: 0, landing: 626))
         let held = RailAccent.reduce(landed, scroll(30, 626))
         XCTAssertEqual(held.letter(topRow: "H"), "I")
 
@@ -108,8 +133,8 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(RailAccent.reduce(.topRow, scroll(12, 200)), .topRow)
         XCTAssertEqual(RailAccent.reduce(.topRow, scroll(12, 200)).letter(topRow: "K"), "K")
 
-        let held = RailAccent.reduce(.picked(letter: "I", landingOffset: 626), .pick(letter: "O", target: 97, fromTop: 6))
-        XCTAssertEqual(held, .jumping(letter: "O", target: 97, fromTop: 6))
+        let held = RailAccent.reduce(.picked(letter: "I", landingOffset: 626), .pick(letter: "O", target: 97, fromTop: 6, landing: 700))
+        XCTAssertEqual(held, .jumping(letter: "O", target: 97, fromTop: 6, landing: 700))
         XCTAssertEqual(held.letter(topRow: "N"), "O")
     }
 
@@ -117,12 +142,12 @@ final class RailAccentTests: XCTestCase {
     /// offset 0 and stays lit. A zero end reported before the grid has a size
     /// is not a landing.
     func testAPickOnAShortGridSettlesAtOnce() {
-        let state = RailAccent.reduce(.topRow, .pick(letter: "H", target: 2, fromTop: 0))
+        let state = RailAccent.reduce(.topRow, .pick(letter: "H", target: 2, fromTop: 0, landing: 0))
         let landed = RailAccent.reduce(state, scroll(0, 0, maxOffset: 0))
         XCTAssertEqual(landed, .picked(letter: "H", landingOffset: 0))
         XCTAssertEqual(landed.letter(topRow: "G"), "H")
 
-        let jump = RailAccent.reduce(.topRow, .pick(letter: "X", target: 54, fromTop: 0))
+        let jump = RailAccent.reduce(.topRow, .pick(letter: "X", target: 54, fromTop: 0, landing: 400))
         XCTAssertEqual(RailAccent.reduce(jump, scroll(0, 0, maxOffset: 0)), jump,
                        "a zero end before layout is not the grid's end")
     }
@@ -131,8 +156,8 @@ final class RailAccentTests: XCTestCase {
     /// its landing: the pick holds through the animation and settles at the
     /// top.
     func testAnUpwardJumpFromTheGridsEndKeepsThePick() {
-        var state = RailAccent.reduce(.topRow, .pick(letter: "A", target: 0, fromTop: 48))
-        XCTAssertEqual(state, .jumping(letter: "A", target: 0, fromTop: 48))
+        var state = RailAccent.reduce(.topRow, .pick(letter: "A", target: 0, fromTop: 48, landing: 40))
+        XCTAssertEqual(state, .jumping(letter: "A", target: 0, fromTop: 48, landing: 40))
         state = RailAccent.reduce(state, scroll(48, 900, maxOffset: 900))
         XCTAssertEqual(state.letter(topRow: "X"), "A", "the bottom it starts on is not its landing")
         for top in [36, 24, 12] {
@@ -143,16 +168,37 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(state, .picked(letter: "A", landingOffset: 40))
     }
 
+    /// A pick whose target is on the top row but whose landing is below the
+    /// sections (the All Apps row is not at the viewport's top) still animates
+    /// down: the start offset is not the landing, and the jump's frames keep
+    /// the pick. This is the press that used to lose its emphasis: the accent
+    /// settled at the old offset, then the jump's own frames read as the
+    /// person's scroll.
+    func testASameRowJumpWaitsForItsLanding() {
+        let picked = RailAccent.reduce(.topRow,
+                                       .pick(letter: "C", target: 3, fromTop: 0, landing: 200))
+        XCTAssertEqual(picked, .jumping(letter: "C", target: 3, fromTop: 0, landing: 200))
+        for offset in [CGFloat(0), 60, 120, 180] {
+            let frame = RailAccent.reduce(picked, scroll(0, offset))
+            XCTAssertEqual(frame, picked,
+                           "the same-row jump's frame at offset \(offset) settled early")
+            XCTAssertEqual(frame.letter(topRow: "A"), "C")
+        }
+        let landed = RailAccent.reduce(picked, scroll(0, 200))
+        XCTAssertEqual(landed, .picked(letter: "C", landingOffset: 200))
+        XCTAssertEqual(landed.letter(topRow: "A"), "C")
+    }
+
     /// A scroll that leaves the jump's path while it runs is the person's, not
     /// the jump's: the top row's letter is back.
     func testAScrollOffTheJumpPathDropsThePick() {
-        let down = RailAccent.reduce(.topRow, .pick(letter: "I", target: 30, fromTop: 12))
+        let down = RailAccent.reduce(.topRow, .pick(letter: "I", target: 30, fromTop: 12, landing: 626))
         // Above where the jump started.
         XCTAssertEqual(RailAccent.reduce(down, scroll(6, 160)), .topRow)
         // Past the target's row.
         XCTAssertEqual(RailAccent.reduce(down, scroll(36, 700)), .topRow)
 
-        let up = RailAccent.reduce(.topRow, .pick(letter: "C", target: 12, fromTop: 30))
+        let up = RailAccent.reduce(.topRow, .pick(letter: "C", target: 12, fromTop: 30, landing: 200))
         XCTAssertEqual(RailAccent.reduce(up, scroll(36, 700)), .topRow, "below the start")
         XCTAssertEqual(RailAccent.reduce(up, scroll(6, 80)), .topRow, "above the target's row")
     }

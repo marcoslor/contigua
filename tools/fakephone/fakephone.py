@@ -508,17 +508,19 @@ def add_demo_apps(count, no_icon_every):
 
 
 # DECK-7's accent: a letter whose first app shares its row with the next letter
-# (I with J; a row does not start at a letter boundary), and letters in the
-# grid's last screenful, where the row cannot come to the top (X with Y below).
-# Five H apps put I on the row's second column at the e2e's 8 columns.
-RAIL_LETTER_LABELS = ["Harbor", "Harbor 2", "Harbor 3", "Harbor 4", "Harbor 5",
-                      "Invoices", "Journal", "Outbox", "Xylophone", "Yoga"]
+# (I with J and K; a row does not start at a letter boundary), and letters in
+# the grid's last screenful, where the row cannot come to the top (X with Y
+# below). 1Password is the rail's `#` letter; Kiosk puts K in J's row (ISS-94:
+# picking J flashed K), and Z is in the demo list (Zoom).
+RAIL_LETTER_LABELS = ["1Password", "Harbor", "Harbor 2", "Harbor 3", "Harbor 4",
+                      "Harbor 5", "Invoices", "Jabber", "Journal", "Kiosk",
+                      "Outbox", "Xylophone", "Yoga"]
 
 
 def add_rail_letters():
     """Swap fillers for the rail's fixtures: the same cell count, so the grid
-    screenshots and their counts stay put. The fillers go from after J, which
-    keeps I mid-row instead of on a row boundary."""
+    screenshots and their counts stay put. I, J and K share a row, so a pick
+    on I or J shares its row with another letter."""
     for label in RAIL_LETTER_LABELS:
         pkg = "fixture.%s" % label.lower().replace(" ", "")
         APPS.append({"pkg": pkg, "label": label, "activity": "%s/.Main" % pkg})

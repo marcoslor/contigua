@@ -15873,6 +15873,110 @@ check_deckstart() {
 
 # The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
 # steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
+# railpress_shots — the ISS-94 visual record on the run's own (quiet, virtual)
+# display: the press and the click's linger at 760 and 1000 wide, light and
+# dark. PD_RAILPRESS_SHOT_TAG names the build (feat/main); PD_RAILPRESS_SHOT_MODE
+# hover captures main's hover-driven emphasis instead (it has no press state).
+# The shots go to ~/dev/pocketdeck/.agent/railpress/shots/ and are judged by eye.
+railpress_shots() {
+    local out="$HOME/dev/pocketdeck/.agent/railpress/shots"
+    local tag="${PD_RAILPRESS_SHOT_TAG:-feat}"
+    local mode="${PD_RAILPRESS_SHOT_MODE:-press}"
+    mkdir -p "$out"
+    # The shared app is still running after `stop_app` (it only resets it), and
+    # a second instance would exit at once. End it and its phone, then serve
+    # the shots from a fresh phone with the same state and identity.
+    end_shared
+    FAKE_ARGS="--demo-apps 60 --rail-letters" start_fake || return 1
+    FAKE_ARGS=""
+    local appearance width id grid since state
+    probe_state() {
+        python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state", ""))' "$1"
+    }
+    # railshot_settle SINCE GRID — a new `picked` accent line: the pick's jump
+    # reached its landing. The shot is read only after this.
+    railshot_settle() {
+        local tries=60
+        while [ "$tries" -gt 0 ]; do
+            if tail -n "+$(( $1 + 1 ))" "$2" 2>/dev/null \
+                | grep -q '"railAccent".*"state":"picked"'; then
+                return 0
+            fi
+            sleep 0.1
+            tries=$((tries - 1))
+        done
+        return 1
+    }
+    shot_probe() {  # shot_probe NAME — the machine's state at the shot's moment
+        control deckrailemph "$out/$1.json" \
+            || { bad "RAILSHOTS $1: deckrailemph: $CONTROL_REPLY"; return 1; }
+        say "RAILSHOTS $1: state $(probe_state "$out/$1.json")"
+    }
+    for appearance in light dark; do
+        for width in 760 1000; do
+            rm -rf "$WORK-control"
+            mkdir -p "$WORK-control"
+            grid="$WORK/rail-shots-$appearance-$width.jsonl"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --debug-control "$WORK-control" --debug-deck-grid "$grid" \
+                --debug-deck-emphasis --debug-motion full --quit-after 150
+            if ! wait_until 40 events_have '"t":"apps.list"'; then
+                bad "RAILSHOTS $appearance $width: no apps.list"
+                stop_app
+                continue
+            fi
+            # Wait for the phone's own rendered icons, never a placeholder or
+            # a cover: the grid dump says when a cell's icon landed.
+            if ! wait_until 40 grep -q '"icon":"rendered"' "$grid"; then
+                bad "RAILSHOTS $appearance $width: no rendered icons"
+                stop_app
+                continue
+            fi
+            control deck-size "$width" 600 || bad "RAILSHOTS deck-size $width: $CONTROL_REPLY"
+            sleep 2
+            id="$(await_window "\$4 >= $((width - 1)) && \$4 <= $((width + 1))")" \
+                || { bad "RAILSHOTS no Deck window at $width"; stop_app; continue; }
+            if [ "$mode" = "hover" ]; then
+                # Main's emphasis is hover-driven and it has no click verb:
+                # scroll to C with the old `deck-rail` (the same landing the
+                # branch's press reaches), then hover it.
+                since="$(wc -l < "$grid" | tr -d ' ')"
+                control deck-rail C || bad "RAILSHOTS deck-rail C (main): $CONTROL_REPLY"
+                railshot_settle "$since" "$grid" || bad "RAILSHOTS main C jump never settled"
+                control deckrailenter C || bad "RAILSHOTS enter C: $CONTROL_REPLY"
+                sleep 0.8
+                shot_probe "hover-$tag-$appearance-$width"
+                screencapture -x -o -l"$id" "$out/hover-$tag-$appearance-$width.png" \
+                    && say "shot: $out/hover-$tag-$appearance-$width.png"
+                control deckrailleave
+            else
+                since="$(wc -l < "$grid" | tr -d ' ')"
+                control deckrailpress C || bad "RAILSHOTS press C: $CONTROL_REPLY"
+                railshot_settle "$since" "$grid" || bad "RAILSHOTS the C jump never settled"
+                sleep 0.2
+                shot_probe "pressed-$tag-$appearance-$width"
+                state="$(probe_state "$out/pressed-$tag-$appearance-$width.json")"
+                [ "$state" = "pressed" ] \
+                    || bad "RAILSHOTS pressed-$tag-$appearance-$width: the machine is $state, not pressed"
+                screencapture -x -o -l"$id" "$out/pressed-$tag-$appearance-$width.png" \
+                    && say "shot: $out/pressed-$tag-$appearance-$width.png"
+                control deckrailup C || bad "RAILSHOTS up C: $CONTROL_REPLY"
+                sleep 0.2
+                control deckrailclick C 80 || bad "RAILSHOTS click C: $CONTROL_REPLY"
+                sleep 0.15
+                shot_probe "linger-$tag-$appearance-$width"
+                state="$(probe_state "$out/linger-$tag-$appearance-$width.json")"
+                [ "$state" = "lingering" ] \
+                    || bad "RAILSHOTS linger-$tag-$appearance-$width: the machine is $state, not lingering"
+                screencapture -x -o -l"$id" "$out/linger-$tag-$appearance-$width.png" \
+                    && say "shot: $out/linger-$tag-$appearance-$width.png"
+            fi
+            sleep 0.3
+            stop_app
+        done
+    done
+}
+
 # Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
 # shots are what proves rail-glyph.py before the boot; visible, the real pointer
 # comes onto the rail at M, sideways there, down to Z and #, and out again,
@@ -15885,7 +15989,7 @@ check_deckrail() {
     if [ -n "${PD_DECKRAIL_START_FRAME:-}" ]; then
         defaults write "$DEFAULTS_SUITE" deck.windowFrame "$PD_DECKRAIL_START_FRAME"
     fi
-    FAKE_ARGS="--demo-apps 60" start_fake || return 1
+    FAKE_ARGS="--demo-apps 60 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The VM guest keeps its own Reduce Motion; the test hook makes the app's
     # effective setting full so the fisheye (the proof) works here.
@@ -15918,7 +16022,8 @@ check_deckrail() {
             && say "shot: $railshots/$1" \
             || bad "DECKRAIL no Deck window for $1"
     }
-    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale since settle
+    local deadx glyphx jy winw edgex hitrect railhit_top railhit_bottom fx fy fw fh pitch
     if [ "$VISIBLE" = 1 ]; then
         # Park the real pointer outside the Deck before any forced step.
         cg_input moveat --x 5 --y 5
@@ -16379,6 +16484,134 @@ PY
         && ok "[DECK-7] the click through the overlay opened the app" \
         || bad "[DECK-7] the click through the overlay opened nothing"
 
+    # [DECK-33] A pick's accent is the clicked letter on every frame of its
+    # jump, never a row the scroll passes. I's first app shares its row with J
+    # (the reported flash), J's row with K, Z is the last letter, # has an app
+    # (1Password) and X sits in the last screenful, whose row cannot come to
+    # the top. The click is the same press the rail's own gesture runs.
+    control deckrailleave
+    sleep 0.3
+    control deckfocus grid || bad "[DECK-33] deckfocus grid: $CONTROL_REPLY"
+    for target in I J Z '#' X; do
+        control deck-scroll -100000 >/dev/null
+        case "$CONTROL_REPLY" in
+            ok|*"already at its end"*) ;;
+            *) bad "DECKRAIL deck-scroll to the top ($target): $CONTROL_REPLY" ;;
+        esac
+        sleep 0.5
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclick "$target" 80 \
+            || bad "[DECK-33] deckrailclick $target: $CONTROL_REPLY"
+        if settle="$(python3 "$MACOS/scripts/deck-rail-accent.py" settle "$WORK/deck-grid.jsonl" "$since" "$target" 2>&1)"; then
+            ok "[DECK-33] the $target pick lit only $target from the click to the settle ($settle)"
+        else
+            bad "[DECK-33] the $target pick: $settle"
+        fi
+    done
+    control deckrailleave
+    sleep 0.3
+
+    # [DECK-34] The rail's hit column is the letters' column widened by at most
+    # 4 pt each side; the strip right of the letters and the window's right
+    # edge are the grid's, not the rail's. The probe reads the rail's own hit
+    # rect and letters' column; the pointer verbs feed the rail's own hit test.
+    control deckfocus grid || bad "[DECK-34] deckfocus grid: $CONTROL_REPLY"
+    control deckrailslots "$WORK/rail-hit-rest.json" \
+        || bad "[DECK-34] deckrailslots (rest): $CONTROL_REPLY"
+    if hitrect="$(python3 "$MACOS/scripts/deck-rail-hit.py" rect "$WORK/rail-hit-rest.json" 2>&1)"; then
+        ok "[DECK-34] the hit column is the letters' column + 4 pt each side ($hitrect)"
+    else
+        bad "[DECK-34] the hit column: $hitrect"
+    fi
+    control deckrailanchor "$WORK/rail-hit-anchor.pt" \
+        && read -r wx wy sx sy scale < "$WORK/rail-hit-anchor.pt" \
+        || bad "[DECK-34] deckrailanchor: $CONTROL_REPLY"
+    control deck-frame "$WORK/rail-hit-frame.txt" \
+        && read -r fx fy fw fh < "$WORK/rail-hit-frame.txt" \
+        || bad "[DECK-34] deck-frame: $CONTROL_REPLY"
+    read -r deadx glyphx jy winw railhit_top railhit_bottom pitch < <(python3 - "$WORK/rail-hit-rest.json" "$fw" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+letters, pitch, hit = d["letters"], d["pitch"], d["hit"]
+print(letters["right"] + 6, (letters["left"] + letters["right"]) / 2,
+      9.5 * pitch, sys.argv[2], hit["top"], hit["bottom"], pitch)
+PY
+)
+    # A hover at the letters' right edge + 6 pt is not the rail's: no pointer
+    # state, no emphasis.
+    control deckrailhoverat "$deadx" "$jy"
+    sleep 0.3
+    control deckrailslots "$WORK/rail-hit-hover.json" \
+        || bad "[DECK-34] deckrailslots (dead hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" state "$WORK/rail-hit-hover.json" away \
+        && ok "[DECK-34] a hover 6 pt right of the letters does not enter the rail" \
+        || bad "[DECK-34] a hover 6 pt right of the letters entered the rail"
+    control deckrailemph "$WORK/rail-hit-emph.json" \
+        || bad "[DECK-34] deckrailemph (dead hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" none "$WORK/rail-hit-emph.json" \
+        && ok "[DECK-34] a hover right of the letters lights nothing" \
+        || bad "[DECK-34] a hover right of the letters lit the grid"
+    # A click there does nothing to the rail: no jump and no accent.
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$deadx" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (dead): $CONTROL_REPLY"
+    sleep 0.5
+    python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+        && ok "[DECK-34] a click 6 pt right of the letters does not jump or change the accent" \
+        || bad "[DECK-34] a click 6 pt right of the letters reached the rail"
+    # The window's right edge, over the scroller area: the same nothing.
+    edgex="$(python3 -c "print($winw - $wx - 1)")"
+    control deckrailhoverat "$edgex" "$jy"
+    sleep 0.3
+    control deckrailslots "$WORK/rail-hit-edge.json" \
+        || bad "[DECK-34] deckrailslots (edge hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" state "$WORK/rail-hit-edge.json" away \
+        && ok "[DECK-34] a hover at the window's right edge does not enter the rail" \
+        || bad "[DECK-34] a hover at the window's right edge entered the rail"
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$edgex" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (edge): $CONTROL_REPLY"
+    sleep 0.5
+    python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+        && ok "[DECK-34] a click at the window's right edge does not reach the rail" \
+        || bad "[DECK-34] a click at the window's right edge reached the rail"
+    # A click on the letter's glyph still picks it.
+    control deckrailleave
+    sleep 0.2
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$glyphx" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (glyph): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" picked "$WORK/deck-grid.jsonl" "$since" J \
+        && ok "[DECK-34] a click on J's glyph picks J" \
+        || bad "[DECK-34] a click on J's glyph did not pick J"
+    # Above the first and below the last letter is dead beyond 4 pt.
+    local deady
+    for deady in "$(python3 -c "print($railhit_top - 2)")" "$(python3 -c "print($railhit_bottom + 2)")"; do
+        control deckrailleave
+        sleep 0.2
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclickat "$glyphx" "$deady" 60 \
+            || bad "[DECK-34] deckrailclickat (crown $deady): $CONTROL_REPLY"
+        sleep 0.4
+        python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+            && ok "[DECK-34] a click at $deady (past the letters' end + 4 pt) is dead" \
+            || bad "[DECK-34] a click at $deady reached the rail"
+    done
+    # The gap between J's and K's boxes still belongs to the nearest letter.
+    local gap
+    for gap in "J:$(python3 -c "print(10 * $pitch - 1)")" "K:$(python3 -c "print(10 * $pitch + 1)")"; do
+        control deckrailleave
+        sleep 0.2
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclickat "$glyphx" "${gap#*:}" 60 \
+            || bad "[DECK-34] deckrailclickat (gap ${gap%%:*}): $CONTROL_REPLY"
+        python3 "$MACOS/scripts/deck-rail-hit.py" picked "$WORK/deck-grid.jsonl" "$since" "${gap%%:*}" \
+            && ok "[DECK-34] the gap on ${gap%%:*}'s side belongs to ${gap%%:*}" \
+            || bad "[DECK-34] the gap did not belong to ${gap%%:*}"
+    done
+    control deckrailleave
+    sleep 0.3
+
     # [DECK-32] The rail's letter on the tiles. Build the start page first: one
     # open window and two pinned C apps, so a pinned tile of the emphasised
     # letter proves the sections never lift, while All Apps' C tiles do.
@@ -16392,7 +16625,7 @@ PY
         || bad "DECKRAIL deckpin camera (DECK-32): $CONTROL_REPLY"
     sleep 3
     local emphasis="$WORK/rail-emphasis.json" emphasis_error
-    emphasis_check() {  # emphasis_check LETTER [source:POINTER]
+    emphasis_check() {  # emphasis_check MODE [source:POINTER] [duration:SECS]
         sleep 0.5
         if ! control deckrailemph "$emphasis"; then
             emphasis_error="deckrailemph: $CONTROL_REPLY"
@@ -16403,42 +16636,132 @@ PY
         fi
         return 0
     }
+    # wait_rail_settle SINCE — the grid dump has a new `picked` accent line: a
+    # pick's jump reached its landing. A press that starts a jump is read only
+    # after this, with the button still down.
+    wait_rail_settle() {
+        local since="$1" tries=50
+        while [ "$tries" -gt 0 ]; do
+            if tail -n "+$((since + 1))" "$WORK/deck-grid.jsonl" 2>/dev/null \
+                | grep -q '"railAccent".*"state":"picked"'; then
+                return 0
+            fi
+            sleep 0.1
+            tries=$((tries - 1))
+        done
+        return 1
+    }
+    # Start at the top. C's row is the top All Apps row, but its landing is
+    # below the Open/Pinned sections, so a press on C starts a jump: the
+    # jump's own scroll must not end the press (DECK-32's early end is the
+    # person's wheel/trackpad, never our own scroll).
+    control deck-scroll -100000 >/dev/null 2>&1 || true
+    sleep 0.5
+    # Hover alone is not a press: the rail magnifies, the grid lights nothing.
     control deckrailenter C || bad "DECKRAIL deckrailenter C (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:C; then
-        ok "[DECK-32] C lights its All Apps tiles (1.08, semibold) and dims the rest; the sections stay at rest ($emphasis_error)"
+    if emphasis_check none; then
+        ok "[DECK-32] a hover on C lights nothing (hover is not a press)"
     else
-        bad "[DECK-32] the C emphasis is wrong ($emphasis_error)"
+        bad "[DECK-32] the hover lit the grid ($emphasis_error)"
     fi
-    control deckrailmove D || bad "DECKRAIL deckrailmove D (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:D; then
-        ok "[DECK-32] moving to D cross-fades to D's tiles ($emphasis_error)"
+    # The button down lights C; the press's jump lands, and the emphasis is
+    # read while the button is still down; the drag to D cross-fades; the
+    # release after a held press or a drag ends it at once.
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailpress C || bad "DECKRAIL deckrailpress C (DECK-32): $CONTROL_REPLY"
+    if ! wait_rail_settle "$since"; then
+        bad "[DECK-32] the C jump never settled"
+    fi
+    if emphasis_check pressed:C source:C; then
+        ok "[DECK-32] a held press keeps C after its jump lands: its All Apps tiles lift (1.08, semibold) and the rest dim to 30%; the sections stay at rest ($emphasis_error)"
     else
-        bad "[DECK-32] the move to D did not light D ($emphasis_error)"
+        bad "[DECK-32] the held press lost its emphasis during the jump ($emphasis_error)"
     fi
-    # B is empty in the fixture: its jump lands on C, so the grid follows the
+    control deckraildragto D || bad "DECKRAIL deckraildragto D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check pressed:D source:D; then
+        ok "[DECK-32] dragging to D cross-fades to D's tiles ($emphasis_error)"
+    else
+        bad "[DECK-32] the drag to D did not light D ($emphasis_error)"
+    fi
+    control deckrailup D || bad "DECKRAIL deckrailup D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] releasing a held press ends the emphasis at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the held release did not end the emphasis ($emphasis_error)"
+    fi
+    # A click (80 ms, one letter) lingers for 1000 ms, then the grid returns.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    if emphasis_check lingering:C source:C; then
+        ok "[DECK-32] a click on C lingers with C lit ($emphasis_error)"
+    else
+        bad "[DECK-32] the click did not linger on C ($emphasis_error)"
+    fi
+    sleep 1.2
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] the click's 1000 ms linger ends and the whole grid returns to rest ($emphasis_error)"
+    else
+        bad "[DECK-32] the linger did not end ($emphasis_error)"
+    fi
+    # A new press during the linger replaces the letter at once and discards
+    # the old clock: this press outlives the click's own deadline.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    sleep 0.8
+    control deckrailpress D || bad "DECKRAIL deckrailpress D (DECK-32): $CONTROL_REPLY"
+    sleep 0.4
+    if emphasis_check pressed:D; then
+        ok "[DECK-32] a press during the linger replaces it and discards its clock ($emphasis_error)"
+    else
+        bad "[DECK-32] the press during the linger did not replace it ($emphasis_error)"
+    fi
+    control deckrailup D || bad "DECKRAIL deckrailup D (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] the replacing press's held release ends the emphasis ($emphasis_error)"
+    else
+        bad "[DECK-32] the replacing press did not end ($emphasis_error)"
+    fi
+    # An empty B has no apps: its jump lands on C, so the grid follows the
     # accent rather than dimming the whole page.
-    control deckrailmove B || bad "DECKRAIL deckrailmove B (DECK-32): $CONTROL_REPLY"
-    if emphasis_check letter:C source:B; then
+    control deckrailpress B || bad "DECKRAIL deckrailpress B (DECK-32): $CONTROL_REPLY"
+    if emphasis_check pressed:C source:B; then
         ok "[DECK-32] the empty B lights the C its jump lands on ($emphasis_error)"
     else
         bad "[DECK-32] the empty B did not light its landing letter ($emphasis_error)"
     fi
-    control deckrailleave
-    if emphasis_check away; then
-        ok "[DECK-32] leaving the rail puts every tile back at rest ($emphasis_error)"
-    else
-        bad "[DECK-32] the grid did not return to rest after the rail ($emphasis_error)"
-    fi
-    # The rail is hidden while searching: the results are never drawn dimmed.
+    control deckrailup B || bad "DECKRAIL deckrailup B (DECK-32): $CONTROL_REPLY"
+    sleep 0.3
+    # Each early end cuts a click's linger at once: typing in search, a person's
+    # scroll, and a zoom change.
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
     control deckquery "a" || bad "DECKRAIL deckquery (DECK-32): $CONTROL_REPLY"
-    if emphasis_check away; then
-        ok "[DECK-32] searching hides the rail and lights nothing ($emphasis_error)"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] typing in search ends the linger at once ($emphasis_error)"
     else
         bad "[DECK-32] the search results took the rail's emphasis ($emphasis_error)"
     fi
     control deckquery "" || bad "DECKRAIL deckquery clear (DECK-32): $CONTROL_REPLY"
+    sleep 0.5
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    control deckwheel -100 || bad "DECKRAIL deckwheel (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] a person's wheel scroll ends the linger at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the wheel left the emphasis up ($emphasis_error)"
+    fi
+    control deckrailclick C 80 || bad "DECKRAIL deckrailclick C (DECK-32): $CONTROL_REPLY"
+    control deckzoom 1 || bad "DECKRAIL deckzoom (DECK-32): $CONTROL_REPLY"
+    if emphasis_check none duration:0.2; then
+        ok "[DECK-32] a zoom change ends the linger at once ($emphasis_error)"
+    else
+        bad "[DECK-32] the zoom left the emphasis up ($emphasis_error)"
+    fi
+    control deckzoom 1.25 || bad "DECKRAIL deckzoom restore (DECK-32): $CONTROL_REPLY"
+    sleep 0.5
 
     stop_app
+    # The ISS-94 visual record (opt-in; the functional check never takes it).
+    if [ "${PD_RAILPRESS_SHOTS:-0}" = 1 ]; then
+        railpress_shots
+    fi
 }
 
 check_deck() {

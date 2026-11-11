@@ -25,6 +25,35 @@ enum DeckGridScroll {
         return nil
     }
 
+    /// A real continuous wheel event at the grid's centre, the way a person's
+    /// wheel or trackpad delivers one: the scroll view's own phase becomes
+    /// `.interacting`, which DECK-32 reads to end a click's emphasis. Nil on
+    /// success, else why not.
+    static func wheel(by dy: CGFloat) -> String? {
+        guard let window = DeckWindow.window,
+              let scroll = find(in: window.contentView) else {
+            return "no grid scroll view"
+        }
+        let point = scroll.convert(CGPoint(x: scroll.bounds.midX, y: scroll.bounds.midY), to: nil)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        for (phase, delta) in [(1, CGFloat(0)), (2, dy), (4, CGFloat(0))] {
+            guard let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                                        wheel1: Int32(delta.rounded()), wheel2: 0, wheel3: 0) else {
+                return "no wheel event"
+            }
+            cgEvent.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            cgEvent.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase))
+            cgEvent.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: Double(delta))
+            cgEvent.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Double(delta))
+            cgEvent.location = CGPoint(x: point.x, y: primaryHeight - point.y)
+            guard let event = NSEvent(cgEvent: cgEvent) else { return "no wheel event" }
+            scroll.scrollWheel(with: event)
+        }
+        // Let SwiftUI read the phase and the geometry before the caller dumps.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+        return nil
+    }
+
     private static func find(in view: NSView?) -> NSScrollView? {
         guard let view else { return nil }
         if let scroll = view as? NSScrollView { return scroll }

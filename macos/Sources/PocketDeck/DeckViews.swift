@@ -817,16 +817,18 @@ enum RailAccent: Equatable {
     case topRow
     /// A pick's jump is running toward the app at `target`, from the top row
     /// `fromTop` (nil before the grid reported a position); the accent is the
-    /// `letter` it will land on.
-    case jumping(letter: String, target: Int, fromTop: Int?)
+    /// `letter` it will land on. `landing` is the offset the scroll will
+    /// settle at, so a frame that merely crosses the target row's gutter is
+    /// not mistaken for the landing.
+    case jumping(letter: String, target: Int, fromTop: Int?, landing: CGFloat)
     /// The jump landed at `landingOffset`; the accent stays `letter` until the
     /// grid moves away from that offset.
     case picked(letter: String, landingOffset: CGFloat)
 
     enum Event: Equatable {
-        /// A rail click or drag: the letter it picks, the app it aims at and
-        /// the top row the jump starts from.
-        case pick(letter: String, target: Int, fromTop: Int?)
+        /// A rail click or drag: the letter it picks, the app it aims at, the
+        /// top row the jump starts from and the offset it will settle at.
+        case pick(letter: String, target: Int, fromTop: Int?, landing: CGFloat)
         /// A scroll position: the first app of the top row, the content
         /// offset, the drawn columns and the furthest offset the grid reaches.
         case scroll(top: Int, offset: CGFloat, columns: Int, maxOffset: CGFloat)
@@ -838,24 +840,39 @@ enum RailAccent: Equatable {
 
     static func reduce(_ state: RailAccent, _ event: Event) -> RailAccent {
         switch (state, event) {
-        case (_, .pick(let letter, let target, let fromTop)):
-            return .jumping(letter: letter, target: target, fromTop: fromTop)
+        case (_, .pick(let letter, let target, let fromTop, let landing)):
+            return .jumping(letter: letter, target: target, fromTop: fromTop,
+                            landing: landing)
         case (.topRow, .scroll):
             return .topRow
-        case (.jumping(let letter, let target, let fromTop),
+        case (.jumping(let letter, let target, let fromTop, let landing),
               .scroll(let top, let offset, let columns, let maxOffset)):
             let row = DeckRail.rowStart(containing: target, columns: columns)
-            // The row reached the top: the jump landed.
-            if top == row { return .picked(letter: letter, landingOffset: offset) }
+            // The landing is where the scroll settles: the target row's top,
+            // or the grid's end when that row cannot reach it. The gutter
+            // makes `top == row` true a few points early (the row above still
+            // shows), so the row alone is not the landing.
+            if abs(offset - landing) <= landingTolerance {
+                return .picked(letter: letter, landingOffset: landing)
+            }
+            if maxOffset > 0, landing > maxOffset - landingTolerance,
+               offset >= maxOffset - landingTolerance {
+                return .picked(letter: letter, landingOffset: maxOffset)
+            }
+            // A frame past the landing inside the target's row is the
+            // animation's own overshoot; past the row, it is the person's.
+            // The direction is the offset's, not the row index's: a pick on
+            // the top row whose landing is below the sections still animates
+            // down, and its start offset is not an overshoot.
+            if top == row {
+                let downward = offset < landing
+                if downward ? offset > landing + landingTolerance
+                    : offset < landing - landingTolerance {
+                    return .picked(letter: letter, landingOffset: landing)
+                }
+            }
             if let fromTop, fromTop != row {
                 if fromTop < row {
-                    // A downward jump that reached the grid's end with the
-                    // row still below: X, Y and Z in the last screenful land
-                    // here, and the pick holds there. A zero end is a layout
-                    // that has not reported a size yet, not a landing.
-                    if maxOffset > 0, offset >= maxOffset - landingTolerance {
-                        return .picked(letter: letter, landingOffset: offset)
-                    }
                     // Off the jump's path (above where it started, or past
                     // the target's row): the person scrolled instead.
                     if top < fromTop || top > row { return .topRow }
@@ -878,7 +895,7 @@ enum RailAccent: Equatable {
     func letter(topRow: String?) -> String? {
         switch self {
         case .topRow: return topRow
-        case .jumping(let letter, _, _), .picked(let letter, _): return letter
+        case .jumping(let letter, _, _, _), .picked(let letter, _): return letter
         }
     }
 
@@ -1265,6 +1282,15 @@ struct AppGrid: View {
             .onChange(of: zoom, initial: true) { _, zoom in
                 RailPointerModel.shared.noteZoom(zoom)
             }
+            // [DECK-32] A person's wheel or trackpad scroll ends a click's
+            // emphasis at once. The jump's own `scrollTo` animation reports
+            // `.animating`, never a person's scroll, so the press that starts
+            // a jump keeps its emphasis; the accent's frames are not consulted.
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting || phase == .decelerating {
+                    RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+                }
+            }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
                            width: geometry.containerSize.width,
@@ -1285,7 +1311,8 @@ struct AppGrid: View {
                     // resize and sit over the last column).
                     DeckRailLayout(zoom: zoom) {
                         DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter) { letter in
+                                      current: currentLetter ?? firstRailLetter,
+                                      pointerRequest: controller.deckRailPointerRequest) { letter in
                             scroll(to: letter, proxy: proxy)
                         }
                     }
@@ -1302,9 +1329,17 @@ struct AppGrid: View {
             .onContinuousHover { phase in trackRail(phase) }
             // [DECK-32] The rail disappearing (a search, a short grid) ends the
             // emphasis even if the pointer's leave never arrives; the results
-            // are never drawn dimmed.
+            // are never drawn dimmed. A zoom change and the page going offline
+            // end it the same way, and a person's wheel/trackpad scroll ends it
+            // in `onScrollPhaseChange`.
             .onChange(of: railShown) { _, shown in
-                if !shown { RailEmphasisModel.shared.leave(reduceMotion: reduceMotion) }
+                if !shown { RailEmphasisModel.shared.end(reduceMotion: reduceMotion) }
+            }
+            .onChange(of: zoom) { _, _ in
+                RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+            }
+            .onChange(of: controller.presentation.deckInteractive) { _, interactive in
+                if !interactive { RailEmphasisModel.shared.end(reduceMotion: reduceMotion) }
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
@@ -1374,8 +1409,9 @@ struct AppGrid: View {
         guard let pick = DeckRail.pick(letter, in: cellApps),
               cells.indices.contains(pick.index) else { return }
         let fromTop = scrollBox.lastTop ?? currentTop
+        let landing = landingOffset(forAllApps: pick.index)
         let picked = RailAccent.reduce(railAccent, .pick(letter: pick.letter, target: pick.index,
-                                                         fromTop: fromTop))
+                                                         fromTop: fromTop, landing: landing))
         if picked != railAccent {
             Log.app.debug("rail accent: \(railAccent.name, privacy: .public) --pick--> \(picked.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
         }
@@ -1387,6 +1423,22 @@ struct AppGrid: View {
         // A target already on screen scrolls nowhere, so no geometry change
         // follows: report the landing from the position we have.
         if let last = scrollBox.last { follow(last) }
+    }
+
+    /// Where a jump to All Apps `index` settles: the cell's top in the grid's
+    /// own offset space, or the grid's end when that row cannot reach the top
+    /// (the last screenful). The page layout is the same one the width draws,
+    /// so the offset matches the scroll's own.
+    private func landingOffset(forAllApps index: Int) -> CGFloat {
+        guard let last = scrollBox.last else { return 0 }
+        let page = DeckPageLayout(width: last.width, metrics: DeckGridSize(zoom: zoom),
+                                  sections: sections)
+        guard let section = sections.firstIndex(where: { $0.kind == .allApps }),
+              page.cells.indices.contains(section),
+              page.cells[section].indices.contains(index) else { return 0 }
+        let cellTop = page.cells[section][index].minY - page.gridOrigin
+        let maxOffset = max(0, last.maxOffset - page.gridOrigin)
+        return min(cellTop, maxOffset)
     }
 
     /// The first app of the row at the last scroll position.
@@ -1438,7 +1490,7 @@ struct AppGrid: View {
     }
 
     /// The container hover, reduced to where the pointer is relative to the
-    /// rail: `dx` points left of its leading edge, 0 inside it.
+    /// rail: a signed `x` from its leading edge, and its y in the rail.
     private func trackRail(_ phase: HoverPhase) {
         let model = RailPointerModel.shared
         guard DeckRail.shows(count: cells.count, query: query) else {
@@ -1459,7 +1511,7 @@ struct AppGrid: View {
                                        metrics: DeckGridSize(zoom: zoom))
             let rail = RailHover.point(hover: point, container: model.containerSize, fit: fit,
                                        trailing: block.railTrailingSpace)
-            model.track(dx: rail.dx, y: rail.y, reduceMotion: reduceMotion)
+            model.track(x: rail.x, y: rail.y, reduceMotion: reduceMotion)
         case .ended:
             model.leave(reduceMotion: reduceMotion)
         }
@@ -1554,6 +1606,28 @@ enum DeckRailPoint {
         let text = "\(screen.x) \(top - screen.y)\n"
         return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
     }
+
+    /// The drawn band's centre of `letter` in the rail's own coordinates, for
+    /// a synthetic click (`deckrailclick`) that takes the window's own route.
+    static func bandCentre(letter: String) -> CGFloat? {
+        let model = RailPointerModel.shared
+        guard let index = DeckRail.letters.firstIndex(of: letter),
+              let slot = model.slots.firstIndex(where: {
+                  index >= $0.first && index < $0.first + $0.count
+              }) else { return nil }
+        let pitch = model.railFit?.pitch ?? DeckRail.pitch
+        let band = CGFloat(index - model.slots[slot].first)
+        return CGFloat(slot) * pitch
+            + (band + 0.5) / CGFloat(model.slots[slot].count) * pitch
+    }
+
+    /// A point in the rail's own coordinates (0,0 = its top-left) as a window
+    /// point: the anchor's window place plus x right and y down.
+    static func windowPoint(x: CGFloat, y: CGFloat) -> NSPoint? {
+        guard let anchor, anchor.window != nil else { return nil }
+        let local = anchor.convert(anchor.bounds, to: nil)
+        return NSPoint(x: local.minX + x, y: local.minY - y)
+    }
 }
 
 /// A zero-size AppKit anchor in the rail, so the debug route can read the
@@ -1600,6 +1674,10 @@ private struct DeckIndexRail: View {
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
     let current: String?
+    /// The quiet e2e's pointer phases (`deckrailclickat` and friends): the
+    /// same handler the rail's own gesture calls. A background app's SwiftUI
+    /// gesture does not take a synthetic NSEvent.
+    let pointerRequest: ConnectionController.DeckRailPointerRequest?
     let pick: (String) -> Void
 
     @State private var lastPicked: String?
@@ -1698,26 +1776,28 @@ private struct DeckIndexRail: View {
         .background(alignment: .topLeading) {
             DeckRailAnchor().frame(width: 1, height: 1)
         }
-        // The arc draws left of the column; the hit area grows with it (the
-        // room stops it at the clearance to the last column's cell).
-        .padding(.leading, hitGrowth)
-        .contentShape(.rect)
+        // DECK-34: the rail's letters draw in the 26 pt column, but only the
+        // letters' column plus 4 pt each side takes the pointer (and the
+        // arc's room left of it while magnified). The strip right of the
+        // letters belongs to the grid, so the wheel and the scroller work
+        // there.
+        .allowsHitTesting(false)
+        .overlay(alignment: .topLeading) { hitStrip }
         .overlay(alignment: .topTrailing) { helpTag }
-        .gesture(drag)
         .onChange(of: slots, initial: true) { _, slots in
             // The forced e2e position (`deckrailenter`) resolves a letter to
             // its band with the layout the rail is actually drawing.
             RailPointerModel.shared.slots = slots
         }
-        // [DECK-32] The drawn letter under the pointer lights its All Apps
-        // tiles. An empty letter forwards to the letter its jump lands on, so
-        // the grid and the accent agree; leaving the rail or hiding it (search)
-        // returns the grid to rest.
-        .onChange(of: hovered?.letter, initial: true) { _, letter in
-            updateEmphasis(letter)
+        .onChange(of: pointerRequest) { _, request in
+            if let request { handlePointer(request) }
         }
+        // [DECK-32] The emphasis follows the button, never the hover: the
+        // gesture below presses, drags and releases it. Leaving the rail with
+        // the pointer does not cut a click's linger short; the model's own
+        // clock ends it.
         .onDisappear {
-            RailEmphasisModel.shared.leave(reduceMotion: reduceMotion)
+            RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
@@ -1731,15 +1811,20 @@ private struct DeckIndexRail: View {
 
     /// Feed the emphasis machine the letter a pointer on `letter` lights: the
     /// letter itself, or the next one with apps. No letter here to land on
-    /// (an empty tail) lights nothing.
-    private func updateEmphasis(_ letter: String?) {
+    /// (an empty tail) lights nothing. `dragging` is the button's second and
+    /// later moves: the machine sets its moved flag, so the release is a drag.
+    private func pressEmphasis(_ letter: String?, dragging: Bool) {
         let model = RailEmphasisModel.shared
         guard let letter,
               let landed = DeckRail.landedLetter(for: letter, in: entries) else {
-            model.leave(reduceMotion: reduceMotion)
+            model.end(reduceMotion: reduceMotion)
             return
         }
-        model.point(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        if dragging {
+            model.drag(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        } else {
+            model.press(pointer: letter, landed: landed, reduceMotion: reduceMotion)
+        }
     }
 
     private func slotView(index: Int, slot: DeckRail.Slot, box: RailLayout.Slot,
@@ -1816,24 +1901,102 @@ private struct DeckIndexRail: View {
         return count == 0 ? "\(name), no apps" : "\(name), \(count) apps"
     }
 
+    /// The strip that takes the pointer (DECK-34): the letters' column plus
+    /// 4 pt each side, the arc's room left while magnified, and the drawn
+    /// letters' vertical span (the frozen span while magnified).
+    private var hitColumn: ClosedRange<CGFloat> {
+        RailHit.column(magnified: hitGrowth)
+    }
+
+    private var hitVertical: ClosedRange<CGFloat> {
+        RailHit.vertical(count: slots.count, pitch: pitch, span: frozen?.span)
+    }
+
+    private var hitStrip: some View {
+        Color.clear
+            .frame(width: hitColumn.upperBound - hitColumn.lowerBound,
+                   height: hitVertical.upperBound - hitVertical.lowerBound)
+            .contentShape(.rect)
+            .gesture(drag)
+            .offset(x: hitColumn.lowerBound, y: hitVertical.lowerBound)
+            .accessibilityHidden(true)
+    }
+
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let model = RailPointerModel.shared
-                if model.state.isDragging {
-                    model.drag(y: value.location.y, reduceMotion: reduceMotion)
+                let y = value.location.y + hitVertical.lowerBound
+                let wasDragging = model.state.isDragging
+                if wasDragging {
+                    model.drag(y: y, reduceMotion: reduceMotion)
                 } else {
-                    model.press(y: value.location.y, reduceMotion: reduceMotion)
+                    model.press(y: y, reduceMotion: reduceMotion)
                 }
-                guard let letter = letter(atY: value.location.y),
-                      letter != lastPicked else { return }
-                lastPicked = letter
-                pick(letter)
+                pickIfNeeded(atY: y)
+                if model.state.isDragging {
+                    pressEmphasis(letter(atY: y), dragging: wasDragging)
+                }
             }
             .onEnded { value in
+                let y = value.location.y + hitVertical.lowerBound
+                // The release inside the frozen span is a click or a held
+                // press; past its ends the rail is left, so the emphasis ends
+                // at once rather than lingering on a letter nobody released.
+                let inside = frozen.map { y >= $0.span.top && y <= $0.span.bottom } ?? false
                 lastPicked = nil
-                RailPointerModel.shared.release(y: value.location.y, reduceMotion: reduceMotion)
+                RailPointerModel.shared.release(y: y, reduceMotion: reduceMotion)
+                if inside {
+                    RailEmphasisModel.shared.release(reduceMotion: reduceMotion)
+                } else {
+                    RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+                }
             }
+    }
+
+    /// The click or drag's pick, once per letter (a drag sweeps several).
+    private func pickIfNeeded(atY y: CGFloat) {
+        guard let letter = letter(atY: y), letter != lastPicked else { return }
+        lastPicked = letter
+        pick(letter)
+    }
+
+    /// One of the quiet e2e's pointer phases, through the same press, drag,
+    /// release and pick the gesture runs. The hit column is the rail's own
+    /// (DECK-34): a point right of the letters is not the rail's.
+    private func handlePointer(_ request: ConnectionController.DeckRailPointerRequest) {
+        let model = RailPointerModel.shared
+        switch request.phase {
+        case .hover:
+            model.track(x: request.x, y: request.y, reduceMotion: reduceMotion)
+        case .down:
+            guard RailHit.contains(x: request.x, y: request.y,
+                                   railWidth: Self.width, count: slots.count,
+                                   pitch: pitch, magnified: hitGrowth,
+                                   span: frozen?.span) else { return }
+            model.press(y: request.y, reduceMotion: reduceMotion)
+            pickIfNeeded(atY: request.y)
+            if model.state.isDragging {
+                pressEmphasis(letter(atY: request.y), dragging: false)
+            }
+        case .drag:
+            model.drag(y: request.y, reduceMotion: reduceMotion)
+            pickIfNeeded(atY: request.y)
+            if model.state.isDragging {
+                pressEmphasis(letter(atY: request.y), dragging: true)
+            }
+        case .up:
+            let inside = frozen.map {
+                request.y >= $0.span.top && request.y <= $0.span.bottom
+            } ?? false
+            lastPicked = nil
+            model.release(y: request.y, reduceMotion: reduceMotion)
+            if inside {
+                RailEmphasisModel.shared.release(reduceMotion: reduceMotion)
+            } else {
+                RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+            }
+        }
     }
 }
 

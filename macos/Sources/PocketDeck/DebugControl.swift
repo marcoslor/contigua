@@ -54,6 +54,12 @@
 //   deckclick LABEL  a click on that app's cell in the Deck grid: the cell's
 //                    own place from the accessibility tree, through the
 //                    Deck window's event handling
+//   deckrailclick LETTER [HOLD_MS] / deckraildrag FROM TO
+//                    pointer events at the rail's drawn letters, through the
+//                    window's event handling (the rail's own gesture)
+//   deckrailclickat X Y [HOLD_MS] / deckrailhoverat X Y
+//                    a pointer event at a point in the rail's own coordinates
+//                    (0,0 = its top-left), for the hit column's bounds
 //   deckcellpoint LABEL PATH  that cell's centre in Quartz coordinates, for a
 //                    check that posts a real right click (the cell's menu)
 //   deckmenu LABEL   the cell's own context menu, through a secondary click at
