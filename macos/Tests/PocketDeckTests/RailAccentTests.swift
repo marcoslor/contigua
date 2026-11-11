@@ -37,6 +37,31 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(landed.letter(topRow: "J"), "I")
     }
 
+    /// The person's report (ISS-94): a pick on J lights K for a moment. J's
+    /// first app shares its row with K, so the row is lettered K; the animated
+    /// scroll crosses the row's gutter a few points before J's row reaches the
+    /// top, and the frames after that must still light J. The accent settles
+    /// on J at the landing, never on the row's letter.
+    func testTheJumpsFramesNeverLightTheRowsLetter() {
+        let list = apps(["Harbor 1", "Harbor 2", "Harbor 3", "Harbor 4", "Harbor 5",
+                         "Invoices", "Journal", "Kiosk"])
+        XCTAssertEqual(DeckRail.pick("J", in: list)?.index, 6)
+        XCTAssertEqual(DeckRail.rowLetter(rowStart: 6, apps: list, columns: 6), "K",
+                       "J's row is lettered by K, so the row rule can see the flash")
+        var state = RailAccent.reduce(.topRow, .pick(letter: "J", target: 6, fromTop: 0))
+        // The jump down to J's row: the top row becomes J's row at 195, five
+        // points before the landing, and the animation continues to 200.
+        for (top, offset) in [(0, CGFloat(60)), (0, 120), (0, 180), (6, 195)] {
+            state = RailAccent.reduce(state, scroll(top, offset))
+            XCTAssertEqual(state.letter(topRow: "K"), "J",
+                           "the jump's own frame at offset \(offset) lit another letter")
+        }
+        state = RailAccent.reduce(state, scroll(6, 200))
+        XCTAssertEqual(state.letter(topRow: "K"), "J",
+                       "the landing must keep the clicked letter, not the row's")
+        XCTAssertEqual(state, .picked(letter: "J", landingOffset: 200))
+    }
+
     /// The jump's own animated scroll walks the top row toward the target and
     /// must not count as the person's scroll: the pick stays lit until the
     /// target's row is the top one.

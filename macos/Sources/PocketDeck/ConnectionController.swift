@@ -429,6 +429,27 @@ final class ConnectionController {
     private(set) var deckRailRequest: DeckRailRequest?
     private var deckRailToken = 0
 
+    /// A pointer event at a point in the rail's own coordinates, for the
+    /// quiet e2e (`deckrailclickat`, `deckrailhoverat`, `deckrailclick`,
+    /// `deckraildrag`): a background app's SwiftUI gesture does not take a
+    /// synthetic NSEvent, so the rail's view is fed the same phase a real
+    /// pointer sends. The hit column (DECK-34) is the view's own.
+    struct DeckRailPointerRequest: Equatable {
+        enum Phase: Equatable { case hover, down, drag, up }
+        let phase: Phase
+        let x: CGFloat
+        let y: CGFloat
+        let token: Int
+    }
+    private(set) var deckRailPointerRequest: DeckRailPointerRequest?
+    private var deckRailPointerToken = 0
+
+    func sendRailPointer(_ phase: DeckRailPointerRequest.Phase, x: CGFloat, y: CGFloat) {
+        deckRailPointerToken += 1
+        deckRailPointerRequest = DeckRailPointerRequest(phase: phase, x: x, y: y,
+                                                        token: deckRailPointerToken)
+    }
+
     /// The phone being renamed right now: Settings ▸ Phones ▸ Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
@@ -4409,6 +4430,32 @@ final class ConnectionController {
             RailPointerModel.shared.leave(reduceMotion: railReduceMotion)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
+        case "deckrailclick":
+            // [DECK-32/33/34] A click at LETTER's drawn band, through the Deck
+            // window's event handling: the rail's own gesture picks it, and a
+            // click outside the hit column proves the strip is not the rail's.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailclick needs A-Z or #"
+            }
+            let hold = arguments.count > 1 ? (Double(arguments[1]) ?? 60) / 1000 : 0.06
+            return DeckRailInput.click(letter: letter, hold: hold, controller: self)
+        case "deckraildrag":
+            guard arguments.count >= 2, DeckRail.letters.contains(arguments[0]),
+                  DeckRail.letters.contains(arguments[1]) else {
+                return "deckraildrag needs FROM TO (A-Z or #)"
+            }
+            return DeckRailInput.drag(from: arguments[0], to: arguments[1], controller: self)
+        case "deckrailclickat":
+            guard arguments.count >= 2, let x = Double(arguments[0]), let y = Double(arguments[1]) else {
+                return "deckrailclickat needs X Y [HOLD_MS]"
+            }
+            let hold = arguments.count > 2 ? (Double(arguments[2]) ?? 60) / 1000 : 0.06
+            return DeckRailInput.click(x: CGFloat(x), y: CGFloat(y), hold: hold, controller: self)
+        case "deckrailhoverat":
+            guard arguments.count >= 2, let x = Double(arguments[0]), let y = Double(arguments[1]) else {
+                return "deckrailhoverat needs X Y"
+            }
+            return DeckRailInput.hover(x: CGFloat(x), y: CGFloat(y), controller: self)
         case "deckrailanchor":
             // The rail's top-left in Quartz screen coordinates, for a visible
             // run's real pointer at a place measured from the render.

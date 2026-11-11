@@ -15584,7 +15584,7 @@ check_deckrail() {
     if [ -n "${PD_DECKRAIL_START_FRAME:-}" ]; then
         defaults write "$DEFAULTS_SUITE" deck.windowFrame "$PD_DECKRAIL_START_FRAME"
     fi
-    FAKE_ARGS="--demo-apps 60" start_fake || return 1
+    FAKE_ARGS="--demo-apps 60 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The VM guest keeps its own Reduce Motion; the test hook makes the app's
     # effective setting full so the fisheye (the proof) works here.
@@ -15617,7 +15617,7 @@ check_deckrail() {
             && say "shot: $railshots/$1" \
             || bad "DECKRAIL no Deck window for $1"
     }
-    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale since settle
     if [ "$VISIBLE" = 1 ]; then
         # Park the real pointer outside the Deck before any forced step.
         cg_input moveat --x 5 --y 5
@@ -16077,6 +16077,33 @@ PY
     wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
         && ok "[DECK-7] the click through the overlay opened the app" \
         || bad "[DECK-7] the click through the overlay opened nothing"
+
+    # [DECK-33] A pick's accent is the clicked letter on every frame of its
+    # jump, never a row the scroll passes. I's first app shares its row with J
+    # (the reported flash), J's row with K, Z is the last letter, # has an app
+    # (1Password) and X sits in the last screenful, whose row cannot come to
+    # the top. The click is the same press the rail's own gesture runs.
+    control deckrailleave
+    sleep 0.3
+    control deckfocus grid || bad "[DECK-33] deckfocus grid: $CONTROL_REPLY"
+    for target in I J Z '#' X; do
+        control deck-scroll -100000 >/dev/null
+        case "$CONTROL_REPLY" in
+            ok|*"already at its end"*) ;;
+            *) bad "DECKRAIL deck-scroll to the top ($target): $CONTROL_REPLY" ;;
+        esac
+        sleep 0.5
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclick "$target" 80 \
+            || bad "[DECK-33] deckrailclick $target: $CONTROL_REPLY"
+        if settle="$(python3 "$MACOS/scripts/deck-rail-accent.py" settle "$WORK/deck-grid.jsonl" "$since" "$target" 2>&1)"; then
+            ok "[DECK-33] the $target pick lit only $target from the click to the settle ($settle)"
+        else
+            bad "[DECK-33] the $target pick: $settle"
+        fi
+    done
+    control deckrailleave
+    sleep 0.3
 
     # [DECK-32] The rail's letter on the tiles. Build the start page first: one
     # open window and two pinned C apps, so a pinned tile of the emphasised

@@ -1285,7 +1285,8 @@ struct AppGrid: View {
                     // resize and sit over the last column).
                     DeckRailLayout(zoom: zoom) {
                         DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter) { letter in
+                                      current: currentLetter ?? firstRailLetter,
+                                      pointerRequest: controller.deckRailPointerRequest) { letter in
                             scroll(to: letter, proxy: proxy)
                         }
                     }
@@ -1554,6 +1555,28 @@ enum DeckRailPoint {
         let text = "\(screen.x) \(top - screen.y)\n"
         return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
     }
+
+    /// The drawn band's centre of `letter` in the rail's own coordinates, for
+    /// a synthetic click (`deckrailclick`) that takes the window's own route.
+    static func bandCentre(letter: String) -> CGFloat? {
+        let model = RailPointerModel.shared
+        guard let index = DeckRail.letters.firstIndex(of: letter),
+              let slot = model.slots.firstIndex(where: {
+                  index >= $0.first && index < $0.first + $0.count
+              }) else { return nil }
+        let pitch = model.railFit?.pitch ?? DeckRail.pitch
+        let band = CGFloat(index - model.slots[slot].first)
+        return CGFloat(slot) * pitch
+            + (band + 0.5) / CGFloat(model.slots[slot].count) * pitch
+    }
+
+    /// A point in the rail's own coordinates (0,0 = its top-left) as a window
+    /// point: the anchor's window place plus x right and y down.
+    static func windowPoint(x: CGFloat, y: CGFloat) -> NSPoint? {
+        guard let anchor, anchor.window != nil else { return nil }
+        let local = anchor.convert(anchor.bounds, to: nil)
+        return NSPoint(x: local.minX + x, y: local.minY - y)
+    }
 }
 
 /// A zero-size AppKit anchor in the rail, so the debug route can read the
@@ -1600,6 +1623,10 @@ private struct DeckIndexRail: View {
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
     let current: String?
+    /// The quiet e2e's pointer phases (`deckrailclickat` and friends): the
+    /// same handler the rail's own gesture calls. A background app's SwiftUI
+    /// gesture does not take a synthetic NSEvent.
+    let pointerRequest: ConnectionController.DeckRailPointerRequest?
     let pick: (String) -> Void
 
     @State private var lastPicked: String?
@@ -1708,6 +1735,9 @@ private struct DeckIndexRail: View {
             // The forced e2e position (`deckrailenter`) resolves a letter to
             // its band with the layout the rail is actually drawing.
             RailPointerModel.shared.slots = slots
+        }
+        .onChange(of: pointerRequest) { _, request in
+            if let request { handlePointer(request) }
         }
         // [DECK-32] The drawn letter under the pointer lights its All Apps
         // tiles. An empty letter forwards to the letter its jump lands on, so
@@ -1825,15 +1855,44 @@ private struct DeckIndexRail: View {
                 } else {
                     model.press(y: value.location.y, reduceMotion: reduceMotion)
                 }
-                guard let letter = letter(atY: value.location.y),
-                      letter != lastPicked else { return }
-                lastPicked = letter
-                pick(letter)
+                pickIfNeeded(atY: value.location.y)
             }
             .onEnded { value in
                 lastPicked = nil
                 RailPointerModel.shared.release(y: value.location.y, reduceMotion: reduceMotion)
             }
+    }
+
+    /// The click or drag's pick, once per letter (a drag sweeps several).
+    private func pickIfNeeded(atY y: CGFloat) {
+        guard let letter = letter(atY: y), letter != lastPicked else { return }
+        lastPicked = letter
+        pick(letter)
+    }
+
+    /// One of the quiet e2e's pointer phases, through the same press, drag,
+    /// release and pick the gesture runs. The hit column is the rail's own
+    /// (DECK-34): a point right of the letters is not the rail's.
+    private func handlePointer(_ request: ConnectionController.DeckRailPointerRequest) {
+        let model = RailPointerModel.shared
+        switch request.phase {
+        case .hover:
+            // Today `dx` is points left of the rail's leading edge; a point
+            // inside or right of it is 0.
+            model.track(dx: max(0, -request.x), y: request.y, reduceMotion: reduceMotion)
+        case .down:
+            guard RailHit.contains(x: request.x, y: request.y,
+                                   railWidth: Self.width, railHeight: height,
+                                   magnified: hitGrowth) else { return }
+            model.press(y: request.y, reduceMotion: reduceMotion)
+            pickIfNeeded(atY: request.y)
+        case .drag:
+            model.drag(y: request.y, reduceMotion: reduceMotion)
+            pickIfNeeded(atY: request.y)
+        case .up:
+            lastPicked = nil
+            model.release(y: request.y, reduceMotion: reduceMotion)
+        }
     }
 }
 
