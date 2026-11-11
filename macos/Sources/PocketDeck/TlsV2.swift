@@ -521,11 +521,14 @@ final class TlsConnectorV2: @unchecked Sendable {
         // has. The hello is serialized over the finished attempts, so a
         // black-holed provider must never win it just by accepting a socket.
         let handshake = group.next().makePromise(of: Void.self)
+        // PATH-50: every way this attempt can end offers the same outcome
+        // gate; the first one completes the promise and the rest are ignored.
+        let gate = HandshakeGate(promise: handshake)
         // R-12: a peer that accepts TCP and then goes silent must not block
         // this thread and hold the fd forever. The attempt timer still owns the
         // attempt; this closes the channel so the dial fails inside it.
         let handshakeDeadline = group.next().scheduleTask(in: handshakeTimeout) {
-            handshake.fail(TlsV2Error.handshakeTimeout)
+            gate.offer(.deadlineFired, completingWith: .failure(TlsV2Error.handshakeTimeout))
         }
         do {
             var bootstrap = ClientBootstrap(group: group)
@@ -550,7 +553,7 @@ final class TlsConnectorV2: @unchecked Sendable {
                         try ch.pipeline.syncOperations.addHandler(
                             HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
                                                   peerCertificate: { cert in learnCert?(cert) },
-                                                  handshakePromise: handshake))
+                                                  gate: gate))
                         if let onWritableChange {
                             try ch.pipeline.syncOperations.addHandler(WritabilityHandler(onChange: onWritableChange))
                         }
@@ -580,6 +583,11 @@ final class TlsConnectorV2: @unchecked Sendable {
             }, Self.serviceType(of: channel))
         } catch {
             handshakeDeadline.cancel()
+            // A dial that fails before the handler can report anything (connect
+            // refused, the phone gone, a pipeline failure) still ends the
+            // handshake here, so its promise is never left uncompleted. When
+            // another source already ended it, this offer is ignored.
+            gate.offer(.dialFailed, completingWith: .failure(error))
             let message = String(describing: error)
             throw TlsV2Error.dialFailed(String(message.prefix(180)))
         }
@@ -610,6 +618,140 @@ final class WritabilityHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 }
 
+// MARK: - The handshake's outcome (PATH-50)
+
+/// The states of one dial's TLS handshake: `pending` until exactly one source
+/// reports an ending, then terminal. Later events are ignored, never replayed.
+enum HandshakePhase: Equatable {
+    case pending
+    case succeeded
+    case failed(HandshakeFailure)
+
+    /// What ended the attempt, as a closed token set: no error text, address or
+    /// key material reaches the transition log.
+    enum HandshakeFailure: String, Equatable {
+        /// The SSL handler (or its pipeline lookup) reported an error.
+        case handler
+        /// The channel went away before the handshake finished.
+        case inactive
+        /// The attempt's own handshake deadline fired (R-12).
+        case timeout
+        /// The dial failed before (or while) the pipeline came up.
+        case dial
+    }
+
+    var token: String {
+        switch self {
+        case .pending: return "pending"
+        case .succeeded: return "succeeded"
+        case .failed(let failure): return "failed(\(failure.rawValue))"
+        }
+    }
+}
+
+enum HandshakeEvent: Equatable {
+    /// The SSL handler saw the handshake complete.
+    case handshakeCompleted
+    /// The SSL handler (or its pipeline lookup) reported an error.
+    case handshakeFailed
+    /// The channel went away before the handshake finished.
+    case channelInactive
+    /// The attempt's handshake deadline fired.
+    case deadlineFired
+    /// The dial itself failed before the pipeline came up.
+    case dialFailed
+
+    var token: String {
+        switch self {
+        case .handshakeCompleted: return "completed"
+        case .handshakeFailed: return "error"
+        case .channelInactive: return "inactive"
+        case .deadlineFired: return "deadline"
+        case .dialFailed: return "dial-failed"
+        }
+    }
+}
+
+enum HandshakeAction: Equatable {
+    /// The attempt already ended; this offer changes nothing.
+    case ignore
+    /// This offer decided the attempt; its promise is completed with the value
+    /// the caller supplied.
+    case complete
+}
+
+/// `(phase, event) -> (phase, action)` for one handshake. There is no second
+/// terminal state and no way back to `pending`: the promise this drives can be
+/// completed once and only once.
+struct HandshakeMachine {
+    private(set) var phase: HandshakePhase = .pending
+
+    mutating func handle(_ event: HandshakeEvent) -> HandshakeAction {
+        switch (phase, event) {
+        case (.pending, .handshakeCompleted):
+            phase = .succeeded
+            return .complete
+        case (.pending, .handshakeFailed):
+            phase = .failed(.handler)
+            return .complete
+        case (.pending, .channelInactive):
+            phase = .failed(.inactive)
+            return .complete
+        case (.pending, .deadlineFired):
+            phase = .failed(.timeout)
+            return .complete
+        case (.pending, .dialFailed):
+            phase = .failed(.dial)
+            return .complete
+        case (.succeeded, _), (.failed, _):
+            return .ignore
+        }
+    }
+}
+
+/// Owns the handshake promise and drives the machine above. The handler, the
+/// deadline, channel inactivity and the dial's own failure all offer their
+/// ending; the first offer completes the promise, every later one is logged and
+/// dropped. This is the only place the promise is completed, so no path can
+/// leave it uncompleted (ISS-82) or complete it twice.
+final class HandshakeGate: @unchecked Sendable {
+    private let promise: EventLoopPromise<Void>
+    private let log: @Sendable (String) -> Void
+    private let lock = NSLock()
+    private var machine = HandshakeMachine()
+
+    init(promise: EventLoopPromise<Void>,
+         log: @escaping @Sendable (String) -> Void = { line in
+             Log.session.info("\(line, privacy: .public)")  // log-ok: closed state and event tokens only
+         }) {
+        self.promise = promise
+        self.log = log
+    }
+
+    /// Offers one ending. `result` completes the promise only when this offer is
+    /// the first, so a losing offer neither builds nor surfaces its error.
+    @discardableResult
+    func offer(_ event: HandshakeEvent,
+               completingWith result: @autoclosure () -> Result<Void, Error>) -> Bool {
+        let action: HandshakeAction
+        lock.lock()
+        let from = machine.phase
+        action = machine.handle(event)
+        let to = machine.phase
+        // Logged under the lock so the lines keep the transitions' order.
+        log("handshake: \(from.token) --\(event.token)--> \(to.token)")
+        lock.unlock()
+        guard action == .complete else { return false }
+        switch result() {
+        case .success:
+            promise.succeed(())
+        case .failure(let error):
+            promise.fail(error)
+        }
+        return true
+    }
+}
+
 // MARK: - Handshake-completed watcher (pairing-mode pin learning)
 
 /// Sits after the SSL handler; when the handshake completes it reads the
@@ -622,27 +764,25 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
     private let peerCertificate: @Sendable (NIOSSLCertificate) -> Void
     /// Completed when the handshake finishes (or fails), after the callbacks
     /// above ran: the connector does not report a path ready before this.
-    private let handshakePromise: EventLoopPromise<Void>?
+    private let gate: HandshakeGate?
     private var fired = false
-    /// The promise completes once, on this handler's event loop.
-    private var settled = false
 
     init(handshakeCompleted: @escaping @Sendable (String) -> Void,
          peerCertificate: @escaping @Sendable (NIOSSLCertificate) -> Void = { _ in },
-         handshakePromise: EventLoopPromise<Void>? = nil) {
+         gate: HandshakeGate? = nil) {
         self.handshakeCompleted = handshakeCompleted
         self.peerCertificate = peerCertificate
-        self.handshakePromise = handshakePromise
+        self.gate = gate
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if !fired, case .handshakeCompleted = event as? TLSUserEvent {
             fired = true
             let report = handshakeCompleted
-            let done = handshakePromise
+            let outcome = gate
             // NEVER block the event loop with a synchronous pipeline lookup:
-            // the future form resolves on the same loop, cleanly. The promise
-            // is completed last so connect() cannot outrun the pin callback.
+            // the future form resolves on the same loop, cleanly. The outcome
+            // is offered last so connect() cannot outrun the pin callback.
             context.pipeline.handler(type: NIOSSLHandler.self).whenComplete { result in
                 switch result {
                 case .success(let handler):
@@ -652,15 +792,9 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
                     if let peerFp = handler.peerCertificate.flatMap({ PinCheckV2.pointFingerprint(cert: $0) }) {
                         report(Data(peerFp).hexString)
                     }
-                    if !self.settled {
-                        self.settled = true
-                        done?.succeed(())
-                    }
+                    outcome?.offer(.handshakeCompleted, completingWith: .success(()))
                 case .failure(let error):
-                    if !self.settled {
-                        self.settled = true
-                        done?.fail(error)
-                    }
+                    outcome?.offer(.handshakeFailed, completingWith: .failure(error))
                 }
             }
         }
@@ -668,19 +802,14 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        if !settled {
-            settled = true
-            handshakePromise?.fail(error)
-        }
+        gate?.offer(.handshakeFailed, completingWith: .failure(error))
         context.fireErrorCaught(error)
         context.close(promise: nil)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        if !settled {
-            settled = true
-            handshakePromise?.fail(TlsV2Error.dialFailed("closed before the handshake finished"))
-        }
+        gate?.offer(.channelInactive,
+                     completingWith: .failure(TlsV2Error.dialFailed("closed before the handshake finished")))
         context.fireChannelInactive()
     }
 

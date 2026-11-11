@@ -541,7 +541,7 @@ final class TlsV2Tests: XCTestCase {
         }
         // The cancelled deadline task is released on its event loop; a leaked
         // promise's trap (debug builds) fires from there.
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the leak trap fires on the event loop, not in this call
     }
 
     /// PATH-50: a peer that accepts TCP and closes before its ServerHello ends
@@ -560,7 +560,7 @@ final class TlsV2Tests: XCTestCase {
             XCTAssertFalse(String(describing: error).isEmpty,
                            "a peer that hung up must not fail silently")
         }
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the peer's close and the deadline cancel land on their event loops
     }
 
     /// PATH-50: the deadline ends a silent peer's attempt, and the channel close
@@ -579,7 +579,7 @@ final class TlsV2Tests: XCTestCase {
             XCTAssertTrue(String(describing: error).contains("handshake timed out"),
                           "expected the deadline's failure, got: \(String(describing: error))")
         }
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: the cancelled deadline and channel events land on their event loops
     }
 
     /// PATH-50: a handshake that already succeeded keeps its result when the
@@ -595,7 +595,7 @@ final class TlsV2Tests: XCTestCase {
         XCTAssertNotNil(session.exporter(), "the handshake must complete before the error")
         session.channel.pipeline.fireErrorCaught(TlsV2Error.dialFailed("peer went away"))
         _ = try? session.channel.close().wait()
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: channelInactive is delivered on the channel's event loop
         XCTAssertNotNil(session.exporter(), "the finished handshake keeps its exporter material")
     }
 
