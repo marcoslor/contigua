@@ -1,6 +1,6 @@
 # Several phones at once — audit and plan
 
-Feature 2 of `ISSUES.md` § 5. This document is docs only: it reads the Mac and
+Feature 2 of the features backlog (GitHub issues). This document is docs only: it reads the Mac and
 the phone code, names every place the app assumes one phone, and then plans the
 change. It does not change product code, the wire, or any spec. The audit is
 against `main` at `3144abd1`.
