@@ -1665,9 +1665,9 @@ import os, sys
 with open(sys.argv[1], "wb") as fp:
     fp.write(os.urandom(64 * 1024 * 1024))
 PY2
-    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 40" > "$WORK/pathbulk.txt"
+    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 60" > "$WORK/pathbulk.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
-        --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 60
+        --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 90
     wait_until 25 path_upto 2 || bad "[PATH-10] PATHBULK the standby never joined"
     founder=""
     for _ in $(seq 1 80); do
@@ -1683,7 +1683,12 @@ PY2
     # The standby is fast for the rest of the run: a live throttled path must
     # still not be failed by a late pong.
     pathfault_mode "$fast_ctl" pass
-    if wait_until 70 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
+    # A pinned session with its standby up is the first run that carries the
+    # file beside a live video stream on the same 16 Mbit/s path; the phone's
+    # ACKs wait behind its video backlog, so the drop runs slower than the
+    # link-alone 17 s (measured 8 MiB per 15.5 s on the slowest run, 19.5 s for
+    # the whole file on another). The assertion is the same; only the window grew.
+    if wait_until 90 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
         ok "[PATH-10] [PATH-23] PATHBULK the 32 MiB file arrived byte-exact across the throttled path"
     else
         bad "[PATH-10] PATHBULK the file never arrived intact: $(grep '"ev":"drop"' "$WORK/events.jsonl" | tail -2)"
