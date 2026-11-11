@@ -168,6 +168,27 @@ final class RailAccentTests: XCTestCase {
         XCTAssertEqual(state, .picked(letter: "A", landingOffset: 40))
     }
 
+    /// A pick whose target is on the top row but whose landing is below the
+    /// sections (the All Apps row is not at the viewport's top) still animates
+    /// down: the start offset is not the landing, and the jump's frames keep
+    /// the pick. This is the press that used to lose its emphasis: the accent
+    /// settled at the old offset, then the jump's own frames read as the
+    /// person's scroll.
+    func testASameRowJumpWaitsForItsLanding() {
+        let picked = RailAccent.reduce(.topRow,
+                                       .pick(letter: "C", target: 3, fromTop: 0, landing: 200))
+        XCTAssertEqual(picked, .jumping(letter: "C", target: 3, fromTop: 0, landing: 200))
+        for offset in [CGFloat(0), 60, 120, 180] {
+            let frame = RailAccent.reduce(picked, scroll(0, offset))
+            XCTAssertEqual(frame, picked,
+                           "the same-row jump's frame at offset \(offset) settled early")
+            XCTAssertEqual(frame.letter(topRow: "A"), "C")
+        }
+        let landed = RailAccent.reduce(picked, scroll(0, 200))
+        XCTAssertEqual(landed, .picked(letter: "C", landingOffset: 200))
+        XCTAssertEqual(landed.letter(topRow: "A"), "C")
+    }
+
     /// A scroll that leaves the jump's path while it runs is the person's, not
     /// the jump's: the top row's letter is back.
     func testAScrollOffTheJumpPathDropsThePick() {

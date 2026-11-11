@@ -861,8 +861,11 @@ enum RailAccent: Equatable {
             }
             // A frame past the landing inside the target's row is the
             // animation's own overshoot; past the row, it is the person's.
+            // The direction is the offset's, not the row index's: a pick on
+            // the top row whose landing is below the sections still animates
+            // down, and its start offset is not an overshoot.
             if top == row {
-                let downward = fromTop.map { $0 < row } ?? (offset > landing)
+                let downward = offset < landing
                 if downward ? offset > landing + landingTolerance
                     : offset < landing - landingTolerance {
                     return .picked(letter: letter, landingOffset: landing)
@@ -1279,6 +1282,15 @@ struct AppGrid: View {
             .onChange(of: zoom, initial: true) { _, zoom in
                 RailPointerModel.shared.noteZoom(zoom)
             }
+            // [DECK-32] A person's wheel or trackpad scroll ends a click's
+            // emphasis at once. The jump's own `scrollTo` animation reports
+            // `.animating`, never a person's scroll, so the press that starts
+            // a jump keeps its emphasis; the accent's frames are not consulted.
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting || phase == .decelerating {
+                    RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
+                }
+            }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
                            width: geometry.containerSize.width,
@@ -1318,7 +1330,8 @@ struct AppGrid: View {
             // [DECK-32] The rail disappearing (a search, a short grid) ends the
             // emphasis even if the pointer's leave never arrives; the results
             // are never drawn dimmed. A zoom change and the page going offline
-            // end it the same way, and a person's scroll ends it in `follow`.
+            // end it the same way, and a person's wheel/trackpad scroll ends it
+            // in `onScrollPhaseChange`.
             .onChange(of: railShown) { _, shown in
                 if !shown { RailEmphasisModel.shared.end(reduceMotion: reduceMotion) }
             }
@@ -1457,12 +1470,6 @@ struct AppGrid: View {
         railAccent = RailAccent.reduce(before, .scroll(top: top, offset: offset,
                                                        columns: columns,
                                                        maxOffset: maxOffset))
-        if personScrolled(before: before, after: railAccent,
-                          offset: offset, width: scroll.width) {
-            RailEmphasisModel.shared.end(reduceMotion: reduceMotion)
-        }
-        scrollBox.lastOffset = offset
-        scrollBox.lastWidth = scroll.width
         if railAccent != before {
             Log.app.debug("rail accent: \(before.name, privacy: .public) --scroll--> \(railAccent.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
         }
@@ -1480,25 +1487,6 @@ struct AppGrid: View {
                                            columns: columns, state: railAccent.name,
                                            offset: offset, maxOffset: maxOffset)
         }
-    }
-
-    /// Whether this scroll came from the person (the wheel, trackpad, scroll
-    /// bar or keys) rather than the pick's own animated jump, which DECK-32
-    /// ends a click's emphasis on. The jump's frames are all `jumping` and
-    /// settle at `picked`; a jump that falls off its path to `topRow` is the
-    /// person's, and while no jump is in flight any move of the offset is.
-    /// A resize changes the width and the origin together, so it is not a
-    /// scroll and keeps the emphasis.
-    private func personScrolled(before: RailAccent, after: RailAccent,
-                                offset: CGFloat, width: CGFloat) -> Bool {
-        if case .jumping = before {
-            if case .topRow = after { return true }
-            return false
-        }
-        guard let last = scrollBox.lastOffset, scrollBox.lastWidth == width else {
-            return false
-        }
-        return abs(offset - last) > RailAccent.landingTolerance
     }
 
     /// The container hover, reduced to where the pointer is relative to the
@@ -1564,11 +1552,6 @@ private final class RailScrollBox {
     var last: RailScroll?
     /// The first app of the row at `last`: a pick's jump starts from here.
     var lastTop: Int?
-    /// The last offset and width `follow` saw, so a person's scroll (which
-    /// ends DECK-32's emphasis) is told apart from a resize and from the
-    /// pick's own animated jump.
-    var lastOffset: CGFloat?
-    var lastWidth: CGFloat?
 }
 
 /// Dock-style magnification (R1): the letter under the pointer swells to
