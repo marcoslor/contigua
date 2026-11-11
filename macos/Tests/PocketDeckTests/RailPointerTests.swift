@@ -40,6 +40,25 @@ final class RailPointerTests: XCTestCase {
         XCTAssertEqual(point.dx, 0, accuracy: 0.01, "inside the rail")
     }
 
+    /// DECK-34: a hover right of the letters is the grid's, not the rail's.
+    /// The rail's frame is 26 pt wide but its letters are 11 pt: the strip
+    /// right of them (and the window's right edge) must not enter the rail.
+    func testAHoverRightOfTheLettersIsNotTheRail() {
+        let container = CGSize(width: 1000, height: 573)
+        let block = DeckWide.block(width: 1000, metrics: DeckGridSize(zoom: 1))
+        let railTop = (container.height - CGFloat(drawnFit.count) * drawnFit.pitch) / 2
+        let letters = RailHit.letters()
+        let y = railTop + 12.5 * drawnFit.pitch
+        for x in [block.railLeading + letters.upperBound + 6, container.width - 1] {
+            let point = RailHover.point(hover: CGPoint(x: x, y: y), container: container,
+                                        fit: drawnFit, trailing: 44)
+            let (state, actions) = reduce(.away, .track(dx: point.dx, y: point.y))
+            XCTAssertEqual(state, .away,
+                           "the hover at \(x) (the rail's leading edge is \(block.railLeading)) entered the rail")
+            XCTAssertTrue(actions.isEmpty)
+        }
+    }
+
     func testRailPointMeasuresDxFromTheRailsLeadingEdge() {
         let container = CGSize(width: 1000, height: 573)
         let leading = container.width - 44

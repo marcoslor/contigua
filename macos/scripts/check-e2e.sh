@@ -15618,6 +15618,7 @@ check_deckrail() {
             || bad "DECKRAIL no Deck window for $1"
     }
     local dx px py mcentre ncentre ax ay aw wx wy sx sy scale since settle
+    local deadx glyphx jy winw edgex hitrect railhit_top railhit_bottom fx fy fw fh pitch
     if [ "$VISIBLE" = 1 ]; then
         # Park the real pointer outside the Deck before any forced step.
         cg_input moveat --x 5 --y 5
@@ -16101,6 +16102,107 @@ PY
         else
             bad "[DECK-33] the $target pick: $settle"
         fi
+    done
+    control deckrailleave
+    sleep 0.3
+
+    # [DECK-34] The rail's hit column is the letters' column widened by at most
+    # 4 pt each side; the strip right of the letters and the window's right
+    # edge are the grid's, not the rail's. The probe reads the rail's own hit
+    # rect and letters' column; the pointer verbs feed the rail's own hit test.
+    control deckfocus grid || bad "[DECK-34] deckfocus grid: $CONTROL_REPLY"
+    control deckrailslots "$WORK/rail-hit-rest.json" \
+        || bad "[DECK-34] deckrailslots (rest): $CONTROL_REPLY"
+    if hitrect="$(python3 "$MACOS/scripts/deck-rail-hit.py" rect "$WORK/rail-hit-rest.json" 2>&1)"; then
+        ok "[DECK-34] the hit column is the letters' column + 4 pt each side ($hitrect)"
+    else
+        bad "[DECK-34] the hit column: $hitrect"
+    fi
+    control deckrailanchor "$WORK/rail-hit-anchor.pt" \
+        && read -r wx wy sx sy scale < "$WORK/rail-hit-anchor.pt" \
+        || bad "[DECK-34] deckrailanchor: $CONTROL_REPLY"
+    control deck-frame "$WORK/rail-hit-frame.txt" \
+        && read -r fx fy fw fh < "$WORK/rail-hit-frame.txt" \
+        || bad "[DECK-34] deck-frame: $CONTROL_REPLY"
+    read -r deadx glyphx jy winw railhit_top railhit_bottom pitch < <(python3 - "$WORK/rail-hit-rest.json" "$fw" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+letters, pitch, hit = d["letters"], d["pitch"], d["hit"]
+print(letters["right"] + 6, (letters["left"] + letters["right"]) / 2,
+      9.5 * pitch, sys.argv[2], hit["top"], hit["bottom"], pitch)
+PY
+)
+    # A hover at the letters' right edge + 6 pt is not the rail's: no pointer
+    # state, no emphasis.
+    control deckrailhoverat "$deadx" "$jy"
+    sleep 0.3
+    control deckrailslots "$WORK/rail-hit-hover.json" \
+        || bad "[DECK-34] deckrailslots (dead hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" state "$WORK/rail-hit-hover.json" away \
+        && ok "[DECK-34] a hover 6 pt right of the letters does not enter the rail" \
+        || bad "[DECK-34] a hover 6 pt right of the letters entered the rail"
+    control deckrailemph "$WORK/rail-hit-emph.json" \
+        || bad "[DECK-34] deckrailemph (dead hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" none "$WORK/rail-hit-emph.json" \
+        && ok "[DECK-34] a hover right of the letters lights nothing" \
+        || bad "[DECK-34] a hover right of the letters lit the grid"
+    # A click there does nothing to the rail: no jump and no accent.
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$deadx" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (dead): $CONTROL_REPLY"
+    sleep 0.5
+    python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+        && ok "[DECK-34] a click 6 pt right of the letters does not jump or change the accent" \
+        || bad "[DECK-34] a click 6 pt right of the letters reached the rail"
+    # The window's right edge, over the scroller area: the same nothing.
+    edgex="$(python3 -c "print($winw - $wx - 1)")"
+    control deckrailhoverat "$edgex" "$jy"
+    sleep 0.3
+    control deckrailslots "$WORK/rail-hit-edge.json" \
+        || bad "[DECK-34] deckrailslots (edge hover): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" state "$WORK/rail-hit-edge.json" away \
+        && ok "[DECK-34] a hover at the window's right edge does not enter the rail" \
+        || bad "[DECK-34] a hover at the window's right edge entered the rail"
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$edgex" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (edge): $CONTROL_REPLY"
+    sleep 0.5
+    python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+        && ok "[DECK-34] a click at the window's right edge does not reach the rail" \
+        || bad "[DECK-34] a click at the window's right edge reached the rail"
+    # A click on the letter's glyph still picks it.
+    control deckrailleave
+    sleep 0.2
+    since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+    control deckrailclickat "$glyphx" "$jy" 80 \
+        || bad "[DECK-34] deckrailclickat (glyph): $CONTROL_REPLY"
+    python3 "$MACOS/scripts/deck-rail-hit.py" picked "$WORK/deck-grid.jsonl" "$since" J \
+        && ok "[DECK-34] a click on J's glyph picks J" \
+        || bad "[DECK-34] a click on J's glyph did not pick J"
+    # Above the first and below the last letter is dead beyond 4 pt.
+    local deady
+    for deady in "$(python3 -c "print($railhit_top - 2)")" "$(python3 -c "print($railhit_bottom + 2)")"; do
+        control deckrailleave
+        sleep 0.2
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclickat "$glyphx" "$deady" 60 \
+            || bad "[DECK-34] deckrailclickat (crown $deady): $CONTROL_REPLY"
+        sleep 0.4
+        python3 "$MACOS/scripts/deck-rail-hit.py" nopick "$WORK/deck-grid.jsonl" "$since" \
+            && ok "[DECK-34] a click at $deady (past the letters' end + 4 pt) is dead" \
+            || bad "[DECK-34] a click at $deady reached the rail"
+    done
+    # The gap between J's and K's boxes still belongs to the nearest letter.
+    local gap
+    for gap in "J:$(python3 -c "print(10 * $pitch - 1)")" "K:$(python3 -c "print(10 * $pitch + 1)")"; do
+        control deckrailleave
+        sleep 0.2
+        since="$(wc -l < "$WORK/deck-grid.jsonl" | tr -d ' ')"
+        control deckrailclickat "$glyphx" "${gap#*:}" 60 \
+            || bad "[DECK-34] deckrailclickat (gap ${gap%%:*}): $CONTROL_REPLY"
+        python3 "$MACOS/scripts/deck-rail-hit.py" picked "$WORK/deck-grid.jsonl" "$since" "${gap%%:*}" \
+            && ok "[DECK-34] the gap on ${gap%%:*}'s side belongs to ${gap%%:*}" \
+            || bad "[DECK-34] the gap did not belong to ${gap%%:*}"
     done
     control deckrailleave
     sleep 0.3
