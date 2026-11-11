@@ -137,4 +137,15 @@ final class PathRejoinTests: XCTestCase {
         XCTAssertEqual(PathRejoinMachine.connectTimeout, 2.0)
         XCTAssertEqual(PathRejoinMachine.connectTimeout, PathProbeMachine.connectTimeout)
     }
+
+    /// ISS-95: one attempt's ending is reported once. A second report while the
+    /// schedule already holds the round changes no state and starts no dial.
+    func testASecondFailureReportForTheSameRoundChangesNothing() {
+        var machine = PathRejoinMachine()
+        XCTAssertEqual(machine.handle(tick(at: 0), now: 0), [.dial])
+        XCTAssertEqual(machine.handle(.failed(orphaned: true, now: 0.05), now: 0.05), [.ignore])
+        XCTAssertEqual(machine.state, .spacing(until: 1.0))
+        XCTAssertEqual(machine.handle(.failed(orphaned: true, now: 0.06), now: 0.06), [.ignore])
+        XCTAssertEqual(machine.state, .spacing(until: 1.0))
+    }
 }
