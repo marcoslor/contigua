@@ -8,17 +8,17 @@
 import SwiftUI
 
 enum RailHover {
-    /// A container hover point, reduced to the rail's own space: `dx` points
-    /// left of the rail's leading edge (0 inside it) and `y` is measured from
-    /// the rail's top, at the pitch the rail is actually drawn with.
-    /// `trailing` is the rail's width plus its trailing padding.
+    /// A container hover point, reduced to the rail's own space: `x` is
+    /// measured from the rail's leading edge (negative left of it, 0 at it)
+    /// and `y` from the rail's top, at the pitch the rail is actually drawn
+    /// with. `trailing` is the rail's width plus its trailing padding.
     static func point(hover: CGPoint, container: CGSize,
                       fit: (count: Int, pitch: CGFloat),
-                      trailing: CGFloat) -> (dx: CGFloat, y: CGFloat) {
+                      trailing: CGFloat) -> (x: CGFloat, y: CGFloat) {
         let drawn = CGFloat(fit.count)
         let top = max(0, (container.height - drawn * fit.pitch) / 2)
         let leading = container.width - trailing
-        return (max(0, leading - hover.x), hover.y - top)
+        return (hover.x - leading, hover.y - top)
     }
 }
 
@@ -59,9 +59,9 @@ enum RailPointer: Equatable {
 }
 
 enum RailPointerEvent: Equatable {
-    /// A container hover point, already reduced to `dx` (points left of the
-    /// rail's leading edge, 0 inside the rail) and its y in the rail.
-    case track(dx: CGFloat, y: CGFloat)
+    /// A container hover point, already reduced to the rail's own space: `x`
+    /// from its leading edge (negative left of it) and its `y` in the rail.
+    case track(x: CGFloat, y: CGFloat)
     case leave
     case press(y: CGFloat)
     case drag(y: CGFloat)
@@ -95,23 +95,27 @@ extension RailPointer {
             [.animateRest(duration: reduceMotion ? 0 : easeDuration)]
         }
         switch event {
-        case .track(let dx, let y):
+        case .track(let x, let y):
             switch state {
             // A drag owns the pointer until it ends, span included.
             case .dragging:
                 return (state, [])
             case .hovering(let span, _):
-                // Leave on the magnified hit area's left edge, or the span's
-                // ends; horizontal movement inside it changes nothing.
-                guard dx <= room, y >= span.top, y <= span.bottom else {
+                // Leave on the magnified hit area's left edge, the letters'
+                // right edge, or the span's ends; horizontal movement inside
+                // it changes nothing.
+                guard RailHit.column(magnified: room).contains(x),
+                      y >= span.top, y <= span.bottom else {
                     return (.away, rest())
                 }
                 return (.hovering(span: span, y: y), [])
             case .away:
-                // Enter only inside the rail's rest column, at a y on the rest
-                // rail. The scale never depends on x.
-                let total = CGFloat(count) * pitch
-                guard count > 0, pitch > 0, dx <= 0, y >= 0, y <= total else {
+                // Enter only inside the letters' column plus its 4 pt each
+                // side (DECK-34), at a y on the rest letters (plus 4 pt).
+                // The scale never depends on x.
+                guard count > 0, pitch > 0,
+                      RailHit.column().contains(x),
+                      RailHit.vertical(count: count, pitch: pitch).contains(y) else {
                     return (.away, [])
                 }
                 let span = RailLayout.span(count: count, pitch: pitch, anchor: y,
@@ -188,8 +192,8 @@ final class RailPointerModel {
     /// leaves: the same clearance from the last column's cell as the letters.
     var room: CGFloat { RailArc.hitRoom(width: containerSize.width, zoom: zoom) }
 
-    func track(dx: CGFloat, y: CGFloat, reduceMotion: Bool) {
-        send(.track(dx: dx, y: y), reduceMotion: reduceMotion)
+    func track(x: CGFloat, y: CGFloat, reduceMotion: Bool) {
+        send(.track(x: x, y: y), reduceMotion: reduceMotion)
     }
 
     func leave(reduceMotion: Bool) {
@@ -221,7 +225,7 @@ final class RailPointerModel {
         let band = CGFloat(index - slots[slot].first)
         let y = CGFloat(slot) * pitch
             + (band + 0.5) / CGFloat(slots[slot].count) * pitch
-        send(.track(dx: 0, y: y), reduceMotion: reduceMotion)
+        send(.track(x: 13, y: y), reduceMotion: reduceMotion)
         return true
     }
 

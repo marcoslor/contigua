@@ -250,19 +250,25 @@ enum RailHit {
         return left...(left + box)
     }
 
-    /// The column the pointer may take. Today the rail's whole frame, plus the
-    /// magnified arc's room on the left.
+    /// The column the pointer may take: the letters' column plus `sidePadding`
+    /// each side, and the magnified arc's room on the left while the rail is
+    /// open. The right edge never grows: the strip right of the letters is the
+    /// grid's.
     static func column(railWidth: CGFloat = DeckWide.railWidth,
                        magnified: CGFloat = 0) -> ClosedRange<CGFloat> {
-        (magnified > 0 ? -magnified : 0)...railWidth
+        let letters = letters(railWidth: railWidth)
+        return (letters.lowerBound - sidePadding - magnified)...(letters.upperBound + sidePadding)
     }
 
-    /// The vertical span the pointer may take. Today the rail's whole height,
-    /// or the frozen span while it is magnified.
+    /// The vertical span the pointer may take: the first and last letters'
+    /// 11 pt boxes plus 4 pt above and below, so the gaps between letters are
+    /// the nearest letter's; the frozen span's own ends while magnified.
     static func vertical(count: Int, pitch: CGFloat,
                          span: RailLayout.Span? = nil) -> ClosedRange<CGFloat> {
         if let span { return span.top...span.bottom }
-        return 0...(CGFloat(count) * pitch)
+        guard count > 0, pitch > 0 else { return 0...0 }
+        let inset = (pitch - min(RailLayout.letterBox, pitch)) / 2
+        return (inset - sidePadding)...(CGFloat(count) * pitch - inset + sidePadding)
     }
 
     static func contains(x: CGFloat, y: CGFloat, railWidth: CGFloat,

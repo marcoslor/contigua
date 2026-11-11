@@ -37,7 +37,7 @@ final class RailPointerTests: XCTestCase {
         let point = RailHover.point(hover: hover, container: container, fit: drawnFit, trailing: 44)
         XCTAssertEqual(point.y, 12.5 * drawnFit.pitch, accuracy: 0.01,
                        "M's drawn centre must read as M's row")
-        XCTAssertEqual(point.dx, 0, accuracy: 0.01, "inside the rail")
+        XCTAssertEqual(point.x, 13, accuracy: 0.01, "on the letters' column")
     }
 
     /// DECK-34: a hover right of the letters is the grid's, not the rail's.
@@ -51,29 +51,29 @@ final class RailPointerTests: XCTestCase {
         let y = railTop + 12.5 * drawnFit.pitch
         for x in [block.railLeading + letters.upperBound + 6, container.width - 1] {
             let point = RailHover.point(hover: CGPoint(x: x, y: y), container: container,
-                                        fit: drawnFit, trailing: 44)
-            let (state, actions) = reduce(.away, .track(dx: point.dx, y: point.y))
+                                        fit: drawnFit, trailing: block.railTrailingSpace)
+            let (state, actions) = reduce(.away, .track(x: point.x, y: point.y))
             XCTAssertEqual(state, .away,
                            "the hover at \(x) (the rail's leading edge is \(block.railLeading)) entered the rail")
             XCTAssertTrue(actions.isEmpty)
         }
     }
 
-    func testRailPointMeasuresDxFromTheRailsLeadingEdge() {
+    func testRailPointMeasuresXFromTheRailsLeadingEdge() {
         let container = CGSize(width: 1000, height: 573)
         let leading = container.width - 44
         let hover = CGPoint(x: leading - 40, y: 200)
-        XCTAssertEqual(RailHover.point(hover: hover, container: container, fit: drawnFit, trailing: 44).dx,
-                       40, accuracy: 0.01)
+        XCTAssertEqual(RailHover.point(hover: hover, container: container, fit: drawnFit, trailing: 44).x,
+                       -40, accuracy: 0.01, "left of the rail")
         let inside = CGPoint(x: leading + 5, y: 200)
-        XCTAssertEqual(RailHover.point(hover: inside, container: container, fit: drawnFit, trailing: 44).dx,
-                       0, accuracy: 0.01)
+        XCTAssertEqual(RailHover.point(hover: inside, container: container, fit: drawnFit, trailing: 44).x,
+                       5, accuracy: 0.01)
     }
 
     // MARK: The pointer machine
 
     func testEnterFreezesTheSpanOnTheRestRail() {
-        let (state, actions) = reduce(.away, .track(dx: 0, y: y0))
+        let (state, actions) = reduce(.away, .track(x: 13, y: y0))
         guard case .hovering(let span, let y) = state else {
             return XCTFail("the pointer did not enter")
         }
@@ -81,19 +81,21 @@ final class RailPointerTests: XCTestCase {
         XCTAssertEqual(span, RailLayout.span(count: fit.count, pitch: fit.pitch, anchor: y0))
         XCTAssertEqual(actions, [.animateIn(duration: RailPointer.easeDuration)])
 
-        // Only inside the rest column, at a y on the rest rail.
+        // Only inside the letters' column plus 4 pt each side, at a y on the
+        // letters plus 4 pt (DECK-34).
         let total = CGFloat(fit.count) * fit.pitch
-        for (dx, y) in [(CGFloat(10), y0), (0, CGFloat(-1)), (0, total + 1)] {
-            let (state, actions) = reduce(.away, .track(dx: dx, y: y))
-            XCTAssertEqual(state, .away, "entered from dx \(dx), y \(y)")
+        let right = RailHit.letters().upperBound + RailHit.sidePadding
+        for (x, y) in [(right + 1, y0), (CGFloat(13), CGFloat(-1)), (13, total + 1)] {
+            let (state, actions) = reduce(.away, .track(x: x, y: y))
+            XCTAssertEqual(state, .away, "entered from x \(x), y \(y)")
             XCTAssertTrue(actions.isEmpty)
         }
     }
 
     func testMovingInsideKeepsTheSpanAndAHoverCannotMoveADrag() {
-        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        let (entered, _) = reduce(.away, .track(x: 13, y: y0))
         guard case .hovering(let span, _) = entered else { return XCTFail("no enter") }
-        let (moved, actions) = reduce(entered, .track(dx: 0, y: y0 + 10))
+        let (moved, actions) = reduce(entered, .track(x: 13, y: y0 + 10))
         XCTAssertEqual(moved, .hovering(span: span, y: y0 + 10))
         XCTAssertTrue(actions.isEmpty)
 
@@ -102,7 +104,7 @@ final class RailPointerTests: XCTestCase {
         XCTAssertTrue(pressed.isDragging)
         let (dragged, _) = reduce(pressed, .drag(y: y0 + 80))
         XCTAssertEqual(dragged, .dragging(span: span, y: y0 + 80))
-        let (held, heldActions) = reduce(dragged, .track(dx: 40, y: y0))
+        let (held, heldActions) = reduce(dragged, .track(x: 40, y: y0))
         XCTAssertEqual(held, dragged, "the container's hover must not fight the drag")
         XCTAssertTrue(heldActions.isEmpty)
         let (released, _) = reduce(dragged, .release(y: y0 + 80))
@@ -110,11 +112,11 @@ final class RailPointerTests: XCTestCase {
     }
 
     func testLeaveOnTheRoomsEdgeOrPastTheSpanEnds() {
-        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        let (entered, _) = reduce(.away, .track(x: 13, y: y0))
         guard case .hovering(let span, _) = entered else { return XCTFail("no enter") }
-        for event in [RailPointerEvent.track(dx: 23, y: y0),
-                      .track(dx: 0, y: span.top - 1),
-                      .track(dx: 0, y: span.bottom + 1),
+        for event in [RailPointerEvent.track(x: 24, y: y0),
+                      .track(x: 13, y: span.top - 1),
+                      .track(x: 13, y: span.bottom + 1),
                       .leave] {
             let (left, actions) = reduce(entered, event)
             XCTAssertEqual(left, .away, "\(event) did not leave")
@@ -129,7 +131,7 @@ final class RailPointerTests: XCTestCase {
     /// back rather than holding a frozen span the pointer is not on. A release
     /// inside the span stays on the rail.
     func testAReleaseOutsideTheSpanEndsTheHover() {
-        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        let (entered, _) = reduce(.away, .track(x: 13, y: y0))
         guard case .hovering(let span, _) = entered else { return XCTFail("no enter") }
         let (pressed, _) = reduce(entered, .press(y: y0))
         let (outside, actions) = reduce(pressed, .release(y: span.bottom + 30))
@@ -144,7 +146,7 @@ final class RailPointerTests: XCTestCase {
     /// K2: the container's hover ending during a drag (the pointer left the
     /// window with the button down) ends the hover, not a stale span.
     func testTheHoverEndingDuringADragEndsTheHover() {
-        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        let (entered, _) = reduce(.away, .track(x: 13, y: y0))
         guard case .hovering = entered else { return XCTFail("no enter") }
         let (pressed, _) = reduce(entered, .press(y: y0 + 5))
         guard case .dragging = pressed else { return XCTFail("no drag") }
@@ -162,7 +164,7 @@ final class RailPointerTests: XCTestCase {
     }
 
     func testReduceMotionEntersAndLeavesWithoutAnEase() {
-        let (state, actions) = reduce(.away, .track(dx: 0, y: y0), reduceMotion: true)
+        let (state, actions) = reduce(.away, .track(x: 13, y: y0), reduceMotion: true)
         guard case .hovering(let span, _) = state else { return XCTFail("no enter") }
         XCTAssertEqual(actions, [.animateIn(duration: 0)], "Reduce Motion drops the ease")
         XCTAssertEqual(span.length, CGFloat(fit.count) * fit.pitch, accuracy: 0.001,
@@ -173,7 +175,7 @@ final class RailPointerTests: XCTestCase {
     }
 
     func testReduceMotionDrawsThePlainHighlight() {
-        let (state, _) = reduce(.away, .track(dx: 0, y: y0), reduceMotion: true)
+        let (state, _) = reduce(.away, .track(x: 13, y: y0), reduceMotion: true)
         guard case .hovering(let span, let y) = state else { return XCTFail("no enter") }
         XCTAssertTrue(state.showsHelpTag)
         let centre = RailLayout.frozenCentre(atY: y, span: span, count: fit.count)

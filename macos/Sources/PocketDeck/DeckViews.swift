@@ -1491,7 +1491,7 @@ struct AppGrid: View {
                                        metrics: DeckGridSize(zoom: zoom))
             let rail = RailHover.point(hover: point, container: model.containerSize, fit: fit,
                                        trailing: block.railTrailingSpace)
-            model.track(dx: rail.dx, y: rail.y, reduceMotion: reduceMotion)
+            model.track(x: rail.x, y: rail.y, reduceMotion: reduceMotion)
         case .ended:
             model.leave(reduceMotion: reduceMotion)
         }
@@ -1756,12 +1756,14 @@ private struct DeckIndexRail: View {
         .background(alignment: .topLeading) {
             DeckRailAnchor().frame(width: 1, height: 1)
         }
-        // The arc draws left of the column; the hit area grows with it (the
-        // room stops it at the clearance to the last column's cell).
-        .padding(.leading, hitGrowth)
-        .contentShape(.rect)
+        // DECK-34: the rail's letters draw in the 26 pt column, but only the
+        // letters' column plus 4 pt each side takes the pointer (and the
+        // arc's room left of it while magnified). The strip right of the
+        // letters belongs to the grid, so the wheel and the scroller work
+        // there.
+        .allowsHitTesting(false)
+        .overlay(alignment: .topLeading) { hitStrip }
         .overlay(alignment: .topTrailing) { helpTag }
-        .gesture(drag)
         .onChange(of: slots, initial: true) { _, slots in
             // The forced e2e position (`deckrailenter`) resolves a letter to
             // its band with the layout the rail is actually drawing.
@@ -1877,20 +1879,43 @@ private struct DeckIndexRail: View {
         return count == 0 ? "\(name), no apps" : "\(name), \(count) apps"
     }
 
+    /// The strip that takes the pointer (DECK-34): the letters' column plus
+    /// 4 pt each side, the arc's room left while magnified, and the drawn
+    /// letters' vertical span (the frozen span while magnified).
+    private var hitColumn: ClosedRange<CGFloat> {
+        RailHit.column(magnified: hitGrowth)
+    }
+
+    private var hitVertical: ClosedRange<CGFloat> {
+        RailHit.vertical(count: slots.count, pitch: pitch, span: frozen?.span)
+    }
+
+    private var hitStrip: some View {
+        Color.clear
+            .frame(width: hitColumn.upperBound - hitColumn.lowerBound,
+                   height: hitVertical.upperBound - hitVertical.lowerBound)
+            .contentShape(.rect)
+            .gesture(drag)
+            .offset(x: hitColumn.lowerBound, y: hitVertical.lowerBound)
+            .accessibilityHidden(true)
+    }
+
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let model = RailPointerModel.shared
+                let y = value.location.y + hitVertical.lowerBound
                 if model.state.isDragging {
-                    model.drag(y: value.location.y, reduceMotion: reduceMotion)
+                    model.drag(y: y, reduceMotion: reduceMotion)
                 } else {
-                    model.press(y: value.location.y, reduceMotion: reduceMotion)
+                    model.press(y: y, reduceMotion: reduceMotion)
                 }
-                pickIfNeeded(atY: value.location.y)
+                pickIfNeeded(atY: y)
             }
             .onEnded { value in
                 lastPicked = nil
-                RailPointerModel.shared.release(y: value.location.y, reduceMotion: reduceMotion)
+                let y = value.location.y + hitVertical.lowerBound
+                RailPointerModel.shared.release(y: y, reduceMotion: reduceMotion)
             }
     }
 
@@ -1908,9 +1933,7 @@ private struct DeckIndexRail: View {
         let model = RailPointerModel.shared
         switch request.phase {
         case .hover:
-            // Today `dx` is points left of the rail's leading edge; a point
-            // inside or right of it is 0.
-            model.track(dx: max(0, -request.x), y: request.y, reduceMotion: reduceMotion)
+            model.track(x: request.x, y: request.y, reduceMotion: reduceMotion)
         case .down:
             guard RailHit.contains(x: request.x, y: request.y,
                                    railWidth: Self.width, count: slots.count,
