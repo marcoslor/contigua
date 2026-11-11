@@ -248,7 +248,7 @@ publish running (the network is released at once); a publish callback after
 | CONV-PD-05 | applies: PATH-14 and DIRECT-15 (R-PRIV-1) |
 | CONV-PD-06 | applies: a switch costs at most one keyframe (video resumes within `stale_picture_ms`, PATH-5) and one audio frame; a joined path is pinged immediately so its ranking starts at once |
 | CONV-PD-07 | applies: "Direct link" is the same words in the Mac's Settings, the phone's Settings, the installer's text and these docs; "Paths" is internal and never shown |
-| CONV-PD-08 | applies: the four machines above, with their full tables in the design docs, PATH-24's probe machine in design/paths.md §6.1, and PATH-52's session-pin machine in the table below |
+| CONV-PD-08 | applies: the four machines above, with their full tables in the design docs, PATH-24's probe machine in design/paths.md §6.1, and PATH-52's session-pin machine in the state table above |
 | CONV-PD-09 | applies: DIRECT-12 (every probe code and every refusal names a step that can fix it); PATH-17 (the window's own words while there is no path) |
 
 ## Assumptions
