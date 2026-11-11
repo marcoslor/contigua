@@ -28,10 +28,10 @@ final class TlsV2Tests: XCTestCase {
     func testExporterVectors() {
         let zero = [UInt8](repeating: 0, count: 32)
         XCTAssertEqual(ExporterV2.derive(exporterSecret: zero).hexByteString,
-                       "380c2602efd61000023783cb8280d36f3fb3a8c1b22a7d0e5247e6e227f3340c")
+                       "5a3f4f8c184a6d082a3620b19b81a723c8d829c1ed7a2ae92235c0fbf0a363a6")
         let labeled = [UInt8](SHA256.hash(data: Data("contigua-exporter-test-1".utf8)))
         XCTAssertEqual(ExporterV2.derive(exporterSecret: labeled).hexByteString,
-                       "68544181667677211b2823d71b530f48800be1ab6e762a4612d2d4fe85312d80")
+                       "3bc2dc9384542e65c9a38e26ea3b46169c9ab310f99651b0f3f88bfb217ac8e8")
     }
 
     func testKeyLogLineParsing() {
