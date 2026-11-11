@@ -257,14 +257,18 @@ enum RailHit {
         (magnified > 0 ? -magnified : 0)...railWidth
     }
 
-    /// The vertical span the pointer may take: today the rail's whole height.
-    static func vertical(railHeight: CGFloat) -> ClosedRange<CGFloat> {
-        0...railHeight
+    /// The vertical span the pointer may take. Today the rail's whole height,
+    /// or the frozen span while it is magnified.
+    static func vertical(count: Int, pitch: CGFloat,
+                         span: RailLayout.Span? = nil) -> ClosedRange<CGFloat> {
+        if let span { return span.top...span.bottom }
+        return 0...(CGFloat(count) * pitch)
     }
 
     static func contains(x: CGFloat, y: CGFloat, railWidth: CGFloat,
-                         railHeight: CGFloat, magnified: CGFloat) -> Bool {
+                         count: Int, pitch: CGFloat, magnified: CGFloat,
+                         span: RailLayout.Span? = nil) -> Bool {
         column(railWidth: railWidth, magnified: magnified).contains(x)
-            && vertical(railHeight: railHeight).contains(y)
+            && vertical(count: count, pitch: pitch, span: span).contains(y)
     }
 }

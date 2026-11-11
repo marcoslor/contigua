@@ -4509,14 +4509,41 @@ final class ConnectionController {
             case .hovering: state = "hovering"
             case .dragging: state = "dragging"
             }
+            // The hit column (DECK-34) and the letters' drawn column: the e2e
+            // proves the pointer's area against the letters, not the rail's
+            // frame, and that the strip right of the letters is the grid's.
+            let letters = RailHit.letters()
+            let lettersTop: CGFloat
+            let lettersBottom: CGFloat
+            if let frozen {
+                lettersTop = frozen.span.top
+                lettersBottom = frozen.span.bottom
+            } else {
+                let inset = (fit.pitch - RailLayout.letterBox) / 2
+                lettersTop = inset
+                lettersBottom = CGFloat(fit.count) * fit.pitch - inset
+            }
+            let hitGrowth: CGFloat = frozen != nil && !railReduceMotion ? model.room : 0
+            let hitColumn = RailHit.column(magnified: hitGrowth)
+            let hitVertical = RailHit.vertical(count: fit.count, pitch: fit.pitch,
+                                               span: frozen?.span)
             let line: [String: Any] = ["pitch": Double(fit.pitch),
                                        "reduceMotion": railReduceMotion,
                                        "railHeight": Double(height),
+                                       "railWidth": Double(DeckWide.railWidth),
                                        "containerHeight": Double(model.containerSize.height),
                                        "state": state,
                                        "y": Double(frozen?.y ?? -1),
                                        "spanTop": Double(frozen?.span.top ?? -1),
                                        "spanBottom": Double(frozen?.span.bottom ?? -1),
+                                       "letters": ["left": Double(letters.lowerBound),
+                                                   "right": Double(letters.upperBound),
+                                                   "top": Double(lettersTop),
+                                                   "bottom": Double(lettersBottom)],
+                                       "hit": ["left": Double(hitColumn.lowerBound),
+                                               "right": Double(hitColumn.upperBound),
+                                               "top": Double(hitVertical.lowerBound),
+                                               "bottom": Double(hitVertical.upperBound)],
                                        "tag": tag,
                                        "slots": items]
             guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),

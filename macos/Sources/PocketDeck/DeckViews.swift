@@ -1913,8 +1913,9 @@ private struct DeckIndexRail: View {
             model.track(dx: max(0, -request.x), y: request.y, reduceMotion: reduceMotion)
         case .down:
             guard RailHit.contains(x: request.x, y: request.y,
-                                   railWidth: Self.width, railHeight: height,
-                                   magnified: hitGrowth) else { return }
+                                   railWidth: Self.width, count: slots.count,
+                                   pitch: pitch, magnified: hitGrowth,
+                                   span: frozen?.span) else { return }
             model.press(y: request.y, reduceMotion: reduceMotion)
             pickIfNeeded(atY: request.y)
         case .drag:
