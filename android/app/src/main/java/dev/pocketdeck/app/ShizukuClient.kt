@@ -99,7 +99,7 @@ object ShizukuClient {
         // The sticky listener covers a binder that is already here; this covers
         // a listener registration that never landed (a Shizuku build that does
         // not replay) without binding on a timer.
-        if (machine.state == ShellState.NoBinder && hasBinder()) send(ShellEvent.BinderReceived)
+        if (machine.state is ShellState.NoBinder && hasBinder()) send(ShellEvent.BinderReceived)
     }
 
     /** Stop listening: the deck is not serving, so nothing may be bound. */
@@ -127,9 +127,9 @@ object ShizukuClient {
         when (machine.state) {
             // A caller asking now is the person's Try again or a component
             // that needs the service: a fresh bounded round.
-            is ShellState.Failed, is ShellState.WaitingRetry, ShellState.NeedsPermission ->
+            is ShellState.Failed, is ShellState.WaitingRetry, is ShellState.NeedsPermission ->
                 send(ShellEvent.RetryRequested)
-            ShellState.NoBinder ->
+            is ShellState.NoBinder ->
                 if (hasBinder()) send(ShellEvent.BinderReceived)
             is ShellState.Binding, ShellState.Ready -> Unit
         }
@@ -137,7 +137,7 @@ object ShizukuClient {
         // permission missing, the round is over) cannot answer these callers
         // later either, so they hear "no" instead of waiting for nothing.
         when (machine.state) {
-            ShellState.NoBinder, ShellState.NeedsPermission, is ShellState.Failed -> failPending()
+            is ShellState.NoBinder, is ShellState.NeedsPermission, is ShellState.Failed -> failPending()
             is ShellState.Binding, is ShellState.WaitingRetry, ShellState.Ready -> Unit
         }
     }
@@ -160,6 +160,7 @@ object ShizukuClient {
         when (action) {
             ShellAction.CheckPermission -> send(permissionEvent())
             ShellAction.BindService -> bind()
+            ShellAction.ProbeBinder -> Unit
             is ShellAction.ArmTimeout -> {
                 main.removeCallbacks(bindTimeout)
                 main.postDelayed(bindTimeout, action.ms)
@@ -177,6 +178,7 @@ object ShizukuClient {
                 Log.i(TAG, "shell service gave up: ${action.failure.describe()}") // log-ok: closed reason token
                 failPending()
             }
+            is ShellAction.RestartSelf -> Unit
         }
     }
 

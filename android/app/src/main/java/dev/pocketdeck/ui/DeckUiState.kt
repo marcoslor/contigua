@@ -21,6 +21,8 @@ enum class AttentionKind {
     PAIR_NOTIFY,
     /** R-8/D-4: the Mac app is another protocol version; update that side. */
     VERSION,
+    /** ISS-100: the shell binding keeps timing out while Shizuku itself answers. */
+    SHELL_NOT_ANSWERING,
     RETRY,
 }
 
@@ -46,6 +48,8 @@ data class StatusInput(
     val pairNotifyMissing: Boolean = false,
     /** R-8/D-4: the sentence naming the other app to update; null until refused. */
     val versionSentence: String? = null,
+    /** ISS-100: the binder pings but every bind round times out. */
+    val shellNotAnswering: Boolean = false,
 )
 
 /**

@@ -22,6 +22,7 @@ import dev.pocketdeck.app.DeckState
 import dev.pocketdeck.app.KeepRunningAction
 import dev.pocketdeck.app.Prefs
 import dev.pocketdeck.app.QrPairing
+import dev.pocketdeck.app.ShellFailure
 import dev.pocketdeck.app.ShizukuClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -183,6 +184,8 @@ class DeckViewModel(
                     notifyNoAccess = DeckState.notifyNoAccess,
                     pairNotifyMissing = DeckState.pending != null && !notificationsGranted,
                     versionSentence = DeckState.versionSentence,
+                    shellNotAnswering =
+                        running && DeckState.shellFailure?.token == ShellFailure.BIND_TIMEOUT,
                 ),
             ),
         )
@@ -321,6 +324,11 @@ class DeckViewModel(
             AttentionKind.VERSION -> refresh()
 
             AttentionKind.RETRY -> {
+                DeckForegroundService.start(ctx)
+                refresh()
+            }
+
+            AttentionKind.SHELL_NOT_ANSWERING -> {
                 DeckForegroundService.start(ctx)
                 refresh()
             }
