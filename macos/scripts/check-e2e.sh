@@ -15572,6 +15572,71 @@ check_deckstart() {
 
 # The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
 # steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
+# railpress_shots — the ISS-94 visual record on the run's own (quiet, virtual)
+# display: the press and the click's linger at 760 and 1000 wide, light and
+# dark. PD_RAILPRESS_SHOT_TAG names the build (feat/main); PD_RAILPRESS_SHOT_MODE
+# hover captures main's hover-driven emphasis instead (it has no press state).
+# The shots go to ~/dev/pocketdeck/.agent/railpress/shots/ and are judged by eye.
+railpress_shots() {
+    local out="$HOME/dev/pocketdeck/.agent/railpress/shots"
+    local tag="${PD_RAILPRESS_SHOT_TAG:-feat}"
+    local mode="${PD_RAILPRESS_SHOT_MODE:-press}"
+    mkdir -p "$out"
+    # The shared app is still running after `stop_app` (it only resets it), and
+    # a second instance would exit at once. End it and its phone, then serve
+    # the shots from a fresh phone with the same state and identity.
+    end_shared
+    FAKE_ARGS="--demo-apps 60 --rail-letters" start_fake || return 1
+    FAKE_ARGS=""
+    local appearance width id grid
+    for appearance in light dark; do
+        for width in 760 1000; do
+            rm -rf "$WORK-control"
+            mkdir -p "$WORK-control"
+            grid="$WORK/rail-shots-$appearance-$width.jsonl"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --debug-control "$WORK-control" --debug-deck-grid "$grid" \
+                --debug-deck-emphasis --debug-motion full --quit-after 150
+            if ! wait_until 40 events_have '"t":"apps.list"'; then
+                bad "RAILSHOTS $appearance $width: no apps.list"
+                stop_app
+                continue
+            fi
+            # Wait for the phone's own rendered icons, never a placeholder or
+            # a cover: the grid dump says when a cell's icon landed.
+            if ! wait_until 40 grep -q '"icon":"rendered"' "$grid"; then
+                bad "RAILSHOTS $appearance $width: no rendered icons"
+                stop_app
+                continue
+            fi
+            control deck-size "$width" 600 || bad "RAILSHOTS deck-size $width: $CONTROL_REPLY"
+            sleep 2
+            id="$(await_window "\$4 >= $((width - 1)) && \$4 <= $((width + 1))")" \
+                || { bad "RAILSHOTS no Deck window at $width"; stop_app; continue; }
+            if [ "$mode" = "hover" ]; then
+                control deckrailenter C || bad "RAILSHOTS enter C: $CONTROL_REPLY"
+                sleep 0.8
+                screencapture -x -o -l"$id" "$out/hover-$tag-$appearance-$width.png" \
+                    && say "shot: $out/hover-$tag-$appearance-$width.png"
+                control deckrailleave
+            else
+                control deckrailpress C || bad "RAILSHOTS press C: $CONTROL_REPLY"
+                sleep 0.5
+                screencapture -x -o -l"$id" "$out/pressed-$tag-$appearance-$width.png" \
+                    && say "shot: $out/pressed-$tag-$appearance-$width.png"
+                control deckrailup C || bad "RAILSHOTS up C: $CONTROL_REPLY"
+                sleep 0.2
+                control deckrailclick C 80 || bad "RAILSHOTS click C: $CONTROL_REPLY"
+                sleep 0.15
+                screencapture -x -o -l"$id" "$out/linger-$tag-$appearance-$width.png" \
+                    && say "shot: $out/linger-$tag-$appearance-$width.png"
+            fi
+            sleep 0.3
+            stop_app
+        done
+    done
+}
+
 # Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
 # shots are what proves rail-glyph.py before the boot; visible, the real pointer
 # comes onto the rail at M, sideways there, down to Z and #, and out again,
@@ -16327,6 +16392,10 @@ PY
     sleep 0.5
 
     stop_app
+    # The ISS-94 visual record (opt-in; the functional check never takes it).
+    if [ "${PD_RAILPRESS_SHOTS:-0}" = 1 ]; then
+        railpress_shots
+    fi
 }
 
 check_deck() {

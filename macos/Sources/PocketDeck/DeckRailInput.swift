@@ -42,7 +42,14 @@ enum DeckRailInput {
         controller.sendRailPointer(.hover, x: x, y: y)
         turn(0.08)
         controller.sendRailPointer(.down, x: x, y: y)
-        turn(max(hold, 0.02))
+        // The click's length is the person's: wait for the rail's own handler
+        // to take the down, then release at once. A fixed sleep here can
+        // stretch past the 300 ms click threshold on a loaded run loop and
+        // turn a click into a hold; `hold` is the longest wait for the press.
+        let deadline = Date().addingTimeInterval(max(hold, 0.05))
+        while !RailPointerModel.shared.state.isDragging, Date() < deadline {
+            turn(0.01)
+        }
         controller.sendRailPointer(.up, x: x, y: y)
         turn(0.1)
         return nil
