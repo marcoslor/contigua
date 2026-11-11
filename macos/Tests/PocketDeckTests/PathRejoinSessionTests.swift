@@ -122,4 +122,216 @@ final class PathRejoinSessionTests: XCTestCase {
         XCTAssertLessThanOrEqual(gap, 3.0,
                                  "an orphaned rejoin waited \(gap)s before the next dial (E-11c: 2.0 s timeout)")
     }
+
+    // MARK: A pairing session's own pin (ISS-95, PATH-51/PATH-52)
+
+    /// ISS-95: a session that pairs has, from `pair.ok`, the pin both ends
+    /// verified. Its path then dies inside the grace: the rejoin must dial
+    /// pinned and carry `hello{join}` so the phone attaches it to the same
+    /// session. Before the fix the session stayed in pairing mode for life, its
+    /// rejoin dial could not join, and the schedule stalled in flight until the
+    /// 30 s grace ended.
+    func testAPairingSessionRejoinsWithThePinPairingEstablished() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let brain = FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "phone-1")
+        brain.autoAllow = true
+        server.brain = brain
+        let lock = NSLock()
+        var plainHellos = 0
+        var joins: [String] = []
+        var founder: FakeServer.Connection?
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello" else { return }
+            if let join = message.string("join") {
+                lock.lock(); joins.append(join); let founderSession = founder?.sessionId; lock.unlock()
+                if join == founderSession {
+                    connection.sendJSON(Self.welcomeJSON(session: join))
+                }
+                return
+            }
+            // The plain hello starts the pairing prompt; the welcome follows
+            // the brain's pair.ok on Allow, so it is not answered here.
+            lock.lock(); plainHellos += 1; founder = connection; lock.unlock()
+        }
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: nil,
+                              clientId: "test-client", identity: macIdentity.identity,
+                              connectTimeout: 2, pairingTimeout: 30)
+        session.pairingPolicy = .allowed
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        XCTAssertTrue(brain.sawPairRequest, "the pairing flow never ran")
+        lock.lock()
+        let founderConnection = founder
+        lock.unlock()
+        guard let founderConnection else { return XCTFail("no founding connection") }
+
+        founderConnection.close()
+        XCTAssertTrue(waitFor(timeout: 8) {
+            lock.lock(); defer { lock.unlock() }
+            return joins.contains(founderConnection.sessionId)
+        }, "the pairing session's rejoin never reached the phone as a pinned join")
+        XCTAssertTrue(waitFor { session.state == .ready }, "the session did not stay live: \(session.state)")
+        lock.lock()
+        let plains = plainHellos
+        lock.unlock()
+        XCTAssertEqual(1, plains, "the rejoin started a new session (plain hellos \(plains))")
+        session.closeAndWait()
+    }
+
+    /// ISS-95: a session that never saw the phone's `pair.ok` has no verified
+    /// pin, so it must never send `hello{join}` (PATH-11: an unpinned peer gets
+    /// `busy`). Its refused rejoin still ends, and the ending must be reported:
+    /// the schedule dials again about a second later rather than staying in
+    /// flight. Before the fix the first dial was refused, the attempt vanished
+    /// silently and no second dial was made.
+    func testASessionWithoutAVerifiedPinNeverSendsTheJoinAndKeepsRedialing() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var founder: FakeServer.Connection?
+        var joinHellos = 0
+        var acceptsAfterClose = 0
+        var closed = false
+        server.onRawFrame = { _, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") != nil else { return }
+            lock.lock(); joinHellos += 1; lock.unlock()
+        }
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") == nil else { return }
+            // A phone that welcomes without pairing: this Mac has seen no
+            // pair.ok, so its pin is not verified and it may not join.
+            lock.lock(); founder = connection; lock.unlock()
+            connection.sendJSON(Self.welcomeJSON(session: connection.sessionId))
+        }
+        server.onAccepted = { _ in
+            lock.lock()
+            if closed { acceptsAfterClose += 1 }
+            lock.unlock()
+        }
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: nil,
+                              clientId: "test-client", identity: macIdentity.identity,
+                              connectTimeout: 2, pairingTimeout: 30)
+        session.pairingPolicy = .allowed
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        lock.lock()
+        let founderConnection = founder
+        closed = true
+        lock.unlock()
+        guard let founderConnection else { return XCTFail("no founding connection") }
+
+        founderConnection.close()
+        XCTAssertTrue(waitFor(timeout: 6) {
+            lock.lock(); defer { lock.unlock() }
+            return acceptsAfterClose >= 2
+        }, "the refused rejoin left the schedule in flight (dials after close: \(acceptsAfterClose))")
+        lock.lock()
+        let joins = joinHellos
+        lock.unlock()
+        XCTAssertEqual(0, joins, "a session with no verified pin sent hello{join}")
+        session.closeAndWait()
+    }
+
+    /// ISS-95: the pin adopted from pairing is verified, not assumed. A phone
+    /// that answers the rejoin with a different certificate is refused, so no
+    /// `hello{join}` ever reaches it; the ending is reported and the schedule
+    /// keeps dialing instead of stalling.
+    func testARejoinIsRefusedWhenThePhonePresentsADifferentCertificate() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let brain = FakeV2PhoneBrain(identity: phoneIdentity, deviceId: "phone-1")
+        brain.autoAllow = true
+        server.brain = brain
+        let lock = NSLock()
+        var founder: FakeServer.Connection?
+        var joins = 0
+        var acceptsAfterClose = 0
+        var closed = false
+        server.onRawFrame = { _, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") != nil else { return }
+            lock.lock(); joins += 1; lock.unlock()
+        }
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") == nil else { return }
+            lock.lock(); founder = connection; lock.unlock()
+        }
+        server.onAccepted = { _ in
+            lock.lock()
+            if closed { acceptsAfterClose += 1 }
+            lock.unlock()
+        }
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: nil,
+                              clientId: "test-client", identity: macIdentity.identity,
+                              connectTimeout: 2, pairingTimeout: 30)
+        session.pairingPolicy = .allowed
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        lock.lock()
+        let founderConnection = founder
+        lock.unlock()
+        guard let founderConnection else { return XCTFail("no founding connection") }
+
+        // The phone's identity changes under the Mac's pin (forgotten and
+        // re-paired elsewhere): the same address now answers as another phone.
+        server.swapPhoneIdentity(IdentityGeneratorV2.make(
+            deviceId: "phone-1", cn: "PocketDeck Phone").identity)
+        lock.lock(); closed = true; lock.unlock()
+        founderConnection.close()
+        XCTAssertTrue(waitFor(timeout: 6) {
+            lock.lock(); defer { lock.unlock() }
+            return acceptsAfterClose >= 2
+        }, "a refused rejoin left the schedule in flight (dials after close: \(acceptsAfterClose))")
+        lock.lock()
+        let joinsSeen = joins
+        lock.unlock()
+        XCTAssertEqual(0, joinsSeen, "a different certificate was allowed to join")
+        session.closeAndWait()
+    }
+
+    /// ISS-95: before the founding welcome there is no session to join. A
+    /// pairing connection that dies at its hello must send no `join`, and its
+    /// start must fail (the attempt's ending is reported to PathStart).
+    func testAPairingSessionThatDiesBeforeWelcomeNeverJoins() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var joins = 0
+        server.onRawFrame = { _, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") != nil else { return }
+            lock.lock(); joins += 1; lock.unlock()
+        }
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", message.string("join") == nil else { return }
+            connection.close()
+        }
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: nil,
+                              clientId: "test-client", identity: macIdentity.identity,
+                              connectTimeout: 2, pairingTimeout: 30)
+        session.pairingPolicy = .allowed
+        session.start()
+        XCTAssertTrue(waitFor(timeout: 8) {
+            if case .failed = session.state { return true }
+            return false
+        }, "the start never failed: \(session.state)")
+        lock.lock()
+        let joinsSeen = joins
+        lock.unlock()
+        XCTAssertEqual(0, joinsSeen, "a session that never welcomed sent hello{join}")
+        session.closeAndWait()
+    }
 }
