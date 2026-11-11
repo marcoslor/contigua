@@ -1,25 +1,43 @@
 // The rail's emphasis on All Apps (docs/specs/deck.md DECK-32): WHILE the
-// pointer is on a rail letter, that letter's tiles lift and the rest of All
-// Apps dims; the Open on this Mac and Pinned sections never take it. The
-// emphasis is state, not timing: the machine below is fed the letter a jump
-// would land on (an empty letter forwards to the next letter with apps), and
-// the views read its one letter. The fade's duration is part of the transition,
-// never a per-tile timer.
+// mouse button is down on a rail letter, that letter's tiles lift and the rest
+// of All Apps dims; the Open on this Mac and Pinned sections never take it. A
+// click (a press shorter than 300 ms that stayed on one letter) keeps the
+// emphasis for 1000 ms after the button goes up. Hover alone lights nothing on
+// the grid. The emphasis is state, not timing: the machine below is fed the
+// letter a jump would land on (an empty letter forwards to the next letter with
+// apps), and the views read its one letter. The fade's duration is part of the
+// transition, never a per-tile timer; the model owns the one clock and the one
+// linger timer.
 
 import SwiftUI
 
-/// DECK-32's one small machine: no emphasis, or one letter's. Every event is
-/// accepted or ignored here, and the transition names its own duration so the
-/// 0.12 s in, 0.2 s out (and Reduce Motion's zero) cannot drift apart.
+/// DECK-32's one small machine: no emphasis, a press's, or a click's linger.
+/// Every event is accepted or ignored here, and the transition names its own
+/// duration so the 0.12 s in, 0.2 s out (and Reduce Motion's zero) cannot
+/// drift apart. `since` is the press's time and `until` the linger's end, both
+/// on the model's one clock.
 enum RailEmphasis: Equatable {
     case none
-    case letter(String)
+    /// The button is down on `pointer`'s letter; `letter` is the one a jump
+    /// would land on (an empty pointer forwards). `moved` is set when the
+    /// pointer crossed to another letter, which makes the release a drag.
+    case pressed(letter: String, pointer: String, since: TimeInterval, moved: Bool)
+    /// A click's emphasis, kept until `until` (1000 ms after the release).
+    case lingering(letter: String, until: TimeInterval)
 
     enum Event: Equatable {
-        /// The pointer rests on a rail letter; `letter` is the one a jump
-        /// would land on, so the grid and the rail's accent agree.
-        case point(String)
-        case leave
+        /// The button went down on `pointer`'s letter; `letter` is the one a
+        /// jump would land on, so the grid and the rail's accent agree.
+        case press(pointer: String, landed: String, at: TimeInterval)
+        /// The button is still down and the pointer is on another letter.
+        case drag(pointer: String, landed: String, at: TimeInterval)
+        /// The button went up at `at`.
+        case release(at: TimeInterval)
+        /// The linger's clock reached `at`.
+        case expire(at: TimeInterval)
+        /// The emphasis ends at once (a person's scroll, search, a zoom
+        /// change, the page going offline).
+        case end
     }
 
     enum Action: Equatable {
@@ -37,12 +55,35 @@ enum RailEmphasis: Equatable {
 
     static let enterDuration: TimeInterval = 0.12
     static let leaveDuration: TimeInterval = 0.2
+    /// A press shorter than this, on one letter, is a click: its emphasis
+    /// lingers. At or past it, the release ends the emphasis at once.
+    static let clickThreshold: TimeInterval = 0.3
+    /// How long a click's emphasis stays after the button goes up.
+    static let lingerDuration: TimeInterval = 1.0
 
     /// The letter All Apps lights, when there is one.
     var letter: String? {
         switch self {
-        case .letter(let letter): letter
         case .none: nil
+        case .pressed(let letter, _, _, _), .lingering(let letter, _): letter
+        }
+    }
+
+    /// The rail letter actually under the pointer, when it differs from the
+    /// landing letter: an empty letter forwards to the next one with apps.
+    var pointer: String? {
+        switch self {
+        case .none: nil
+        case .pressed(_, let pointer, _, _): pointer
+        case .lingering: nil
+        }
+    }
+
+    /// The linger's end, while lingering.
+    var until: TimeInterval? {
+        switch self {
+        case .lingering(_, let until): until
+        case .none, .pressed: nil
         }
     }
 
@@ -51,24 +92,59 @@ enum RailEmphasis: Equatable {
         func enter() -> [Action] {
             [.animateIn(duration: reduceMotion ? 0 : enterDuration)]
         }
+        func leave() -> [Action] {
+            [.animateOut(duration: reduceMotion ? 0 : leaveDuration)]
+        }
         switch event {
-        case .point(let letter):
+        case .press(let pointer, let landed, let at):
             switch state {
             case .none:
-                return (.letter(letter), enter())
-            case .letter(let current):
-                // The pointer moving inside one letter changes nothing; moving
-                // to another cross-fades in over the entry duration, never
-                // through rest.
-                guard letter != current else { return (state, []) }
-                return (.letter(letter), enter())
+                return (.pressed(letter: landed, pointer: pointer, since: at, moved: false),
+                        enter())
+            case .lingering:
+                // A new press replaces the linger at once and discards its
+                // clock; the letter changes cross-fade, the same letter stays
+                // lit.
+                return (.pressed(letter: landed, pointer: pointer, since: at, moved: false),
+                        enter())
+            case .pressed(let letter, let current, let since, let moved):
+                // A second down is not a new press: the press's clock and its
+                // moved flag stay. Another letter still cross-fades.
+                guard pointer != current || landed != letter else { return (state, []) }
+                return (.pressed(letter: landed, pointer: pointer, since: since,
+                                 moved: moved || pointer != current),
+                        landed == letter ? [] : enter())
             }
-        case .leave:
+        case .drag(let pointer, let landed, _):
+            guard case .pressed(let letter, let current, let since, let moved) = state else {
+                // A drag without a press is the container's hover; it lights
+                // nothing.
+                return (state, [])
+            }
+            guard pointer != current || landed != letter else { return (state, []) }
+            return (.pressed(letter: landed, pointer: pointer, since: since,
+                             moved: moved || pointer != current),
+                    landed == letter ? [] : enter())
+        case .release(let at):
+            guard case .pressed(let letter, _, let since, let moved) = state else {
+                return (state, [])
+            }
+            // A press held 300 ms or longer, or one that crossed to another
+            // letter, ends at once; a click lingers without an animation.
+            if moved || at - since >= clickThreshold {
+                return (.none, leave())
+            }
+            return (.lingering(letter: letter, until: at + lingerDuration), [])
+        case .expire(let at):
+            guard case .lingering(let letter, let until) = state else {
+                return (state, [])
+            }
+            guard at >= until else { return (state, []) }
+            return (.none, leave())
+        case .end:
             switch state {
-            case .none:
-                return (.none, [])
-            case .letter:
-                return (.none, [.animateOut(duration: reduceMotion ? 0 : leaveDuration)])
+            case .none: return (.none, [])
+            case .pressed, .lingering: return (.none, leave())
             }
         }
     }
@@ -82,7 +158,7 @@ enum DeckCellEmphasis: Equatable {
     case lift
 
     /// The numbers DECK-32 and DESIGN.md name.
-    static let dimOpacity: Double = 0.5
+    static let dimOpacity: Double = 0.3
     static let liftScale: CGFloat = 1.08
 
     var opacity: Double { self == .dim ? Self.dimOpacity : 1 }
@@ -105,9 +181,10 @@ enum DeckCellEmphasis: Equatable {
     }
 }
 
-/// The rail's emphasis for the whole Deck, one value the tiles read. Only a
-/// pointer move to a different letter writes here; the grid's own body never
-/// reads it, so the layout is not rebuilt on each letter (the cells are).
+/// The rail's emphasis for the whole Deck, one value the tiles read. Only the
+/// rail's press, drag, release and the early ends write here; the grid's own
+/// body never reads it, so the layout is not rebuilt on each letter (the cells
+/// are). One clock and one linger timer live here, never in a view.
 @MainActor
 @Observable
 final class RailEmphasisModel {
@@ -117,22 +194,46 @@ final class RailEmphasisModel {
     /// The duration of the last transition, so every tile animates with the
     /// same one: 0.12 s in, 0.2 s out, zero under Reduce Motion.
     private(set) var duration: TimeInterval = 0
-    /// The last event, for the e2e probe (`point(B)` shows the empty letter
+    /// The last event, for the e2e probe (`press(B)` shows the empty letter
     /// that forwarded to its landing letter).
     private(set) var lastEvent = ""
     /// The rail letter actually under the pointer, when it differs from the
     /// landing letter: an empty letter forwards to the next one with apps.
     private(set) var lastPointer = ""
+    /// The one clock: a monotonic uptime, so a wall-clock change cannot make a
+    /// press look held. Tests replace it.
+    @ObservationIgnored var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// The linger's one timer; cancelled by every state change that is not a
+    /// linger, so a replaced press never expires the new one.
+    @ObservationIgnored private var lingerTimer: Timer?
+    @ObservationIgnored private var lingerReduceMotion = false
 
     init() {}
 
-    func point(pointer: String, landed: String, reduceMotion: Bool) {
+    func press(pointer: String, landed: String, reduceMotion: Bool) {
         lastPointer = pointer
-        send(.point(landed), reduceMotion: reduceMotion)
+        send(.press(pointer: pointer, landed: landed, at: now()),
+             reduceMotion: reduceMotion)
     }
 
-    func leave(reduceMotion: Bool) {
-        send(.leave, reduceMotion: reduceMotion)
+    func drag(pointer: String, landed: String, reduceMotion: Bool) {
+        lastPointer = pointer
+        send(.drag(pointer: pointer, landed: landed, at: now()),
+             reduceMotion: reduceMotion)
+    }
+
+    func release(reduceMotion: Bool) {
+        send(.release(at: now()), reduceMotion: reduceMotion)
+    }
+
+    /// The early end: a person's scroll, search, a zoom change, offline.
+    func end(reduceMotion: Bool) {
+        send(.end, reduceMotion: reduceMotion)
+    }
+
+    /// The linger's clock reached its end; the one timer calls this.
+    func expire() {
+        send(.expire(at: now()), reduceMotion: lingerReduceMotion)
     }
 
     /// What one All Apps tile draws. The view asks only for All Apps; the
@@ -146,12 +247,31 @@ final class RailEmphasisModel {
         lastEvent = event.name
         let (next, actions) = RailEmphasis.reduce(before, event: event,
                                                   reduceMotion: reduceMotion)
+        lingerReduceMotion = reduceMotion
         // An ignored event (the same letter, or leaving while at rest) is not
         // a transition: no animation and no log line.
         guard next != before else { return }
-        duration = actions.map(\.duration).first ?? 0
+        if let action = actions.first { duration = action.duration }
         state = next
         Log.app.debug("rail emphasis: \(before.name, privacy: .public) --\(event.name, privacy: .public)--> \(next.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
+        scheduleLinger()
+    }
+
+    /// One timer for the linger's deadline. Every state change replaces it, so
+    /// a press during the linger cancels the old clock, and a click's timer is
+    /// the only one alive.
+    private func scheduleLinger() {
+        lingerTimer?.invalidate()
+        lingerTimer = nil
+        guard let until = state.until else { return }
+        let delay = max(0, until - now())
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.expire()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        lingerTimer = timer
     }
 }
 
@@ -159,7 +279,9 @@ extension RailEmphasis {
     var name: String {
         switch self {
         case .none: "none"
-        case .letter(let letter): "letter(\(letter))"
+        case .pressed(let letter, let pointer, let since, let moved):
+            "pressed(\(letter)@\(since), pointer: \(pointer), moved: \(moved))"
+        case .lingering(let letter, let until): "lingering(\(letter) until \(until))"
         }
     }
 }
@@ -167,8 +289,13 @@ extension RailEmphasis {
 extension RailEmphasis.Event {
     var name: String {
         switch self {
-        case .point(let letter): "point(\(letter))"
-        case .leave: "leave"
+        case .press(let pointer, let landed, let at):
+            "press(\(pointer)->\(landed)@\(at))"
+        case .drag(let pointer, let landed, let at):
+            "drag(\(pointer)->\(landed)@\(at))"
+        case .release(let at): "release(\(at))"
+        case .expire(let at): "expire(\(at))"
+        case .end: "end"
         }
     }
 }
@@ -238,7 +365,8 @@ enum RailEmphasisProbe {
         let state: String
         switch model.state {
         case .none: state = "none"
-        case .letter: state = "letter"
+        case .pressed: state = "pressed"
+        case .lingering: state = "lingering"
         }
         let line: [String: Any] = [
             "state": state,

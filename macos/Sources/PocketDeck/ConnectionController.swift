@@ -4456,6 +4456,27 @@ final class ConnectionController {
                 return "deckrailhoverat needs X Y"
             }
             return DeckRailInput.hover(x: CGFloat(x), y: CGFloat(y), controller: self)
+        case "deckrailpress":
+            // [DECK-32] The button goes down and stays down on LETTER's band,
+            // so the e2e can read the pressed emphasis mid-press.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailpress needs A-Z or #"
+            }
+            return DeckRailInput.press(letter: letter, controller: self)
+        case "deckraildragto":
+            // [DECK-32] With the button still down, the pointer moves to
+            // LETTER's band: the drag's cross-fade.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckraildragto needs A-Z or #"
+            }
+            return DeckRailInput.drag(to: letter, controller: self)
+        case "deckrailup":
+            // [DECK-32] The button goes up at LETTER's band: a click's linger
+            // or a held press's end.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailup needs A-Z or #"
+            }
+            return DeckRailInput.up(letter: letter, controller: self)
         case "deckrailanchor":
             // The rail's top-left in Quartz screen coordinates, for a visible
             // run's real pointer at a place measured from the render.
