@@ -98,12 +98,12 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testFramedIsTheStreamInsideTheFrame() {
-        XCTAssertEqual(WindowStyle.framed.windowSize(stream: stream), CGSize(width: 911, height: 644))
+        XCTAssertEqual(WindowStyle.framed.windowSize(stream: stream), CGSize(width: 910, height: 643))
         let pad = WindowStyle.framed.insets(fullScreen: false)
-        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [38.5, 5.5, 5.5, 5.5])
-        XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 911, height: 644)), stream)
+        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [38, 5, 5, 5])
+        XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 910, height: 643)), stream)
         XCTAssertEqual(WindowStyle.framed.windowSize(stream: CGSize(width: 320, height: 240)),
-                       CGSize(width: 331, height: 284), "the minimum stream plus the frame")
+                       CGSize(width: 330, height: 283), "the minimum stream plus the frame")
     }
 
     func testFullScreenHasNoWindowedChromeInEitherStyle() {
@@ -116,7 +116,7 @@ final class WindowStyleSizeTests: XCTestCase {
     func testTheStreamSizeIsTheWindowSizeWithoutTheChrome() {
         XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 628)), stream)
         XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 900, height: 600)),
-                       CGSize(width: 889, height: 556))
+                       CGSize(width: 890, height: 557))
         XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 20)),
                        CGSize(width: 900, height: 0), "never negative")
     }
@@ -132,40 +132,40 @@ final class WindowStyleSizeTests: XCTestCase {
     func testSwitchingToFramedGrowsTheWindowAroundTheSameStream() {
         let current = NSRect(x: 200, y: 100, width: 900, height: 628)
         let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
-        XCTAssertEqual(framed, NSRect(x: 194.5, y: 94.5, width: 911, height: 644),
-                       "the stream keeps its place: 5.5 pt on the left and bottom, 38.5 above")
+        XCTAssertEqual(framed, NSRect(x: 195, y: 95, width: 910, height: 643),
+                       "the stream keeps its place: 5 pt on the left and bottom, 38 above")
     }
 
     func testSwitchingBackToImmersiveShrinksTheWindowAroundTheStream() {
-        let current = NSRect(x: 194.5, y: 94.5, width: 911, height: 644)
+        let current = NSRect(x: 195, y: 95, width: 910, height: 643)
         let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
         XCTAssertEqual(immersive, NSRect(x: 200, y: 100, width: 900, height: 628))
     }
 
     func testSwitchingNearTheTopMovesTheWindowDownJustEnough() {
-        // The window's top edge is at the screen's top: the frame's 10.5 pt
-        // of extra band above the stream has nowhere to go.
+        // The window's top edge is at the screen's top: the frame's 10 pt of
+        // extra band above the stream has nowhere to go.
         let current = NSRect(x: 200, y: screen.maxY - 628, width: 900, height: 628)
         let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY, "the frame fits under the screen's top edge")
-        XCTAssertEqual(framed.origin.y, screen.maxY - 644, "moved down by exactly what overflowed")
-        XCTAssertEqual(framed.size, CGSize(width: 911, height: 644))
+        XCTAssertEqual(framed.origin.y, screen.maxY - 643, "moved down by exactly what overflowed")
+        XCTAssertEqual(framed.size, CGSize(width: 910, height: 643))
     }
 
     func testSwitchingNearTheTopMovesItDownOnlyByWhatItOverflows() {
-        // The window starts 4 pt under the top; the frame's 10.5 pt above the
-        // stream leaves 6.5 pt to move down.
+        // The window starts 4 pt under the top; the frame's 10 pt above the
+        // stream leaves 6 pt to move down.
         let current = NSRect(x: 200, y: screen.maxY - 632, width: 900, height: 628)
         let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY)
-        XCTAssertEqual(framed.origin.y, screen.maxY - 644, "down by 6.5 pt, not a whole bar")
-        XCTAssertEqual(framed.height, 644)
-        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -6.5,
+        XCTAssertEqual(framed.origin.y, screen.maxY - 643, "down by 6 pt, not a whole bar")
+        XCTAssertEqual(framed.height, 643)
+        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -6,
                        "just the overflow, never more")
     }
 
     func testShrinkingKeepsTheStreamAndNeverMovesDown() {
-        let current = NSRect(x: 200, y: screen.maxY - 644, width: 911, height: 644)
+        let current = NSRect(x: 200, y: screen.maxY - 643, width: 910, height: 643)
         let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
         XCTAssertEqual(immersive.origin.y, current.origin.y + FramedChrome.sideInset,
                        "the stream stays where it is: the window sheds the frame's bottom")
@@ -226,16 +226,16 @@ final class RevealDelayTests: XCTestCase {
 }
 
 final class FramedGeometryTests: XCTestCase {
-    private let bounds = NSRect(x: 0, y: 0, width: 911, height: 644)
+    private let bounds = NSRect(x: 0, y: 0, width: 910, height: 643)
 
     func testTheHairlineIsHalfAPointAndTheRimOnePoint() {
         XCTAssertEqual(FramedChrome.hairline, 0.5)
         XCTAssertEqual(FramedChrome.rim, 1)
     }
 
-    func testTheOuterRadiusIs22AndTheContentRadiusIs11AndAHalf() {
-        XCTAssertEqual(FramedChrome.outerRadius, 22)
-        XCTAssertEqual(FramedChrome.contentRadius, 11.5)
+    func testTheOuterRadiusIs21AndTheContentRadiusIs12() {
+        XCTAssertEqual(FramedChrome.outerRadius, 21)
+        XCTAssertEqual(FramedChrome.contentRadius, 12)
         XCTAssertNotEqual(FramedChrome.contentRadius, FramedChrome.outerRadius - FramedChrome.sideInset,
                           "deliberately not concentric")
     }
@@ -247,18 +247,18 @@ final class FramedGeometryTests: XCTestCase {
     func testTheFrameInsetsAndLightSlotsAreTheMeasuredOnes() {
         XCTAssertEqual([FramedChrome.topInset, FramedChrome.sideInset,
                         FramedChrome.bottomInset, FramedChrome.sideInset],
-                       [38.5, 5.5, 5.5, 5.5])
-        XCTAssertEqual(FramedChrome.lightInset, 12.25, "the 14 pt lights centred in the 38.5 pt bar")
-        XCTAssertEqual(FramedChrome.controlsRightInset, 12.5, "the controls mirror the lights")
+                       [38, 5, 5, 5])
+        XCTAssertEqual(FramedChrome.lightInset, 12, "the 14 pt lights centred in the 38 pt bar")
+        XCTAssertEqual(FramedChrome.controlsRightInset, 12, "the controls mirror the lights")
     }
 
     func testTheContentRectIsTheStreamInsideTheFrame() {
         XCTAssertEqual(FramedChrome.contentRect(in: bounds),
-                       NSRect(x: 5.5, y: 5.5, width: 900, height: 600))
+                       NSRect(x: 5, y: 5, width: 900, height: 600))
     }
 
     func testTheOneToOneRectIsTheContentRectNotTheWindow() {
-        let content = WindowStyle.framed.streamSize(window: CGSize(width: 911, height: 644))
+        let content = WindowStyle.framed.streamSize(window: CGSize(width: 910, height: 643))
         XCTAssertEqual(content, CGSize(width: 900, height: 600))
         XCTAssertEqual(VideoSize.displayPixels(bounds: content, backingScale: 2,
                                                encoder: EncoderSpec(widthAlign: 2, heightAlign: 2,
@@ -270,9 +270,9 @@ final class FramedGeometryTests: XCTestCase {
     func testTheLiteralCornerIsRoundedOffAndTheEdgeIsThePicturesEdge() {
         XCTAssertTrue(FramedChrome.contentRect(in: bounds).contains(NSPoint(x: 6, y: 6)))
         XCTAssertFalse(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 6, y: 6)),
-                       "the rect's literal corner lies outside the 11.5 pt circle")
-        XCTAssertTrue(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 5.6, y: 300)))
-        XCTAssertFalse(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 5.4, y: 300)))
+                       "the rect's literal corner lies outside the 12 pt circle")
+        XCTAssertTrue(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 5.1, y: 300)))
+        XCTAssertFalse(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 4.9, y: 300)))
     }
 }
 
@@ -727,8 +727,8 @@ final class PhoneChromeTests: XCTestCase {
         let snapped = PhoneChrome.frame(proposed: proposed, phone: phone, style: .framed)
         let snappedStream = WindowStyle.framed.streamSize(window: snapped)
         XCTAssertEqual(snappedStream.width / snappedStream.height, phone.width / phone.height, accuracy: 0.005)
-        XCTAssertEqual(snapped.width - snappedStream.width, 11, accuracy: 0.5)
-        XCTAssertEqual(snapped.height - snappedStream.height, 44, accuracy: 0.5)
+        XCTAssertEqual(snapped.width - snappedStream.width, 10, accuracy: 0.5)
+        XCTAssertEqual(snapped.height - snappedStream.height, 43, accuracy: 0.5)
     }
 
 }

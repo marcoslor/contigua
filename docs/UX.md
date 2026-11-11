@@ -86,8 +86,8 @@ work is disabled, never hidden.
    Style), remembered per app: **Immersive** (default) is the stream plus a permanent 28 pt bar
    above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, with the app's name centred on
    that line (the phone's name in the Phone Mirror, and for a link or a handoff only once the phone reports an app), the traffic lights
-   on that line; **Framed** is the stream inside a real frame on all four sides — 38.5 pt above and 5.5 pt on the other three sides, a
-   22 pt window corner radius and an 11.5 pt picture radius, the system's dark or light material, a hairline and a lighter rim, the app's
+   on that line; **Framed** is the stream inside a real frame on all four sides — 38 pt above and 5 pt on the other three sides, a
+   21 pt window corner radius and a 12 pt picture radius, the system's dark or light material, a hairline and a lighter rim, the app's
    name in the system label colour, the traffic lights and our controls in the taller bar (the measured numbers and the reference are in
    DESIGN.md). Switching grows or shrinks the window by the difference between the two insets, the stream keeps its place. Native full
    screen is macOS's own View item (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the
