@@ -1,0 +1,59 @@
+name: Bug report
+description: Something does not work as it should
+labels: ["bug"]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ..."
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model and Android version
+      placeholder: "Pixel 8, Android 15"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 26.1"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Contigua commit or version
+      description: Phone app and Mac app, if they differ.
+    validations:
+      required: true
+  - type: input
+    id: shizuku
+    attributes:
+      label: How Shizuku was started
+      placeholder: "Wireless debugging on the phone, or adb from a computer"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Warning: remove personal data first. Logs must not contain text, names, file paths, contents or keys. If unsure, leave a line out."
+      render: text
+    validations:
+      required: false
