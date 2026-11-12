@@ -44,6 +44,14 @@ The commonest defect is a change that works only on the tested path. A report sa
 - **Reverse states:** every way in has a visible way out.
 - **Docs:** rewrite whatever the change makes inaccurate; don't append.
 
+## Versions and releases
+
+- **SemVer, 0.x.** One version covers the phone app and the Mac app, because they ship together. It is defined in `android/app/build.gradle.kts` (`versionName`, plus `versionCode`, which the maintainer bumps) and, for the Mac app, in `macos/scripts/bundle.sh` (the app and one more bundle it writes) and the `Info.plist` of each extension (`macos/Extensions/Controls`, `macos/Extensions/Files`). Change them together.
+- **The wire protocol has its own version,** an integer (`v` in `hello`), separate from the app version. It is documented in [PROTOCOL.md](PROTOCOL.md) under "Versioning".
+- **Trunk-based.** Short branches, a pull request into protected `main`.
+- **A release is a tag `vX.Y.Z`** with GitHub release notes.
+- **No backward compatibility during the alpha.** A wire or storage change may break older builds; it is still documented.
+
 ## Process
 
 - Work starts from an issue that states the goal and the checks that prove it.
