@@ -214,6 +214,8 @@ plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the phone and the Mac actually work |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | the wire protocol (single source of truth) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | status and what is next |
+| [SECURITY.md](SECURITY.md) | how to report a vulnerability privately, scope, supported versions |
+| [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | assets, trust boundaries, attackers, known limits, open questions |
 | [docs/UX.md](docs/UX.md) | interface conventions |
 | [docs/design/*.md](docs/design) | per-feature design notes (audio, dock, mirror, notify, drops, …) |
 | [tools/emulator/](tools/emulator/README.md) | boots the real server on a local emulator |
