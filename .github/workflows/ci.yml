@@ -1,0 +1,49 @@
+# Cheap gates for every change. Linux only: macOS minutes cost ten times as much
+# while the repository is private.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rules a script can see
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: scripts/check-rules.sh --base "$(git merge-base HEAD "$BASE" 2>/dev/null || echo HEAD~1)"
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: 8.21.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan of the new commits
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          base=$(git merge-base HEAD "$BASE" 2>/dev/null || echo HEAD~1)
+          ./gitleaks git --redact --log-opts="$base..HEAD" .
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tool unit tests
+        run: |
+          python3 -m unittest discover -s tools/fakephone -p 'test_*.py'
+          python3 -m unittest discover -s tools -p 'test_*.py'
