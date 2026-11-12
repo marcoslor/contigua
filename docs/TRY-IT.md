@@ -95,7 +95,7 @@ number seven times). You need USB debugging or Wireless debugging in there.
 ## 2. Clone
 
 ```bash
-git clone <repo-url> contigua
+git clone https://github.com/marcoslor/contigua.git contigua
 cd contigua
 ```
 
