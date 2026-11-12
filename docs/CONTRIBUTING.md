@@ -6,7 +6,7 @@ The rules every change follows are in [AGENTS.md](../AGENTS.md). This page is th
 
 - Android: JDK 17 and the Android SDK (platform 36, build-tools 36.0.0).
 - Mac: Swift 6.4 with the macOS 27 SDK, deployment target macOS 26.
-- Allowed dependencies: Android = Shizuku, androidx core/activity/lifecycle, Compose + Material 3 (BOM), `play-services-code-scanner`; macOS = system frameworks only; tools = Python 3.9 standard library plus ffmpeg and dns-sd.
+- Allowed dependencies: Android = Shizuku, androidx core/activity/lifecycle, Compose + Material 3 (BOM), `play-services-code-scanner`; macOS = system frameworks plus the Apple SwiftPM packages in `macos/Package.swift` (swift-nio, swift-nio-ssl, swift-certificates, swift-asn1, swift-collections); tools = Python 3.9 standard library plus ffmpeg and dns-sd.
 
 ## Test tiers, cheapest first
 
