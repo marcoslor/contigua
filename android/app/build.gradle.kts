@@ -16,7 +16,7 @@ android {
         // must be bumped on every install or the previously-bound service keeps
         // running instead of being replaced.
         versionCode = 149
-        versionName = "0.1.0"
+        versionName = rootProject.file("../VERSION").readText().trim()
     }
 
     buildFeatures {
