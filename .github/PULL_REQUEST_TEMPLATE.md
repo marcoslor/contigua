@@ -21,4 +21,4 @@ Say how each entry was handled; "n/a" counts, silence does not.
 - [ ] **Phones and states:** 0, 1 and 2+ phones; connecting, connected, offline, screen off or locked, unsupported (disabled with a reason).
 - [ ] **Reverse states:** every way in has a visible way out.
 - [ ] **Docs:** rewrite whatever the change makes inaccurate; don't append.
-- [ ] Commits are signed off (`git commit -s`).
+- [ ] First contribution: I agreed to the [CLA](../CLA.md) in a comment.

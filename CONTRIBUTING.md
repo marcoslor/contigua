@@ -25,17 +25,11 @@ Found something unrelated while working? Open an issue instead of folding the fi
 
 Welcome, under the same rules. You are the author and responsible for every line: you must understand it, have run the checks, and be able to answer review questions. Unreviewed generated output will be closed.
 
-## License and sign-off
+## License and contributor agreement
 
-Contigua is under FSL-1.1-ALv2 (see [LICENSE](LICENSE)). Contributions are accepted under the same license.
+Contigua is under FSL-1.1-ALv2 (see [LICENSE](LICENSE)).
 
-Every commit needs a Developer Certificate of Origin sign-off (<https://developercertificate.org>), which says you wrote it or have the right to submit it under this license. Add it with:
-
-```
-git commit -s
-```
-
-That appends `Signed-off-by: Your Name <you@example.com>`. Pull requests with unsigned commits are not merged.
+Before a first pull request is merged, you agree to the [contributor license agreement](CLA.md). You keep your copyright; the agreement lets the maintainer ship your contribution in every build of Contigua, including paid ones, and change the license later. You agree once, with a comment on the pull request.
 
 ## Where the detail is
 
