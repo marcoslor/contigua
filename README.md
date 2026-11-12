@@ -273,6 +273,11 @@ are in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 | [tools/emulator/](tools/emulator/README.md) | boots the real server on a local emulator |
 | [tools/fakephone/](tools/fakephone/README.md) | protocol-complete fake phone for e2e checks |
 
+## Support
+
+Contigua is built by one person. If it is useful to you, you can
+[buy me a coffee](https://buymeacoffee.com/marcoslor).
+
 ## License
 
 Source-available under the [Functional Source License 1.1, Apache 2.0 future license](LICENSE)
