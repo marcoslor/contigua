@@ -15,7 +15,7 @@ cd macos && ./scripts/install.sh && open /Applications/Contigua.app
 ```
 
 0. **Upgrading from a plaintext build? Pair once more.** Sessions are now TLS 1.3
-   with pinned keys (protocol v2), so the old plaintext pairing does not carry
+   with pinned keys, so the old plaintext pairing does not carry
    over: the first connection after the update asks for a fresh pair (the
    phone's "This Mac's certificate changed; pair again" or the Mac's "This
    phone's identity changed. Pair again."). Code and QR pairing both work;
