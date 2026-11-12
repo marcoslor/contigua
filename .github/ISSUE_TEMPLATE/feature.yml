@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a change or addition
+labels: ["feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do, or what is hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What should happen instead, and how would you know it works?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface
+      multiple: true
+      options:
+        - Phone
+        - Mac
+        - Protocol
+        - Tools
+    validations:
+      required: true
