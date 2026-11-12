@@ -1,17 +1,9 @@
 # Contigua
 
-Contigua runs Android apps in **native Mac windows** over your home network —
-one window per Android app, several at once, plus a phone-sized window that
-mirrors the phone's screen — **while the phone stays locked in your pocket**.
-No cables, no cloud: the phone runs a tiny server inside
-[Shizuku](https://shizuku.rikka.app/)'s shell process and streams video over a
-single TCP session to the Mac, which drives the apps with real touch, keyboard
-and audio in the other direction.
+Contigua runs Android apps in native Mac windows over your home network, with
+the phone staying locked.
 
-Screen recording is per-app virtual displays on the Android side and
-`AVSampleBufferDisplayLayer` on the Mac side, so these are real windows you can
-resize into any shape, not screen-capture videos — the app re-lays out to the
-window you give it.
+<!-- demo video goes here -->
 
 | Two apps in Mac windows (Clock in Immersive style, Settings in Framed style — both are the actual Android app) | The Deck: the phone's app grid on the Mac |
 |---|---|
@@ -21,7 +13,32 @@ window you give it.
 |---|---|
 | ![Phone mode](docs/images/phone_mode.png) | ![Pairing onboarding](docs/images/onboarding_4_pair_light.png) |
 
+> **Status: pre-release alpha. There are no binaries yet; build from source.**
+> The recipe in [docs/TRY-IT.md](docs/TRY-IT.md) needs no Apple Developer ID:
+> `macos/scripts/bundle.sh` signs the app and its Share, File Provider and
+> Control Center extensions ad-hoc (`codesign --sign -`). From such a build the
+> windows, input, audio, clipboard, links, share, drops, APK install, MCP and
+> the Finder location work; the Share and Finder extensions need a one-time
+> switch in System Settings › General › Login Items & Extensions
+> ([docs/design/files.md](docs/design/files.md)). The Control Center controls
+> do not appear yet (see Features below), and phone-as-camera needs a
+> Developer ID and is not in the main branch.
+
+Contigua runs a tiny server inside [Shizuku](https://shizuku.rikka.app/)'s
+shell process on the phone, with one virtual display per app window, and
+streams video over a single TCP session to the Mac. The Mac draws each stream
+in a real window with `AVSampleBufferDisplayLayer` and sends real touch,
+keyboard and scroll back, so you can resize a window into any shape and the
+app re-lays out to it. Audio comes from the phone to the Mac. No cables, no
+cloud.
+
 ## Features
+
+Everything in the first group is part of the source-build recipe. Several
+features are marked in [docs/ROADMAP.md](docs/ROADMAP.md) as built but still
+waiting for a hands-on check on a real Mac and phone.
+
+### Works from a source build
 
 **Windows and input**
 
@@ -40,22 +57,21 @@ window you give it.
 - **Open <App> on Mac (handoff)** — move the task in the phone's foreground onto
   the Mac (the card's row, the Phone menu, or ⌘⇧C): same app, a new window.
 - **Live Text** — View ▸ Live Text (⌘⇧T) freezes a window on its current frame:
-  select and copy text, use data detectors (links, numbers, dates), lift an
-  image subject, Visual Look Up, translate where macOS offers it. ⌘C without a
-  selection copies the whole frame, and the bar's `text.viewfinder` button drags
-  it out as a PNG. Input stays paused while the mode is on; Esc (or the shortcut
-  again) brings live video back.
+  select and copy text, use data detectors, lift an image subject, Visual Look
+  Up, translate where macOS offers it. ⌘C without a selection copies the
+  whole frame. Input stays paused while the mode is
+  on; Esc brings live video back ([docs/design/livetext.md](docs/design/livetext.md)).
 
-**Phone mode, audio**
+**Audio**
 
 - **Audio from the phone to the Mac** — with a window open, the phone's media
   and game audio plays on the Mac with a volume slider and mute in the menu
   bar; media stays silent on the phone's speaker. Capture follows the focused
   window's app where Android allows it and falls back to all-device audio.
   Added latency measured around 80–125 ms on the API 36 emulator
-  (docs/design/audio.md).
+  ([docs/design/audio.md](docs/design/audio.md)).
 
-**Clipboard, links, share, drag and drop, APK install**
+**Clipboard, links, share, drag and drop, APK install, files**
 
 - **Clipboard text, both ways** — copy on the phone, paste on the Mac and the
   other way round; clipboard **images** travel both ways too.
@@ -75,44 +91,12 @@ window you give it.
   you set yourself is never turned off. The menu bar toggles the phone's DND by
   hand, and a Shortcut can too.
 - **Phone files in Finder** — the phone's shared storage appears as a
-  **Contigua** location in Finder: browse, open and Quick Look files, copy
-  them out, and copy files in, edit, rename, move, make folders and delete.
-  Writes are verified on the phone and MediaStore is kept in step, so a new
-  photo shows up in the Gallery. While a folder has been open the phone keeps
-  watching it for ten minutes, and the app signals the domain's working set so
-  a change made on the phone shows up in Finder (within seconds in the test
-  VM, also after Finder closed the folder). A delete is **immediate** — the
-  phone has no Trash — and Finder says
-  so. Cached files stay readable while the phone is away, and edits made then
-  upload when it is back; when both sides changed a file, both copies are kept
-  (`name (from Mac).ext`). A copy onto a name the phone already has is refused,
-  never silently replaced. The first time, turn Contigua on in System
-  Settings › General › Login Items & Extensions (Settings › General has the
-  switch and the link).
-- **Control Center controls** (in progress, opt-in build: the controls do not yet appear in Control Center) —
-  Phone Do Not Disturb as a toggle, Ring Phone, a ringer-mode control and Open
-  Contigua, built as a small widget extension that reads a snapshot the app
-  writes and sends its actions over a private socket in the app's group. A
-  hotspot control is not included: at shell UID Android offers no way to toggle
-  the person's existing hotspot without replacing its configuration.
-
-**Notifications and Now Playing** (opt-in on both sides)
-
-- The phone's notifications appear in macOS Notification Center; clicking one
-  opens that app's window.
-- A notification's own buttons and a **Reply** field ride along on its banner;
-  clearing the banner clears it on the phone, and a phone-side removal clears
-  the banner. A chat's picture is on the banner too.
-- Android 16 **Live Updates** (a ride's ETA, a delivery, a timer) stay in the
-  menu bar's **Live on <phone>** section and update in place while they run.
-- **Muted apps** per phone drop those apps' notifications before they appear,
-  and a sign-in code gets a **Copy code** button that copies it concealed for
-  90 seconds.
-- Media on the phone shows up in **Now Playing** on the Mac with its
-  **artwork**, play/pause/next/previous, a **position bar** you can drag to
-  seek (plus 15-second skips), a **volume** slider for the phone's media
-  stream, and, when several apps are playing, the choice of which one the Mac
-  follows — even while the phone is locked and its screen is off.
+  **Contigua** location in Finder: browse, Quick Look, copy out, and copy in,
+  edit, rename, move, make folders and delete. A delete is immediate (the phone
+  has no Trash), and a copy onto an existing name is refused, never silently
+  replaced. Cached files stay readable while the phone is away. Turn Contigua
+  on once in System Settings › General › Login Items & Extensions. Conflict
+  handling, watching and verification: [docs/design/files.md](docs/design/files.md).
 
 **The Mac knows the phone**
 
@@ -131,6 +115,66 @@ window you give it.
   (`_contigua._tcp`), and direct connect by address. Pairing shows a
   six-digit code on both screens (numeric comparison) or exchanges a QR code;
   sessions are authenticated with keys created at pairing (docs/PROTOCOL.md).
+
+### Built but unproven on real hardware, or in progress
+
+**Notifications and Now Playing** (opt-in on both sides). ROADMAP items 8 and 9
+list the real-device proof as still open: the VM never showed a Contigua
+banner.
+
+- The phone's notifications appear in macOS Notification Center; clicking one
+  opens that app's window.
+- A notification's own buttons and a **Reply** field ride along on its banner;
+  clearing the banner clears it on the phone, and a phone-side removal clears
+  the banner. A chat's picture is on the banner too.
+- Android 16 **Live Updates** (a ride's ETA, a delivery, a timer) stay in the
+  menu bar's **Live on <phone>** section and update in place while they run.
+- **Muted apps** per phone drop those apps' notifications before they appear,
+  and a sign-in code gets a **Copy code** button that copies it concealed for
+  90 seconds.
+- Media on the phone shows up in **Now Playing** on the Mac with its
+  **artwork**, play/pause/next/previous, a **position bar** you can drag to
+  seek (plus 15-second skips), a **volume** slider for the phone's media
+  stream, and, when several apps are playing, the choice of which one the Mac
+  follows — even while the phone is locked and its screen is off.
+
+**Control Center controls** (in progress, opt-in build: the controls do not yet
+appear in Control Center) — Phone Do Not Disturb as a toggle, Ring Phone, a
+ringer-mode control and Open Contigua, built as a small widget extension. In the
+test VM an ad-hoc signed build never showed them in the gallery, and whether a
+signed build would is not known
+([docs/design/controls.md](docs/design/controls.md)). A hotspot control is not
+included: at shell UID Android offers no way to toggle the person's existing
+hotspot without replacing its configuration.
+
+**Phone as a Mac camera** is on the `feature/camera` branch, not in `main`; it
+needs a Developer ID (docs/ROADMAP.md item 7).
+
+## Compatibility and known limits
+
+Tested on:
+
+- Android 16 (API 36) emulator, driven by `tools/emulator/`.
+- A Samsung phone running One UI on Android 16.
+- macOS 26 or later (the deployment target in `macos/Package.swift`).
+
+Everything else is untested: other Android versions (the minimum is Android 11,
+API 30, but it has not been run), other phone makers and macOS releases before
+26. Shizuku must be installed and running on the phone.
+
+Known limits from [docs/TRY-IT.md](docs/TRY-IT.md):
+
+- On the Samsung build, the server powers the physical panel off while a window
+  streams. Pressing the power button hands the phone back to normal Android
+  behaviour until the screen has been off again.
+- Chrome stable is disabled for the user by the vendor on that phone; use
+  Chrome Dev from the app list.
+- After about 20 minutes with no stream, a dozing phone can stop answering mDNS;
+  wake its screen once and the Mac finds it again.
+- One Mac at a time; a second session gets "busy".
+- Windows larger than 2560 px of virtual display are scaled down, which lowers
+  the density.
+- The mouse's Forward button does nothing yet.
 
 ## Requirements
 
@@ -158,7 +202,8 @@ Every detail: [docs/TRY-IT.md](docs/TRY-IT.md).
 ## Privacy
 
 - **Nothing leaves your home network.** One TCP session, phone → Mac, over the
-  LAN. No accounts, no analytics, no logging anywhere.
+  LAN. No accounts, no analytics. Logs carry ids, counts, sizes, states, durations and
+  error codes only, never text, names, paths, contents or key material.
 - The session is **mutual TLS 1.3 with both certificates pinned at pairing**
   (docs/PROTOCOL.md, docs/design/e2ee.md): no plaintext phase, no account and
   no key material outside the two devices.
@@ -196,15 +241,22 @@ Settings › Automation shows this snippet with a Copy button (it adds
 claude mcp add contigua -- /Applications/Contigua.app/Contents/Helpers/contigua-mcp
 ```
 
-The agent gets 13 tools: phone status, list apps, open an app, list windows,
-screenshot, tap, long-press, swipe, type text, press a key, close a window,
-send a link, send a file.
+The agent gets 14 tools: phone status, list apps, open an app, list windows,
+screenshot, tap, long-press, swipe, type text, press a key, input probe (taps,
+then times how long the picture takes to change), close a window, send a link,
+send a file.
 
 ## Status
 
-Pre-release. Traffic is end-to-end encrypted: **mutual TLS 1.3 with the
-certificates pinned at pairing** (protocol v2). Details and the rest of the
-plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+Pre-release alpha. Traffic is end-to-end encrypted: **mutual TLS 1.3 with the
+certificates pinned at pairing** (wire protocol v4). Details and the rest of
+the plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## How this is built
+
+The code is written with AI coding agents under human review. The rules the
+agents follow are in [AGENTS.md](AGENTS.md); tests and the definition of done
+are in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## Docs
 
@@ -225,4 +277,4 @@ Source-available under the [Functional Source License 1.1, Apache 2.0 future lic
 (FSL-1.1-ALv2). You may use, change and share Contigua for any purpose except offering a
 product or service that competes with it. Each release becomes available under the Apache
 License 2.0 two years after it is published. Third-party dependencies (SwiftNIO,
-swift-crypto, …) keep their own licenses.
+SwiftNIO SSL, swift-certificates, swift-asn1, swift-collections) keep their own licenses.
