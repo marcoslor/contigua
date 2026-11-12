@@ -50,6 +50,7 @@ The commonest defect is a change that works only on the tested path. A report sa
 - **The wire protocol has its own version,** an integer (`v` in `hello`), separate from the app version. It is documented in [PROTOCOL.md](PROTOCOL.md) under "Versioning".
 - **Trunk-based.** Short branches, a pull request into protected `main`.
 - **A release is a tag `vX.Y.Z`** with GitHub release notes.
+- **Release APKs are signed by the maintainer.** `./gradlew :app:assembleRelease` signs when `CONTIGUA_KEYSTORE` (the keystore path), `CONTIGUA_KEYSTORE_PASSWORD`, `CONTIGUA_KEY_ALIAS` and `CONTIGUA_KEY_PASSWORD` are set, and leaves the APK unsigned otherwise. The keystore is never in the repository. A build from source is debug-signed, so it cannot update an installed release build; uninstall first.
 - **No backward compatibility during the alpha.** A wire or storage change may break older builds; it is still documented.
 
 ## Process
