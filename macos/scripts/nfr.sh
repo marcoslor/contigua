@@ -15,7 +15,10 @@ MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
 # .agent is gitignored, so a clone has no heavy.sh: then the steps run directly.
 # Elsewhere it lives in the main checkout (CONTIGUA_HEAVY overrides).
-MAIN="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)" || MAIN="$ROOT"
+_common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _common=""
+MAIN="$ROOT"
+[ -n "$_common" ] && MAIN="$(cd "$_common/.." 2>/dev/null && pwd)"
+[ -n "$MAIN" ] || MAIN="$ROOT"
 HEAVY="${CONTIGUA_HEAVY:-$MAIN/.agent/heavy.sh}"
 [ -x "$HEAVY" ] || HEAVY="$ROOT/.agent/heavy.sh"
 [ -x "$HEAVY" ] || HEAVY=""
