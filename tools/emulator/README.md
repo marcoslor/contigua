@@ -53,7 +53,7 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
 ```sh
 bash tools/emulator/preflight.sh              # no device: syntax, APK, manifest, budget
 bash tools/emulator/verify-batch.sh --check   # the rehearsal of the boot command
-~/dev/contigua/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
 `verify-batch.sh` boots once, pairs once, then runs six sections that do not
@@ -76,7 +76,7 @@ is already up and paired).
 
 ```sh
 bash tools/emulator/p1-proof.sh --check
-~/dev/contigua/.agent/heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
+timeout 2700 bash tools/emulator/p1-proof.sh
 ```
 
 `p1-proof.sh` is the direct-p1 item-7 proof of the **real** shell server (not

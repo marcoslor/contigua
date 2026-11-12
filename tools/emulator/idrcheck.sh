@@ -3,11 +3,11 @@
 # real shell server (emulator).
 #
 #   bash tools/emulator/idrcheck.sh --check    # rehearse: no device, no boot
-#   heavy.sh timeout 2700 bash tools/emulator/idrcheck.sh
+#   timeout 2700 bash tools/emulator/idrcheck.sh
 #
 # Build the APK and the e2e Mac app first, in their own heavy steps:
-#   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
-#   (cd macos && heavy.sh bash scripts/bundle.sh build/e2e/Contigua.app --variant e2e)
+#   cd <worktree>/android && ./gradlew :app:assembleDebug
+#   (cd macos && bash scripts/bundle.sh build/e2e/Contigua.app --variant e2e)
 #
 # What it does on the one boot:
 #   * boots the rig (tools/emulator/start.sh --no-build) and unlocks it;
@@ -95,7 +95,7 @@ PY
         [ -z "$stale" ] || cfail "the Mac app is older than $stale"
     fi
     APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-    [ -f "$APK" ] || cfail "no debug APK at $APK (build it in Docker)"
+    [ -f "$APK" ] || cfail "no debug APK at $APK (build it first)"
     if [ -f "$APK" ]; then
         stale="$(find "$ROOT/android/app/src/main" -type f -newer "$APK" -print -quit 2>/dev/null)"
         [ -z "$stale" ] || cfail "the APK is older than $stale (rebuild :app:assembleDebug)"

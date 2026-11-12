@@ -6,7 +6,7 @@
 #                                                    self-test, the debug
 #                                                    activities in the APK; no
 #                                                    device
-#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/share-display.sh \
+#   bash tools/emulator/share-display.sh \
 #       [--second-apk PATH]
 #
 # Run it from the worktree that holds the second APK: the first APK is
@@ -18,8 +18,8 @@
 # `:contigua` service (install -r leaves that uid-2000 process running the old
 # APK) and fails unless a new pid maps the new base.apk.
 #
-# The APK must already be built with the Docker K1
-# (`k1-docker.sh <android> :app:assembleDebug`); no JVM runs on the host.
+# The APK must already be built with K1
+# (`cd android && ./gradlew :app:assembleDebug`).
 #
 # The stand-in (debug builds only): ShareDebugActivity is a window's app with an
 # image paste field; its listener starts ShareDebugPickerActivity from the
@@ -103,7 +103,7 @@ check_mode() {
     || { section service-maps FAIL "service-maps.py --help"; return 1; }
   bash tools/emulator/preflight.sh || { section preflight FAIL "preflight"; return 1; }
   section preflight PASS "preflight (no device)"
-  [ -f "$APK" ] || { section apk FAIL "no $APK (build it with k1-docker)"; return 1; }
+  [ -f "$APK" ] || { section apk FAIL "no $APK (build it with gradlew)"; return 1; }
   local manifest
   manifest="$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null)"
   for activity in ShareDebugActivity ShareDebugSendActivity ShareDebugPickerActivity; do
@@ -128,7 +128,7 @@ trap 'kill_emulator' EXIT
   echo "commit $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo none)"
 } > "$LOG"
 
-[ -f "$APK" ] || die "no $APK (build it with k1-docker :app:assembleDebug)"
+[ -f "$APK" ] || die "no $APK (build it with gradlew :app:assembleDebug)"
 step "booting $SERIAL (one boot budget)"
 if ! bash tools/emulator/start.sh --no-build > "$OUT/share-display-start.log" 2>&1; then
   tail -5 "$OUT/share-display-start.log" | tee -a "$LOG"

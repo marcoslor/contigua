@@ -5,7 +5,7 @@
 # (ContentResolver.loadThumbnail), for the same camera-sized JPEGs.
 #
 #   tools/emulator/start.sh            # or let this script boot the AVD
-#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/mediathumb.sh
+#   bash tools/emulator/mediathumb.sh
 #
 # Pushes 200 generated 4032x3024 JPEGs, scans them, then runs Spike.java as
 # app_process at UID 2000 and prints p50/p95 for both APIs (cold and warm),

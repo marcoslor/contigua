@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The phone mirror's picture on the emulator rig: ONE boot (mirror-frames.py).
 #
-#   tools/emulator/mirror-frames.sh            the run (heavy.sh owns the lock and the boot budget)
+#   tools/emulator/mirror-frames.sh            the run (it runs under the boot budget)
 #   tools/emulator/mirror-frames.sh --check    a dry run: preflight, the analyser's self-test, the
 #                                              deckctl parser, the serial — no device, no boot
 #

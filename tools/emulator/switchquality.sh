@@ -4,7 +4,7 @@
 # screen, then the AWDL stall pattern at 20 Mbit/s (PATH-46).
 #
 #   bash tools/emulator/switchquality.sh --check     # rehearse: no device, no boot
-#   heavy.sh bash -c 'CONTIGUA_SERIAL=emulator-5584 bash tools/emulator/switchquality.sh'
+#   bash -c 'CONTIGUA_SERIAL=emulator-5584 bash tools/emulator/switchquality.sh'
 #
 # One boot runs both arms. The red arm sets
 # `debug.contigua.stream.quality=off` (the debug switch in StreamStrategy /
@@ -15,8 +15,8 @@
 # forward the Mac reaches, so `netshape.sh show` only proves the console is
 # unshaped (measured 2026-11-09; see .agent/switch/netem.md).
 #
-# Build the APK in Docker first:
-#   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
+# Build the APK first:
+#   cd <worktree>/android && ./gradlew :app:assembleDebug
 # and the e2e Mac bundle once per tree:
 #   bash macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
 set -uo pipefail
@@ -37,7 +37,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_SWITCHQUALITY_WORK:-/tmp/pd-switch-quality}"
-OUT="${PD_SWITCHQUALITY_OUT:-$HOME/dev/contigua/.agent/switch/quality}"
+OUT="${PD_SWITCHQUALITY_OUT:-$MAIN_REPO/.agent/switch/quality}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
@@ -186,7 +186,7 @@ if [ "$MODE" = check ]; then
         [ -z "$stale" ] || cfail "the Mac app is older than $stale"
     fi
     APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-    [ -f "$APK" ] || cfail "no debug APK at $APK (build it in Docker)"
+    [ -f "$APK" ] || cfail "no debug APK at $APK (build it first)"
     if [ -f "$APK" ]; then
         stale="$(find "$ROOT/android/app/src/main" -type f -newer "$APK" -print -quit 2>/dev/null)"
         [ -z "$stale" ] || cfail "the APK is older than $stale (rebuild :app:assembleDebug)"

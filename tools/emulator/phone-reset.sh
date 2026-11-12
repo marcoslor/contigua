@@ -5,7 +5,7 @@
 #
 # Runs against an already booted rig (tools/emulator/start.sh) and boots
 # nothing itself: the caller owns the emulator's whole life inside ONE
-# heavy.sh call. Every check prints PASS/FAIL with its measured value; the
+# call. Every check prints PASS/FAIL with its measured value; the
 # script exits non-zero when any check failed (the pre-fix run fails A and B).
 #
 # A  pair the fake Mac, then hold a live session
@@ -35,7 +35,7 @@ RUN="$(date +%s)"
 STATE="$CACHE_DIR/phone-reset-$RUN-a.json"
 CODE="$CACHE_DIR/phone-reset-code.txt"
 WATCH="$CACHE_DIR/phone-reset-watch.log"
-SHOTS="${CONTIGUA_SHOTS:-$HOME/dev/contigua/.agent/phone-reset/shots}"
+SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.agent/phone-reset/shots}"
 MAX_CLOSE_S=5
 
 dc() {

@@ -11,8 +11,8 @@
 #
 # The allow-list, never a deny-list: a registration is ours only when its path
 # is under one of
-#   ~/dev/pd-wt/                      other agents' worktrees
-#   ~/dev/contigua/                 the main checkout's test builds
+#   this repository's main checkout and each of its worktrees
+#                                     (`git worktree list`, read when this runs)
 #   /private/tmp/ and /tmp/           temp builds
 #   ~/.t3/                            harness scratch checkouts
 #   ~/Library/Application Support/Contigua-<profile>/   for a non-empty
@@ -49,10 +49,34 @@ trap 'rm -rf "$WORK"' EXIT
 
 HOME_DIR="${HOME:-/Users/$(id -un)}"
 
+# The checkouts this repository has: the main one and every worktree, as git
+# lists them. Nothing outside them (and the temp and harness folders below)
+# is ours. If git cannot say, only the checkout this script is in counts.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CHECKOUTS=()
+while IFS= read -r line; do
+    case "$line" in
+        "worktree "*) CHECKOUTS+=("${line#worktree }") ;;
+    esac
+done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null)
+[ "${#CHECKOUTS[@]}" -gt 0 ] || CHECKOUTS=("$ROOT")
+
+# in_checkout PATH — PATH is inside a listed checkout. An empty or "/" entry
+# never matches, so a bad listing cannot widen the list to the whole disk.
+in_checkout() {
+    local c
+    for c in "${CHECKOUTS[@]}"; do
+        case "$c" in ""|/) continue ;; esac
+        case "$1" in "${c%/}"/*) return 0 ;; esac
+    done
+    return 1
+}
+
 # is_test_path PATH — the allow-list above.
 is_test_path() {
+    in_checkout "$1" && return 0
     case "$1" in
-        "$HOME_DIR"/dev/pd-wt/*|"$HOME_DIR"/dev/contigua/*|/private/tmp/*|/tmp/*|"$HOME_DIR"/.t3/*)
+        /private/tmp/*|/tmp/*|"$HOME_DIR"/.t3/*)
             return 0 ;;
         "$HOME_DIR"/Library/Application\ Support/Contigua-*)
             local rest="${1#"$HOME_DIR"/Library/Application Support/Contigua-}"

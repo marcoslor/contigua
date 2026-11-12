@@ -2,7 +2,7 @@
 """The multiwin emulator check: several windows of one app on API 36.
 
 Runs against the rig `tools/emulator/start.sh` already booted and leaves it
-running: the caller owns the emulator's whole life in one heavy.sh call (see
+running: the caller owns the emulator's whole life in one call (see
 tools/emulator/multiwin.sh). Nothing here boots or kills anything.
 
 Proves, with a PASS/FAIL line each, the plane the JVM cannot show:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The combined device verification: ONE boot, six independent sections.
 #
-#   bash tools/emulator/verify-batch.sh            the run (heavy.sh owns the
+#   bash tools/emulator/verify-batch.sh            the run (it runs under the
 #                                                  lock and the boot budget; boot
 #                                                  + checks + kill are one call)
 #   bash tools/emulator/verify-batch.sh --check    the rehearsal: preflight plus

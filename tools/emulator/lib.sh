@@ -14,6 +14,10 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 
 EMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EMU_DIR/../.." && pwd)"
+# The main checkout: shared budgets and run output live in its (gitignored)
+# .agent/, also when this script runs from a worktree. A plain clone is its own.
+MAIN_REPO="$(cd "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)" || MAIN_REPO="$REPO_ROOT"
+[ -n "$MAIN_REPO" ] || MAIN_REPO="$REPO_ROOT"
 CACHE_DIR="$EMU_DIR/.cache"
 # Downloaded fixtures (Shizuku, the F-Droid test apps) are shared by every
 # checkout: a fresh worktree's empty .cache used to fetch them again after the

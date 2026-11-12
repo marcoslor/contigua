@@ -2,7 +2,7 @@
 # The person's power press while an app window streams — ONE boot. L1/L2:
 # docs/PROTOCOL.md "Phone screen", docs/NFR.md "No stale picture".
 #
-#   tools/emulator/power-lock.sh            the run (heavy.sh owns the lock and
+#   tools/emulator/power-lock.sh            the run (it runs under the lock and
 #                                           the boot budget)
 #   tools/emulator/power-lock.sh --no-boot  the same checks on a rig that is
 #                                           already up and paired

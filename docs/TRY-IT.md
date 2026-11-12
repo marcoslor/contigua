@@ -91,10 +91,10 @@ missing bit used to cost a whole boot. A boot is expensive, so rehearse it:
 `verify-batch.sh --check` runs preflight (syntax, the APK's versionCode and
 merged manifest, deckctl's subcommands, the boot budget) plus every section's
 dry run without starting anything. The boot itself is one call, because the
-emulator holds the machine-wide heavy lock for its whole life:
+emulator is up for the whole run:
 
 ```sh
-~/dev/contigua/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
 That boots once and runs media control, screen off/wake and the icon renders in
@@ -186,7 +186,7 @@ in the VM's console session, copies the log and the run's work dir back to
 `macos/build/vm-e2e/<check>/` (`run.log`, `work/`) and stops the VM; a list
 lands in `macos/build/vm-e2e/<check+check...>/checks/<check>/` (`run.log`,
 `work/`). The whole boot-run-stop is one heavy step: it takes the same
-machine-wide lock as a host run (`.agent/heavy.sh`), so it never runs beside
+machine-wide lock as a host run, so it never runs beside
 other heavy work. Before that it waits for room for the VM (at least 25% free
 memory, swap under 2 GB); a boot/stop cycle pushes swap up for a while, so
 back-to-back runs can wait a few minutes between them. The exit code is the

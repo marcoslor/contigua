@@ -2,8 +2,8 @@
 # An app window opened on a locked, screen-off phone — ONE boot (WIN-23,
 # docs/PROTOCOL.md "Phone screen" point 6, docs/NFR.md `first_frame_ms`).
 #
-#   bash tools/emulator/locked-open.sh            the run (heavy.sh owns the lock
-#                                                 and the boot budget)
+#   bash tools/emulator/locked-open.sh            the run (it runs
+#                                                 under the boot budget)
 #   bash tools/emulator/locked-open.sh --no-boot  the same checks on a rig that is
 #                                                 already up and paired
 #   bash tools/emulator/locked-open.sh --check    a dry run: syntax, preflight,

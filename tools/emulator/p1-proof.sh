@@ -28,8 +28,8 @@
 # verdict reads those events plus the proxies' delivered-byte counts. The table
 # goes to .agent/direct-link/p1-emulator.md.
 #
-# Run it as: heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
-# Rehearse it as the same heavy.sh line with --check (no device, no boot).
+# Run it as: timeout 2700 bash tools/emulator/p1-proof.sh
+# Rehearse it as the same line with --check (no device, no boot).
 #
 # --dry-run (or P1_DRY=1) runs the whole flow with no device, app or proxy:
 # every external step becomes a stub that returns at once and fills the log or

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nfr.sh — the non-functional gate (docs/NFR.md): the NFR K2 tests and the host
 # e2e check `nfr`, one after the other. Every step takes the machine-wide lock
-# (heavy.sh) and gives it back before the next; nothing runs beside a build,
+# (.agent/heavy.sh, when the checkout has one) and gives it back before the next; nothing runs beside a build,
 # an e2e run or another agent's heavy step.
 #
 #   macos/scripts/nfr.sh
@@ -13,13 +13,12 @@ set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
-# .agent is not part of a checkout's git tree; the lock lives in the main one.
-HEAVY="${CONTIGUA_HEAVY:-$HOME/dev/contigua/.agent/heavy.sh}"
+# .agent is gitignored, so a clone has no heavy.sh: then the steps run directly.
+# Elsewhere it lives in the main checkout (CONTIGUA_HEAVY overrides).
+MAIN="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)" || MAIN="$ROOT"
+HEAVY="${CONTIGUA_HEAVY:-$MAIN/.agent/heavy.sh}"
 [ -x "$HEAVY" ] || HEAVY="$ROOT/.agent/heavy.sh"
-if [ ! -x "$HEAVY" ]; then
-    echo "nfr: no heavy.sh at $HEAVY (set CONTIGUA_HEAVY)" >&2
-    exit 3
-fi
+[ -x "$HEAVY" ] || HEAVY=""
 PORT="${PD_E2E_PORT:-47980}"
 PROFILE="${PD_E2E_PROFILE:-nfr1}"
 
@@ -33,12 +32,12 @@ if ! bash "$ROOT/scripts/check-rules.sh"; then
 fi
 
 echo "== nfr: K2 ($K2_FILTER)"
-if ! "$HEAVY" bash -c "cd '$MACOS' && swift test --filter '$K2_FILTER'"; then
+if ! ${HEAVY:+"$HEAVY"} bash -c "cd '$MACOS' && swift test --filter '$K2_FILTER'"; then
     fail=1
 fi
 
 echo "== nfr: e2e ($PROFILE on port $PORT)"
-if ! "$HEAVY" bash -c "cd '$MACOS' && PD_E2E_PORT='$PORT' PD_E2E_PROFILE='$PROFILE' bash scripts/check-e2e.sh nfr"; then
+if ! ${HEAVY:+"$HEAVY"} bash -c "cd '$MACOS' && PD_E2E_PORT='$PORT' PD_E2E_PROFILE='$PROFILE' bash scripts/check-e2e.sh nfr"; then
     fail=1
 fi
 
