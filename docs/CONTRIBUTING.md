@@ -46,7 +46,7 @@ The commonest defect is a change that works only on the tested path. A report sa
 
 ## Versions and releases
 
-- **SemVer, 0.x.** One version covers the phone app and the Mac app, because they ship together. It is defined in `android/app/build.gradle.kts` (`versionName`, plus `versionCode`, which the maintainer bumps) and, for the Mac app, in `macos/scripts/bundle.sh` (the app and one more bundle it writes) and the `Info.plist` of each extension (`macos/Extensions/Controls`, `macos/Extensions/Files`). Change them together.
+- **SemVer, 0.x.** One version covers the phone app and the Mac app, because they ship together. It lives in one file, `VERSION` at the repo root. `android/app/build.gradle.kts` (`versionName`) and `macos/scripts/bundle.sh` (the app and its extensions) read it, so a bump is one edit. `bundle.sh` writes the value into each bundled `Info.plist`; the checked-in extension plists keep a plain `0.1.0` that is only a default. The Android `versionCode` is separate and the maintainer bumps it.
 - **The wire protocol has its own version,** an integer (`v` in `hello`), separate from the app version. It is documented in [PROTOCOL.md](PROTOCOL.md) under "Versioning".
 - **Trunk-based.** Short branches, a pull request into protected `main`.
 - **A release is a tag `vX.Y.Z`** with GitHub release notes.
