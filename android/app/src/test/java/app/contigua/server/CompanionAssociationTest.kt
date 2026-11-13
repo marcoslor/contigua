@@ -34,6 +34,21 @@ class CompanionAssociationTest {
     }
 
     @Test
+    fun `PHONE-24 One UI's association records are read`() {
+        // The shape `cmd companiondevice list 0` prints on One UI (Android 17),
+        // with the names left out.
+        val out = """
+            Association{mId=4, mUserId=0, mPackageName='com.example.tv', mDeviceMacAddress=52:dc:44:15:7b:11, mDeviceProfile='null', mSelfManaged=false, mDeviceId=null}
+
+            Association{mId=25, mUserId=0, mPackageName='com.android.shell', mDeviceMacAddress=fa:ce:fe:ed:f0:18, mDeviceProfile='android.app.role.COMPANION_DEVICE_APP_STREAMING', mSelfManaged=true, mDeviceId=null}
+
+            Association{mId=26, mUserId=0, mPackageName='com.android.shell', mDeviceMacAddress=$address, mDeviceProfile='android.app.role.COMPANION_DEVICE_APP_STREAMING', mSelfManaged=true, mDeviceId=null, mExtraPermissions=[]}
+        """.trimIndent()
+        assertEquals(26, CompanionAssociation.find(out))
+        assertNull(CompanionAssociation.find(out.lines().filterNot { "mId=26" in it }.joinToString("\n")))
+    }
+
+    @Test
     fun `PHONE-24 another package's or another address's association is never ours`() {
         val out = """
             com.example.streamer $address 12
@@ -113,6 +128,17 @@ class CompanionAssociationTest {
         listed = "com.android.shell $address 26"
         assertNull(shell.ensure())
         assertFalse(ran.any { it[2] == "associate" })
+    }
+
+    @Test
+    fun `PHONE-24 our address in a list it cannot read is never created again`() {
+        val calls = ArrayList<List<String>>()
+        val logs = ArrayList<String>()
+        val shell = ShellAssociations(0, { argv -> calls.add(argv); CommandResult(0, "<$address unknown shape>") }, { logs.add(it) })
+
+        assertNull(shell.ensure())
+        assertTrue(calls.none { "associate" in it })
+        assertEquals(listOf("association: listed but unreadable"), logs)
     }
 
     @Test

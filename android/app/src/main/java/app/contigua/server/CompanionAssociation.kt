@@ -35,21 +35,24 @@ internal object CompanionAssociation {
     fun disassociateArgv(user: Int): List<String> =
         listOf("cmd", "companiondevice", "disassociate", user.toString(), PACKAGE, ADDRESS)
 
-    private val idField = Regex("""\bid\s*=\s*(\d+)""")
+    /** `id=31` or One UI's `mId=26`, never `mUserId=0`. */
+    private val idField = Regex("""(?<![A-Za-z])m?[iI]d\s*=\s*(\d+)""")
     private val number = Regex("""^\d+$""")
 
     /**
      * The id of the shell's association with [ADDRESS] in `cmd companiondevice
      * list` output, or null. AOSP prints `<package> <address> <id>` per line;
-     * a build that prints `id=<n>` fields is read too. A line must name both
-     * the shell package and the address as whole tokens.
+     * a build that prints `id=<n>` fields, or One UI's
+     * `Association{mId=26, …, mPackageName='com.android.shell',
+     * mDeviceMacAddress=…}`, is read too. A line must name both the shell
+     * package and the address as whole tokens (quotes stripped).
      */
     fun find(listOutput: String): Int? {
         for (raw in listOutput.lineSequence()) {
             val line = raw.trim()
             if (line.isEmpty()) continue
             val tokens = line.split(Regex("""[\s,;{}\[\]]+""")).filter { it.isNotEmpty() }
-            val values = tokens.map { it.substringAfter('=') }
+            val values = tokens.map { it.substringAfter('=').trim('\'', '"') }
             if (values.none { it == PACKAGE }) continue
             if (values.none { it.equals(ADDRESS, ignoreCase = true) }) continue
             idField.find(line)?.let { return it.groupValues[1].toIntOrNull() }
@@ -81,6 +84,12 @@ internal class ShellAssociations(
         CompanionAssociation.find(before)?.let { id ->
             log("association: found id=$id")
             return id
+        }
+        // Our address is listed but its record could not be read: a list
+        // format this parser does not know. Never make a second one.
+        if (before.contains(CompanionAssociation.ADDRESS, ignoreCase = true)) {
+            log("association: listed but unreadable")
+            return null
         }
         val made = run(CompanionAssociation.associateArgv(user))
         if (made.exit != 0) {
