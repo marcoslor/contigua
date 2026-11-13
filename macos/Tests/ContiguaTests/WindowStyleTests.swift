@@ -77,15 +77,20 @@ final class WindowStyleStorageTests: XCTestCase {
 
 final class ChromeConfigTests: XCTestCase {
     /// Framed and Immersive draw their own chrome under a hidden, clear title
-    /// bar and place the lights; Compact is the system's own title bar (WIN-7).
-    func testWindowedFramedAndImmersiveOwnTheLightsAndCompactIsTheSystems() {
+    /// bar and place the lights. Compact's band is the mirrored stream under
+    /// AppKit's transparent title bar: AppKit's own lights, our toned title
+    /// over the band instead of the system's (WIN-7, WIN-69).
+    func testWindowedFramedAndImmersiveOwnTheLightsAndCompactWearsAppKitsOverItsBand() {
         for style in [WindowStyle.framed, .immersive] {
             let config = ChromeConfig.forState(style: style, fullScreen: false)
             XCTAssertFalse(config.titleVisible, "\(style)")
             XCTAssertTrue(config.titlebarTransparent, "\(style)")
             XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
         }
-        XCTAssertEqual(ChromeConfig.forState(style: .compact, fullScreen: false), .system)
+        let compact = ChromeConfig.forState(style: .compact, fullScreen: false)
+        XCTAssertFalse(compact.titleVisible, "the band's title is ours, in the band's tone")
+        XCTAssertTrue(compact.titlebarTransparent, "the band shows through AppKit's title bar")
+        XCTAssertTrue(compact.lightsManagedByAppKit, "AppKit's own lights, where AppKit puts them")
     }
 
     /// Full screen looks the same in every style: the window's own native
@@ -107,21 +112,23 @@ final class WindowStyleSizeTests: XCTestCase {
     /// its title bar: the system's height on this macOS, never a number of ours.
     private var compactHeight: CGFloat {
         NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: stream),
-                           styleMask: WindowStyle.compact.styleMask).height
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable]).height
     }
     private var titleBar: CGFloat { compactHeight - stream.height }
 
-    /// WIN-4: Compact is a standard titled window; the title bar is AppKit's,
-    /// outside the content view, which is exactly the stream.
-    func testCompactIsTheStreamPlusTheSystemTitleBar() {
+    /// WIN-4, WIN-67: Compact's band above the stream is exactly AppKit's
+    /// title-bar height, never a number of ours: the content view spans the
+    /// window under the transparent title bar and the stream sits below it.
+    func testCompactIsTheStreamUnderABandAsTallAsAppKitsTitleBar() {
         XCTAssertGreaterThan(titleBar, 0)
         XCTAssertEqual(WindowStyle.compact.windowSize(stream: stream), CGSize(width: 900, height: compactHeight))
-        XCTAssertEqual(WindowStyle.compact.contentSize(stream: stream), stream, "the content view is the stream")
+        XCTAssertEqual(WindowStyle.compact.contentSize(stream: stream), CGSize(width: 900, height: compactHeight),
+                       "the content view is the whole window: the band is ours to draw")
         let pad = WindowStyle.compact.insets(fullScreen: false)
-        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [0, 0, 0, 0], "no chrome of ours")
-        XCTAssertFalse(WindowStyle.compact.styleMask.contains(.fullSizeContentView))
-        XCTAssertTrue(WindowStyle.framed.styleMask.contains(.fullSizeContentView))
-        XCTAssertTrue(WindowStyle.immersive.styleMask.contains(.fullSizeContentView))
+        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [titleBar, 0, 0, 0])
+        for style in WindowStyle.allCases {
+            XCTAssertTrue(style.styleMask.contains(.fullSizeContentView), "\(style)")
+        }
     }
 
     func testFramedIsTheStreamInsideTheFrame() {
@@ -515,7 +522,7 @@ final class PhoneChromeTests: XCTestCase {
     /// phone's aspect fit inside the visible frame, never to the whole display.
     func testThePhoneZoomIsTheAspectFitInsideTheVisibleFrame() {
         let visible = NSRect(x: 100, y: 50, width: 1440, height: 900)
-        let bar = WindowStyle.compact.frameInsets().top
+        let bar = WindowStyle.compact.insets(fullScreen: false).top
         let portrait = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
                                              style: .compact, visible: visible)
         XCTAssertEqual(portrait.height, visible.height, accuracy: 1)

@@ -240,10 +240,10 @@ final class HoverInputTests: XCTestCase {
             if case .hover(let event) = command { sent.hovers.append(event) }
         }
 
-        // Mid-video: enter. Then AppKit's title bar above the stream: exit.
+        // Mid-video: enter. Then the band above the stream: exit.
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
         XCTAssertEqual(sent.actions, [.enter])
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: controller.videoView.frame.height + 10))
+        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: controller.chrome.contentRect.maxY + 10))
         XCTAssertEqual(sent.actions, [.enter, .exit])
     }
 
@@ -271,11 +271,11 @@ final class HoverInputTests: XCTestCase {
 
     // MARK: The band is never phone input (WIN-61)
 
-    /// Compact's band is AppKit's title bar, above the content view: moving
-    /// the pointer there ends the phone's hover and sends nothing while it
-    /// stays, and the stream's top row under it is still the phone's (ISS-49,
-    /// WIN-61).
-    func testHoverIntoTheCompactTitleBarLeavesThePhoneAndStaysOut() throws {
+    /// Compact's band is the window's, under AppKit's transparent title bar:
+    /// moving the pointer there ends the phone's hover and sends nothing while
+    /// it stays, and the stream's top row under it is still the phone's
+    /// (ISS-49, WIN-61).
+    func testHoverIntoTheCompactBandLeavesThePhoneAndStaysOut() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -284,12 +284,12 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(controller.style, .compact)
         window.orderFront(nil)
         controller.noteFirstFrame()
-        try assertTheTitleBarIsNotThePhone(controller, window: window)
+        try assertTheBandIsNotThePhone(controller, window: window)
     }
 
-    /// The Phone Mirror wears the same Compact window: its title bar belongs
-    /// to the window, not to the phone's own screen.
-    func testHoverIntoThePhoneMirrorsCompactTitleBarLeavesThePhone() throws {
+    /// The Phone Mirror wears the same Compact window: its band belongs to
+    /// the window, not to the phone's own screen.
+    func testHoverIntoThePhoneMirrorsCompactBandLeavesThePhone() throws {
         let manager = makeManager()
         manager.styleStore.set(.compact, forKey: WindowStyleStore.phoneKey)
         let controller = PhoneWindowController(stream: 1, phone: nil, manager: manager)
@@ -298,10 +298,10 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(controller.style, .compact)
         window.orderFront(nil)
         controller.noteFirstFrame()
-        try assertTheTitleBarIsNotThePhone(controller, window: window)
+        try assertTheBandIsNotThePhone(controller, window: window)
     }
 
-    private func assertTheTitleBarIsNotThePhone(_ controller: StreamWindowController, window: NSWindow,
+    private func assertTheBandIsNotThePhone(_ controller: StreamWindowController, window: NSWindow,
                                                 file: StaticString = #filePath, line: UInt = #line) throws {
         var sent = Sent()
         let mapper = try XCTUnwrap(controller.videoView.inputMapper)
@@ -309,17 +309,17 @@ final class HoverInputTests: XCTestCase {
         mapper.send = { command in
             if case .hover(let event) = command { sent.hovers.append(event) }
         }
-        let contentTop = controller.chrome.frame.maxY
-        XCTAssertLessThan(contentTop, window.frame.height, "a title bar above the content", file: file, line: line)
+        let contentTop = controller.chrome.contentRect.maxY
+        XCTAssertLessThan(contentTop, window.frame.height, "a band above the stream", file: file, line: line)
         let x = controller.chrome.bounds.midX
 
         controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: contentTop - 1))
         XCTAssertEqual(sent.actions, [.enter], "the stream's top row is the phone's", file: file, line: line)
         for y in [contentTop + 1, window.frame.height - 1] {
             controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: y))
-            XCTAssertEqual(sent.actions, [.enter, .exit], "hover at y=\(y) is in the title bar", file: file, line: line)
+            XCTAssertEqual(sent.actions, [.enter, .exit], "hover at y=\(y) is in the band", file: file, line: line)
             controller.pointerMoved(toWindowPoint: CGPoint(x: x + 40, y: y))
-            XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the title bar", file: file, line: line)
+            XCTAssertEqual(sent.actions, [.enter, .exit], "no hover move while over the band", file: file, line: line)
         }
         controller.pointerMoved(toWindowPoint: CGPoint(x: x, y: contentTop - 20))
         XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "below it the hover resumes", file: file, line: line)

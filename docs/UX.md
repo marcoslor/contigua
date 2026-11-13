@@ -87,8 +87,8 @@ work is disabled, never hidden.
    Framed → Compact → Immersive), remembered per app: **Framed** (default) is the stream inside a real frame on all four sides — 38 pt
    above and 5 pt on the other three sides, a 21 pt window corner radius and a 12 pt picture radius, the system's dark or light material, a
    hairline and a lighter rim, the app's name and phone in the system label colour, the traffic lights and our controls in the taller bar
-   (the measured numbers and the reference are in DESIGN.md); **Compact** is a standard window: the stream under the
-   system's own title bar, solid and in the system's appearance, with the traffic lights and the window's title "<App> (<phone>)" (the
+   (the measured numbers and the reference are in DESIGN.md); **Compact** is the stream under a slim band as tall as the system's title bar: the stream's own top edge mirrored and
+   blurred, never see-through, with the system's traffic lights, the title "<App> (<phone>)" in white or black ink by the band behind it (the
    phone's name alone in the Phone Mirror, and for a link or a handoff only once the phone reports an app), and our controls at its right
    end; **Immersive** is the old borderless style — the window is exactly the stream, no
    bar and no borders, and the traffic lights and our controls live on a clear-glass pill at the stream's top-left that a 350 ms rest in a

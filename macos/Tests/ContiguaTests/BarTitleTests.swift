@@ -185,7 +185,7 @@ final class FramedTitleViewTests: XCTestCase {
         chrome.framedTitleView.layoutSubtreeIfNeeded()
     }
 
-    func testTheTitleShowsOnlyInFramedAndOnlyWithAName() {
+    func testTheTitleShowsInFramedAndCompactAndOnlyWithAName() {
         let (window, chrome) = makeChrome()
         defer { window.close() }
         chrome.setBarTitle("Maps")
@@ -195,8 +195,8 @@ final class FramedTitleViewTests: XCTestCase {
 
         chrome.setStyle(.compact)
         chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible, "Compact's title is the system's, in AppKit's title bar")
-        XCTAssertNil(chrome.barTitleRect)
+        XCTAssertTrue(chrome.barTitleVisible, "Compact's band draws it, in the band's tone")
+        XCTAssertGreaterThanOrEqual(chrome.barTitleRect?.minY ?? 0, chrome.contentRect.maxY, "in the band")
         chrome.setStyle(.immersive)
         chrome.layoutChrome()
         XCTAssertFalse(chrome.barTitleVisible, "Immersive has no bar")
@@ -208,6 +208,9 @@ final class FramedTitleViewTests: XCTestCase {
         chrome.layoutChrome()
         chrome.framedTitleView.layoutSubtreeIfNeeded()
         XCTAssertFalse(chrome.barTitleVisible, "a window with no name has no title")
+        chrome.setStyle(.compact)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTitleVisible, "nor in Compact's band")
     }
 
     func testTheTitleDrawsThePhoneSuffixAndDropsItFirst() {
@@ -255,5 +258,80 @@ final class FramedTitleViewTests: XCTestCase {
         XCTAssertFalse(title.titleIsHidden)
         XCTAssertEqual(title.titleLineBreakMode, .byTruncatingMiddle,
                        "a name wider than the bar truncates in the middle")
+    }
+}
+
+/// Compact's band tone (WIN-69, #147): the title's ink from the band's mean,
+/// with a margin either side of the even point so it does not flip on noise,
+/// and the glass's tint the opposite way.
+final class BandToneTests: XCTestCase {
+    func testTheSampleIsTheBandsColourAndItsRelativeLuminance() {
+        XCTAssertEqual(BandSample(red: 1, green: 1, blue: 1).luminance, 1, accuracy: 0.0001)
+        XCTAssertEqual(BandSample(red: 0, green: 0, blue: 0).luminance, 0, accuracy: 0.0001)
+        XCTAssertEqual(BandSample(red: 0.5, green: 0.5, blue: 0.5).luminance, 0.214, accuracy: 0.001,
+                       "WCAG: the sRGB channels are linearised first")
+        let colour = BandSample(red: 0.2, green: 0.4, blue: 0.6).color.usingColorSpace(.sRGB)
+        XCTAssertEqual(colour?.alphaComponent, 1, "the band's colour is opaque")
+        XCTAssertEqual(colour?.greenComponent ?? 0, 0.4, accuracy: 0.001)
+    }
+
+    func testTheFirstToneIsTheInkWithTheBetterContrast() {
+        XCTAssertEqual(BarTone.next(nil, luminance: 0.05), .light)
+        XCTAssertEqual(BarTone.next(nil, luminance: 0.6), .dark)
+        // White and black ink have the same contrast at L ≈ 0.179.
+        XCTAssertEqual(BarTone.next(nil, luminance: 0.17), .light)
+        XCTAssertEqual(BarTone.next(nil, luminance: 0.19), .dark)
+    }
+
+    func testAToneHoldsUntilTheBandIsClearlyTheOtherSide() {
+        XCTAssertEqual(BarTone.next(.light, luminance: 0.22), .light, "inside the margin: holds")
+        XCTAssertEqual(BarTone.next(.light, luminance: 0.30), .dark)
+        XCTAssertEqual(BarTone.next(.dark, luminance: 0.14), .dark, "inside the margin: holds")
+        XCTAssertEqual(BarTone.next(.dark, luminance: 0.08), .light)
+    }
+
+    func testTheTintIsTheOppositeOfTheInkAt14Percent() {
+        let light = BarTone.light.tint.usingColorSpace(.sRGB)
+        let dark = BarTone.dark.tint.usingColorSpace(.sRGB)
+        XCTAssertEqual(light?.alphaComponent ?? 0, 0.14, accuracy: 0.001)
+        XCTAssertEqual(dark?.alphaComponent ?? 0, 0.14, accuracy: 0.001)
+        XCTAssertEqual(light?.redComponent ?? 1, 0, accuracy: 0.001, "light ink: a dark tint")
+        XCTAssertEqual(dark?.redComponent ?? 0, 1, accuracy: 0.001, "dark ink: a light tint")
+        XCTAssertEqual(BarTone.light.appearance.name, .darkAqua, "light ink is the dark appearance's label colour")
+        XCTAssertEqual(BarTone.dark.appearance.name, .aqua)
+    }
+
+    /// At either edge of the margin the ink that holds still reads at 4.5:1
+    /// over the band under the glass's tint (a uniform band; WIN-69).
+    func testTheHeldInkKeepsFourAndAHalfToOneAtTheMarginsEdges() {
+        func srgb(_ linear: Double) -> Double {
+            linear <= 0.0031308 ? linear * 12.92 : 1.055 * pow(linear, 1 / 2.4) - 0.055
+        }
+        func contrast(_ tone: BarTone, band luminance: Double) -> Double {
+            let tint = tone == .light ? 0.0 : 1.0
+            let under = srgb(luminance) * 0.86 + tint * 0.14
+            let band = BandSample.linear(under)
+            let ink = tone == .light ? 1.0 : 0.0
+            return (max(ink, band) + 0.05) / (min(ink, band) + 0.05)
+        }
+        let limit = NFRTestLimits.shared.double("bar_title_contrast_min")
+        XCTAssertGreaterThanOrEqual(contrast(.light, band: BarTone.toDark), limit)
+        XCTAssertGreaterThanOrEqual(contrast(.dark, band: BarTone.toLight), limit)
+        XCTAssertEqual(BarTone.light.ink, .white)
+        XCTAssertEqual(BarTone.dark.ink, .black)
+    }
+
+    /// No timer: the band is read when a frame is shown, at most once a
+    /// second, never twice at once, and not at all while the picture is still.
+    func testTheBandIsReadOnFramesAtMostOnceASecond() {
+        var clock = BandSampleClock()
+        XCTAssertTrue(clock.shouldSample(now: 10), "the first frame is read at once")
+        XCTAssertFalse(clock.shouldSample(now: 10.2), "one read in flight")
+        clock.finished()
+        XCTAssertFalse(clock.shouldSample(now: 10.5), "within the second")
+        XCTAssertTrue(clock.shouldSample(now: 11.01))
+        clock.finished()
+        clock.reset()
+        XCTAssertTrue(clock.shouldSample(now: 11.2), "a new picture (style, size, config) is read at once")
     }
 }

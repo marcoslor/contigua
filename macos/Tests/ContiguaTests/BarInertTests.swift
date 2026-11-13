@@ -1,7 +1,8 @@
 // The window's own band is never the phone's (WIN-61). In Compact the band is
-// AppKit's title bar, above the content view: the content view is exactly the
-// stream, so its top row is the picture's and a title-bar click never reaches
-// our view. Framed's own bar buttons keep their clicks over the frame.
+// the stream's top edge mirrored up under AppKit's transparent title bar: the
+// mirror's content view is the picture, so the hit test decides from the band
+// itself, never from where the picture's view ends up. Framed's own bar
+// buttons keep their clicks over the frame.
 
 import AppKit
 import XCTest
@@ -18,21 +19,34 @@ final class BarInertTests: XCTestCase {
         return chrome
     }
 
-    func testCompactsContentIsThePictureUpToItsTopRow() {
+    func testCompactsBandIsNeverThePhonesWhereverThePictureEndsUp() {
         let chrome = makeChrome(.compact)
-        XCTAssertEqual(chrome.video.frame, chrome.bounds, "the content view is the stream")
-        for x in stride(from: 8.0, through: chrome.bounds.width - 8, by: 40) {
-            let point = NSPoint(x: x, y: chrome.bounds.height - 1)
-            XCTAssertTrue(chrome.hitTest(point) === chrome.video,
-                          "the stream's top row at x=\(x) is the phone's: the title bar is above it")
+        XCTAssertEqual(chrome.contentRect, NSRect(x: 0, y: 0, width: 360, height: 780), "the stream is under the band")
+        XCTAssertGreaterThan(chrome.barHeight, 0)
+        let band = chrome.bounds.height - chrome.barHeight / 2
+        for stretched in [false, true] {
+            // The mirror may stretch its content view over itself, as the
+            // system does in a real window: the band still decides.
+            if stretched { chrome.video.frame = chrome.bandMirror.bounds }
+            for x in stride(from: 8.0, through: chrome.bounds.width - 8, by: 40) {
+                XCTAssertFalse(chrome.hitTest(NSPoint(x: x, y: band)) === chrome.video,
+                               "the band at x=\(x) reached the picture: a click there is a touch on the phone")
+                XCTAssertTrue(chrome.ownsPoint(NSPoint(x: x, y: band)), "hover in the band is the window's too")
+            }
         }
+        chrome.layoutChrome()
+        let topRow = NSPoint(x: 180, y: chrome.contentRect.maxY - 1)
+        XCTAssertTrue(chrome.hitTest(topRow) === chrome.video, "the stream's own top row is the phone's")
+        XCTAssertFalse(chrome.ownsPoint(topRow))
     }
 
-    /// A point in AppKit's title bar is outside the content view, so our
-    /// view never sees its clicks: AppKit drags and zooms there.
-    func testCompactsTitleBarIsOutsideOurView() throws {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 780),
+    /// A real click in the band lands in AppKit's transparent title bar,
+    /// which drags and zooms; it never reaches the picture.
+    func testARealClickInTheBandIsTheTitleBarsNotThePictures() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 812),
                               styleMask: WindowStyle.compact.styleMask, backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
@@ -40,11 +54,14 @@ final class BarInertTests: XCTestCase {
         window.contentView = chrome
         window.orderFront(nil)
         window.layoutIfNeeded()
+        chrome.layoutChrome()
+        let frameView = try XCTUnwrap(chrome.superview)
         let titlebar = window.frame.height - window.contentLayoutRect.height
         XCTAssertGreaterThan(titlebar, 0)
-        XCTAssertEqual(chrome.frame.height, 780, "the content view stops under the title bar")
-        let inTitlebar = NSPoint(x: 180, y: chrome.frame.maxY + titlebar / 2)
-        XCTAssertNil(chrome.hitTest(inTitlebar), "the title bar is AppKit's, not ours")
+        let inBand = NSPoint(x: 180, y: window.frame.height - titlebar / 2)
+        let hit = frameView.hitTest(inBand)
+        XCTAssertFalse(hit === chrome.video || hit?.isDescendant(of: chrome.video) == true,
+                       "the band is the window's: \(String(describing: hit))")
     }
 
     func testTheBarsOwnButtonsStillTakeTheirClicks() {

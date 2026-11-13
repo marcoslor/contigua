@@ -1,5 +1,5 @@
-// The window chrome by style (WindowStyle.swift): Compact's system title bar
-// and its accessory, the phone window's actions, the Framed frame, and
+// The window chrome by style (WindowStyle.swift): Compact's mirrored band under
+// AppKit's transparent title bar and its accessory, the phone window's actions, the Framed frame, and
 // style switching — and that none of it changes the stream area the virtual
 // display is sized from.
 
@@ -9,9 +9,10 @@ import XCTest
 
 /// AppKit's own frame for a 900×600 stream in a standard titled window: the
 /// stream plus the system's title bar, whatever its height is on this macOS.
+/// Compact's window is that size: its band is AppKit's title-bar height.
 private var compactFrameSize: NSSize {
     NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-                       styleMask: WindowStyle.compact.styleMask).size
+                       styleMask: [.titled, .closable, .miniaturizable, .resizable]).size
 }
 
 final class LetterboxTests: XCTestCase {
@@ -72,61 +73,99 @@ final class StreamChromeWindowTests: XCTestCase {
         return (controller, window)
     }
 
-    /// WIN-4, WIN-7: Compact is a standard titled window. AppKit draws its
-    /// opaque title bar (the system title, the lights) above the content view,
-    /// and the content view is exactly the stream. Nothing of ours draws the
-    /// bar, so nothing of ours can leave it see-through.
-    func testCompactIsAStandardWindowWithTheSystemTitleBar() throws {
+    /// WIN-4, WIN-7: Compact is the stream under a band as tall as AppKit's
+    /// title bar. The content view spans the window under AppKit's transparent
+    /// title bar; AppKit keeps its own lights there, and the band's title is
+    /// ours, in the band's tone (WIN-69). The window is still the stream plus
+    /// AppKit's title-bar height.
+    func testCompactIsTheStreamUnderItsBandInAppKitsTransparentTitleBar() throws {
         let manager = makeManager()
         let (controller, window) = try openCompact(manager)
         defer { window.close() }
+        let titleBar = compactFrameSize.height - 600
         XCTAssertEqual(controller.style, .compact)
-        XCTAssertTrue(window.styleMask.contains(.titled))
-        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView),
-                       "the content view starts under AppKit's title bar")
-        XCTAssertEqual(window.titleVisibility, .visible, "the system draws the title")
-        XCTAssertFalse(window.titlebarAppearsTransparent, "the title bar is the system's solid one")
-        XCTAssertEqual(window.title, "Example")
-        XCTAssertEqual(window.backgroundColor, .windowBackgroundColor)
-        XCTAssertGreaterThan(compactFrameSize.height, 600, "the title bar has a height of its own")
-        XCTAssertEqual(window.frame.size, compactFrameSize, "the window is the stream plus AppKit's title bar")
-        XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 900, height: 600))
-        XCTAssertEqual(controller.chrome.bounds.size, NSSize(width: 900, height: 600))
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView), "the band is under the title bar")
+        XCTAssertTrue(window.titlebarAppearsTransparent, "the band shows through AppKit's title bar")
+        XCTAssertEqual(window.titleVisibility, .hidden, "the band's title is ours, in its tone")
+        XCTAssertEqual(window.title, "Example", "the window keeps its title: the Window menu, VoiceOver")
+        XCTAssertGreaterThan(titleBar, 0)
+        XCTAssertEqual(window.frame.size, compactFrameSize, "the stream plus AppKit's title-bar height")
+        XCTAssertEqual(controller.chrome.bounds.size, compactFrameSize)
         XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
-                       "the stream is the whole content view")
+                       "the stream sits under the band")
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
-        XCTAssertEqual(controller.chrome.barHeight, 0, "no bar of ours")
+        XCTAssertEqual(controller.chrome.barHeight, titleBar)
+        XCTAssertTrue(controller.chrome.lightsManagedByAppKit)
         XCTAssertTrue(trafficLightsShown(window))
         let atRest = (controller.videoView.frame, controller.displayPixels(), controller.dpi())
 
         controller.simulateFullScreenForTesting(true)
+        XCTAssertTrue(controller.chrome.bandGlass.isHidden, "full screen is the bare system title bar (WIN-14)")
         controller.simulateFullScreenForTesting(false)
         pump(0.2)
-        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView), "full screen gives the mask back")
+        XCTAssertTrue(window.titlebarAppearsTransparent, "windowed again: the band's title bar")
+        XCTAssertEqual(window.titleVisibility, .hidden)
         XCTAssertEqual(window.frame.size, compactFrameSize)
         XCTAssertEqual(controller.videoView.frame, atRest.0, "the stream does not move")
         XCTAssertEqual(controller.displayPixels(), atRest.1, "nor does the virtual display")
         XCTAssertEqual(controller.dpi(), atRest.2)
     }
 
-    /// Compact draws no chrome of its own: no mirror, no material, no title
-    /// field, square corners (the system's window shape rounds the frame).
-    func testCompactDrawsNoChromeOfItsOwn() throws {
+    /// WIN-67: the band is the stream's own top edge, mirrored up by the
+    /// system's NSBackgroundExtensionView, under clear glass. An opaque
+    /// backing in the band's own colour sits under the mirror, so a mirror
+    /// that draws nothing leaves a solid band, never the desktop (#45).
+    func testCompactsBandIsTheSystemMirrorUnderClearGlassOverAnOpaqueBacking() throws {
         let manager = makeManager()
         let (controller, window) = try openCompact(manager)
         defer { window.close() }
         let chrome = controller.chrome
-        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
-        let views = all(chrome)
-        XCTAssertFalse(views.contains { String(describing: type(of: $0)).contains("BackgroundExtension") },
-                       "no mirror of the picture")
-        XCTAssertTrue(views.compactMap { $0 as? NSVisualEffectView }.allSatisfy { $0.isHidden || $0.isHiddenOrHasHiddenAncestor },
-                      "no material over the stream")
-        XCTAssertTrue(chrome.framedTitleView.isHidden)
-        XCTAssertFalse(chrome.barTitleVisible, "the title is AppKit's")
-        XCTAssertEqual(chrome.layer?.cornerRadius ?? 0, 0)
-        XCTAssertEqual(controller.videoView.layer?.cornerRadius ?? 0, 0)
-        XCTAssertEqual(controller.chrome.actionCount, 0, "app windows have no actions")
+        let band = NSRect(x: 0, y: 600, width: 900, height: compactFrameSize.height - 600)
+        let mirror = chrome.bandMirror
+        XCTAssertTrue(controller.videoView.superview === mirror, "the mirror's content is the stream")
+        XCTAssertFalse(mirror.automaticallyPlacesContentView)
+        XCTAssertEqual(mirror.frame, chrome.bounds, "the mirror fills the band above the stream")
+        XCTAssertFalse(chrome.bandGlass.isHidden)
+        XCTAssertEqual(chrome.bandGlass.frame, band)
+        XCTAssertEqual(chrome.bandGlass.style, .clear, "the blur stays, the grey scrim does not")
+        XCTAssertEqual(chrome.bandGlass.cornerRadius, 0)
+        XCTAssertFalse(chrome.bandBacking.isHidden)
+        XCTAssertEqual(chrome.bandBacking.frame, band)
+        XCTAssertLessThan(chrome.bandBacking.zPosition, mirror.layer?.zPosition ?? 0, "under the mirror")
+        XCTAssertEqual(chrome.bandBacking.backgroundColor?.alpha, 1, "opaque: never see-through")
+        XCTAssertEqual(chrome.layer?.cornerRadius ?? 0, 0, "the system's window shape rounds the frame")
+
+        controller.setStyle(.framed)
+        XCTAssertEqual(mirror.frame, chrome.contentRect, "Framed: the mirror is the picture, no band")
+        XCTAssertTrue(chrome.bandGlass.isHidden)
+        XCTAssertTrue(chrome.bandBacking.isHidden)
+        controller.setStyle(.compact)
+        XCTAssertFalse(chrome.bandGlass.isHidden)
+    }
+
+    /// WIN-69, #147: the band's mean decides the title's ink, with a margin
+    /// so it does not flip on noise, and the glass takes the opposite tint:
+    /// light ink over a dark band gets a dark tint, dark ink a light one. The
+    /// backing is the band's own colour, opaque.
+    func testTheBandsTitleInkAndTintFollowThePicture() throws {
+        let manager = makeManager()
+        let (controller, window) = try openCompact(manager)
+        defer { window.close() }
+        let chrome = controller.chrome
+        chrome.setBarTitle("Example", phone: "Pixel")
+        chrome.applyBandSample(BandSample(red: 0.05, green: 0.05, blue: 0.08))
+        XCTAssertEqual(chrome.barTone, .light, "a dark band: light ink")
+        XCTAssertTrue(chrome.barTitleVisible)
+        let rect = try XCTUnwrap(chrome.barTitleRect)
+        XCTAssertGreaterThanOrEqual(rect.minY, 600, "in the band")
+        XCTAssertEqual(chrome.bandGlass.tintColor, BarTone.light.tint)
+        XCTAssertEqual(chrome.bandBacking.backgroundColor.flatMap { NSColor(cgColor: $0) }?.usingColorSpace(.sRGB)?.redComponent ?? -1,
+                       0.05, accuracy: 0.01, "the backing is the band's own colour")
+
+        chrome.applyBandSample(BandSample(red: 0.95, green: 0.95, blue: 0.95))
+        XCTAssertEqual(chrome.barTone, .dark, "a light band: dark ink")
+        XCTAssertEqual(chrome.bandGlass.tintColor, BarTone.dark.tint)
+        XCTAssertNotEqual(BarTone.light.tint, BarTone.dark.tint)
     }
 
     /// WIN-7: the window kind's controls ride AppKit's trailing title-bar
@@ -164,7 +203,8 @@ final class StreamChromeWindowTests: XCTestCase {
                       "Live Text is in the title bar")
         XCTAssertFalse(chrome.liveTextButton.isHidden)
         let button = chrome.liveTextButton.convert(chrome.liveTextButton.bounds, to: nil)
-        XCTAssertGreaterThanOrEqual(button.minY, chrome.frame.maxY - 0.5, "above the stream, in the title bar")
+        XCTAssertGreaterThanOrEqual(button.minY, controller.chrome.contentRect.maxY - 0.5,
+                                    "above the stream, in the title bar over the band")
         XCTAssertLessThanOrEqual(button.maxY, window.frame.height + 0.5)
 
         controller.setStyle(.framed)
@@ -179,14 +219,17 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertFalse(accessory.isHidden)
     }
 
-    /// The lights are AppKit's, where a standard titled window has them.
+    /// The lights are AppKit's, where a window with a transparent title bar
+    /// has them.
     func testTheTrafficLightsAreAppKitsOwnInItsTitleBar() throws {
         let manager = makeManager()
         let (controller, window) = try openCompact(manager)
         defer { window.close() }
         controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
-        let plain = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+        let plain = NSWindow(contentRect: NSRect(origin: .zero, size: compactFrameSize),
                              styleMask: WindowStyle.compact.styleMask, backing: .buffered, defer: false)
+        plain.titlebarAppearsTransparent = true
+        plain.titleVisibility = .hidden
         plain.isReleasedWhenClosed = false
         defer { plain.close() }
         plain.layoutIfNeeded()
@@ -210,10 +253,11 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertFalse(window.ignoresMouseEvents)
         controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
+        XCTAssertNotNil(controller.chrome.barTitleRect, "the band's title shows")
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=no clicks=0 touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_title=0 bar_title_rect=none key=0 responder_video=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=no lights_managed=appkit fullscreen=no clicks=0 touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_title=1 bar_title_rect=X key=0 responder_video=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWork() throws {
@@ -249,12 +293,13 @@ final class StreamChromeWindowTests: XCTestCase {
                         "the picture rect is reported")
         // The window is still opening: the cover is one sheet over the content,
         // under AppKit's title bar (WIN-11).
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=no clicks=0 touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_title=0 bar_title_rect=none key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=no lights_managed=appkit fullscreen=no clicks=0 touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_title=0 bar_title_rect=none key=0 responder_video=0 frame=\(frame) video_gap=0\n")
         controller.noteFirstFrame()
         let live = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(live.hasPrefix("style=compact lights=shown pill=hidden title_visible=yes lights_managed=appkit"), live)
+        XCTAssertTrue(live.hasPrefix("style=compact lights=shown pill=hidden title_visible=no lights_managed=appkit"), live)
         XCTAssertTrue(live.contains("loading=0 cover_phase=0"), live)
-        XCTAssertTrue(live.contains(" bar_title=0 bar_title_rect=none "), live)
+        XCTAssertTrue(live.contains(" bar_title=1 "), "the band's own title, in its tone: \(live)")
+        XCTAssertTrue(live.contains(" band:1"), live)
     }
 
     /// Full screen looks the same in every style (WIN-14): the stream fills
@@ -443,15 +488,15 @@ final class StreamChromeStyleTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         XCTAssertEqual(controller.style, .framed, "no stored choice opens Framed")
         XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643))
-        XCTAssertEqual(controller.videoView.frame, NSRect(x: 5, y: 5, width: 900, height: 600))
+        XCTAssertEqual(controller.chrome.contentRect, NSRect(x: 5, y: 5, width: 900, height: 600))
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
         XCTAssertEqual(controller.chrome.barHeight, FramedChrome.topInset)
         XCTAssertTrue(trafficLightsShown(window))
     }
 
-    /// Compact: the stream plus AppKit's own title bar, nothing at the sides
-    /// or the bottom; the virtual display is the stream's own size.
-    func testCompactIsTheStreamPlusTheSystemTitleBar() throws {
+    /// Compact: the stream under a band of AppKit's title-bar height, nothing
+    /// at the sides or the bottom; the virtual display is the stream's own size.
+    func testCompactIsTheStreamUnderItsBand() throws {
         let manager = makeManager(choose: .compact)
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -463,7 +508,7 @@ final class StreamChromeStyleTests: XCTestCase {
         XCTAssertEqual(window.frame.size, compactFrameSize)
         XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600))
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
-        XCTAssertEqual(controller.chrome.barHeight, 0, "the title bar is AppKit's")
+        XCTAssertEqual(controller.chrome.barHeight, compactFrameSize.height - 600, "AppKit's title-bar height")
         XCTAssertTrue(trafficLightsShown(window))
     }
 
@@ -551,7 +596,7 @@ final class StreamChromeStyleTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         XCTAssertEqual(controller.style, .framed)
         XCTAssertEqual(window.frame.size, NSSize(width: 910, height: 643))
-        XCTAssertEqual(controller.videoView.frame, controller.chrome.streamContentRect,
+        XCTAssertEqual(controller.chrome.contentRect, controller.chrome.streamContentRect,
                        "the video is the stream's rect inside the frame")
         XCTAssertEqual(controller.chrome.streamContentRect,
                        NSRect(x: FramedChrome.sideInset, y: FramedChrome.bottomInset,
@@ -599,8 +644,10 @@ final class StreamChromeStyleTests: XCTestCase {
         XCTAssertEqual(controller.window?.title, "Settings (Pixel 9)",
                        "the window's own title already carried the phone")
         controller.setStyle(.compact)
-        XCTAssertEqual(controller.window?.title, "Settings (Pixel 9)", "Compact shows the window's own title")
-        XCTAssertFalse(controller.chrome.barTitleVisible, "AppKit draws it, not us")
+        XCTAssertEqual(controller.window?.title, "Settings (Pixel 9)",
+                       "Compact keeps the window's own title for the Window menu and VoiceOver")
+        XCTAssertEqual(controller.window?.titleVisibility, .hidden)
+        XCTAssertTrue(controller.chrome.barTitleVisible, "the band draws it, in the band's tone")
         controller.setStyle(.immersive)
         XCTAssertFalse(controller.chrome.barTitleVisible, "Immersive has no bar")
         XCTAssertNil(controller.chrome.barTitleRect)
@@ -755,12 +802,12 @@ final class StreamChromeStyleTests: XCTestCase {
                        "the stream keeps its place: 5 pt of frame came off the left")
         let titleBar = compactFrameSize.height - 600
         XCTAssertEqual(window.frame.maxY, visible.maxY - 38 + titleBar, accuracy: 1,
-                       "the stream's top edge stays: the frame's 38 pt bar became AppKit's title bar")
+                       "the stream's top edge stays: the frame's 38 pt bar became the band")
         XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
                        .compact, "the choice is remembered for the package")
         XCTAssertEqual(StreamMenuState.shared.style, .compact)
         XCTAssertTrue(trafficLightsShown(window), "Compact shows the lights")
-        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(window.titlebarAppearsTransparent, "Compact's band shows through the title bar")
 
         controller.setStyle(.immersive)
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 600), "the window is the stream alone")

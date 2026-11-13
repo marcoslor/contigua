@@ -173,9 +173,11 @@ system-privileged steps):
 - **Windows**: `AppWindow`/`StreamWindow` + `StreamChrome`. The style system
   (`WindowStyle`, remembered per app in the profile defaults) has three shapes:
   **Framed** (the default: a real 38/5 pt frame round the picture with the
-  system material, hairline, rim and rounded corners), **Compact** (a
-  standard titled window: AppKit's own title bar above the stream, our controls
-  in its trailing accessory) and **Immersive** (the stream alone; a dwell pill at the top-left
+  system material, hairline, rim and rounded corners), **Compact** (the
+  stream under a band of AppKit's title-bar height: the stream's top edge
+  mirrored up by the system's `NSBackgroundExtensionView` under clear glass, in
+  AppKit's transparent title bar, our title in the band's tone and our
+  controls in its trailing accessory) and **Immersive** (the stream alone; a dwell pill at the top-left
   brings the lights back). Full screen looks the same in every style: the
   stream fills the screen and the window's own native title bar comes down
   with the menu bar (WIN-14). Style flips (⌥⌘F / View menu)

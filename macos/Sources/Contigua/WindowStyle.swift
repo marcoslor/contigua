@@ -2,9 +2,11 @@
 //
 // Framed (the default): a real frame on all four sides — 38 pt above the
 // picture and 5 pt on the other three, a system material, a hairline, a lighter
-// rim and the picture's own 12 pt corners. Compact: a standard titled window,
-// AppKit's own opaque title bar (the system title, the lights, our controls
-// in a trailing accessory) above the stream. Immersive: the borderless
+// rim and the picture's own 12 pt corners. Compact: the stream under a band as
+// tall as AppKit's title bar, in AppKit's transparent title bar — the stream's
+// top edge mirrored up by the system (NSBackgroundExtensionView) under clear
+// glass, over an opaque backing, with AppKit's lights, our toned title and our
+// controls in a trailing accessory (CompactBand). Immersive: the borderless
 // style — no bar and no borders, the picture fills the window, and the traffic
 // lights and our controls live on a clear-glass pill that fades in at the
 // picture's top-left corner after a rest (DwellPill).
@@ -91,25 +93,32 @@ enum WindowStyle: String, CaseIterable {
         return flags == [.command, .option] && event.charactersIgnoringModifiers?.lowercased() == "f"
     }
 
-    /// The window's style mask. Compact is a standard titled window: AppKit's
-    /// own opaque title bar sits above the stream, outside the content view
-    /// (WIN-7). Framed and Immersive draw their own chrome under a transparent
-    /// title bar, so their content view is the whole window.
+    /// The window's style mask: every style's content view is the whole
+    /// window under a transparent title bar — Framed's frame, Compact's band
+    /// (WIN-7, WIN-67) and Immersive's picture are ours to draw there.
     var styleMask: NSWindow.StyleMask {
-        let titled: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
-        return self == .compact ? titled : titled.union(.fullSizeContentView)
+        [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+    }
+
+    /// AppKit's own title-bar height on this macOS: a standard titled
+    /// window's frame above its content. Compact's band is exactly this tall,
+    /// never a number of ours.
+    static var appKitTitleBarHeight: CGFloat {
+        NSWindow.frameRect(forContentRect: .zero, styleMask: [.titled, .closable, .miniaturizable, .resizable]).height
     }
 
     /// The padding the style's own chrome adds around the stream inside the
-    /// content view. Compact's title bar is AppKit's, outside the content
-    /// view, so it adds none here. Full screen never has windowed chrome.
+    /// content view: Framed's frame, Compact's band above the stream (AppKit's
+    /// title-bar height). Full screen never has windowed chrome.
     func insets(fullScreen: Bool) -> NSEdgeInsets {
         guard !fullScreen else { return NSEdgeInsets() }
         switch self {
         case .framed:
             return NSEdgeInsets(top: FramedChrome.topInset, left: FramedChrome.sideInset,
                                 bottom: FramedChrome.bottomInset, right: FramedChrome.sideInset)
-        case .compact, .immersive:
+        case .compact:
+            return NSEdgeInsets(top: Self.appKitTitleBarHeight, left: 0, bottom: 0, right: 0)
+        case .immersive:
             return NSEdgeInsets()
         }
     }
@@ -127,28 +136,15 @@ enum WindowStyle: String, CaseIterable {
                       height: max(content.height - pad.top - pad.bottom, 0))
     }
 
-    /// The chrome a window frame adds around its stream: the style's own
-    /// insets plus AppKit's title bar above the content view where the style
-    /// has one (read from AppKit, so it is the system's own height, never a
-    /// number of ours). Full screen adds nothing.
-    func frameInsets(fullScreen: Bool = false) -> NSEdgeInsets {
-        var pad = insets(fullScreen: fullScreen)
-        guard !fullScreen else { return pad }
-        pad.top += NSWindow.frameRect(forContentRect: .zero, styleMask: styleMask).height
-        return pad
-    }
-
-    /// The window frame that holds a stream `stream` big.
+    /// The window frame that holds a stream `stream` big: the content view,
+    /// which is the whole window in every style (`styleMask`).
     func windowSize(stream: CGSize, fullScreen: Bool = false) -> CGSize {
-        let pad = frameInsets(fullScreen: fullScreen)
-        return CGSize(width: stream.width + pad.left + pad.right, height: stream.height + pad.top + pad.bottom)
+        contentSize(stream: stream, fullScreen: fullScreen)
     }
 
     /// The stream inside a window frame `window` big.
     func streamSize(window: CGSize, fullScreen: Bool = false) -> CGSize {
-        let pad = frameInsets(fullScreen: fullScreen)
-        return CGSize(width: max(window.width - pad.left - pad.right, 0),
-                      height: max(window.height - pad.top - pad.bottom, 0))
+        streamSize(content: window, fullScreen: fullScreen)
     }
 
     /// The frame a window takes when it changes from this style to `next`: the
@@ -222,9 +218,11 @@ enum FramedChrome {
 
 /// The window's titlebar and traffic lights in a given state. The system's
 /// own title bar — solid, the window's title, the standard lights where
-/// AppKit puts them — is Compact's windowed chrome (WIN-7) and every style's
-/// full screen (WIN-14). Framed and Immersive windowed hide the system's
-/// title and place the lights themselves: the frame's bar and the pill.
+/// AppKit puts them — is every style's full screen (WIN-14). Compact windowed
+/// keeps AppKit's lights over its band in a transparent title bar, with our
+/// toned title instead of the system's (WIN-7, WIN-69). Framed and Immersive
+/// windowed hide the system's title and place the lights themselves: the
+/// frame's bar and the pill.
 struct ChromeConfig: Equatable {
     let titleVisible: Bool
     let titlebarTransparent: Bool
@@ -234,8 +232,9 @@ struct ChromeConfig: Equatable {
     static let system = ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
 
     static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
-        if fullScreen || style == .compact { return system }
-        return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
+        if fullScreen { return system }
+        return ChromeConfig(titleVisible: false, titlebarTransparent: true,
+                            lightsManagedByAppKit: style == .compact)
     }
 }
 
@@ -424,7 +423,7 @@ enum PhoneChrome {
             return visible
         }
         let ratio = phone.width / phone.height
-        let pad = style.frameInsets()
+        let pad = style.insets(fullScreen: false)
         var streamHeight = max(visible.height - pad.top - pad.bottom, 1)
         var streamWidth = streamHeight * ratio
         let maxStreamWidth = max(visible.width - pad.left - pad.right, 1)
@@ -485,7 +484,7 @@ enum PhoneChrome {
                               visible: NSRect, minimum: NSSize = .zero) -> NSRect {
         guard phone.width > 0, phone.height > 0, saved.width > 0, saved.height > 0 else { return saved }
         let ratio = phone.width / phone.height
-        let pad = style.frameInsets()
+        let pad = style.insets(fullScreen: false)
         var streamHeight = max(saved.height - pad.top - pad.bottom, 1)
         var streamWidth = streamHeight * ratio
         let maxStreamHeight = max(visible.height - pad.top - pad.bottom, 1)

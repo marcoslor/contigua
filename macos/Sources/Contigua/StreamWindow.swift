@@ -357,6 +357,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.stats.noteEnqueued(now: ProcessInfo.processInfo.systemUptime,
                                     ptsUs: ptsUs, offsetUs: self.manager.clockOffsetUs)
+            self.readBandIfDue()
         }
         videoView.onFrameDiscarded = { [weak self] reason in
             self?.stats.noteDiscarded(reason, now: ProcessInfo.processInfo.systemUptime)
@@ -638,6 +639,42 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         Log.video.notice("bar focus: from=\(-1, privacy: .public) to=\(-1, privacy: .public) (reset)")
     }
 
+    // MARK: Compact's band (WIN-69, #147)
+
+    /// When the band is read: on shown frames, at most once a second.
+    private var bandClock = BandSampleClock()
+    private static let bandQueue = DispatchQueue(label: "contigua.band", qos: .utility)  // gcd: one Core Image read off the main thread
+
+    /// A frame was shown: read the band's mean when it is due, off the main
+    /// thread, and hand it to the chrome. Frames are the clock: a still
+    /// picture is never read again, and no band (another style, full screen,
+    /// the cover) reads nothing.
+    private func readBandIfDue() {
+        let fraction = chrome.bandSampleFraction
+        guard fraction > 0, bandClock.shouldSample(now: ProcessInfo.processInfo.systemUptime) else { return }
+        guard let buffer = videoView.copyDisplayedFrame() else {
+            bandClock.finished()
+            return
+        }
+        let width = CGFloat(CVPixelBufferGetWidth(buffer))
+        let rows = max(CGFloat(CVPixelBufferGetHeight(buffer)) * fraction, 1)
+        let rect = CGRect(x: 0, y: 0, width: width, height: rows.rounded(.up))
+        Self.bandQueue.async { [weak self] in
+            let sample = BandReader.sample(buffer, rect: rect)
+            DispatchQueue.main.async {  // gcd: the chrome is main-thread only
+                guard let self else { return }
+                self.bandClock.finished()
+                if let sample, self.chrome.bandSampleFraction > 0 { self.chrome.applyBandSample(sample) }
+            }
+        }
+    }
+
+    /// A new picture under the band (a style, size or config change): the
+    /// next shown frame is read at once.
+    private func bandPictureChanged() {
+        bandClock.reset()
+    }
+
     // MARK: Style switching
 
     /// View ▸ Window Style's switch (and the scripted driver's toggle): the
@@ -661,6 +698,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         refreshMenuState()
         chrome.setStyle(style)
         if !fullScreen { applyChromeConfig(fullScreen: false) }
+        bandPictureChanged()
         configureDwell()
         writeChromeState()
     }
@@ -1618,9 +1656,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let titlebar = window.standardWindowButton(.closeButton)?.superview?.frame ?? .zero
         return "win:\(rect(window.frame)) content:\(rect(window.contentView?.frame ?? .zero))"
             + " chrome:\(rect(chrome.frame))"
-            + " video:\(rect(chrome.video.frame)) layout:\(rect(window.contentLayoutRect))"
+            + " video:\(rect(chrome.contentRect)) layout:\(rect(window.contentLayoutRect))"
             + " tb:\(rect(titlebar)) mask:\(window.styleMask.rawValue)"
             + " bar:\(Int(chrome.barHeight.rounded()))"
+            + " tone:\(chrome.barTone?.rawValue ?? "none") band:\(chrome.bandGlass.isHidden ? 0 : 1)"
     }
 
     /// The standard buttons' slots before the chrome moved them. AppKit lays
@@ -1650,8 +1689,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The window's mask, titlebar and buttons by state (ChromeConfig): the
-    /// system's own title bar (Compact windowed, every style in full screen)
-    /// or the chrome's (Framed's frame, Immersive's pill).
+    /// system's own title bar in full screen, AppKit's transparent one over
+    /// Compact's band, or the chrome's (Framed's frame, Immersive's pill).
     private func applyChromeConfig(fullScreen: Bool) {
         guard let window else { return }
         if !fullScreen {
@@ -1660,8 +1699,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             let frame = window.frame
             window.styleMask = style.styleMask
             window.setFrame(frame, display: false)
-            // Compact's content is the stream under AppKit's own title bar;
-            // the others draw their window edge themselves on a clear ground.
+            // Compact's band and stream fill the window under AppKit's
+            // transparent title bar, on an opaque ground; the others draw
+            // their window edge themselves on a clear ground.
             window.backgroundColor = style == .compact ? .windowBackgroundColor : .clear
         }
         let config = ChromeConfig.forState(style: style, fullScreen: fullScreen)
@@ -1670,6 +1710,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome.lightsManagedByAppKit = config.lightsManagedByAppKit
         if config.lightsManagedByAppKit { restoreStandardLights() }
         chrome.placeTrafficLights()
+        bandPictureChanged()
     }
 
     /// Before the transition: the windowed chrome goes and the window's own

@@ -299,25 +299,26 @@ final class StallOverlayTests: XCTestCase {
                          keyCode: code)!
     }
 
-    /// WIN-39: in Compact the overlay is the whole content view, which is the
-    /// stream: AppKit's opaque title bar sits above it, outside our view, and
-    /// stays the system's. A frame takes the overlay away.
-    func testInCompactTheOverlayIsTheContentUnderTheSystemTitleBar() throws {
+    /// WIN-39: in Compact the overlay is one sheet over the whole content
+    /// view, the band included, so the band never mirrors the bright stream
+    /// while it is up; AppKit's lights and our controls stay above it. A frame
+    /// takes the overlay away.
+    func testInCompactTheOverlayReachesOverTheBand() throws {
         let manager = makeManager()
         let controller = try makeWindow(manager)
         defer { controller.window?.close() }
         let chrome = controller.chrome
         let window = try XCTUnwrap(controller.window)
         XCTAssertEqual(controller.style, .compact)
-        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView),
-                       "the title bar is AppKit's own, above the content")
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView), "the band is under AppKit's title bar")
 
         let t0 = ProcessInfo.processInfo.systemUptime
         stall(controller, at: t0)
-        XCTAssertEqual(chrome.stallOverlay.frame, chrome.bounds, "one sheet over the content")
-        XCTAssertEqual(chrome.stallOverlay.frame, chrome.video.frame, "which is the stream")
-        XCTAssertEqual(chrome.stallOverlay.topInset, 0, "no bar of ours to clear")
-        XCTAssertLessThan(chrome.frame.maxY, window.frame.height, "the title bar stays above the overlay")
+        XCTAssertEqual(chrome.stallOverlay.frame, chrome.bounds, "one sheet over the content, the band included")
+        XCTAssertEqual(chrome.stallOverlay.topInset, chrome.barHeight, "its words stay under the band")
+        XCTAssertGreaterThan(chrome.barHeight, 0)
+        XCTAssertGreaterThan(chrome.stallOverlay.layer?.zPosition ?? 0, chrome.bandGlass.layer?.zPosition ?? 0,
+                             "over the band's glass and title")
 
         controller.frameClock.note(at: t0 + 2.1)
         controller.tickFrameWatchdog(at: t0 + 2.1)
@@ -380,12 +381,12 @@ final class StallOverlayTests: XCTestCase {
         let t0 = ProcessInfo.processInfo.systemUptime
         stall(controller, at: t0)
 
-        let point = NSPoint(x: chrome.bounds.midX, y: chrome.video.frame.midY)
+        let point = NSPoint(x: chrome.bounds.midX, y: chrome.contentRect.midY)
         XCTAssertTrue(chrome.hitTest(point) === chrome.stallOverlay,
                       "a click on the frozen picture is the overlay's, not the stream's")
         let topEdge = NSPoint(x: chrome.bounds.midX, y: chrome.bounds.maxY - 4)
-        XCTAssertTrue(chrome.hitTest(topEdge) === chrome.stallOverlay,
-                      "the content's top edge is the stream's too: the title bar is above it")
+        XCTAssertTrue(chrome.hitTest(topEdge) === chrome,
+                      "the band is still the window's own drag")
     }
 }
 

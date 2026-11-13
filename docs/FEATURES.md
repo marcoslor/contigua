@@ -18,8 +18,9 @@ waiting for a hands-on check on a real Mac and phone.
   a trackpad, two-finger scroll drags the page like a finger (with fling) and
   pinch/rotate are two fingers around the pointer.
 - **Window styles** — Framed (the default: a Quick Look-like frame whose
-  material bar holds the lights, the title and the controls), Compact (a standard
-  window: the system's own title bar above the app) or Immersive (the window
+  material bar holds the lights, the title and the controls), Compact (the
+  app under a slim band: its own top edge mirrored and blurred behind the
+  lights and the title) or Immersive (the window
   *is* the app; a dwell pill brings the lights back). Switch with View ▸
   Window Style or ⌥⌘F; the choice is remembered per app.
 - **Open <App> on Mac (handoff)** — move the task in the phone's foreground onto

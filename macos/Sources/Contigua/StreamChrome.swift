@@ -1,8 +1,10 @@
-// The stream window's chrome by style (WindowStyle.swift). Compact: none of
-// ours. The window is a standard titled one, so AppKit draws its opaque title
-// bar above this view, with the system's title and lights; the window kind's
-// actions and Live Text ride its trailing NSTitlebarAccessoryViewController
-// (WIN-7). This view is exactly the stream. Framed: the picture sits inside a real frame on all four
+// The stream window's chrome by style (WindowStyle.swift). Compact: the stream
+// under a band as tall as AppKit's title bar, in AppKit's transparent title
+// bar with its own lights. The band is the stream's top edge mirrored up by the
+// system's NSBackgroundExtensionView, blurred by clear glass, over an opaque
+// backing in the band's colour, with our title in the band's tone
+// (CompactBand.swift, WIN-67, WIN-69); the window kind's actions and Live Text
+// ride AppKit's trailing NSTitlebarAccessoryViewController (WIN-7). Framed: the picture sits inside a real frame on all four
 // sides (FramedChrome): a system material, a 0.5 pt hairline, a 1 pt rim, a
 // 10 pt top highlight, a 21 pt window radius and a 12 pt picture radius, with
 // our lights, a label-coloured title and our controls in the 38 pt bar.
@@ -201,6 +203,22 @@ final class FramedChromeView: NSView {
 
 final class StreamChromeView: NSView {
     let video: VideoLayerView
+    /// The system's mirror (WIN-67): its content view is the stream. Windowed
+    /// Compact, it spans the window and mirrors the stream's top edge up into
+    /// the band; everywhere else it is exactly the picture's rect, so it has
+    /// nothing to extend. Never hidden: hiding it blanks its content view.
+    let bandMirror = NSBackgroundExtensionView()
+    /// Clear glass over the band: the blur stays, the grey scrim does not;
+    /// its tint goes away from the title's ink (#147).
+    let bandGlass = NSGlassEffectView()
+    /// An opaque band in the band's own colour under the mirror: a mirror
+    /// that draws nothing leaves this, never the desktop (#45).
+    let bandBacking = CALayer()
+    /// The band's title, in the band's tone; the window's own title stays set
+    /// but hidden (the Window menu and VoiceOver read it).
+    private let bandTitle = NSTextField(labelWithString: "")
+    /// The title's ink over the band: nil until the first read of the band.
+    private(set) var barTone: BarTone?
     /// The Framed style's material, hairline, rim, highlight and title.
     private let framedView = FramedChromeView()
     /// The Immersive style's clear-glass pill; only a background: the buttons above it are the chrome's own
@@ -284,6 +302,7 @@ final class StreamChromeView: NSView {
             window.removeTitlebarAccessoryViewController(at: index)
         }
         titlebarRow.subviews.forEach { $0.removeFromSuperview() }
+        bandMirror.contentView = nil
         subviews.forEach { $0.removeFromSuperview() }
         layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
         layer?.contents = nil
@@ -302,7 +321,29 @@ final class StreamChromeView: NSView {
         liveTextButton.dragProvider = { [weak self] in self?.liveTextDragProvider?() }
         addSubview(framedView)
         framedView.isHidden = true
-        addSubview(video)
+        bandMirror.wantsLayer = true
+        bandMirror.automaticallyPlacesContentView = false
+        bandMirror.contentView = video
+        addSubview(bandMirror)
+        // Over the mirror (0), under the dots (1) and every control (2).
+        bandGlass.style = .clear
+        bandGlass.cornerRadius = 0
+        bandGlass.tintColor = .clear
+        bandGlass.isHidden = true
+        addSubview(bandGlass)
+        bandGlass.wantsLayer = true
+        bandGlass.layer?.zPosition = 0.5
+        BarTitle.configure(bandTitle)
+        bandTitle.isHidden = true
+        bandTitle.textColor = .labelColor
+        addSubview(bandTitle)
+        bandTitle.wantsLayer = true
+        bandTitle.layer?.zPosition = 0.6
+        // Under everything, the mirror included.
+        bandBacking.zPosition = -1
+        bandBacking.isHidden = true
+        bandBacking.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.addSublayer(bandBacking)
         // The dots ride above the stream, below the controls (2), clipped to
         // the picture.
         video.touchDotHost = touchDots
@@ -355,9 +396,10 @@ final class StreamChromeView: NSView {
     /// The Immersive pill, for the window tests (they look inside).
     var pill: DwellPillView { pillView }
 
-    /// The picture's own rect in this view's coordinates (the whole view in
-    /// Compact, Immersive and full screen; the inset rect in Framed).
-    var contentRect: NSRect { video.frame }
+    /// The picture's own rect in this view's coordinates: under the band in
+    /// windowed Compact, the inset rect in Framed, the whole view in
+    /// Immersive and full screen.
+    var contentRect: NSRect { convert(video.frame, from: bandMirror) }
 
     /// The Show Touches dots' layer, for the tests and the chrome state.
     var touchDotsLayer: CALayer { touchDots }
@@ -424,9 +466,9 @@ final class StreamChromeView: NSView {
         return style
     }
 
-    /// Right now: the height of our own top chrome band — Framed's 38 pt bar —
-    /// or 0 in the other styles (Compact's title bar is AppKit's, outside this
-    /// view), in full screen and while the opening cover is one sheet (WIN-11).
+    /// Right now: the height of the top band — Framed's 38 pt bar, Compact's
+    /// band of AppKit's title-bar height — or 0 in Immersive, in full screen
+    /// and while the opening cover is one sheet (WIN-11).
     var barHeight: CGFloat {
         guard let chrome = windowedChrome else { return 0 }
         return chrome.insets(fullScreen: false).top
@@ -447,6 +489,9 @@ final class StreamChromeView: NSView {
 
     /// The Immersive style's pill is the windowed chrome: no bar, no frame.
     private var immersiveChrome: Bool { windowedChrome == .immersive }
+
+    /// Compact's band shows: windowed, cover not up.
+    private var compactBand: Bool { windowedChrome == .compact }
 
     override func layout() {
         super.layout()
@@ -493,12 +538,21 @@ final class StreamChromeView: NSView {
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
-    /// The stream's rect: Framed's content rect inside its frame; the whole
-    /// view in Compact (its title bar is AppKit's, above this view), in
-    /// Immersive and in full screen.
+    /// The stream's rect: under the band in Compact, Framed's content rect
+    /// inside its frame, the whole view in Immersive and in full screen. The
+    /// mirror spans the window only where it has a band to draw (windowed
+    /// Compact); elsewhere it is the picture's own rect, with nothing to
+    /// extend.
     private func layoutStream() {
-        video.frame = streamContentRect
-        touchDots.frame = video.frame
+        let content = streamContentRect
+        if compactBand {
+            bandMirror.frame = bounds
+            video.frame = NSRect(x: content.minX, y: content.minY, width: content.width, height: content.height)
+        } else {
+            bandMirror.frame = content
+            video.frame = NSRect(origin: .zero, size: content.size)
+        }
+        touchDots.frame = contentRect
         // One sheet over the whole content view in every style, Framed's band
         // included (WIN-11, WIN-65).
         phoneOverlay.frame = bounds
@@ -526,6 +580,7 @@ final class StreamChromeView: NSView {
         // live resize the picture must take the new frame in the same commit,
         // or the edge the window already shows stays black for ~0.25 s.
         clearLayerAnimations(layer)
+        clearLayerAnimations(bandMirror.layer)
         clearLayerAnimations(video.layer)
         // The window's corners round once, on this container.
         if let layer = layer {
@@ -533,9 +588,12 @@ final class StreamChromeView: NSView {
             layer.cornerCurve = .continuous
             layer.masksToBounds = true
         }
-        // The picture's own corners: Framed's 12 pt, not the window's 21.
+        // The picture's own corners: Framed's 12 pt, not the window's 21. The
+        // mirror and the video round together, or one black corner would
+        // show through the other; square elsewhere, so the mirror never
+        // copies a rounded corner into the band.
         let contentRadius = framedGeometry ? FramedChrome.contentRadius : 0
-        if let shaped = video.layer {
+        for shaped in [bandMirror.layer, video.layer].compactMap({ $0 }) {
             shaped.cornerRadius = contentRadius
             shaped.cornerCurve = .continuous
             shaped.masksToBounds = contentRadius > 0
@@ -556,6 +614,8 @@ final class StreamChromeView: NSView {
             pillFrame = nil
         }
         layoutControls()
+        // After the controls: the title fits up to the accessory's row.
+        layoutBand()
     }
 
     /// The window's own radius where our chrome draws the window's edge: 21
@@ -580,6 +640,71 @@ final class StreamChromeView: NSView {
         titleText = text
         titlePhone = phone
         updateFramedTitle()
+        layoutBand()
+    }
+
+    // MARK: Compact's band (WIN-67, WIN-69, #147)
+
+    /// The band's rect in this view: the top `barHeight` points, windowed
+    /// Compact only.
+    private var bandRect: NSRect {
+        NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
+    }
+
+    /// Frames and shows the band's glass, backing and title. Hidden in every
+    /// other style, in full screen (the system's own title bar, WIN-14) and
+    /// under the opening cover.
+    private func layoutBand() {
+        let shown = compactBand && barHeight > 0 && !released
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bandBacking.isHidden = !shown
+        bandGlass.isHidden = !shown
+        if shown {
+            bandBacking.frame = bandRect
+            bandGlass.frame = bandRect
+        }
+        CATransaction.commit()
+        let fit = shown ? bandTitleFitting() : nil
+        BarTitle.layOut(fit?.text, in: bandTitle, frame: fit?.frame)
+        if !shown { bandTitle.isHidden = true }
+    }
+
+    /// The title's room in the band: from AppKit's zoom button to our
+    /// accessory row, the phone suffix dropped first (WIN-68).
+    private func bandTitleFitting() -> (text: String, frame: NSRect)? {
+        var lightsEnd = ChromeBar.trafficLightInset + 2 * ChromeBar.trafficLightSpacing
+            + ChromeBar.trafficLightButtonSide
+        if let zoom = window?.standardWindowButton(.zoomButton), let host = zoom.superview, !zoom.isHidden {
+            lightsEnd = convert(zoom.frame, from: host).maxX
+        }
+        let rightRowStart = bounds.width - titlebarRow.frame.width
+        return BarTitle.fitting(text: BarTitleName.withPhone(titleText, phone: titlePhone), base: titleText,
+                                windowWidth: bounds.width, barHeight: barHeight,
+                                boundsHeight: bounds.height, lightsEnd: lightsEnd,
+                                rightRowStart: rightRowStart)
+    }
+
+    /// One read of the band (StreamWindow reads it on frames): the backing
+    /// takes its colour, the title its ink, the glass the opposite tint and
+    /// the title-bar controls the ink's appearance.
+    func applyBandSample(_ sample: BandSample) {
+        let tone = BarTone.next(barTone, luminance: sample.luminance)
+        barTone = tone
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bandBacking.backgroundColor = sample.color.cgColor
+        CATransaction.commit()
+        bandGlass.tintColor = tone.tint
+        bandTitle.textColor = tone.ink
+        titlebarRow.appearance = tone.appearance
+    }
+
+    /// The share of the picture's height the band mirrors: the rows a read
+    /// averages. 0 when there is no band.
+    var bandSampleFraction: CGFloat {
+        guard compactBand, barHeight > 0, contentRect.height > 0 else { return 0 }
+        return min(barHeight / contentRect.height, 1)
     }
 
     /// The Framed bar's own label: the same name and phone suffix, in the
@@ -595,16 +720,16 @@ final class StreamChromeView: NSView {
         framedView.layoutSubtreeIfNeeded()
     }
 
-    /// The e2e's view of our title — Framed's frame is the only chrome of
-    /// ours that draws one; Compact and full screen show the window's own
-    /// title in AppKit's title bar. The text itself is never written to the
-    /// state.
-    var barTitleVisible: Bool {
-        framedGeometry && !framedView.titleIsHidden
-    }
+    /// The e2e's view of our title: Framed's frame or Compact's band; full
+    /// screen shows the window's own title in AppKit's title bar. The text
+    /// itself is never written to the state.
+    var barTitleVisible: Bool { barTitleRect != nil }
     var barTitleRect: NSRect? {
         if framedGeometry, !framedView.titleIsHidden {
             return convert(framedView.titleFrame, from: framedView)
+        }
+        if compactBand, !bandTitle.isHidden {
+            return bandTitle.frame
         }
         return nil
     }
@@ -649,7 +774,8 @@ final class StreamChromeView: NSView {
         titlebarControls.isHidden = !titlebarHosted
         if titlebarHosted {
             // Compact: the native title bar carries the row, `rightInset` in
-            // from its right end and centred on its line.
+            // from its right end and centred on its line; the band's title
+            // fits between the lights and it.
             hostControls(in: titlebarRow)
             let height = titlebarHeight
             let width = (HeaderBar.row(actions.actions, rightEdge: 0)?.width ?? 0) + HeaderBar.rightInset
@@ -849,12 +975,14 @@ final class StreamChromeView: NSView {
     }
 
     /// True at a point in this view that the chrome owns over the picture:
-    /// Framed's margins and rounded-off corners, and Immersive's pill while it
-    /// is up. Compact's title bar and full screen's are AppKit's, outside this
-    /// view. Clicks and hover share this one rule (ISS-49,
-    /// WIN-61): a point the chrome owns is never the phone's.
+    /// Compact's band (AppKit's title bar is over it), Framed's margins and
+    /// rounded-off corners, and Immersive's pill while it is up. Full
+    /// screen's title bar is AppKit's, outside this view. Clicks and hover
+    /// share this one rule (ISS-49, WIN-61): a point the chrome owns is never
+    /// the phone's.
     func ownsPoint(_ point: NSPoint) -> Bool {
         if isFullScreen { return false }
+        if compactBand { return point.y >= bounds.height - barHeight }
         if framedGeometry {
             return !FramedChrome.contentContains(point, in: bounds)
         }
@@ -884,7 +1012,7 @@ final class StreamChromeView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
-        if framedGeometry || (immersiveChrome && pillOnScreen) {
+        if compactBand || framedGeometry || (immersiveChrome && pillOnScreen) {
             onBarPress?()
             if event.clickCount == 2 {
                 window.performZoom(nil)
