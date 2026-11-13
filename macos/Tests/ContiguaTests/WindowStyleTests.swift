@@ -930,3 +930,41 @@ final class PhoneChromeTests: XCTestCase {
     }
 
 }
+
+/// The View menu's style group (MENU-4): ⌥⌘F is the group's key and always
+/// means "the next style", whichever item holds it when the press arrives —
+/// before, a press from Compact picked the item that carried the key
+/// (Framed) or nothing, and the cycle never reached Immersive (issue #45).
+final class StyleMenuPickTests: XCTestCase {
+    func testTheGroupsKeyAlwaysCyclesAndAClickPicks() {
+        for current in WindowStyle.allCases {
+            for picked in WindowStyle.allCases {
+                XCTAssertEqual(WindowStyle.menuPick(picked, current: current, fromStyleKey: true), .next,
+                               "⌥⌘F from \(current) on the \(picked) item")
+            }
+        }
+        XCTAssertEqual(WindowStyle.menuPick(.compact, current: .compact, fromStyleKey: false), .next,
+                       "re-picking the checked item is the group's key")
+        XCTAssertEqual(WindowStyle.menuPick(.immersive, current: .compact, fromStyleKey: false),
+                       .set(.immersive), "a click on another item picks it")
+    }
+
+    func testTheCycleVisitsEveryStyleInMenuOrder() {
+        XCTAssertEqual(WindowStyle.framed.next, .compact)
+        XCTAssertEqual(WindowStyle.compact.next, .immersive)
+        XCTAssertEqual(WindowStyle.immersive.next, .framed)
+    }
+
+    @MainActor func testOnlyOptionCommandFIsTheGroupsKey() throws {
+        func key(_ chars: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: 0, windowNumber: 0, context: nil,
+                                           characters: chars, charactersIgnoringModifiers: chars,
+                                           isARepeat: false, keyCode: 3))
+        }
+        XCTAssertTrue(WindowStyle.isGroupKey(try key("f", [.command, .option])))
+        XCTAssertFalse(WindowStyle.isGroupKey(try key("f", [.command])), "⌘F is the phone's")
+        XCTAssertFalse(WindowStyle.isGroupKey(try key("f", [.command, .control])), "⌃⌘F is full screen")
+        XCTAssertFalse(WindowStyle.isGroupKey(nil), "a menu click has no key")
+    }
+}

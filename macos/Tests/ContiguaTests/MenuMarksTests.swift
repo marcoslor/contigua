@@ -418,6 +418,13 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(view.items.first { $0.title == "Framed" }?.state, .off)
         XCTAssertEqual(view.items.first { $0.title == "Compact" }?.state, .on)
         XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .off)
+        // The group's ⌥⌘F rides the checked style: the item a press re-picks
+        // is the one that shows the key (issue #45).
+        XCTAssertEqual(view.items.first { $0.title == "Compact" }?.keyEquivalent, "f")
+        XCTAssertEqual(view.items.first { $0.title == "Compact" }?.keyEquivalentModifierMask,
+                       [.command, .option])
+        XCTAssertEqual(view.items.first { $0.title == "Framed" }?.keyEquivalent, "")
+        XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.keyEquivalent, "")
         XCTAssertEqual(hideItem.isEnabled, false, "Hide Controls is disabled on Compact")
         XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on,
                        "the stored choice's mark still shows, greyed")

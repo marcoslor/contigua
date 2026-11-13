@@ -227,17 +227,17 @@ struct AppCommands: Commands {
             // AppKit item inserted here is dropped the moment SwiftUI rebuilds
             // the menu — how the person's v104 and v107 menus lost these. ⌥⌘F
             // is the group's: it re-picks the checked style, which this binding
-            // reads as "the next one".
+            // reads as "the next one". MenuMarks moves the key onto the
+            // checked style; this one is only where SwiftUI first puts it.
             Picker(selection: Binding(
                 get: { MenuBarModel.shared.snapshot.style },
                 set: { picked in
-                    // The group's ⌥⌘F re-picks the checked style, which this
-                    // binding reads as "the next one"; a pick of another style
-                    // sets it.
-                    if picked == MenuBarModel.shared.snapshot.style {
-                        controller.windows.toggleKeyWindowStyle()
-                    } else {
-                        controller.windows.setKeyWindowStyle(picked)
+                    // The group's ⌥⌘F is "the next style" whichever item
+                    // holds it; a click on another style sets that one.
+                    switch WindowStyle.menuPick(picked, current: MenuBarModel.shared.snapshot.style,
+                                                fromStyleKey: WindowStyle.isGroupKey(NSApp.currentEvent)) {
+                    case .next: controller.windows.toggleKeyWindowStyle()
+                    case .set(let style): controller.windows.setKeyWindowStyle(style)
                     }
                 })) {
                 Text(WindowStyle.framed.label)

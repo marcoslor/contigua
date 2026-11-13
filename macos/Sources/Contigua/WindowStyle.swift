@@ -61,6 +61,37 @@ enum WindowStyle: String, CaseIterable {
         self = style
     }
 
+    /// The style after this one in the menu's order: ⌥⌘F's cycle.
+    var next: WindowStyle {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? 0
+        return all[(index + 1) % all.count]
+    }
+
+    /// What a pick in View's style group means (MENU-4).
+    enum MenuPick: Equatable {
+        /// The group's ⌥⌘F: the next style.
+        case next
+        case set(WindowStyle)
+    }
+
+    /// The group's ⌥⌘F is the next style whichever item holds the key when
+    /// the press arrives (MenuMarks moves it onto the checked one, but a
+    /// SwiftUI rebuild puts it back on the first); re-picking the checked
+    /// item is the same; a click on another item picks it.
+    static func menuPick(_ picked: WindowStyle, current: WindowStyle, fromStyleKey: Bool) -> MenuPick {
+        fromStyleKey || picked == current ? .next : .set(picked)
+    }
+
+    /// The group's key: ⌥⌘F and nothing else (⌘F is the phone's, ⌃⌘F full
+    /// screen's).
+    static func isGroupKey(_ event: NSEvent?) -> Bool {
+        guard let event, event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        return flags == [.command, .option] && event.charactersIgnoringModifiers?.lowercased() == "f"
+    }
+
     /// The padding the style adds around the stream. Full screen never has
     /// windowed chrome in any style.
     func insets(fullScreen: Bool) -> NSEdgeInsets {

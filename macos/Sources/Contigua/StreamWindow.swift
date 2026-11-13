@@ -696,9 +696,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     @objc func toggleStyleMenuAction(_ sender: Any?) { toggleStyle() }
 
     func toggleStyle() {
-        let styles = WindowStyle.allCases
-        guard let index = styles.firstIndex(of: style) else { return }
-        setStyle(styles[(index + 1) % styles.count])
+        setStyle(style.next)
     }
     /// A link or handoff window learned the app it shows: the stored choice
     /// for that package now applies (a no-op when it agrees).
