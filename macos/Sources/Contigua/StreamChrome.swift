@@ -937,11 +937,23 @@ final class StreamChromeView: NSView {
         return members
     }
 
-    /// One fade for the whole pill: every piece in the same animation group.
+    /// Reduce Motion, read when the pill comes or goes (tests set it).
+    var reduceMotion: () -> Bool = {
+        Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+
+    /// One fade for the whole pill: every piece in the same animation group;
+    /// none under Reduce Motion.
     /// A view that has been hidden since it was made has no layer yet, and an
     /// alpha change on it is not animated (the glass and the lights popped in
     /// on the first reveal): each piece is layer-backed before the fade.
     private func fadePill(_ members: [NSView], to alpha: CGFloat, completion: @escaping () -> Void) {
+        guard !reduceMotion() else {
+            // Reduce Motion: the whole pill comes or goes at once, still as one.
+            members.forEach { $0.alphaValue = alpha }
+            completion()
+            return
+        }
         for view in members where view.layer == nil { view.wantsLayer = true }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = DwellChrome.pillFade

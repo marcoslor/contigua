@@ -650,6 +650,7 @@ final class StreamChromeStyleTests: XCTestCase {
         func fade(_ view: NSView) -> CABasicAnimation? {
             view.layer?.animation(forKey: "opacity") as? CABasicAnimation
         }
+        chrome.reduceMotion = { false }
 
         chrome.setPill(true)
         chrome.layoutChrome()
@@ -672,6 +673,39 @@ final class StreamChromeStyleTests: XCTestCase {
         pump(DwellChrome.pillFade + 0.15)
         for (name, view) in members {
             XCTAssertTrue(view.isHidden || view.alphaValue < 0.01, "\(name) is gone once the fade has run")
+        }
+    }
+
+    /// Reduce Motion: the pill and its members show and go at once, together,
+    /// with no fade (WIN-74, CONV-MAC-22).
+    func testThePillDoesNotFadeUnderReduceMotion() throws {
+        let manager = makeManager(choose: .immersive)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        let window = try XCTUnwrap(controller.window)
+        let chrome = controller.chrome
+        chrome.reduceMotion = { true }
+        let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        let members: [(String, NSView)] = [("glass", chrome.pill), ("Live Text", chrome.liveTextButton)]
+            + lights.enumerated().map { ("light \($0.offset)", $0.element as NSView) }
+
+        chrome.setPill(true)
+        chrome.layoutChrome()
+        for (name, view) in members {
+            XCTAssertFalse(view.isHidden, "\(name) shows with the pill")
+            XCTAssertNil(view.layer?.animation(forKey: "opacity"), "\(name) does not fade in")
+            XCTAssertEqual(view.alphaValue, 1, "\(name) is up at once")
+        }
+
+        chrome.setPill(false)
+        chrome.layoutChrome()
+        for (name, view) in members {
+            XCTAssertNil(view.layer?.animation(forKey: "opacity"), "\(name) does not fade out")
+            XCTAssertTrue(view.isHidden || view.alphaValue < 0.01, "\(name) is gone at once")
         }
     }
 
