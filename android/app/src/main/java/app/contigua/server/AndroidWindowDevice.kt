@@ -11,7 +11,12 @@ import java.lang.reflect.InvocationTargetException
  * by reflection: its calls are system APIs, and the service is the shell user
  * with `CREATE_VIRTUAL_DEVICE` (docs/specs/app-windows.md WIN-75).
  */
-internal class AndroidWindowDevice(private val device: Any, val deviceId: Int) {
+internal class AndroidWindowDevice(
+    private val device: Any,
+    val deviceId: Int,
+    /** The panel's refresh floor, held for the device's life (WIN-76). */
+    private val floor: RefreshFloor,
+) {
 
     /** A display of this device's own group; throws when the device is gone. */
     fun createDisplay(config: VirtualDisplayConfig): VirtualDisplay {
@@ -25,6 +30,7 @@ internal class AndroidWindowDevice(private val device: Any, val deviceId: Int) {
     }
 
     fun close() {
+        floor.drop()
         runCatching { device.javaClass.getMethod("close").invoke(device) }
     }
 
@@ -97,8 +103,9 @@ internal class AndroidWindowDevice(private val device: Any, val deviceId: Int) {
                 }
                 "$name=$how"
             }
-            log("windowdevice: device $id made association=$association $policies")
-            return DeviceMake.Made(AndroidWindowDevice(device, id))
+            val floor = RefreshFloor(AndroidRefreshFloor::acquire)
+            log("windowdevice: device $id made association=$association $policies ${floor.hold()}")
+            return DeviceMake.Made(AndroidWindowDevice(device, id, floor))
         }
 
         /** The params, and the policy types they took. */

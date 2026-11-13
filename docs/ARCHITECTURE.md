@@ -251,6 +251,11 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
   it in the panel's group; the virtual device's display group is what avoids
   that (android/README.md). A phone where even that lands in group 0 cannot
   open app windows.
+- A display group of its own does not give a VD its own pace: SurfaceFlinger
+  paces every display by the built-in panel. In Always-On Display One UI caps
+  the panel at 30 Hz, so while the window device is open the phone holds a
+  60 Hz `RefreshRateMinLimitToken`, which outranks that cap; the platform
+  drops it with the process (WIN-76).
 
 ## Session end / battery (acceptance criteria, not suggestions)
 
