@@ -1865,8 +1865,11 @@ check_resize() {
     : > "$WORK/events.jsonl"
     FAKE_ARGS="--resize-delay-ms 4000" start_fake || return 1
     FAKE_ARGS=""
+    # Immersive: the window is exactly the stream, so each of its four edges
+    # is the picture's (the default Framed draws a frame round it).
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "pill"
     launch_shared --connect "127.0.0.1:$PORT" || return 1
-    local fw=640 fh=640 bar=28 edges win ew eh
+    local fw=640 fh=640 bar=0 edges win ew eh
     ew=$((fw * scale)); eh=$((fh * scale))
     open_shared --open com.android.settings --float-windows \
         --resize-stream "1:${fw}x${fh}-pt" || return 1
@@ -1979,6 +1982,9 @@ check_resize() {
 
 check_dragbar() {
     clean
+    # Compact: the stream under AppKit's title bar, nothing at the sides or
+    # bottom, so every edge of the window is the picture's edge.
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "bar"
     # The phone answers a resize the way the real one did while the person
     # dragged: 30-55 ms to encode its first frame at the new size, plus the
     # link. 150 ms keeps the last frame filling the window long enough to see
@@ -2001,17 +2007,18 @@ check_dragbar() {
         bad "DRAGBAR no first video config"
         stop_app; stop_fakephone; return 1
     fi
-    local bar=28
-    local id
-    id="$(await_window '$4 == 480 && $5 == 428')" \
-        || { bad "DRAGBAR no 480x428 pt window (480x400 stream + 28 pt bar)"; stop_app; stop_fakephone; return 1; }
+    local bar id
+    id="$(await_window '$4 == 480 && $5 > 400 && $5 < 460')" \
+        || { bad "DRAGBAR no 480 pt Compact window over the 480x400 stream"; stop_app; stop_fakephone; return 1; }
     wait_until 10 chrome_has "loading=0" \
         || bad "DRAGBAR the first frame never filled the window (state: $(chrome_state))"
     sleep 1
+    bar="$(titlebar_height)"
+    [ -n "$bar" ] || { bad "DRAGBAR no title bar height in the state"; stop_app; stop_fakephone; return 1; }
 
     local spec name amount steps out cap before after before_config summary
     # 25 pt per data step: about 1500 pt/s at a 60 Hz cadence. The window
-    # starts at 480x428; right +300 and bottom +200 fit the 1280x800 run
+    # starts at 480 pt wide; right +300 and bottom +200 fit the 1280x800 run
     # display, and top +100 (growing upward) still fits.
     for spec in "right:300:12" "bottom:200:8" "top:100:4"; do
         IFS=: read -r name amount steps <<<"$spec"
@@ -2119,9 +2126,9 @@ check_crisp() {
         sleep 1
         shot_window "$win" "$WORK/crisp-$label-window.png" \
             || { bad "[CRISP] $label: no window capture"; return 1; }
-        # The video is the window's bottom h*scale rows (the Compact bar sits
-        # above it). This is the drawn rect for these two sizes both before
-        # the fix (the quantisation is stretched) and after it (1:1).
+        # The video is the window's bottom h*scale rows (in Immersive, all of
+        # it). This is the drawn rect for these two sizes both before the fix
+        # (the quantisation is stretched) and after it (1:1).
         shot_h="$(sips -g pixelHeight "$WORK/crisp-$label-window.png" 2>/dev/null \
             | awk '/pixelHeight/{print $2}')"
         [ -n "$shot_h" ] || { bad "[CRISP] $label: cannot read the capture"; return 1; }
@@ -2150,6 +2157,9 @@ check_crisp() {
     : > "$WORK/events.jsonl"
     FAKE_ARGS="--encoder-report --encoder-align 2 --crisp-pattern $cr" start_fake || return 1
     FAKE_ARGS=""
+    # Immersive: the window is exactly the stream (the default Framed adds
+    # a frame round it), so the window's width is the stream's.
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "pill"
     launch_shared --connect "127.0.0.1:$PORT" || return 1
 
     check_crisp_size control "$control"
@@ -3242,17 +3252,22 @@ check_chrome() {
         local style_name
         for style_name in framed compact immersive; do
             next_shared
-            rm -f "$WORK/fs-shown" "$WORK/fs-exit"
-            printf '%s\n' "wait 1" "windowstyle $style_name" "wait 1" "fullscreen" "wait 6" \
+            rm -f "$WORK/fs-styled" "$WORK/fs-shown" "$WORK/fs-exit"
+            printf '%s\n' "wait 1" "windowstyle $style_name" "waitfile $WORK/fs-styled 30" "fullscreen" "wait 6" \
                 "waitfile $WORK/fs-shown 90" "fullscreen" "wait 8" "waitfile $WORK/fs-exit 90" "wait 10" \
                 > "$WORK/chrome-fs.txt"
             open_shared --open com.android.settings \
                 --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fs.txt" \
                 || { kill "$backdrop"; return 1; }
             win="$(await_window '$4 == 900 || $4 == 910')" || { bad "C14 no window before full screen"; kill "$backdrop"; return 1; }
+            # The windowed size to come back to is the picked style's, read
+            # once the switch has landed and before full screen starts.
+            wait_until 10 chrome_is "style=$style_name " || bad "C14 the $style_name switch never landed: $(chrome_state)"
+            sleep 0.5
             local windowed_w windowed_h
             windowed_w="$(windows | awk -v id="$win" '$1 == id {print $4}')"
             windowed_h="$(windows | awk -v id="$win" '$1 == id {print $5}')"
+            touch "$WORK/fs-styled"
             if wait_until 20 chrome_all fullscreen=yes title_visible=yes lights_managed=appkit pill=hidden bar_title=0; then
                 ok "[WIN-14] C14 $style_name full screen is the system's title bar and none of ours ($(chrome_state))"
             else
@@ -12702,7 +12717,7 @@ check_styles_shots() {
                         windowed_w="$(windows | awk -v id="$id" '$1 == id {print $4}' | head -1)"
                         windowed_h="$(windows | awk -v id="$id" '$1 == id {print $5}' | head -1)"
                         touch "$WORK/ss-begin"
-                        full="$win"
+                        full="$id"
                         # Full screen is the system's own title bar in every
                         # style, with none of our chrome (WIN-14).
                         if wait_until 20 chrome_all fullscreen=yes lights_managed=appkit title_visible=yes pill=hidden bar_title=0; then
