@@ -1034,8 +1034,7 @@ final class StreamChromeView: NSView {
     /// The capsule material follows the window's appearance (light or dark).
     /// A chrome built into a window that is already dark never hears a change,
     /// so the material is also taken when it lands in its window; without that
-    /// the bar stayed light in a Dark window (the capture in
-    /// `.agent/conv-fixes-1/` showed it).
+    /// the bar stayed light in a Dark window (a capture showed it).
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyMaterial()

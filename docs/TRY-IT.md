@@ -361,7 +361,7 @@ bash tools/emulator/setup.sh        # SDK packages + AVD (idempotent)
 bash tools/emulator/preflight.sh    # no device: syntax, APK, manifest, budget
 bash tools/emulator/verify-batch.sh --check   # rehearse the boot command
 bash tools/emulator/start.sh        # boot, Shizuku, build+install, 127.0.0.1:47811
-bash tools/emulator/flow.sh         # the POC check; frames in .agent/emu/frames/
+bash tools/emulator/flow.sh         # the POC check; frames in .work/emu/frames/
 python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 \
     --state tools/emulator/.cache/deckctl-state.json apps
 ```
@@ -382,8 +382,8 @@ timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
 That boots once and runs media control, screen off/wake and the icon renders in
-one go, then kills the emulator. The maintainer runs it under a machine-wide
-lock script (`.agent/heavy.sh`) that is not part of the clone; you can leave it
+one go, then kills the emulator. The maintainer runs it under an optional machine-wide
+lock script (set CONTIGUA_HEAVY) that is not part of the clone; you can leave it
 out. The reliability rules learnt the hard way (explicit broadcast components,
 `-d` installs with a versionCode check, the shell-service retry) are in
 `tools/emulator/README.md`, which also covers pairing without a camera, port

@@ -40,7 +40,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_STATS_WORK:-/tmp/pd-stats-emu}"
-OUT="${CONTIGUA_STATS_OUT:-$MAIN_REPO/.agent/stats/emu}"
+OUT="${CONTIGUA_STATS_OUT:-$MAIN_REPO/.work/stats/emu}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"

@@ -415,8 +415,7 @@ internal class AudioCapture(
     }
 
     /**
-     * Registers the uid-filtered loop-back mix (one rule per window app; the
-     * exact construction probed in .agent/perapp/findings.md) and returns its
+     * Registers the uid-filtered loop-back mix (one rule per window app) and returns its
      * recording sink, or null when the framework rejects it — the caller then
      * falls back to all-audio. Storing `policy` before any later failure lets
      * that failure path unregister it, so nothing is left registered.

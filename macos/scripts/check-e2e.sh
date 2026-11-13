@@ -7944,7 +7944,7 @@ PY
 # delivery and the 30 s silence.
 check_drop_sources() {
     clean
-    local shots="$ROOT/.agent/paste-drop"
+    local shots="$ROOT/.work/paste-drop"
     mkdir -p "$shots"
     python3 - "$WORK" <<'PY'
 import os, struct, sys, zlib
@@ -8070,7 +8070,7 @@ PY
 # review (the pasteboard is saved and put back, text only, as check_clip does).
 check_paste() {
     clean
-    local saved="$WORK/pasteboard.saved" shots="$ROOT/.agent/paste-drop"
+    local saved="$WORK/pasteboard.saved" shots="$ROOT/.work/paste-drop"
     mkdir -p "$shots"
     pbpaste > "$saved" 2>/dev/null
     trap 'pbcopy < "$saved" 2>/dev/null; trap - RETURN' RETURN
@@ -15696,7 +15696,7 @@ deck_at_the_default_zoom() { [ "$(deck_stored_zoom)" = "1.25" ]; }
 # check_deck — the grid gets both kinds of icon the phone can send: fakephone
 # answers fg/bg layers for every 3rd app and a flat PNG for the rest. The Deck
 # shows both without errors and the grid is captured for the human (glass is
-# judged by eye in .agent/glass/; this check only asserts the wire and the
+# judged by eye in .work/glass/; this check only asserts the wire and the
 # log say both kinds arrived).
 # --- The Deck as a start page (ISS-74, DECK-26…DECK-31) ---------------------
 #
@@ -15878,9 +15878,9 @@ check_deckstart() {
 # display: the press and the click's linger at 760 and 1000 wide, light and
 # dark. PD_RAILPRESS_SHOT_TAG names the build (feat/main); PD_RAILPRESS_SHOT_MODE
 # hover captures main's hover-driven emphasis instead (it has no press state).
-# The shots go to $ROOT/.agent/railpress/shots/ (gitignored) and are judged by eye.
+# The shots go to $ROOT/.work/railpress/shots/ (gitignored) and are judged by eye.
 railpress_shots() {
-    local out="$ROOT/.agent/railpress/shots"
+    local out="$ROOT/.work/railpress/shots"
     local tag="${PD_RAILPRESS_SHOT_TAG:-feat}"
     local mode="${PD_RAILPRESS_SHOT_MODE:-press}"
     mkdir -p "$out"

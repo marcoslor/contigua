@@ -331,7 +331,7 @@ final class VideoFillTests: XCTestCase {
         }
     }
 
-    /// The reported run (`.agent/barname`, ISS-87): a 301 x 653 pt stream
+    /// The reported run (ISS-87): a 301 x 653 pt stream
     /// under the 28 pt bar, the fake phone's 16 px mirror frame at 592 x 1280.
     /// On main the phone-mode fit leaves 1.09 pt above and below (a black row
     /// under the bar and one at the window's bottom edge), and the picture's

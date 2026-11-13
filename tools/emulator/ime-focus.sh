@@ -33,7 +33,7 @@ cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47996}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
@@ -52,7 +52,7 @@ check_mode() {
     || { echo "CHECK FAIL: py_compile ime-focus.py"; return 1; }
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; return 1; }
   [ -f "$APK" ] || { echo "CHECK FAIL: no $APK (gradlew :app:assembleDebug)"; return 1; }
-  echo "--- budget: $(cat "$MAIN_REPO/.agent/budgets/ime-focus" 2>/dev/null || echo '?')"
+  echo "--- budget: $(cat "$MAIN_REPO/.work/budgets/ime-focus" 2>/dev/null || echo '?')"
   echo "--- boots in the ledger for ime-focus: $(ledger_boots /tmp/contigua-boots.ledger ime-focus)"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"

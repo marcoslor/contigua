@@ -3,7 +3,7 @@
 Research for WIN-44…WIN-49 (ISS-4). What Android 16 does when an app starts a
 task while one of its apps is streamed, and the two binder calls that make the
 second window work. Measured on the API 36 emulator rig with Chrome 133 and
-Settings; the raw boots are in `.agent/instream/spike-in-stream.md`.
+Settings. The raw boots are not in the repo.
 
 ## The trigger: the task is born on the phone, not on the stream
 

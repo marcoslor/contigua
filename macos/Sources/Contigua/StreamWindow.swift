@@ -8,7 +8,7 @@ import SwiftUI
 /// A stream window whose zoom the app can run itself. AppKit's zoom animation
 /// holds the main run loop for its whole length; while it runs no decoded
 /// frame reaches the display layer, the phone's sender backs up and re-attaches
-/// its encoder when the backlog clears (measured in .agent/zoom-jank). The
+/// its encoder when the backlog clears (measured). The
 /// controller animates the same frame sequence from its display link instead,
 /// as a live resize, and the window keeps streaming.
 final class StreamWindow: NSWindow {

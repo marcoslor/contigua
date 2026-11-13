@@ -9,7 +9,7 @@
 # this worktree), pairs once, opens a phone mirror, resizes it through six sizes (odd ones
 # included), and at each size checks the decoded frame against the picture rect the phone
 # named (window.content): the picture is where the rect says, to 1 px, and no band lies inside it.
-# The emulator is killed at the end whatever happened. Results: .agent/emu/mirror-frames.log.
+# The emulator is killed at the end whatever happened. Results: .work/emu/mirror-frames.log.
 set -u
 
 MODE=run
@@ -26,7 +26,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47811}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh

@@ -10,7 +10,7 @@ import android.content.pm.ActivityInfo
  * `documentLaunchMode`; `PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` is the
  * app's own claim that it is built for several windows. Both must agree — the
  * property alone is a claim ([AndroidLauncher] reads it), the modes alone would
- * enable every app on the phone (`.agent/multiwin/spike.md`). An allow-list
+ * enable every app on the phone. An allow-list
  * covers an app found to work without the property; empty today.
  *
  * Pure: the PackageManager reads live in [AndroidLauncher], so every

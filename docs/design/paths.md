@@ -1,7 +1,7 @@
 # Paths — the session layer
 
 Design for epic "direct link", phase P0. Implements decisions D1–D5 and D10 of
-`.agent/direct-link/plan.md`; the providers themselves (D6–D9) are in
+the epic plan; the providers themselves (D6–D9) are in
 `docs/design/direct-link.md`. The wire is `docs/PROTOCOL.md` § "Paths"; the
 requirements are `docs/specs/transport.md` (`PATH-n`).
 

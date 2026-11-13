@@ -1110,8 +1110,8 @@ the bridge's own constant.
   a phone that takes 1 s each all answering with bytes (the last waits past 8 s
   before it starts).
 - **One VM boot:** `files-thumbs` — in this order: (a) Finder's icon view shows
-  the fake phone's green thumbnail for `photo.jpg` (the screenshot, taken
-  first, is `.agent/finder-thumbs/after-files-thumbs.png`) while the item stays
+  the fake phone's green thumbnail for `photo.jpg` (the screenshot is taken
+  first) while the item stays
   undownloaded; (b) the PDF shows its type icon and the fake phone's log has no
   `fs.thumb` for it; (c) a second JPEG (`lost.jpg`) is held past the deadline:
   one timeout and one `fs.cancel`, and the system's re-ask is recorded, never

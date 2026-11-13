@@ -18,7 +18,7 @@
 # display 0 back (`mWakefulness=Awake`, display 0 ON in `dumpsys display`) and
 # `state.screen on` arrives; the keyguard is still locked afterwards. It never
 # unlocks or dismisses the keyguard and never changes lock settings. Results are
-# states only, in .agent/emu/phone-screen.log.
+# states only, in .work/emu/phone-screen.log.
 set -u
 
 MODE=run
@@ -37,7 +37,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47811}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh

@@ -811,7 +811,7 @@ One app on one phone can run in several windows, one per task, when the Mac asks
 for another (`window.open` with `newInstance`, or a click on the New Window
 command). The Mac's only evidence that an app can do it is `apps.multi`, and the
 phone counts the windows it will run. The evidence for what the platform allows
-and what a window costs is `.agent/multiwin/spike.md`.
+and what a window costs came from a spike that is not in the repo.
 
 - One stream is one virtual display and one task. `newInstance` never reuses an
   existing task; without it the phone launches with `FLAG_ACTIVITY_NEW_TASK` and

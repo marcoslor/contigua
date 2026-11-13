@@ -7,9 +7,9 @@
 #
 # ONE emulator boot. The APKs must already be built with K1
 # (`cd android && ./gradlew :app:assembleDebug`):
-#   .agent/clip-su/app-debug-main.apk    built from the branch point
-#   .agent/clip-su/app-debug-fixed.apk   built from this branch
-#   .agent/clip-life/app-debug-life.apk  built from fix/clip-life
+#   .work/clip-su/app-debug-main.apk    built from the branch point
+#   .work/clip-su/app-debug-fixed.apk   built from this branch
+#   .work/clip-life/app-debug-life.apk  built from fix/clip-life
 # start.sh runs with --no-build so no JVM ever runs on the host.
 #
 # Phases, all on emulator-5554:
@@ -49,7 +49,7 @@ cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47992}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/clip-life/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/clip-life/emu"
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
@@ -57,9 +57,9 @@ mkdir -p "$CONTIGUA_AGENT_DIR"
 OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/clip-root.log"
 APK_BUILD="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-APK_MAIN="$PWD/.agent/clip-su/app-debug-main.apk"
-APK_FIXED="$PWD/.agent/clip-su/app-debug-fixed.apk"
-APK_LIFE="$PWD/.agent/clip-life/app-debug-life.apk"
+APK_MAIN="$PWD/.work/clip-su/app-debug-main.apk"
+APK_FIXED="$PWD/.work/clip-su/app-debug-fixed.apk"
+APK_LIFE="$PWD/.work/clip-life/app-debug-life.apk"
 STATE="$CACHE_DIR/deckctl-state.json"
 PKG=app.contigua
 ACT="$PKG/.app.PasteDebugActivity"

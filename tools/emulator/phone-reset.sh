@@ -35,7 +35,7 @@ RUN="$(date +%s)"
 STATE="$CACHE_DIR/phone-reset-$RUN-a.json"
 CODE="$CACHE_DIR/phone-reset-code.txt"
 WATCH="$CACHE_DIR/phone-reset-watch.log"
-SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.agent/phone-reset/shots}"
+SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.work/phone-reset/shots}"
 MAX_CLOSE_S=5
 
 dc() {

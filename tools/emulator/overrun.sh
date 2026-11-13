@@ -37,7 +37,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_OVERRUN_WORK:-/tmp/pd-overrun-emu}"
-OUT="${PD_OVERRUN_OUT:-$MAIN_REPO/.agent/overrun/emu}"
+OUT="${PD_OVERRUN_OUT:-$MAIN_REPO/.work/overrun/emu}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"

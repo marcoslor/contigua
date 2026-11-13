@@ -15,7 +15,7 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 EMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EMU_DIR/../.." && pwd)"
 # The main checkout: shared budgets and run output live in its (gitignored)
-# .agent/, also when this script runs from a worktree. A plain clone is its own.
+# .work/, also when this script runs from a worktree. A plain clone is its own.
 _common="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _common=""
 MAIN_REPO=""
 [ -n "$_common" ] && MAIN_REPO="$(cd "$_common/.." 2>/dev/null && pwd)"
@@ -33,7 +33,7 @@ AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
 AVD_NAME="${CONTIGUA_AVD:-contigua-api36}"
 SERIAL="${CONTIGUA_SERIAL:-emulator-5554}"
 PORT="${CONTIGUA_PORT:-47811}"
-AGENT_DIR="${CONTIGUA_AGENT_DIR:-$REPO_ROOT/.agent/emu}"
+AGENT_DIR="${CONTIGUA_AGENT_DIR:-$REPO_ROOT/.work/emu}"
 
 CACHE_DIR="$CACHE_DIR"
 AGENT_DIR="$AGENT_DIR"
@@ -248,7 +248,7 @@ restart_server() {
 }
 
 # Evidence for a service that died: the crash buffer and the app's own lines,
-# bounded, under $AGENT_DIR. The .agent tree is ignored by git: this is never
+# bounded, under $AGENT_DIR. The .work tree is ignored by git: this is never
 # committed.
 capture_crash() { # capture_crash <tag>
   local tag="$1"

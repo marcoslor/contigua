@@ -16,8 +16,8 @@
 # the end, whatever happened.
 #
 # Results: one `SECTION <name> PASS|FAIL <key numbers>` line per section, in
-# .agent/emu/verify-batch.log, with one full log per section beside it. Icon
-# layer PNGs go to .agent/rig-verify/icons/ (never committed). Only counts,
+# .work/emu/verify-batch.log, with one full log per section beside it. Icon
+# layer PNGs go to .work/rig-verify/icons/ (never committed). Only counts,
 # sizes, states and timings are logged — never a track, an artist or an icon's
 # pixels in text.
 set -u
@@ -36,14 +36,14 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47982}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
 OUT="$CONTIGUA_AGENT_DIR"
 LOG="$OUT/verify-batch.log"
-ICONS="$REPO_ROOT/.agent/rig-verify/icons"
+ICONS="$REPO_ROOT/.work/rig-verify/icons"
 FAILED=0
 
 # One SECTION line on the console and in the log, the shape the brief asks for.

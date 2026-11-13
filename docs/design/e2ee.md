@@ -4,12 +4,12 @@ Launch blocker: docs/ROADMAP.md, "End-to-end encryption (P0)". Fixed decisions a
 NOT reopened here (TLS 1.3 only; ECDSA P-256; self-signed certs; pinned at
 pairing; protocol v2; no plaintext/v1 fallback; one forced re-pair; framing
 unchanged; keys never leave the device).
-Revision 2 applies the architect's review (.agent/e2ee/review1.md): R1 (blocker)
+Revision 2 applies the architect's review: R1 (blocker)
 replaces the fingerprint-hash pairing code with commit/nonce/reveal over the TLS
 exporter; R2 keeps the QR as Mac-shows/phone-scans (Mac fingerprint + one-time
 secret); R3 disables resumption/0-RTT, adds key hygiene and drops the mDNS TXT
 `fp64`. Answers the brief's 8 questions with spike evidence, then the phase-2
-steps. Spikes stay uncommitted in .agent/e2ee/spikes/ (s1-mac Swift, s2-jvm Java).
+steps. The spikes are not committed (s1-mac Swift, s2-jvm Java).
 
 Fixed decisions restated for rev 2: the QR is what the MAC shows and the PHONE
 scans; it carries the Mac's certificate fingerprint `f` and a one-time secret
@@ -34,7 +34,7 @@ Evidence (spike s1-mac, two rounds):
   Software-backed identities are unusable with Network.framework TLS on macOS
   26.x; the only remaining route (keychain + ACL-managed items) contradicts
   "no default-keychain writes" + ad-hoc-signed dev builds (RULES 3). Evidence
-  kept in .agent/e2ee/spikes/s1-mac/spike-logs/.
+  kept in the s1-mac spike logs (not in the repo).
 - Round 2 — **SwiftNIO-SSL 2.37.5 + SwiftNIO + swift-certificates** (SwiftPM):
   mutual TLS 1.3 with in-memory CryptoKit P-256 keys, self-signed certs
   (SAN, EKU server+client), pinning by per-side trust roots — matrix passes.
@@ -406,7 +406,7 @@ Requirement (R1): BOTH stacks must expose the RFC 8446 exporter with the same 32
 bytes for the same session, Swift client ↔ JVM server, label
 `EXPORTER-contigua-pair`, empty context.
 
-Spike modes added (kept in .agent/e2ee/spikes/, uncommitted):
+Spike modes added (the spikes are not committed):
 - s1-mac: `Spike exporter-client --port P` — NIOSSL client, keylog callback,
   `exportSecret(...)` per §4b, waits for the phone's `0xFE` proof frame, prints
   `s1 exporter= <64 hex>`( + rereads the keylog once from a second derivations
@@ -476,11 +476,11 @@ closes it:
 
 ## Spike artifacts + record of what failed (phase 1)
 
-- .agent/e2ee/spikes/s1-mac/ — Swift spike v2 (NIOSSL): matrix 3/3 PASS, bench
+- s1-mac — Swift spike v2 (NIOSSL): matrix 3/3 PASS, bench
   numbers above, interop to the JVM server OK. First-round Apple-TLS attempts
   preserved in spike-logs/ (in-memory SecIdentityCreate + custom file keychain
   both hang; `-9810` when peer auth is off), kept as the Q1 evidence trail.
-- .agent/e2ee/spikes/s2-jvm/Spike2.java — SunJSSE TLS 1.3, mutual auth, pin by
+- s2-jvm Spike2.java — SunJSSE TLS 1.3, mutual auth, pin by
   point FP; Java↔Java bench + interop with S1 (SunJSSE only because the spike
   runs on the JVM; Android's Conscrypt is BoringSSL and faster — phase 2 re-runs
   on-device before numbers go to ROADMAP). Rev 2 adds the Conscrypt uber-jar

@@ -238,7 +238,7 @@ def main(argv):
     parser.add_argument("--out")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
-    out_dir = args.out or os.path.join(HERE, "..", "..", ".agent", "emu", "mirror-frames")
+    out_dir = args.out or os.path.join(HERE, "..", "..", ".work", "emu", "mirror-frames")
     os.makedirs(out_dir, exist_ok=True)
     if args.self_test:
         return self_test(out_dir)

@@ -381,7 +381,7 @@ def main(argv):
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     out_dir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       "..", "..", ".agent", "direct-link", "p1-confirm")
+                                       "..", "..", ".work", "direct-link", "p1-confirm")
     os.makedirs(out_dir, exist_ok=True)
     if args.self_test:
         return self_test(out_dir)

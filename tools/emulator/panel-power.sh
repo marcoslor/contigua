@@ -27,7 +27,7 @@
 #   (e) the person's power press (`input keyevent KEYCODE_POWER`) ends the hold
 #       by itself, with NORMAL.
 # The evidence is the app's own state lines (plans, mode transitions, counts),
-# never pixels. Results go to .agent/emu/panel-power.log. It never unlocks or
+# never pixels. Results go to .work/emu/panel-power.log. It never unlocks or
 # dismisses the keyguard, never changes lock settings and never touches a phone
 # but $SERIAL.
 set -u
@@ -48,7 +48,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47812}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 # start.sh sets this property before it launches the server, so the policy is
 # built forced. Setting it after the boot (the old order) left the Shizuku
 # user-service process alive and unforced; the init-line check below catches it.

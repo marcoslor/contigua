@@ -158,8 +158,7 @@ promise is covered by K2.
 Visual items for prototypes: the drop target's highlight for the new types, the refusal line
 for a non-image URL, and the paste pills (A4: the existing glass pill component with new copy and
 one button — "Pasting…", "Image pasted. Nothing there?", "Nothing pasted." — light and dark,
-Reduce Motion and Reduce Transparency; the six captures are in
-`.agent/paste-drop/`).
+Reduce Motion and Reduce Transparency; the six captures were checked by eye).
 
 ## Drag out (design only, not built)
 The window exposes a file-promise drag (qualifier: a mouse-side long-press, since the input mapper

@@ -40,7 +40,7 @@
 # reaction is the phone's fault and not the script's coordinates.
 #
 # The evidence is the phone's own state lines and the session's own timings,
-# never pixels: .agent/locked-input/locked-open.log, -logcat.txt, -display-*.log.
+# never pixels: .work/locked-input/locked-open.log, -logcat.txt, -display-*.log.
 set -u
 
 MODE=run
@@ -73,7 +73,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47996}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/locked-input"
+export CONTIGUA_AGENT_DIR="$PWD/.work/locked-input"
 # start.sh sets this property before it launches the server, so the policy is
 # built forced. vd_panel_group is set below, before the server restarts.
 export CONTIGUA_FORCE_PANEL_OFF=1
