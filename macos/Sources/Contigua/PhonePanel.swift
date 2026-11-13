@@ -679,6 +679,8 @@ struct PhonePanelView: View {
                 gearButton(onGear)
                     .offset(x: -inset, y: PhonePanelMetrics.gearTop)
                     .zIndex(1)
+                    // Drawn order is not AX order: VoiceOver reads the gear first (PANEL-7).
+                    .accessibilitySortPriority(1)
             }
             card
                 .onGeometryChange(for: CGFloat.self) { proxy in
@@ -803,6 +805,7 @@ struct PhonePanelView: View {
                 .font(.system(size: 22))
                 .foregroundStyle(.tint)
                 .frame(width: 26)
+                .accessibilityHidden(true) // decorative: the name line says which phone (PANEL-7)
             VStack(alignment: .leading, spacing: 2) {
                 nameLine
                 statusLine

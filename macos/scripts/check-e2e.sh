@@ -12422,8 +12422,9 @@ check_windows() {
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
     wait_until 20 events_have '"ev":"video"' \
         || bad "WIN-40 the stream never sent video"
-    wait_until 15 chrome_has "bar_blur_radius=30 haze=1" \
-        && ok "[WIN-40] the live bar's system blur is 30 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]* haze=[0-9]*'))" \
+    # Two fields, matched apart: the state line puts the tint and title between them.
+    wait_until 15 eval 'chrome_has "bar_blur_radius=30 " && chrome_has " haze=1 "' \
+        && ok "[WIN-40] the live bar's system blur is 30 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]*\| haze=[0-9]*' | tr -d '\n'))" \
         || bad "[WIN-40] the live bar: $(chrome_state)"
     stop_app
     stop_fakephone
@@ -16130,8 +16131,15 @@ def overlap(screen):
     return max(0, min(x + w, deck[0] + deck[2]) - max(x, deck[0])) \
         * max(0, min(y + h, deck[1] + deck[3]) - max(y, deck[1]))
 vx, vy, vw, vh = max(screens, key=overlap)[4:]
-inside = sx >= vx and sy >= vy and sx + rail_width <= vx + vw and sy + railh <= vy + vh
-print("rail %.0f..%.0f,%.0f on the visible frame %.0f..%.0f" % (sx, sx + rail_width, sy, vx, vx + vw))
+# The rail's point is in Quartz space (top-left origin of the main screen); the
+# screens report is AppKit space (bottom-left). They agree only for a screen
+# whose top is the main screen's top, so convert: a closed lid or a display
+# arranged above or below moved the run's display and failed this gate.
+main_h = next(s for s in screens if s[0] == 0 and s[1] == 0)[3]
+bottom = main_h - sy - railh
+inside = sx >= vx and bottom >= vy and sx + rail_width <= vx + vw and main_h - sy <= vy + vh
+print("rail x %.0f..%.0f y %.0f..%.0f on the visible frame x %.0f..%.0f y %.0f..%.0f"
+      % (sx, sx + rail_width, bottom, bottom + railh, vx, vx + vw, vy, vy + vh))
 sys.exit(0 if inside else 1)
 PY
         then
