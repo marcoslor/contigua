@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Builds Contigua.app from the SwiftPM package and ad-hoc codesigns it.
+# Builds Contigua.app from the SwiftPM package and codesigns it: with
+# CONTIGUA_SIGN_IDENTITY when set (a certificate name or SHA-1 from
+# `security find-identity -p codesigning`), else ad-hoc. macOS will not keep a
+# Local Network grant for an ad-hoc app, so a build you pair with needs one
+# (docs/TRY-IT.md, step 5).
 #
 #   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls]
 #
@@ -19,6 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # One app version for every bundle, from the repo root.
 APP_VERSION="$(tr -d '[:space:]' < ../VERSION)"
+SIGN_ID="${CONTIGUA_SIGN_IDENTITY:--}"
 
 APP="build/Contigua.app"
 VARIANT="dev"
@@ -329,7 +334,7 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$APPEX"
+codesign --force --sign "$SIGN_ID" --entitlements Extensions/Share/Share.entitlements "$APPEX"
 
 # File Provider extension (docs/design/files.md §1): the same swiftc shape as
 # Share, because SwiftPM cannot link an app extension's entry point. It is a
@@ -356,7 +361,7 @@ if [ "$WITH_FILES" = 1 ]; then
         -e "s/__FILES_GROUP__/$FILES_GROUP/" \
         Extensions/Files/Info.plist > "$FILES_APPEX/Contents/Info.plist"
     plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$FILES_APPEX/Contents/Info.plist"
-    codesign --force --sign - --entitlements "$FILES_ENTITLEMENTS" "$FILES_APPEX"
+    codesign --force --sign "$SIGN_ID" --entitlements "$FILES_ENTITLEMENTS" "$FILES_APPEX"
 fi
 
 # Control Center extension (docs/design/controls.md): the same swiftc shape as
@@ -404,7 +409,7 @@ if [ "$WITH_CONTROLS" = 1 ]; then
     sed -e "s/__CONTROLS_ID__/$CONTROLS_ID/" -e "s/__CONTROLS_TITLE__/$CONTROLS_TITLE/" \
         Extensions/Controls/Info.plist > "$CONTROLS_APPEX/Contents/Info.plist"
     plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$CONTROLS_APPEX/Contents/Info.plist"
-    codesign --force --sign - --entitlements Extensions/Controls/Controls.entitlements "$CONTROLS_APPEX"
+    codesign --force --sign "$SIGN_ID" --entitlements Extensions/Controls/Controls.entitlements "$CONTROLS_APPEX"
 fi
 
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
@@ -420,17 +425,17 @@ swiftc -O -module-name ContiguaShim -target "$(uname -m)-apple-macos26.0" -swift
 mkdir -p "$APP/Contents/Helpers"
 swiftc -O -module-name ContiguaMCP -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
     Shim/mcp.swift -o "$APP/Contents/Helpers/contigua-mcp"
-codesign --force --sign - "$APP/Contents/Helpers/contigua-mcp"
+codesign --force --sign "$SIGN_ID" "$APP/Contents/Helpers/contigua-mcp"
 
 if [ "$WITH_CONTROLS" = 1 ]; then
     # The app carries the App Group the controls extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
-    codesign --force --sign - --entitlements Extensions/Controls/ContiguaControls.entitlements "$APP"
+    codesign --force --sign "$SIGN_ID" --entitlements Extensions/Controls/ContiguaControls.entitlements "$APP"
 elif [ "$WITH_FILES" = 1 ]; then
     # The app carries the App Group the Files extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
-    codesign --force --sign - --entitlements "$APP_ENTITLEMENTS" "$APP"
+    codesign --force --sign "$SIGN_ID" --entitlements "$APP_ENTITLEMENTS" "$APP"
 else
-    codesign --force --sign - "$APP"
+    codesign --force --sign "$SIGN_ID" "$APP"
 fi
 echo "built $APP"

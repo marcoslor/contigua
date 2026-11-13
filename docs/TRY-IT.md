@@ -38,8 +38,8 @@ What you need to have before you start. The versions come from
 
 You do not need:
 
-- An Apple Developer ID or a paid Apple account. `macos/scripts/bundle.sh`
-  signs the app and its extensions ad-hoc (`codesign --force --sign -`).
+- An Apple Developer ID or a paid Apple account. You sign the app with a
+  certificate you make on your own Mac (step 5).
 - Root on the phone. The phone side runs inside Shizuku, which you start
   without root (step 4).
 - To unlock the phone. It stays locked while you use it.
@@ -173,8 +173,49 @@ survive swiping the app away and start when the phone restarts.
 
 ## 5. Build and run the Mac app
 
+### A signing certificate, once per Mac
+
+macOS keeps the app's Local Network permission only for an app signed with a
+certificate it trusts; without that, the Mac lists your phone but cannot pair
+with it. Make a local code-signing certificate once and trust it (macOS asks
+for your password):
+
+```bash
+cat > /tmp/contigua-cert.cfg <<'CFG'
+[req]
+distinguished_name=dn
+x509_extensions=ext
+prompt=no
+[dn]
+CN=Contigua Local Signing
+[ext]
+basicConstraints=critical,CA:false
+keyUsage=critical,digitalSignature
+extendedKeyUsage=critical,codeSigning
+CFG
+cd /tmp
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config contigua-cert.cfg \
+  -keyout contigua.key -out contigua.pem
+openssl pkcs12 -export -legacy -inkey contigua.key -in contigua.pem \
+  -out contigua.p12 -passout pass:contigua
+security import contigua.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P contigua -T /usr/bin/codesign
+security add-trusted-cert -r trustRoot -p codeSign \
+  -k ~/Library/Keychains/login.keychain-db contigua.pem
+rm contigua.key contigua.p12 contigua-cert.cfg
+cd -
+```
+
+`security find-identity -v -p codesigning` now lists "Contigua Local
+Signing". The certificate lives in your login keychain and is valid for ten
+years; nothing leaves your Mac. The first build asks whether `codesign` may
+use the key: choose **Always Allow**.
+
+### Build and install
+
 ```bash
 cd macos
+export CONTIGUA_SIGN_IDENTITY="Contigua Local Signing"
 ./scripts/install.sh
 open /Applications/Contigua.app
 cd ..
@@ -203,16 +244,18 @@ the installed app is fine.
 
 ### What macOS does with this app
 
-- **Gatekeeper.** The scripts build the app on your Mac and sign it ad-hoc.
+- **Gatekeeper.** The scripts build the app on your Mac and sign it there.
   Nothing in them downloads the bundle or sets a quarantine mark on it, so you
   open it with `open` or a double-click and macOS shows no "unidentified
   developer" prompt. If you copy the built app to another Mac through a
   download, that Mac may quarantine it; that is outside this guide.
 - **Local Network.** The app finds phones with Bonjour (`_contigua._tcp`) and
-  declares a Local Network usage text. On first launch macOS asks to allow
-  Local Network access. Allow it. If you refused, the app shows "Contigua needs
-  Local Network access" and a pointer to System Settings, Privacy & Security,
-  Local Network.
+  connects to them on your network, which needs Local Network access. On first
+  pairing macOS should ask; allow it. If pairing says "Couldn't reach" while
+  the phone is listed under Nearby, open System Settings, Privacy & Security,
+  Local Network and turn Contigua on. That switch only holds for an app built
+  with `CONTIGUA_SIGN_IDENTITY` set (above). The app does not yet name this
+  cause itself (#132).
 - **Login Items & Extensions.** The Share extension ("Open on Phone") and the
   Finder files extension need a one-time switch in System Settings, General,
   Login Items & Extensions. The app tells you when the files one is off ("Turn
