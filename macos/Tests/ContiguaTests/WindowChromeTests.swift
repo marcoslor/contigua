@@ -168,6 +168,32 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertNotEqual(BarTone.light.tint, BarTone.dark.tint)
     }
 
+    /// WIN-69: the band's controls are drawn for the band, not the window:
+    /// over a light band in a dark window the capsules go light with dark
+    /// glyphs, so a dark glyph never sits on a dark capsule (seen on a real
+    /// display). Framed's controls sit on its material and follow the window.
+    func testTheBandsControlsTakeTheBandsToneNotTheWindows() throws {
+        let manager = makeManager()
+        let (controller, window) = try openCompact(manager)
+        defer { window.close() }
+        window.appearance = NSAppearance(named: .darkAqua)
+        let chrome = controller.chrome
+        chrome.layoutChrome()
+        chrome.applyBandSample(BandSample(red: 0.95, green: 0.95, blue: 0.95))
+        XCTAssertEqual(chrome.barTone, .dark)
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: false), "a light capsule over a light band")
+        XCTAssertEqual(chrome.liveTextButton.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]), .aqua,
+                       "its glyph is drawn for the same light capsule")
+        chrome.applyBandSample(BandSample(red: 0.04, green: 0.04, blue: 0.05))
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: true), "a dark capsule over a dark band")
+        controller.setStyle(.framed)
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: true), "Framed follows the window")
+        window.appearance = NSAppearance(named: .aqua)
+        controller.setStyle(.compact)
+        chrome.applyBandSample(BandSample(red: 0.04, green: 0.04, blue: 0.05))
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: true), "a dark band in a light window")
+    }
+
     /// WIN-7: the window kind's controls ride AppKit's trailing title-bar
     /// accessory in Compact, and come back into our chrome in the other styles.
     /// The e2e click route (`nav-click`, `panel-click`) resolves its point by

@@ -697,7 +697,7 @@ final class StreamChromeView: NSView {
         CATransaction.commit()
         bandGlass.tintColor = tone.tint
         bandTitle.textColor = tone.ink
-        titlebarRow.appearance = tone.appearance
+        applyMaterial()
     }
 
     /// The share of the picture's height the band mirrors: the rows a read
@@ -968,10 +968,15 @@ final class StreamChromeView: NSView {
         layoutControls()
     }
 
+    /// The capsules' material: the band's tone in Compact's title bar, where
+    /// the glyphs take the tone's appearance too (WIN-69), so a dark glyph
+    /// never sits on a dark capsule; the window's appearance elsewhere.
     private func applyMaterial() {
-        let material = HeaderBar.material(for: effectiveAppearance)
-        actions.material = material
-        liveTextCapsule.material = material
+        let tone = titlebarHosted ? barTone : nil
+        titlebarRow.appearance = tone?.appearance
+        let material = HeaderBar.material(for: tone?.appearance ?? effectiveAppearance)
+        if actions.material != material { actions.material = material }
+        if liveTextCapsule.material != material { liveTextCapsule.material = material }
     }
 
     /// True at a point in this view that the chrome owns over the picture:
@@ -1179,5 +1184,6 @@ final class StreamChromeView: NSView {
         style = new
         layoutChrome()
         placeTrafficLights()
+        applyMaterial()
     }
 }
