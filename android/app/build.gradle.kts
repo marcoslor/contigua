@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "app.contigua"
-        minSdk = 30
+        minSdk = 34
         targetSdk = 36
         // Shizuku user-service version: it is the daemon's version marker, so it
         // must be bumped on every install or the previously-bound service keeps

@@ -78,4 +78,24 @@ class PrefsIdentityTest {
 
         assertEquals(id, Prefs.deviceId(ctx))
     }
+
+    @Test
+    fun `forget all Macs asks the shell to remove the association until a push carried it`() {
+        // PHONE-24: no removal is owed before Forget All Macs.
+        assertEquals(false, Json.bool(pushed()["forgetAssociation"]))
+
+        Prefs.forgetAll(ctx)
+        assertEquals(true, Json.bool(pushed()["forgetAssociation"]))
+
+        // A push that never reached a shell service keeps it owed.
+        runCatching { Prefs.pushState(ctx) { error("shell service not bound") } }
+        assertTrue(Prefs.associationRemovalOwed(ctx))
+
+        // The push that went through carried it, and the next one does not.
+        val sent = mutableListOf<String>()
+        Prefs.pushState(ctx) { sent.add(it) }
+        assertEquals(true, Json.bool(Json.parseObject(sent.single())["forgetAssociation"]))
+        assertEquals(false, Prefs.associationRemovalOwed(ctx))
+        assertEquals(false, Json.bool(pushed()["forgetAssociation"]))
+    }
 }

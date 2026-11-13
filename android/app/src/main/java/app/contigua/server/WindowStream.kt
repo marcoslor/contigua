@@ -31,6 +31,8 @@ internal class WindowStream(
     private val log: (String) -> Unit,
     /** The codecs the Mac said it decodes; the arm's HEVC needs it. */
     private val macCodecs: () -> Set<VideoCodec> = { setOf(VideoCodec.Avc) },
+    /** The service's one virtual device, the app window's own display group (WIN-74/75). */
+    private val devices: WindowDevices<AndroidWindowDevice>? = null,
 ) {
 
     private companion object {
@@ -54,11 +56,7 @@ internal class WindowStream(
                     EncoderHardware.isHardware(
                         name = info.name,
                         sdk = Build.VERSION.SDK_INT,
-                        hardwareAccelerated = if (Build.VERSION.SDK_INT >= 29) {
-                            info.isHardwareAccelerated
-                        } else {
-                            null
-                        },
+                        hardwareAccelerated = info.isHardwareAccelerated,
                     )
                 }.getOrDefault(false)
                 if (!hardware) {
@@ -109,16 +107,20 @@ internal class WindowStream(
         /** `debug.contigua.swap_surfaces=1`: the old surface swaps, for A/B on a device. */
         const val SWAP_SURFACES = "debug.contigua.swap_surfaces"
 
-        /** `debug.contigua.vd_panel_group=1`: the VD joins display 0's group (the One UI shape). */
+        /**
+         * `debug.contigua.vd_panel_group=1`: a plain display with the device
+         * group bit and no device lands in display 0's group, the shape One UI
+         * gives every plain display; the open is then refused (WIN-74).
+         */
         const val VD_PANEL_GROUP = "debug.contigua.vd_panel_group"
+
+        /** `debug.contigua.vd_plain=1`: skip the virtual device, the AOSP plain route. */
+        const val VD_PLAIN = "debug.contigua.vd_plain"
 
         // The flags a window asks for live in WindowDisplayFlags (pure, pinned
         // by the JVM test). Deliberately absent from that set: the
         // system-decorations flag (bit 9) adds a SystemUI nav bar and poisons
-        // One UI's back gesture, and the device display-group flag (bit 15) ties
-        // the VD to the panel's power state and freezes it while the phone is
-        // locked. Bit 15 exists only behind VD_PANEL_GROUP, which reproduces
-        // that freeze on the emulator.
+        // One UI's back gesture.
     }
 
     @Volatile private var vd: VirtualDisplay? = null
@@ -144,6 +146,9 @@ internal class WindowStream(
 
     /** The last display's creation path and requested rate, for the open's log line. */
     private var lastDisplayPath = ""
+
+    /** How this stream's display was made; DEVICE makes it one of the device's holders. */
+    private var lastRoute = WindowRoute.PLAIN
     private var lastDisplayRate: Float? = null
 
     /** Where the picture sits in the frame of the size above (window.content). */
@@ -371,8 +376,16 @@ internal class WindowStream(
             encoderLifecycle.dispatch(EncoderEvent.Open(DisplayPhase.Virtual, IntSize(w, h))),
         )
         checkNotNull(vd) { "no encoder for ${w}x$h" }
+        // WIN-74: a window display in the panel's group would sleep and wake
+        // with the phone's own screen. It is refused before anything launches
+        // on it; the caller closes this stream, which releases the display.
+        val group = DisplayProbe.displayGroupId(displayIdValue)
+        if (!WindowGroup.accepted(group)) {
+            log("stream $stream vd=$displayIdValue refused: route=${lastRoute.wire} group=$group")
+            throw WindowDisplayRefused(lastRoute, group)
+        }
         hideIme(displayIdValue)
-        val requested = flags()
+        val requested = WindowDisplayFlags.requested(lastRoute)
         log("stream $stream vd=$displayIdValue ${width}x$height dpi=$dpi path=$lastDisplayPath" +
             (DisplayRate.displayToken(lastDisplayRate)?.let { " $it" } ?: ""))
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
@@ -1000,6 +1013,7 @@ internal class WindowStream(
         }
         EncoderAction.ReleaseDisplay -> {
             runCatching { vd?.release() }
+            if (vd != null && lastRoute == WindowRoute.DEVICE) devices?.release(stream)
             vd = null
             displayIdValue = -1
             null
@@ -1311,12 +1325,14 @@ internal class WindowStream(
         log("stream $stream strategy: ${strategy.describe(plan.applied.copy(vdRate = vdRateSupported))}")
     }
 
-    private fun flags(): Int {
-        // The panel-group knob is a debug build's stand-in for One UI; it swaps
-        // only the display-group bits inside the pure set.
-        val panelGroup = app.contigua.BuildConfig.DEBUG &&
-            Hidden.systemProperty(VD_PANEL_GROUP) == "1"
-        return WindowDisplayFlags.requested(panelGroup)
+    /** The route a debug build was told to take, or null for the normal choice (WIN-74). */
+    private fun forcedRoute(): WindowRoute? {
+        if (!app.contigua.BuildConfig.DEBUG) return null
+        return when {
+            Hidden.systemProperty(VD_PANEL_GROUP) == "1" -> WindowRoute.PLAIN_PANEL_GROUP
+            Hidden.systemProperty(VD_PLAIN) == "1" -> WindowRoute.PLAIN
+            else -> null
+        }
     }
 
     /** Names for the requested flags, so the server log shows what we asked for. */
@@ -1338,7 +1354,14 @@ internal class WindowStream(
      */
     private fun createDisplay(w: Int, h: Int, dpi: Int, surface: Surface): Created {
         val rate = DisplayRate.requested(strategy.vdRate, refreshRateMethodExists())
-        val config = buildConfig(w, h, dpi, surface, rate)
+        val forced = forcedRoute()
+        if (forced == null) {
+            fromDevice(w, h, dpi, surface, rate)?.let { return it }
+        }
+        val route = forced ?: WindowRoute.PLAIN
+        lastRoute = route
+        val flags = WindowDisplayFlags.requested(route)
+        val config = buildConfig(w, h, dpi, surface, rate, flags)
         if (config != null) {
             val dm = displayManager()
             val method = dm.javaClass.methods.firstOrNull {
@@ -1354,9 +1377,37 @@ internal class WindowStream(
                 }
             }
         }
-        val classic = displayManager().createVirtualDisplay("contigua-$stream", w, h, dpi, surface, flags())
+        val classic = displayManager().createVirtualDisplay("contigua-$stream", w, h, dpi, surface, flags)
         DisplayRate.classicUnsupported(strategy.vdRate)?.let { log("stream $stream $it") }
         return Created(classic, "classic", null)
+    }
+
+    /**
+     * The device route (WIN-75): a display of the service's one virtual
+     * device. A failed call means the platform closed the device (its
+     * association went), so one new device is tried before the plain route.
+     */
+    private fun fromDevice(w: Int, h: Int, dpi: Int, surface: Surface, rate: Float?): Created? {
+        val holder = devices ?: return null
+        repeat(2) {
+            val device = holder.acquire(stream) ?: return null
+            val config = buildConfig(w, h, dpi, surface, rate, WindowDisplayFlags.requested(WindowRoute.DEVICE))
+                as? android.hardware.display.VirtualDisplayConfig
+            if (config == null) {
+                holder.release(stream)
+                return null
+            }
+            val display = runCatching { device.createDisplay(config) }.getOrElse {
+                log("stream $stream device display refused (${failureClasses(it)})")
+                holder.lost()
+                null
+            }
+            if (display != null) {
+                lastRoute = WindowRoute.DEVICE
+                return Created(display, "device", rate)
+            }
+        }
+        return null
     }
 
     private class Created(
@@ -1372,7 +1423,7 @@ internal class WindowStream(
             .getMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType)
     }.isSuccess
 
-    private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface, rate: Float?): Any? = runCatching {
+    private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface, rate: Float?, flags: Int): Any? = runCatching {
         val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
         val ctor = builderClass.getDeclaredConstructor(
             String::class.java,
@@ -1382,7 +1433,7 @@ internal class WindowStream(
         )
         ctor.isAccessible = true
         val builder = ctor.newInstance("contigua-$stream", w, h, dpi)
-        builderClass.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags())
+        builderClass.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags)
         builderClass.getMethod("setSurface", Surface::class.java).invoke(builder, surface)
         if (rate != null) {
             builderClass.getMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType)
@@ -1780,9 +1831,22 @@ internal class StreamTable<V> {
 internal class AndroidDisplayLayer(
     private val ctx: Context,
     private val log: (String) -> Unit,
+    /** Contigua's companion association, the virtual device's (PHONE-24). */
+    associations: ShellAssociations = ShellAssociations(
+        user = android.os.Process.myUid() / PER_USER_RANGE,
+        run = ShellAssociations::runCommand,
+        log = log,
+    ),
 ) : DisplayLayer {
 
     private val streams = StreamTable<WindowStream>()
+
+    /** The one virtual device every app window's display comes from (WIN-75). */
+    private val devices = WindowDevices(
+        make = { AndroidWindowDevice.make(ctx, associations, log) },
+        close = { it.close() },
+        log = log,
+    )
     @Volatile private var statsOn = false
     /** The codecs the Mac's hello said it decodes; HEVC only arrives here on request. */
     @Volatile private var macCodecs: Set<VideoCodec> = setOf(VideoCodec.Avc)
@@ -1793,7 +1857,7 @@ internal class AndroidDisplayLayer(
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
         take(stream)?.close()
-        val ws = WindowStream(ctx, stream, sink, log, macCodecs = { macCodecs })
+        val ws = WindowStream(ctx, stream, sink, log, macCodecs = { macCodecs }, devices = devices)
             .also { it.setStatsWanted(statsOn) }
         // start() can throw after it created the persistent surface and an
         // encoder; close what it built before the session sees the failure.
@@ -1884,4 +1948,14 @@ internal class AndroidDisplayLayer(
     override fun totalsLine(stream: Int): String? = get(stream)?.totalsLine()
 
     private fun take(stream: Int): WindowStream? = streams.take(stream)
+
+    /** The server stops (its sessions closed their streams): the device goes too. */
+    fun shutdown() {
+        devices.stop()
+    }
+
+    private companion object {
+        /** `UserHandle.PER_USER_RANGE`: a uid's user is `uid / 100000`. */
+        const val PER_USER_RANGE = 100_000
+    }
 }

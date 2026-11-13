@@ -225,7 +225,7 @@ class DeckForegroundService : Service() {
             // to exist here, in this client callback path, before the push and
             // the start. The app owns it; this is the one generator and store.
             ensureIdentity()
-            svc.setPairedClients(Prefs.serviceStateJson(this))
+            Prefs.pushState(this) { svc.setPairedClients(it) }
             // Before startServer: a server that has not received the gates
             // refuses everything, so this order has no permissive window.
             // A daemon too old to know setGates cannot be gated: stop it
@@ -326,7 +326,7 @@ class DeckForegroundService : Service() {
     fun forget(clientId: String) {
         Prefs.forget(this, clientId)
         DeckState.paired = Prefs.paired(this)
-        runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(this)) }
+        runCatching { Prefs.pushState(this) { checkNotNull(ShizukuClient.current()).setPairedClients(it) } }
         DeckState.notifyChanged()
     }
 
@@ -360,7 +360,7 @@ class DeckForegroundService : Service() {
         DeckState.paired = Prefs.paired(this)
         DeckState.pending = null
         getSystemService(NotificationManager::class.java).cancel(NOTIF_PAIRING)
-        runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(this)) }
+        runCatching { Prefs.pushState(this) { checkNotNull(ShizukuClient.current()).setPairedClients(it) } }
         DeckState.notifyChanged()
     }
 

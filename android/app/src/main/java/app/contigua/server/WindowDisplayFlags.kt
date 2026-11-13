@@ -34,12 +34,18 @@ internal object WindowDisplayFlags {
     const val STEAL_TOP_FOCUS_DISABLED = 1 shl 16
 
     /**
-     * The set a window asks for. [panelGroup] is the debug `VD_PANEL_GROUP`
-     * knob: it swaps the display's own group for the panel's and changes those
-     * two bits only.
+     * The set a window asks for on [route] (WIN-74). Only the display-group
+     * bits differ between routes: a virtual device's display joins the
+     * device's own group through `DEVICE_DISPLAY_GROUP`, and asking for
+     * `OWN_DISPLAY_GROUP` as well sends it back to the panel's group on One UI
+     * (docs/research/lock-fade.md, option 1). A plain display earns its own
+     * group with `OWN_DISPLAY_GROUP` where the platform honours it (AOSP).
      */
-    fun requested(panelGroup: Boolean): Int {
-        val group = if (panelGroup) DEVICE_DISPLAY_GROUP else OWN_DISPLAY_GROUP
+    fun requested(route: WindowRoute): Int {
+        val group = when (route) {
+            WindowRoute.DEVICE, WindowRoute.PLAIN_PANEL_GROUP -> DEVICE_DISPLAY_GROUP
+            WindowRoute.PLAIN -> OWN_DISPLAY_GROUP
+        }
         return PUBLIC or
             PRESENTATION or
             OWN_CONTENT_ONLY or
@@ -75,5 +81,44 @@ internal object WindowDisplayFlags {
         if (flags and DEVICE_DISPLAY_GROUP != 0) set.add("DEVICE_DISPLAY_GROUP")
         if (flags and STEAL_TOP_FOCUS_DISABLED != 0) set.add("STEAL_TOP_FOCUS_DISABLED")
         return set.joinToString("|")
+    }
+}
+
+/** How an app window's display is made (docs/specs/app-windows.md WIN-74). */
+internal enum class WindowRoute(val wire: String) {
+    /** From Contigua's virtual device: the device's own display group. */
+    DEVICE("device"),
+
+    /** A plain virtual display with `OWN_DISPLAY_GROUP`: AOSP gives it a group. */
+    PLAIN("plain"),
+
+    /**
+     * Debug only (`debug.contigua.vd_panel_group=1`): a plain display with the
+     * device-group bit and no device, which lands in the panel's group 0 the
+     * way One UI puts every plain display there. It proves the refusal.
+     */
+    PLAIN_PANEL_GROUP("plain-panel-group"),
+}
+
+/**
+ * The one rule a window display must pass before anything launches on it
+ * (WIN-74): a group of its own. The panel's group is 0 and an unreadable group
+ * reads as 0 ([DisplayProbe.displayGroupId]), so both are refused; there is no
+ * fallback that shares the panel's group.
+ */
+internal object WindowGroup {
+    fun accepted(groupId: Int): Boolean = groupId > DisplayProbe.DEFAULT_GROUP_ID
+}
+
+/**
+ * The display a window asked for sits in the panel's group (or its group could
+ * not be read): it was released and nothing was launched. The session answers
+ * `error {code: "windows_unsupported"}` for the stream.
+ */
+internal class WindowDisplayRefused(val route: WindowRoute, val groupId: Int) :
+    IllegalStateException("window display refused: route=${route.wire} group=$groupId") {
+    companion object {
+        const val CODE = "windows_unsupported"
+        const val MESSAGE = "this phone can't give app windows a display group of their own"
     }
 }

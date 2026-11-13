@@ -1876,7 +1876,7 @@ class Session(
             gate.forget(stream)
         }
         gate.expect(stream)
-        val displayId = display.open(stream, w, h, dpi, this)
+        val displayId = openAppDisplay(stream, w, h, dpi) ?: return
         val state = StreamState(stream, displayId, IntSize(w, h)).also {
             it.content = WindowContent.App(pkg, null)
         }
@@ -1953,11 +1953,11 @@ class Session(
             gate.forget(stream)
         }
         gate.expect(stream)
-        val displayId = display.open(stream, w, h, dpi, this)
+        val displayId = openAppDisplay(stream, w, h, dpi) ?: return
         val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = WindowContent.App(task.pkg, task.activity) }
         synchronized(streams) { streams[stream] = state }
-        // The episode's take-over first: on a shared group the move waits for
-        // the sleeping display to wake, so the wake cannot wait for it.
+        // The episode first: the move waits for the window display's group to
+        // be awake (WIN-23), so the wake cannot wait for it.
         updatePower()
         // Moving before the reply: `started` must match what actually happened.
         val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
@@ -2048,7 +2048,7 @@ class Session(
                 sendJson(openedFields(stream, PHONE_DISPLAY, size.w, size.h, taskId = 0))
             }
         } else {
-            val displayId = display.open(stream, w, h, dpi, this)
+            val displayId = openAppDisplay(stream, w, h, dpi) ?: return
             val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
             // The episode's take-over first: a VD created while the panel's
@@ -2087,6 +2087,20 @@ class Session(
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
+    }
+
+    /**
+     * An app window's display (WIN-74). The display layer refuses one that
+     * landed in the panel's display group, before anything launches on it:
+     * that stream answers `windows_unsupported` and the session goes on.
+     */
+    private fun openAppDisplay(stream: Int, w: Int, h: Int, dpi: Int): Int? = try {
+        display.open(stream, w, h, dpi, this)
+    } catch (e: WindowDisplayRefused) {
+        log("stream $stream refused: ${WindowDisplayRefused.CODE} route=${e.route.wire} group=${e.groupId}")
+        gate.forget(stream)
+        sendError(WindowDisplayRefused.CODE, WindowDisplayRefused.MESSAGE, stream)
+        null
     }
 
     /**

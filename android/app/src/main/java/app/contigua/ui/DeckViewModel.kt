@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -36,7 +35,8 @@ import java.util.concurrent.Executors
  * slow as the shell service is, so it never runs on the main thread (PAIR-20).
  */
 private fun pushToShell(json: String) {
-    runCatching { ShizukuClient.current()?.setPairedClients(json) }
+    val service = checkNotNull(ShizukuClient.current()) { "shell service not bound" }
+    service.setPairedClients(json)
 }
 
 /**
@@ -131,12 +131,9 @@ class DeckViewModel(
         // came back (PHONE-20).
         val granted = ShizukuClient.permission() ?: DeckState.shizukuGranted
         val installed = isInstalled(ctx, SHIZUKU_PACKAGE)
-        val notificationsGranted = if (Build.VERSION.SDK_INT >= 33) {
+        val notificationsGranted =
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
         val port = DeckState.port
         val connected = DeckState.connectedMac
         // Forget All empties the list before the background rotation lands, so
@@ -455,7 +452,7 @@ class DeckViewModel(
 
     /** The push itself: `serviceStateJson` may generate the identity (keygen). */
     private fun pushNow(ctx: Application) {
-        push(Prefs.serviceStateJson(ctx))
+        runCatching { Prefs.pushState(ctx, push) }
     }
 
     private fun postSnackbar(message: String) {

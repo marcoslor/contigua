@@ -114,6 +114,9 @@ class DeckService(private val appContext: Context?) :
     /** STREAM_MUSIC's level, shared by every session (docs/PROTOCOL.md "Volume"). */
     private var volume: VolumeControl? = null
 
+    /** The window streams and their virtual device, while the server runs. */
+    private var display: AndroidDisplayLayer? = null
+
     /** The live state watcher of the current session, if any. */
     @Volatile private var stateWatcher: AndroidDeviceState? = null
 
@@ -137,6 +140,7 @@ class DeckService(private val appContext: Context?) :
         }
         val shell = ShellContext(base)
         val display = AndroidDisplayLayer(shell, ::log)
+        this.display = display
         val clip = ShellClipboard(shell, ::log, helper = ClipHelper(shell, ::log))
         val injector = AndroidInjector(::log, clipboard = clip)
         val launcher = AndroidLauncher(shell, ::log)
@@ -255,6 +259,8 @@ class DeckService(private val appContext: Context?) :
     override fun stopServer() {
         server?.stop()
         server = null
+        display?.shutdown()
+        display = null
         staging.clear()
     }
 
@@ -321,6 +327,18 @@ class DeckService(private val appContext: Context?) :
         }
         apply(AppLink.Event.AppPushed(fingerprint, certPem, keyP8, list))
         log("paired clients: ${list.size}, device=$deviceId, self=${fingerprint.isNotEmpty()}")
+        // PHONE-24: Forget All Macs removes Contigua's companion association.
+        // Off the binder thread: the shell command takes a moment, and the
+        // push's own reconcile (the dropped session) must not wait for it.
+        if (Json.bool(obj["forgetAssociation"]) == true) {
+            Thread({
+                ShellAssociations(
+                    user = android.os.Process.myUid() / 100_000,
+                    run = ShellAssociations::runCommand,
+                    log = ::log,
+                ).remove()
+            }, "contigua-association").apply { isDaemon = true }.start()
+        }
     }
 
     /** The current state, for the log/`status`; never key material. */

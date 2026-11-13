@@ -63,6 +63,17 @@ final class OpeningCoverTests: XCTestCase {
         XCTAssertNil(OpeningCover.reason(for: "something_new"))
     }
 
+    /// WIN-74: a phone that would share its own screen's display group refuses
+    /// the window; the cover fails at once and says why, Close only.
+    func testTheUnsupportedPhoneSaysWhy() {
+        XCTAssertEqual(OpeningCover.reason(for: "windows_unsupported"),
+                       "This phone can't give app windows a screen of their own.")
+        var cover = OpeningCover(startedAt: 0)
+        cover.handle(.refused("windows_unsupported"), at: 0.4)
+        XCTAssertEqual(cover.phase(at: 0.4),
+                       .failed(reason: "This phone can't give app windows a screen of their own."))
+    }
+
     func testAnUnknownCodeFailsWithoutAReasonLine() {
         var cover = OpeningCover(startedAt: 0)
         cover.handle(.refused("something_new"), at: 1)
