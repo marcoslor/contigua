@@ -88,8 +88,6 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertFalse(window.titlebarAppearsTransparent, "the title bar is the system's solid one")
         XCTAssertEqual(window.title, "Example")
         XCTAssertEqual(window.backgroundColor, .windowBackgroundColor)
-        XCTAssertEqual(window.titlebarSeparatorStyle, .none,
-                       "AppKit's separator hairline would cover the picture's first device row (MIRROR-27)")
         XCTAssertGreaterThan(compactFrameSize.height, 600, "the title bar has a height of its own")
         XCTAssertEqual(window.frame.size, compactFrameSize, "the window is the stream plus AppKit's title bar")
         XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 900, height: 600))

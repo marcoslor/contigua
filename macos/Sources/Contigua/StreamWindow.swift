@@ -1664,9 +1664,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             // the others draw their window edge themselves on a clear ground.
             window.backgroundColor = style == .compact ? .windowBackgroundColor : .clear
         }
-        // No separator hairline: AppKit draws it over the content's first
-        // device row, and that row is the picture (MIRROR-27).
-        window.titlebarSeparatorStyle = .none
         let config = ChromeConfig.forState(style: style, fullScreen: fullScreen)
         window.titleVisibility = config.titleVisible ? .visible : .hidden
         window.titlebarAppearsTransparent = config.titlebarTransparent
