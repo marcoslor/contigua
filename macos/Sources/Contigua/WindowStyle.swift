@@ -220,16 +220,29 @@ enum DwellChrome {
     /// the same spacing as the bar's, with the bar's left inset mirrored.
     static var pillLightInset: CGFloat { pillInset + ChromeBar.trafficLightInset }
     static var pillLightSpacing: CGFloat { ChromeBar.trafficLightSpacing }
-    /// The window kind's actions 8 pts right of the zoom light's slot.
+    // The row inside the pill, in the pill's own coordinates (x from its
+    // left edge), with the bar's spacing: the lights `lightInset` in, the
+    // first capsule `barGap` after the zoom light, `capsuleGap` between
+    // capsules, and `rightInset` after Live Text. The window-coordinate
+    // `pillLightInset` adds the pill's own inset once, for the lights only:
+    // adding it to the row too left 14–20 pt after the lights and pushed an
+    // app window's Live Text 4 pt past the pill's end (#45).
+
+    /// The window kind's actions: `barGap` right of the zoom light's slot.
     static var pillActionsX: CGFloat {
-        pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+        ChromeBar.trafficLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide
+            + HeaderBar.barGap
+    }
+    /// The Live Text capsule: after the actions and a gap, or in their place.
+    static func pillLiveTextX(actions: [HeaderAction]) -> CGFloat {
+        actions.isEmpty ? pillActionsX
+            : pillActionsX + HeaderBar.rowWidth(actions) + HeaderBar.capsuleGap
     }
     /// The pill is as tall as the Compact bar and as wide as its contents:
     /// the traffic lights, the window kind's action capsules, then Live Text's
-    /// capsule, then the edge.
+    /// capsule, then the bar's right inset.
     static func pillWidth(actions: [HeaderAction]) -> CGFloat {
-        pillActionsX + HeaderBar.rowWidth(actions)
-            + (actions.isEmpty ? 0 : HeaderBar.capsuleGap) + HeaderBar.liveTextSide + 2
+        pillLiveTextX(actions: actions) + HeaderBar.liveTextSide + HeaderBar.rightInset
     }
 }
 

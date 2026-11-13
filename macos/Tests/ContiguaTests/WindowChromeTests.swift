@@ -423,6 +423,46 @@ final class StreamChromeStyleTests: XCTestCase {
                        DwellChrome.pillInset + DwellChrome.pillHeight / 2, accuracy: 0.5)
     }
 
+    /// The pill holds its row with the bar's own spacing: the lights 7 pt in,
+    /// the first capsule 8 pt after the zoom light, 6 pt between capsules and
+    /// the Live Text capsule 7 pt from the pill's right end — never outside
+    /// it. Before: 20 pt after the lights and Live Text 4 pt past the edge of
+    /// an app window's pill; 14 pt and 2 pt on the Phone Mirror's.
+    func testThePillHoldsItsRowWithTheBarsSpacing() throws {
+        let manager = makeManager(choose: .immersive)
+        manager.styleStore.set(.immersive, forKey: WindowStyleStore.phoneKey)
+        let app = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                      label: "Example", manager: manager)
+        let phone = PhoneWindowController(stream: 2, phone: nil, manager: manager)
+        for controller in [app, phone] as [StreamWindowController] {
+            defer { controller.window?.close() }
+            controller.present()
+            controller.noteFirstFrame()
+            let window = try XCTUnwrap(controller.window)
+            let height = try XCTUnwrap(window.contentView).bounds.height
+            controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: height - 20))
+            pump(0.45)
+            XCTAssertTrue(controller.chrome.showsPill)
+            let pill = controller.chrome.pill.frame
+            let kind = controller === app ? "app" : "phone"
+            let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+            let zoom = try XCTUnwrap(window.standardWindowButton(.zoomButton))
+            let closeFrame = controller.chrome.convert(close.bounds, from: close)
+            let zoomFrame = controller.chrome.convert(zoom.bounds, from: zoom)
+            XCTAssertEqual(closeFrame.minX - pill.minX, BarGeometry.lightInset, accuracy: 0.5, "\(kind) lights")
+            let live = controller.chrome.liveTextFrameForTesting
+            let first = controller.chrome.actionsFrameForTesting ?? live
+            XCTAssertEqual(first.minX - zoomFrame.maxX, HeaderBar.barGap, accuracy: 0.5,
+                           "\(kind) first capsule after the lights")
+            if let row = controller.chrome.actionsFrameForTesting {
+                XCTAssertEqual(live.minX - row.maxX, HeaderBar.capsuleGap, accuracy: 0.5, "\(kind) capsule gap")
+            }
+            XCTAssertEqual(pill.maxX - live.maxX, HeaderBar.rightInset, accuracy: 0.5,
+                           "\(kind) Live Text inside the pill's right end")
+            XCTAssertTrue(pill.contains(live), "\(kind) Live Text inside the pill")
+        }
+    }
+
     /// Framed: 5 pt on three sides and 38 pt above, a frame drawn in the
     /// chrome, the stream still 900×600 and the display priced on it.
     func testFramedIsTheStreamInsideTheFrame() throws {
@@ -502,7 +542,9 @@ final class StreamChromeStyleTests: XCTestCase {
         XCTAssertTrue(controller.chrome.showsPill)
 
         controller.pointerMoved(toWindowPoint: NSPoint(x: 400, y: 300))
-        pump(0.7)
+        // The hide starts 600 ms after leaving; the pill parks once its
+        // 0.12 s fade has run.
+        pump(DwellChrome.hideDelay + DwellChrome.fadeIn + 0.15)
         XCTAssertFalse(controller.chrome.showsPill, "600 ms after leaving both the pill and the zone")
         XCTAssertFalse(trafficLightsShown(controller.window))
         XCTAssertTrue(controller.chrome.pill.isHidden)

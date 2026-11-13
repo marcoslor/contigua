@@ -509,6 +509,10 @@ final class StreamChromeView: NSView {
 
     /// The bar's actions, for the layout tests.
     var actionsForTesting: [HeaderAction] { actions.actions }
+    /// The action row's and the Live Text capsule's frames, for the layout
+    /// tests (nil for a row with no actions).
+    var actionsFrameForTesting: NSRect? { actions.actions.isEmpty ? nil : actions.frame }
+    var liveTextFrameForTesting: NSRect { liveTextCapsule.frame }
 
     /// The pill's own rect in the stream's coordinates, top-left origin
     /// (DwellPill's feeding geometry): the pill sits `pillInset` in from the
@@ -1041,7 +1045,8 @@ final class StreamChromeView: NSView {
             actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
                                    width: HeaderBar.rowWidth(actions.actions), height: pill.height)
             let buttonY = pill.minY + (pill.height - side) / 2
-            liveTextCapsule.frame = NSRect(x: actions.frame.maxX + HeaderBar.capsuleGap, y: buttonY,
+            liveTextCapsule.frame = NSRect(x: pill.minX + DwellChrome.pillLiveTextX(actions: actions.actions),
+                                           y: buttonY,
                                            width: side, height: side)
             liveTextButton.frame = liveTextCapsule.frame
             liveTextStatus.isHidden = !liveTextActive
