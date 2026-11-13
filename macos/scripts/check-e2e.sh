@@ -3989,6 +3989,7 @@ fingerpinch 0.5 0.01 1.25 4
 wait 1
 waitfile $WORK/menus-step-framed 60
 menupick View/Framed
+stamp $WORK/menus-step-framed-picked
 wait 1.5
 waitfile $WORK/menus-step-full 60
 fullscreen
@@ -4459,7 +4460,13 @@ PY
         && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
         || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
     # The style pick waits until the dots' shot is taken: Framed draws no dots.
+    # The script picks only after the pinch's 4 s hold, so the 5 s for the
+    # style start when the script stamps its pick, not when the dots show (a
+    # loaded run picked 5.0 s after this step file and missed a 5 s window
+    # started here).
     touch "$WORK/menus-step-framed"
+    wait_until 15 test -f "$WORK/menus-step-framed-picked" \
+        || bad "[MENU-4] the script never reached the Framed pick"
     wait_until 5 grep -q "style=framed" "$WORK/chrome.txt" \
         && ok "[MENU-4] choosing Framed took the window to the framed style for the rest of the run ($(chrome_state))" \
         || bad "[MENU-4] choosing Framed left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
