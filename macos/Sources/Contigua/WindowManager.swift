@@ -924,6 +924,18 @@ final class WindowManager {
         }
     }
 
+    /// Whether this frame is the first of `stream` for its window, recorded
+    /// once per stream under `lock`. A frame with no window (a closed
+    /// stream's last one, after `remove`) notes nothing: it took the id's one
+    /// note before, and the next window opened on that id kept its opening
+    /// cover for good.
+    func markFirstFrame(stream: UInt32, hasWindow: Bool) -> Bool {
+        guard hasWindow else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        return firstFrameNoted.insert(stream).inserted
+    }
+
     func remove(stream: UInt32) {
         lock.lock()
         let removed = streams.removeValue(forKey: stream) != nil
@@ -1110,10 +1122,7 @@ final class WindowManager {
             controller?.frameClock.note()
             // The opening cover ends at the stream's first frame; the note is
             // main-thread state, sent once per stream.
-            lock.lock()
-            let first = firstFrameNoted.insert(stream).inserted
-            lock.unlock()
-            if first, let controller {
+            if markFirstFrame(stream: stream, hasWindow: controller != nil), let controller {
                 // One hop from the session's video queue to the main thread,
                 // where the window's cover and the menus live.
                 DispatchQueue.main.async { [weak self, weak controller] in  // gcd: off the video queue
