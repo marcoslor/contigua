@@ -1,221 +1,15 @@
-// The Compact bar's title: its tone machine, its luminance estimate, its pure
-// layout, the names each window kind gives it, and the band read off a real
-// pixel buffer (WIN-68, WIN-69, MIRROR-26).
+// The Framed bar's title: its pure layout, the names each window kind gives
+// it, and the label Framed draws (WIN-68, MIRROR-26). Compact and full screen
+// show the window's own title in AppKit's title bar.
 
 import AppKit
-import CoreVideo
 import XCTest
 @testable import Contigua
 
-private final class FakeToneSource: BarToneSource {
-    var frameStamp: UInt64 = 1
-    var range: BandRange?
-    private(set) var calls = 0
-
-    private(set) var lastReach: CGFloat?
-
-    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat, blurReach: CGFloat,
-                      completion: @escaping (BandRange?) -> Void) {
-        calls += 1
-        lastReach = blurReach
-        completion(range)
-    }
-}
-
-final class BarTitleToneTests: XCTestCase {
-    /// #147: the tint follows the tone, so each ink is judged over the band
-    /// as it will be drawn under that ink: black ink over the light tint,
-    /// white ink over the dark tint. A mid band where black passes under its
-    /// own (light) tint is decided, not left unresolved.
-    func testEachInkIsJudgedOverTheBandUnderItsOwnTint() {
-        var machine = BarToneMachine()
-        let change = machine.handle(.inks(dark: BandRange(low: 0.19, high: 0.30),
-                                          light: BandRange(low: 0.12, high: 0.22)))
-        XCTAssertEqual(change, .baseline(.dark), "black ink passes over its own band; white does not over its")
-
-        var other = BarToneMachine()
-        XCTAssertEqual(other.handle(.inks(dark: BandRange(low: 0.10, high: 0.20),
-                                          light: BandRange(low: 0.05, high: 0.15))),
-                       .baseline(.light), "white ink passes over the band under the dark tint")
-
-        // Neither passes: the better worst case, each over its own band.
-        var neither = BarToneMachine()
-        XCTAssertEqual(neither.handle(.inks(dark: BandRange(low: 0.17, high: 0.6),
-                                            light: BandRange(low: 0.05, high: 0.6))),
-                       .unresolved(.dark),
-                       "black's worst (0.17) beats white's worst (0.6), each over its own band")
-    }
-
-    /// #147: a light tint under black ink, a dark tint under white ink: the
-    /// tint deepens the band's own side, opposite the title.
-    func testTheTintIsTheBandsOwnSide() throws {
-        let light = try XCTUnwrap(BarTitle.tintColor(for: .dark).usingColorSpace(.sRGB))
-        let dark = try XCTUnwrap(BarTitle.tintColor(for: .light).usingColorSpace(.sRGB))
-        XCTAssertGreaterThan(light.relativeLuminance ?? 0, 0.7, "black ink sits on a light tint")
-        XCTAssertLessThan(dark.relativeLuminance ?? 1, 0.05, "white ink sits on a dark tint")
-        XCTAssertEqual(light.alphaComponent, 1, "the tint's own 14 % is the layer's alpha, not the colour's")
-    }
-
-    func testTheTwoThresholdsComeFromTheNFRContrastLimit() {
-        let limit = NFRTestLimits.shared.double("bar_title_contrast_min")
-        XCTAssertEqual(BarTitle.minimumContrast, limit, accuracy: 0.0001,
-                       "the app's limit and nfr-limits.json are the same number")
-        let thresholds = BarToneThresholds.standard
-        XCTAssertEqual(thresholds.toDark, 0.18333, accuracy: 0.0001,
-                       "white ink first reaches 4.5:1 at this band luminance")
-        XCTAssertEqual(thresholds.toLight, 0.175, accuracy: 0.0001,
-                       "black ink first reaches 4.5:1 at this band luminance")
-        XCTAssertGreaterThan(thresholds.toDark, thresholds.toLight,
-                             "the hysteresis interval is between them")
-        for luminance in [thresholds.toLight, (thresholds.toLight + thresholds.toDark) / 2,
-                          thresholds.toDark] {
-            XCTAssertGreaterThanOrEqual(BarTone.contrast(.light, over: luminance), limit - 1e-9,
-                                        "white ink at \(luminance)")
-            XCTAssertGreaterThanOrEqual(BarTone.contrast(.dark, over: luminance), limit - 1e-9,
-                                        "black ink at \(luminance)")
-        }
-    }
-
-    func testTheLuminanceToToneMappingPicksTheReadableInk() {
-        for luminance in [0.0, 0.05, 0.1] {
-            XCTAssertEqual(BarTone.preferred(for: luminance), .light, "dark band \(luminance)")
-        }
-        for luminance in [0.5, 0.8, 0.9, 1.0] {
-            XCTAssertEqual(BarTone.preferred(for: luminance), .dark, "light band \(luminance)")
-        }
-        XCTAssertEqual(BarTone.preferred(for: 0.20), .dark, "above the crossover black wins")
-        XCTAssertEqual(BarTone.preferred(for: 0.17), .light, "below the crossover white wins")
-    }
-
-    func testEveryToneTransitionAndIgnoredSample() {
-        var machine = BarToneMachine()
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.02, high: 0.03))), .baseline(.light),
-                       "the first dark-band sample appears light")
-        XCTAssertTrue(machine.hasSample)
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.179, high: 0.182))), .ignored,
-                       "inside the hysteresis band the light tone stays")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.179, high: 0.18333))), .ignored,
-                       "at toDark white ink still passes, so the light tone stays")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.19, high: 0.3))), .changed(.dark),
-                       "above toDark white ink can no longer pass")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.18, high: 0.183))), .ignored,
-                       "inside the hysteresis band the dark tone stays")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.176, high: 0.18))), .ignored,
-                       "both inks pass, so the dark tone stays")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.1))), .changed(.light),
-                       "below toLight black ink can no longer pass")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.02, high: 0.03))), .ignored,
-                       "the light tone stays on a dark band")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.12, high: 0.3))), .unresolved(.light),
-                       "neither ink reaches the limit and black is not clearly better: the tone is kept")
-        XCTAssertEqual(machine.tone, .light)
-    }
-
-    /// Issue #45: a band neither ink can pass everywhere (a status bar's
-    /// glyphs, a photo) must not freeze the first tone. The ink whose worst
-    /// pixel reads clearly better (1.2×) takes over, so a page that turned
-    /// light under a few dark marks still gets black ink.
-    func testAnUnresolvedBandMovesToTheClearlyBetterInk() {
-        var machine = BarToneMachine()
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.05))), .baseline(.light))
-        // A white page under black glyphs: black's worst is 0.12 / 0.05 = 2.4,
-        // white's is 1.05 / 1.0 ≈ 1.05.
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark),
-                       "black ink is the clearly better worst case")
-        XCTAssertEqual(machine.tone, .dark)
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark),
-                       "the same band again keeps black")
-        // A dark page under white glyphs: white's worst is 1.05 / 0.45 ≈ 2.3,
-        // black's is 0.06 / 0.05 = 1.2.
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.4))), .unresolved(.light))
-        XCTAssertEqual(machine.tone, .light)
-        // Within 1.2× of each other: the tone is kept (hysteresis), still said.
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.12, high: 0.3))), .unresolved(.light))
-        XCTAssertEqual(machine.tone, .light)
-    }
-
-    func testTheFirstUnresolvedSampleTakesTheBetterWorstCase() {
-        var machine = BarToneMachine()
-        // The mid (0.5) would pick black, but white's worst case is better
-        // here: 1.05 / 0.95 ≈ 1.1 against black's 0.05 / 0.05 = 1.0.
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.0, high: 0.9))), .unresolved(.light))
-        var dark = BarToneMachine()
-        XCTAssertEqual(dark.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark))
-    }
-
-    func testTheFirstSampleDecidesEitherToneAndNonFiniteIsIgnored() {
-        var light = BarToneMachine()
-        XCTAssertEqual(light.handle(.sample(BandRange(low: .nan, high: 0.1))), .ignored,
-                       "a non-finite sample decides nothing")
-        XCTAssertFalse(light.hasSample)
-        XCTAssertEqual(light.handle(.sample(BandRange(low: 0.02, high: 0.03))), .baseline(.light))
-        XCTAssertEqual(light.tone, .light)
-
-        var dark = BarToneMachine()
-        XCTAssertEqual(dark.handle(.sample(BandRange(low: 0.8, high: 0.95))), .baseline(.dark))
-        XCTAssertEqual(dark.tone, .dark)
-
-        var both = BarToneMachine()
-        let change = both.handle(.sample(BandRange(low: 0.176, high: 0.182)))
-        XCTAssertEqual(change, .baseline(both.tone),
-                       "a band that both inks pass takes one tone and stays")
-        XCTAssertTrue([.light, .dark].contains(both.tone))
-
-        var neither = BarToneMachine()
-        XCTAssertEqual(neither.handle(.sample(BandRange(low: 0.1, high: 0.5))),
-                       .unresolved(neither.tone))
-        XCTAssertTrue(neither.hasSample)
-    }
-
-    func testTheMachineKeepsTheToneInTheHysteresisBand() {
-        var light = BarToneMachine()
-        _ = light.handle(.sample(BandRange(low: 0.01, high: 0.02)))
-        XCTAssertEqual(light.tone, .light)
-        for low in stride(from: 0.175, through: 0.1833, by: 0.001) {
-            XCTAssertEqual(light.handle(.sample(BandRange(low: low, high: low))), .ignored)
-            XCTAssertEqual(light.tone, .light, "light holds at \(low)")
-        }
-
-        var dark = BarToneMachine()
-        _ = dark.handle(.sample(BandRange(low: 0.8, high: 0.9)))
-        XCTAssertEqual(dark.tone, .dark)
-        for high in stride(from: 0.1833, through: 0.175, by: -0.001) {
-            XCTAssertEqual(dark.handle(.sample(BandRange(low: high, high: high))), .ignored)
-            XCTAssertEqual(dark.tone, .dark, "dark holds at \(high)")
-        }
-    }
-
-    func testTheBandEstimateIncludesTheTintAndTheHazeInSRGB() {
-        // One uniform band, top and bottom haze equal: `.low` is the value.
-        func estimate(_ frame: Double, tint: Double = 1.0,
-                      tintAlpha: CGFloat = 0, haze: Double = 0) -> Double {
-            BarToneEstimate.blend(frame: BandRange(low: frame, high: frame),
-                                  tintLuminance: tint, tintAlpha: tintAlpha,
-                                  hazeTop: haze, hazeBottom: haze).low
-        }
-        let frame = 0.02
-        let tint = 1.0
-        let noTint = estimate(frame)
-        XCTAssertEqual(noTint, frame, accuracy: 0.0001)
-        let tinted = estimate(frame, tintAlpha: BarTitle.tintAlpha)
-        let encode = BarToneEstimate.encode(frame)
-        XCTAssertEqual(tinted, BarToneEstimate.decode(encode * 0.86 + 1 * 0.14), accuracy: 0.0001,
-                       "the white tint lifts a dark frame in sRGB, not linear")
-        let hazed = estimate(frame, tintAlpha: BarTitle.tintAlpha, haze: 0.15)
-        XCTAssertGreaterThan(hazed, tinted)
-
-        let range = BarToneEstimate.blend(frame: BandRange(low: 0.02, high: 0.4),
-                                          tintLuminance: tint,
-                                          hazeTop: 0.15, hazeBottom: 0.05)
-        XCTAssertLessThan(range.low, range.high)
-        XCTAssertLessThan(range.low, BarToneEstimate.blend(
-            frame: BandRange(low: 0.02, high: 0.02), tintLuminance: tint,
-            hazeTop: 0.15, hazeBottom: 0.05).high,
-            "the bottom line sees less haze than the top")
-    }
-}
-
 final class BarTitleLayoutTests: XCTestCase {
+    /// The zoom light's right edge in a 28 pt row: where the title's
+    /// clearance from the lights begins.
+    private let lightsEnd: CGFloat = 7 + 2 * 23 + 14
     private let windowWidth: CGFloat = 900
     private let barHeight = ChromeBar.height
     private let rowStart: CGFloat = 763  // 900 - 7 - (3*32 + 6 + 28)
@@ -224,11 +18,11 @@ final class BarTitleLayoutTests: XCTestCase {
         let text = "Quarterly notes"
         let frame = try XCTUnwrap(BarTitle.frame(text: text, windowWidth: windowWidth,
                                                 barHeight: barHeight, boundsHeight: 628,
-                                                lightsEnd: BarTitle.lightsEnd,
+                                                lightsEnd: lightsEnd,
                                                 rightRowStart: rowStart))
         XCTAssertEqual(frame.midX, windowWidth / 2, accuracy: 0.01,
                        "the title is centred on the bar's own line")
-        XCTAssertGreaterThanOrEqual(frame.minX, BarTitle.lightsEnd + BarTitle.sideGap)
+        XCTAssertGreaterThanOrEqual(frame.minX, lightsEnd + BarTitle.sideGap)
         XCTAssertLessThanOrEqual(frame.maxX, rowStart - BarTitle.sideGap)
         XCTAssertEqual(frame.width, BarTitle.textWidth(text), accuracy: 0.5)
         XCTAssertEqual(frame.minY, 628 - barHeight + (barHeight - frame.height) / 2, accuracy: 0.01,
@@ -240,7 +34,7 @@ final class BarTitleLayoutTests: XCTestCase {
         let narrowRow: CGFloat = 320
         let frame = try XCTUnwrap(BarTitle.frame(text: long, windowWidth: 900,
                                                 barHeight: barHeight, boundsHeight: 628,
-                                                lightsEnd: BarTitle.lightsEnd,
+                                                lightsEnd: lightsEnd,
                                                 rightRowStart: narrowRow))
         XCTAssertEqual(frame.maxX, narrowRow - BarTitle.sideGap, accuracy: 0.01)
         XCTAssertGreaterThan(BarTitle.textWidth(long), frame.width,
@@ -367,180 +161,17 @@ final class BarTitleLayoutTests: XCTestCase {
     }
 }
 
-final class BarTitleBandLuminanceTests: XCTestCase {
-    private func bgra(width: Int, height: Int, top: UInt8, bottom: UInt8) throws -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                                         kCVPixelFormatType_32BGRA, nil, &buffer)
-        let made = try XCTUnwrap(buffer)
-        XCTAssertEqual(status, kCVReturnSuccess)
-        CVPixelBufferLockBaseAddress(made, [])
-        defer { CVPixelBufferUnlockBaseAddress(made, []) }
-        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(made))
-        let stride = CVPixelBufferGetBytesPerRow(made)
-        for y in 0..<height {
-            let value = y < height / 2 ? top : bottom
-            for x in 0..<width {
-                let offset = y * stride + x * 4
-                base.storeBytes(of: value, toByteOffset: offset, as: UInt8.self)
-                base.storeBytes(of: value, toByteOffset: offset + 1, as: UInt8.self)
-                base.storeBytes(of: value, toByteOffset: offset + 2, as: UInt8.self)
-                base.storeBytes(of: 255, toByteOffset: offset + 3, as: UInt8.self)
-            }
-        }
-        return made
-    }
-
-    func testABGRAFrameReadsTheTopBandAndNotTheBottom() throws {
-        let buffer = try bgra(width: 64, height: 32, top: 255, bottom: 0)
-        let top = try XCTUnwrap(BandLuminance.mean(of: buffer, rect: CGRect(x: 0, y: 0, width: 64, height: 16)))
-        let bottom = try XCTUnwrap(BandLuminance.mean(of: buffer, rect: CGRect(x: 0, y: 16, width: 64, height: 16)))
-        XCTAssertEqual(top, 1.0, accuracy: 0.01)
-        XCTAssertEqual(bottom, 0.0, accuracy: 0.01)
-    }
-
-    func testACoreImageRegionReadsTheTopOfTheFrame() throws {
-        // The lossless formats a display layer hands back are read through
-        // Core Image; this is the same call on a frame whose top is known.
-        let buffer = try bgra(width: 64, height: 32, top: 255, bottom: 0)
-        let top = try XCTUnwrap(BandLuminance.meanThroughCoreImage(
-            of: buffer, rect: CGRect(x: 8, y: 0, width: 32, height: 12)))
-        let bottom = try XCTUnwrap(BandLuminance.meanThroughCoreImage(
-            of: buffer, rect: CGRect(x: 8, y: 20, width: 32, height: 12)))
-        XCTAssertEqual(top, 1.0, accuracy: 0.01, "the top band is white")
-        XCTAssertEqual(bottom, 0.0, accuracy: 0.01, "the bottom band is black")
-    }
-
-    func testABiPlanarFrameReadsItsLumaPlaneTopDown() throws {
-        var buffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(kCFAllocatorDefault, 64, 32,
-                                         kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                                         nil, &buffer)
-        let made = try XCTUnwrap(buffer)
-        XCTAssertEqual(status, kCVReturnSuccess)
-        CVPixelBufferLockBaseAddress(made, [])
-        defer { CVPixelBufferUnlockBaseAddress(made, []) }
-        let luma = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(made, 0))
-        let stride = CVPixelBufferGetBytesPerRowOfPlane(made, 0)
-        for y in 0..<32 {
-            let value: UInt8 = y < 16 ? 255 : 0
-            for x in 0..<64 { luma.storeBytes(of: value, toByteOffset: y * stride + x, as: UInt8.self) }
-        }
-        let top = try XCTUnwrap(BandLuminance.mean(of: made, rect: CGRect(x: 0, y: 0, width: 64, height: 16)))
-        let bottom = try XCTUnwrap(BandLuminance.mean(of: made, rect: CGRect(x: 0, y: 16, width: 64, height: 16)))
-        XCTAssertEqual(top, 1.0, accuracy: 0.02, "full-range white is full white")
-        XCTAssertEqual(bottom, 0.0, accuracy: 0.02, "full-range black is full black")
-    }
-
-    /// A dark page whose top band carries thin white marks (a status bar's
-    /// clock and icons): the raw extremes reach full white, so no ink passes
-    /// and the first tone would stick. The bar blurs that band before the
-    /// title sits on it; the blurred estimate sees a dark band.
-    private func striped(width: Int, height: Int, ground: UInt8, mark: UInt8,
-                         period: Int, markWidth: Int) throws -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                            kCVPixelFormatType_32BGRA, nil, &buffer)
-        let made = try XCTUnwrap(buffer)
-        CVPixelBufferLockBaseAddress(made, [])
-        defer { CVPixelBufferUnlockBaseAddress(made, []) }
-        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(made))
-        let stride = CVPixelBufferGetBytesPerRow(made)
-        for y in 0..<height {
-            for x in 0..<width {
-                // Marks in the middle third of the band's rows, like glyphs.
-                let inMarkRow = y >= height / 3 && y < 2 * height / 3
-                let value = inMarkRow && x % period < markWidth ? mark : ground
-                let offset = y * stride + x * 4
-                for channel in 0..<3 {
-                    base.storeBytes(of: value, toByteOffset: offset + channel, as: UInt8.self)
-                }
-                base.storeBytes(of: 255, toByteOffset: offset + 3, as: UInt8.self)
-            }
-        }
-        return made
-    }
-
-    func testTheBlurredBandSeesADarkPageUnderBrightGlyphs() throws {
-        let buffer = try striped(width: 600, height: 56, ground: 20, mark: 255, period: 24, markWidth: 3)
-        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
-        let raw = try XCTUnwrap(BandLuminance.range(of: buffer, rect: title))
-        let thresholds = BarToneThresholds.standard
-        XCTAssertGreaterThan(raw.high, thresholds.toDark, "the raw extremes catch the glyphs")
-        let blurred = try XCTUnwrap(BandLuminance.blurredRange(of: buffer, rect: title, reach: 15))
-        XCTAssertLessThanOrEqual(blurred.high, thresholds.toDark, "blurred, the band passes for white ink")
-        XCTAssertGreaterThanOrEqual(blurred.low, raw.low - 1e-9, "a blur never darkens the darkest")
-        var machine = BarToneMachine()
-        XCTAssertEqual(machine.handle(.sample(blurred)), .baseline(.light))
-    }
-
-    func testTheBlurredBandSeesAWhitePageUnderDarkGlyphs() throws {
-        let buffer = try striped(width: 600, height: 56, ground: 250, mark: 0, period: 24, markWidth: 3)
-        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
-        let raw = try XCTUnwrap(BandLuminance.range(of: buffer, rect: title))
-        XCTAssertLessThan(raw.low, BarToneThresholds.standard.toLight)
-        let blurred = try XCTUnwrap(BandLuminance.blurredRange(of: buffer, rect: title, reach: 15))
-        XCTAssertGreaterThanOrEqual(blurred.low, BarToneThresholds.standard.toLight,
-                                    "blurred, the band passes for black ink")
-    }
-
-    func testABlurNeverHidesAWholeDarkHalf() throws {
-        // Left half black, right half white: wider than any blur's reach, so
-        // the title over both halves must stay unresolved, not average to grey.
-        var buffer: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, 600, 56, kCVPixelFormatType_32BGRA, nil, &buffer)
-        let made = try XCTUnwrap(buffer)
-        CVPixelBufferLockBaseAddress(made, [])
-        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(made))
-        let stride = CVPixelBufferGetBytesPerRow(made)
-        for y in 0..<56 {
-            for x in 0..<600 {
-                let value: UInt8 = x < 300 ? 0 : 255
-                for channel in 0..<3 {
-                    base.storeBytes(of: value, toByteOffset: y * stride + x * 4 + channel, as: UInt8.self)
-                }
-                base.storeBytes(of: 255, toByteOffset: y * stride + x * 4 + 3, as: UInt8.self)
-            }
-        }
-        CVPixelBufferUnlockBaseAddress(made, [])
-        let blurred = try XCTUnwrap(BandLuminance.blurredRange(
-            of: made, rect: CGRect(x: 100, y: 0, width: 400, height: 56), reach: 15))
-        XCTAssertLessThan(blurred.low, 0.01, "the black half stays black")
-        XCTAssertGreaterThan(blurred.high, 0.99, "the white half stays white")
-    }
-
-    func testNoReachIsTheRawRange() throws {
-        let buffer = try striped(width: 600, height: 56, ground: 20, mark: 255, period: 24, markWidth: 3)
-        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
-        XCTAssertEqual(BandLuminance.blurredRange(of: buffer, rect: title, reach: 0),
-                       BandLuminance.range(of: buffer, rect: title),
-                       "a bar without its blur is read pixel for pixel")
-    }
-
-    func testAnUnreadableFormatIsAMeasurementNotACrash() throws {
-        var buffer: CVPixelBuffer?
-        CVPixelBufferCreate(kCFAllocatorDefault, 16, 16,
-                            kCVPixelFormatType_32ARGB, nil, &buffer)
-        let made = try XCTUnwrap(buffer)
-        XCTAssertNil(BandLuminance.mean(of: made, rect: CGRect(x: 0, y: 0, width: 16, height: 16)))
-        XCTAssertNil(BandLuminance.mean(of: made, rect: .zero))
-    }
-}
-
-@MainActor
-final class BarTitleViewTests: XCTestCase {
-    private func makeChrome(tone: FakeToneSource,
-                            reduceMotion: @escaping () -> Bool = { false })
-        -> (NSWindow, StreamChromeView) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 628),
-                              styleMask: [.titled], backing: .buffered, defer: false)
+final class FramedTitleViewTests: XCTestCase {
+    private func makeChrome(width: CGFloat = 910) -> (NSWindow, StreamChromeView) {
+        let size = WindowStyle.framed.contentSize(stream: CGSize(width: width - 10, height: 600))
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: WindowStyle.framed.styleMask, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .darkAqua)
-        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
-        video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .compact, toneSource: tone,
-                                      reduceMotion: reduceMotion)
-        chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
+        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: width - 10, height: 600))
+        video.setVideoSizeForTesting(CGSize(width: width - 10, height: 600))
+        let chrome = StreamChromeView(video: video, style: .framed)
+        chrome.frame = NSRect(origin: .zero, size: size)
         window.contentView = chrome
         window.makeKeyAndOrderFront(nil)
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
@@ -548,208 +179,81 @@ final class BarTitleViewTests: XCTestCase {
         return (window, chrome)
     }
 
-    func testTheTitleAppearsInTheBandsOwnToneAndFollowsIt() throws {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone)
-        defer { window.close() }
-        chrome.setBarTitle("Quarterly notes")
+    private func layOut(_ chrome: StreamChromeView, width: CGFloat) {
+        chrome.frame = NSRect(x: 0, y: 0, width: width, height: chrome.frame.height)
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        XCTAssertEqual(chrome.barTitleToneName, BarTone.dark.rawValue,
-                       "a bright band gets black ink")
-        let frame = try XCTUnwrap(chrome.barTitleRect)
-        XCTAssertGreaterThanOrEqual(frame.minX, BarTitle.lightsEnd + BarTitle.sideGap)
-        XCTAssertLessThanOrEqual(frame.maxX, 900 - 7 - 28 - BarTitle.sideGap,
-                                 "the title keeps clear of the Live Text capsule")
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
-                       "the whole name fits, so the field must not reserve an ellipsis")
-
-        tone.range = BandRange(low: 0.02, high: 0.03)
-        tone.frameStamp += 1
-        chrome.sampleBarToneForTesting()
-        XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue,
-                       "a dark band gets white ink")
-        XCTAssertEqual(chrome.barTitleAlpha(.light), 1, accuracy: 0.01)
-        XCTAssertEqual(chrome.barTitleAlpha(.dark), 0, accuracy: 0.01)
+        chrome.framedTitleView.layoutSubtreeIfNeeded()
     }
 
-    /// #147: the tint follows the picture, by the title's own decision: a
-    /// bright band gets black ink over a light tint, a dark band white ink
-    /// over a dark tint, in either window appearance.
-    func testTheTintFollowsTheTitlesToneNotTheAppearance() throws {
-        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
-            let tone = FakeToneSource()
-            tone.range = BandRange(low: 0.8, high: 0.9)
-            let (window, chrome) = makeChrome(tone: tone)
-            defer { window.close() }
-            window.appearance = NSAppearance(named: appearance)
-            chrome.setBarTitle("Quarterly notes")
-            chrome.layoutChrome()
-            tone.frameStamp += 1
-            chrome.sampleBarToneForTesting()
-            XCTAssertEqual(chrome.barTitleToneName, BarTone.dark.rawValue)
-            let lightTint = try XCTUnwrap(chrome.barTintColor?.usingColorSpace(.sRGB))
-            XCTAssertGreaterThan(lightTint.relativeLuminance ?? 0, 0.7, "\(appearance): a bright band, a light tint")
-            XCTAssertEqual(lightTint.alphaComponent, BarTitle.tintAlpha, accuracy: 0.005)
-
-            tone.range = BandRange(low: 0.02, high: 0.03)
-            tone.frameStamp += 1
-            chrome.sampleBarToneForTesting()
-            XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue)
-            let darkTint = try XCTUnwrap(chrome.barTintColor?.usingColorSpace(.sRGB))
-            XCTAssertLessThan(darkTint.relativeLuminance ?? 1, 0.05, "\(appearance): a dark band, a dark tint")
-            XCTAssertEqual(darkTint.alphaComponent, BarTitle.tintAlpha, accuracy: 0.005)
-        }
-    }
-
-    /// The title sits on the bar's blurred mirror, so the sample is read at
-    /// the blur the bar carries now: a quarter of its radius, as a fraction
-    /// of the picture's width (issue #45).
-    func testTheSampleIsReadAtTheBarsOwnBlur() throws {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone)
-        defer { window.close() }
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-        chrome.setBarTitle("Quarterly notes")
-        chrome.layoutChrome()
-        tone.frameStamp += 1
-        chrome.sampleBarToneForTesting()
-        XCTAssertEqual(chrome.barBlurRadius, BarBlur.radius, "the bar wears its blur")
-        let reach = try XCTUnwrap(tone.lastReach)
-        XCTAssertEqual(reach, BarBlur.radius * BarTitle.blurReachPerRadius / 900, accuracy: 1e-6)
-    }
-
-    func testReduceMotionChangesTheToneAtOnce() throws {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone, reduceMotion: { true })
-        defer { window.close() }
-        chrome.setBarTitle("Maps")
-        chrome.layoutChrome()
-        XCTAssertEqual(chrome.barTitleToneName, BarTone.dark.rawValue)
-        tone.range = BandRange(low: 0.02, high: 0.03)
-        tone.frameStamp += 1
-        chrome.sampleBarToneForTesting()
-        XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue)
-        XCTAssertEqual(chrome.barTitleAlpha(.light), 1, accuracy: 0.01,
-                       "Reduce Motion swaps the ink with no fade")
-        XCTAssertEqual(chrome.barTitleAlpha(.dark), 0, accuracy: 0.01)
-    }
-
-    func testTheTitleHidesForEveryCoverAndComesBack() {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone)
+    func testTheTitleShowsOnlyInFramedAndOnlyWithAName() {
+        let (window, chrome) = makeChrome()
         defer { window.close() }
         chrome.setBarTitle("Maps")
         chrome.layoutChrome()
         XCTAssertTrue(chrome.barTitleVisible)
+        XCTAssertNotNil(chrome.barTitleRect)
 
-        chrome.phoneOverlay.show(.screenOff)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible, "the phone cover owns the bar")
-        chrome.phoneOverlay.show(nil as PhoneCover?)
-        chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-
-        chrome.setStyle(.framed)
-        chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible, "Framed has its title on the frame")
         chrome.setStyle(.compact)
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible, "Compact has its title on the bar too")
+        XCTAssertFalse(chrome.barTitleVisible, "Compact's title is the system's, in AppKit's title bar")
+        XCTAssertNil(chrome.barTitleRect)
+        chrome.setStyle(.immersive)
+        chrome.layoutChrome()
+        XCTAssertFalse(chrome.barTitleVisible, "Immersive has no bar")
+        chrome.setStyle(.framed)
+        chrome.layoutChrome()
+        XCTAssertTrue(chrome.barTitleVisible)
 
         chrome.setBarTitle(nil)
         chrome.layoutChrome()
+        chrome.framedTitleView.layoutSubtreeIfNeeded()
         XCTAssertFalse(chrome.barTitleVisible, "a window with no name has no title")
     }
 
-    func testTheTitleDrawsThePhoneSuffixAndDropsItFirst() throws {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.02, high: 0.03)
-        let (window, chrome) = makeChrome(tone: tone)
+    func testTheTitleDrawsThePhoneSuffixAndDropsItFirst() {
+        let (window, chrome) = makeChrome()
         defer { window.close() }
+        let title = chrome.framedTitleView
         chrome.setBarTitle("Settings", phone: "Pixel 9")
         chrome.layoutChrome()
-        XCTAssertEqual(chrome.barTitleString, "Settings (Pixel 9)")
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
-                       "the whole name fits at 900 pt")
+        XCTAssertEqual(title.titleText, "Settings (Pixel 9)")
+        XCTAssertEqual(title.titleLineBreakMode, .byClipping, "the whole name fits at 910 pt")
 
-        // Room for the app's name but not the phone: only the suffix goes.
-        let chromeExtra: CGFloat = 7 + HeaderBar.liveTextSide + BarTitle.lightsEnd + 2 * BarTitle.sideGap
-        let forBase = BarTitle.textWidth("Settings") + 0.5 + chromeExtra
-        chrome.frame = NSRect(x: 0, y: 0, width: forBase, height: 628)
-        chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        XCTAssertEqual(chrome.barTitleString, "Settings", "the phone suffix goes first")
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping)
-
-        // A long app name: the phone still goes first, then the app's own name
-        // is the one that truncates; below 96 pt it hides instead.
-        let longApp = String(repeating: "A very long app name ", count: 8)
-        chrome.setBarTitle(longApp, phone: "Pixel 9")
-        chrome.frame = NSRect(x: 0, y: 0, width: 200 + chromeExtra, height: 628)
-        chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        XCTAssertEqual(chrome.barTitleString, longApp)
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle)
-        chrome.frame = NSRect(x: 0, y: 0,
-                              width: BarTitle.minimumTruncatedWidth - 1 + chromeExtra,
-                              height: 628)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible, "a name cut to two letters reads worse than none")
+        // Narrow the window one point at a time: the suffix goes before the
+        // app's own name is cut, and the name is cut before it hides.
+        var seen: [String] = []
+        var width: CGFloat = 910
+        while width > 120 {
+            layOut(chrome, width: width)
+            let state = title.titleIsHidden ? "hidden"
+                : title.titleText == "Settings (Pixel 9)" ? "whole"
+                : title.titleText == "Settings" && title.titleLineBreakMode == .byClipping ? "base"
+                : title.titleText == "Settings" ? "truncated" : "other: \(title.titleText)"
+            if seen.last != state { seen.append(state) }
+            width -= 1
+        }
+        XCTAssertEqual(seen, ["whole", "base", "hidden"],
+                       "a short name hides at the minimum rather than shrink to two letters")
 
         // The Mirror's title already is the phone's: no doubled suffix.
-        chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
+        layOut(chrome, width: 910)
         chrome.setBarTitle("Pixel 9", phone: "Pixel 9")
         chrome.layoutChrome()
-        XCTAssertEqual(chrome.barTitleString, "Pixel 9")
-
-        // Framed draws the same name in the system label colour.
-        chrome.setBarTitle("Settings", phone: "Pixel 9")
-        chrome.setStyle(.framed)
-        chrome.layoutChrome()
-        XCTAssertEqual(chrome.framedTitleView.titleText, "Settings (Pixel 9)")
-
-        // Immersive has no bar: nothing to draw.
-        chrome.setStyle(.immersive)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible)
-        XCTAssertNil(chrome.barTitleRect)
+        XCTAssertEqual(title.titleText, "Pixel 9")
     }
 
-    func testTheTitleHidesBelowItsMinimumWidth() {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone)
+    func testALongNameTruncatesInTheMiddleAndAShortOneIsWhole() {
+        let (window, chrome) = makeChrome()
         defer { window.close() }
-        chrome.setBarTitle("Maps")
-        chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        chrome.frame = NSRect(x: 0, y: 0,
-                              width: BarTitle.lightsEnd + 2 * BarTitle.sideGap
-                                  + BarTitle.minimumWidth - 1 + 7 + 28,
-                              height: 628)
-        chrome.layoutChrome()
-        XCTAssertFalse(chrome.barTitleVisible, "one point under the minimum hides the title")
-    }
-
-    func testTheFieldTruncatesAMiddleThatDoesNotFitAndClipsOneThatDoes() {
-        let tone = FakeToneSource()
-        tone.range = BandRange(low: 0.8, high: 0.9)
-        let (window, chrome) = makeChrome(tone: tone)
-        defer { window.close() }
+        let title = chrome.framedTitleView
         chrome.setBarTitle("Settings")
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byClipping,
-                       "a name that fits is drawn whole")
+        XCTAssertEqual(title.titleLineBreakMode, .byClipping, "a name that fits is drawn whole")
         chrome.setBarTitle(String(repeating: "A very long app name ", count: 8))
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible)
-        XCTAssertEqual(chrome.barTitleLineBreakMode, .byTruncatingMiddle,
+        chrome.framedTitleView.layoutSubtreeIfNeeded()
+        XCTAssertFalse(title.titleIsHidden)
+        XCTAssertEqual(title.titleLineBreakMode, .byTruncatingMiddle,
                        "a name wider than the bar truncates in the middle")
     }
 }

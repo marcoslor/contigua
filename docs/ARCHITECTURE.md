@@ -174,8 +174,8 @@ system-privileged steps):
   (`WindowStyle`, remembered per app in the profile defaults) has three shapes:
   **Framed** (the default: a real 38/5 pt frame round the picture with the
   system material, hairline, rim and rounded corners), **Compact** (a
-  permanent 28 pt bar with the traffic lights and the picture mirrored under a
-  blur) and **Immersive** (the stream alone; a dwell pill at the top-left
+  standard titled window: AppKit's own title bar above the stream, our controls
+  in its trailing accessory) and **Immersive** (the stream alone; a dwell pill at the top-left
   brings the lights back). Full screen looks the same in every style: the
   stream fills the screen and the window's own native title bar comes down
   with the menu bar (WIN-14). Style flips (⌥⌘F / View menu)
@@ -188,8 +188,8 @@ system-privileged steps):
   socket reader thread with cached reflection handles. Hover: the video's
   tracking area sends ENTER/MOVE/EXIT (moves at most one per 16 ms, the newest
   point) and the phone injects `ACTION_HOVER_*` as a mouse; a button down sends
-  EXIT before the touch, and Mac UI over the video (the Compact bar, the
-  Framed frame, the Immersive pill) or a window losing key ends it. Trackpad: two-finger
+  EXIT before the touch, and Mac UI over or beside the video (Compact's
+  title bar, the Framed frame, the Immersive pill) or a window losing key ends it. Trackpad: two-finger
   scroll is a touch drag (Android gets flings; a mouse wheel is a SCROLL
   frame), pinch/rotate are two pointers from the raw fingers; a mouse side
   Back button maps to one Android Back per press.

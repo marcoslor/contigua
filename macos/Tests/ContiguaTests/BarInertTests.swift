@@ -1,9 +1,7 @@
-// The Compact bar is a blurred mirror of the stream's top edge, not the
-// picture: a click on it drags the window and must never become a touch on
-// the phone (WIN-61). The extension view fills the window with the stream as
-// its content view — that is how the bar draws its mirror — so the hit test
-// must decide from the bar's own band, never from where the picture's view
-// ends up.
+// The window's own band is never the phone's (WIN-61). In Compact the band is
+// AppKit's title bar, above the content view: the content view is exactly the
+// stream, so its top row is the picture's and a title-bar click never reaches
+// our view. Framed's own bar buttons keep their clicks over the frame.
 
 import AppKit
 import XCTest
@@ -11,30 +9,46 @@ import XCTest
 
 @MainActor
 final class BarInertTests: XCTestCase {
-    private func makeChrome() -> StreamChromeView {
-        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
-        let chrome = StreamChromeView(video: video, style: .compact)
-        chrome.frame = NSRect(x: 0, y: 0, width: 360, height: 800)
+    private func makeChrome(_ style: WindowStyle) -> StreamChromeView {
+        let stream = NSSize(width: 360, height: 780)
+        let video = VideoLayerView(frame: NSRect(origin: .zero, size: stream))
+        let chrome = StreamChromeView(video: video, style: style)
+        chrome.frame = NSRect(origin: .zero, size: style.contentSize(stream: stream))
+        chrome.layoutSubtreeIfNeeded()
         return chrome
     }
 
-    func testAClickOnTheCompactBarsMirrorIsInert() {
-        let chrome = makeChrome()
-        chrome.layoutSubtreeIfNeeded()
-        // The extension view stretches its content view over the whole window;
-        // model it, as the system does in a real window.
-        chrome.video.frame = chrome.bounds
-        let band = chrome.bounds.height - ChromeBar.height / 2
+    func testCompactsContentIsThePictureUpToItsTopRow() {
+        let chrome = makeChrome(.compact)
+        XCTAssertEqual(chrome.video.frame, chrome.bounds, "the content view is the stream")
         for x in stride(from: 8.0, through: chrome.bounds.width - 8, by: 40) {
-            let point = NSPoint(x: x, y: band)
-            let hit = chrome.hitTest(point)
-            XCTAssertFalse(hit === chrome.video,
-                           "the bar's mirror at x=\(x) reached the picture: a click there is a touch on the phone")
+            let point = NSPoint(x: x, y: chrome.bounds.height - 1)
+            XCTAssertTrue(chrome.hitTest(point) === chrome.video,
+                          "the stream's top row at x=\(x) is the phone's: the title bar is above it")
         }
     }
 
+    /// A point in AppKit's title bar is outside the content view, so our
+    /// view never sees its clicks: AppKit drags and zooms there.
+    func testCompactsTitleBarIsOutsideOurView() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 780),
+                              styleMask: WindowStyle.compact.styleMask, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
+        let chrome = StreamChromeView(video: video, style: .compact)
+        window.contentView = chrome
+        window.orderFront(nil)
+        window.layoutIfNeeded()
+        let titlebar = window.frame.height - window.contentLayoutRect.height
+        XCTAssertGreaterThan(titlebar, 0)
+        XCTAssertEqual(chrome.frame.height, 780, "the content view stops under the title bar")
+        let inTitlebar = NSPoint(x: 180, y: chrome.frame.maxY + titlebar / 2)
+        XCTAssertNil(chrome.hitTest(inTitlebar), "the title bar is AppKit's, not ours")
+    }
+
     func testTheBarsOwnButtonsStillTakeTheirClicks() {
-        let chrome = makeChrome()
+        let chrome = makeChrome(.framed)
         var fired = 0
         chrome.setActions([.back { fired += 1 }])
         chrome.layoutSubtreeIfNeeded()
@@ -51,43 +65,5 @@ final class BarInertTests: XCTestCase {
         let hit = chrome.hitTest(point)
         XCTAssertTrue(hit === button || hit?.isDescendant(of: button) == true,
                       "the bar's own button must keep its click")
-    }
-
-    /// The native titlebar is taller than the 28 pt bar (32 pt on macOS 26):
-    /// its bottom rows are still the window's edge above the stream's first
-    /// visible row, so a click there must drag, not reach the picture.
-    func testAClickUnderTheTitlebarIsStillTheBars() throws {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 800),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable,
-                                          .fullSizeContentView],
-                              backing: .buffered, defer: false)
-        defer { window.close() }
-        window.isReleasedWhenClosed = false
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 800))
-        let chrome = StreamChromeView(video: video, style: .compact)
-        window.contentView = chrome
-        window.orderFront(nil)
-        window.layoutIfNeeded()
-        chrome.layoutSubtreeIfNeeded()
-        let titlebar = window.frame.height - window.contentLayoutRect.maxY
-        try XCTSkipIf(titlebar <= ChromeBar.height,
-                      "this titlebar (\(titlebar) pt) is not taller than the bar")
-        // The extension view stretches the picture over the window, as it
-        // does in a real window.
-        chrome.video.frame = chrome.bounds
-        let point = NSPoint(x: chrome.bounds.midX,
-                            y: chrome.bounds.height - titlebar + 1)
-        let hit = chrome.hitTest(point)
-        XCTAssertFalse(hit === chrome.video,
-                       "the titlebar's bottom row is the bar's edge, not the picture's")
-        XCTAssertTrue(hit === chrome, "the titlebar's bottom row drags the window")
-        // The stream's first visible row below the titlebar is still the
-        // picture's and keeps its touch.
-        let stream = NSPoint(x: chrome.bounds.midX,
-                             y: chrome.bounds.height - titlebar - 1)
-        XCTAssertFalse(chrome.hitTest(stream) === chrome,
-                       "the stream below the titlebar must stay the picture's")
     }
 }

@@ -1,13 +1,8 @@
-// The stream window's chrome by style (WindowStyle.swift). Compact: a
-// permanent 28 pt bar above the stream. The mirror is NSBackgroundExtensionView:
-// the video view is its contentView and it fills the rest of its frame — here
-// the bar band — with a replica of the content's top edge, so nothing is read
-// back off the CPU and nothing is decoded twice. The replica carries the
-// system's progressive blur (strongest at the window's top edge, sharp at the
-// seam) turned up to 30 pt (BarBlur.swift), a 14 % window-background tint and a
-// light white haze over the bar band only, clear at its seam. The centred title
-// is the app's name and the phone's, in the tone the band behind it allows
-// (BarTitle.swift). Framed: the picture sits inside a real frame on all four
+// The stream window's chrome by style (WindowStyle.swift). Compact: none of
+// ours. The window is a standard titled one, so AppKit draws its opaque title
+// bar above this view, with the system's title and lights; the window kind's
+// actions and Live Text ride its trailing NSTitlebarAccessoryViewController
+// (WIN-7). This view is exactly the stream. Framed: the picture sits inside a real frame on all four
 // sides (FramedChrome): a system material, a 0.5 pt hairline, a 1 pt rim, a
 // 10 pt top highlight, a 21 pt window radius and a 12 pt picture radius, with
 // our lights, a label-coloured title and our controls in the 38 pt bar.
@@ -71,8 +66,7 @@ final class FramedChromeView: NSView {
         layer?.masksToBounds = true
 
         // The desktop behind the window is the material's backdrop, never a
-        // copy of the picture: Framed's bar is a real material bar, not the
-        // Compact mirror.
+        // copy of the picture: Framed's bar is a real material bar.
         material.blendingMode = .behindWindow
         material.state = .active
         material.wantsLayer = true
@@ -120,8 +114,8 @@ final class FramedChromeView: NSView {
         titleLabel.stringValue = title ?? ""
         titleBase = base
         titleRightEdge = rightEdge
-        // Always lay out: the frame is hidden while Compact, so a title set
-        // then has no laid-out label yet; the switch to Framed must place it.
+        // Always lay out: the frame is hidden in the other styles, so a title
+        // set then has no laid-out label yet; the switch to Framed places it.
         needsLayout = true
     }
 
@@ -142,8 +136,8 @@ final class FramedChromeView: NSView {
     var rimWidth: CGFloat { rimLayer.lineWidth }
 
     /// The title's rect between the lights and the right-hand controls, with
-    /// the same 8 pt clearance and hide thresholds as the Compact bar
-    /// (WIN-68), and the phone suffix dropped first when the room is short.
+    /// an 8 pt clearance and the hide thresholds of WIN-68, and the phone
+    /// suffix dropped first when the room is short.
     private func fitting() -> (text: String, frame: NSRect)? {
         let lightsEnd = FramedChrome.lightInset + 2 * ChromeBar.trafficLightSpacing
             + ChromeBar.trafficLightButtonSide
@@ -207,58 +201,24 @@ final class FramedChromeView: NSView {
 
 final class StreamChromeView: NSView {
     let video: VideoLayerView
-    /// The bar's mirror: the extension view spans the whole window, so the
-    /// band beyond the video's top edge is its filled replica — blurred
-    /// progressively by the system, with no material over it.
-    private let ext = BarMirrorView()
     /// The Framed style's material, hairline, rim, highlight and title.
     private let framedView = FramedChromeView()
     /// The Immersive style's clear-glass pill; only a background: the buttons above it are the chrome's own
     /// subviews so they can move between the pill's row and their home slots.
     private let pillView = DwellPillView()
-    /// The haze over the bar band only: white at the window's top edge, clear
-    /// at the seam (WIN-40). Above the mirror, below the bar's controls.
-    private let hazeLayer = CAGradientLayer()
-    /// The 14 % tint over the bar band (WIN-67), in the band's own side's
-    /// colour (#147), above the haze and below the title and the controls.
-    private let tintLayer = CALayer()
-    /// An opaque band under the extension view, in the tint's own colour at
-    /// full strength: a mirror that draws nothing leaves this, never the
-    /// desktop (#45, WIN-67). A drawing mirror is opaque and covers it.
-    private let backingLayer = CALayer()
-    /// The centred title, one field per tone so a tone change cross-fades
-    /// instead of blinking (WIN-68, WIN-69). `titleLight` is white ink,
-    /// `titleDark` black.
-    private let titleLight = NSTextField(labelWithString: "")
-    private let titleDark = NSTextField(labelWithString: "")
     /// What the bar names; nil hides the title (WIN-68). `titleText` is the
     /// name without the phone suffix; `titlePhone` is the phone's display name
     /// the suffix is built from.
     private(set) var titleText: String?
     private var titlePhone: String?
-    /// The title's frame in this view, nil while hidden.
-    private var titleFrame: NSRect?
-    private var titleVisible = false
-    /// The band's two tones and their hysteresis (WIN-69).
-    private var toneMachine = BarToneMachine()
-    /// The displayed picture's top band, the mirror's own source.
-    private let toneSource: BarToneSource
-    /// Reduce Motion: a tone change applies at once.
-    private let reduceMotion: () -> Bool
-    private var toneTimer: Timer?
-    private var toneSampleInFlight = false
-    private var lastToneStamp: UInt64?
-    private var loggedUnresolvedTone = false
-    /// Re-applies the system blur radius when the hosting view builds or
-    /// rebuilds its backdrop (WIN-40).
-    private let barBlur: BarBlurTuner
-    /// The window events that can come with a rebuilt backdrop; tokens only.
-    private var windowObservers: [NSObjectProtocol] = []
-    /// The Show Touches dots: a layer of this view, not of the video. The
-    /// extension view mirrors its contentView (the video), so a dot there
-    /// would be reflected into the Compact bar; this layer is a sibling above
-    /// the mirror, so the bar shows the video only.
+    /// The Show Touches dots: a layer of this view above the stream, clipped
+    /// to the picture.
     private let touchDots = CALayer()
+    /// Compact's controls: the window kind's actions and Live Text ride
+    /// AppKit's own trailing title-bar accessory, in the native title bar
+    /// (WIN-7). Hidden in every other style and in full screen.
+    let titlebarControls = NSTitlebarAccessoryViewController()
+    private let titlebarRow = NSView()
     /// The window kind's actions at the right end (the phone window's
     /// Back/Home/Recents), each group in its own glass capsule.
     private let actions = HeaderBarView(frame: .zero)
@@ -309,10 +269,6 @@ final class StreamChromeView: NSView {
     /// The cover came or went (WIN-11): the window's geometry follows it.
     var onCoverVisibilityChange: (() -> Void)?
 
-    /// The title's tone changed: the window rewrites the chrome state so the
-    /// e2e and the chrome state file see the tone that is drawn.
-    var onBarToneChange: (() -> Void)?
-
     /// The Live Text button: a click toggles the mode; the drag source is the
     /// frozen frame (nil while the mode is off).
     var onLiveTextToggle: (() -> Void)?
@@ -323,70 +279,39 @@ final class StreamChromeView: NSView {
     /// the mirrored video go now instead of living until the app quits
     /// (WIN-33). Nothing is drawn again from a released chrome.
     func releaseGraphics() {
-        barBlur.windowClosing(root: ext.layer)
-        ext.onSystemPass = nil
-        stopToneTimer()
-        ext.contentView = nil
+        released = true
+        if let window, let index = window.titlebarAccessoryViewControllers.firstIndex(of: titlebarControls) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+        titlebarRow.subviews.forEach { $0.removeFromSuperview() }
         subviews.forEach { $0.removeFromSuperview() }
         layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
         layer?.contents = nil
     }
+    /// Set once by `releaseGraphics`: no later layout puts a control back.
+    private var released = false
 
-    init(video: VideoLayerView, style: WindowStyle, barBlur: BarBlurTuner = BarBlurTuner(),
-         toneSource: BarToneSource? = nil,
-         reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+    init(video: VideoLayerView, style: WindowStyle) {
         self.video = video
         self.style = style
-        self.barBlur = barBlur
-        self.toneSource = toneSource ?? video
-        self.reduceMotion = reduceMotion
-        super.init(frame: NSRect(origin: .zero, size: style.windowSize(stream: video.frame.size)))
+        super.init(frame: NSRect(origin: .zero, size: style.contentSize(stream: video.frame.size)))
         wantsLayer = true
-        ext.automaticallyPlacesContentView = false
-        ext.contentView = video
-        // The radius follows the extension view's own passes: that is where
-        // the system builds its backdrop, after this view's layout.
-        ext.onSystemPass = { [weak self] in self?.reapplyBarBlur() }
         video.wantsLayer = true
         actions.isHidden = true
         liveTextButton.onPress = { [weak self] in self?.onLiveTextToggle?() }
         liveTextButton.dragProvider = { [weak self] in self?.liveTextDragProvider?() }
-        addSubview(ext)
-        addSubview(framedView, positioned: .below, relativeTo: ext)
+        addSubview(framedView)
         framedView.isHidden = true
-        // The dots ride above the stream but outside the mirror: above the
-        // extension view's layer (0), below the actions (2), and
-        // clipped at the seam, so a touch at the very top edge never paints
-        // over the bar.
+        addSubview(video)
+        // The dots ride above the stream, below the controls (2), clipped to
+        // the picture.
         video.touchDotHost = touchDots
         touchDots.zPosition = 1
         touchDots.masksToBounds = true
         layer?.addSublayer(touchDots)
-        // The haze sits over the mirror (0) and under the dots and the controls
-        // (1/2); its own frame keeps it inside the 28 pt band. The first colour
-        // is at the window's top edge (layer y 1), the clear one at the seam.
-        hazeLayer.startPoint = CGPoint(x: 0.5, y: 1)
-        hazeLayer.endPoint = CGPoint(x: 0.5, y: 0)
-        hazeLayer.zPosition = 0.55
-        layer?.addSublayer(hazeLayer)
-        // The tint sits over the haze but under the title and every control.
-        tintLayer.zPosition = 0.56
-        tintLayer.isHidden = true
-        layer?.addSublayer(tintLayer)
-        // The backing sits under everything, the extension view (0) included.
-        backingLayer.zPosition = -1
-        backingLayer.isHidden = true
-        layer?.addSublayer(backingLayer)
-        for field in [titleLight, titleDark] {
-            BarTitle.configure(field)
-            field.alphaValue = 0
-            field.isHidden = true
-            field.wantsLayer = true
-            field.layer?.zPosition = 0.6
-            addSubview(field)
-        }
-        titleLight.textColor = .white
-        titleDark.textColor = .black
+        titlebarControls.layoutAttribute = .trailing
+        titlebarControls.view = titlebarRow
+        titlebarControls.isHidden = true
         addSubview(phoneOverlay)
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(openingCover)
@@ -431,24 +356,14 @@ final class StreamChromeView: NSView {
     var pill: DwellPillView { pillView }
 
     /// The picture's own rect in this view's coordinates (the whole view in
-    /// Compact; the inset content rect in Framed and while opening).
+    /// Compact, Immersive and full screen; the inset rect in Framed).
     var contentRect: NSRect { video.frame }
-
-    /// The mirror's frame in the chrome (the e2e's geometry).
-    var mirrorFrame: NSRect { ext.frame }
 
     /// The Show Touches dots' layer, for the tests and the chrome state.
     var touchDotsLayer: CALayer { touchDots }
 
     /// The dots drawn right now (the chrome state's evidence).
     var touchDotCount: Int { touchDots.sublayers?.count ?? 0 }
-
-    /// True when the dots are outside the extension view's mirror (the bar
-    /// must mirror the video only): the video draws into this layer, and this
-    /// layer is the chrome's own, above the extension view.
-    var touchDotsOutsideMirror: Bool {
-        video.touchDotHost === touchDots && touchDots.superlayer === layer
-    }
 
     /// The bar's actions, for the layout tests.
     var actionsForTesting: [HeaderAction] { actions.actions }
@@ -509,9 +424,9 @@ final class StreamChromeView: NSView {
         return style
     }
 
-    /// Right now: the windowed top chrome band's height — Compact's 28 pt bar
-    /// or Framed's 38.5 pt bar — or 0 in full screen and while the opening
-    /// cover is one sheet over the whole window (WIN-11).
+    /// Right now: the height of our own top chrome band — Framed's 38 pt bar —
+    /// or 0 in the other styles (Compact's title bar is AppKit's, outside this
+    /// view), in full screen and while the opening cover is one sheet (WIN-11).
     var barHeight: CGFloat {
         guard let chrome = windowedChrome else { return 0 }
         return chrome.insets(fullScreen: false).top
@@ -529,9 +444,6 @@ final class StreamChromeView: NSView {
 
     /// The Framed style's frame is drawn: windowed, cover not up.
     private var framedGeometry: Bool { windowedChrome == .framed }
-
-    /// The Compact mirror's band is live: windowed, cover up, not Framed.
-    private var compactBar: Bool { windowedChrome == .compact }
 
     /// The Immersive style's pill is the windowed chrome: no bar, no frame.
     private var immersiveChrome: Bool { windowedChrome == .immersive }
@@ -571,7 +483,7 @@ final class StreamChromeView: NSView {
     }
 
     /// The pill's frame in this view (the window's content): `pillInset` in
-    /// from the stream's top-left corner, as tall as the Compact bar, wide
+    /// from the stream's top-left corner, the 28 pt row's height, wide
     /// enough for its contents. nil when it cannot show (a framed window with
     /// no cover, full screen, the opening cover's one sheet).
     private func newPillFrame() -> NSRect? {
@@ -581,22 +493,13 @@ final class StreamChromeView: NSView {
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
-    /// The stream's rect: Framed's content rect while its frame is drawn; the
-    /// stored style's stream rect while the cover is one sheet; the whole view
-    /// in full screen. The extension view fills the view in Compact so its
-    /// bar band is the mirrored top of the stream.
+    /// The stream's rect: Framed's content rect inside its frame; the whole
+    /// view in Compact (its title bar is AppKit's, above this view), in
+    /// Immersive and in full screen.
     private func layoutStream() {
-        let content = streamContentRect
-        if framedGeometry || openingCover.isShowing {
-            ext.frame = content
-            video.frame = NSRect(origin: .zero, size: content.size)
-            touchDots.frame = content
-        } else {
-            ext.frame = bounds
-            video.frame = NSRect(x: 0, y: 0, width: bounds.width, height: content.height)
-            touchDots.frame = video.frame
-        }
-        // One sheet over the whole window in either style, the style's band
+        video.frame = streamContentRect
+        touchDots.frame = video.frame
+        // One sheet over the whole content view in every style, Framed's band
         // included (WIN-11, WIN-65).
         phoneOverlay.frame = bounds
         openingCover.frame = bounds
@@ -623,26 +526,16 @@ final class StreamChromeView: NSView {
         // live resize the picture must take the new frame in the same commit,
         // or the edge the window already shows stays black for ~0.25 s.
         clearLayerAnimations(layer)
-        clearLayerAnimations(ext.layer)
         clearLayerAnimations(video.layer)
-        // The ext is never hidden: it is the video view's parent (its contentView
-        // is the stream), and hiding NSBackgroundExtensionView blanks its
-        // contentView — a stream window left without its bar then showed
-        // nothing. The corners round exactly once, on this container: the
-        // children stay square, so the bar's seam and the stream's top edge
-        // stay straight, and the extension's mirror never copies a rounded
-        // corner (a rounded video corner mirrored into the bar read as a dark
-        // crescent).
+        // The window's corners round once, on this container.
         if let layer = layer {
             layer.cornerRadius = windowCornerRadius
             layer.cornerCurve = .continuous
             layer.masksToBounds = true
         }
-        // The picture's own corners: Framed's 11.5 pt, not the window's 22.
-        // The extension view and the video round together, or one black corner
-        // would show through the other.
+        // The picture's own corners: Framed's 12 pt, not the window's 21.
         let contentRadius = framedGeometry ? FramedChrome.contentRadius : 0
-        for shaped in [ext.layer, video.layer].compactMap({ $0 }) {
+        if let shaped = video.layer {
             shaped.cornerRadius = contentRadius
             shaped.cornerCurve = .continuous
             shaped.masksToBounds = contentRadius > 0
@@ -663,60 +556,19 @@ final class StreamChromeView: NSView {
             pillFrame = nil
         }
         layoutControls()
-        updateBarHaze()
-        reapplyBarBlur()
     }
 
-    /// The window's own radius: 22 for Framed, 16 for Compact and Immersive,
-    /// square in full screen except for Immersive, which kept its 16 pt corners
-    /// in full screen before the merge; the cover keeps the stored style's
-    /// window radius.
+    /// The window's own radius where our chrome draws the window's edge: 21
+    /// for Framed, 16 for Immersive. Compact's window is AppKit's titled
+    /// window, whose shape and corners are the system's; full screen is
+    /// square. The cover keeps the stored style's radius.
     private var windowCornerRadius: CGFloat {
         if isFullScreen { return 0 }
         switch style {
-        case .compact, .immersive: return ChromeBar.cornerRadius
+        case .compact: return 0
+        case .immersive: return ChromeBar.cornerRadius
         case .framed: return FramedChrome.outerRadius
         }
-    }
-
-    /// Frames and shows the Compact bar's haze and tint from the current
-    /// state: the 28 pt band above the stream and nothing below its seam.
-    /// Hidden while the opening cover's ground or the stall overlay owns the
-    /// bar, and in Framed or full screen (neither mirrors the picture). The
-    /// title follows them.
-    func updateBarHaze() {
-        let bar = barHeight
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let top = NSColor(white: 1, alpha: ChromeBar.hazeTopAlpha(dark: dark)).cgColor
-        let visible = compactBar && bar > 0 && !stallOverlay.isShowing
-            && !phoneOverlay.isShowing
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        hazeLayer.colors = [top, NSColor(white: 1, alpha: 0).cgColor]
-        hazeLayer.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
-        hazeLayer.isHidden = !visible
-        tintLayer.backgroundColor = barTintTarget.cgColor
-        tintLayer.frame = hazeLayer.frame
-        tintLayer.isHidden = !visible
-        backingLayer.backgroundColor = barTintTarget.withAlphaComponent(1).cgColor
-        backingLayer.frame = hazeLayer.frame
-        backingLayer.isHidden = !visible
-        CATransaction.commit()
-        // The tone timer runs while the bar is live: its tick samples the
-        // band for the title and checks the mirror (WIN-67, WIN-69).
-        if visible { startToneTimer() } else { stopToneTimer() }
-        updateBarTitle()
-    }
-
-    /// Re-applies the system blur radius after the extension view's own pass
-    /// (where the system builds its backdrop) or an event that can bring a new
-    /// backdrop: a layout, the first frame, an appearance, backing-scale, key
-    /// or occlusion change. Observation only; nothing runs per frame. Only the
-    /// Compact mirror has the filter; Framed's material has no backdrop blur
-    /// of this kind.
-    func reapplyBarBlur() {
-        guard window != nil, compactBar else { return }
-        barBlur.apply(in: ext.layer)
     }
 
     /// The bar's name: an app's, the phone's, or nil for a link or handoff
@@ -727,7 +579,6 @@ final class StreamChromeView: NSView {
         guard titleText != text || titlePhone != phone else { return }
         titleText = text
         titlePhone = phone
-        updateBarTitle()
         updateFramedTitle()
     }
 
@@ -744,256 +595,19 @@ final class StreamChromeView: NSView {
         framedView.layoutSubtreeIfNeeded()
     }
 
-    /// Lays the title out and starts or stops its sampling. Called by every
-    /// layout and every cover change; the geometry is read at layout time,
-    /// never stored from a proposal.
-    private func updateBarTitle() {
-        let row = HeaderBar.row(actions.actions, rightEdge: bounds.width)
-        let fitted = compactBarTitle(row: row)
-        titleFrame = fitted?.frame
-        let shows = compactBar && fitted != nil
-        if shows != titleVisible {
-            titleVisible = shows
-            if shows {
-                titleLight.isHidden = false
-                titleDark.isHidden = false
-                if toneMachine.hasSample {
-                    applyTone(toneMachine.tone, animated: false)
-                } else {
-                    titleLight.alphaValue = 0
-                    titleDark.alphaValue = 0
-                }
-                sampleBarTone(force: !toneMachine.hasSample)
-            } else {
-                titleLight.isHidden = true
-                titleDark.isHidden = true
-            }
-        }
-        guard let fitted else { return }
-        BarTitle.layOut(fitted.text, in: titleLight, frame: fitted.frame)
-        BarTitle.layOut(fitted.text, in: titleDark, frame: fitted.frame)
-    }
-
-    private func compactBarTitle(row: HeaderBar.Row?) -> (text: String, frame: NSRect)? {
-        guard compactBar, !stallOverlay.isShowing, !phoneOverlay.isShowing else { return nil }
-        return BarTitle.fitting(text: BarTitleName.withPhone(titleText, phone: titlePhone),
-                                base: titleText, windowWidth: bounds.width, barHeight: barHeight,
-                                boundsHeight: bounds.height, lightsEnd: BarTitle.lightsEnd,
-                                rightRowStart: row?.actionsX ?? bounds.width)
-    }
-
-    /// One tone sample at most every 0.5 s, and only when a new frame has
-    /// arrived since the last one: a still picture has no new tone.
-    private func startToneTimer() {
-        guard toneTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.checkBarMirror()
-                self?.sampleBarTone(force: false)
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        toneTimer = timer
-    }
-
-    private func stopToneTimer() {
-        toneTimer?.invalidate()
-        toneTimer = nil
-    }
-
-    private func sampleBarTone(force: Bool) {
-        guard compactBar, titleVisible, let frame = titleFrame, !toneSampleInFlight else { return }
-        if !force, let last = lastToneStamp, last == toneSource.frameStamp { return }
-        let picture = video.videoRect()
-        guard picture.width > 0, picture.height > 0 else { return }
-        let x0 = max(frame.minX, picture.minX)
-        let x1 = min(frame.maxX, picture.maxX)
-        guard x1 > x0 else { return }
-        let from = (x0 - picture.minX) / picture.width
-        let to = (x1 - picture.minX) / picture.width
-        let band = min(1, ChromeBar.height / picture.height)
-        // The title sits on the blurred mirror: read the band at the blur the
-        // bar carries now (none found reads the raw pixels).
-        let reach = barBlurRadius * BarTitle.blurReachPerRadius / picture.width
-        let stamp = toneSource.frameStamp
-        toneSampleInFlight = true
-        toneSource.topBandRange(xFrom: from, xTo: to, bandFraction: band, blurReach: reach) { [weak self] range in
-            guard let self else { return }
-            self.toneSampleInFlight = false
-            guard let range else { return }
-            self.lastToneStamp = stamp
-            self.consumeToneSample(range, frame: frame)
-        }
-    }
-
-    /// The band behind the title is the mirror's frame under the tint and the
-    /// haze; the machine then decides the ink (WIN-69). The haze fades from
-    /// the window's top edge to the seam, so the darkest end uses its alpha
-    /// at the title's bottom line and the brightest end at its top.
-    private func consumeToneSample(_ frame: BandRange, frame titleFrame: NSRect) {
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let topAlpha = Double(ChromeBar.hazeTopAlpha(dark: dark))
-        let bandTop = bounds.height
-        func haze(_ offset: CGFloat) -> Double {
-            let clamped = min(max(offset, 0), ChromeBar.height)
-            return topAlpha * (1 - Double(clamped / ChromeBar.height))
-        }
-        // Each ink over the band as it will be drawn under it: the tint
-        // follows the tone (#147), light under black ink, dark under white.
-        func under(_ tone: BarTone) -> BandRange {
-            BarToneEstimate.blend(
-                frame: frame, tintLuminance: BarTitle.tintColor(for: tone).relativeLuminance ?? 0,
-                hazeTop: haze(bandTop - titleFrame.maxY),
-                hazeBottom: haze(bandTop - titleFrame.minY))
-        }
-        let bands = InkBands(dark: under(.dark), light: under(.light))
-        let before = toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
-        let change = toneMachine.handle(.inks(dark: bands.dark, light: bands.light))
-        if case .unresolved = change, !loggedUnresolvedTone {
-            loggedUnresolvedTone = true
-            let kept = toneMachine.tone.rawValue  // the better worst case
-            Log.video.notice("bar tone: neither ink reaches the contrast limit; using \(kept, privacy: .public)")  // log-ok: a closed tone name
-        }
-        // An unresolved sample that kept the tone is the ignored case for the
-        // view: no fade and no transition line every half second.
-        guard change != .ignored, before != toneMachine.tone.rawValue else { return }
-        applyTone(toneMachine.tone, animated: true)
-        let band = bands.band(for: toneMachine.tone)
-        let line = String(format: "bar tone: %@ --sample(%.3f..%.3f)--> %@",
-                          before, band.low, band.high, toneMachine.tone.rawValue)
-        Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and luminances
-        onBarToneChange?()
-    }
-
-    /// The tint's colour at `BarTitle.tintAlpha`: the side the title's tone
-    /// says the band is on (#147); the window's own background until the
-    /// first sample decides.
-    private var barTintTarget: NSColor {
-        guard toneMachine.hasSample else {
-            var colour = NSColor.windowBackgroundColor
-            effectiveAppearance.performAsCurrentDrawingAppearance {
-                colour = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? colour
-            }
-            return colour.withAlphaComponent(BarTitle.tintAlpha)
-        }
-        return BarTitle.tintColor(for: toneMachine.tone).withAlphaComponent(BarTitle.tintAlpha)
-    }
-
-    /// The two fields cross-fade, and the tint with them; Reduce Motion swaps
-    /// them at once.
-    private func applyTone(_ tone: BarTone, animated: Bool) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(!animated || reduceMotion())
-        CATransaction.setAnimationDuration(BarTitle.fadeDuration)
-        tintLayer.backgroundColor = barTintTarget.cgColor
-        backingLayer.backgroundColor = barTintTarget.withAlphaComponent(1).cgColor
-        CATransaction.commit()
-        titleLight.setAccessibilityElement(tone == .light)
-        titleDark.setAccessibilityElement(tone == .dark)
-        let light: CGFloat = tone == .light ? 1 : 0
-        let dark: CGFloat = tone == .dark ? 1 : 0
-        guard animated, !reduceMotion() else {
-            titleLight.alphaValue = light
-            titleDark.alphaValue = dark
-            return
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = BarTitle.fadeDuration
-            titleLight.animator().alphaValue = light
-            titleDark.animator().alphaValue = dark
-        }
-    }
-
-    /// The e2e's view of the title: shown, its rect in this view, its ink, and
-    /// the bar's tint. The text itself is never written to the state. Framed
-    /// uses the system label colour, so its tone reads `none` (WIN-71: no
-    /// tone machine there).
+    /// The e2e's view of our title — Framed's frame is the only chrome of
+    /// ours that draws one; Compact and full screen show the window's own
+    /// title in AppKit's title bar. The text itself is never written to the
+    /// state.
     var barTitleVisible: Bool {
-        if compactBar { return titleVisible }
-        if framedGeometry { return !framedView.titleIsHidden }
-        return false
-    }
-    /// The ink drawn now; none until the first sample decides it (the
-    /// Compact fields are transparent before that).
-    var barTitleToneName: String {
-        guard compactBar, titleVisible else { return "none" }
-        return toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
+        framedGeometry && !framedView.titleIsHidden
     }
     var barTitleRect: NSRect? {
-        if compactBar { return titleVisible ? titleFrame : nil }
         if framedGeometry, !framedView.titleIsHidden {
             return convert(framedView.titleFrame, from: framedView)
         }
         return nil
     }
-    var barTintVisible: Bool { !tintLayer.isHidden }
-    var barBackingForTesting: CALayer? { backingLayer }
-
-    /// Which side the tint is on (#147): `light` or `dark` once the title's
-    /// tone decided, `window` before, `none` with no tint.
-    var barTintSide: String {
-        guard barTintVisible else { return "none" }
-        guard toneMachine.hasSample else { return "window" }
-        return toneMachine.tone == .dark ? "light" : "dark"
-    }
-
-    /// The live Compact bar's mirror, by its layers (BarBlur.mirrorProblems):
-    /// `ok`, the problems joined by `+`, or `none` with no live bar.
-    var barMirrorState: String {
-        guard compactBar, !hazeLayer.isHidden, let root = ext.layer else { return "none" }
-        let problems = BarBlur.mirrorProblems(in: root, source: video.layer)
-        return problems.isEmpty ? "ok" : problems.joined(separator: "+")
-    }
-
-    /// The tone timer's tick checks the mirror too: a mirror that is not
-    /// drawing is said once per window (WIN-67).
-    func checkBarMirror() {
-        guard compactBar, !hazeLayer.isHidden, let root = ext.layer else { return }
-        barBlur.checkMirror(problems: BarBlur.mirrorProblems(in: root, source: video.layer), root: root)
-    }
-
-    /// e2e (`barmirror off`): hides the extension view's own backdrop and
-    /// portal layers, the mirror's drawing, leaving the video and our layers.
-    func stopBarMirrorForTesting() {
-        func walk(_ layer: CALayer) {
-            let name = String(describing: type(of: layer))
-            if name.contains("Backdrop") || name.contains("Portal") {
-                layer.isHidden = true
-                return
-            }
-            if layer === video.layer { return }
-            for sub in layer.sublayers ?? [] { walk(sub) }
-        }
-        if let root = ext.layer { walk(root) }
-    }
-    var barTintColor: NSColor? { tintLayer.backgroundColor.flatMap { NSColor(cgColor: $0) } }
-
-    /// The tests' own clock tick: one forced sample, independent of the timer.
-    func sampleBarToneForTesting() {
-        sampleBarTone(force: true)
-    }
-
-    /// The title's truncation and its two ink alphas, for the tests.
-    var barTitleLineBreakMode: NSLineBreakMode { titleLight.lineBreakMode }
-    /// The text drawn now: the whole "<App> (<phone>)" or the app's name alone
-    /// once the suffix had to go.
-    var barTitleString: String { titleLight.stringValue }
-    func barTitleAlpha(_ tone: BarTone) -> CGFloat {
-        tone == .light ? titleLight.alphaValue : titleDark.alphaValue
-    }
-
-    /// The system blur's radius right now, 0 when the fallback is in force
-    /// (WIN-40; the e2e reads it).
-    var barBlurRadius: CGFloat { BarBlur.systemRadius(in: ext.layer) ?? 0 }
-
-    /// True while the haze is drawn (WIN-40; the e2e reads it).
-    var hazeVisible: Bool { !hazeLayer.isHidden }
-
-    /// True when the Compact bar's mirror band would show. The opening cover
-    /// is one opaque sheet over it until the first frame (WIN-11), and the
-    /// phone cover is one sheet from the window's top edge (WIN-65); the stall
-    /// overlay reports its own covering separately (`barMirrorCovered`).
-    var barMirrorVisible: Bool { compactBar && !phoneOverlay.isShowing }
 
     /// The top edge and height of the row the controls ride: the windowed
     /// bar, or the cover's top row while the style's chrome is one sheet.
@@ -1006,10 +620,55 @@ final class StreamChromeView: NSView {
         return barHeight > 0 ? barHeight : ChromeBar.height
     }
 
+    /// Compact windowed: the controls ride AppKit's title bar (the trailing
+    /// accessory), the cover up or not.
+    private var titlebarHosted: Bool { style == .compact && !isFullScreen }
+
+    /// The native title bar's height, from AppKit: the window's frame above
+    /// its content.
+    private var titlebarHeight: CGFloat {
+        guard let window else { return ChromeBar.height }
+        return max(window.frame.height - window.contentLayoutRect.height, ChromeBar.height)
+    }
+
+    /// The controls' views move between this view and the title-bar row.
+    private func hostControls(in host: NSView) {
+        for view in [actions, liveTextCapsule, liveTextButton] where view.superview !== host {
+            host.addSubview(view)
+        }
+    }
+
     /// Where the kind's actions and Live Text ride. Positions only: show/hide
     /// is the style's, the cover's and the dwell's business.
     private func layoutControls() {
+        guard !released else { return }
         let side = HeaderBar.liveTextSide
+        if let window, !window.titlebarAccessoryViewControllers.contains(titlebarControls) {
+            window.addTitlebarAccessoryViewController(titlebarControls)
+        }
+        titlebarControls.isHidden = !titlebarHosted
+        if titlebarHosted {
+            // Compact: the native title bar carries the row, `rightInset` in
+            // from its right end and centred on its line.
+            hostControls(in: titlebarRow)
+            let height = titlebarHeight
+            let width = (HeaderBar.row(actions.actions, rightEdge: 0)?.width ?? 0) + HeaderBar.rightInset
+            titlebarRow.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            if let row = HeaderBar.row(actions.actions, rightEdge: width) {
+                actions.isHidden = actionCount == 0
+                liveTextButton.isHidden = false
+                liveTextCapsule.isHidden = false
+                actions.frame = NSRect(x: row.actionsX, y: (height - ChromeBar.height) / 2,
+                                       width: row.actionsWidth, height: ChromeBar.height)
+                liveTextCapsule.frame = NSRect(x: row.liveTextX, y: (height - side) / 2, width: side, height: side)
+                liveTextButton.frame = liveTextCapsule.frame
+            }
+            liveTextStatus.isHidden = !liveTextActive
+            layoutLiveTextStatus()
+            layoutPanelStatus()
+            return
+        }
+        hostControls(in: self)
         // Full screen is the system's own title bar (ChromeConfig): no chrome
         // of ours there; View ▸ Live Text and the Navigate menu still reach
         // every control.
@@ -1080,7 +739,7 @@ final class StreamChromeView: NSView {
     private func layoutLiveTextStatus() {
         guard !liveTextStatus.isHidden else { return }
         let size = liveTextStatus.preferredSize
-        if immersiveChrome || isFullScreen {
+        if immersiveChrome || isFullScreen || titlebarHosted {
             liveTextStatus.frame = NSRect(x: bounds.midX - size.width / 2,
                                           y: bounds.height - size.height - 10,
                                           width: size.width, height: size.height)
@@ -1150,26 +809,11 @@ final class StreamChromeView: NSView {
     /// True while the phone's panel-off pill is up (the chrome state reports it).
     var showsPanelStatus: Bool { !panelStatus.isHidden }
 
-    /// The overlay covers the bar's mirror (WIN-39): it spans the bar's band and
-    /// sits above the extension view, so the bar shows the same cover as the
-    /// body instead of the bright stream. The phone cover does the same for
-    /// the sleeping panel and a secure surface (WIN-65). False once it is down.
-    var barMirrorCovered: Bool {
-        guard barHeight > 0 else { return false }
-        let band = NSRect(x: 0, y: video.frame.maxY, width: bounds.width,
-                          height: bounds.height - video.frame.maxY)
-        let cover: NSView? = stallOverlay.isShowing ? stallOverlay
-            : (phoneOverlay.isShowing ? phoneOverlay : nil)
-        guard let cover else { return false }
-        return cover.frame.contains(band)
-            && (cover.layer?.zPosition ?? 0) > (ext.layer?.zPosition ?? 0)
-    }
-
     private func layoutPanelStatus() {
         guard !panelStatus.isHidden else { return }
         let size = panelStatus.preferredSize
         let y: CGFloat
-        if immersiveChrome || isFullScreen {
+        if immersiveChrome || isFullScreen || titlebarHosted {
             y = bounds.height - size.height - 10
         } else {
             y = controlRowTop + (controlRowHeight - size.height) / 2
@@ -1190,45 +834,12 @@ final class StreamChromeView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyMaterial()
-        // The alphas follow the appearance, and macOS may rebuild the backdrop
-        // it applies to.
-        updateBarHaze()
-        reapplyBarBlur()
-    }
-
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        reapplyBarBlur()
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         applyMaterial()
-        updateBarHaze()
-        reapplyBarBlur()
-        observeWindow()
-        if window == nil { stopToneTimer() }
-    }
-
-    deinit {
-        windowObservers.forEach(NotificationCenter.default.removeObserver)
-        toneTimer?.invalidate()
-    }
-
-    /// Re-apply the radius when the window becomes or stops being key and when
-    /// its occlusion changes: those are the events after which the hosting
-    /// view has been seen to rebuild its backdrop.
-    private func observeWindow() {
-        windowObservers.forEach(NotificationCenter.default.removeObserver)
-        windowObservers = []
-        guard let window else { return }
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
-                     NSWindow.didChangeOcclusionStateNotification] {
-            windowObservers.append(NotificationCenter.default.addObserver(
-                forName: name, object: window, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.reapplyBarBlur() }
-                })
-        }
+        layoutControls()
     }
 
     private func applyMaterial() {
@@ -1237,33 +848,15 @@ final class StreamChromeView: NSView {
         liveTextCapsule.material = material
     }
 
-    /// The bottom edge of the band that belongs to the window: the Compact bar
-    /// plus whatever the native titlebar covers. The titlebar is taller than
-    /// the bar on macOS 26 (32 against 28), and its last rows still show the
-    /// stream's top edge at the window's edge. A click there is the bar's, not
-    /// the picture's (ISS-49); without this the click under the titlebar
-    /// reaches VideoLayerView and becomes a touch. No window (tests build the
-    /// chrome alone): the bar alone.
-    private var inertBandBottom: CGFloat {
-        let barBottom = bounds.height - barHeight
-        guard let window else { return barBottom }
-        let contentTop = convert(window.contentLayoutRect, from: nil).maxY
-        return min(barBottom, contentTop)
-    }
-
     /// True at a point in this view that the chrome owns over the picture:
-    /// Compact's bar and the native titlebar rows above the stream's first
-    /// visible row, Framed's margins and rounded-off corners, Immersive's pill
-    /// while it is up. Full screen owns nothing here: the system's title bar
-    /// is its own window. Clicks and hover share this one rule (ISS-49,
+    /// Framed's margins and rounded-off corners, and Immersive's pill while it
+    /// is up. Compact's title bar and full screen's are AppKit's, outside this
+    /// view. Clicks and hover share this one rule (ISS-49,
     /// WIN-61): a point the chrome owns is never the phone's.
     func ownsPoint(_ point: NSPoint) -> Bool {
         if isFullScreen { return false }
         if framedGeometry {
             return !FramedChrome.contentContains(point, in: bounds)
-        }
-        if barHeight > 0 {
-            return point.y >= inertBandBottom
         }
         guard immersiveChrome, pillOnScreen, let pillFrame else { return false }
         return pillFrame.contains(point)
@@ -1282,19 +875,16 @@ final class StreamChromeView: NSView {
         }
         guard ownsPoint(local) else { return hit }
         guard hit != nil else { return nil }
-        // The bar's mirrored band is the window's own: a click on it is a drag
-        // (and counts). The band decides, not which view the mirror's content
-        // ends up in: the extension view stretches the video over the window,
-        // so the picture can answer for the bar's points (ISS-49). Framed's
-        // margins and rounded-off corners are the same. The disconnection
-        // overlay's band drags here too; its body below the band takes the
-        // click (WIN-39).
+        // Framed's margins and rounded-off corners are the window's own: a
+        // click there is a drag (and counts), never the picture's (ISS-49).
+        // The disconnection overlay's band drags here too; its body below the
+        // band takes the click (WIN-39).
         return self
     }
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
-        if barHeight > 0 || framedGeometry || (immersiveChrome && pillOnScreen) {
+        if framedGeometry || (immersiveChrome && pillOnScreen) {
             onBarPress?()
             if event.clickCount == 2 {
                 window.performZoom(nil)
@@ -1386,12 +976,11 @@ final class StreamChromeView: NSView {
         }
     }
 
-    /// Where the traffic lights ride: the windowed bar's line (Compact's
-    /// 7 pt insets or Framed's 12.25), the Immersive pill's row, or out of
-    /// sight. The lights live in the title area above the full-size content,
-    /// so they are placed there in window coordinates and converted. With the
-    /// system's title bar (full screen) they are AppKit's: shown, and laid out
-    /// where AppKit puts them.
+    /// Where the traffic lights ride: Framed's bar line (12.25 pt insets), the
+    /// Immersive pill's row, or out of sight. The lights live in the title
+    /// area above the full-size content, so they are placed there in window
+    /// coordinates and converted. With the system's title bar (Compact, full
+    /// screen) they are AppKit's: shown, and laid out where AppKit puts them.
     func placeTrafficLights() {
         guard let window else { return }
         if lightsManagedByAppKit {

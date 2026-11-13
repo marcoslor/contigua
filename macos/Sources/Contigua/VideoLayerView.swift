@@ -6,7 +6,7 @@
 import AVFoundation
 import AppKit
 
-final class VideoLayerView: NSView, BarToneSource {
+final class VideoLayerView: NSView {
     /// Created on the first VIDEO_CONFIG, not at open: a window that never
     /// shows a picture holds no decoder surface (WIN-33), and a closed window
     /// drops its layer again.
@@ -165,9 +165,8 @@ final class VideoLayerView: NSView, BarToneSource {
     var inputMapper: InputMapper?
 
     /// Where the Show Touches dots are drawn. The chrome sets this to a layer
-    /// of its own, outside the extension view's mirror: a dot inside the
-    /// mirrored content would be reflected into the Compact bar. nil draws on
-    /// the video's own layer (no chrome: tests and previews).
+    /// of its own above the stream, clipped to the picture. nil draws on the
+    /// video's own layer (no chrome: tests and previews).
     var touchDotHost: CALayer?
 
     /// True at a window point that is Mac UI drawn over the video (the
@@ -499,15 +498,9 @@ final class VideoLayerView: NSView, BarToneSource {
     /// liveness across a window animation (an animation that holds the main
     /// run loop stops these).
     private(set) var framesDrained = 0
-    /// Changes when a frame reaches the display layer: the bar's tone
-    /// sampler skips a still picture instead of reading it twice (WIN-69).
-    private(set) var frameStamp: UInt64 = 0
     /// Samples handed over since the last flush, so a flush that discards some
     /// is counted once (not once per frame).
     private var samplesSinceFlush = 0
-    /// The bar-tone sampler's queue: the band's tiny readback never runs on
-    /// the frame path or on main.
-    private let toneQueue = DispatchQueue(label: "app.contigua.bartone", qos: .utility)  // gcd: one utility lane for the band readback, never the frame path
 
     /// A resize is pending while the window has asked and the last frame is not
     /// the size it asked for.
@@ -572,49 +565,6 @@ final class VideoLayerView: NSView, BarToneSource {
         if rate != 0 { CMTimebaseSetRate(timebase, rate: 0) }
         defer { if rate != 0 { CMTimebaseSetRate(timebase, rate: rate) } }
         return renderer.displayedPixelBuffer()
-    }
-
-    /// The luminance range of the picture's top band, the source the Compact
-    /// bar mirrors (WIN-69), as the bar's blur spreads it: `blurReach` is the
-    /// blur's sideways reach as a fraction of the picture's width (0 reads
-    /// the raw pixels). The displayed buffer is taken on main (the
-    /// renderer's own rule) and read on `toneQueue`, a few dozen samples:
-    /// no full-frame copy and no work on the frame path.
-    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat, blurReach: CGFloat,
-                      completion: @escaping (BandRange?) -> Void) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in  // gcd: the renderer's buffer is main's
-                self?.topBandRange(xFrom: xFrom, xTo: xTo, bandFraction: bandFraction,
-                                   blurReach: blurReach, completion: completion)
-            }
-            return
-        }
-        guard picture.w > 0, picture.h > 0, frameSize.width > 0, frameSize.height > 0,
-              let buffer = copyDisplayedFrame() else {
-            completion(nil)
-            return
-        }
-        let bufferWidth = CGFloat(CVPixelBufferGetWidth(buffer))
-        let bufferHeight = CGFloat(CVPixelBufferGetHeight(buffer))
-        guard bufferWidth > 0, bufferHeight > 0 else {
-            completion(nil)
-            return
-        }
-        // `picture` is in the frame's pixels; the buffer is that frame.
-        let scaleX = bufferWidth / frameSize.width
-        let scaleY = bufferHeight / frameSize.height
-        let x0 = CGFloat(picture.x) + CGFloat(picture.w) * min(max(xFrom, 0), 1)
-        let x1 = CGFloat(picture.x) + CGFloat(picture.w) * min(max(xTo, 0), 1)
-        let y = CGFloat(picture.y)
-        let height = max(1, CGFloat(picture.h) * min(max(bandFraction, 0), 1))
-        let rect = CGRect(x: x0 * scaleX, y: y * scaleY,
-                          width: max(1, (x1 - x0) * scaleX), height: height * scaleY).integral
-        let reach = CGFloat(picture.w) * max(blurReach, 0) * scaleX
-        toneQueue.async { [weak self] in
-            guard let self else { return }
-            let value = BandLuminance.blurredRange(of: buffer, rect: rect, reach: reach)
-            DispatchQueue.main.async { completion(value) }  // gcd: the completion's main-queue contract
-        }
     }
 
     // MARK: Input-to-photon probe (P0, pmaxx)
@@ -1059,7 +1009,6 @@ final class VideoLayerView: NSView, BarToneSource {
         renderer.enqueue(item.sample)
         samplesSinceFlush += 1
         framesDrained += 1
-        frameStamp &+= 1
         onFrameEnqueued?(item.ptsUs)
         if renderer.status == .failed {
             Log.video.error("display layer failed; flush + keyframe")

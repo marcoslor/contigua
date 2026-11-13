@@ -2824,41 +2824,7 @@ print(",".join(sorted(sizes)) if sizes else "none")
 PY
 }
 
-# bar_pixels <png> <w-pt> <h-pt> — "spread=NN seam=NN": how much the bar's
-# bottom row (the seam row, device scale) varies across columns — a mirror of a
-# colourful stream moves a lot, a plain material is flat — and how close that
-# row is to the stream's first row (the seam's mirror shares the stream's
-# colour, the 0.15 material share over it).
-bar_pixels() {
-    python3 - "$@" <<'PY'
-import subprocess, sys
-path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
-                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
-w, h = int(size[0]), int(size[1])
-scale = w / wpt
-barrow = int(28 * scale) - 1
-streamrow = int(28 * scale)
-raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                     capture_output=True).stdout
-def px(row):
-    i = row * w * 3
-    return [tuple(raw[i + x * 3: i + x * 3 + 3])
-            for x in range(int(2 * scale), w - int(2 * scale), 4)]
-bar, stream = px(barrow), px(streamrow)
-def series(cols):
-    lo, hi = [255] * 3, [0] * 3
-    for pixel in cols:
-        for c, v in enumerate(pixel):
-            lo[c] = min(lo[c], v)
-            hi[c] = max(hi[c], v)
-    return max(hi[c] - lo[c] for c in range(3))
-seam = sum(sum(abs(a[c] - b[c]) for c in range(3)) for a, b in zip(bar, stream)) / (len(bar) * 3)
-print("spread=%d seam=%d" % (series(bar), round(seam)))
-PY
-}
-
-# bar_band_opacity <png> <w-pt> <h-pt> — the bar band's own opacity in a window
+# bar_band_opacity <png> <w-pt> <h-pt> — the title bar band's opacity in a window
 # capture (screencapture -o -l keeps the window's alpha): the lowest alpha of
 # the band's sampled pixels (4..24 pt down, 20 pt in from each side) and the
 # percentage below 250. A window capture holds the window's pixels alone, so a
@@ -3038,21 +3004,21 @@ window_gone() {
     ! windows | awk -v id="$1" '$1 == id { found = 1 } END { exit found ? 1 : 0 }'
 }
 
-# check_chrome — the chrome by style (WindowStyle.swift). Framed: the window is
-# the 900x600 pt stream plus a permanent 28 pt bar above it (the stream's own
-# mirrored top rows under the window material), lights on the bar's line, and
-# the bar is not flat while a colourful stream runs (testsrc2) but tracks the
-# stream's top row at the seam. The virtual display (window.open of the 900x600
-# pt stream at the run's backing scale — 1792x1200 at 2x, 896x592 at 1x — every
-# window.resize at that size) never changes with the style or while switching.
-# Immersive: the window is exactly the stream; a click in the 72x32 hot zone
-# before the dwell reaches the app as ordinary touch, a rest shows the dwell
-# pill (the traffic lights on screen), a click on the minimise light minimises
-# the window and no touch reaches the phone from the chrome. ⌥⌘F cycles Framed
-# → Compact → Immersive: the window grows or shrinks by the difference in the
-# styles' insets; with the bar right at the top of the screen the window moves
-# down by just that overflow; the choice lands under chrome.style.<package>. A
-# right-edge drag resizes the window and the display.
+# check_chrome — the chrome by style (WindowStyle.swift). Compact: a standard
+# titled window, the 900x600 pt stream under AppKit's own opaque title bar
+# (the system's title and lights), the picture right under it and nothing at
+# the sides or bottom. Framed: the stream inside the 38/5/5/5 pt frame. The
+# virtual display (window.open of the 900x600 pt stream at the run's backing
+# scale — 1792x1200 at 2x, 896x592 at 1x — every window.resize at that size)
+# never changes with the style or while switching. Immersive: the window is
+# exactly the stream; a click in the 72x32 hot zone before the dwell reaches
+# the app as ordinary touch, a rest shows the dwell pill (the traffic lights on
+# screen), a click on the minimise light minimises the window and no touch
+# reaches the phone from the chrome. ⌥⌘F cycles Framed → Compact → Immersive:
+# the window grows or shrinks by the difference in the styles' chrome; with
+# the window right at the top of the screen it moves down by just that
+# overflow; the choice lands under chrome.style.<package>. A right-edge drag
+# resizes the window and the display.
 check_chrome() {
     begin_shared || return 1
     rm -f "$WORK/chrome.txt"
@@ -3066,47 +3032,48 @@ check_chrome() {
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
     style_key="chrome.style.com.android.settings"
 
-    # --- Compact: the bar over the stream ---
+    # --- Compact: the stream under AppKit's own title bar ---
     defaults write "$DEFAULTS_SUITE" "$style_key" -string "bar"
-    rm -f "$WORK/chrome-step-mirror-off" "$WORK/chrome-mirror-off-done"
-    printf '%s\n' "hoverat 0 200" "waitfile $WORK/chrome-step-mirror-off 120" "barmirror off" \
-        "wait 0.5" "stamp $WORK/chrome-mirror-off-done" > "$WORK/chrome-compact.txt"
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-compact.txt"
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-compact.txt" \
         || { kill "$backdrop"; return 1; }
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    local win
-    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt Compact window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "[WIN-4] C14 Compact is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
-    chrome_is "style=compact lights=shown pill=hidden title_visible=no" \
-        && ok "[WIN-7] C14 a stored Compact choice opens with its bar and lights" \
+    local win compact_h titlebar
+    win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" || { bad "C14 no 900 pt Compact window over the 900x600 stream"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    compact_h="$(windows | awk -v id="$win" '$1 == id {print $5}' | head -1)"
+    titlebar=$((compact_h - 600))
+    wait_until 10 chrome_frame_live || bad "C14 the Compact picture never went live: $(chrome_state)"
+    chrome_has "layout:0,0,900x600" \
+        && ok "[WIN-4] C14 Compact is the 900x600 pt stream plus AppKit's ${titlebar} pt title bar, nothing at the sides or bottom (900x$compact_h)" \
+        || bad "[WIN-4] C14 the Compact content is not the 900x600 stream: $(chrome_state | grep -oE 'geom=.*video_gap')"
+    chrome_is "style=compact lights=shown pill=hidden title_visible=yes lights_managed=appkit" \
+        && ok "[WIN-7] C14 a stored Compact choice opens as a standard window: the system's title and lights" \
         || bad "[WIN-7] C14 Compact at rest: $(chrome_state)"
+    chrome_has " bar_title=0 " \
+        && ok "[WIN-68] C14 Compact's title is the system's; none of ours is drawn" \
+        || bad "[WIN-68] C14 Compact drew a title of ours: $(chrome_state)"
     chrome_has "can_fullscreen=1" \
         && ok "[WIN-14] C14 an app window may go full screen" \
         || bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
     local before
     before="$(window_opens_resizes)"
     case "$before" in
-        "open=${wake}x${hake} "*) ok "[WIN-5] C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
+        "open=${wake}x${hake} "*) ok "[WIN-5] C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no title bar in it" ;;
         *) bad "[WIN-5] C14 window.open size: $before" ;;
     esac
+    chrome_has "video=0,$titlebar,900,600" \
+        && chrome_has "video_gap=0" \
+        && ok "[WIN-4] C14 the picture starts right under the title bar (video=0,$titlebar,900,600, no gap)" \
+        || bad "[WIN-4] C14 the picture's rect under the title bar: $(chrome_state)"
     screencapture -x -o -l"$win" "$WORK/chrome-compact.png" && say "screenshot: $WORK/chrome-compact.png"
-    local bar spread seam tries=40
-    while [ "$tries" -gt 0 ]; do
-        bar="$(bar_pixels "$WORK/chrome-compact.png" 900 628)"
-        spread="$(echo "$bar" | sed -n 's/.*spread=\([0-9]*\).*/\1/p')"
-        seam="$(echo "$bar" | sed -n 's/.*seam=\([0-9]*\).*/\1/p')"
-        [ "${spread:-0}" -ge 40 ] && break
-        sleep 0.25
-        screencapture -x -o -l"$win" "$WORK/chrome-compact.png"
-        tries=$((tries - 1))
-    done
-    [ "${spread:-0}" -ge 40 ] \
-        && ok "[WIN-67] C14 the bar is the mirrored stream, not flat (row spread $spread)" \
-        || bad "[WIN-67] C14 the bar is flat (spread ${spread:-0}): no mirror"
-    [ "${seam:-255}" -le 60 ] \
-        && ok "[WIN-67] C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
-        || bad "[WIN-67] C14 the seam does not track the stream (mean diff ${seam:-255})"
+    # A window capture holds the window's own pixels, never the desktop's, so
+    # a see-through title bar would read as low alpha here (#45).
+    local opacity
+    opacity="$(bar_band_opacity "$WORK/chrome-compact.png" 900 "$compact_h")"
+    [ "$opacity" = "min_alpha=255 clear=0" ] \
+        && ok "[WIN-7] C14 the title bar is opaque: nothing behind the window shows through ($opacity)" \
+        || bad "[WIN-7] C14 the title bar is see-through: $opacity"
     local x y w h edges
     read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
     screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-compact-frame.png"
@@ -3115,72 +3082,21 @@ check_chrome() {
         && ok "[WIN-4] C14 the Compact window's sides and bottom are the stream's edges ($edges)" \
         || bad "[WIN-4] C14 Compact window edges: $edges"
 
-    # WIN-61: real clicks through the window server on the band. A quiet run
-    # cannot post them, so this step runs visible.
+    # WIN-61: real clicks through the window server on the title bar. A quiet
+    # run cannot post them, so this step runs visible.
     if [ "$VISIBLE" = "1" ]; then
-        local bar_touches bar_touches_after bar_clicks bar_clicks_after
-        local geom win_h layout_h titlebar band_click
-        geom="$(sed -n 's/.* \(geom=.*\)/\1/p' "$WORK/chrome.txt")"
-        win_h="$(sed -n 's/.*win:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
-        layout_h="$(sed -n 's/.*layout:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
-        titlebar=$(( win_h - layout_h ))
-        band_click=$(( titlebar - 2 ))
-        say "BAR geometry: $geom (titlebar $titlebar pt, band click $band_click pt)"
+        local bar_touches bar_touches_after
         bar_touches="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
-        bar_clicks="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
-        cg_input click --window "$win" --top 14 --dx -200
+        cg_input click --window "$win" --top $((titlebar / 2)) --dx -200
         sleep 0.6
-        cg_input click --window "$win" --top "$band_click" --dx 0
-        sleep 0.6
-        cg_input click --window "$win" --top "$band_click" --dx 200
+        cg_input click --window "$win" --top $((titlebar - 2)) --dx 0
         sleep 1
         bar_touches_after="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" 2>/dev/null || true)"
-        bar_clicks_after="$(chrome_state | sed -n 's/.*clicks=\([0-9]*\).*/\1/p')"
         [ "$bar_touches_after" -eq "$bar_touches" ] \
-            && ok "[WIN-61] C14 real clicks in the bar's band made no touch ($bar_touches)" \
-            || bad "[WIN-61] C14 the bar's band click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
-        [ "${bar_clicks_after:-0}" -gt "${bar_clicks:-0}" ] \
-            && ok "[WIN-61] C14 the clicks were the window's own press (clicks $bar_clicks -> $bar_clicks_after)" \
-            || bad "[WIN-61] C14 the bar's band click never reached the chrome (clicks ${bar_clicks:-?} -> ${bar_clicks_after:-?})"
+            && ok "[WIN-61] C14 real clicks in the title bar made no touch ($bar_touches)" \
+            || bad "[WIN-61] C14 a title-bar click reached the phone as a touch ($bar_touches -> $bar_touches_after)"
     else
-        skip_visible "WIN-61 the bar's band click as a real CGEvent"
-    fi
-
-    # WIN-67: the picture starts under the bar (the extension view is the whole
-    # window), and the bar is the stream's own blurred mirror, never the
-    # desktop: the e2e backdrop behind the window is a flat blue, so a
-    # see-through bar would read blue. The radius is the picked 30 without any
-    # event after the first frame (the extension view builds its backdrop after
-    # the chrome's own layout; the tuning rides the view's own pass).
-    chrome_has "video=0,28,900,600" \
-        && chrome_has "bar:28" \
-        && chrome_has "video_gap=0" \
-        && ok "[WIN-67] C14 the picture runs under the 28 pt bar (video=0,28,900,600, no gap)" \
-        || bad "[WIN-67] C14 the picture does not start under the bar: $(chrome_state)"
-    chrome_has "bar_mirror=ok" \
-        && ok "[WIN-67] C14 the system mirror is drawing: its portal mirrors the video under its backdrop" \
-        || bad "[WIN-67] C14 the mirror: $(chrome_state | grep -oE 'bar_mirror=[a-z+-]+')"
-    chrome_has "bar_blur_radius=30" \
-        && ok "[WIN-67] C14 the bar's system blur is 30 pt from the first frame on" \
-        || bad "[WIN-67] C14 the bar's blur radius: $(chrome_state | grep -oE 'bar_blur_radius=[0-9]+')"
-    # A window capture holds the window's own pixels, never the desktop's, so
-    # a see-through bar reads as low alpha there, not as the backdrop's blue.
-    local opacity
-    opacity="$(bar_band_opacity "$WORK/chrome-compact.png" 900 628)"
-    [ "$opacity" = "min_alpha=255 clear=0" ] \
-        && ok "[WIN-67] C14 the bar is opaque: nothing behind the window shows through ($opacity)" \
-        || bad "[WIN-67] C14 the bar is see-through: $opacity"
-    # WIN-67: the system mirror drew nothing in a real display's window (#45).
-    # With its layers stopped, the bar must still be opaque: never the desktop.
-    touch "$WORK/chrome-step-mirror-off"
-    if wait_until 15 test -f "$WORK/chrome-mirror-off-done" \
-        && screencapture -x -o -l"$win" "$WORK/chrome-compact-mirror-off.png"; then
-        opacity="$(bar_band_opacity "$WORK/chrome-compact-mirror-off.png" 900 628)"
-        [ "$opacity" = "min_alpha=255 clear=0" ] \
-            && ok "[WIN-67] C14 with the system mirror drawing nothing the bar is still opaque ($opacity)" \
-            || bad "[WIN-67] C14 with the system mirror drawing nothing the bar is see-through: $opacity ($WORK/chrome-compact-mirror-off.png)"
-    else
-        bad "[WIN-67] C14 the script never stopped the mirror"
+        skip_visible "WIN-61 the title bar click as a real CGEvent"
     fi
     next_shared
 
@@ -3193,7 +3109,7 @@ check_chrome() {
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
         || { kill "$backdrop"; return 1; }
-    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no window for the Framed switch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" || { bad "C14 no window for the Framed switch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     wait_until 8 win_size "$win" 910 643 \
         && ok "[WIN-4] [WIN-71] C14 Framed is the stream plus 38 pt above and 5 pt on the other three sides (910x643)" \
         || bad "[WIN-4] C14 the Framed window is not 910x643: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
@@ -3246,12 +3162,12 @@ check_chrome() {
         && ok "[WIN-7] C14 the stored framed choice opens Framed (910x643)" \
         || bad "[WIN-7] C14 the stored style did not open its window: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     touch "$WORK/chrome-step-toggle1"
-    wait_until 8 win_size "$win" 900 628 \
-        && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x628" \
+    wait_until 8 win_size "$win" 900 "$compact_h" \
+        && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x$compact_h, the stream under AppKit's title bar" \
         || bad "[WIN-7] C14 ⌥⌘F did not reach Compact: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     touch "$WORK/chrome-step-toggle2"
     wait_until 8 win_size "$win" 900 600 \
-        && ok "[WIN-7] C14 ⌥⌘F from Compact takes the bar away too: 900x600 Immersive" \
+        && ok "[WIN-7] C14 ⌥⌘F from Compact takes the title bar away too: 900x600 Immersive" \
         || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     chrome_is "style=immersive lights=hidden pill=hidden" \
         && ok "[WIN-74] C14 Immersive at rest: the stream alone, no lights and no pill" \
@@ -4396,22 +4312,17 @@ if missing:
     print("no image:", missing); sys.exit(1)
 PY
 
-    # The Show Touches dots are drawn outside the view the bar mirrors.
-    wait_until 10 eval 'grep -q "dots=outside" "$WORK/chrome.txt" 2>/dev/null' \
-        && ok "[MENU-4] the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
-        || bad "[MENU-4] the dot layer is still inside the mirrored content: $(chrome_state)"
-
     # Show Touches on, the pointer hovering the video and a trackpad touch at
-    # the stream's top edge: the bar above it must stay clean. The driver's
-    # fingers are scripted, so a quiet run captures the same thing (the
-    # capture is of the window, on this run's display).
+    # the stream's top edge: the dots stay on the picture, under AppKit's
+    # title bar. The driver's fingers are scripted, so a quiet run captures
+    # the same thing (the capture is of the window, on this run's display).
     touch "$WORK/menus-step-touch"
     sleep 1.5
     local win
-    win="$(await_window '$4 == 900 && $5 == 628')" \
+    win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" \
         && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
-        && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
-        || bad "MENUS no window to capture the bar"
+        && ok "MENUS captured the window with Show Touches on: $WORK/menus-touch.png" \
+        || bad "MENUS no window to capture"
     wait_until 5 eval 'grep -q "touches=on" "$WORK/chrome.txt" && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt"' \
         && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
         || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
@@ -5387,31 +5298,20 @@ if w and h:
 PY
 }
 
-# frame_video_ratio W H [BAR] — the video area (window minus the style's bar)
+# frame_video_ratio W H BAR — the video area (window minus BAR pt above it)
 # as width/height. ISS-63: the mirror's area must match the picture's shape.
 frame_video_ratio() {
     python3 -c 'import sys; w, h, bar = map(float, sys.argv[1:]); print("%.6f" % (w / max(h - bar, 1)))' \
-        "$1" "$2" "${3:-28}"
+        "$1" "$2" "$3"
 }
 
-# The window's video area (frame minus the style's bar) as width/height, from
-# the chrome state.
+# The window's video area as width/height: the video view's own rect from the
+# chrome state's geometry (` video:x,y,WxH`), whatever chrome the style adds.
 window_video_ratio() {
-    local state frame style bar w h
-    state="$(chrome_state)"
-    frame="$(printf '%s' "$state" | grep -oE 'frame=[0-9]+x[0-9]+' | head -1 | cut -d= -f2)"
-    style="$(printf '%s' "$state" | grep -oE 'style=[a-z]+' | head -1 | cut -d= -f2)"
-    [ -n "$frame" ] || return 1
-    w="${frame%x*}"
-    h="${frame#*x}"
-    # The two-style windowed chrome: Compact adds the 28 pt bar above the
-    # stream, Framed insets 38 pt above and 5 pt on the other three sides.
-    if [ "$style" = "framed" ]; then
-        w=$((w - 10)); h=$((h - 43))
-    else
-        h=$((h - 28))
-    fi
-    frame_video_ratio "$w" "$h" 0
+    local size
+    size="$(chrome_state | sed -n 's/.* video:[0-9-]*,[0-9-]*,\([0-9]*x[0-9]*\) .*/\1/p' | head -1)"
+    [ -n "$size" ] || return 1
+    frame_video_ratio "${size%x*}" "${size#*x}" 0
 }
 
 # aspect_ok RATIO W H — true when RATIO is W/H within 1%.
@@ -5463,7 +5363,8 @@ check_mirror() {
     local opening_id opening_ratio opening_w opening_h
     if opening_id="$(await_window '$5 > $4 * 1.5')"; then
         read -r opening_w opening_h <<<"$(windows | awk -v i="$opening_id" '$1 == i {print $4, $5}')"
-        opening_ratio="$(frame_video_ratio "$opening_w" "$opening_h")"
+        # Compact: the window less AppKit's title bar (the state's geometry).
+        opening_ratio="$(frame_video_ratio "$opening_w" "$opening_h" "$(titlebar_height)")"
         if aspect_ok "$opening_ratio" 1080 2340; then
             ok "[MIRROR-24] a wrong-shaped saved frame opens in the phone's shape (${opening_w}x${opening_h}, video area ${opening_ratio})"
         else
@@ -12356,9 +12257,6 @@ check_windows() {
     wait_until 20 chrome_has "cover_phase=opening cover_buttons=none" \
         && ok "[WIN-11] L1 opening: the cover is up with no buttons ($(chrome_state | grep -o 'loading=[^ ]* .*cover_buttons=[^ ]*'))" \
         || bad "[WIN-11] L1 opening: $(chrome_state)"
-    chrome_has "haze=0" \
-        && ok "[WIN-40] the opening cover's ground takes the bar's haze away" \
-        || bad "[WIN-40] the opening cover left the haze up: $(chrome_state)"
     # The shot first: the opening state lasts 5 s, and the accessibility walk
     # is slower than the rest of that window. Two seconds in, the phone's app
     # list and icon have usually arrived (a Deck click already has them).
@@ -12519,161 +12417,95 @@ check_windows() {
         || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
     stop_app
     stop_fakephone
-
-    # --- WIN-40: the bar's system blur and its haze ----------------------
-    # Live, the mirror's variableBlur carries the picked 15 pt radius and the
-    # haze is up over the bar band; the opening cover's ground takes the haze
-    # away (the L1 opening phase above).
-    clean
-    rm -f "$WORK/chrome.txt"
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 45
-    wait_until 20 events_have '"ev":"video"' \
-        || bad "WIN-40 the stream never sent video"
-    # Two fields, matched apart: the state line puts the tint and title between them.
-    wait_until 15 eval 'chrome_has "bar_blur_radius=30 " && chrome_has " haze=1 "' \
-        && ok "[WIN-40] the live bar's system blur is 30 and the haze is up ($(chrome_state | grep -o 'bar_blur_radius=[0-9]*\| haze=[0-9]*' | tr -d '\n'))" \
-        || bad "[WIN-40] the live bar: $(chrome_state)"
-    stop_app
-    stop_fakephone
 }
 
 # --- Cover bar: WIN-11's opening cover in the compact geometry ------------
 #
-# The visual record for the person's 11-03 report: a framed window with no
-# first frame looks exactly as the same window does in compact — one sheet
-# over the whole window, the bar's band included — and the Compact bar returns
-# with the first frame. A quiet run captures the run's own virtual display;
-# the record the reviewer sees is the VM's visible run. The two check names are
+# The visual record for the person's 11-03 report: the opening cover is one
+# sheet over the content in either style — over Framed's frame band, and in
+# Compact under AppKit's own title bar — and the style's chrome returns with
+# the first frame. A quiet run captures the run's own virtual display; the
+# record the reviewer sees is the VM's visible run. The two check names are
 # the two appearances.
 
-# --- Barname: the Compact bar's heavier blur, tint and centred name ----------
+# --- Bar title: Compact's system title bar names the app and the phone -------
 #
-# The three fixture pictures (a white page, a dark page and a busy photo) in
-# both appearances at 2x. Each phase reads the chrome state's tone and title
-# rect, captures the real window and measures the worst band contrast behind
-# the glyphs (bar-title-contrast.py, WIN-69). The phone mirror runs the same
-# title with the phone's name (MIRROR-26). Visual record: $SHOTS/bar-title-*.
+# Compact is a standard titled window: AppKit draws the title, so the check
+# reads the window's own title (WIN-68), that the title bar is opaque in both
+# appearances (WIN-7), and, in the Phone Mirror, that the picture starts right
+# under it with no backing row at the seam (MIRROR-27). Visual record:
+# $SHOTS/bar-title-*.
 
-bar_title_field() { chrome_state | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
-
-# bar_title_measure <shot> <label> <right-inset> — one capture's title check:
-# inside the lights and the right-hand row, and the measured contrast.
-bar_title_measure() {
-    local shot="$1" label="$2" right_inset="$3" rect tone frame_width limit measured
-    rect="$(bar_title_field bar_title_rect)"
-    tone="$(bar_title_field bar_title_tone)"
-    frame_width="$(bar_title_field frame)"
-    frame_width="${frame_width%%x*}"
-    [ -n "$rect" ] && [ "$rect" != "none" ] || { bad "BAR-TITLE $label no title rect in the state"; return 1; }
-    local rx rw right_bound
-    IFS=, read -r rx _ rw _ <<<"$rect"
-    right_bound=$((frame_width - right_inset))
-    if [ "$rx" -ge 75 ] && [ $((rx + rw)) -le "$right_bound" ]; then
-        ok "BAR-TITLE $label the title sits clear of the lights and the right-hand controls (x=$rx w=$rw)"
-    else
-        bad "BAR-TITLE $label the title overlaps a control: x=$rx w=$rw right-bound=$right_bound"
-    fi
-    limit="$(nfr_limit bar_title_contrast_min)"
-    if measured="$(python3 "$MACOS/scripts/bar-title-contrast.py" "$shot" "$rect" "$frame_width" "$tone" "$limit" "$label" 2>&1)"; then
-        ok "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
-    else
-        bad "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
-    fi
+# titlebar_height — AppKit's title bar in points, from the chrome state's geometry:
+# the window's height less its content layout rect's.
+titlebar_height() {
+    local geom win_h layout_h
+    geom="$(chrome_state | sed -n 's/.* \(geom=.*\)/\1/p')"
+    win_h="$(sed -n 's/.*win:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
+    layout_h="$(sed -n 's/.*layout:[0-9-]*,[0-9-]*,[0-9]*x\([0-9]*\).*/\1/p' <<< "$geom")"
+    [ -n "$win_h" ] && [ -n "$layout_h" ] && echo $((win_h - layout_h))
 }
 
 check_bar_title() {
-    local fixture appearance want win shot bar frame_width seam style_store
-    style_store="chrome.style.com.android.settings"
+    local appearance win shot frame_width titlebar seam opacity
     ax_has() { ax_tree | grep -qF -- "$1"; }
-    # status-dark / status-light: a status bar's thin glyphs over a dark or
-    # white page. Read pixel for pixel, no ink passes over them; the bar
-    # blurs them first, and the tone must follow the page (issue #45).
     for appearance in light dark; do
-        for fixture in white-page dark-page busy-photo status-dark status-light; do
-            clean
-            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
-            defaults write "$DEFAULTS_SUITE" "$style_store" -string "bar"
-            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
-                --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
-            wait_until 25 events_have '"ev":"video"' \
-                || bad "BAR-TITLE $appearance/$fixture the stream never sent video"
-            wait_until 15 chrome_has "bar_title=1" \
-                || bad "BAR-TITLE $appearance/$fixture no bar title: $(chrome_state)"
-            # The sample is at most 2 Hz: one beat after the first frame.
-            sleep 1
-            case "$fixture/$appearance" in
-                dark-page/* | status-dark/*) want=light ;;
-                *) want=dark ;;
-            esac
-            if wait_until 5 chrome_has "bar_title_tone=$want"; then
-                ok "[WIN-69] BAR-TITLE $appearance/$fixture the tone follows the band: $want"
-            else
-                bad "[WIN-69] BAR-TITLE $appearance/$fixture wanted tone $want, state: $(bar_title_field bar_title_tone)"
-            fi
-            chrome_has "bar_blur_radius=30" && chrome_has "bar_tint=0.14 tint=1" \
-                && ok "[WIN-67] BAR-TITLE $appearance/$fixture blur=30 tint=0.14 over the band" \
-                || bad "[WIN-67] BAR-TITLE $appearance/$fixture bar: $(chrome_state)"
-            # #147: the tint is the band's own side, opposite the title's ink.
-            local side_want=dark
-            [ "$want" = "dark" ] && side_want=light
-            chrome_has "bar_tint_side=$side_want" \
-                && ok "[WIN-67] BAR-TITLE $appearance/$fixture the tint follows the band: $side_want under $want ink" \
-                || bad "[WIN-67] BAR-TITLE $appearance/$fixture wanted a $side_want tint under $want ink: $(chrome_state | grep -oE 'bar_tint_side=[a-z]+')"
-            chrome_has "bar_mirror=ok" \
-                && ok "[WIN-67] BAR-TITLE $appearance/$fixture the system mirror is drawing (bar_mirror=ok)" \
-                || bad "[WIN-67] BAR-TITLE $appearance/$fixture the mirror: $(chrome_state | grep -oE 'bar_mirror=[a-z+-]+')"
-            if wait_until 5 ax_has "value=[Settings (FakePhone)]"; then
-                ok "[WIN-68] BAR-TITLE $appearance/$fixture the bar names the app and the phone"
-            else
-                bad "[WIN-68] BAR-TITLE $appearance/$fixture the bar's name: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
-            fi
-            win="$(await_window '$4 == 900')" || { bad "BAR-TITLE $appearance/$fixture no 900 pt window"; continue; }
-            shot="$SHOTS/bar-title-$fixture-$appearance.png"
-            if shot_window "$win" "$shot"; then
-                say "shot: $shot"
-                bar_title_measure "$shot" "$appearance/$fixture" 43
-            else
-                bad "BAR-TITLE $appearance/$fixture no window capture"
-            fi
-            stop_app
-            stop_fakephone
-        done
-    done
+        clean
+        FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
+        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "bar"
+        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+        wait_until 25 events_have '"ev":"video"' \
+            || bad "BAR-TITLE $appearance the stream never sent video"
+        wait_until 15 chrome_frame_live || bad "BAR-TITLE $appearance the picture never went live: $(chrome_state)"
+        chrome_all "style=compact" "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
+            && ok "[WIN-68] BAR-TITLE $appearance the title is the system's, none of ours" \
+            || bad "[WIN-68] BAR-TITLE $appearance the title: $(chrome_state)"
+        if wait_until 5 ax_has "Settings (FakePhone)"; then
+            ok "[WIN-68] BAR-TITLE $appearance the window's title names the app and the phone"
+        else
+            bad "[WIN-68] BAR-TITLE $appearance the window's title: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
+        fi
+        win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" || { bad "BAR-TITLE $appearance no Compact window"; stop_app; stop_fakephone; continue; }
+        shot="$SHOTS/bar-title-app-$appearance.png"
+        if shot_window "$win" "$shot"; then
+            say "shot: $shot"
+            opacity="$(bar_band_opacity "$shot" 900 "$(windows | awk -v id="$win" '$1 == id {print $5}' | head -1)")"
+            [ "$opacity" = "min_alpha=255 clear=0" ] \
+                && ok "[WIN-7] BAR-TITLE $appearance the title bar is opaque ($opacity)" \
+                || bad "[WIN-7] BAR-TITLE $appearance the title bar is see-through: $opacity ($shot)"
+        else
+            bad "BAR-TITLE $appearance no window capture"
+        fi
+        stop_app
+        stop_fakephone
 
-    # The Phone Mirror's bar names the phone, not the mirrored app (MIRROR-26).
-    for appearance in light dark; do
+        # The Phone Mirror in Compact: the phone's name, and the picture's
+        # first rows meet the title bar's bottom edge (MIRROR-26, MIRROR-27).
         clean
         FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
         defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
         launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
-            --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
+            --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
         wait_until 25 events_have '"ev":"video"' \
             || bad "BAR-TITLE phone/$appearance the stream never sent video"
-        sleep 2
-        # A portrait Mirror leaves less room than the phone's name needs, and
-        # a name cut down to two letters reads worse than none (WIN-68).
-        if chrome_has "bar_title=0 bar_title_tone=none bar_title_rect=none"; then
-            ok "[MIRROR-26] BAR-TITLE phone/$appearance a name that does not fit is not drawn"
-        else
-            bad "[MIRROR-26] BAR-TITLE phone/$appearance wanted no title, state: $(chrome_state)"
-        fi
-        win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; continue; }
+        wait_until 15 chrome_frame_live || bad "BAR-TITLE phone/$appearance the picture never went live: $(chrome_state)"
+        sleep 1
+        chrome_all "style=compact" "title_visible=yes" "video_gap=0" \
+            && ok "[MIRROR-26] BAR-TITLE phone/$appearance the Mirror is a standard window with the system's title" \
+            || bad "[MIRROR-26] BAR-TITLE phone/$appearance: $(chrome_state)"
+        win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; stop_app; stop_fakephone; continue; }
         shot="$SHOTS/bar-title-phone-$appearance.png"
+        titlebar="$(titlebar_height)"
+        frame_width="$(chrome_state | tr ' ' '\n' | sed -n 's/^frame=//p' | head -1)"
+        frame_width="${frame_width%%x*}"
         if shot_window "$win" "$shot"; then
             say "shot: $shot"
-            # ISS-87: the picture's first rows must meet the 28 pt bar's
-            # bottom edge; a backing row between them is a black line under
-            # the bar in light and dark.
-            bar="$(chrome_state | grep -oE ' bar:[0-9]+' | tail -1 | cut -d: -f2)"
-            frame_width="$(bar_title_field frame)"
-            frame_width="${frame_width%%x*}"
-            if [ -n "$bar" ] && [ -n "$frame_width" ] \
-                && seam="$(python3 "$MACOS/scripts/seam-gap.py" "$shot" "$frame_width" "$bar" 2>&1)"; then
-                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row at the bar's seam ($seam)"
+            if [ -n "$titlebar" ] && [ -n "$frame_width" ] \
+                && seam="$(python3 "$MACOS/scripts/seam-gap.py" "$shot" "$frame_width" "$titlebar" 2>&1)"; then
+                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row under the ${titlebar} pt title bar ($seam)"
             else
-                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row at the bar's seam (${seam:-no seam})"
+                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row under the title bar (${seam:-no seam}; titlebar=${titlebar:-?})"
             fi
         else
             bad "BAR-TITLE phone/$appearance no window capture"
@@ -12684,17 +12516,18 @@ check_bar_title() {
 }
 
 check_cover_bar() {
-    local appearance="$1" shots="$SHOTS/cover-bar" id style key width height style_name
+    local appearance="$1" shots="$SHOTS/cover-bar" id style key width window style_name
     clean
     mkdir -p "$shots"
     local style_store="chrome.style.com.android.settings"
 
-    # The opening cover is one sheet over the stored style's window: Framed's
-    # 5/38 pt frame band is under it, and Compact's 28 pt bar is. The fake
-    # holds the first frame (and its video config), so no scripted driver runs.
+    # The opening cover is one sheet over the stored style's content: Framed's
+    # 5/38 pt frame band is under it; Compact's title bar is AppKit's, above
+    # it. The fake holds the first frame (and its video config), so no
+    # scripted driver runs.
     for style in framed compact; do
-        if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-        else key=bar; width=900; height=628; fi
+        if [ "$style" = "framed" ]; then key=mat; width=910; window='$4 == 910 && $5 == 643'
+        else key=bar; width=900; window='$4 == 900 && $5 > 600 && $5 < 660'; fi
         # After clean: it clears the profile's defaults, the stored style too.
         clean
         defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
@@ -12703,8 +12536,8 @@ check_cover_bar() {
             --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
         wait_until 20 chrome_has "loading=1 cover_phase=opening" \
             || bad "COVER-BAR $appearance $style no opening state: $(chrome_state)"
-        id="$(await_window "\$4 == $width && \$5 == $height")" \
-            || bad "COVER-BAR $appearance no $style window ($width x $height)"
+        id="$(await_window "$window")" \
+            || bad "COVER-BAR $appearance no $style window ($window)"
         sleep 0.6
         if [ -n "$id" ]; then
             shot_window "$id" "$shots/$style-opening-$appearance.png" \
@@ -12723,10 +12556,10 @@ check_cover_bar() {
     done
 
     # The first frame restores the stored style's windowed chrome: Compact
-    # brings its mirror and haze, Framed its material frame and no haze.
+    # the system's title and lights, Framed its material frame and title.
     for style in framed compact; do
-        if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-        else key=bar; width=900; height=628; fi
+        if [ "$style" = "framed" ]; then key=mat; width=910; window='$4 == 910 && $5 == 643'
+        else key=bar; width=900; window='$4 == 900 && $5 > 600 && $5 < 660'; fi
         # After clean: it clears the profile's defaults, the stored style too.
         clean
         defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
@@ -12737,13 +12570,13 @@ check_cover_bar() {
         wait_until 15 chrome_has "loading=0" \
             || bad "COVER-BAR $appearance $style the first frame did not land: $(chrome_state)"
         if [ "$style" = "compact" ]; then
-            wait_until 10 chrome_has "haze=1" \
-                || bad "COVER-BAR $appearance compact has no mirror"
+            wait_until 10 chrome_all "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
+                || bad "COVER-BAR $appearance compact is not the system's title bar: $(chrome_state)"
         else
-            chrome_has "haze=0" \
-                || bad "COVER-BAR $appearance framed drew a mirror"
+            wait_until 10 chrome_all "title_visible=no" " bar_title=1 " \
+                || bad "COVER-BAR $appearance framed has no frame title: $(chrome_state)"
         fi
-        id="$(await_window "\$4 == $width && \$5 == $height")" \
+        id="$(await_window "$window")" \
             || bad "COVER-BAR $appearance no live $style window"
         sleep 0.5
         if [ -n "$id" ]; then
@@ -12755,10 +12588,9 @@ check_cover_bar() {
         stop_fakephone
     done
 
-    # WIN-67: a first frame that lands late, as a real phone's does (0.4-0.7 s
-    # on a phone, ~0.12 s from the fake), brings the same mirror: the bar is
-    # opaque and mirrored, never the desktop. The cover holds the extension
-    # view at the stream's size until then.
+    # WIN-7: a first frame that lands late, as a real phone's does (0.4-0.7 s
+    # on a phone, ~0.12 s from the fake): the title bar is opaque throughout,
+    # never the desktop (#45).
     clean
     defaults write "$DEFAULTS_SUITE" "$style_store" -string "bar"
     FAKE_ARGS="--first-frame-delay 1" start_fake || return 1
@@ -12766,16 +12598,15 @@ check_cover_bar() {
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
     wait_until 20 chrome_has "loading=0" \
         || bad "COVER-BAR $appearance late: the first frame did not land: $(chrome_state)"
-    wait_until 10 chrome_has "haze=1" || bad "COVER-BAR $appearance late: no haze"
-    id="$(await_window '$4 == 900 && $5 == 628')" \
+    id="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" \
         || bad "COVER-BAR $appearance late: no live compact window"
     sleep 1
     if [ -n "$id" ] && shot_window "$id" "$shots/compact-late-$appearance.png"; then
         local opacity
-        opacity="$(bar_band_opacity "$shots/compact-late-$appearance.png" 900 628)"
+        opacity="$(bar_band_opacity "$shots/compact-late-$appearance.png" 900 "$(windows | awk -v id="$id" '$1 == id {print $5}' | head -1)")"
         [ "$opacity" = "min_alpha=255 clear=0" ] \
-            && ok "[WIN-67] COVER-BAR $appearance a late first frame brings an opaque bar ($opacity)" \
-            || bad "[WIN-67] COVER-BAR $appearance a late first frame left the bar see-through ($opacity): $shots/compact-late-$appearance.png"
+            && ok "[WIN-7] COVER-BAR $appearance a late first frame: the title bar is opaque ($opacity)" \
+            || bad "[WIN-7] COVER-BAR $appearance a late first frame left the title bar see-through ($opacity): $shots/compact-late-$appearance.png"
     else
         bad "COVER-BAR $appearance late: no window capture"
     fi
@@ -12799,7 +12630,7 @@ check_cover_bar_light() { check_cover_bar light; }
 # Phone Mirror never goes full screen (WIN-72), so its full-screen cells do
 # not exist. A quiet run takes the windowed cells only.
 check_styles_shots() {
-    local appearance style fixture surface key width height id full
+    local appearance style fixture surface key window id full windowed_w windowed_h
     local style_store="chrome.style.com.android.settings"
     local shots="$SHOTS/styles"
     mkdir -p "$shots"
@@ -12809,9 +12640,9 @@ check_styles_shots() {
                 for style in compact framed immersive; do
                     clean
                     FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
-                    if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-                    elif [ "$style" = "immersive" ]; then key=pill; width=900; height=600
-                    else key=bar; width=900; height=628; fi
+                    if [ "$style" = "framed" ]; then key=mat; window='$4 == 910 && $5 == 643'
+                    elif [ "$style" = "immersive" ]; then key=pill; window='$4 == 900 && $5 == 600'
+                    else key=bar; window='$4 == 900 && $5 > 600 && $5 < 660'; fi
                     defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
                     defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
                     rm -f "$WORK/ss-begin" "$WORK/ss-hidden" "$WORK/ss-revealed" "$WORK/ss-exit" "$WORK/ss-done"
@@ -12835,13 +12666,13 @@ check_styles_shots() {
                         || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface never reached a live picture: $(chrome_state)"
                     if [ "$surface" = "app" ]; then
                         if [ "$style" = "compact" ]; then
-                            wait_until 10 eval 'chrome_has "bar_title=1" && ! chrome_has "bar_title_tone=none"' \
-                                || bad "STYLES-SHOTS $appearance/$fixture/$style no toned bar title: $(chrome_state)"
+                            wait_until 10 chrome_all "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style is not the system's title bar: $(chrome_state)"
                         elif [ "$style" = "framed" ]; then
                             wait_until 10 chrome_has "bar_title=1" \
                                 || bad "STYLES-SHOTS $appearance/$fixture/$style no framed title: $(chrome_state)"
                         else
-                            chrome_has "bar_title=0 bar_title_tone=none bar_title_rect=none" \
+                            chrome_has "bar_title=0 bar_title_rect=none" \
                                 && ok "[WIN-74] STYLES-SHOTS $appearance/$fixture/immersive the pill has no title" \
                                 || bad "STYLES-SHOTS $appearance/$fixture/immersive drew a bar title: $(chrome_state)"
                         fi
@@ -12855,8 +12686,8 @@ check_styles_shots() {
                     if [ "$surface" = "mirror" ]; then
                         id="$(await_window '$5 > $4')" || bad "STYLES-SHOTS $appearance/$fixture/$style no mirror window"
                     else
-                        id="$(await_window "\$4 == $width && \$5 == $height")" \
-                            || bad "STYLES-SHOTS $appearance/$fixture/$style no $width x $height window"
+                        id="$(await_window "$window")" \
+                            || bad "STYLES-SHOTS $appearance/$fixture/$style no window ($window)"
                     fi
                     if [ -n "$id" ]; then
                         shot_window "$id" "$shots/$style-$surface-$fixture-$appearance-windowed.png" \
@@ -12868,6 +12699,8 @@ check_styles_shots() {
                             && ok "[WIN-72] STYLES-SHOTS $appearance/$fixture/$style the Phone Mirror cannot go full screen" \
                             || bad "[WIN-72] STYLES-SHOTS $appearance/$fixture/$style the Phone Mirror offered full screen"
                     elif [ "$VISIBLE" = "1" ]; then
+                        windowed_w="$(windows | awk -v id="$id" '$1 == id {print $4}' | head -1)"
+                        windowed_h="$(windows | awk -v id="$id" '$1 == id {print $5}' | head -1)"
                         touch "$WORK/ss-begin"
                         full="$win"
                         # Full screen is the system's own title bar in every
@@ -12887,7 +12720,7 @@ check_styles_shots() {
                         touch "$WORK/ss-revealed"
                         sleep 0.5
                         touch "$WORK/ss-exit"
-                        wait_until 15 win_size "$id" "$width" "$height" \
+                        wait_until 15 win_size "$id" "$windowed_w" "$windowed_h" \
                             || bad "STYLES-SHOTS $appearance/$fixture/$style did not leave full screen"
                         touch "$WORK/ss-done"
                     else

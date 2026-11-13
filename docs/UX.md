@@ -87,13 +87,13 @@ work is disabled, never hidden.
    Framed → Compact → Immersive), remembered per app: **Framed** (default) is the stream inside a real frame on all four sides — 38 pt
    above and 5 pt on the other three sides, a 21 pt window corner radius and a 12 pt picture radius, the system's dark or light material, a
    hairline and a lighter rim, the app's name and phone in the system label colour, the traffic lights and our controls in the taller bar
-   (the measured numbers and the reference are in DESIGN.md); **Compact** is the stream plus a permanent 28 pt bar
-   above it — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint on the band's own side, the app's name and the phone's as
-   "<App> (<phone>)" centred on that line (the phone's name alone in the Phone Mirror, and for a link or a handoff only once the phone
-   reports an app), the traffic lights on that line; **Immersive** is the old borderless style — the window is exactly the stream, no
+   (the measured numbers and the reference are in DESIGN.md); **Compact** is a standard window: the stream under the
+   system's own title bar, solid and in the system's appearance, with the traffic lights and the window's title "<App> (<phone>)" (the
+   phone's name alone in the Phone Mirror, and for a link or a handoff only once the phone reports an app), and our controls at its right
+   end; **Immersive** is the old borderless style — the window is exactly the stream, no
    bar and no borders, and the traffic lights and our controls live on a clear-glass pill at the stream's top-left that a 350 ms rest in a
    72×32 pt hot zone brings in and a 600 ms absence takes away (Always Visible keeps it up). Switching grows or shrinks the window by the
-   difference between the two insets, the stream keeps its place. Native full
+   difference between the styles' chrome, the stream keeps its place. Native full
    screen is macOS's own View item (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the
    screen and looks the same in every style: the window's own title bar, the system's, comes down with the menu bar when the pointer
    reaches the top edge, with the traffic lights and the window's title and nothing of ours. **Hide Controls** and its items are
@@ -103,8 +103,7 @@ work is disabled, never hidden.
    while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
    **View → Show Touches** (on by default on a Mac with a trackpad) draws a dot where the phone is being touched by a trackpad
-   gesture — touches only, never the pointer's hover — and the Compact bar above the stream never shows it: the bar mirrors the
-   video, not the overlay.
+   gesture — touches only, never the pointer's hover — on the picture only, never over the window's bar.
    The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
    mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
    touch. Settings → Input → **Hover over Android apps** turns it off.
@@ -252,11 +251,10 @@ dark background, a 2 pt accent line sweeping under the window's top edge
 (indeterminate, never a made-up percentage) and the title **<App> — opening on
 <phone>**.
 
-The cover is the whole window in every style: one sheet from the top edge,
-with the traffic lights and our controls on the top row, and the icon, title and
-line where Compact puts them. The style's bar — its mirror, blur and haze — or
-frame — its material and rim — arrives with the first frame, so the loading
-state looks the same in Framed, Compact and Immersive; the stored style does not change.
+The cover is the whole picture area in every style: one sheet from the top of
+the content (in Compact, under the system's title bar), with the traffic lights
+and our controls on the top row. Framed's frame — its material and rim — and
+Immersive's pill arrive with the first frame; the stored style does not change.
 
 - 0–5 s: the icon, the line and the title.
 - 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel

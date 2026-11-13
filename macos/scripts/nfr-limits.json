@@ -1,7 +1,6 @@
 {
   "app_list_ms": 1500,
   "blip_recovery_ms": 3000,
-  "bar_title_contrast_min": 4.5,
   "connect_ms": 1500,
   "contrast_min": 3.0,
   "deck_zoom_frame_p95_ms": 40,

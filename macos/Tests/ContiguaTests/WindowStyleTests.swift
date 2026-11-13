@@ -76,13 +76,16 @@ final class WindowStyleStorageTests: XCTestCase {
 }
 
 final class ChromeConfigTests: XCTestCase {
-    func testWindowedEveryStyleHidesTheSystemTitleAndOwnsTheLights() {
-        for style in WindowStyle.allCases {
+    /// Framed and Immersive draw their own chrome under a hidden, clear title
+    /// bar and place the lights; Compact is the system's own title bar (WIN-7).
+    func testWindowedFramedAndImmersiveOwnTheLightsAndCompactIsTheSystems() {
+        for style in [WindowStyle.framed, .immersive] {
             let config = ChromeConfig.forState(style: style, fullScreen: false)
             XCTAssertFalse(config.titleVisible, "\(style)")
             XCTAssertTrue(config.titlebarTransparent, "\(style)")
             XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
         }
+        XCTAssertEqual(ChromeConfig.forState(style: .compact, fullScreen: false), .system)
     }
 
     /// Full screen looks the same in every style: the window's own native
@@ -100,11 +103,25 @@ final class ChromeConfigTests: XCTestCase {
 final class WindowStyleSizeTests: XCTestCase {
     private let stream = CGSize(width: 900, height: 600)
     private let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)
+    /// AppKit's frame for the 900×600 stream in a standard titled window, and
+    /// its title bar: the system's height on this macOS, never a number of ours.
+    private var compactHeight: CGFloat {
+        NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: stream),
+                           styleMask: WindowStyle.compact.styleMask).height
+    }
+    private var titleBar: CGFloat { compactHeight - stream.height }
 
-    func testCompactIsTheStreamPlusTheBar() {
-        XCTAssertEqual(WindowStyle.compact.windowSize(stream: stream), CGSize(width: 900, height: 628))
+    /// WIN-4: Compact is a standard titled window; the title bar is AppKit's,
+    /// outside the content view, which is exactly the stream.
+    func testCompactIsTheStreamPlusTheSystemTitleBar() {
+        XCTAssertGreaterThan(titleBar, 0)
+        XCTAssertEqual(WindowStyle.compact.windowSize(stream: stream), CGSize(width: 900, height: compactHeight))
+        XCTAssertEqual(WindowStyle.compact.contentSize(stream: stream), stream, "the content view is the stream")
         let pad = WindowStyle.compact.insets(fullScreen: false)
-        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [28, 0, 0, 0], "the bar at the top only")
+        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [0, 0, 0, 0], "no chrome of ours")
+        XCTAssertFalse(WindowStyle.compact.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(WindowStyle.framed.styleMask.contains(.fullSizeContentView))
+        XCTAssertTrue(WindowStyle.immersive.styleMask.contains(.fullSizeContentView))
     }
 
     func testFramedIsTheStreamInsideTheFrame() {
@@ -141,7 +158,7 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testTheStreamSizeIsTheWindowSizeWithoutTheChrome() {
-        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: 628)), stream)
+        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: compactHeight)), stream)
         XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 900, height: 600)),
                        CGSize(width: 890, height: 557))
         XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: 20)),
@@ -157,7 +174,7 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testSwitchingToFramedGrowsTheWindowAroundTheSameStream() {
-        let current = NSRect(x: 200, y: 100, width: 900, height: 628)
+        let current = NSRect(x: 200, y: 100, width: 900, height: compactHeight)
         let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed, NSRect(x: 195, y: 95, width: 910, height: 643),
                        "the stream keeps its place: 5 pt on the left and bottom, 38 above")
@@ -166,7 +183,8 @@ final class WindowStyleSizeTests: XCTestCase {
     func testSwitchingBackToCompactShrinksTheWindowAroundTheStream() {
         let current = NSRect(x: 195, y: 95, width: 910, height: 643)
         let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
-        XCTAssertEqual(compact, NSRect(x: 200, y: 100, width: 900, height: 628))
+        XCTAssertEqual(compact, NSRect(x: 200, y: 100, width: 900, height: compactHeight),
+                       "the stream keeps its place: its top edge is under AppKit's title bar")
     }
 
     func testSwitchingToImmersiveShedsTheBarsAndTheFrame() {
@@ -176,25 +194,27 @@ final class WindowStyleSizeTests: XCTestCase {
                        "the stream keeps its place; only the chrome goes")
     }
 
-    func testSwitchingNearTheTopMovesTheWindowDownJustEnough() {
-        // The window's top edge is at the screen's top: the frame's 10 pt of
-        // extra band above the stream has nowhere to go.
-        let current = NSRect(x: 200, y: screen.maxY - 628, width: 900, height: 628)
+    func testSwitchingNearTheTopMovesTheWindowDownJustEnough() throws {
+        // The window's top edge is at the screen's top: what the frame's 38 pt
+        // bar adds over AppKit's title bar has nowhere to go.
+        let overflow = FramedChrome.topInset - titleBar
+        try XCTSkipIf(overflow <= 0, "this title bar (\(titleBar) pt) is as tall as the frame's bar")
+        let current = NSRect(x: 200, y: screen.maxY - compactHeight, width: 900, height: compactHeight)
         let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY, "the frame fits under the screen's top edge")
         XCTAssertEqual(framed.origin.y, screen.maxY - 643, "moved down by exactly what overflowed")
         XCTAssertEqual(framed.size, CGSize(width: 910, height: 643))
     }
 
-    func testSwitchingNearTheTopMovesItDownOnlyByWhatItOverflows() {
-        // The window starts 4 pt under the top; the frame's 10 pt above the
-        // stream leaves 6 pt to move down.
-        let current = NSRect(x: 200, y: screen.maxY - 632, width: 900, height: 628)
+    func testSwitchingNearTheTopMovesItDownOnlyByWhatItOverflows() throws {
+        // The window starts 1 pt under the top: one point less to move down.
+        let overflow = FramedChrome.topInset - titleBar - 1
+        try XCTSkipIf(overflow <= 0, "this title bar (\(titleBar) pt) leaves nothing to overflow")
+        let current = NSRect(x: 200, y: screen.maxY - compactHeight - 1, width: 900, height: compactHeight)
         let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY)
-        XCTAssertEqual(framed.origin.y, screen.maxY - 643, "down by 6 pt, not a whole bar")
         XCTAssertEqual(framed.height, 643)
-        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -6,
+        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -overflow,
                        "just the overflow, never more")
     }
 
@@ -203,7 +223,7 @@ final class WindowStyleSizeTests: XCTestCase {
         let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
         XCTAssertEqual(compact.origin.y, current.origin.y + FramedChrome.sideInset,
                        "the stream stays where it is: the window sheds the frame's bottom")
-        XCTAssertEqual(compact.height, 628)
+        XCTAssertEqual(compact.height, compactHeight)
         XCTAssertLessThan(compact.maxY, screen.maxY, "shrinking never moves the window down")
     }
 
@@ -472,8 +492,8 @@ final class FramedGeometryTests: XCTestCase {
 }
 
 final class ChromeBarTests: XCTestCase {
-    /// The Compact bar: 28 pt, the 14 pt lights equally inset 7 pt.
-    /// BarGeometryTests covers the numbers and the real view geometry.
+    /// The 28 pt row (the Immersive pill, the covers' top row): the 14 pt
+    /// lights equally inset 7 pt. BarGeometryTests covers the numbers.
     func testTheBarIsTwentyEightPointsWithItsEqualInsets() {
         XCTAssertEqual(ChromeBar.height, 28)
         XCTAssertEqual(ChromeBar.trafficLightInset, 7)
@@ -495,7 +515,7 @@ final class PhoneChromeTests: XCTestCase {
     /// phone's aspect fit inside the visible frame, never to the whole display.
     func testThePhoneZoomIsTheAspectFitInsideTheVisibleFrame() {
         let visible = NSRect(x: 100, y: 50, width: 1440, height: 900)
-        let bar = WindowStyle.compact.insets(fullScreen: false).top
+        let bar = WindowStyle.compact.frameInsets().top
         let portrait = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
                                              style: .compact, visible: visible)
         XCTAssertEqual(portrait.height, visible.height, accuracy: 1)

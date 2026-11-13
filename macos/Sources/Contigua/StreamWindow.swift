@@ -197,25 +197,19 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         self.manager = manager
         self.style = manager.styleStore.style(forKey: styleKey)
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
-        // `contentSize` is the stream's; the window adds the style's bar above
-        // it (WindowStyle.swift). The content view fills the whole window,
-        // under a transparent titlebar, and is transparent itself outside
-        // the stream.
-        let frameSize = style.windowSize(stream: contentSize)
-        let window = StreamWindow(contentRect: NSRect(origin: .zero, size: frameSize),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                                  backing: .buffered, defer: false)
+        // `contentSize` is the stream's; the window adds the style's chrome
+        // (WindowStyle.swift): Compact's AppKit title bar above the content,
+        // or Framed's frame and Immersive's pill inside a content view that
+        // fills the window under a transparent title bar.
+        let window = StreamWindow(contentRect: NSRect(origin: .zero, size: style.contentSize(stream: contentSize)),
+                                  styleMask: style.styleMask, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         // The app sets this window's frame itself (a stream's size, a phone's
         // turn): the backstop leaves those frames to the delegate above.
         WindowFrameLimit.owns(window)
         window.acceptsMouseMovedEvents = true
-        window.titlebarAppearsTransparent = true
-        // The title still names the window in the Window menu and Mission Control.
-        window.titleVisibility = .hidden
         window.isOpaque = false
-        window.backgroundColor = .clear
-        window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
+        window.setFrame(NSRect(origin: window.frame.origin, size: style.windowSize(stream: contentSize)), display: false)
         chrome = StreamChromeView(video: videoView, style: style)
         super.init(window: window)
         // The phone's encoder limits decide how the picture is drawn and what
@@ -244,10 +238,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             self?.configureDwell()
             self?.writeChromeState()
         }
-        chrome.onBarToneChange = { [weak self] in self?.writeChromeState() }
         // Where AppKit put the standard buttons before the chrome moves them;
-        // full screen gives them back (applyChromeConfig).
+        // the system's title bar gives them back (applyChromeConfig).
         captureStandardLights()
+        applyChromeConfig(fullScreen: false)
         chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
         chrome.onLiveTextToggle = { [weak self] in self?.toggleLiveText() }
         chrome.liveTextDragProvider = { [weak self] in self?.liveText.dragFileURL() }
@@ -473,8 +467,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // No frame is held before the first one, so the shared cover uses its
         // last picture's colours (none yet) or black (WIN-65).
         chrome.openingCover.show(display, icon: openingIcon, heldFrame: videoView.copyDisplayedFrame())
-        // The cover's ground takes the bar's haze with it (WIN-40).
-        chrome.updateBarHaze()
         // The cover is a frozen mode: the bar's phone-side controls dim with
         // it, from the first moment to a refusal (WIN-22, item M9).
         updateFrozen()
@@ -490,10 +482,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         showOpeningPhase()
         let ms = max(0, at - opening.startedAt) * 1000
         Log.video.notice("stream \(self.stream, privacy: .public): first frame \(String(format: "%.1f", ms), privacy: .public) ms after open, opening cover off")
-        // The cover's sheet is gone and the bar's band is the mirror again: one
-        // more chance at the radius (WIN-40); the extension view's own pass
-        // tunes it as soon as the system has built the backdrop.
-        chrome.reapplyBarBlur()
         updateFrozen()
         tickFrameWatchdog()
         run(actions)
@@ -661,15 +649,18 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func setStyle(_ next: WindowStyle) {
         guard let window, next != style else { return }
         let fullScreen = isFullScreen
+        let previous = style
+        style = next
         if !fullScreen {
             let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect.zero
-            let target = style.frame(switchedTo: next, current: window.frame, visible: visible)
+            let target = previous.frame(switchedTo: next, current: window.frame, visible: visible)
+            applyChromeConfig(fullScreen: false)
             window.setFrame(target, display: true)
         }
-        style = next
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
         refreshMenuState()
         chrome.setStyle(style)
+        if !fullScreen { applyChromeConfig(fullScreen: false) }
         configureDwell()
         writeChromeState()
     }
@@ -838,7 +829,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// shows or not. This is what the virtual display is sized from.
     func videoBounds() -> CGSize {
         guard let window, let chrome = window.contentView as? StreamChromeView else { return .zero }
-        return style.streamSize(window: chrome.bounds.size, fullScreen: isFullScreen)
+        return style.streamSize(content: chrome.bounds.size, fullScreen: isFullScreen)
     }
 
     /// Virtual-display pixels for the video area: the window's exact backing
@@ -1573,7 +1564,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         line += " pill=\(chrome.showsPill ? "shown" : "hidden")"
         line += " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
         line += " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
-        line += " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
         line += " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
         line += " collection=\(window?.collectionBehavior.rawValue ?? 0)"
         line += " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
@@ -1599,15 +1589,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         line += " bar_offline=\(phoneControlsOffline ? 1 : 0)"
         line += " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
         line += " bar_focus=\(barFocusState)"
-        line += " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
-        line += " bar_tint=\(String(format: "%.2f", BarTitle.tintAlpha))"
-        line += " tint=\(chrome.barTintVisible ? 1 : 0)"
         line += " bar_title=\(chrome.barTitleVisible ? 1 : 0)"
-        line += " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
         line += " bar_title_rect=\(barTitleRectState())"
-        line += " haze=\(chrome.hazeVisible ? 1 : 0)"
-        line += " bar_tint_side=\(chrome.barTintSide)"
-        line += " bar_mirror=\(chrome.barMirrorState)"
         line += " key=\(window?.isKeyWindow == true ? 1 : 0)"
         line += " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
         line += " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
@@ -1625,7 +1608,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         return "\(Int(inWindow.minX.rounded())),\(Int((window.frame.height - inWindow.maxY).rounded())),\(Int(inWindow.width.rounded())),\(Int(inWindow.height.rounded()))"
     }
 
-    /// The e2e's geometry: the window, the content and the chrome, the mirror
+    /// The e2e's geometry: the window, the content and the chrome, the video
     /// and the titlebar, so a check can see which band a click lands in.
     private func geometryLine() -> String {
         func rect(_ r: NSRect) -> String {
@@ -1634,7 +1617,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return "none" }
         let titlebar = window.standardWindowButton(.closeButton)?.superview?.frame ?? .zero
         return "win:\(rect(window.frame)) content:\(rect(window.contentView?.frame ?? .zero))"
-            + " chrome:\(rect(chrome.frame)) ext:\(rect(chrome.mirrorFrame))"
+            + " chrome:\(rect(chrome.frame))"
             + " video:\(rect(chrome.video.frame)) layout:\(rect(window.contentLayoutRect))"
             + " tb:\(rect(titlebar)) mask:\(window.styleMask.rawValue)"
             + " bar:\(Int(chrome.barHeight.rounded()))"
@@ -1666,14 +1649,29 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// The titlebar and the buttons by state (ChromeConfig): in both states
-    /// the system's title is hidden and the chrome places the buttons itself.
+    /// The window's mask, titlebar and buttons by state (ChromeConfig): the
+    /// system's own title bar (Compact windowed, every style in full screen)
+    /// or the chrome's (Framed's frame, Immersive's pill).
     private func applyChromeConfig(fullScreen: Bool) {
         guard let window else { return }
+        if !fullScreen {
+            // The style's own mask (Compact's real title bar or a full-size
+            // content view), keeping the frame: the caller sets the size.
+            let frame = window.frame
+            window.styleMask = style.styleMask
+            window.setFrame(frame, display: false)
+            // Compact's content is the stream under AppKit's own title bar;
+            // the others draw their window edge themselves on a clear ground.
+            window.backgroundColor = style == .compact ? .windowBackgroundColor : .clear
+        }
+        // No separator hairline: AppKit draws it over the content's first
+        // device row, and that row is the picture (MIRROR-27).
+        window.titlebarSeparatorStyle = .none
         let config = ChromeConfig.forState(style: style, fullScreen: fullScreen)
         window.titleVisibility = config.titleVisible ? .visible : .hidden
         window.titlebarAppearsTransparent = config.titlebarTransparent
         chrome.lightsManagedByAppKit = config.lightsManagedByAppKit
+        if config.lightsManagedByAppKit { restoreStandardLights() }
         chrome.placeTrafficLights()
     }
 

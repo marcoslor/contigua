@@ -51,8 +51,6 @@ final class OpeningCoverChromeTests: XCTestCase {
                        NSRect(x: FramedChrome.sideInset, y: FramedChrome.bottomInset,
                               width: 900, height: 600),
                        "the stream keeps the framed style's rect, so the virtual display does not move")
-        XCTAssertFalse(chrome.barMirrorVisible, "the mirror's band is under the cover, not on screen")
-        XCTAssertFalse(chrome.hazeVisible, "the Compact haze is not over the cover")
         XCTAssertTrue(chrome.framedTitleView.isHidden, "the Framed frame is not drawn under the cover")
 
         chrome.openingCover.show(nil, icon: nil)

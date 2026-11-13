@@ -135,10 +135,6 @@ enum DebugInputAction: Equatable {
     /// for the phone in use, through the same write-then-apply path (e2e).
     case shortcutsAll(Bool)
     case windowStyle(String)
-    /// `barmirror off` (e2e): the system mirror's own layers in the Compact
-    /// bar stop drawing, the way a real display left them (#45), so a check
-    /// can see what the bar shows without them.
-    case barMirrorOff
     /// View ▸ Hide Controls' pick: the full-screen reveal choice.
     case hideControls(FullScreenMenuItem)
     /// The Navigate menu's action: back, home or recents.
@@ -297,9 +293,6 @@ enum DebugInputScript {
                 throw LineError(message: "windowstyle needs \(verbs.joined(separator: ", "))")
             }
             return .windowStyle(verb)
-        case "barmirror":
-            guard args == ["off"] else { throw LineError(message: "barmirror needs off") }
-            return .barMirrorOff
         case "hidecontrols":
             switch args.first {
             case "instantly" where args.count == 1: return .hideControls(.delay(.instantly))
@@ -824,9 +817,6 @@ final class DebugInputDriver {
             dockApps?(on)
         case .shortcutsAll(let on):
             shortcutsAll?(on)
-        case .barMirrorOff:
-            guard let controller = view.window?.windowController as? StreamWindowController else { return }
-            controller.chrome.stopBarMirrorForTesting()
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             if let style = WindowStyle(debugName: target) {
@@ -1144,13 +1134,16 @@ final class DebugInputDriver {
         pumpRunLoop()
     }
 
-    /// A click at a window point on the control the content's hit test finds,
+    /// A click at a window point on the control the window's hit test finds,
     /// for a check that must click a real control and not call its action.
     /// AppKit's own window dispatch delivers no synthetic mouse event to a
     /// quiet run (the app is never active, its windows sit on a virtual
     /// display), so the pair goes to the view the window would have used.
     static func clickControl(at point: CGPoint, in window: NSWindow) {
-        guard let content = window.contentView, let view = content.hitTest(point) else { return }
+        // The window's own hit test starts at its frame view, so a control in
+        // the title bar (Compact's accessory) is found as a real click finds it.
+        guard let root = window.contentView?.superview ?? window.contentView,
+              let view = root.hitTest(point) else { return }
         func event(_ type: NSEvent.EventType) -> NSEvent? {
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                                timestamp: ProcessInfo.processInfo.systemUptime,

@@ -26,7 +26,7 @@ PORT="${PD_E2E_PORT:-47980}"
 PROFILE="${PD_E2E_PROFILE:-nfr1}"
 
 # The tests that own an NFR requirement in docs/NFR.md.
-K2_FILTER="NFRTestLimits|BarContrastTests|BarTitleTests|SettingsLayoutTests|LayoutTests|HangingPeerTests|HonestSettingsTests|IconReferenceTests|ControlsRealPathTests"
+K2_FILTER="NFRTestLimits|BarContrastTests|SettingsLayoutTests|LayoutTests|HangingPeerTests|HonestSettingsTests|IconReferenceTests|ControlsRealPathTests"
 
 fail=0
 echo "== nfr: check-rules (changed lines, no build)"
