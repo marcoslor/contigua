@@ -13,7 +13,8 @@ app/src/main/java/app/contigua/
   proto/     frame codec + minimal JSON + hex/HMAC (pure Kotlin, no Android)
   server/    the shell process: DeckService (AIDL), Server, Session, WindowStream,
              InputInjector, AppLauncher, Power, AndroidPower/PanelPower/DisplayProbe,
-             DarkPanelPolicy, Watchdog, AndroidWindowObserver, Hidden, ShellContext +
+             WindowDevice/AndroidWindowDevice/CompanionAssociation, Watchdog,
+             AndroidWindowObserver, Hidden, ShellContext +
              the platform interfaces Session depends on
   app/       MainActivity (Compose host), DeckForegroundService, BootReceiver,
              NsdAdvertiser, ShizukuClient, Prefs, DeckState, QrPairing (pure)
@@ -55,96 +56,100 @@ starting it, granting the app permission and turning **Keep Contigua running** o
 - Input is injected on the window's display via `IInputManager.injectInputEvent`
   with `InputEvent.setDisplayId`.
 
-### Virtual-display flags
+### Window displays and their group
 
-`PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | ROTATES_WITH_CONTENT |
-DESTROY_CONTENT_ON_REMOVAL | TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED |
-TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`
+A window display must sit in a display group of its own, or it sleeps and wakes
+with the phone's screen (docs/specs/app-windows.md WIN-74). The server takes
+the first route that works:
 
-Two flags are deliberately **never** set:
+- **Virtual device (Android 14+, One UI).** One platform virtual device
+  (`VirtualDeviceManager.createVirtualDevice`, reached by reflection at shell
+  UID) makes every window display. It is created from Contigua's own companion
+  association: owned by `com.android.shell`, profile
+  `COMPANION_DEVICE_APP_STREAMING`, self-managed, fixed address
+  `02:c0:4e:00:00:01` (`CompanionAssociation`, created once with
+  `cmd companiondevice associate` and removed by Forget All Macs). The device
+  shares the phone's clipboard and keeps its tasks out of the phone's Recents
+  (`POLICY_TYPE_CLIPBOARD` and `POLICY_TYPE_RECENTS` = custom). The display
+  flags are
 
-- the system-decorations flag — it adds a SystemUI nav bar to the VD and, on
-  One UI, poisons `SysUiState` so the phone's back gesture dies until reboot;
-- the device display-group flag — the VD would follow the panel's power state and
-  freeze while the phone is locked.
+  `PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | ROTATES_WITH_CONTENT |
+  DESTROY_CONTENT_ON_REMOVAL | TRUSTED | DEVICE_DISPLAY_GROUP | ALWAYS_UNLOCKED |
+  TOUCH_FEEDBACK_DISABLED | OWN_FOCUS | STEAL_TOP_FOCUS_DISABLED` (`0x1f5cb`).
 
-`ALWAYS_UNLOCKED` + `OWN_CONTENT_ONLY` are the whole locked-phone feature. The
-VD's IME policy is set to HIDE; back is `KEYCODE_BACK` stamped with the VD id.
-The VD is built from a hidden `VirtualDisplayConfig` when available so that, on
+  One UI ignores `OWN_DISPLAY_GROUP` on a plain display but gives a device
+  display its own group. The device is made with the first window and closed
+  with the last (`WindowDevice`, a pure state machine).
+- **Plain display (AOSP, the emulator).** No device could be made (no service,
+  no association, refused): the classic flags with `OWN_DISPLAY_GROUP` instead
+  of the device group.
+- **Refused.** A display that still reads group 0 is released before anything
+  launches on it, and the Mac gets `error {code: "windows_unsupported"}`.
+
+The system-decorations flag is never set: it adds a SystemUI nav bar to the VD
+and, on One UI, poisons `SysUiState` so the phone's back gesture dies until
+reboot.
+
+`ALWAYS_UNLOCKED` + `OWN_CONTENT_ONLY` are the whole locked-phone feature. Each
+window display's IME policy is set to HIDE; back is `KEYCODE_BACK` stamped with
+the VD id. The VD is built from a hidden `VirtualDisplayConfig` so that, on
 SDK ≥ 36, `ignoreActivitySizeRestrictions` is set and apps that declare a fixed
-size/orientation still fill any Mac-window size; any failure falls back to the
-classic 6-arg `createVirtualDisplay`.
+size/orientation still fill any Mac-window size.
 
-### Power
+Debug builds take `debug.contigua.vd_plain=1` (skip the device: the plain
+route) and `debug.contigua.vd_panel_group=1` (a display in group 0: the
+refusal), read at every open. `tools/emulator/vd-group.sh` checks all three.
 
-No session → no VD, no encoder, no wake lock, no polling threads. With a session,
-`userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` are poked when a
-stream opens or resizes, alongside a PARTIAL wake lock. There is **no** fallback
-to the global wake-up call and the keyguard is never dismissed: the poke names
-the streaming display's own group (`PowerManagerService.wakeUpWithDisplayId`
-wakes the power group of that display's display group).
-
-Each unpaused stream also holds a **display-scoped** `SCREEN_BRIGHT` wake lock
-bound to its virtual display (hidden `PowerManager.newWakeLock(levelAndFlags,
-tag, displayId)`, API 33+), so the VD's power group holds itself awake instead of
-depending on the timer. While those locks are held the keep-alive timer slows to
-60 s (it is a safety net, and it still drives the panel policy); without the
-hidden call it stays at 10 s. `debug.contigua.force_timer_keepalive=1` skips
-the display wake locks, for measuring the timer path.
-
-The *physical* panel is a separate story, and the server picks one of two
-strategies from the display group the VD actually got (logged at creation, see
-below):
-
-- **Own display group (AOSP).** Waking the VD's group leaves the panel's group
-  (group 0) off. Nothing else to do; the panel power mode is never touched.
-- **Panel group (vendor builds that ignore `OWN_DISPLAY_GROUP`, e.g. Samsung One
-  UI).** The same wake also turns the panel on, so right after our own wake the
-  panel is powered off through SurfaceFlinger
-  (`SurfaceControl.setDisplayPowerMode(token, POWER_MODE_OFF)`, token from
-  `com.android.server.display.DisplayControl` loaded out of `services.jar`).
-  The override is re-applied after our own wakes only — never in a loop — and a
-  transitional wake re-applies it twice more (0.5 s and 1.5 s) because the
-  platform's display power controller writes its own mode while it processes the
-  wake. Waking on *input* is skipped in this mode: the keep-alive owns the group
-  and the panel.
-- **The user wins.** If the panel was on (ours, forced dark) and then reports
-  off, that was a power-button press: the server stops waking and stops
-  re-applying until the screen has been on and off again, so normal Android
-  behaviour takes over. The keyguard is never dismissed and the phone is never
-  unlocked.
-- **Restore.** When the last stream pauses/closes or the session ends, the panel
-  power mode is set back to NORMAL *only* if the platform believes the panel is
-  on (the override is masking it), then `IPowerManager.goToSleep(…,
-  GO_TO_SLEEP_REASON_APPLICATION)` puts the phone back to its normal locked-off
-  state. Never called when the user has the phone.
-- **Crash guard.** While the override is live, a marker file
-  (`/data/local/tmp/contigua/panel-off`) is written and a tiny second
-  `app_process` (`contigua-watchdog`, the same APK) holds a loopback socket to
-  the server and blocks on a read. If the server dies (crash, `kill -9`, Shizuku
-  restart), the read returns without the clean-shutdown byte: the watchdog then
-  restores `POWER_MODE_NORMAL` (only when the marker exists and the platform
-  believes the panel is on) and calls `goToSleep`, then exits. The watchdog is
-  started lazily on the first panel-off and stopped when the episode ends, so
-  own-group builds never pay for it. Orphan VDs are released by system_server
-  when their owner dies; no wake lock survives a dead process.
-
-`debug.contigua.force_panel_off=1` forces the panel-dark path (used by the
-emulator checks, where AOSP gives the VD its own group).
-
-Every VD creation logs the requested flags, the creation path
-(`VirtualDisplayConfig` vs the classic call) and the resulting `DisplayInfo`
-(`flags`, `displayGroupId`, `state`) with the hidden
-`DisplayManagerGlobal.getDisplayInfo`, which is what tells the two strategies
-apart on a new build:
+Every VD creation logs the requested flags, the creation path and the resulting
+`DisplayInfo` (`flags`, `displayGroupId`, `state`) with the hidden
+`DisplayManagerGlobal.getDisplayInfo`:
 
 ```
+windowdevice: device 7 made association=26 recents=params clipboard=params
 stream 1 vd=57 1280x800 dpi=240 path=VirtualDisplayConfig
-stream 1 vd=57 requested flags=0x7dcb (PUBLIC|…|OWN_DISPLAY_GROUP|ALWAYS_UNLOCKED|…)
-stream 1 vd=57 display 57: group=0 state=ON flags=0x4f88 (TRUSTED|OWN_DISPLAY_GROUP|…)
+stream 1 vd=57 requested flags=0x1f5cb (PUBLIC|…|ALWAYS_UNLOCKED|…)
+stream 1 vd=57 display 57: group=2 state=ON flags=… (TRUSTED|…)
 ```
 
 Root cause and the AOSP source trail: `docs/research/display-groups.md`.
+
+### Power
+
+No session → no VD, no encoder, no wake lock, no polling threads. With an app
+window open the server keeps **only the window displays' own group** awake:
+`userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` before a launch,
+on input and on a keep-alive timer, a PARTIAL wake lock, and a
+**display-scoped** `SCREEN_BRIGHT` wake lock per window display (hidden
+`PowerManager.newWakeLock(levelAndFlags, tag, displayId)`). While those locks
+are held the timer runs every 60 s as a safety net; without the hidden call it
+runs every 10 s. `debug.contigua.force_timer_keepalive=1` skips the display
+wake locks, for measuring the timer path. Display 0 is never named: the phone's
+own screen sleeps on its own timeout, a power press works as usual, and the
+keyguard is never dismissed. A virtual device's group never times out on its
+own, so the server releases its displays itself.
+
+A device display keeps the platform's *global* wakefulness awake while group 0
+dozes, so every "is the phone's screen on" check reads display 0
+(`ScreenState.read`), never `PowerManager.isInteractive()`.
+
+**Turn Off Phone Screen** (the Phone Mirror, `phone.panel`, `PanelHold`) is the
+one panel control left:
+
+- the panel is powered off through SurfaceFlinger
+  (`SurfaceControl.setDisplayPowerMode(token, POWER_MODE_OFF)`, token from
+  `com.android.server.display.DisplayControl` loaded out of `services.jar`)
+  while the mirror keeps rendering, with a 2 s user-activity poke on display 0
+  so the mirrored group does not time out;
+- the person's power press (display 0 leaving ON) ends the hold, unless the
+  Mac's keep-it-off setting is on;
+- every end gives the panel back with `POWER_MODE_NORMAL`;
+- **crash guard:** while the override is live, a marker file
+  (`/data/local/tmp/contigua/panel-off`) is written and a tiny second
+  `app_process` (`contigua-watchdog`, the same APK) holds a loopback socket to
+  the server and blocks on a read. If the server dies, the watchdog restores
+  `POWER_MODE_NORMAL` (only when the marker exists and the platform believes
+  the panel is on), calls `goToSleep`, and exits. Orphan VDs and the virtual
+  device are released by system_server when their owner dies.
 
 ### Device state (locked / battery)
 

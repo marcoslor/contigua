@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * The episode's lifetime (docs/specs/controls.md CTRL-14): every open app
  * stream keeps its display wake, a covered window stays in the set, and only
- * the last close or the all-paused grace ends the episode.
+ * the last close or every window covered ends the episode.
  */
 class StreamEpisodeTest {
 
@@ -62,54 +62,37 @@ class StreamEpisodeTest {
     }
 
     @Test
-    fun `a covered sibling stays in the episode when the visible one closes`() {
+    fun `a covered sibling keeps its wake while another window is live`() {
         val m = machine()
         opened(m, setOf(a, b))
-        // The Mac covers b; a is still live, so the episode is not paused.
+        // The Mac covers b; a is still live, so nothing changes.
         assertEquals(emptyList<EpisodeAction>(), opened(m, setOf(a, b), allPaused = false))
+        assertEquals(setOf(a, b), m.state.displays)
+    }
+
+    @Test
+    fun `the visible window closing over a covered one ends the episode`() {
+        val m = machine()
+        opened(m, setOf(a, b))
 
         val actions = opened(m, setOf(b), allPaused = true)
 
-        assertFalse("the covered window keeps the episode alive", actions.contains(EpisodeAction.End))
-        assertEquals(EpisodePhase.PAUSED, m.state.phase)
-        assertEquals(setOf(b), m.state.displays)
+        assertEquals(listOf(EpisodeAction.Drop(a), EpisodeAction.Drop(b), EpisodeAction.End), actions)
+        assertEquals(EpisodePhase.IDLE, m.state.phase)
     }
 
     @Test
-    fun `every window covered pauses, and a resume inside the grace does not restart`() {
+    fun `every window covered ends the episode, and one live again starts it`() {
         val m = machine()
         opened(m, setOf(a))
-        val paused = opened(m, setOf(a), allPaused = true)
-        assertEquals(listOf(EpisodeAction.Pause), paused)
+        assertEquals(listOf(EpisodeAction.Drop(a), EpisodeAction.End), opened(m, setOf(a), allPaused = true))
+        assertFalse(m.state.active)
 
         val resumed = opened(m, setOf(a))
-        assertEquals(listOf(EpisodeAction.Resume), resumed)
+
+        assertEquals(listOf(EpisodeAction.Start, EpisodeAction.Hold(a)), resumed)
         assertEquals(EpisodePhase.LIVE, m.state.phase)
         assertEquals(setOf(a), m.state.displays)
-    }
-
-    @Test
-    fun `the grace ending releases every display and ends the episode`() {
-        val m = machine()
-        opened(m, setOf(a, b))
-        // One window paused while the other is live is not the all-paused pause.
-        opened(m, setOf(a, b), allPaused = false)
-        opened(m, setOf(b), allPaused = true)
-
-        val expired = m.dispatch(EpisodeEvent.GraceExpired)
-
-        assertEquals(listOf(EpisodeAction.Drop(b), EpisodeAction.End), expired)
-        assertEquals(EpisodePhase.IDLE, m.state.phase)
-        assertFalse(m.state.active)
-    }
-
-    @Test
-    fun `a grace expiry outside the pause is ignored`() {
-        val m = machine()
-        assertEquals(emptyList<EpisodeAction>(), m.dispatch(EpisodeEvent.GraceExpired))
-        opened(m, setOf(a))
-        assertEquals(emptyList<EpisodeAction>(), m.dispatch(EpisodeEvent.GraceExpired))
-        assertTrue(m.state.active)
     }
 
     @Test
@@ -122,8 +105,15 @@ class StreamEpisodeTest {
     @Test
     fun `a first set that is already covered is not an episode start`() {
         val m = machine()
-        val actions = opened(m, setOf(a), allPaused = true)
-        assertFalse("a covered set must not take the phone over", actions.contains(EpisodeAction.Start))
-        assertEquals(EpisodePhase.PAUSED, m.state.phase)
+        assertEquals(emptyList<EpisodeAction>(), opened(m, setOf(a), allPaused = true))
+        assertEquals(EpisodePhase.IDLE, m.state.phase)
+    }
+
+    @Test
+    fun `the step is pure`() {
+        val s = EpisodeState(EpisodePhase.LIVE, setOf(a))
+        val event = EpisodeEvent.Streams(setOf(a, b), allPaused = false)
+        assertEquals(episodeStep(s, event), episodeStep(s, event))
+        assertEquals(EpisodeState(EpisodePhase.LIVE, setOf(a)), s)
     }
 }

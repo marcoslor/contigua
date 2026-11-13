@@ -842,7 +842,7 @@ class PdNotificationListener : NotificationListenerService() {
                 title = action.title?.toString(),
                 hasIntent = action.actionIntent != null,
                 reply = action.remoteInputs?.any { it.allowFreeFormInput } == true,
-                contextual = Build.VERSION.SDK_INT >= 31 && action.isContextual,
+                contextual = action.isContextual,
             )
         } ?: emptyList()
 

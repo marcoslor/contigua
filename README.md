@@ -47,8 +47,9 @@ limits: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Requirements
 
-- Android 11 or later, with [Shizuku](https://shizuku.rikka.app/) running. No
-  root.
+- Android 14 or later, with [Shizuku](https://shizuku.rikka.app/) running. No
+  root. App windows need a phone that gives them a display group of their own
+  (docs/FEATURES.md).
 - macOS 26 or later, with Xcode.
 - The Mac and the phone on the same network.
 

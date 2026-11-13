@@ -144,6 +144,9 @@ struct OpeningCover: Equatable {
         case "app_disabled": return "The app is disabled on the phone."
         case "app_missing", "not_installed": return "The app isn't installed any more."
         case "mirror_unavailable": return "This phone can't share its screen with Contigua."
+        // WIN-74: the phone would have put the window in its own screen's
+        // display group, so it refused the window instead.
+        case "windows_unsupported": return "This phone can't give app windows a screen of their own."
         case "launch_failed", "bad_request", "bad_size", "no_stream", "internal": return nil
         default: return nil
         }

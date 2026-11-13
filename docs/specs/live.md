@@ -140,7 +140,7 @@ Ignored events, stated so nobody builds them: a post for a phone whose switch is
 
 ## Assumptions
 
-- The phone runs API 30 or later; a `NotificationListenerService` is granted at shell UID when the Mac's switch turns on (`design/notify.md`).
+- The phone runs API 34 or later; a `NotificationListenerService` is granted at shell UID when the Mac's switch turns on (`design/notify.md`).
 - The main notification switch is the only person-facing gate; the per-app switches are the Mac's per-phone setting, sent to the phone so it sends nothing for a switched-off app; they are not a phone permission. The listener grant remains all-or-nothing at the OS level.
 - "Promoted" means `FLAG_PROMOTED_ONGOING` was set by the system. The app never infers it from a style, a category or a progress bar.
 - A legacy card is a notification the phone already holds; the phone does not create one. It is forwarded only for an allowed package with a positive signal (`LIVE-3`).

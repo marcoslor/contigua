@@ -8,6 +8,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.contigua.ui.theme.ContiguaTheme
 import org.junit.Assert.assertEquals
@@ -83,6 +85,19 @@ class HomeScreenTest {
             ),
         ),
     )
+
+    @Test
+    fun `the forget all dialog names the companion device`() {
+        // PHONE-18/PHONE-24: the association app windows need is the phone's one
+        // lasting change, and the action that removes it says so.
+        shoot(state(enabled = true).copy(paired = listOf(PairedMacUi("c1", "Studio", 0L))))
+        compose.onNodeWithText("Forget All Macs…").performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitForIdle()
+        compose.onNodeWithText(
+            "Contigua will create a new identity for this phone and remove the companion device it uses " +
+                "for app windows. Every Mac must pair again.",
+        ).fetchSemanticsNode()
+    }
 
     @Test
     fun `background off says the service stops with the task`() {

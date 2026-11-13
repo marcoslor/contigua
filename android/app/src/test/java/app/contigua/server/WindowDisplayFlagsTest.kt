@@ -13,16 +13,18 @@ import org.junit.Test
  */
 class WindowDisplayFlagsTest {
 
-    private val own = WindowDisplayFlags.requested(panelGroup = false)
-    private val device = WindowDisplayFlags.requested(panelGroup = true)
+    private val own = WindowDisplayFlags.requested(WindowRoute.PLAIN)
+    private val device = WindowDisplayFlags.requested(WindowRoute.DEVICE)
 
     @Test
     fun `a window's display asks not to take the phone's top focus`() {
-        assertTrue(own and WindowDisplayFlags.STEAL_TOP_FOCUS_DISABLED != 0)
-        // The system drops STEAL_TOP_FOCUS_DISABLED unless the display is
-        // trusted and has its own focus: the three are one request.
-        assertTrue(own and WindowDisplayFlags.OWN_FOCUS != 0)
-        assertTrue(own and WindowDisplayFlags.TRUSTED != 0)
+        for (flags in listOf(own, device)) {
+            assertTrue(flags and WindowDisplayFlags.STEAL_TOP_FOCUS_DISABLED != 0)
+            // The system drops STEAL_TOP_FOCUS_DISABLED unless the display is
+            // trusted and has its own focus: the three are one request.
+            assertTrue(flags and WindowDisplayFlags.OWN_FOCUS != 0)
+            assertTrue(flags and WindowDisplayFlags.TRUSTED != 0)
+        }
     }
 
     @Test
@@ -47,12 +49,22 @@ class WindowDisplayFlagsTest {
     }
 
     @Test
-    fun `the panel group knob changes only the group bits`() {
+    fun `WIN-74 each route changes only the group bits`() {
         assertEquals(WindowDisplayFlags.OWN_DISPLAY_GROUP or WindowDisplayFlags.DEVICE_DISPLAY_GROUP,
             own xor device)
+        // OWN_DISPLAY_GROUP sends a device display back to the panel's group on
+        // One UI, so the device route must never carry it.
         assertEquals(0, device and WindowDisplayFlags.OWN_DISPLAY_GROUP)
         val group = WindowDisplayFlags.OWN_DISPLAY_GROUP or WindowDisplayFlags.DEVICE_DISPLAY_GROUP
         assertEquals(own and group.inv(), device and group.inv())
+        // The debug panel-group route is the device set with no device behind it.
+        assertEquals(device, WindowDisplayFlags.requested(WindowRoute.PLAIN_PANEL_GROUP))
+    }
+
+    @Test
+    fun `WIN-74 the device route is the spike's set plus the top-focus flag`() {
+        // 0xf5cb is the set the 2026-11-04 probe saw in group 5 on One UI.
+        assertEquals(0xf5cb or WindowDisplayFlags.STEAL_TOP_FOCUS_DISABLED, device)
     }
 
     @Test

@@ -98,7 +98,7 @@
     <string name="home_no_paired">No Macs paired yet.</string>
     <string name="home_forget_all">Forget All Macs…</string>
     <string name="home_forget_all_title">Forget all Macs?</string>
-    <string name="home_forget_all_body">Contigua will create a new identity for this phone. Every Mac must pair again.</string>
+    <string name="home_forget_all_body">Contigua will create a new identity for this phone and remove the companion device it uses for app windows. Every Mac must pair again.</string>
     <string name="home_forget_all_confirm">Forget All</string>
     <string name="cancel">Cancel</string>
     <string name="home_pair_new">Pair new Mac</string>

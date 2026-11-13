@@ -785,7 +785,7 @@ Phone → Mac:
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
-| `power.locked` | — the person's power press with app streams up: the phone took its panel over and is re-lighting the streaming group. The Mac holds each app window's last frame for a short grace instead of calling the picture stalled; see "Phone screen" |
+| `power.locked` | — **no longer sent** (#142): app windows run in a display group of their own, so a power press never stops their picture. A Mac still accepts it and holds each app window's last frame for a short grace; see "Phone screen" |
 | `error` | `code`, `message`, optional `stream` |
 | `apk.progress` | `id`, `bytes` — bytes written into the install so far |
 | `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
@@ -1467,15 +1467,13 @@ live while the panel is on.
    until the next keep-alive step re-applies the panel off, and the hold stands. It never
    outlives the ends in point 4, so the phone cannot stay dark without a Mac holding it. The
    phone stays locked either way.
-6. A power press with app windows open (no phone window) may sleep the panel's whole display
-   group: on a build that ignores `OWN_DISPLAY_GROUP` the streaming virtual displays share
-   display 0's group (docs/ARCHITECTURE.md). The phone then wakes the streaming group at once
-   and powers the panel off under it — the same take-over an episode start uses — so the
-   windows keep rendering. The press still locks the phone: nothing dismisses or unlocks the
-   keyguard. The phone sends one `{"t":"power.locked"}` on that edge, and the Mac holds each
-   app window's last frame for a grace shorter than `stale_picture_ms` before it says "Not
-   responding", so the press does not read as a dead stream. It sends nothing for a press
-   while the panel is already held (point 4): that one hands the phone back instead.
+6. A power press with app windows open changes nothing for them: every app window runs on a
+   virtual display in a display group of its own (docs/specs/app-windows.md WIN-74), so the
+   phone locks, sleeps and wakes as it would with no window open, and the windows keep
+   rendering and taking input. The phone sends nothing on that edge. (Until #142 a build that
+   put the window display in the panel's group got a dark-panel take-over and one
+   `{"t":"power.locked"}`; the phone no longer sends it, and a phone that cannot give a
+   window its own group refuses the open with `windows_unsupported`.)
 
 ## Foreground app
 
@@ -1548,7 +1546,11 @@ window still opening is refused on its cover, a live one closes as on `window.cl
 this session was live: the Mac enters the trust-lost state, makes no further
 attempt and shows "<phone name> no longer trusts this Mac." with Pair again; the
 phone sends it on the authenticated session and then ends it within the PAIR-20
-bound), `launch_failed`, `bad_url` (a `link.open` URL that is
+bound), `launch_failed`, `windows_unsupported` (a `window.open`, `link.open`, `task.continue` or
+`window.adopt` on a phone whose window display would share the panel's display group, carrying
+the `stream`: the phone released the display and launched nothing, and the Mac's cover says
+"This phone can't give app windows a screen of their own.", docs/specs/app-windows.md WIN-74),
+`bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
 (the phone would not write the ringer setting or the music volume), `connections_off` (the phone's

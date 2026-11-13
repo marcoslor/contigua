@@ -3,7 +3,6 @@ package app.contigua.server
 import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Context
-import android.os.Build
 import android.os.Bundle
 
 /**
@@ -30,11 +29,9 @@ object NotifyOpen {
     fun options(displayId: Int): Bundle {
         val options = ActivityOptions.makeBasic()
         options.setLaunchDisplayId(displayId)
-        if (Build.VERSION.SDK_INT >= 34) {
-            options.setPendingIntentBackgroundActivityStartMode(
-                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
-            )
-        }
+        options.setPendingIntentBackgroundActivityStartMode(
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+        )
         return options.toBundle()
     }
 

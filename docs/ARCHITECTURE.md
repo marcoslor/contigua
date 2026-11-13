@@ -61,17 +61,24 @@ encoder whose input surface backs the VD, one stream id. `window.open` carries
 reconfiguration); `window.close` tears it down. The Mac resizes freely and the
 app re-lays out at the new shape and DPI.
 
-VD flags (proven on Android 16): `PUBLIC | PRESENTATION | OWN_CONTENT_ONLY |
-SUPPORTS_TOUCH | ROTATES_WITH_CONTENT | DESTROY_CONTENT_ON_REMOVAL | TRUSTED |
-OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`.
+Every VD must sit in a display group of its own, or it sleeps and wakes with
+the phone's screen (docs/specs/app-windows.md WIN-74). On Android 14+ the VDs
+are made by one platform virtual device (`VirtualDeviceManager`, from
+Contigua's own `com.android.shell` companion association, WIN-75), with
+`PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH |
+ROTATES_WITH_CONTENT | DESTROY_CONTENT_ON_REMOVAL | TRUSTED |
+DEVICE_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS |
+STEAL_TOP_FOCUS_DISABLED`; One UI ignores `OWN_DISPLAY_GROUP` on a plain VD
+but gives a device's display its own group. Where no device can be made (AOSP,
+the emulator) a plain VD with `OWN_DISPLAY_GROUP` instead of the device group
+is used. A VD that still reads group 0 is refused before anything launches on
+it (`error {code: "windows_unsupported"}`).
 
 - **Never `SHOULD_SHOW_SYSTEM_DECORATIONS`** — it poisons SysUiState on One UI
   and breaks the phone's back gesture until reboot. Back is `KEYCODE_BACK`
   stamped with the VD's display id.
-- **Never `DEVICE_DISPLAY_GROUP`** — the VD would follow the panel's power
-  state and freeze while the phone is locked. `ALWAYS_UNLOCKED` is what makes
-  "apps run while the panel is locked" possible; the keyguard itself is never
-  touched.
+- `ALWAYS_UNLOCKED` is what makes "apps run while the panel is locked"
+  possible; the keyguard itself is never touched.
 - The VD's creation source is a `ShellContext` package `com.android.shell`
   (a Shizuku-only trick); injected input must carry the display id explicitly.
 - Encoder: H.264 at the platform's default profile (we never set `KEY_PROFILE`
@@ -240,10 +247,10 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
   version) on every install or the old service keeps running. AIDL transaction
   codes must grow monotonically — a rebuild with an existing shell service
   breaks otherwise.
-- Some OEM builds (One UI) ignore `OWN_DISPLAY_GROUP` and put the VD in the
-  panel's group anyway; the server detects that from the VD's `DisplayInfo`
-  and powers the panel off through SurfaceFlinger while streaming, restoring
-  normal power state when the last window closes (android/README.md).
+- Some OEM builds (One UI) ignore `OWN_DISPLAY_GROUP` on a plain VD and put
+  it in the panel's group; the virtual device's display group is what avoids
+  that (android/README.md). A phone where even that lands in group 0 cannot
+  open app windows.
 
 ## Session end / battery (acceptance criteria, not suggestions)
 
@@ -264,18 +271,16 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
   (docs/design/paths.md).
 - Windows hidden/occluded → `window.pause` (encoder stopped, VD surface
   detached). Static content emits no frames. App-level ping every 15 s.
-- Keep-awake pokes the VD's display group (on stream open, throttled input,
-  a ≤ 1/10 s timer while streams are visible) holding a PARTIAL wake lock only
-  while ≥ 1 stream is unpaused; the panel is never forced on, the keyguard is
-  never dismissed. The episode start's take-over (the group wake, then the
-  panel-off under it on a shared-group build) runs right after the VD exists
-  and *before* the activity launch: a VD created while the group sleeps starts
-  OFF, and Android does not launch onto it until it is awake.
-- A power press with app streams up is watched from the first second: on the
-  not-interactive edge the streaming group is woken at once and the panel
-  powered off under it (the same take-over an episode start uses), and the Mac
-  is told (`power.locked`) so its windows hold the last frame for a short grace
-  instead of calling the picture stalled. The press still locks the phone.
+- Keep-awake pokes only the VDs' own display group (on stream open,
+  throttled input, a timer while a window is live), with a display-scoped wake
+  lock per VD and a PARTIAL wake lock while ≥ 1 window is live; display 0 is
+  never woken, held or slept for an app window, so the phone's own screen
+  times out and a power press works as usual, and the keyguard is never
+  dismissed. The group wake runs right after the VD exists and *before* the
+  activity launch: a VD created while its group sleeps starts OFF, and Android
+  does not launch onto it until it is awake.
+- A device VD keeps the platform's global wakefulness awake while group 0
+  dozes, so "is the phone's screen on" is read from display 0 itself.
 - End of session restores every power state we touched.
 
 ## End-to-end encryption (v2, shipped in this branch)

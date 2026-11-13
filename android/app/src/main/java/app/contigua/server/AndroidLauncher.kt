@@ -160,7 +160,7 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
             IconLayers(
                 fg = fg,
                 bg = bg,
-                mono = if (Build.VERSION.SDK_INT >= 33) renderLayer(drawable.monochrome, size) else null,
+                mono = renderLayer(drawable.monochrome, size),
             )
         } catch (e: Throwable) {
             log("layers $pkg failed: ${e.message}")

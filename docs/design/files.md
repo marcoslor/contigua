@@ -1022,7 +1022,7 @@ stats, refuses a directory, checks `etag` like a read, checks the name's MIME
 prefix is `image/` or `video/`, and enqueues the job. One worker thread runs the
 queue; each job calls a `ThumbSource` seam, whose Android implementation
 (`AndroidThumbSource`) is `ThumbnailUtils.createImageThumbnail(File, Size,
-CancellationSignal)` or `createVideoThumbnail(...)` (API 29+; minSdk is 30),
+CancellationSignal)` or `createVideoThumbnail(...)` (API 29+; minSdk is 34),
 then `Bitmap.compress` — JPEG at quality 80, or PNG when the bitmap has alpha
 and the item is an image (a video frame is opaque even when its bitmap reports
 alpha, so video is always JPEG) — with the long side `min(size, 512)`. Over

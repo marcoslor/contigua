@@ -495,15 +495,7 @@ class Session(
     /** The protocol's `state` stream: one emission per real change. */
     private val stateTracker = DeviceStateTracker { state -> sendState(state) }
 
-    /** The person's own use of the phone, for the wake machine's edges (CTRL-7). */
-    private val personUse = PersonUseTracker()
-
     private fun sendState(state: DeviceState) {
-        for (use in personUse.note(state)) when (use) {
-            PersonUse.UNLOCKED -> power.onPersonUnlocked()
-            PersonUse.SCREEN_ON -> power.onPersonScreen(true)
-            PersonUse.SCREEN_OFF -> power.onPersonScreen(false)
-        }
         val message = linkedMapOf<String, Any?>(
             "t" to "state",
             "locked" to state.locked,
@@ -689,13 +681,6 @@ class Session(
                 val state = stateTracker.current ?: device.state()
                 if (!stateTracker.update(state)) sendState(state)
             }
-        }
-        // The person's power press with our streams up: the phone took the
-        // panel over and the VD group is being re-lit, so the Mac holds the
-        // last frame for a short grace instead of calling it a stall.
-        power.onPowerLocked = {
-            log("power.locked: telling the Mac the screen went off")
-            sendJson(mapOf("t" to "power.locked"))
         }
         writerThread = Thread({ writerLoop() }, "contigua-writer").also { it.start() }
         try {
@@ -1127,7 +1112,6 @@ class Session(
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
         runCatching { power.onPanelChanged = null }
-        runCatching { power.onPowerLocked = null }
         pathTicker?.interrupt()
         pathTicker = null
         // Wake a reader blocked in the hand-off: the session is going.
@@ -1876,7 +1860,7 @@ class Session(
             gate.forget(stream)
         }
         gate.expect(stream)
-        val displayId = display.open(stream, w, h, dpi, this)
+        val displayId = openAppDisplay(stream, w, h, dpi) ?: return
         val state = StreamState(stream, displayId, IntSize(w, h)).also {
             it.content = WindowContent.App(pkg, null)
         }
@@ -1953,11 +1937,11 @@ class Session(
             gate.forget(stream)
         }
         gate.expect(stream)
-        val displayId = display.open(stream, w, h, dpi, this)
+        val displayId = openAppDisplay(stream, w, h, dpi) ?: return
         val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = WindowContent.App(task.pkg, task.activity) }
         synchronized(streams) { streams[stream] = state }
-        // The episode's take-over first: on a shared group the move waits for
-        // the sleeping display to wake, so the wake cannot wait for it.
+        // The episode first: the move waits for the window display's group to
+        // be awake (WIN-23), so the wake cannot wait for it.
         updatePower()
         // Moving before the reply: `started` must match what actually happened.
         val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
@@ -2048,7 +2032,7 @@ class Session(
                 sendJson(openedFields(stream, PHONE_DISPLAY, size.w, size.h, taskId = 0))
             }
         } else {
-            val displayId = display.open(stream, w, h, dpi, this)
+            val displayId = openAppDisplay(stream, w, h, dpi) ?: return
             val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
             // The episode's take-over first: a VD created while the panel's
@@ -2087,6 +2071,20 @@ class Session(
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
+    }
+
+    /**
+     * An app window's display (WIN-74). The display layer refuses one that
+     * landed in the panel's display group, before anything launches on it:
+     * that stream answers `windows_unsupported` and the session goes on.
+     */
+    private fun openAppDisplay(stream: Int, w: Int, h: Int, dpi: Int): Int? = try {
+        display.open(stream, w, h, dpi, this)
+    } catch (e: WindowDisplayRefused) {
+        log("stream $stream refused: ${WindowDisplayRefused.CODE} route=${e.route.wire} group=${e.groupId}")
+        gate.forget(stream)
+        sendError(WindowDisplayRefused.CODE, WindowDisplayRefused.MESSAGE, stream)
+        null
     }
 
     /**
@@ -3415,10 +3413,6 @@ class Session(
     }
 
     override fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
-        // The picture's own clock for the power-press gap: one Long store in a
-        // fixed ring, no allocation and no display lookup. The session's clock
-        // (uptime milliseconds) is the seam the JVM tests replace.
-        power.noteFrame(now())
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
         gate.frame(stream, ptsUs, key, Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload))
     }

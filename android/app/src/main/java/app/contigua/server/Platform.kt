@@ -70,8 +70,8 @@ enum class ScreenState(val wire: String) {
     companion object {
         /**
          * Maps the platform's values. An unknown display state (some builds
-         * report UNKNOWN for the default display) follows the interactive flag
-         * instead of guessing "off".
+         * report UNKNOWN for the default display) follows display 0's own
+         * interactive flag instead of guessing "off".
          */
         fun of(displayState: Int, interactive: Boolean): ScreenState = when (displayState) {
             android.view.Display.STATE_ON -> ON
@@ -83,15 +83,34 @@ enum class ScreenState(val wire: String) {
             else -> if (interactive) ON else OFF
         }
 
-        /** Display 0's state at the caller's UID; null when it cannot be read. */
+        /**
+         * Display 0's state at the caller's UID; null when it cannot be read.
+         * Never the global `PowerManager.isInteractive()`: an app window's
+         * display group keeps the global wakefulness awake while display 0
+         * dozes (WIN-74), so the fallback asks about display 0 by id.
+         */
         fun read(ctx: android.content.Context?): ScreenState? {
             ctx ?: return null
             return runCatching {
                 val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE)
                     as? android.os.PowerManager ?: return@runCatching null
-                of(DisplayProbe.state(android.view.Display.DEFAULT_DISPLAY), pm.isInteractive)
+                val state = DisplayProbe.state(android.view.Display.DEFAULT_DISPLAY)
+                if (state == android.view.Display.STATE_UNKNOWN) {
+                    of(state, panelInteractive(pm))
+                } else {
+                    of(state, interactive = false)
+                }
             }.getOrNull()
         }
+
+        /** Hidden `PowerManager.isInteractive(int displayId)` (Android 14+); false without it. */
+        private val isInteractiveById: java.lang.reflect.Method? = runCatching {
+            android.os.PowerManager::class.java.getMethod("isInteractive", Int::class.javaPrimitiveType)
+        }.getOrNull()
+
+        private fun panelInteractive(pm: android.os.PowerManager): Boolean =
+            runCatching { isInteractiveById?.invoke(pm, android.view.Display.DEFAULT_DISPLAY) as? Boolean }
+                .getOrNull() ?: false
     }
 }
 
@@ -428,8 +447,8 @@ interface Power {
 
     /**
      * The set of displays whose app streams are open, covered windows included.
-     * A pause is not a close: the episode keeps every open stream's display and
-     * ends only when the last one closes (or the all-paused grace expires).
+     * A pause is not a close: the episode keeps every open stream's display
+     * while one is live, and ends when the last one closes or all are covered.
      */
     fun setActiveStreams(
         displayIds: List<Int>,
@@ -446,18 +465,6 @@ interface Power {
      * the display call and the key-event fallback.
      */
     fun wakeScreen(): WakeResult = WakeResult.FAILED
-
-    /**
-     * The person's own use of the phone, for the wake-ownership machine
-     * (docs/specs/controls.md CTRL-7): the keyguard went unlocked.
-     */
-    fun onPersonUnlocked() {}
-
-    /**
-     * Display 0's power state changed (`state.screen`): the person's own wake,
-     * or our own wake landing, which the machine tells apart by timing.
-     */
-    fun onPersonScreen(on: Boolean) {}
 
     /**
      * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
@@ -477,23 +484,6 @@ interface Power {
      * Runs on the power thread.
      */
     var onPanelChanged: ((off: Boolean) -> Unit)?
-
-    /**
-     * The person's screen went off while app streams were up and the phone took
-     * the panel over (the shared-group press). The session sends one
-     * `{"t":"power.locked"}`, so the Mac's windows hold their last frame for a
-     * short grace instead of calling it a stall. Runs on the power thread.
-     */
-    var onPowerLocked: (() -> Unit)?
-        get() = null
-        set(_) {}
-
-    /**
-     * A frame reached the wire. The power layer keeps a small ring of frame
-     * times, so a screen-off edge can report the picture's largest silence
-     * around it (the emulator rig's number).
-     */
-    fun noteFrame(nowMs: Long) {}
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);

@@ -426,7 +426,7 @@ real state instead of assuming it.
 | API | Permission | Notes |
 |---|---|---|
 | 33+ | `NEARBY_WIFI_DEVICES` with `usesPermissionFlags="neverForLocation"` | the runtime permission the person grants in context |
-| 30–32 | `ACCESS_FINE_LOCATION` | required for Aware discovery below 33; minSdk is 30, so this branch ships |
+| 30–32 | `ACCESS_FINE_LOCATION` | required for Aware discovery below 33; the app's minSdk is 34 (#142), so the app never needs it |
 | all | `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`, `INTERNET`, `CHANGE_NETWORK_STATE`, `ACCESS_NETWORK_STATE` | the probe's manifest, all normal permissions |
 
 - The runtime permission is asked **when the person turns the switch on**, with

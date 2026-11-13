@@ -179,7 +179,7 @@ Ignored events, stated so nobody builds them: a working-set identifier as a watc
 - The phone writes its files at shell UID (Shizuku): `/sdcard` is readable, `Android/` and dot entries are deliberately not.
 - A drop's 200 MiB cap is counted while receiving on the phone; an install's 1 GiB cap is the bundle's total. Neither number lives in NFR.md (they are protocol caps, not time limits).
 - Finder, not this app, draws the location: the icon view, the columns, Quick Look and the progress UI are the system's.
-- The phone makes a thumbnail from the file itself at shell UID: `ThumbnailUtils.createImageThumbnail`/`createVideoThumbnail` (API 29+; the app's minSdk is 30), so a format the platform can decode is a format it can thumbnail, and a format it cannot answers `fs_no_thumb` rather than an error the person sees.
+- The phone makes a thumbnail from the file itself at shell UID: `ThumbnailUtils.createImageThumbnail`/`createVideoThumbnail` (API 29+; the app's minSdk is 34), so a format the platform can decode is a format it can thumbnail, and a format it cannot answers `fs_no_thumb` rather than an error the person sees.
 - Finder asks for thumbnails in batches and shows each one as it arrives; a slow or missing answer costs that item's icon, not the folder.
 
 ## Non-goals

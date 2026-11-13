@@ -19,7 +19,7 @@ object TlsExporter {
     const val LABEL = "EXPORTER-contigua-pair"
     const val CONTEXT_EMPTY = ""
 
-    /** `SSLSockets.exportKeyingMaterial` arrived in API 31; minSdk is 30. */
+    /** `SSLSockets.exportKeyingMaterial` arrived in API 31; minSdk is 34. */
     const val MIN_EXPORT_SDK = 31
 
     fun exportSupported(sdkInt: Int): Boolean = sdkInt >= MIN_EXPORT_SDK
@@ -68,11 +68,10 @@ object TlsExporter {
 
     /**
      * Platform acquisition. `SSLSockets.exportKeyingMaterial` is API 31; the
-     * app's minSdk is 30, so an API 30 phone MUST NOT reach the call (it would
-     * throw `NoSuchMethodError`). It returns null there, and the pairing path
-     * fails closed with `pair_exporter`; the Mac says the phone needs a newer
-     * Android. On API 31+ the call is guarded by `isSupportedSocket` and any
-     * engine refusal is null, never a zero key.
+     * app's minSdk is 34, so the SDK gate only keeps an older phone (which
+     * cannot install the app) from reaching a call it lacks. The call is
+     * guarded by `isSupportedSocket` and any engine refusal is null, never a
+     * zero key, and the pairing path then fails closed with `pair_exporter`.
      *
      * The platform call is:
      *   android.net.ssl.SSLSockets.exportKeyingMaterial(sslSocket, LABEL,

@@ -15,6 +15,12 @@ object Prefs {
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_PAIRED = "paired"
     private const val KEY_PENDING_QR = "pending_qr"
+
+    /**
+     * Forget All Macs owes the shell the removal of Contigua's companion
+     * association (PHONE-24) until a push carried it to a bound shell service.
+     */
+    private const val KEY_FORGET_ASSOCIATION = "forget_association"
     private const val KEY_ONBOARDING_DONE = "onboarding_done"
     private const val KEY_BATTERY_REQUESTED = "battery_requested"
     /** ISS-100: the process was restarted for a binder since the last Ready. */
@@ -210,17 +216,36 @@ object Prefs {
                 "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp) },
                 "self" to self,
                 "pendingQr" to pendingQr,
+                // PHONE-24: rides every push until one is delivered (pushState).
+                "forgetAssociation" to sp(ctx).getBoolean(KEY_FORGET_ASSOCIATION, false),
             ),
         )
     }
 
     /**
+     * The one push of [serviceStateJson] to the shell service: [send] is the
+     * binder call and throws when no service is bound. Once a push that
+     * carried the association's removal went through, the removal is no
+     * longer owed (PHONE-24).
+     */
+    fun pushState(ctx: Context, send: (String) -> Unit) {
+        val owed = sp(ctx).getBoolean(KEY_FORGET_ASSOCIATION, false)
+        send(serviceStateJson(ctx))
+        if (owed) sp(ctx).edit().remove(KEY_FORGET_ASSOCIATION).apply()
+    }
+
+    /** True while Forget All Macs still owes the shell the association's removal. */
+    fun associationRemovalOwed(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_FORGET_ASSOCIATION, false)
+
+    /**
      * Paired Macs ▸ Forget All Macs…: a fresh identity and no pairings, so no
      * Mac's pin matches this phone again and every live session is dropped
-     * (docs/specs/pairing.md PAIR-20).
+     * (docs/specs/pairing.md PAIR-20). Contigua's companion association goes
+     * too, on the next push that reaches the shell (PHONE-24).
      */
     fun forgetAll(ctx: Context) {
         app.contigua.e2ee.PhoneIdentity.rotate(ctx)
-        sp(ctx).edit().remove(KEY_PAIRED).remove(KEY_PENDING_QR).apply()
+        sp(ctx).edit().remove(KEY_PAIRED).remove(KEY_PENDING_QR)
+            .putBoolean(KEY_FORGET_ASSOCIATION, true).apply()
     }
 }

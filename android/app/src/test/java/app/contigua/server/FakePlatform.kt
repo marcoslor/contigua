@@ -58,6 +58,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     var screenSize = IntSize(1080, 2340)
     var mirrorFails = false
     var openFails = false
+    /** WIN-74: the window's display landed in the panel's group and was refused. */
+    var openRefused = false
     val resizes = CopyOnWriteArrayList<ResizeCall>()
     val pauses = CopyOnWriteArrayList<Int>()
     val resumes = CopyOnWriteArrayList<Int>()
@@ -119,6 +121,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
         check(!openFails) { "display open failed" }
+        if (openRefused) throw WindowDisplayRefused(WindowRoute.DEVICE, DisplayProbe.DEFAULT_GROUP_ID)
         val id = nextDisplayId++
         opens.add(OpenCall(stream, w, h, dpi, id))
         sizes[stream] = IntSize(w, h)
@@ -317,13 +320,6 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         wakeCalls.add(wakeResult)
         onWake?.invoke()
         return wakeResult
-    }
-
-    /** `state.screen` edges the session passed to the power seam (CTRL-7/PHONE-22). */
-    val screenReports = CopyOnWriteArrayList<Boolean>()
-
-    override fun onPersonScreen(on: Boolean) {
-        screenReports.add(on)
     }
 
     // ---- DeviceSource -------------------------------------------------
