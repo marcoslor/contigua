@@ -867,9 +867,12 @@ final class StreamChromeView: NSView {
         let from = (x0 - picture.minX) / picture.width
         let to = (x1 - picture.minX) / picture.width
         let band = min(1, ChromeBar.height / picture.height)
+        // The title sits on the blurred mirror: read the band at the blur the
+        // bar carries now (none found reads the raw pixels).
+        let reach = barBlurRadius * BarTitle.blurReachPerRadius / picture.width
         let stamp = toneSource.frameStamp
         toneSampleInFlight = true
-        toneSource.topBandRange(xFrom: from, xTo: to, bandFraction: band) { [weak self] range in
+        toneSource.topBandRange(xFrom: from, xTo: to, bandFraction: band, blurReach: reach) { [weak self] range in
             guard let self else { return }
             self.toneSampleInFlight = false
             guard let range else { return }
@@ -900,11 +903,10 @@ final class StreamChromeView: NSView {
             hazeBottom: haze(bandTop - titleFrame.minY))
         let before = toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
         let change = toneMachine.handle(.sample(band))
-        switch change {
-        case .ignored:
-            return
-        case .baseline, .changed, .unresolved:
-            applyTone(toneMachine.tone, animated: true)
+        if case .unresolved = change, !loggedUnresolvedTone {
+            loggedUnresolvedTone = true
+            let kept = toneMachine.tone.rawValue  // the better worst case
+            Log.video.notice("bar tone: neither ink reaches the contrast limit; using \(kept, privacy: .public)")  // log-ok: a closed tone name
         }
         // An unresolved sample that kept the tone is the ignored case for the
         // view: no fade and no transition line every half second.

@@ -34,6 +34,18 @@ enum BarTone: String, CaseIterable {
         contrast(.light, over: luminance) >= contrast(.dark, over: luminance) ? .light : .dark
     }
 
+    /// The ink's contrast against the band's pixel that is worst for it:
+    /// the brightest for white ink, the darkest for black.
+    static func worstContrast(_ tone: BarTone, over band: BandRange) -> Double {
+        contrast(tone, over: tone == .light ? band.high : band.low)
+    }
+
+    /// The ink whose worst pixel reads better; the first unresolved sample's
+    /// choice (ties go to white, like `preferred`).
+    static func betterWorstCase(over band: BandRange) -> BarTone {
+        worstContrast(.light, over: band) >= worstContrast(.dark, over: band) ? .light : .dark
+    }
+
     /// WCAG contrast between the tone's ink and a band of `luminance`.
     static func contrast(_ tone: BarTone, over luminance: Double) -> Double {
         let ink = tone.inkLuminance
@@ -85,6 +97,12 @@ struct BarToneMachine: Equatable {
         self.thresholds = thresholds
     }
 
+    /// When neither ink passes, the other ink takes over only when its worst
+    /// pixel's contrast is at least this many times the current one's: the
+    /// unresolved band's own hysteresis, so a busy picture does not flicker
+    /// and a band that clearly turned does not keep the first tone (#45).
+    static let unresolvedSwitchRatio = 1.2
+
     /// Black ink passes when the band's darkest pixel is at or above
     /// `toLight`; white ink passes when its brightest pixel is at or below
     /// `toDark` (the two are the same 4.5:1 boundary from each ink's side).
@@ -107,7 +125,7 @@ struct BarToneMachine: Equatable {
                     tone = BarTone.preferred(for: band.mid)
                     return .baseline(tone)
                 case (false, false):
-                    tone = BarTone.preferred(for: band.mid)
+                    tone = BarTone.betterWorstCase(over: band)
                     return .unresolved(tone)
                 }
             }
@@ -124,6 +142,11 @@ struct BarToneMachine: Equatable {
                 // Hysteresis: both inks still pass, so the current one stays.
                 return .ignored
             case (false, false):
+                let other: BarTone = tone == .light ? .dark : .light
+                if BarTone.worstContrast(other, over: band)
+                    >= BarTone.worstContrast(tone, over: band) * Self.unresolvedSwitchRatio {
+                    tone = other
+                }
                 return .unresolved(tone)
             }
         }
@@ -195,6 +218,13 @@ enum BarTitle {
     /// full at the window's top edge and clear at the seam, so the line at
     /// the band's middle sees half of it.
     static let hazeAtTitle: Double = 0.5
+    /// How far the bar's blur spreads a picture pixel sideways under the
+    /// title, as a share of the blur's radius: a Gaussian of radius r is
+    /// taken as an even average over ±r/2, and the progressive mask is about
+    /// half strength at the title's line, so a quarter. Deliberately short:
+    /// a narrower average keeps more of a mark's extreme in the range, which
+    /// errs towards "unresolved", never towards a wrong pass.
+    static let blurReachPerRadius: CGFloat = 0.25
     /// WCAG AA for body text; `bar_title_contrast_min` in nfr-limits.json
     /// carries the same number for the e2e check.
     static let minimumContrast: Double = 4.5
@@ -238,9 +268,21 @@ enum BarTitle {
     /// width plus a guess at the padding fell short by about 2 pt and clipped
     /// the last glyph of a name that "fit" ("Settings (FakePhone" — #45).
     static func textWidth(_ text: String) -> CGFloat {
-        let attributed = NSAttributedString(string: text, attributes: [.font: font()])
-        return ceil(attributed.size().width) + 2
+        MainActor.assumeIsolated {
+            let field = measuringField
+            field.stringValue = text
+            return ceil(field.cell?.cellSize.width ?? 0)
+        }
     }
+
+    /// A title field built like the drawn ones (`configure`, clipping), kept
+    /// for measuring: its cell is the one whose edges decide the fit.
+    @MainActor private static let measuringField: NSTextField = {
+        let field = NSTextField(labelWithString: "")
+        configure(field)
+        field.lineBreakMode = .byClipping
+        return field
+    }()
 
     /// The field's line-break mode for a name in `width`. An `NSTextField`
     /// reserves the middle ellipsis's width even when the whole line fits, so
@@ -371,10 +413,12 @@ protocol BarToneSource: AnyObject {
     /// Changes when a new frame reaches the display layer.
     var frameStamp: UInt64 { get }
     /// The displayed picture's top band over the horizontal fractions
-    /// `xFrom...xTo` of its width, `bandFraction` of its height from its top.
+    /// `xFrom...xTo` of its width, `bandFraction` of its height from its top,
+    /// averaged sideways over ±`blurReach` (a fraction of the picture's
+    /// width) the way the bar's blur spreads it (`BandLuminance.blurredRange`).
     /// The completion runs on the main queue; nil when there is no readable
     /// frame.
-    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat, blurReach: CGFloat,
                       completion: @escaping (BandRange?) -> Void)
 }
 
@@ -393,13 +437,59 @@ enum BandLuminance {
         return BandRange(low: low, high: high)
     }
 
+    /// The range the title sees on the bar's blurred mirror (#45): the band
+    /// is read over `rect` widened by `reach` pixels on each side, each
+    /// sampled column averaged down the band, the columns averaged over
+    /// ±`reach` (in sRGB, the space the blur works in), and the darkest and
+    /// brightest of those averages inside `rect` returned. A status bar's
+    /// thin glyphs then lift a dark page a little instead of reading as
+    /// white, while a dark or light area wider than the reach stays itself.
+    /// A reach under one pixel is the raw `range`.
+    static func blurredRange(of buffer: CVPixelBuffer, rect: CGRect, reach: CGFloat) -> BandRange? {
+        guard reach >= 1 else { return range(of: buffer, rect: rect) }
+        let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer),
+                            height: CVPixelBufferGetHeight(buffer))
+        let inner = rect.intersection(bounds)
+        let outer = rect.insetBy(dx: -reach, dy: 0).intersection(bounds)
+        guard inner.width >= 1, inner.height >= 1, outer.width >= 1 else { return nil }
+        let columns = min(blurColumns, max(1, Int(outer.width)))
+        guard let values = values(of: buffer, rect: outer, columns: columns),
+              !values.isEmpty, values.count % columns == 0 else { return nil }
+        let rows = values.count / columns
+        let xs = (0..<columns).map { Int(outer.minX) + ($0 * Int(outer.width)) / columns }
+        let means = (0..<columns).map { column -> Double in
+            var sum = 0.0
+            for row in 0..<rows { sum += BarToneEstimate.encode(values[row * columns + column]) }
+            return sum / Double(rows)
+        }
+        var low = Double.infinity
+        var high = -Double.infinity
+        for column in 0..<columns where CGFloat(xs[column]) >= inner.minX && CGFloat(xs[column]) < inner.maxX {
+            var sum = 0.0
+            var count = 0
+            for other in 0..<columns where abs(CGFloat(xs[other] - xs[column])) <= reach {
+                sum += means[other]
+                count += 1
+            }
+            let value = BarToneEstimate.decode(sum / Double(count))
+            low = min(low, value)
+            high = max(high, value)
+        }
+        guard low.isFinite, high.isFinite else { return nil }
+        return BandRange(low: low, high: high)
+    }
+
+    /// Columns across the widened band for `blurredRange`: fine enough that
+    /// a 1 pt glyph stroke at 2× is sampled, still a few hundred reads.
+    static let blurColumns = 128
+
     /// The same range's mean, for callers that want one number.
     static func mean(of buffer: CVPixelBuffer, rect: CGRect) -> Double? {
         guard let values = values(of: buffer, rect: rect), !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private static func values(of buffer: CVPixelBuffer, rect: CGRect) -> [Double]? {
+    private static func values(of buffer: CVPixelBuffer, rect: CGRect, columns: Int = 32) -> [Double]? {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
         guard width > 0, height > 0 else { return nil }
@@ -407,7 +497,7 @@ enum BandLuminance {
         guard clipped.width >= 1, clipped.height >= 1 else { return nil }
         let format = CVPixelBufferGetPixelFormatType(buffer)
         if format == kCVPixelFormatType_32BGRA {
-            return directValues(buffer, rect: clipped) { base, stride, x, y in
+            return directValues(buffer, rect: clipped, columns: columns) { base, stride, x, y in
                 let offset = y * stride + x * 4
                 let b = Double(base.load(fromByteOffset: offset + 0, as: UInt8.self)) / 255
                 let g = Double(base.load(fromByteOffset: offset + 1, as: UInt8.self)) / 255
@@ -422,7 +512,7 @@ enum BandLuminance {
                   let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
             defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
             let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
-            return grid(rect: clipped) { x, y in
+            return grid(rect: clipped, columns: columns) { x, y in
                 let raw = Double(base.load(fromByteOffset: y * stride + x, as: UInt8.self))
                 let level = videoRange ? min(255, max(0, (raw - 16) * 255 / 219)) : raw
                 return linear(level / 255)
@@ -430,7 +520,8 @@ enum BandLuminance {
         }
         if format == losslessVideoRange || format == losslessFullRange {
             guard let output = renderThroughCoreImage(of: buffer, rect: clipped) else { return nil }
-            return values(of: output, rect: CGRect(x: 0, y: 0, width: clipped.width, height: clipped.height))
+            return values(of: output, rect: CGRect(x: 0, y: 0, width: clipped.width, height: clipped.height),
+                          columns: columns)
         }
         return nil
     }
@@ -475,18 +566,19 @@ enum BandLuminance {
 
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
-    private static func directValues(_ buffer: CVPixelBuffer, rect: CGRect,
+    private static func directValues(_ buffer: CVPixelBuffer, rect: CGRect, columns: Int,
                                      luma: (UnsafeRawPointer, Int, Int, Int) -> Double) -> [Double]? {
         guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess,
               let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let stride = CVPixelBufferGetBytesPerRow(buffer)
-        return grid(rect: rect) { x, y in luma(base, stride, x, y) }
+        return grid(rect: rect, columns: columns) { x, y in luma(base, stride, x, y) }
     }
 
-    /// At most 32×8 even samples across the rect, row-major from its top.
-    private static func grid(rect: CGRect, value: (Int, Int) -> Double) -> [Double] {
-        let columns = min(32, max(1, Int(rect.width)))
+    /// At most `columns`×8 even samples across the rect, row-major from its
+    /// top (32 columns for the raw range).
+    private static func grid(rect: CGRect, columns maximum: Int, value: (Int, Int) -> Double) -> [Double] {
+        let columns = min(maximum, max(1, Int(rect.width)))
         let rows = min(8, max(1, Int(rect.height)))
         var values: [Double] = []
         values.reserveCapacity(columns * rows)

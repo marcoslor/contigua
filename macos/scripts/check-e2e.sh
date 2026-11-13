@@ -12615,8 +12615,11 @@ check_bar_title() {
     local fixture appearance want win shot bar frame_width seam style_store
     style_store="chrome.style.com.android.settings"
     ax_has() { ax_tree | grep -qF -- "$1"; }
+    # status-dark / status-light: a status bar's thin glyphs over a dark or
+    # white page. Read pixel for pixel, no ink passes over them; the bar
+    # blurs them first, and the tone must follow the page (issue #45).
     for appearance in light dark; do
-        for fixture in white-page dark-page busy-photo; do
+        for fixture in white-page dark-page busy-photo status-dark status-light; do
             clean
             FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
             defaults write "$DEFAULTS_SUITE" "$style_store" -string "bar"
@@ -12629,7 +12632,7 @@ check_bar_title() {
             # The sample is at most 2 Hz: one beat after the first frame.
             sleep 1
             case "$fixture/$appearance" in
-                dark-page/*) want=light ;;
+                dark-page/* | status-dark/*) want=light ;;
                 *) want=dark ;;
             esac
             if wait_until 5 chrome_has "bar_title_tone=$want"; then

@@ -12,9 +12,12 @@ private final class FakeToneSource: BarToneSource {
     var range: BandRange?
     private(set) var calls = 0
 
-    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+    private(set) var lastReach: CGFloat?
+
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat, blurReach: CGFloat,
                       completion: @escaping (BandRange?) -> Void) {
         calls += 1
+        lastReach = blurReach
         completion(range)
     }
 }
@@ -70,9 +73,41 @@ final class BarTitleToneTests: XCTestCase {
                        "below toLight black ink can no longer pass")
         XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.02, high: 0.03))), .ignored,
                        "the light tone stays on a dark band")
-        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.1, high: 0.5))), .unresolved(.light),
-                       "neither ink reaches the limit: the tone is kept and said once")
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.12, high: 0.3))), .unresolved(.light),
+                       "neither ink reaches the limit and black is not clearly better: the tone is kept")
         XCTAssertEqual(machine.tone, .light)
+    }
+
+    /// Issue #45: a band neither ink can pass everywhere (a status bar's
+    /// glyphs, a photo) must not freeze the first tone. The ink whose worst
+    /// pixel reads clearly better (1.2×) takes over, so a page that turned
+    /// light under a few dark marks still gets black ink.
+    func testAnUnresolvedBandMovesToTheClearlyBetterInk() {
+        var machine = BarToneMachine()
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.05))), .baseline(.light))
+        // A white page under black glyphs: black's worst is 0.12 / 0.05 = 2.4,
+        // white's is 1.05 / 1.0 ≈ 1.05.
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark),
+                       "black ink is the clearly better worst case")
+        XCTAssertEqual(machine.tone, .dark)
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark),
+                       "the same band again keeps black")
+        // A dark page under white glyphs: white's worst is 1.05 / 0.45 ≈ 2.3,
+        // black's is 0.06 / 0.05 = 1.2.
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.01, high: 0.4))), .unresolved(.light))
+        XCTAssertEqual(machine.tone, .light)
+        // Within 1.2× of each other: the tone is kept (hysteresis), still said.
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.12, high: 0.3))), .unresolved(.light))
+        XCTAssertEqual(machine.tone, .light)
+    }
+
+    func testTheFirstUnresolvedSampleTakesTheBetterWorstCase() {
+        var machine = BarToneMachine()
+        // The mid (0.5) would pick black, but white's worst case is better
+        // here: 1.05 / 0.95 ≈ 1.1 against black's 0.05 / 0.05 = 1.0.
+        XCTAssertEqual(machine.handle(.sample(BandRange(low: 0.0, high: 0.9))), .unresolved(.light))
+        var dark = BarToneMachine()
+        XCTAssertEqual(dark.handle(.sample(BandRange(low: 0.07, high: 1.0))), .unresolved(.dark))
     }
 
     func testTheFirstSampleDecidesEitherToneAndNonFiniteIsIgnored() {
@@ -191,13 +226,30 @@ final class BarTitleLayoutTests: XCTestCase {
         XCTAssertEqual(BarTitle.lineBreakMode(text: nil, width: 100), .byTruncatingMiddle)
     }
 
+    /// Issue #45's captures read "Settings (FakePhone" — the field drew the
+    /// name clipped by its cell's own edges: a clipping field must be at
+    /// least as wide as the cell needs to draw the whole line.
+    @MainActor func testAWholeNamesFieldIsAsWideAsItsCellDraws() {
+        for name in ["Settings (FakePhone)", "Spotify (Galaxy S25+)", "Settings", "Quarterly notes",
+                     "WhatsApp (Nicky)", "Phone Mirror"] {
+            let field = NSTextField(labelWithString: name)
+            BarTitle.configure(field)
+            field.lineBreakMode = .byClipping  // as `layOut` draws a name that fits
+            let needed = field.cell?.cellSize.width ?? 0
+            XCTAssertGreaterThanOrEqual(BarTitle.textWidth(name), needed, "\(name) fits its own cell")
+            XCTAssertEqual(BarTitle.lineBreakMode(text: name, width: BarTitle.textWidth(name)), .byClipping)
+        }
+    }
+
     func testTheTitleHidesBelowItsMinimumWidth() {
-        XCTAssertNil(BarTitle.frame(text: "Maps", windowWidth: 900, barHeight: barHeight,
+        // "Mail" is narrower than the 40 pt minimum, so only the minimum hides it.
+        XCTAssertLessThan(BarTitle.textWidth("Mail"), BarTitle.minimumWidth)
+        XCTAssertNil(BarTitle.frame(text: "Mail", windowWidth: 900, barHeight: barHeight,
                                     boundsHeight: 628, lightsEnd: 100,
                                     rightRowStart: 100 + 2 * BarTitle.sideGap
                                         + BarTitle.minimumWidth - 1),
                      "one point too narrow")
-        XCTAssertNotNil(BarTitle.frame(text: "Maps", windowWidth: 900, barHeight: barHeight,
+        XCTAssertNotNil(BarTitle.frame(text: "Mail", windowWidth: 900, barHeight: barHeight,
                                        boundsHeight: 628, lightsEnd: 100,
                                        rightRowStart: 100 + 2 * BarTitle.sideGap
                                         + BarTitle.minimumWidth))
@@ -347,6 +399,91 @@ final class BarTitleBandLuminanceTests: XCTestCase {
         XCTAssertEqual(bottom, 0.0, accuracy: 0.02, "full-range black is full black")
     }
 
+    /// A dark page whose top band carries thin white marks (a status bar's
+    /// clock and icons): the raw extremes reach full white, so no ink passes
+    /// and the first tone would stick. The bar blurs that band before the
+    /// title sits on it; the blurred estimate sees a dark band.
+    private func striped(width: Int, height: Int, ground: UInt8, mark: UInt8,
+                         period: Int, markWidth: Int) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                            kCVPixelFormatType_32BGRA, nil, &buffer)
+        let made = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(made, [])
+        defer { CVPixelBufferUnlockBaseAddress(made, []) }
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(made))
+        let stride = CVPixelBufferGetBytesPerRow(made)
+        for y in 0..<height {
+            for x in 0..<width {
+                // Marks in the middle third of the band's rows, like glyphs.
+                let inMarkRow = y >= height / 3 && y < 2 * height / 3
+                let value = inMarkRow && x % period < markWidth ? mark : ground
+                let offset = y * stride + x * 4
+                for channel in 0..<3 {
+                    base.storeBytes(of: value, toByteOffset: offset + channel, as: UInt8.self)
+                }
+                base.storeBytes(of: 255, toByteOffset: offset + 3, as: UInt8.self)
+            }
+        }
+        return made
+    }
+
+    func testTheBlurredBandSeesADarkPageUnderBrightGlyphs() throws {
+        let buffer = try striped(width: 600, height: 56, ground: 20, mark: 255, period: 24, markWidth: 3)
+        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
+        let raw = try XCTUnwrap(BandLuminance.range(of: buffer, rect: title))
+        let thresholds = BarToneThresholds.standard
+        XCTAssertGreaterThan(raw.high, thresholds.toDark, "the raw extremes catch the glyphs")
+        let blurred = try XCTUnwrap(BandLuminance.blurredRange(of: buffer, rect: title, reach: 15))
+        XCTAssertLessThanOrEqual(blurred.high, thresholds.toDark, "blurred, the band passes for white ink")
+        XCTAssertGreaterThanOrEqual(blurred.low, raw.low - 1e-9, "a blur never darkens the darkest")
+        var machine = BarToneMachine()
+        XCTAssertEqual(machine.handle(.sample(blurred)), .baseline(.light))
+    }
+
+    func testTheBlurredBandSeesAWhitePageUnderDarkGlyphs() throws {
+        let buffer = try striped(width: 600, height: 56, ground: 250, mark: 0, period: 24, markWidth: 3)
+        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
+        let raw = try XCTUnwrap(BandLuminance.range(of: buffer, rect: title))
+        XCTAssertLessThan(raw.low, BarToneThresholds.standard.toLight)
+        let blurred = try XCTUnwrap(BandLuminance.blurredRange(of: buffer, rect: title, reach: 15))
+        XCTAssertGreaterThanOrEqual(blurred.low, BarToneThresholds.standard.toLight,
+                                    "blurred, the band passes for black ink")
+    }
+
+    func testABlurNeverHidesAWholeDarkHalf() throws {
+        // Left half black, right half white: wider than any blur's reach, so
+        // the title over both halves must stay unresolved, not average to grey.
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, 600, 56, kCVPixelFormatType_32BGRA, nil, &buffer)
+        let made = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(made, [])
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(made))
+        let stride = CVPixelBufferGetBytesPerRow(made)
+        for y in 0..<56 {
+            for x in 0..<600 {
+                let value: UInt8 = x < 300 ? 0 : 255
+                for channel in 0..<3 {
+                    base.storeBytes(of: value, toByteOffset: y * stride + x * 4 + channel, as: UInt8.self)
+                }
+                base.storeBytes(of: 255, toByteOffset: y * stride + x * 4 + 3, as: UInt8.self)
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(made, [])
+        let blurred = try XCTUnwrap(BandLuminance.blurredRange(
+            of: made, rect: CGRect(x: 100, y: 0, width: 400, height: 56), reach: 15))
+        XCTAssertLessThan(blurred.low, 0.01, "the black half stays black")
+        XCTAssertGreaterThan(blurred.high, 0.99, "the white half stays white")
+    }
+
+    func testNoReachIsTheRawRange() throws {
+        let buffer = try striped(width: 600, height: 56, ground: 20, mark: 255, period: 24, markWidth: 3)
+        let title = CGRect(x: 200, y: 0, width: 200, height: 56)
+        XCTAssertEqual(BandLuminance.blurredRange(of: buffer, rect: title, reach: 0),
+                       BandLuminance.range(of: buffer, rect: title),
+                       "a bar without its blur is read pixel for pixel")
+    }
+
     func testAnUnreadableFormatIsAMeasurementNotACrash() throws {
         var buffer: CVPixelBuffer?
         CVPixelBufferCreate(kCFAllocatorDefault, 16, 16,
@@ -402,6 +539,24 @@ final class BarTitleViewTests: XCTestCase {
                        "a dark band gets white ink")
         XCTAssertEqual(chrome.barTitleAlpha(.light), 1, accuracy: 0.01)
         XCTAssertEqual(chrome.barTitleAlpha(.dark), 0, accuracy: 0.01)
+    }
+
+    /// The title sits on the bar's blurred mirror, so the sample is read at
+    /// the blur the bar carries now: a quarter of its radius, as a fraction
+    /// of the picture's width (issue #45).
+    func testTheSampleIsReadAtTheBarsOwnBlur() throws {
+        let tone = FakeToneSource()
+        tone.range = BandRange(low: 0.8, high: 0.9)
+        let (window, chrome) = makeChrome(tone: tone)
+        defer { window.close() }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        chrome.setBarTitle("Quarterly notes")
+        chrome.layoutChrome()
+        tone.frameStamp += 1
+        chrome.sampleBarToneForTesting()
+        XCTAssertEqual(chrome.barBlurRadius, BarBlur.radius, "the bar wears its blur")
+        let reach = try XCTUnwrap(tone.lastReach)
+        XCTAssertEqual(reach, BarBlur.radius * BarTitle.blurReachPerRadius / 900, accuracy: 1e-6)
     }
 
     func testReduceMotionChangesTheToneAtOnce() throws {

@@ -574,16 +574,18 @@ final class VideoLayerView: NSView, BarToneSource {
         return renderer.displayedPixelBuffer()
     }
 
-    /// The luminance range of the picture's top band, the source the Framed
-    /// bar mirrors (WIN-69). The displayed buffer is taken on main (the
+    /// The luminance range of the picture's top band, the source the Compact
+    /// bar mirrors (WIN-69), as the bar's blur spreads it: `blurReach` is the
+    /// blur's sideways reach as a fraction of the picture's width (0 reads
+    /// the raw pixels). The displayed buffer is taken on main (the
     /// renderer's own rule) and read on `toneQueue`, a few dozen samples:
     /// no full-frame copy and no work on the frame path.
-    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat,
+    func topBandRange(xFrom: CGFloat, xTo: CGFloat, bandFraction: CGFloat, blurReach: CGFloat,
                       completion: @escaping (BandRange?) -> Void) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in  // gcd: the renderer's buffer is main's
                 self?.topBandRange(xFrom: xFrom, xTo: xTo, bandFraction: bandFraction,
-                                   completion: completion)
+                                   blurReach: blurReach, completion: completion)
             }
             return
         }
@@ -607,9 +609,10 @@ final class VideoLayerView: NSView, BarToneSource {
         let height = max(1, CGFloat(picture.h) * min(max(bandFraction, 0), 1))
         let rect = CGRect(x: x0 * scaleX, y: y * scaleY,
                           width: max(1, (x1 - x0) * scaleX), height: height * scaleY).integral
+        let reach = CGFloat(picture.w) * max(blurReach, 0) * scaleX
         toneQueue.async { [weak self] in
             guard let self else { return }
-            let value = BandLuminance.range(of: buffer, rect: rect)
+            let value = BandLuminance.blurredRange(of: buffer, rect: rect, reach: reach)
             DispatchQueue.main.async { completion(value) }  // gcd: the completion's main-queue contract
         }
     }
