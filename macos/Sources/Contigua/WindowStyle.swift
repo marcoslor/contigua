@@ -191,25 +191,25 @@ enum FramedChrome {
 
 /// The window's titlebar and traffic lights in a given state. Windowed, the
 /// chrome owns the lights and hides the system's title: the Compact bar, the
-/// Framed frame and the Immersive pill all place them themselves. Full screen in
-/// Framed or Compact is the acrylic bar's (WIN-73); full screen in Immersive is
-/// as it was before the three-style merge: the system's own title bar slides in
-/// with the window's title and standard lights (ChromeConfig).
+/// Framed frame and the Immersive pill all place them themselves. Full screen
+/// looks the same in every style (WIN-14): the window's own native title bar,
+/// which the system brings down with the menu bar, with the window's title and
+/// the standard lights where AppKit puts them; none of our chrome.
 struct ChromeConfig: Equatable {
     let titleVisible: Bool
     let titlebarTransparent: Bool
     /// true: AppKit places the standard buttons; false: the chrome does.
     let lightsManagedByAppKit: Bool
 
+    static let system = ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
+
     static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
-        if fullScreen, style == .immersive {
-            return ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
-        }
+        if fullScreen { return system }
         return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
     }
 }
 
-/// The Compact bar and the full-screen bar: the numbers both share.
+/// The Compact bar's numbers.
 enum ChromeBar {
     /// The permanent bar above the stream.
     static let height = BarGeometry.barHeight
@@ -296,220 +296,16 @@ enum ImmersiveChrome {
     }
 }
 
-/// The full-screen bar Framed and Compact wear: one 28 pt acrylic bar across the
-/// screen's top, hidden until the pointer reaches the top edge and revealed by
-/// FullScreenBarMachine. No mirror, no frame: the system material frosts the
-/// stream behind it.
-enum FullScreenBar {
-    static let height = ChromeBar.height
-    /// The band at the very top edge a pointer has to reach while the bar is
-    /// hidden. Once it is showing, its own height keeps it alive.
-    static let edgeHeight: CGFloat = 8
-    /// The default rest before the bar slides in, from RevealDelay.short.
-    static let revealDelay: TimeInterval = 0.35
-    /// How long the pointer may leave the bar before it slides away.
-    static let hideDelay: TimeInterval = 0.6
-    /// The slide's own times: down like the system's full-screen titlebar, and
-    /// away a little faster.
-    static let revealDuration: TimeInterval = 0.18
-    static let hideDuration: TimeInterval = 0.15
-    /// The bar's own background: the system's full-screen material, blended
-    /// within the window so it frosts the stream, not the desktop.
-    static let material: NSVisualEffectView.Material = .fullScreenUI
-    /// The centred title's ink: the system label colour; the material and the
-    /// window's appearance own the contrast.
-    static let titleColor: NSColor = .labelColor
-}
-
-/// The full-screen bar's four states (WIN-8). One explicit machine: no
-/// booleans elsewhere stand for a phase. `pending` records which timer the
-/// current state asked for, so a late or duplicated `delayElapsed` can be
-/// ignored and a pointer returning cancels the right one.
-enum FullScreenBarMode: String, CaseIterable {
-    case hidden
-    case revealing
-    case shown
-    case hiding
-}
-
-enum FullScreenBarEvent: Equatable {
-    /// The system entered full screen: the bar starts hidden.
-    case enterFullScreen
-    /// The system left full screen: the bar goes and no timer survives.
-    case exitFullScreen
-    /// The pointer reached the top edge (the top band while hidden, the bar
-    /// while it shows) and is resting there.
-    case pointerAtTopEdge
-    /// The pointer left the top edge and the bar.
-    case pointerLeaves
-    /// The reveal rest or the hide grace expired.
-    case delayElapsed
-    /// The slide in or out finished.
-    case animationFinished
-    /// A menu began or ended tracking: the bar stays while one is open.
-    case menuTracking(Bool)
-    /// View ▸ Hide Controls or Settings picked another reveal choice.
-    case configurationChanged(RevealDelay)
-}
-
-/// What the window has to do for one transition. Effects run in the
-/// controller; the machine only names them.
-enum FullScreenBarAction: Equatable {
-    case scheduleReveal(TimeInterval)
-    case scheduleHide(TimeInterval)
-    case cancelTimer
-    case reveal(animated: Bool)
-    case hide(animated: Bool)
-}
-
-/// The full-screen bar's transition table. Pure: time, pointer and menu events
-/// are passed in and the caller runs the returned actions.
-struct FullScreenBarMachine: Equatable {
-    enum Pending: Equatable {
-        case reveal
-        case hide
-    }
-
-    private(set) var mode: FullScreenBarMode = .hidden
-    private(set) var reveal: RevealDelay
-    private(set) var pointerAtTop = false
-    private(set) var menuIsTracking = false
-    private(set) var pending: Pending?
-
-    init(reveal: RevealDelay = .short) {
-        self.reveal = reveal
-    }
-
-    private var alwaysVisible: Bool { reveal.keepsChromeVisible }
-
-    /// Folds one event in and returns the effects to run, in order.
-    mutating func handle(_ event: FullScreenBarEvent) -> [FullScreenBarAction] {
-        switch event {
-        case .enterFullScreen, .exitFullScreen:
-            mode = .hidden
-            pointerAtTop = false
-            menuIsTracking = false
-            pending = nil
-            return [.cancelTimer, .hide(animated: false)]
-
-        case .pointerAtTopEdge:
-            pointerAtTop = true
-            if alwaysVisible {
-                pending = nil
-                guard mode != .shown else { return [] }
-                mode = .revealing
-                return [.cancelTimer, .reveal(animated: true)]
-            }
-            switch mode {
-            case .hidden:
-                pending = .reveal
-                return [.cancelTimer, .scheduleReveal(reveal.seconds)]
-            case .revealing, .shown:
-                guard pending == .hide else { return [] }
-                pending = nil
-                return [.cancelTimer]
-            case .hiding:
-                pending = nil
-                mode = .revealing
-                return [.cancelTimer, .reveal(animated: true)]
-            }
-
-        case .pointerLeaves:
-            pointerAtTop = false
-            if alwaysVisible || menuIsTracking { return [] }
-            switch mode {
-            case .hidden:
-                guard pending == .reveal else { return [] }
-                pending = nil
-                return [.cancelTimer]
-            case .revealing:
-                pending = nil
-                mode = .hiding
-                return [.hide(animated: true)]
-            case .shown:
-                pending = .hide
-                return [.cancelTimer, .scheduleHide(FullScreenBar.hideDelay)]
-            case .hiding:
-                return []
-            }
-
-        case .delayElapsed:
-            switch (mode, pending) {
-            case (.hidden, .reveal):
-                pending = nil
-                mode = alwaysVisible ? .shown : .revealing
-                return [.reveal(animated: true)]
-            case (.shown, .hide):
-                pending = nil
-                guard !alwaysVisible, !menuIsTracking, !pointerAtTop else { return [] }
-                mode = .hiding
-                return [.hide(animated: true)]
-            default:
-                return []
-            }
-
-        case .animationFinished:
-            switch mode {
-            case .revealing:
-                mode = .shown
-                guard !alwaysVisible, !menuIsTracking, !pointerAtTop else { return [] }
-                pending = .hide
-                return [.scheduleHide(FullScreenBar.hideDelay)]
-            case .hiding:
-                mode = .hidden
-                return []
-            case .hidden, .shown:
-                return []
-            }
-
-        case .menuTracking(let tracking):
-            menuIsTracking = tracking
-            if tracking {
-                pending = nil
-                guard mode != .shown else { return [.cancelTimer] }
-                mode = .revealing
-                return [.cancelTimer, .reveal(animated: true)]
-            }
-            guard !alwaysVisible, !pointerAtTop, mode == .shown else { return [] }
-            pending = .hide
-            return [.scheduleHide(FullScreenBar.hideDelay)]
-
-        case .configurationChanged(let choice):
-            let wasAlwaysVisible = alwaysVisible
-            reveal = choice
-            if alwaysVisible {
-                pending = nil
-                guard mode != .shown else { return [.cancelTimer] }
-                mode = .revealing
-                return [.cancelTimer, .reveal(animated: true)]
-            }
-            if wasAlwaysVisible {
-                pending = nil
-                if pointerAtTop || menuIsTracking {
-                    guard mode == .hidden else { return [.cancelTimer] }
-                    pending = .reveal
-                    return [.cancelTimer, .scheduleReveal(choice.seconds)]
-                }
-                guard mode == .shown || mode == .revealing else { return [.cancelTimer] }
-                mode = .hiding
-                return [.cancelTimer, .hide(animated: true)]
-            }
-            guard pending == .reveal, mode == .hidden else { return [] }
-            return [.cancelTimer, .scheduleReveal(choice.seconds)]
-        }
-    }
-}
-
-/// Settings → General "Reveal controls after" and View ▸ Hide Controls: how
-/// long the pointer rests at the top edge in full screen before the bar shows,
-/// or "Always Visible", which keeps it up; in Immersive it is the dwell that
-/// brings the pill in. Short is the 350 ms default; the value lives in the
-/// profile's defaults and applies to open windows at once.
+/// Settings → General "Reveal controls after" and View ▸ Hide Controls: the
+/// dwell that brings the Immersive pill in, or "Always Visible", which keeps
+/// it up. Short is the 350 ms default; the value lives in the profile's
+/// defaults and applies to open windows at once. Full screen is the system's
+/// title bar in every style and the system times it (WIN-14).
 enum RevealDelay: String, CaseIterable {
     case instantly
     case short
     case long
-    /// The full-screen bar stays shown: no rest, no hiding.
+    /// The Immersive pill stays shown: no rest, no hiding.
     case alwaysVisible
 
     static let key = "immersive.revealDelay"
@@ -523,17 +319,17 @@ enum RevealDelay: String, CaseIterable {
         }
     }
 
-    /// Instantly (0), the default 350 ms, or twice that. Unused when the bar
+    /// Instantly (0), the default 350 ms, or twice that. Unused when the pill
     /// is always visible.
     var seconds: TimeInterval {
         switch self {
         case .instantly, .alwaysVisible: return 0
-        case .short: return FullScreenBar.revealDelay
-        case .long: return FullScreenBar.revealDelay * 2
+        case .short: return 0.35
+        case .long: return 0.7
         }
     }
 
-    /// The full-screen bar never hides for this choice.
+    /// The Immersive pill never hides for this choice.
     var keepsChromeVisible: Bool { self == .alwaysVisible }
 
     /// Unset or unreadable values are Short, the default.

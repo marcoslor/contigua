@@ -95,12 +95,9 @@ work is disabled, never hidden.
    72×32 pt hot zone brings in and a 600 ms absence takes away (Always Visible keeps it up). Switching grows or shrinks the window by the
    difference between the two insets, the stream keeps its place. Native full
    screen is macOS's own View item (**Enter Full Screen** / **Exit Full Screen**, fn‑F, ⌃⌘F or the green light); the stream fills the
-   screen in every style. In Framed and Compact a translucent 28 pt acrylic bar holds our traffic lights, the title and our controls
-   without the mirror; in Immersive the system's own revealed title bar carries the title and lights, as it did before the three styles. The bar
-   stays hidden until the pointer reaches the top edge and rests there (350 ms by default; **View ▸ Hide Controls** and Settings →
-   General → **Reveal controls after** pick Instantly, Short or Long) and slides in; it slides away 600 ms after the pointer leaves it, or
-   goes at once on leaving full screen. **Always Visible** keeps it up; picking it never changes a window's style. A click at the top
-   edge before the bar shows is still the app's own touch. **Hide Controls** and its items are disabled outside Immersive. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   screen and looks the same in every style: the window's own title bar, the system's, comes down with the menu bar when the pointer
+   reaches the top edge, with the traffic lights and the window's title and nothing of ours. **Hide Controls** and its items are
+   disabled outside Immersive. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more

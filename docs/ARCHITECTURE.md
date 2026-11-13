@@ -176,9 +176,9 @@ system-privileged steps):
   system material, hairline, rim and rounded corners), **Compact** (a
   permanent 28 pt bar with the traffic lights and the picture mirrored under a
   blur) and **Immersive** (the stream alone; a dwell pill at the top-left
-  brings the lights back). Full screen in Framed or Compact fills the screen
-  with the stream and reveals one acrylic bar from the top edge; Immersive
-  full screen uses the system's title bar. Style flips (⌥⌘F / View menu)
+  brings the lights back). Full screen looks the same in every style: the
+  stream fills the screen and the window's own native title bar comes down
+  with the menu bar (WIN-14). Style flips (⌥⌘F / View menu)
   resize the window around the same stream and never re-open the window.
 - **Video**: H.264 Annex-B → `CMSampleBuffer` →
   `AVSampleBufferDisplayLayer` with `DisplayImmediately`. No CPU readback, no
@@ -189,7 +189,7 @@ system-privileged steps):
   tracking area sends ENTER/MOVE/EXIT (moves at most one per 16 ms, the newest
   point) and the phone injects `ACTION_HOVER_*` as a mouse; a button down sends
   EXIT before the touch, and Mac UI over the video (the Compact bar, the
-  Framed frame, the full-screen bar) or a window losing key ends it. Trackpad: two-finger
+  Framed frame, the Immersive pill) or a window losing key ends it. Trackpad: two-finger
   scroll is a touch drag (Android gets flings; a mouse wheel is a SCROLL
   frame), pinch/rotate are two pointers from the raw fingers; a mouse side
   Back button maps to one Android Back per press.

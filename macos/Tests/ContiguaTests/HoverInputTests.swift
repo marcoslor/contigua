@@ -2,7 +2,7 @@
 // exit before a button's touch DOWN, enter again after the release, no hover
 // while dragging, at most one move per 16 ms (the newest point), nothing when
 // the setting is off, and an exit when the pointer enters Mac UI over the
-// video (the Compact bar, the Framed frame, the full-screen bar).
+// video (the Compact bar, the Framed frame, the Immersive pill).
 
 import AppKit
 import XCTest

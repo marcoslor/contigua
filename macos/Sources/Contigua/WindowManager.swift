@@ -365,8 +365,8 @@ final class WindowManager {
         }
     }
 
-    /// Settings → General "Reveal controls after": the full-screen bar's
-    /// reveal, read from the profile's defaults.
+    /// Settings → General "Reveal controls after": the Immersive pill's
+    /// dwell, read from the profile's defaults.
     var revealDelay: RevealDelay { RevealDelay.stored(in: frames) }
 
     /// The Mac's stream strategies (ISS-40) for windows opened now, read from
@@ -405,7 +405,7 @@ final class WindowManager {
 
     /// View ▸ Hide Controls' pick: store the reveal choice for every window.
     /// It never changes a window's style, and only an Immersive window's pill
-    /// (or the full-screen bar) reads it.
+    /// reads it.
     func pickHideControls(_ item: FullScreenMenuItem) {
         guard let pick = FullScreenMenuModel.pick(item) else { return }
         setRevealDelay(pick)

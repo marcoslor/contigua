@@ -97,7 +97,7 @@ final class StreamChromeWindowTests: XCTestCase {
         // other fill sits over it, so nothing can tint the stream.
         XCTAssertTrue(chrome.subviews.contains { $0 is NSBackgroundExtensionView })
         XCTAssertTrue(chrome.subviews.compactMap { $0 as? NSVisualEffectView }.allSatisfy(\.isHidden),
-                      "no material layer over the bar: the full-screen acrylic stays hidden")
+                      "no material layer over the bar")
         // The corners round once, on the container (the chrome view): the video
         // stays square so the seam is straight in framed.
         XCTAssertEqual(chrome.layer?.cornerRadius, ChromeBar.cornerRadius)
@@ -138,7 +138,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 bar_tint_side=window bar_mirror=none key=0 responder_video=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 bar_tint_side=window bar_mirror=none key=0 responder_video=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -174,49 +174,54 @@ final class StreamChromeWindowTests: XCTestCase {
                         "the picture rect is reported")
         // The window is still opening: the cover is one sheet over it and the
         // Compact bar's mirror, blur and haze wait for the first frame (WIN-11).
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 bar_tint_side=none bar_mirror=none key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 bar_tint_side=none bar_mirror=none key=0 responder_video=0 frame=\(frame) video_gap=0\n")
         controller.noteFirstFrame()
         let live = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(live.hasPrefix("style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0"), live)
+        XCTAssertTrue(live.hasPrefix("style=compact lights=shown pill=hidden"), live)
         XCTAssertTrue(live.contains("loading=0 cover_phase=0"), live)
         XCTAssertTrue(live.contains("bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1"), live)
         XCTAssertTrue(live.contains("haze=1"), live)
     }
 
-    /// Full screen hands the screen to the stream in either style and starts
-    /// with the acrylic bar hidden (WIN-8, WIN-14); leaving brings the stored
-    /// style's windowed chrome and its lights back.
-    func testFullScreenHidesTheAcrylicBarAndExitRestoresTheStyleChrome() throws {
-        let manager = makeManager()
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
-        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
-        manager.chromeStateFile = file
-        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
-                                             label: "Example", manager: manager)
-        defer { controller.window?.close() }
-        let window = try XCTUnwrap(controller.window)
-        window.orderFront(nil)
-        controller.noteFirstFrame()
-        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
+    /// Full screen looks the same in every style (WIN-14): the stream fills
+    /// the screen and the only chrome is the window's own native title bar,
+    /// solid, with the system's title and lights; none of ours is on screen.
+    /// Leaving restores the style's windowed chrome.
+    func testFullScreenIsTheSystemTitleBarInEveryStyle() throws {
+        for style in WindowStyle.allCases {
+            let manager = makeManager()
+            manager.styleStore.set(style, forKey: WindowStyleStore.key(forPackage: "com.example.app"))
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
+            addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+            manager.chromeStateFile = file
+            let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                                 label: "Example", manager: manager)
+            defer { controller.window?.close() }
+            let window = try XCTUnwrap(controller.window)
+            window.orderFront(nil)
+            controller.noteFirstFrame()
+            XCTAssertEqual(controller.style, style)
 
-        controller.simulateFullScreenForTesting(true)
-        XCTAssertEqual(window.titleVisibility, .hidden, "our bar carries the title, not the system's")
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertEqual(controller.chrome.barHeight, 0, "no windowed bar over the stream")
-        XCTAssertFalse(controller.chrome.fullBarVisible, "the acrylic bar starts hidden")
-        XCTAssertFalse(trafficLightsShown(window), "its lights are out of sight with it")
-        let state = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(state.hasPrefix("style=compact lights=hidden pill=hidden fullbar=hidden fullbar_visible=0"),
-                      state)
+            controller.simulateFullScreenForTesting(true)
+            XCTAssertEqual(window.titleVisibility, .visible, "\(style): the system's title")
+            XCTAssertFalse(window.titlebarAppearsTransparent, "\(style): a solid title bar")
+            XCTAssertTrue(controller.chrome.lightsManagedByAppKit, "\(style)")
+            XCTAssertEqual(controller.chrome.barHeight, 0, "\(style): no windowed bar over the stream")
+            XCTAssertTrue(controller.chrome.framedTitleView.isHidden, "\(style): no frame")
+            XCTAssertTrue(controller.chrome.pill.isHidden, "\(style): no pill")
+            XCTAssertTrue(controller.chrome.liveTextButton.isHidden, "\(style): none of our controls")
+            let state = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertTrue(state.contains(" pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes"), state)
+            XCTAssertTrue(state.contains(" bar_title=0 "), state)
 
-        controller.simulateFullScreenForTesting(false)
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertEqual(window.titleVisibility, .hidden)
-        XCTAssertTrue(trafficLightsShown(window), "the Compact bar takes the lights back")
-        XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height)
-        let back = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(back.hasPrefix("style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0"),
-                      back)
+            controller.simulateFullScreenForTesting(false)
+            let windowed = ChromeConfig.forState(style: style, fullScreen: false)
+            XCTAssertEqual(window.titleVisibility == .visible, windowed.titleVisible, "\(style)")
+            XCTAssertEqual(window.titlebarAppearsTransparent, windowed.titlebarTransparent, "\(style)")
+            XCTAssertEqual(controller.chrome.lightsManagedByAppKit, windowed.lightsManagedByAppKit, "\(style)")
+            let back = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertTrue(back.contains(" fullscreen=no"), back)
+        }
     }
 
     func testThePhoneWindowIsThePhoneShapeWithItsActionsOnTheBar() throws {
@@ -702,36 +707,6 @@ final class StreamChromeStyleTests: XCTestCase {
         defer { controller.window?.close() }
         XCTAssertEqual(controller.style, .framed, "the old \"framed\" string is unknown and ignored")
         XCTAssertEqual(controller.window?.frame.size, NSSize(width: 910, height: 643))
-    }
-
-    /// Entering full screen parks the acrylic bar out of sight (WIN-8) and
-    /// leaving it restores the stored style's windowed chrome. The real Space
-    /// switch is the VM run's; the machine and the chrome transitions are here.
-    func testFullScreenEntersHiddenAndExitRestoresTheWindowedChrome() throws {
-        let manager = makeManager(choose: .compact)
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
-        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
-        manager.chromeStateFile = file
-        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
-                                             label: "Example", manager: manager)
-        defer { controller.window?.close() }
-        controller.present()
-        controller.noteFirstFrame()
-        let window = try XCTUnwrap(controller.window)
-        window.orderFront(nil)
-        controller.simulateFullScreenForTesting(true)
-        XCTAssertEqual(controller.fullBar.mode, .hidden, "the bar starts hidden on entry")
-        XCTAssertFalse(controller.chrome.fullBarVisible)
-        XCTAssertEqual(controller.chrome.barHeight, 0, "no windowed bar in full screen")
-        let state = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(state.contains("fullbar=hidden fullbar_visible=0"), state)
-        XCTAssertTrue(state.contains("fullscreen=yes"), state)
-
-        controller.simulateFullScreenForTesting(false)
-        XCTAssertEqual(controller.fullBar.mode, .hidden)
-        XCTAssertEqual(controller.chrome.barHeight, ChromeBar.height, "the Compact bar is back")
-        XCTAssertTrue(controller.chrome.hazeVisible)
-        XCTAssertTrue(trafficLightsShown(window))
     }
 
     /// View ▸ Hide Controls stacks with the window's style: the pick stores the

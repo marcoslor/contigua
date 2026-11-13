@@ -85,17 +85,15 @@ final class ChromeConfigTests: XCTestCase {
         }
     }
 
-    func testFullScreenIsOursExceptImmersivesSystemBar() {
-        for style in [WindowStyle.framed, .compact] {
+    /// Full screen looks the same in every style: the window's own native
+    /// title bar, which the system brings down with the menu bar (WIN-14).
+    func testFullScreenIsTheSystemTitleBarInEveryStyle() {
+        for style in WindowStyle.allCases {
             let config = ChromeConfig.forState(style: style, fullScreen: true)
-            XCTAssertFalse(config.titleVisible, "\(style)")
-            XCTAssertTrue(config.titlebarTransparent, "\(style)")
-            XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
+            XCTAssertTrue(config.titleVisible, "\(style): the system's title")
+            XCTAssertFalse(config.titlebarTransparent, "\(style): a solid title bar")
+            XCTAssertTrue(config.lightsManagedByAppKit, "\(style): the standard lights where AppKit puts them")
         }
-        let immersive = ChromeConfig.forState(style: .immersive, fullScreen: true)
-        XCTAssertTrue(immersive.titleVisible, "Immersive hands the title back to the system")
-        XCTAssertFalse(immersive.titlebarTransparent)
-        XCTAssertTrue(immersive.lightsManagedByAppKit)
     }
 }
 
@@ -227,7 +225,6 @@ final class RevealDelayTests: XCTestCase {
 
     func testShortIsTheDefault() {
         XCTAssertEqual(RevealDelay.stored(in: makeDefaults()), .short, "nothing stored opens Short")
-        XCTAssertEqual(RevealDelay.short.seconds, FullScreenBar.revealDelay)
         XCTAssertEqual(RevealDelay.short.seconds, 0.35)
     }
 
@@ -471,204 +468,6 @@ final class FramedGeometryTests: XCTestCase {
                        "the rect's literal corner lies outside the 12 pt circle")
         XCTAssertTrue(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 5.1, y: 300)))
         XCTAssertFalse(FramedChrome.contentPath(in: bounds).contains(NSPoint(x: 4.9, y: 300)))
-    }
-}
-
-final class FullScreenBarTests: XCTestCase {
-    private func run(_ machine: inout FullScreenBarMachine,
-                     _ events: [FullScreenBarEvent]) -> [[FullScreenBarAction]] {
-        events.map { machine.handle($0) }
-    }
-
-    func testTheNumbersAreTheDesigns() {
-        XCTAssertEqual(FullScreenBar.height, 28)
-        XCTAssertEqual(FullScreenBar.edgeHeight, 8)
-        XCTAssertEqual(FullScreenBar.revealDelay, 0.35)
-        XCTAssertEqual(FullScreenBar.hideDelay, 0.6)
-        XCTAssertEqual(FullScreenBar.revealDuration, 0.18)
-        XCTAssertEqual(FullScreenBar.hideDuration, 0.15)
-        XCTAssertEqual(FullScreenBar.material, .fullScreenUI)
-        XCTAssertEqual(FullScreenBar.titleColor, .labelColor)
-    }
-
-    func testEnteringFullScreenStartsHiddenWithNoTimer() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        let actions = machine.handle(.enterFullScreen)
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(actions, [.cancelTimer, .hide(animated: false)])
-    }
-
-    func testARestAtTheTopEdgeRevealsAfterTheChoice() {
-        for (delay, want) in [(RevealDelay.instantly, 0.0), (.short, 0.35), (.long, 0.7)] {
-            var machine = FullScreenBarMachine(reveal: delay)
-            XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .scheduleReveal(want)], "\(delay)")
-            XCTAssertEqual(machine.mode, .hidden)
-            XCTAssertEqual(machine.pending, .reveal)
-            XCTAssertEqual(machine.handle(.delayElapsed), [.reveal(animated: true)], "\(delay)")
-            XCTAssertEqual(machine.mode, .revealing)
-            XCTAssertEqual(machine.handle(.animationFinished), [])
-            XCTAssertEqual(machine.mode, .shown)
-        }
-    }
-
-    func testAPointerThatLeavesBeforeTheRestCancelsTheReveal() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        _ = machine.handle(.pointerAtTopEdge)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer])
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "the late timer does nothing")
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testThePointerReturningDuringTheHideGraceKeepsTheBar() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished])
-        XCTAssertEqual(machine.mode, .shown)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer, .scheduleHide(0.6)])
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer])
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "the cancelled grace does nothing")
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testTheBarHidesAfterTheGrace() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished, .pointerLeaves])
-        XCTAssertEqual(machine.handle(.delayElapsed), [.hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testLeavingDuringTheSlideInReversesIt() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed])
-        XCTAssertEqual(machine.mode, .revealing)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testReturningDuringTheSlideOutRevealsAgain() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished, .pointerLeaves, .delayElapsed])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-    }
-
-    func testASlideInThatFinishesAfterThePointerLeftHidesAgain() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .pointerLeaves])
-        // pointerLeaves reversed the slide, so a stale animationFinished is
-        // ignored for the revealing state's opposite; a fresh one ends hiding.
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-
-        var slow = FullScreenBarMachine()
-        _ = run(&slow, [.pointerAtTopEdge, .delayElapsed])
-        slow.handle(.pointerLeaves)
-        _ = slow.handle(.pointerAtTopEdge) // back in, revealing
-        // The reveal completes while the pointer is still at the edge.
-        XCTAssertEqual(slow.handle(.animationFinished), [])
-        XCTAssertEqual(slow.mode, .shown)
-    }
-
-    func testAMenuRevealsTheBarAndKeepsIt() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.menuTracking(true)), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [], "a menu keeps the bar up")
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testTheMenuEndingSchedulesTheHideOnlyWhenThePointerIsAway() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.menuTracking(true), .animationFinished])
-        XCTAssertEqual(machine.handle(.menuTracking(false)), [.scheduleHide(0.6)])
-        XCTAssertEqual(machine.mode, .shown)
-
-        var resting = FullScreenBarMachine()
-        _ = resting.handle(.menuTracking(true))
-        _ = resting.handle(.pointerAtTopEdge)
-        _ = resting.handle(.animationFinished)
-        XCTAssertEqual(resting.handle(.menuTracking(false)), [], "the pointer is still at the edge")
-    }
-
-    func testExitFullScreenTakesTheBarWithEveryTimer() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished])
-        XCTAssertEqual(machine.handle(.exitFullScreen), [.cancelTimer, .hide(animated: false)])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .scheduleReveal(0.35)])
-    }
-
-    func testAlwaysVisibleShowsAtOnceAndNeverHides() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [])
-        XCTAssertEqual(machine.mode, .shown)
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testPickingATimedChoiceFromAlwaysVisibleHidesAShownBarWhenThePointerIsAway() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.animationFinished)
-        _ = machine.handle(.pointerLeaves)
-        XCTAssertEqual(machine.mode, .shown, "Always Visible ignores the leave")
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer, .hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-    }
-
-    func testPickingATimedChoiceWhileThePointerRestsKeepsTheBarAndHidesOnLeave() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer])
-        XCTAssertEqual(machine.mode, .shown, "the pointer is still at the edge")
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer, .scheduleHide(0.6)])
-        XCTAssertEqual(machine.handle(.configurationChanged(.long)), [],
-                       "a hide grace is not re-timed by another delay")
-    }
-
-    func testRetimingARunningRestUsesTheNewDelay() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        _ = machine.handle(.pointerAtTopEdge)
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer, .scheduleReveal(0.35)])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertEqual(machine.pending, .reveal)
-    }
-
-    func testPickingAlwaysVisibleRevealsAHiddenBar() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.configurationChanged(.alwaysVisible)), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-    }
-
-    func testIgnoredEventsChangeNothing() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.handle(.pointerLeaves), [])
-        XCTAssertEqual(machine.handle(.menuTracking(false)), [])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.delayElapsed)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "shown has no pending timer")
-        XCTAssertEqual(machine.handle(.enterFullScreen), [.cancelTimer, .hide(animated: false)])
-        XCTAssertEqual(machine.mode, .hidden)
     }
 }
 

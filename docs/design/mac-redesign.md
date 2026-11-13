@@ -270,7 +270,7 @@ toolbar item group:
 
 - one capsule for the phone navigation trio (Back · Home · Recents), one for Live Text, and one per other group (the
   camera window's switch). Buttons in a capsule keep the 32×28 pt hit area; capsules are 28 pt tall (capsule radius),
-  symbols 14 pt medium, and capsules are 6 pt apart. In full screen the same capsules ride the acrylic bar.
+  symbols 14 pt medium, and capsules are 6 pt apart. Full screen is the system's title bar, with none of them (WIN-14).
 - symbols (same meaning, more Apple-like): Back `chevron.backward` · Home `house` · Recents `rectangle.stack` · Live
   Text `text.viewfinder` (Apple's own Live Text symbol) · camera switch `arrow.triangle.2.circlepath.camera`. Tooltips
   are unchanged.
@@ -345,11 +345,10 @@ toolbar item group:
   Phone* name what they are doing ("Sending foo.apk… 40%", "Stop Ringing").
 - **View ▸ Framed / Compact** is one radio pair for the key stream window, built by the commands as an inline
   `Picker`, exactly one checked; ⌥⌘F switches to the other. **Hide Controls ›** holds *Instantly* · *Short* · *Long*
-  (the full-screen reveal delays, checkmark on the current one) · separator · *Always Visible*, and is enabled while a
+  (the Immersive pill's reveal delays, checkmark on the current one) · separator · *Always Visible*, and is enabled while a
   stream window is key. Picking any item stores the choice as the global setting under `immersive.revealDelay`, the
   same store Settings ▸ General uses; the Settings picker gains *Always Visible*. *Always Visible* keeps the
-  full-screen acrylic bar up — no rest, no hiding — and never changes a window's style. The stream still
-  fills the screen.
+  Immersive pill up — no rest, no hiding — and never changes a window's style.
 - **View ▸ Density** names the Settings default in its first item — *Default (100%)* — then lists only the other
   percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.

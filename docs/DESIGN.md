@@ -15,11 +15,11 @@ not invent styling. No hard-coded colors except where a hex is given below.
 | Color | `Color.accentColor`, `.primary/.secondary/.tertiary`, `.quaternary` fills, system `.green/.orange/.red` for status only. Vibrancy comes from glass; never set text color on glass beyond hierarchical styles |
 
 ### Liquid Glass rules
-- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, the full-screen acrylic bar, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
+- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, the Immersive pill, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
 - Static surfaces: `.glassEffect(.regular, in: .rect(cornerRadius: R))`. Things the user clicks/hovers that are themselves glass (rows, chips): `.glassEffect(.regular.interactive(), in: …)`.
 - Group adjacent glass elements in `GlassEffectContainer(spacing: 8)`; give morphing elements `.glassEffectID(id, in: ns)` with a `@Namespace var ns`.
 - Buttons: the one primary action per screen = `.buttonStyle(.glassProminent)` (accent-tinted); everything else = `.buttonStyle(.glass)`. Destructive = `.glass` + `role: .destructive`. Primary uses `.controlSize(.large)`, row buttons `.controlSize(.small)`.
-- AppKit-hosted bits (launcher `NSPanel`, the full-screen acrylic bar): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
+- AppKit-hosted bits (launcher `NSPanel`, the Immersive pill): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
 - Reduce Transparency / Increase Contrast: rely on system fallback; do not add custom fallbacks.
 
 ### Motion
@@ -155,16 +155,15 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
     (the material owns the contrast, so Framed needs no tone machine) with the same phone suffix, middle-truncating and keeping 8 pt clear of the lights and our controls. The
     traffic lights are the system's own buttons on the taller bar's line; nothing of Quick Look's own titlebar or buttons is drawn. A press in the 38/5 pt
     margins or outside the picture's rounded corners is the window's — a drag, or a double-click zoom — never a phone touch.
-  - **Full screen.** Every style drops its windowed chrome and fills the screen with the stream; Immersive hands the title and traffic lights back to the system's revealed title bar and has no bar of ours. In Framed and Compact a 28 pt full-width `NSVisualEffectView` bar (system
-    full-screen material, `.withinWindow`, so it frosts the stream) holds our traffic lights, the centred title in the system label colour and our controls.
-    It is hidden until the pointer reaches the top edge and rests there for the reveal delay (Instantly 0, Short 350 ms, Long 700 ms; Always Visible shows
-    it and never hides it), then slides down over 180 ms; it slides away 150 ms after the pointer leaves it, 600 ms after the pointer leaves its band, and at
-    once on leaving full screen, and it stays while a menu is tracking. The machine's four states are hidden, revealing, shown and hiding.
+  - **Full screen.** Looks the same in every style (WIN-14): the windowed chrome goes, the stream fills the screen, and the only chrome is the
+    window's own native title bar — solid, in the system's appearance, the standard lights and the window's title "<App> (<phone>)", nothing
+    else — which the system brings down with the menu bar at the top edge and times itself. None of our views draws there; View ▸ Live Text
+    and the Navigate menu reach the bar's controls.
   - **Switching.** View ▸ Window Style's Framed/Compact/Immersive radio items and Toggle Window Style (⌥⌘F, cycling Framed → Compact → Immersive): the window grows or shrinks by the difference in the
     styles' insets (`WindowStyle.frame` moves it down just enough when the new chrome would poke above the visible frame) and the choice lands per package
     under `chrome.style.<package>` (`chrome.style.phone` for the Phone Mirror; values `mat`, `bar`, `pill`); a window with nothing stored opens Framed, and a stored value the app does
     not know is ignored (no migration of the old names).
-  - `DebugInput windowstyle framed|compact|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|compact|immersive lights=shown|hidden pill=shown|hidden fullbar=hidden|revealing|shown|hiding clicks=N`
+  - `DebugInput windowstyle framed|compact|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|compact|immersive lights=shown|hidden pill=shown|hidden title_visible=yes|no lights_managed=us|appkit fullscreen=yes|no clicks=N`
     (N = clicks the bar's or the frame's background received) there for the e2e check.
 - **Disconnection overlay (stall and link down):** the whole window — the 28 pt bar included — as one sheet: the last frame under one acrylic
   (`NSVisualEffectView` `.hudWindow` with a black dim, 0.38 in dark and 0.50 in light so white ink keeps 4.5:1), with the window's icon (96 pt, corner 22),
@@ -218,7 +217,7 @@ using the phone with fingers.
 - **The bar's geometry (BarGeometry).** 14 pt traffic lights, 7 pt in from
   the left, the top and the bottom, in a 28 pt bar; the 28 pt Live Text button
   mirrors them 7 pt in from the right, centred on the lights' line. The Compact
-  bar and the full-screen acrylic bar use the same numbers, in app windows and the Phone Mirror,
+  bar uses these numbers, in app windows and the Phone Mirror,
   light and dark. Framed's taller bar is 38 pt with the same 14 pt lights 12 pt in from the
   left and top, and our controls 12 pt in from the right.
 
@@ -296,7 +295,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed · one cell per launch target: a package with two launcher activities is two cells, each keyed by its activity, and a cell with no label falls back to the package's last part (a repeated key draws nothing).
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** three styles (View ▸ Window Style, ⌥⌘F cycles them; remembered per app package; no stored choice, or one this build does not know, = Framed): **Framed** (default) = the stream inside a 38/5 pt frame (a 21 pt window radius, a 12 pt picture radius, a 0.5 pt hairline, a 1 pt rim, a 10 pt top highlight, the system material, the app's name and the phone's in the system label colour, our traffic lights and controls); **Compact** = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, "<App> (<phone>)" centred on the bar's line in white or black ink by the band behind it (the phone's name alone in the Phone Mirror), traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = the stream alone, the lights and controls in a clear-glass pill that fades in after a rest in the top-left hot zone; switching grows or shrinks the window by the difference, the stream keeps its place; full screen in Framed or Compact — the stream fills the screen and a translucent 28 pt acrylic bar with our lights, title and controls stays hidden until the pointer reaches the top edge (Hide Controls: Instantly/Short/Long/Always Visible) and slides in; · the **disconnection overlay** above over the whole window while the picture is stalled or the link is down.
+**Mac — App window:** three styles (View ▸ Window Style, ⌥⌘F cycles them; remembered per app package; no stored choice, or one this build does not know, = Framed): **Framed** (default) = the stream inside a 38/5 pt frame (a 21 pt window radius, a 12 pt picture radius, a 0.5 pt hairline, a 1 pt rim, a 10 pt top highlight, the system material, the app's name and the phone's in the system label colour, our traffic lights and controls); **Compact** = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under a 30 pt progressive blur and a 14 % tint, "<App> (<phone>)" centred on the bar's line in white or black ink by the band behind it (the phone's name alone in the Phone Mirror), traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = the stream alone, the lights and controls in a clear-glass pill that fades in after a rest in the top-left hot zone; switching grows or shrinks the window by the difference, the stream keeps its place; full screen looks the same in every style — the stream fills the screen and the window's own native title bar comes down with the menu bar; · the **disconnection overlay** above over the whole window while the picture is stalled or the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
