@@ -1982,8 +1982,8 @@ check_resize() {
 
 check_dragbar() {
     clean
-    # Compact: the stream under AppKit's title bar, nothing at the sides or
-    # bottom, so every edge of the window is the picture's edge.
+    # Compact: the stream under its band, nothing at the sides or bottom, so
+    # every other edge of the window is the picture's edge.
     defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "bar"
     # The phone answers a resize the way the real one did while the person
     # dragged: 30-55 ms to encode its first frame at the new size, plus the
@@ -3042,7 +3042,7 @@ check_chrome() {
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
     style_key="chrome.style.com.android.settings"
 
-    # --- Compact: the stream under AppKit's own title bar ---
+    # --- Compact: the stream under its band, in AppKit's transparent title bar ---
     defaults write "$DEFAULTS_SUITE" "$style_key" -string "bar"
     printf '%s\n' "hoverat 0 200" > "$WORK/chrome-compact.txt"
     open_shared --open com.android.settings --float-windows \
@@ -3055,14 +3055,15 @@ check_chrome() {
     titlebar=$((compact_h - 600))
     wait_until 10 chrome_frame_live || bad "C14 the Compact picture never went live: $(chrome_state)"
     chrome_has "layout:0,0,900x600" \
-        && ok "[WIN-4] C14 Compact is the 900x600 pt stream plus AppKit's ${titlebar} pt title bar, nothing at the sides or bottom (900x$compact_h)" \
+        && ok "[WIN-4] C14 Compact is the 900x600 pt stream under a band of AppKit's ${titlebar} pt title-bar height, nothing at the sides or bottom (900x$compact_h)" \
         || bad "[WIN-4] C14 the Compact content is not the 900x600 stream: $(chrome_state | grep -oE 'geom=.*video_gap')"
-    chrome_is "style=compact lights=shown pill=hidden title_visible=yes lights_managed=appkit" \
-        && ok "[WIN-7] C14 a stored Compact choice opens as a standard window: the system's title and lights" \
+    chrome_is "style=compact lights=shown pill=hidden title_visible=no lights_managed=appkit" \
+        && chrome_has " band:1" \
+        && ok "[WIN-7] C14 a stored Compact choice opens with its band under AppKit's own lights" \
         || bad "[WIN-7] C14 Compact at rest: $(chrome_state)"
-    chrome_has " bar_title=0 " \
-        && ok "[WIN-68] C14 Compact's title is the system's; none of ours is drawn" \
-        || bad "[WIN-68] C14 Compact drew a title of ours: $(chrome_state)"
+    wait_until 5 chrome_has " bar_title=1 " \
+        && ok "[WIN-68] C14 Compact's band draws the title" \
+        || bad "[WIN-68] C14 Compact has no title in its band: $(chrome_state)"
     chrome_has "can_fullscreen=1" \
         && ok "[WIN-14] C14 an app window may go full screen" \
         || bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
@@ -3074,16 +3075,16 @@ check_chrome() {
     esac
     chrome_has "video=0,$titlebar,900,600" \
         && chrome_has "video_gap=0" \
-        && ok "[WIN-4] C14 the picture starts right under the title bar (video=0,$titlebar,900,600, no gap)" \
-        || bad "[WIN-4] C14 the picture's rect under the title bar: $(chrome_state)"
+        && ok "[WIN-4] C14 the picture starts right under the band (video=0,$titlebar,900,600, no gap)" \
+        || bad "[WIN-4] C14 the picture's rect under the band: $(chrome_state)"
     screencapture -x -o -l"$win" "$WORK/chrome-compact.png" && say "screenshot: $WORK/chrome-compact.png"
     # A window capture holds the window's own pixels, never the desktop's, so
-    # a see-through title bar would read as low alpha here (#45).
+    # a see-through band would read as low alpha here (#45).
     local opacity
     opacity="$(bar_band_opacity "$WORK/chrome-compact.png" 900 "$compact_h")"
     [ "$opacity" = "min_alpha=255 clear=0" ] \
-        && ok "[WIN-7] C14 the title bar is opaque: nothing behind the window shows through ($opacity)" \
-        || bad "[WIN-7] C14 the title bar is see-through: $opacity"
+        && ok "[WIN-67] C14 the band is opaque: nothing behind the window shows through ($opacity)" \
+        || bad "[WIN-67] C14 the band is see-through: $opacity"
     local x y w h edges
     read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
     screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-compact-frame.png"
@@ -3173,11 +3174,11 @@ check_chrome() {
         || bad "[WIN-7] C14 the stored style did not open its window: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     touch "$WORK/chrome-step-toggle1"
     wait_until 8 win_size "$win" 900 "$compact_h" \
-        && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x$compact_h, the stream under AppKit's title bar" \
+        && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x$compact_h, the stream under its band" \
         || bad "[WIN-7] C14 ⌥⌘F did not reach Compact: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     touch "$WORK/chrome-step-toggle2"
     wait_until 8 win_size "$win" 900 600 \
-        && ok "[WIN-7] C14 ⌥⌘F from Compact takes the title bar away too: 900x600 Immersive" \
+        && ok "[WIN-7] C14 ⌥⌘F from Compact takes the band away too: 900x600 Immersive" \
         || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     chrome_is "style=immersive lights=hidden pill=hidden" \
         && ok "[WIN-74] C14 Immersive at rest: the stream alone, no lights and no pill" \
@@ -5378,7 +5379,7 @@ check_mirror() {
     local opening_id opening_ratio opening_w opening_h
     if opening_id="$(await_window '$5 > $4 * 1.5')"; then
         read -r opening_w opening_h <<<"$(windows | awk -v i="$opening_id" '$1 == i {print $4, $5}')"
-        # Compact: the window less AppKit's title bar (the state's geometry).
+        # Compact: the window less its band, AppKit's title-bar height (the state's geometry).
         opening_ratio="$(frame_video_ratio "$opening_w" "$opening_h" "$(titlebar_height)")"
         if aspect_ok "$opening_ratio" 1080 2340; then
             ok "[MIRROR-24] a wrong-shaped saved frame opens in the phone's shape (${opening_w}x${opening_h}, video area ${opening_ratio})"
@@ -12437,19 +12438,51 @@ check_windows() {
 # --- Cover bar: WIN-11's opening cover in the compact geometry ------------
 #
 # The visual record for the person's 11-03 report: the opening cover is one
-# sheet over the content in either style — over Framed's frame band, and in
-# Compact under AppKit's own title bar — and the style's chrome returns with
+# sheet over the content in either style — over Framed's frame band and over
+# Compact's band, under AppKit's lights — and the style's chrome returns with
 # the first frame. A quiet run captures the run's own virtual display; the
 # record the reviewer sees is the VM's visible run. The two check names are
 # the two appearances.
 
-# --- Bar title: Compact's system title bar names the app and the phone -------
+# --- Bar title: Compact's band, its title, tone and opacity ----------------
 #
-# Compact is a standard titled window: AppKit draws the title, so the check
-# reads the window's own title (WIN-68), that the title bar is opaque in both
-# appearances (WIN-7), and, in the Phone Mirror, that the picture starts right
-# under it with no backing row at the seam (MIRROR-27). Visual record:
-# $SHOTS/bar-title-*.
+# Compact is the stream under its band: the stream's top edge mirrored up by
+# the system under clear glass, in AppKit's transparent title bar. Over each
+# fixture in both appearances the check reads the band's state (WIN-67), the
+# title's tone (WIN-69) and the window's own title (WIN-68), and from the
+# window's own capture that the band is opaque and the title keeps
+# `bar_title_contrast_min` against it. In the Phone Mirror the picture starts
+# right under the band with no backing row at the seam (MIRROR-27). Visual
+# record: $SHOTS/bar-title-*.
+
+bar_title_field() { chrome_state | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
+# bar_tone — the band's tone from the state's geometry (`tone:light|dark|none`).
+bar_tone() { chrome_state | grep -oE ' tone:[a-z]+' | tail -1 | cut -d: -f2; }
+
+# bar_title_measure <shot> <label> <right-inset> — one capture's title check:
+# inside the lights and the right-hand row, and the measured contrast.
+bar_title_measure() {
+    local shot="$1" label="$2" right_inset="$3" rect tone frame_width limit measured
+    rect="$(bar_title_field bar_title_rect)"
+    tone="$(bar_tone)"
+    frame_width="$(bar_title_field frame)"
+    frame_width="${frame_width%%x*}"
+    [ -n "$rect" ] && [ "$rect" != "none" ] || { bad "BAR-TITLE $label no title rect in the state"; return 1; }
+    local rx rw right_bound
+    IFS=, read -r rx _ rw _ <<<"$rect"
+    right_bound=$((frame_width - right_inset))
+    if [ "$rx" -ge 75 ] && [ $((rx + rw)) -le "$right_bound" ]; then
+        ok "BAR-TITLE $label the title sits clear of the lights and the right-hand controls (x=$rx w=$rw)"
+    else
+        bad "BAR-TITLE $label the title overlaps a control: x=$rx w=$rw right-bound=$right_bound"
+    fi
+    limit="$(nfr_limit bar_title_contrast_min)"
+    if measured="$(python3 "$MACOS/scripts/bar-title-contrast.py" "$shot" "$rect" "$frame_width" "$tone" "$limit" "$label" 2>&1)"; then
+        ok "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
+    else
+        bad "[WIN-69] BAR-TITLE $label contrast from the real capture: $measured"
+    fi
+}
 
 # titlebar_height — AppKit's title bar in points, from the chrome state's geometry:
 # the window's height less its content layout rect's.
@@ -12462,41 +12495,58 @@ titlebar_height() {
 }
 
 check_bar_title() {
-    local appearance win shot frame_width titlebar seam opacity
+    local fixture appearance want win shot frame_width titlebar seam opacity
     ax_has() { ax_tree | grep -qF -- "$1"; }
+    # status-dark / status-light: a status bar's thin glyphs over a dark or
+    # white page; the band's mean follows the page, not the glyphs (#45).
     for appearance in light dark; do
-        clean
-        FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
-        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "bar"
-        launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
-            --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
-        wait_until 25 events_have '"ev":"video"' \
-            || bad "BAR-TITLE $appearance the stream never sent video"
-        wait_until 15 chrome_frame_live || bad "BAR-TITLE $appearance the picture never went live: $(chrome_state)"
-        chrome_all "style=compact" "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
-            && ok "[WIN-68] BAR-TITLE $appearance the title is the system's, none of ours" \
-            || bad "[WIN-68] BAR-TITLE $appearance the title: $(chrome_state)"
-        if wait_until 5 ax_has "Settings (FakePhone)"; then
-            ok "[WIN-68] BAR-TITLE $appearance the window's title names the app and the phone"
-        else
-            bad "[WIN-68] BAR-TITLE $appearance the window's title: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
-        fi
-        win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" || { bad "BAR-TITLE $appearance no Compact window"; stop_app; stop_fakephone; continue; }
-        shot="$SHOTS/bar-title-app-$appearance.png"
-        if shot_window "$win" "$shot"; then
-            say "shot: $shot"
-            opacity="$(bar_band_opacity "$shot" 900 "$(windows | awk -v id="$win" '$1 == id {print $5}' | head -1)")"
-            [ "$opacity" = "min_alpha=255 clear=0" ] \
-                && ok "[WIN-7] BAR-TITLE $appearance the title bar is opaque ($opacity)" \
-                || bad "[WIN-7] BAR-TITLE $appearance the title bar is see-through: $opacity ($shot)"
-        else
-            bad "BAR-TITLE $appearance no window capture"
-        fi
-        stop_app
-        stop_fakephone
+        for fixture in white-page dark-page busy-photo status-dark status-light; do
+            clean
+            FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "bar"
+            launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
+                --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+            wait_until 25 events_have '"ev":"video"' \
+                || bad "BAR-TITLE $appearance/$fixture the stream never sent video"
+            wait_until 15 chrome_frame_live \
+                || bad "BAR-TITLE $appearance/$fixture the picture never went live: $(chrome_state)"
+            case "$fixture" in
+                dark-page | status-dark) want=light ;;
+                *) want=dark ;;
+            esac
+            # The first shown frame is read at once; a beat for the read.
+            if wait_until 5 chrome_has " tone:$want"; then
+                ok "[WIN-69] BAR-TITLE $appearance/$fixture the title's ink follows the band: $want"
+            else
+                bad "[WIN-69] BAR-TITLE $appearance/$fixture wanted ink $want, tone=$(bar_tone)"
+            fi
+            chrome_all "style=compact" "title_visible=no" "lights_managed=appkit" " bar_title=1 " " band:1" \
+                && ok "[WIN-67] BAR-TITLE $appearance/$fixture the band and its title show under AppKit's lights" \
+                || bad "[WIN-67] BAR-TITLE $appearance/$fixture the band: $(chrome_state)"
+            if wait_until 5 ax_has "Settings (FakePhone)"; then
+                ok "[WIN-68] BAR-TITLE $appearance/$fixture the window's title names the app and the phone"
+            else
+                bad "[WIN-68] BAR-TITLE $appearance/$fixture the window's title: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
+            fi
+            win="$(await_window '$4 == 900 && $5 > 600 && $5 < 660')" \
+                || { bad "BAR-TITLE $appearance/$fixture no Compact window"; stop_app; stop_fakephone; continue; }
+            shot="$SHOTS/bar-title-$fixture-$appearance.png"
+            if shot_window "$win" "$shot"; then
+                say "shot: $shot"
+                opacity="$(bar_band_opacity "$shot" 900 "$(windows | awk -v id="$win" '$1 == id {print $5}' | head -1)")"
+                [ "$opacity" = "min_alpha=255 clear=0" ] \
+                    && ok "[WIN-67] BAR-TITLE $appearance/$fixture the band is opaque ($opacity)" \
+                    || bad "[WIN-67] BAR-TITLE $appearance/$fixture the band is see-through: $opacity ($shot)"
+                bar_title_measure "$shot" "$appearance/$fixture" 43
+            else
+                bad "BAR-TITLE $appearance/$fixture no window capture"
+            fi
+            stop_app
+            stop_fakephone
+        done
 
         # The Phone Mirror in Compact: the phone's name, and the picture's
-        # first rows meet the title bar's bottom edge (MIRROR-26, MIRROR-27).
+        # first rows meet the band's bottom edge (MIRROR-26, MIRROR-27).
         clean
         FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
         defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
@@ -12506,21 +12556,21 @@ check_bar_title() {
             || bad "BAR-TITLE phone/$appearance the stream never sent video"
         wait_until 15 chrome_frame_live || bad "BAR-TITLE phone/$appearance the picture never went live: $(chrome_state)"
         sleep 1
-        chrome_all "style=compact" "title_visible=yes" "video_gap=0" \
-            && ok "[MIRROR-26] BAR-TITLE phone/$appearance the Mirror is a standard window with the system's title" \
+        chrome_all "style=compact" "title_visible=no" "video_gap=0" " band:1" \
+            && ok "[MIRROR-26] BAR-TITLE phone/$appearance the Mirror wears the band" \
             || bad "[MIRROR-26] BAR-TITLE phone/$appearance: $(chrome_state)"
         win="$(await_window '$5 > $4')" || { bad "BAR-TITLE phone/$appearance no portrait window"; stop_app; stop_fakephone; continue; }
         shot="$SHOTS/bar-title-phone-$appearance.png"
         titlebar="$(titlebar_height)"
-        frame_width="$(chrome_state | tr ' ' '\n' | sed -n 's/^frame=//p' | head -1)"
+        frame_width="$(bar_title_field frame)"
         frame_width="${frame_width%%x*}"
         if shot_window "$win" "$shot"; then
             say "shot: $shot"
             if [ -n "$titlebar" ] && [ -n "$frame_width" ] \
                 && seam="$(python3 "$MACOS/scripts/seam-gap.py" "$shot" "$frame_width" "$titlebar" 2>&1)"; then
-                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row under the ${titlebar} pt title bar ($seam)"
+                ok "[MIRROR-27] BAR-TITLE phone/$appearance no backing row under the ${titlebar} pt band ($seam)"
             else
-                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row under the title bar (${seam:-no seam}; titlebar=${titlebar:-?})"
+                bad "[MIRROR-27] BAR-TITLE phone/$appearance a backing row under the band (${seam:-no seam}; titlebar=${titlebar:-?})"
             fi
         else
             bad "BAR-TITLE phone/$appearance no window capture"
@@ -12537,8 +12587,8 @@ check_cover_bar() {
     local style_store="chrome.style.com.android.settings"
 
     # The opening cover is one sheet over the stored style's content: Framed's
-    # 5/38 pt frame band is under it; Compact's title bar is AppKit's, above
-    # it. The fake holds the first frame (and its video config), so no
+    # 5/38 pt frame band and Compact's band are under it; AppKit's lights
+    # stay above it. The fake holds the first frame (and its video config), so no
     # scripted driver runs.
     for style in framed compact; do
         if [ "$style" = "framed" ]; then key=mat; width=910; window='$4 == 910 && $5 == 643'
@@ -12585,8 +12635,8 @@ check_cover_bar() {
         wait_until 15 chrome_has "loading=0" \
             || bad "COVER-BAR $appearance $style the first frame did not land: $(chrome_state)"
         if [ "$style" = "compact" ]; then
-            wait_until 10 chrome_all "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
-                || bad "COVER-BAR $appearance compact is not the system's title bar: $(chrome_state)"
+            wait_until 10 chrome_all "title_visible=no" "lights_managed=appkit" " bar_title=1 " " band:1" \
+                || bad "COVER-BAR $appearance compact's band did not come with the first frame: $(chrome_state)"
         else
             wait_until 10 chrome_all "title_visible=no" " bar_title=1 " \
                 || bad "COVER-BAR $appearance framed has no frame title: $(chrome_state)"
@@ -12620,8 +12670,8 @@ check_cover_bar() {
         local opacity
         opacity="$(bar_band_opacity "$shots/compact-late-$appearance.png" 900 "$(windows | awk -v id="$id" '$1 == id {print $5}' | head -1)")"
         [ "$opacity" = "min_alpha=255 clear=0" ] \
-            && ok "[WIN-7] COVER-BAR $appearance a late first frame: the title bar is opaque ($opacity)" \
-            || bad "[WIN-7] COVER-BAR $appearance a late first frame left the title bar see-through ($opacity): $shots/compact-late-$appearance.png"
+            && ok "[WIN-67] COVER-BAR $appearance a late first frame: the band is opaque ($opacity)" \
+            || bad "[WIN-67] COVER-BAR $appearance a late first frame left the band see-through ($opacity): $shots/compact-late-$appearance.png"
     else
         bad "COVER-BAR $appearance late: no window capture"
     fi
@@ -12681,8 +12731,8 @@ check_styles_shots() {
                         || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface never reached a live picture: $(chrome_state)"
                     if [ "$surface" = "app" ]; then
                         if [ "$style" = "compact" ]; then
-                            wait_until 10 chrome_all "title_visible=yes" "lights_managed=appkit" " bar_title=0 " \
-                                || bad "STYLES-SHOTS $appearance/$fixture/$style is not the system's title bar: $(chrome_state)"
+                            wait_until 10 chrome_all "title_visible=no" "lights_managed=appkit" " bar_title=1 " " band:1" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style has no band and title: $(chrome_state)"
                         elif [ "$style" = "framed" ]; then
                             wait_until 10 chrome_has "bar_title=1" \
                                 || bad "STYLES-SHOTS $appearance/$fixture/$style no framed title: $(chrome_state)"
