@@ -28,25 +28,27 @@ PROFILE="${PD_E2E_PROFILE:-nfr1}"
 # The tests that own an NFR requirement in docs/NFR.md.
 K2_FILTER="NFRTestLimits|BarContrastTests|SettingsLayoutTests|LayoutTests|HangingPeerTests|HonestSettingsTests|IconReferenceTests|ControlsRealPathTests"
 
-fail=0
+# The steps that failed, named in the summary: each fails for its own reason,
+# and the summary must not send a reader to the wrong one.
+failed=()
 echo "== nfr: check-rules (changed lines, no build)"
 if ! bash "$ROOT/scripts/check-rules.sh"; then
-    fail=1
+    failed+=("check-rules")
 fi
 
 echo "== nfr: K2 ($K2_FILTER)"
 if ! ${HEAVY:+"$HEAVY"} bash -c "cd '$MACOS' && swift test --filter '$K2_FILTER'"; then
-    fail=1
+    failed+=("K2")
 fi
 
 echo "== nfr: e2e ($PROFILE on port $PORT)"
 if ! ${HEAVY:+"$HEAVY"} bash -c "cd '$MACOS' && PD_E2E_PORT='$PORT' PD_E2E_PROFILE='$PROFILE' bash scripts/check-e2e.sh nfr"; then
-    fail=1
+    failed+=("e2e")
 fi
 
-if [ "$fail" = "0" ]; then
+if [ "${#failed[@]}" = "0" ]; then
     echo "nfr: PASS"
-else
-    echo "nfr: FAIL (docs/NFR.md names each requirement and its check)"
+    exit 0
 fi
-exit "$fail"
+echo "nfr: FAIL in: $(IFS=,; echo "${failed[*]}") (see that step's output above; docs/NFR.md maps each requirement to its check)"
+exit 1
