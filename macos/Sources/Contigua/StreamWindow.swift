@@ -1771,6 +1771,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         line += " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
         line += " bar_title_rect=\(barTitleRectState())"
         line += " haze=\(chrome.hazeVisible ? 1 : 0)"
+        line += " bar_tint_side=\(chrome.barTintSide)"
+        line += " bar_mirror=\(chrome.barMirrorState)"
         line += " key=\(window?.isKeyWindow == true ? 1 : 0)"
         line += " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
         line += " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"

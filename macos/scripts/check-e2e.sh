@@ -2858,11 +2858,12 @@ print("spread=%d seam=%d" % (series(bar), round(seam)))
 PY
 }
 
-# bar_backdrop_fraction <png> <w-pt> <h-pt> — the percentage of sampled bar-band
-# pixels that are the e2e backdrop's own blue (46,115,217). A transparent bar
-# over the backdrop reads high; the system mirror reads
-# low. The band is 4..24 pt, away from the traffic lights and the right row.
-bar_backdrop_fraction() {
+# bar_band_opacity <png> <w-pt> <h-pt> — the bar band's own opacity in a window
+# capture (screencapture -o -l keeps the window's alpha): the lowest alpha of
+# the band's sampled pixels (4..24 pt down, 20 pt in from each side) and the
+# percentage below 250. A window capture holds the window's pixels alone, so a
+# see-through bar shows as low alpha there, never as the desktop's colour.
+bar_band_opacity() {
     python3 - "$@" <<'PY'
 import subprocess, sys
 path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
@@ -2870,17 +2871,18 @@ size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,
                        "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
 w, h = int(size[0]), int(size[1])
 scale = w / wpt
-raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
                      capture_output=True).stdout
-count = hits = 0
+low = 255
+count = clear = 0
 for y in range(int(4 * scale), int(24 * scale), max(1, int(scale))):
     for x in range(int(20 * scale), w - int(20 * scale), max(1, int(2 * scale))):
-        i = (y * w + x) * 3
-        r, g, b = raw[i], raw[i + 1], raw[i + 2]
+        a = raw[(y * w + x) * 4 + 3]
         count += 1
-        if abs(r - 46) <= 12 and abs(g - 115) <= 12 and abs(b - 217) <= 12:
-            hits += 1
-print(round(100 * hits / max(count, 1)))
+        low = min(low, a)
+        if a < 250:
+            clear += 1
+print("min_alpha=%d clear=%d" % (low, round(100 * clear / max(count, 1))))
 PY
 }
 
@@ -3066,7 +3068,9 @@ check_chrome() {
 
     # --- Compact: the bar over the stream ---
     defaults write "$DEFAULTS_SUITE" "$style_key" -string "bar"
-    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-compact.txt"
+    rm -f "$WORK/chrome-step-mirror-off" "$WORK/chrome-mirror-off-done"
+    printf '%s\n' "hoverat 0 200" "waitfile $WORK/chrome-step-mirror-off 120" "barmirror off" \
+        "wait 0.5" "stamp $WORK/chrome-mirror-off-done" > "$WORK/chrome-compact.txt"
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-compact.txt" \
         || { kill "$backdrop"; return 1; }
@@ -3153,15 +3157,31 @@ check_chrome() {
         && chrome_has "video_gap=0" \
         && ok "[WIN-67] C14 the picture runs under the 28 pt bar (video=0,28,900,600, no gap)" \
         || bad "[WIN-67] C14 the picture does not start under the bar: $(chrome_state)"
+    chrome_has "bar_mirror=ok" \
+        && ok "[WIN-67] C14 the system mirror is drawing: its portal mirrors the video under its backdrop" \
+        || bad "[WIN-67] C14 the mirror: $(chrome_state | grep -oE 'bar_mirror=[a-z+-]+')"
     chrome_has "bar_blur_radius=30" \
         && ok "[WIN-67] C14 the bar's system blur is 30 pt from the first frame on" \
         || bad "[WIN-67] C14 the bar's blur radius: $(chrome_state | grep -oE 'bar_blur_radius=[0-9]+')"
-    # Not `backdrop`: that name holds the backdrop helper's PID for the kills.
-    local see_through
-    see_through="$(bar_backdrop_fraction "$WORK/chrome-compact.png" 900 628)"
-    [ "${see_through:-100}" -le 5 ] \
-        && ok "[WIN-67] C14 no desktop pixels show through the bar (${see_through}% backdrop blue)" \
-        || bad "[WIN-67] C14 the bar is see-through: ${see_through}% of it is the desktop backdrop"
+    # A window capture holds the window's own pixels, never the desktop's, so
+    # a see-through bar reads as low alpha there, not as the backdrop's blue.
+    local opacity
+    opacity="$(bar_band_opacity "$WORK/chrome-compact.png" 900 628)"
+    [ "$opacity" = "min_alpha=255 clear=0" ] \
+        && ok "[WIN-67] C14 the bar is opaque: nothing behind the window shows through ($opacity)" \
+        || bad "[WIN-67] C14 the bar is see-through: $opacity"
+    # WIN-67: the system mirror drew nothing in a real display's window (#45).
+    # With its layers stopped, the bar must still be opaque: never the desktop.
+    touch "$WORK/chrome-step-mirror-off"
+    if wait_until 15 test -f "$WORK/chrome-mirror-off-done" \
+        && screencapture -x -o -l"$win" "$WORK/chrome-compact-mirror-off.png"; then
+        opacity="$(bar_band_opacity "$WORK/chrome-compact-mirror-off.png" 900 628)"
+        [ "$opacity" = "min_alpha=255 clear=0" ] \
+            && ok "[WIN-67] C14 with the system mirror drawing nothing the bar is still opaque ($opacity)" \
+            || bad "[WIN-67] C14 with the system mirror drawing nothing the bar is see-through: $opacity ($WORK/chrome-compact-mirror-off.png)"
+    else
+        bad "[WIN-67] C14 the script never stopped the mirror"
+    fi
     next_shared
 
     # --- Framed: the real frame round the picture ---
@@ -12650,6 +12670,15 @@ check_bar_title() {
             chrome_has "bar_blur_radius=30" && chrome_has "bar_tint=0.14 tint=1" \
                 && ok "[WIN-67] BAR-TITLE $appearance/$fixture blur=30 tint=0.14 over the band" \
                 || bad "[WIN-67] BAR-TITLE $appearance/$fixture bar: $(chrome_state)"
+            # #147: the tint is the band's own side, opposite the title's ink.
+            local side_want=dark
+            [ "$want" = "dark" ] && side_want=light
+            chrome_has "bar_tint_side=$side_want" \
+                && ok "[WIN-67] BAR-TITLE $appearance/$fixture the tint follows the band: $side_want under $want ink" \
+                || bad "[WIN-67] BAR-TITLE $appearance/$fixture wanted a $side_want tint under $want ink: $(chrome_state | grep -oE 'bar_tint_side=[a-z]+')"
+            chrome_has "bar_mirror=ok" \
+                && ok "[WIN-67] BAR-TITLE $appearance/$fixture the system mirror is drawing (bar_mirror=ok)" \
+                || bad "[WIN-67] BAR-TITLE $appearance/$fixture the mirror: $(chrome_state | grep -oE 'bar_mirror=[a-z+-]+')"
             if wait_until 5 ax_has "value=[Settings (FakePhone)]"; then
                 ok "[WIN-68] BAR-TITLE $appearance/$fixture the bar names the app and the phone"
             else
@@ -12721,8 +12750,9 @@ check_cover_bar() {
     for style in framed compact; do
         if [ "$style" = "framed" ]; then key=mat; width=910; height=643
         else key=bar; width=900; height=628; fi
-        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
+        # After clean: it clears the profile's defaults, the stored style too.
         clean
+        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
         FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
         launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
             --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
@@ -12752,8 +12782,9 @@ check_cover_bar() {
     for style in framed compact; do
         if [ "$style" = "framed" ]; then key=mat; width=910; height=643
         else key=bar; width=900; height=628; fi
-        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
+        # After clean: it clears the profile's defaults, the stored style too.
         clean
+        defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
         start_fake || return 1
         launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
             --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
@@ -12778,6 +12809,33 @@ check_cover_bar() {
         stop_app
         stop_fakephone
     done
+
+    # WIN-67: a first frame that lands late, as a real phone's does (0.4-0.7 s
+    # on a phone, ~0.12 s from the fake), brings the same mirror: the bar is
+    # opaque and mirrored, never the desktop. The cover holds the extension
+    # view at the stream's size until then.
+    clean
+    defaults write "$DEFAULTS_SUITE" "$style_store" -string "bar"
+    FAKE_ARGS="--first-frame-delay 1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 25
+    wait_until 20 chrome_has "loading=0" \
+        || bad "COVER-BAR $appearance late: the first frame did not land: $(chrome_state)"
+    wait_until 10 chrome_has "haze=1" || bad "COVER-BAR $appearance late: no haze"
+    id="$(await_window '$4 == 900 && $5 == 628')" \
+        || bad "COVER-BAR $appearance late: no live compact window"
+    sleep 1
+    if [ -n "$id" ] && shot_window "$id" "$shots/compact-late-$appearance.png"; then
+        local opacity
+        opacity="$(bar_band_opacity "$shots/compact-late-$appearance.png" 900 628)"
+        [ "$opacity" = "min_alpha=255 clear=0" ] \
+            && ok "[WIN-67] COVER-BAR $appearance a late first frame brings an opaque bar ($opacity)" \
+            || bad "[WIN-67] COVER-BAR $appearance a late first frame left the bar see-through ($opacity): $shots/compact-late-$appearance.png"
+    else
+        bad "COVER-BAR $appearance late: no window capture"
+    fi
+    stop_app
+    stop_fakephone
 
     # The VM run copies $WORK back to the host, not the run's shot dir.
     mkdir -p "$WORK/cover-bar"

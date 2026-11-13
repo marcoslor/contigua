@@ -239,10 +239,10 @@ enum DwellChrome {
     static var pillHeight: CGFloat { ChromeBar.height }
     static let pillCornerRadius: CGFloat = 8
     /// The dwell has to rest this long, without drifting more than
-    /// `tolerance` pt, before the pill fades in over `fadeIn`.
+    /// `tolerance` pt, before the pill fades in over `pillFade`.
     static let dwell: TimeInterval = 0.35
     static let tolerance: CGFloat = 3
-    static let fadeIn: TimeInterval = 0.12
+    static let pillFade: TimeInterval = 0.15
     /// And it fades out this long after the pointer leaves the pill.
     static let hideDelay: TimeInterval = 0.6
     /// The pill sits this far in from the stream's top-left corner.

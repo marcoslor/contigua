@@ -68,6 +68,56 @@ enum BarBlur {
         return "backdrops=\(backdrops) portals=\(portals) filters=[\(filters.joined(separator: ","))]"
     }
 
+    /// What keeps the system's mirror from drawing, by the layers it is made
+    /// of (macOS 26: a portal of the extension view's content and a backdrop
+    /// with the `variableBlur` filter over it), empty when they are all there.
+    /// A real display left a bar with neither drawing (#45): the window's own
+    /// pixels in the band were the haze and the tint alone.
+    /// - `no-portal`, `portal-hidden` (hidden or clear, itself or an
+    ///   ancestor), `portal-empty`, `portal-unsourced`, `portal-source` (it
+    ///   mirrors some layer other than the video's own);
+    /// - `no-backdrop`, `backdrop-hidden`, `no-filter`.
+    static func mirrorProblems(in root: CALayer, source: CALayer?) -> [String] {
+        var portals: [(layer: CALayer, shown: Bool)] = []
+        var backdrops: [(layer: CALayer, shown: Bool)] = []
+        func walk(_ layer: CALayer, shown: Bool) {
+            let visible = shown && !layer.isHidden && layer.opacity > 0.01
+            let name = String(describing: type(of: layer))
+            if name.contains("Portal") {
+                portals.append((layer, visible))
+                return
+            }
+            if name.contains("Backdrop") { backdrops.append((layer, visible)) }
+            for sub in layer.sublayers ?? [] { walk(sub, shown: visible) }
+        }
+        walk(root, shown: true)
+        var problems: [String] = []
+        let shownPortals = portals.filter(\.shown).map(\.layer)
+        if portals.isEmpty {
+            problems.append("no-portal")
+        } else if shownPortals.isEmpty {
+            problems.append("portal-hidden")
+        } else if shownPortals.allSatisfy({ $0.bounds.isEmpty }) {
+            problems.append("portal-empty")
+        } else {
+            let sources = shownPortals.map { $0.value(forKey: "sourceLayer") as? CALayer }
+            if !sources.contains(where: { $0 != nil && $0 === source }) {
+                problems.append(sources.allSatisfy { $0 == nil } ? "portal-unsourced" : "portal-source")
+            }
+        }
+        let shownBackdrops = backdrops.filter(\.shown).map(\.layer)
+        if backdrops.isEmpty {
+            problems.append("no-backdrop")
+        } else if shownBackdrops.isEmpty {
+            problems.append("backdrop-hidden")
+        } else if !shownBackdrops.contains(where: { layer in
+            ((layer.filters as? [NSObject]) ?? []).contains { ($0.value(forKey: "name") as? String) == "variableBlur" }
+        }) {
+            problems.append("no-filter")
+        }
+        return problems
+    }
+
     /// The backdrop and the one filter that draws the bar's blur.
     private static func backdropFilter(in root: CALayer) -> (layer: CALayer, filter: NSObject)? {
         if String(describing: type(of: root)) == "CABackdropLayer",
@@ -124,10 +174,31 @@ final class BarBlurTuner {
          diagnosis: @escaping Diagnosis = { BarBlur.diagnosis(in: $0) },
          logFailure: @escaping (String) -> Void = { detail in
              Log.video.notice("bar blur: system filter never found in this window (\(detail, privacy: .public))")  // log-ok: layer class counts and private filter names
+         },
+         logMirror: @escaping (String) -> Void = { detail in
+             Log.video.notice("bar mirror: not drawing in this window (\(detail, privacy: .public))")  // log-ok: closed problem names, layer class counts and private filter names
          }) {
         self.lookup = lookup
         self.diagnosis = diagnosis
         self.logFailure = logFailure
+        self.logMirror = logMirror
+    }
+
+    private let logMirror: (String) -> Void
+    /// The mirror's last check found these problems (empty: drawing).
+    private var lastProblems: [String] = []
+    /// This window already said its mirror was not drawing.
+    private(set) var reported = false
+
+    /// One check of the live Compact bar's mirror (the tone timer's tick): a
+    /// problem seen on two checks in a row is said once for the window, with
+    /// what the layer tree holds. One check alone is not evidence: the system
+    /// rebuilds its mirror in passes of its own.
+    func checkMirror(problems: [String], root: CALayer) {
+        defer { lastProblems = problems }
+        guard !reported, !problems.isEmpty, !lastProblems.isEmpty else { return }
+        reported = true
+        logMirror(problems.joined(separator: "+") + "; " + diagnosis(root))
     }
 
     /// True when the system's filter was found and now carries the radius.
@@ -143,7 +214,7 @@ final class BarBlurTuner {
     /// The window is closing: one fact if the bar was live and the filter
     /// never turned up, nothing otherwise.
     func windowClosing(root: CALayer?) {
-        guard tried, !found else { return }
+        guard tried, !found, !reported else { return }
         logFailure(root.map(diagnosis) ?? "no layer")
     }
 }

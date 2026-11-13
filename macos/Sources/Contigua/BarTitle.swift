@@ -31,7 +31,13 @@ enum BarTone: String, CaseIterable {
     /// The tone whose ink keeps the better contrast over `luminance`; the
     /// first sample's choice, where either may pass.
     static func preferred(for luminance: Double) -> BarTone {
-        contrast(.light, over: luminance) >= contrast(.dark, over: luminance) ? .light : .dark
+        preferred(over: InkBands(dark: BandRange(low: luminance, high: luminance),
+                                 light: BandRange(low: luminance, high: luminance)))
+    }
+
+    /// The same, each ink over the middle of its own band.
+    static func preferred(over bands: InkBands) -> BarTone {
+        contrast(.light, over: bands.light.mid) >= contrast(.dark, over: bands.dark.mid) ? .light : .dark
     }
 
     /// The ink's contrast against the band's pixel that is worst for it:
@@ -43,7 +49,12 @@ enum BarTone: String, CaseIterable {
     /// The ink whose worst pixel reads better; the first unresolved sample's
     /// choice (ties go to white, like `preferred`).
     static func betterWorstCase(over band: BandRange) -> BarTone {
-        worstContrast(.light, over: band) >= worstContrast(.dark, over: band) ? .light : .dark
+        betterWorstCase(over: InkBands(dark: band, light: band))
+    }
+
+    /// The same, each ink over the band as it is drawn under that ink.
+    static func betterWorstCase(over bands: InkBands) -> BarTone {
+        worstContrast(.light, over: bands.light) >= worstContrast(.dark, over: bands.dark) ? .light : .dark
     }
 
     /// WCAG contrast between the tone's ink and a band of `luminance`.
@@ -75,7 +86,12 @@ struct BarToneThresholds: Equatable {
 /// band behind it. Pure; the view applies the returned change.
 struct BarToneMachine: Equatable {
     enum Event: Equatable {
+        /// One band for both inks.
         case sample(BandRange)
+        /// The band as each ink will see it: under the light tint for black
+        /// ink, under the dark tint for white ink (the tint follows the tone,
+        /// #147).
+        case inks(dark: BandRange, light: BandRange)
     }
 
     enum Change: Equatable {
@@ -109,48 +125,63 @@ struct BarToneMachine: Equatable {
     mutating func handle(_ event: Event) -> Change {
         switch event {
         case .sample(let band):
-            guard band.isFinite else { return .ignored }
-            let darkPasses = band.low >= thresholds.toLight
-            let lightPasses = band.high <= thresholds.toDark
-            if !hasSample {
-                hasSample = true
-                switch (darkPasses, lightPasses) {
-                case (true, false):
-                    tone = .dark
-                    return .baseline(.dark)
-                case (false, true):
-                    tone = .light
-                    return .baseline(.light)
-                case (true, true):
-                    tone = BarTone.preferred(for: band.mid)
-                    return .baseline(tone)
-                case (false, false):
-                    tone = BarTone.betterWorstCase(over: band)
-                    return .unresolved(tone)
-                }
-            }
+            return decide(InkBands(dark: band, light: band))
+        case .inks(let dark, let light):
+            return decide(InkBands(dark: dark, light: light))
+        }
+    }
+
+    private mutating func decide(_ bands: InkBands) -> Change {
+        guard bands.dark.isFinite, bands.light.isFinite else { return .ignored }
+        let darkPasses = bands.dark.low >= thresholds.toLight
+        let lightPasses = bands.light.high <= thresholds.toDark
+        if !hasSample {
+            hasSample = true
             switch (darkPasses, lightPasses) {
             case (true, false):
-                guard tone != .dark else { return .ignored }
                 tone = .dark
-                return .changed(.dark)
+                return .baseline(.dark)
             case (false, true):
-                guard tone != .light else { return .ignored }
                 tone = .light
-                return .changed(.light)
+                return .baseline(.light)
             case (true, true):
-                // Hysteresis: both inks still pass, so the current one stays.
-                return .ignored
+                tone = BarTone.preferred(over: bands)
+                return .baseline(tone)
             case (false, false):
-                let other: BarTone = tone == .light ? .dark : .light
-                if BarTone.worstContrast(other, over: band)
-                    >= BarTone.worstContrast(tone, over: band) * Self.unresolvedSwitchRatio {
-                    tone = other
-                }
+                tone = BarTone.betterWorstCase(over: bands)
                 return .unresolved(tone)
             }
         }
+        switch (darkPasses, lightPasses) {
+        case (true, false):
+            guard tone != .dark else { return .ignored }
+            tone = .dark
+            return .changed(.dark)
+        case (false, true):
+            guard tone != .light else { return .ignored }
+            tone = .light
+            return .changed(.light)
+        case (true, true):
+            // Hysteresis: both inks still pass, so the current one stays.
+            return .ignored
+        case (false, false):
+            let other: BarTone = tone == .light ? .dark : .light
+            if BarTone.worstContrast(other, over: bands.band(for: other))
+                >= BarTone.worstContrast(tone, over: bands.band(for: tone)) * Self.unresolvedSwitchRatio {
+                tone = other
+            }
+            return .unresolved(tone)
+        }
     }
+}
+
+/// The band behind the title as each ink sees it: the tint under black ink
+/// is light and the tint under white ink dark (#147), so the two differ.
+struct InkBands: Equatable {
+    var dark: BandRange
+    var light: BandRange
+
+    func band(for tone: BarTone) -> BandRange { tone == .dark ? dark : light }
 }
 
 /// A band's darkest and brightest pixel: the two numbers a contrast-safe
@@ -212,8 +243,21 @@ enum BarTitle {
     static let minimumTruncatedWidth: CGFloat = 96
     /// The cross-fade between tones.
     static let fadeDuration: TimeInterval = 0.15
-    /// The window-background tint over the mirror.
+    /// The tint over the mirror, at this alpha.
     static let tintAlpha: CGFloat = 0.14
+
+    /// The tint follows the picture by the title's own decision (#147): black
+    /// ink means a light band and gets the light window background, white ink
+    /// a dark band and the dark one, so the bar deepens the band's own side,
+    /// opposite the title. Opaque; the layer carries `tintAlpha`.
+    static func tintColor(for tone: BarTone) -> NSColor {
+        let name: NSAppearance.Name = tone == .dark ? .aqua : .darkAqua
+        var colour = NSColor.windowBackgroundColor
+        NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+            colour = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? colour
+        }
+        return colour
+    }
     /// The haze gradient's alpha at the title's centre line: the gradient is
     /// full at the window's top edge and clear at the seam, so the line at
     /// the band's middle sees half of it.

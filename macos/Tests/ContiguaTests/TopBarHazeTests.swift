@@ -184,6 +184,97 @@ final class TopBarHazeTests: XCTestCase {
         XCTAssertTrue(chrome.barTintVisible, "the tint comes back with the Compact bar")
     }
 
+    /// #45 on a real display: the system mirror's layers drew nothing and the
+    /// bar showed the desktop. Under the mirror there is now an opaque band in
+    /// the tint's own colour, so whatever the mirror does the bar is never
+    /// see-through; a working mirror is opaque and covers it.
+    func testTheBarHasAnOpaqueToneMatchedBackingUnderTheMirror() throws {
+        let (window, chrome) = makeChrome()
+        defer { window.close() }
+        chrome.layoutChrome()
+        let backing = try XCTUnwrap(chrome.barBackingForTesting)
+        XCTAssertFalse(backing.isHidden, "the backing is under a live Compact bar")
+        XCTAssertEqual(backing.frame, NSRect(x: 0, y: chrome.bounds.height - ChromeBar.height,
+                                             width: chrome.bounds.width, height: ChromeBar.height))
+        let colour = try XCTUnwrap(backing.backgroundColor.flatMap { NSColor(cgColor: $0) })
+        XCTAssertEqual(colour.alphaComponent, 1, "opaque: the desktop can never show through")
+        XCTAssertLessThan(backing.zPosition, 0, "under the extension view (0), so a working mirror covers it")
+
+        chrome.openingCover.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9",
+                                                       phoneMode: false), icon: nil)
+        chrome.layoutChrome()
+        XCTAssertTrue(backing.isHidden, "the cover's own ground owns the band")
+        chrome.openingCover.show(nil)
+        pump(0.3)
+        chrome.layoutChrome()
+        chrome.setStyle(.framed)
+        chrome.layoutChrome()
+        XCTAssertTrue(backing.isHidden, "Framed has no mirror")
+    }
+
+    /// Every bar whose mirror is not drawing is said once per window, when it
+    /// is found (two checks in a row), with what is wrong; not at close.
+    func testAMirrorThatDrawsNothingIsSaidOnceWhenItIsFound() throws {
+        var facts: [String] = []
+        let tuner = BarBlurTuner(logFailure: { facts.append("filter: " + $0) },
+                                 logMirror: { facts.append("mirror: " + $0) })
+        let (window, chrome) = makeChrome(barBlur: tuner)
+        chrome.layoutChrome()
+        chrome.checkBarMirror()
+        chrome.checkBarMirror()
+        XCTAssertEqual(chrome.barMirrorState, "ok", "the system's mirror is there and points at the video")
+        XCTAssertEqual(facts, [])
+
+        chrome.stopBarMirrorForTesting()
+        chrome.checkBarMirror()
+        XCTAssertEqual(facts, [], "one check is not enough: the system rebuilds its mirror in passes")
+        chrome.checkBarMirror()
+        chrome.checkBarMirror()
+        XCTAssertTrue(chrome.barMirrorState.contains("portal-hidden"), chrome.barMirrorState)
+        XCTAssertEqual(facts.count, 1, "said once per window")
+        XCTAssertTrue(facts.first?.hasPrefix("mirror: portal-hidden") ?? false, facts.first ?? "")
+        chrome.releaseGraphics()
+        window.close()
+        XCTAssertEqual(facts.count, 1, "nothing more at close")
+    }
+
+    /// The check names what the system's mirror is missing.
+    func testTheMirrorCheckNamesWhatIsMissing() {
+        let video = CALayer()
+        XCTAssertEqual(BarBlur.mirrorProblems(in: CALayer(), source: video), ["no-portal", "no-backdrop"])
+
+        let root = CALayer()
+        let portal = TestPortalLayer()
+        portal.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        portal.sourceLayer = video
+        let backdrop = TestBackdropLayer()
+        backdrop.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
+        let blur = CIFilter(name: "CIGaussianBlur")!
+        blur.name = "variableBlur"
+        backdrop.filters = [blur]
+        root.addSublayer(portal)
+        root.addSublayer(backdrop)
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), [])
+
+        portal.sourceLayer = CALayer()
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["portal-source"])
+        portal.sourceLayer = nil
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["portal-unsourced"])
+        portal.sourceLayer = video
+        portal.opacity = 0
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["portal-hidden"])
+        portal.opacity = 1
+        portal.frame = .zero
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["portal-empty"])
+        portal.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        backdrop.filters = []
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["no-filter"])
+        backdrop.filters = [blur]
+        root.isHidden = true
+        XCTAssertEqual(BarBlur.mirrorProblems(in: root, source: video), ["portal-hidden", "backdrop-hidden"],
+                       "a hidden ancestor hides them both")
+    }
+
     func testAMissingSystemFilterKeepsTheSystemsOwnRadiusAndSaysSoOnceAtClose() throws {
         var facts: [String] = []
         let tuner = BarBlurTuner(lookup: { _ in nil }, diagnosis: { _ in "backdrops=1 filters=[x]" },
@@ -244,3 +335,11 @@ final class TopBarHazeTests: XCTestCase {
         }
     }
 }
+
+/// Stand-ins for the system's private portal and backdrop classes: the check
+/// knows them by name, as it knows the system's.
+private final class TestPortalLayer: CALayer {
+    @objc var sourceLayer: CALayer?
+}
+
+private final class TestBackdropLayer: CALayer {}

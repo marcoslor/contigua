@@ -138,7 +138,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let state = try String(contentsOf: file, encoding: .utf8)
         XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
                         "the picture rect is reported")
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 key=0 responder_video=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=0 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=0 cover_phase=0 cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=1 bar_title=1 bar_title_tone=none bar_title_rect=X haze=1 bar_tint_side=window bar_mirror=none key=0 responder_video=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -174,7 +174,7 @@ final class StreamChromeWindowTests: XCTestCase {
                         "the picture rect is reported")
         // The window is still opening: the cover is one sheet over it and the
         // Compact bar's mirror, blur and haze wait for the first frame (WIN-11).
-        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 key=0 responder_video=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(withoutVideo(state), "style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0 title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 can_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 panel_requests=0 stall=0 stall_overlay=0 stall_icon=0 stills=0 paused=0 expecting=0 opening=1 frame_age_ms=-1 drop_pill=hidden drop_refusal=none paste_pill=hidden paste_button=0 loading=1 cover_phase=opening cover_buttons=none cover_visible=1 bar_offline=0 bar_enabled=none bar_focus=none bar_blur_radius=0 bar_tint=0.14 tint=0 bar_title=0 bar_title_tone=none bar_title_rect=none haze=0 bar_tint_side=none bar_mirror=none key=0 responder_video=0 frame=\(frame) video_gap=0\n")
         controller.noteFirstFrame()
         let live = try String(contentsOf: file, encoding: .utf8)
         XCTAssertTrue(live.hasPrefix("style=compact lights=shown pill=hidden fullbar=hidden fullbar_visible=0"), live)
@@ -543,11 +543,63 @@ final class StreamChromeStyleTests: XCTestCase {
 
         controller.pointerMoved(toWindowPoint: NSPoint(x: 400, y: 300))
         // The hide starts 600 ms after leaving; the pill parks once its
-        // 0.12 s fade has run.
-        pump(DwellChrome.hideDelay + DwellChrome.fadeIn + 0.15)
+        // 0.15 s fade has run.
+        pump(DwellChrome.hideDelay + DwellChrome.pillFade + 0.15)
         XCTAssertFalse(controller.chrome.showsPill, "600 ms after leaving both the pill and the zone")
         XCTAssertFalse(trafficLightsShown(controller.window))
         XCTAssertTrue(controller.chrome.pill.isHidden)
+    }
+
+    /// WIN-74: the pill is one unit. Its glass, its capsules, the Live Text
+    /// button and the three lights fade in together and out together over
+    /// `pillFade`, and a layout pass in the middle of the fade hides none of
+    /// them early. Before: the lights and Live Text took alpha 1 at once on
+    /// the way in, and a layout during the fade-out hid them at once.
+    func testThePillFadesInAndOutAsOneUnit() throws {
+        let manager = makeManager(choose: .immersive)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.present()
+        controller.noteFirstFrame()
+        let window = try XCTUnwrap(controller.window)
+        let chrome = controller.chrome
+        let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        XCTAssertEqual(lights.count, 3)
+        let members: [(String, NSView)] = [("glass", chrome.pill), ("Live Text", chrome.liveTextButton)]
+            + lights.enumerated().map { ("light \($0.offset)", $0.element as NSView) }
+        func fade(_ view: NSView) -> CABasicAnimation? {
+            view.layer?.animation(forKey: "opacity") as? CABasicAnimation
+        }
+
+        chrome.setPill(true)
+        chrome.layoutChrome()
+        for (name, view) in members {
+            XCTAssertFalse(view.isHidden, "\(name) shows with the pill")
+            let animation = fade(view)
+            XCTAssertNotNil(animation, "\(name) fades in with the pill, never pops in")
+            XCTAssertEqual(animation?.duration ?? 0, DwellChrome.pillFade, accuracy: 0.001, name)
+        }
+        pump(DwellChrome.pillFade + 0.1)
+
+        chrome.setPill(false)
+        chrome.layoutChrome()
+        for (name, view) in members {
+            XCTAssertFalse(view.isHidden, "\(name) stays up while the pill fades out")
+            let animation = fade(view)
+            XCTAssertNotNil(animation, "\(name) fades out with the pill, never vanishes on its own")
+            XCTAssertEqual(animation?.duration ?? 0, DwellChrome.pillFade, accuracy: 0.001, name)
+        }
+        pump(DwellChrome.pillFade + 0.15)
+        for (name, view) in members {
+            XCTAssertTrue(view.isHidden || view.alphaValue < 0.01, "\(name) is gone once the fade has run")
+        }
+    }
+
+    /// The pill's fade is snappy: 0.15 s in and out (WIN-74).
+    func testThePillFadeIsSnappy() {
+        XCTAssertEqual(DwellChrome.pillFade, 0.15)
     }
 
     func testATouchInTheZoneRestartsTheRest() throws {

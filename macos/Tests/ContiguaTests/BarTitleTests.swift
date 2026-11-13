@@ -23,6 +23,39 @@ private final class FakeToneSource: BarToneSource {
 }
 
 final class BarTitleToneTests: XCTestCase {
+    /// #147: the tint follows the tone, so each ink is judged over the band
+    /// as it will be drawn under that ink: black ink over the light tint,
+    /// white ink over the dark tint. A mid band where black passes under its
+    /// own (light) tint is decided, not left unresolved.
+    func testEachInkIsJudgedOverTheBandUnderItsOwnTint() {
+        var machine = BarToneMachine()
+        let change = machine.handle(.inks(dark: BandRange(low: 0.19, high: 0.30),
+                                          light: BandRange(low: 0.12, high: 0.22)))
+        XCTAssertEqual(change, .baseline(.dark), "black ink passes over its own band; white does not over its")
+
+        var other = BarToneMachine()
+        XCTAssertEqual(other.handle(.inks(dark: BandRange(low: 0.10, high: 0.20),
+                                          light: BandRange(low: 0.05, high: 0.15))),
+                       .baseline(.light), "white ink passes over the band under the dark tint")
+
+        // Neither passes: the better worst case, each over its own band.
+        var neither = BarToneMachine()
+        XCTAssertEqual(neither.handle(.inks(dark: BandRange(low: 0.17, high: 0.6),
+                                            light: BandRange(low: 0.05, high: 0.6))),
+                       .unresolved(.dark),
+                       "black's worst (0.17) beats white's worst (0.6), each over its own band")
+    }
+
+    /// #147: a light tint under black ink, a dark tint under white ink: the
+    /// tint deepens the band's own side, opposite the title.
+    func testTheTintIsTheBandsOwnSide() throws {
+        let light = try XCTUnwrap(BarTitle.tintColor(for: .dark).usingColorSpace(.sRGB))
+        let dark = try XCTUnwrap(BarTitle.tintColor(for: .light).usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(light.relativeLuminance ?? 0, 0.7, "black ink sits on a light tint")
+        XCTAssertLessThan(dark.relativeLuminance ?? 1, 0.05, "white ink sits on a dark tint")
+        XCTAssertEqual(light.alphaComponent, 1, "the tint's own 14 % is the layer's alpha, not the colour's")
+    }
+
     func testTheTwoThresholdsComeFromTheNFRContrastLimit() {
         let limit = NFRTestLimits.shared.double("bar_title_contrast_min")
         XCTAssertEqual(BarTitle.minimumContrast, limit, accuracy: 0.0001,
@@ -539,6 +572,35 @@ final class BarTitleViewTests: XCTestCase {
                        "a dark band gets white ink")
         XCTAssertEqual(chrome.barTitleAlpha(.light), 1, accuracy: 0.01)
         XCTAssertEqual(chrome.barTitleAlpha(.dark), 0, accuracy: 0.01)
+    }
+
+    /// #147: the tint follows the picture, by the title's own decision: a
+    /// bright band gets black ink over a light tint, a dark band white ink
+    /// over a dark tint, in either window appearance.
+    func testTheTintFollowsTheTitlesToneNotTheAppearance() throws {
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            let tone = FakeToneSource()
+            tone.range = BandRange(low: 0.8, high: 0.9)
+            let (window, chrome) = makeChrome(tone: tone)
+            defer { window.close() }
+            window.appearance = NSAppearance(named: appearance)
+            chrome.setBarTitle("Quarterly notes")
+            chrome.layoutChrome()
+            tone.frameStamp += 1
+            chrome.sampleBarToneForTesting()
+            XCTAssertEqual(chrome.barTitleToneName, BarTone.dark.rawValue)
+            let lightTint = try XCTUnwrap(chrome.barTintColor?.usingColorSpace(.sRGB))
+            XCTAssertGreaterThan(lightTint.relativeLuminance ?? 0, 0.7, "\(appearance): a bright band, a light tint")
+            XCTAssertEqual(lightTint.alphaComponent, BarTitle.tintAlpha, accuracy: 0.005)
+
+            tone.range = BandRange(low: 0.02, high: 0.03)
+            tone.frameStamp += 1
+            chrome.sampleBarToneForTesting()
+            XCTAssertEqual(chrome.barTitleToneName, BarTone.light.rawValue)
+            let darkTint = try XCTUnwrap(chrome.barTintColor?.usingColorSpace(.sRGB))
+            XCTAssertLessThan(darkTint.relativeLuminance ?? 1, 0.05, "\(appearance): a dark band, a dark tint")
+            XCTAssertEqual(darkTint.alphaComponent, BarTitle.tintAlpha, accuracy: 0.005)
+        }
     }
 
     /// The title sits on the bar's blurred mirror, so the sample is read at

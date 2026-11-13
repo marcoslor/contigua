@@ -406,7 +406,7 @@ final class DwellPillTests: XCTestCase {
         XCTAssertEqual(DwellChrome.pillCornerRadius, 8)
         XCTAssertEqual(DwellChrome.dwell, 0.35)
         XCTAssertEqual(DwellChrome.hideDelay, 0.6)
-        XCTAssertEqual(DwellChrome.fadeIn, 0.12)
+        XCTAssertEqual(DwellChrome.pillFade, 0.15)
         XCTAssertEqual(DwellChrome.tolerance, 3)
     }
 

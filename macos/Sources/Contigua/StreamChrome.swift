@@ -282,9 +282,13 @@ final class StreamChromeView: NSView {
     /// The haze over the bar band only: white at the window's top edge, clear
     /// at the seam (WIN-40). Above the mirror, below the bar's controls.
     private let hazeLayer = CAGradientLayer()
-    /// The 14 % window-background tint over the bar band (WIN-67), above the
-    /// haze and below the title and the controls.
+    /// The 14 % tint over the bar band (WIN-67), in the band's own side's
+    /// colour (#147), above the haze and below the title and the controls.
     private let tintLayer = CALayer()
+    /// An opaque band under the extension view, in the tint's own colour at
+    /// full strength: a mirror that draws nothing leaves this, never the
+    /// desktop (#45, WIN-67). A drawing mirror is opaque and covers it.
+    private let backingLayer = CALayer()
     /// The centred title, one field per tone so a tone change cross-fades
     /// instead of blinking (WIN-68, WIN-69). `titleLight` is white ink,
     /// `titleDark` black.
@@ -348,6 +352,11 @@ final class StreamChromeView: NSView {
     /// The Immersive style's pill is up (the dwell or Always Visible brought it
     /// in); only `setPill` moves it.
     private(set) var showsPill = false
+    /// The pill is on screen: from the start of its fade-in to the end of its
+    /// fade-out. Its pieces (the glass, the capsules, Live Text, the lights)
+    /// show and hide on this one flag and fade on one opacity, so no layout
+    /// pass during a fade can hide or show one of them on its own (WIN-74).
+    private(set) var pillOnScreen = false
     /// The pill's frame in this view while it is up and can show.
     private var pillFrame: NSRect?
 
@@ -428,6 +437,10 @@ final class StreamChromeView: NSView {
         tintLayer.zPosition = 0.56
         tintLayer.isHidden = true
         layer?.addSublayer(tintLayer)
+        // The backing sits under everything, the extension view (0) included.
+        backingLayer.zPosition = -1
+        backingLayer.isHidden = true
+        layer?.addSublayer(backingLayer)
         for field in [titleLight, titleDark] {
             BarTitle.configure(field)
             field.alphaValue = 0
@@ -719,7 +732,7 @@ final class StreamChromeView: NSView {
         placeFullBar()
         if let frame = newPillFrame() {
             pillFrame = frame
-            if showsPill { pillView.frame = frame }
+            if pillOnScreen { pillView.frame = frame }
         } else {
             pillFrame = nil
         }
@@ -756,13 +769,16 @@ final class StreamChromeView: NSView {
         hazeLayer.colors = [top, NSColor(white: 1, alpha: 0).cgColor]
         hazeLayer.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
         hazeLayer.isHidden = !visible
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            tintLayer.backgroundColor = NSColor.windowBackgroundColor
-                .withAlphaComponent(BarTitle.tintAlpha).cgColor
-        }
+        tintLayer.backgroundColor = barTintTarget.cgColor
         tintLayer.frame = hazeLayer.frame
         tintLayer.isHidden = !visible
+        backingLayer.backgroundColor = barTintTarget.withAlphaComponent(1).cgColor
+        backingLayer.frame = hazeLayer.frame
+        backingLayer.isHidden = !visible
         CATransaction.commit()
+        // The tone timer runs while the bar is live: its tick samples the
+        // band for the title and checks the mirror (WIN-67, WIN-69).
+        if visible { startToneTimer() } else { stopToneTimer() }
         updateBarTitle()
     }
 
@@ -823,12 +839,10 @@ final class StreamChromeView: NSView {
                     titleLight.alphaValue = 0
                     titleDark.alphaValue = 0
                 }
-                startToneTimer()
                 sampleBarTone(force: !toneMachine.hasSample)
             } else {
                 titleLight.isHidden = true
                 titleDark.isHidden = true
-                stopToneTimer()
             }
         }
         guard let fitted else { return }
@@ -849,7 +863,10 @@ final class StreamChromeView: NSView {
     private func startToneTimer() {
         guard toneTimer == nil else { return }
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sampleBarTone(force: false) }
+            MainActor.assumeIsolated {
+                self?.checkBarMirror()
+                self?.sampleBarTone(force: false)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         toneTimer = timer
@@ -890,10 +907,6 @@ final class StreamChromeView: NSView {
     /// the window's top edge to the seam, so the darkest end uses its alpha
     /// at the title's bottom line and the brightest end at its top.
     private func consumeToneSample(_ frame: BandRange, frame titleFrame: NSRect) {
-        var tint = 0.0
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            tint = NSColor.windowBackgroundColor.relativeLuminance ?? tint
-        }
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let topAlpha = Double(ChromeBar.hazeTopAlpha(dark: dark))
         let bandTop = bounds.height
@@ -901,12 +914,17 @@ final class StreamChromeView: NSView {
             let clamped = min(max(offset, 0), ChromeBar.height)
             return topAlpha * (1 - Double(clamped / ChromeBar.height))
         }
-        let band = BarToneEstimate.blend(
-            frame: frame, tintLuminance: tint,
-            hazeTop: haze(bandTop - titleFrame.maxY),
-            hazeBottom: haze(bandTop - titleFrame.minY))
+        // Each ink over the band as it will be drawn under it: the tint
+        // follows the tone (#147), light under black ink, dark under white.
+        func under(_ tone: BarTone) -> BandRange {
+            BarToneEstimate.blend(
+                frame: frame, tintLuminance: BarTitle.tintColor(for: tone).relativeLuminance ?? 0,
+                hazeTop: haze(bandTop - titleFrame.maxY),
+                hazeBottom: haze(bandTop - titleFrame.minY))
+        }
+        let bands = InkBands(dark: under(.dark), light: under(.light))
         let before = toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
-        let change = toneMachine.handle(.sample(band))
+        let change = toneMachine.handle(.inks(dark: bands.dark, light: bands.light))
         if case .unresolved = change, !loggedUnresolvedTone {
             loggedUnresolvedTone = true
             let kept = toneMachine.tone.rawValue  // the better worst case
@@ -916,14 +934,36 @@ final class StreamChromeView: NSView {
         // view: no fade and no transition line every half second.
         guard change != .ignored, before != toneMachine.tone.rawValue else { return }
         applyTone(toneMachine.tone, animated: true)
+        let band = bands.band(for: toneMachine.tone)
         let line = String(format: "bar tone: %@ --sample(%.3f..%.3f)--> %@",
                           before, band.low, band.high, toneMachine.tone.rawValue)
         Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and luminances
         onBarToneChange?()
     }
 
-    /// The two fields cross-fade; Reduce Motion swaps them at once.
+    /// The tint's colour at `BarTitle.tintAlpha`: the side the title's tone
+    /// says the band is on (#147); the window's own background until the
+    /// first sample decides.
+    private var barTintTarget: NSColor {
+        guard toneMachine.hasSample else {
+            var colour = NSColor.windowBackgroundColor
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                colour = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? colour
+            }
+            return colour.withAlphaComponent(BarTitle.tintAlpha)
+        }
+        return BarTitle.tintColor(for: toneMachine.tone).withAlphaComponent(BarTitle.tintAlpha)
+    }
+
+    /// The two fields cross-fade, and the tint with them; Reduce Motion swaps
+    /// them at once.
     private func applyTone(_ tone: BarTone, animated: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated || reduceMotion())
+        CATransaction.setAnimationDuration(BarTitle.fadeDuration)
+        tintLayer.backgroundColor = barTintTarget.cgColor
+        backingLayer.backgroundColor = barTintTarget.withAlphaComponent(1).cgColor
+        CATransaction.commit()
         titleLight.setAccessibilityElement(tone == .light)
         titleDark.setAccessibilityElement(tone == .dark)
         let light: CGFloat = tone == .light ? 1 : 0
@@ -967,6 +1007,46 @@ final class StreamChromeView: NSView {
         return nil
     }
     var barTintVisible: Bool { !tintLayer.isHidden }
+    var barBackingForTesting: CALayer? { backingLayer }
+
+    /// Which side the tint is on (#147): `light` or `dark` once the title's
+    /// tone decided, `window` before, `none` with no tint.
+    var barTintSide: String {
+        guard barTintVisible else { return "none" }
+        guard toneMachine.hasSample else { return "window" }
+        return toneMachine.tone == .dark ? "light" : "dark"
+    }
+
+    /// The live Compact bar's mirror, by its layers (BarBlur.mirrorProblems):
+    /// `ok`, the problems joined by `+`, or `none` with no live bar.
+    var barMirrorState: String {
+        guard compactBar, !hazeLayer.isHidden, let root = ext.layer else { return "none" }
+        let problems = BarBlur.mirrorProblems(in: root, source: video.layer)
+        return problems.isEmpty ? "ok" : problems.joined(separator: "+")
+    }
+
+    /// The tone timer's tick checks the mirror too: a mirror that is not
+    /// drawing is said once per window (WIN-67).
+    func checkBarMirror() {
+        guard compactBar, !hazeLayer.isHidden, let root = ext.layer else { return }
+        barBlur.checkMirror(problems: BarBlur.mirrorProblems(in: root, source: video.layer), root: root)
+    }
+
+    /// e2e (`barmirror off`): hides the extension view's own backdrop and
+    /// portal layers, the mirror's drawing, leaving the video and our layers.
+    func stopBarMirrorForTesting() {
+        func walk(_ layer: CALayer) {
+            let name = String(describing: type(of: layer))
+            if name.contains("Backdrop") || name.contains("Portal") {
+                layer.isHidden = true
+                return
+            }
+            if layer === video.layer { return }
+            for sub in layer.sublayers ?? [] { walk(sub) }
+        }
+        if let root = ext.layer { walk(root) }
+    }
+    var barTintColor: NSColor? { tintLayer.backgroundColor.flatMap { NSColor(cgColor: $0) } }
 
     /// The tests' own clock tick: one forced sample, independent of the timer.
     func sampleBarToneForTesting() {
@@ -1030,7 +1110,7 @@ final class StreamChromeView: NSView {
             return
         }
         if immersiveChrome {
-            guard showsPill, let pill = pillFrame else {
+            guard pillOnScreen, let pill = pillFrame else {
                 hideControlRow()
                 liveTextStatus.isHidden = !liveTextActive
                 layoutLiveTextStatus()
@@ -1276,7 +1356,7 @@ final class StreamChromeView: NSView {
         if barHeight > 0 {
             return point.y >= inertBandBottom
         }
-        guard immersiveChrome, showsPill, let pillFrame else { return false }
+        guard immersiveChrome, pillOnScreen, let pillFrame else { return false }
         return pillFrame.contains(point)
     }
 
@@ -1306,7 +1386,7 @@ final class StreamChromeView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         if barHeight > 0 || framedGeometry || (isFullScreen && fullBarVisible)
-            || (immersiveChrome && showsPill) {
+            || (immersiveChrome && pillOnScreen) {
             onBarPress?()
             if event.clickCount == 2 {
                 window.performZoom(nil)
@@ -1316,56 +1396,74 @@ final class StreamChromeView: NSView {
         window.performDrag(with: event)
     }
 
-    /// The Immersive dwell pill came or went (the controller folds time in):
-    /// fade it and its buttons in over `fadeIn`, move the controls and the
-    /// lights to its slots, and on the way out park everything hidden again.
-    /// The real lights live in the title area above this view, so only their
-    /// frames change.
+    /// The Immersive dwell pill came or went (the controller folds time in).
+    /// The pill is one unit: its glass, its capsules, the Live Text button and
+    /// the three lights show together and fade together, in or out, on one
+    /// opacity over `DwellChrome.pillFade`. The real lights live in the title
+    /// area above this view, so only their frames change.
     func setPill(_ shown: Bool) {
         guard !shown || immersiveChrome else { return }
         guard showsPill != shown else { return }
         showsPill = shown
-        let controlViews: [NSView] = [pillView, actions]
-        let lights = trafficLights
         if shown {
-            controlViews.forEach { $0.alphaValue = 0 }
-            pillView.isHidden = false
-            actions.isHidden = actionCount == 0
-            lights.forEach { $0.alphaValue = 0; $0.isHidden = false }
-            layoutControls()
+            pillOnScreen = true
             pillFrame = newPillFrame()
             if let frame = pillFrame { pillView.frame = frame }
+            let members = pillMembers
+            members.forEach { $0.alphaValue = 0 }
+            pillView.isHidden = false
+            layoutControls()
             placeTrafficLights()
             window?.invalidateShadow()
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = DwellChrome.fadeIn
-                controlViews.forEach { $0.animator().alphaValue = 1 }
-                lights.forEach { $0.animator().alphaValue = 1 }
-            }, completionHandler: {
+            fadePill(members, to: 1) {
                 self.placeTrafficLights()
-            })
+            }
             // Unhiding a title-area button makes AppKit assert its standard
             // slot on the next titlebar layout pass; this comes after it.
             DispatchQueue.main.async { [weak self] in  // gcd: after AppKit's titlebar pass on this turn
-                if let self, self.showsPill { self.placeTrafficLights() }
+                if let self, self.pillOnScreen { self.placeTrafficLights() }
             }
         } else {
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = DwellChrome.fadeIn
-                controlViews.forEach { $0.animator().alphaValue = 0 }
-                lights.forEach { $0.animator().alphaValue = 0 }
-            }, completionHandler: {
-                // Still hidden: park everything for the next dwell. The buttons
-                // keep alpha 1 hidden so ⌘W/⌘M still "click" them.
-                if !self.showsPill {
-                    self.pillView.isHidden = true
-                    self.actions.isHidden = true
-                    self.actions.alphaValue = 1
-                    self.lightsHide()
-                    self.window?.invalidateShadow()
-                }
-            })
+            fadePill(pillMembers, to: 0) {
+                // Shown again meanwhile: the fade-in owns the pieces now.
+                if !self.showsPill { self.parkPill() }
+            }
         }
+    }
+
+    /// Every piece of the pill that is on screen with it.
+    private var pillMembers: [NSView] {
+        var members: [NSView] = [pillView, liveTextCapsule, liveTextButton]
+        if !actions.isHidden || actionCount > 0 { members.append(actions) }
+        if immersiveChrome, !lightsManagedByAppKit { members += trafficLights }
+        return members
+    }
+
+    /// One fade for the whole pill: every piece in the same animation group.
+    /// A view that has been hidden since it was made has no layer yet, and an
+    /// alpha change on it is not animated (the glass and the lights popped in
+    /// on the first reveal): each piece is layer-backed before the fade.
+    private func fadePill(_ members: [NSView], to alpha: CGFloat, completion: @escaping () -> Void) {
+        for view in members where view.layer == nil { view.wantsLayer = true }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = DwellChrome.pillFade
+            context.allowsImplicitAnimation = true
+            members.forEach { $0.animator().alphaValue = alpha }
+        }, completionHandler: completion)
+    }
+
+    /// The pill is gone: everything parked hidden for the next dwell. The
+    /// buttons keep alpha 1 hidden so ⌘W/⌘M still "click" them.
+    private func parkPill() {
+        pillOnScreen = false
+        pillView.isHidden = true
+        pillView.alphaValue = 0
+        hideControlRow()
+        actions.alphaValue = 1
+        liveTextCapsule.alphaValue = 1
+        liveTextButton.alphaValue = 1
+        lightsHide()
+        window?.invalidateShadow()
     }
 
     private func lightsHide() {
@@ -1373,7 +1471,7 @@ final class StreamChromeView: NSView {
         // Immersive full screen gives them to AppKit.
         guard immersiveChrome, !lightsManagedByAppKit else { return }
         trafficLights.forEach {
-            if !showsPill {
+            if !pillOnScreen {
                 $0.isHidden = true
                 $0.alphaValue = 1
             }
@@ -1529,8 +1627,8 @@ final class StreamChromeView: NSView {
             } else if immersiveChrome {
                 // The pill's row: 8 pt in from its edge, 14x14 centred on the
                 // pill's centre line; out of sight while the chrome is hidden.
-                light.isHidden = !showsPill
-                light.alphaValue = 1
+                // Its opacity is the pill's (setPill), never set here.
+                light.isHidden = !pillOnScreen
                 let x = DwellChrome.pillLightInset + CGFloat(i) * DwellChrome.pillLightSpacing
                 let frame = NSRect(x: x,
                                    y: height - DwellChrome.pillInset - DwellChrome.pillHeight / 2
@@ -1557,10 +1655,8 @@ final class StreamChromeView: NSView {
     /// lights; the Immersive pill never survives a switch.
     func setStyle(_ new: WindowStyle) {
         guard style != new else { return }
-        if showsPill { setPill(false) }
-        pillView.isHidden = true
-        pillView.alphaValue = 0
-        actions.isHidden = true
+        showsPill = false
+        parkPill()
         style = new
         layoutChrome()
         placeTrafficLights()

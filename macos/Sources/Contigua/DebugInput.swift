@@ -135,6 +135,10 @@ enum DebugInputAction: Equatable {
     /// for the phone in use, through the same write-then-apply path (e2e).
     case shortcutsAll(Bool)
     case windowStyle(String)
+    /// `barmirror off` (e2e): the system mirror's own layers in the Compact
+    /// bar stop drawing, the way a real display left them (#45), so a check
+    /// can see what the bar shows without them.
+    case barMirrorOff
     /// View ▸ Hide Controls' pick: the full-screen reveal choice.
     case hideControls(FullScreenMenuItem)
     /// The Navigate menu's action: back, home or recents.
@@ -293,6 +297,9 @@ enum DebugInputScript {
                 throw LineError(message: "windowstyle needs \(verbs.joined(separator: ", "))")
             }
             return .windowStyle(verb)
+        case "barmirror":
+            guard args == ["off"] else { throw LineError(message: "barmirror needs off") }
+            return .barMirrorOff
         case "hidecontrols":
             switch args.first {
             case "instantly" where args.count == 1: return .hideControls(.delay(.instantly))
@@ -817,6 +824,9 @@ final class DebugInputDriver {
             dockApps?(on)
         case .shortcutsAll(let on):
             shortcutsAll?(on)
+        case .barMirrorOff:
+            guard let controller = view.window?.windowController as? StreamWindowController else { return }
+            controller.chrome.stopBarMirrorForTesting()
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             if let style = WindowStyle(debugName: target) {
