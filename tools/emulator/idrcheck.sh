@@ -33,7 +33,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_IDRCHECK_WORK:-/tmp/pd-idrcheck-emu}"
-OUT="${CONTIGUA_IDRCHECK_OUT:-$ROOT/.agent/idrcheck/emu}"
+OUT="${CONTIGUA_IDRCHECK_OUT:-$ROOT/.work/idrcheck/emu}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"

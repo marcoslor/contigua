@@ -85,7 +85,7 @@ enum WindowStyle: String, CaseIterable {
 /// (76 px), a 21 pt window radius (42 px) and a 12 pt picture radius (24 px,
 /// deliberately not concentric: 21 - 5 is 16), with a 0.5 pt outer hairline,
 /// a 1 pt inner rim and a white top highlight fading over the first 10 pt.
-/// The reference is docs/DESIGN.md; the side-by-side is .agent/styles/.
+/// The reference is docs/DESIGN.md; the side-by-side comparison was made by eye.
 enum FramedChrome {
     static let topInset: CGFloat = 38
     static let sideInset: CGFloat = 5

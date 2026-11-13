@@ -5,7 +5,7 @@ package app.contigua.server
  *
  * The cap is per phone and covers every app stream — each is a virtual display
  * with its own encoder, and the encoder is what the phone pays for
- * (`.agent/multiwin/spike.md`). The Phone Mirror has a separate encoder and is
+ * The Phone Mirror has a separate encoder and is
  * never counted; neither is a stream that has not got as far as naming its
  * content.
  *

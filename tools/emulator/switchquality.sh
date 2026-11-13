@@ -13,7 +13,7 @@
 # must pass every PATH-46 bound. The forwarded leg is shaped by pdpathfault:
 # the emulator console's `network speed` shapes the guest's NIC, not the adb
 # forward the Mac reaches, so `netshape.sh show` only proves the console is
-# unshaped (measured 2026-11-09; see .agent/switch/netem.md).
+# unshaped (measured 2026-11-09).
 #
 # Build the APK first:
 #   cd <worktree>/android && ./gradlew :app:assembleDebug
@@ -37,7 +37,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_SWITCHQUALITY_WORK:-/tmp/pd-switch-quality}"
-OUT="${PD_SWITCHQUALITY_OUT:-$MAIN_REPO/.agent/switch/quality}"
+OUT="${PD_SWITCHQUALITY_OUT:-$MAIN_REPO/.work/switch/quality}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"

@@ -193,8 +193,7 @@ final class BarContrastTests: XCTestCase {
 
 /// The bar's material comes from the window's appearance as soon as the chrome
 /// is in a window, not only on a later change: a window created in Dark kept a
-/// light bar until something changed the system appearance (the capture in
-/// `.agent/conv-fixes-1/bar-focus.png`).
+/// light bar until something changed the system appearance (a capture showed it).
 @MainActor
 final class BarAppearanceTests: XCTestCase {
     private func chrome(in appearance: NSAppearance?) -> (NSWindow, StreamChromeView) {

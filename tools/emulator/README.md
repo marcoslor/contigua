@@ -22,7 +22,7 @@ OpenSSL 3; `lib.sh` tries `/opt/homebrew/bin/python3`, override with
 ```sh
 tools/emulator/setup.sh    # SDK packages + AVD (idempotent)
 tools/emulator/start.sh    # boot, Shizuku, build+install the app, print the address
-tools/emulator/flow.sh     # the core POC check, writes PNGs to .agent/emu/frames/
+tools/emulator/flow.sh     # the core POC check, writes PNGs to .work/emu/frames/
 ```
 
 `start.sh` prints the address to use:
@@ -60,7 +60,7 @@ timeout 1800 bash tools/emulator/verify-batch.sh
 depend on each other — the paired row, media part 2, screen off/wake, secure
 screens, the music volume, and `apps.icon` at 216 and 1296 px — and kills the
 emulator at the end, whatever happened. Its result is one line per section in
-`.agent/emu/verify-batch.log`:
+`.work/emu/verify-batch.log`:
 
 ```
 SECTION media PASS 12 checks: sessions: 2 1 s2 s1,s2 art: ... w=512 h=512 ...
@@ -88,9 +88,9 @@ refuses a v3-shaped hello with `v=4`, and waits out the 30 s grace (the Mac's
 apk must already be built (`start.sh --no-build` installs it). `--check` is the
 rehearsal: `preflight.sh`, the stale APK/Mac app checks and the tools, with no
 device and no boot. Results and the table go to
-`.agent/direct-link/p1-emulator.md`; the per-phase logs are under
+`.work/direct-link/p1-emulator.md`; the per-phase logs are under
 `/tmp/pd-direct-p1-emu/` (copy them before another `--check`). The boot budget
-is in `.agent/budgets/<worktree>` and the ledger is
+is in `.work/budgets/<worktree>` and the ledger is
 `/tmp/contigua-boots.ledger`; one boot per run, `adb -s emulator-5554 emu
 kill` only.
 
@@ -114,7 +114,7 @@ kill` only.
   show: `bash -n` on every rig script, the APK's versionCode against the build
   file, every component the scripts name against the APK's merged manifest,
   deckctl's subcommands (parser and handler) and TLS 1.3, and the boot budget in
-  `.agent/budgets/<worktree>` against `/tmp/contigua-boots.ledger`.
+  `.work/budgets/<worktree>` against `/tmp/contigua-boots.ledger`.
 
 ## What start.sh does
 
@@ -213,7 +213,7 @@ tap the address bar, type `example.com`, tap the new-message button, `wait:5`
 step is not judged as input; every real input step must change that stream's
 frames, and the frames are saved so the effect is visible in the PNG.
 
-Frames and raw H.264 land in `.agent/emu/frames/` (gitignored).
+Frames and raw H.264 land in `.work/emu/frames/` (gitignored).
 
 ## Notes / limitations
 

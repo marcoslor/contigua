@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nfr.sh — the non-functional gate (docs/NFR.md): the NFR K2 tests and the host
 # e2e check `nfr`, one after the other. Every step takes the machine-wide lock
-# (.agent/heavy.sh, when the checkout has one) and gives it back before the next; nothing runs beside a build,
+# (.work/heavy.sh, when the checkout has one) and gives it back before the next; nothing runs beside a build,
 # an e2e run or another agent's heavy step.
 #
 #   macos/scripts/nfr.sh
@@ -13,14 +13,14 @@ set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
-# .agent is gitignored, so a clone has no heavy.sh: then the steps run directly.
+# .work is gitignored, so a clone has no heavy.sh: then the steps run directly.
 # Elsewhere it lives in the main checkout (CONTIGUA_HEAVY overrides).
 _common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || _common=""
 MAIN="$ROOT"
 [ -n "$_common" ] && MAIN="$(cd "$_common/.." 2>/dev/null && pwd)"
 [ -n "$MAIN" ] || MAIN="$ROOT"
-HEAVY="${CONTIGUA_HEAVY:-$MAIN/.agent/heavy.sh}"
-[ -x "$HEAVY" ] || HEAVY="$ROOT/.agent/heavy.sh"
+HEAVY="${CONTIGUA_HEAVY:-$MAIN/.work/heavy.sh}"
+[ -x "$HEAVY" ] || HEAVY="$ROOT/.work/heavy.sh"
 [ -x "$HEAVY" ] || HEAVY=""
 PORT="${PD_E2E_PORT:-47980}"
 PROFILE="${PD_E2E_PROFILE:-nfr1}"

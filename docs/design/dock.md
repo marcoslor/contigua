@@ -110,8 +110,7 @@ system apps with `px` 216 and 1296:
 | 1296 | 864×864 px, 45.7–203.5 KB | 1296×1296 px each | 652–693 ms |
 
 The flat icon is exactly `px`·2/3 and every layer exactly `px`, all three apps
-sent fg and bg (two also `mono`), and the 1296 fg/bg PNGs were saved under
-`.agent/rig-verify/icons/` and checked by eye: the visible artwork sits inside
+sent fg and bg (two also `mono`), and the 1296 fg/bg PNGs were saved and checked by eye: the visible artwork sits inside
 the central 72 dp of the 108 dp layer, as `IconSizes`/the launcher crop expect.
 Render times are software-GPU emulator numbers and say nothing about the phone.
 

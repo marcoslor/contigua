@@ -8,7 +8,7 @@ of side effects. Every limit below lives in one machine-readable file,
 copy of a limit.
 
 Numbers marked **measured** come from the host e2e run of 2026-10-20 with
-profile `nfr1` (the raw lines are in `.agent/nfr-checks/progress.md`). A time
+profile `nfr1`. A time
 budget is about three times the measured p95, rounded up; the safety limits
 (contrast, layout, stale picture, hanging reply) come from the product
 promise in `AGENTS.md`, not from a measurement.

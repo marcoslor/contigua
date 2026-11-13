@@ -515,7 +515,7 @@ Not verified (both hardware sessions were spent on the test client, not on the f
   because the ad-hoc verification client was started with the macOS system `python3` (3.9,
   no TLS 1.3) instead of the rig's `$PYTHON`; it printed `Unsupported protocol version 0x304`
   and the run had no forwarded ids. With that one line fixed (use `$PYTHON`) the same script
-  (`.agent/notify2/emu.sh`) should run. So on a real listener **unverified**: action mapping,
+  should run. So on a real listener **unverified**: action mapping,
   RemoteInput fill, `cancelNotification`, the ongoing refusal.
 - **VM (1 session used)**: the guest booted and the app received the reply-shaped
   `notify.post` (id, 2 actions, reply=1) over a healthy session, but the new visible check
@@ -557,7 +557,7 @@ notification):
   notification was ever forwarded: the watch client saw `notify.state on=true` and then
   nothing. The emulator had to be killed at the end of the run (the boot budget), so no
   logcat survived. The likely cause is the implicit `am broadcast` for the debug poster
-  never reaching the manifest receiver; `.agent/notify3/emu.sh` now sends it with
+  never reaching the manifest receiver; the emulator script now sends it with
   `-p app.contigua`, keeps each broadcast's output in `broadcast.log`, and its
   assertions pass against a synthetic log (`--self-test`). So on a real listener
   **unverified**: reply/button mapping, RemoteInput fill, `cancelNotification`, the
@@ -701,4 +701,4 @@ Still unproven on a real listener: `getActiveSessions` ordering and key
   and the no-text rule. `notify-vm` (SKIP on the host) drives real banners with AX inside the
   VM: Reply, Send, Copy code, and a banner clear.
 - ROADMAP #7 is marked done only if notifications AND media controls both work end to end on
-  the emulator; otherwise the gaps are listed in `.agent/notify/progress.md` and the doc.
+  the emulator; otherwise the gaps are listed in the doc.

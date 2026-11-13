@@ -35,7 +35,7 @@
 #       at most 350 ms (the field log: 639 ms);
 #   (d) the phone is still locked afterwards (WIN-20).
 # The evidence is the dumps and the app's own lines, never pixels. Results go to
-# .agent/locked-multi/locked-multi*.log. It never touches a phone but $SERIAL.
+# .work/locked-multi/locked-multi*.log. It never touches a phone but $SERIAL.
 set -u
 
 MODE=run
@@ -78,7 +78,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47995}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/locked-multi"
+export CONTIGUA_AGENT_DIR="$PWD/.work/locked-multi"
 # start.sh sets this before it launches the server, so the policy is built forced.
 export CONTIGUA_FORCE_PANEL_OFF=1
 mkdir -p "$CONTIGUA_AGENT_DIR"
@@ -209,7 +209,7 @@ PY
   echo "start.sh --no-build; set force_panel_off + vd_panel_group; install the APK;"
   echo "pkill the shell service; ensure Shizuku; restart_server; prove the forced init;"
   echo "(pair with the rig PIN on a boot); lock.sh; run the driver; read the dumps + logcat."
-  echo "--- budget: $(tr '\n' ' ' < "$MAIN_REPO/.agent/budgets/locked-multi" 2>/dev/null) ---"
+  echo "--- budget: $(tr '\n' ' ' < "$MAIN_REPO/.work/budgets/locked-multi" 2>/dev/null) ---"
   echo "--- boots already in the ledger for locked-multi: $(ledger_boots /tmp/contigua-boots.ledger locked-multi) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"

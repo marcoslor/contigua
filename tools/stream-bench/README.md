@@ -288,7 +288,7 @@ or a dead picture is exactly the stage being measured.
 
 ```sh
 tools/stream-bench/bench.py --profile default --serial R58M1234 \
-    --repeats 3 --out .agent/stats/bench.csv
+    --repeats 3 --out .work/stats/bench.csv
 ```
 
 `arms.json` ships every strategy arm. To compare them all, run three repeats
@@ -296,7 +296,7 @@ tools/stream-bench/bench.py --profile default --serial R58M1234 \
 
 ```sh
 tools/stream-bench/bench.py --profile stats --serial R58M1234 \
-    --repeats 3 --out .agent/strat/bench.csv
+    --repeats 3 --out .work/strat/bench.csv
 ```
 
 The table prints one row per arm. With `--repeats 1` it is a smoke test that
@@ -306,7 +306,7 @@ To run only the stall arms (the reviewer's round-2 list):
 
 ```sh
 tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
-    --arms-filter stall --repeats 1 --out .agent/stats/stall.csv
+    --arms-filter stall --repeats 1 --out .work/stats/stall.csv
 ```
 
 `--arms-filter <prefix>` keeps the arms whose name starts with the prefix,
@@ -316,10 +316,10 @@ A first-frame baseline and a one-minute soak need no arm comparison:
 
 ```sh
 tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
-    --script still --repeats 1 --out .agent/stats/still.csv
+    --script still --repeats 1 --out .work/stats/still.csv
 tools/stream-bench/bench.py --profile stats --serial emulator-5554 \
     --script soak --soak-minutes 1 --sample-seconds 10 \
-    --repeats 1 --out .agent/stats/soak.csv
+    --repeats 1 --out .work/stats/soak.csv
 ```
 
 `--dry-run` prints the chosen script, the arms and the repeat count without

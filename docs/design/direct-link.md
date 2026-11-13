@@ -1,7 +1,7 @@
 # Direct link — the Wi-Fi Aware provider
 
 Design for epic "direct link", phase P0. Implements decisions D6–D9 of
-`.agent/direct-link/plan.md`. The session layer it plugs into is
+the epic plan. The session layer it plugs into is
 `docs/design/paths.md`; the requirements are `docs/specs/transport.md`
 (`DIRECT-n`). The evidence is `docs/research/wifi-aware-direct-link/` (the
 README, the 2026-10-30 proof, and the probe sources it names).

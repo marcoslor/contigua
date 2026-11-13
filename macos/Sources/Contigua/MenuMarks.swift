@@ -2,9 +2,8 @@
 //
 // SwiftUI builds a command item once and never re-reads its state: a check
 // mark, an enabled flag or a title that depends on the running window keeps the
-// value it had when the commands were built (measured in an activated app, see
-// .agent/menu-ux/report.md). The app keeps every item SwiftUI's, so no rebuild
-// can drop one, and corrects those few values on the items it already has. It
+// value it had when the commands were built (measured in an activated app). The app keeps every item
+// SwiftUI's, so no rebuild can drop one, and corrects those few values on the items it already has. It
 // never adds, removes or replaces an item.
 //
 // `edits` is the rule as a value — the menu's title, its items and the state —

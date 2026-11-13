@@ -18,7 +18,7 @@
 # inside the VM nobody is typing, so the real-input checks run too. Set
 # PD_VM_VISIBLE=0 for a quiet run.
 #
-# Boot, run and stop happen inside the machine-wide heavy lock (RULES.md 14),
+# Boot, run and stop happen inside the machine-wide heavy lock,
 # after the memory gate. The run's output is copied back to
 # macos/build/vm-e2e/<list>/ (run.log, work/ for a single check; checks/<name>/
 # run.log + work/ for a list). Exit code is the check's, or the number of
@@ -28,7 +28,7 @@
 # copied out to PD_VM_SHOT_DIR/<appearance>/ while the heavy lock is still
 # held, before the next boot's `rm -rf` of the output dir: a lost work dir must
 # never lose the shots again. PD_VM_SHOT_DIR defaults to
-# $ROOT/.agent/mw-mac/shots/r5b; the destination is merged into, never
+# $ROOT/.work/mw-mac/shots/r5b; the destination is merged into, never
 # removed, so no boot deletes an earlier boot's copy.
 set -uo pipefail
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
@@ -251,7 +251,7 @@ fi
 # inside the heavy lock: this is the last moment before the next boot's
 # `rm -rf "$OUT"` can lose them (round 5). One folder per appearance, and the
 # helper merges instead of replacing, so boot 9 cannot delete boot 8's set.
-shot_root="${PD_VM_SHOT_DIR:-$ROOT/.agent/mw-mac/shots/r5b}"
+shot_root="${PD_VM_SHOT_DIR:-$ROOT/.work/mw-mac/shots/r5b}"
 shot_dest="$shot_root/$SHOT_APPEARANCE"
 shot_rc=0
 if [ "${#CHECKS[@]}" = 1 ]; then

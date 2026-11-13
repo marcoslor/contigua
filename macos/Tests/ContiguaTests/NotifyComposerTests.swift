@@ -271,8 +271,8 @@ final class NotifyComposerTests: XCTestCase {
 
     // MARK: the review's fixtures
 
-    /// The four cases the reviewer looks at (brief: .agent/notify-badge/
-    /// composed-*.png). Generated art, written to /tmp so the run leaves the
+    /// The four cases the reviewer looks at.
+    /// Generated art, written to /tmp so the run leaves the
     /// proof beside the task.
     func testTheReviewFixturesAreWritten() throws {
         let directory = URL(fileURLWithPath: "/tmp/contigua-notify-badge", isDirectory: true)

@@ -8,7 +8,7 @@ through the same stdio shim `mcp-driver.py` uses. It never launches, quits or
 changes the Mac app.
 
     tools/stream-bench/bench.py --profile default --serial R58M1234 \
-        --repeats 3 --out .agent/stats/bench.csv
+        --repeats 3 --out .work/stats/bench.csv
 
 Arms are named in arms.json: phone properties (`debug.contigua.stream.*` via
 `adb -s <serial> shell setprop`) and Mac defaults (`defaults write <domain>`)

@@ -21,7 +21,7 @@ esac
 cd "$REPO_ROOT"
 
 PKG=app.contigua
-SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.agent/phone-reset/shots}"
+SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.work/phone-reset/shots}"
 
 ui_text() {
   emu shell uiautomator dump --compressed "$1" >/dev/null 2>&1 || true

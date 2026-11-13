@@ -17,8 +17,8 @@ HEAVY_LOCK="/tmp/contigua-heavy.lock"
 
 say() { printf '%s\n' "$*"; }
 
-# heavy_lock — RULES.md 14: every heavy step is serialized machine-wide. A
-# caller that already holds the lock (for example under .agent/heavy.sh) must not take it again
+# heavy_lock — every heavy step is serialized machine-wide. A
+# caller that already holds the lock (for example under .work/heavy.sh) must not take it again
 # (that would deadlock on itself): if the lock's holder is one of our
 # ancestors, we ARE the step it is running.
 heavy_held_by_ancestor() {
@@ -54,7 +54,7 @@ heavy_unlock() {
     HEAVY_OWN=0
 }
 
-# memory_gate — RULES.md 12: the 8 GB Mac was force-restarted once under load.
+# memory_gate — the 8 GB Mac was force-restarted once under load.
 # Do not boot a VM unless at least 25% of memory is free and swap is under
 # 2 GB. Waiting is the rule's other half: one boot moves a few hundred MB into
 # swap and macOS keeps it there while nothing asks for the RAM, so back-to-back

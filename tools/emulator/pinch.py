@@ -22,7 +22,7 @@ import deckctl  # noqa: E402
 import proto  # noqa: E402
 
 DEFAULT_STATE = os.path.join(HERE, ".cache", "deckctl-state.json")
-DEFAULT_OUT = os.path.join(REPO, ".agent", "multitouch")
+DEFAULT_OUT = os.path.join(REPO, ".work", "multitouch")
 KEYCODE_ENTER = 66
 
 

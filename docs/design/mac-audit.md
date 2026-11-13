@@ -2,7 +2,7 @@
 
 Walked as a first-time user on 2026-10-12 against `tools/fakephone/fakephone.py` (port 47510,
 mDNS on), with a private build of `macos/` (own bundle id and Keychain service, so no user data
-was touched). Screenshots: `.agent/redesign/shots/`. Line numbers refer to the tree as read at
+was touched). Line numbers refer to the tree as read at
 the start of the audit; the profile task was editing `Identity.swift`, `Session.swift`,
 `App.swift` and `LauncherWindow.swift` concurrently, so lines may have shifted by a few.
 
@@ -183,7 +183,7 @@ is stale while the link is down.
 ## Phase B re-walk
 
 Walked again on 2026-10-13 against fakephone (port 47510, mDNS on) with a release bundle of the redesigned app
-(profile `redesign`). Screenshots: `.agent/redesign/shots/rewalk/`, plus the light/dark set in `.agent/redesign/shots/final/`.
+(profile `redesign`).
 
 | Step | Result | Evidence |
 |---|---|---|

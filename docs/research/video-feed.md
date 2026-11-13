@@ -137,7 +137,7 @@ The order after round 2:
 
 ## How each run is measured
 
-The stats work (ISS-40's measurement, `.agent/stats/brief.md`) logs a line per
+The stats work (ISS-40's measurement) logs a line per
 window every 5 s, and **one complete line when the window closes**:
 
 - **Smoothness:**
@@ -463,7 +463,7 @@ What the round found wrong with the measurement:
 - **The medians counted low-motion runs** (today's policy's median of 613 included the run with no picture).
 - **Corruption is invisible to the numbers.** A run needs a check that the frame a drop resumes on is an IDR (the Mac can read the NAL type of every key-flagged frame it decodes), and the bench should keep one screenshot per swipe phase through the automation tool, for the reviewer to look at.
 
-Raw data: `.agent/stats/round2/` (not in the repo).
+Raw data is not in the repo.
 
 ## Third real-phone round: Q1 after its fix, against the fixed default (2026-11-05)
 
@@ -501,7 +501,7 @@ What the round found wrong with the measurement:
   - Yet the next line counted 912 ms of freezes and no gap that long.
   - Either the gap wasn't there, or something resets the freeze baseline after a drop (a new `VIDEO_CONFIG` resets it). `max_gap_ms` now survives a config, and both ends time the recovery (below), so the next real-phone run settles it. That gap may be the "freeze" half of the person's freeze-then-blocky loop.
 
-Raw data: `.agent/stats/round3/` (not in the repo).
+Raw data is not in the repo.
 
 ## Fourth real-phone round: is the resume frame an IDR? (2026-11-06)
 
@@ -527,7 +527,7 @@ What it shows:
   - If R4 comes back, the first step is a per-reason `mac_drop` and a window capture during `stall-ir60`.
 - **The queue policy is settled.** Today's default, with the v147 fix, stays. The stall arms are dominated by the injected stall itself, and the policies differ by less than the run-to-run spread. The next gains are on the encoder side: C1 HEVC, T2 ROI QP, T3 super-resolution, and M3, the Mac's adaptive jitter buffer. Field logs from the person's own use come first: the 5 s lines now carry `max_gap_ms` and the drops.
 
-Raw data: `.agent/stats/round4/` (not in the repo).
+Raw data is not in the repo.
 
 ### How the resuming frame is counted
 
@@ -635,7 +635,7 @@ What it shows:
 - **QP is a proxy.** The two codecs' QP scales are close but not identical, and HEVC's larger transforms and SAO can look better at the same QP. A real answer needs a full-reference score (PSNR or SSIM of the Mac's decoded frame against the phone's own capture), which the bench doesn't have.
 - **Decision:** H.264 stays the default. HEVC stays as the `codec=hevc` arm. The next quality work is T2 (ROI QP for text) and a full-reference score for the bench, not the codec.
 
-Raw data: `.agent/stats/round5/` (not in the repo).
+Raw data is not in the repo.
 
 ## UDP with redundancy, checked against three days of logs (2026-11-06)
 
@@ -663,8 +663,7 @@ Raw data: the Mac's unified log, `subsystem == "app.contigua.mac"`, lines with `
 The pmaxx epic's first real-phone round. Profile `pmaxx`, H.264, TLS/TCP, the
 `baseline` arm only; three runs of each script unless named; the person's
 S25+ over Wi-Fi 6E at 5 GHz, RSSI −38…−40 dBm, link 1.0–1.7 Gbps on channel
-5180 MHz; the Mac's built-in 60 Hz 2560×1600 panel. Raw rows live in
-`.agent/pmaxx/data/round1/` and are never committed.
+5180 MHz; the Mac's built-in 60 Hz 2560×1600 panel. Raw rows are not in the repo.
 
 | script | runs | encoder fps | Mac rx | Mac shown | first frame (ms) | input→photon (ms) |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -740,7 +739,7 @@ arm itself is P4's.
 Arm: the same shaper, 120 s of motion (both 30 s probes and the hold after them), with the phone log and the Mac stats
 recorded. Pass: no repeated `drop episode`/`key after` cycle and no visible
 break in the picture; the bitrate holds below the measured goodput. The script
-is `/tmp/pd-fault.sh` (copy in `.agent/pmaxx/pd-fault.sh`); `on 100 3` applies
+is `/tmp/pd-fault.sh`; `on 100 3` applies
 it, `off` restores. `pdpathfault.py` also gained `delay-throttle` for the
 emulator/fake-phone version.
 
@@ -825,7 +824,7 @@ forced IDR — cheapest, but the encoder may not shrink the IDR in proportion;
 delta after a break until a real keyframe, so GDR recovery points would be
 needed first. The real-phone arm decides. One emulator boot with the
 correction build, and the real-phone arm, remain; the emulator budget was 3 of
-3. The real-phone commands are in `.agent/overrun/real-phone.md`.
+3. The real-phone commands are not in the repo.
 
 ## Presets, later
 

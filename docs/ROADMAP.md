@@ -74,7 +74,7 @@ Batch C (M, one at a time)
 - [x] C3 Mac: live resize. Until the phone sends a frame at the new size, the last frame fills the window aspect-fill (centred crop) instead of letterboxing; the reflection samples only the video, never the black gap.
 
 Batch D (M-L)
-- [x] D1 Hover pass-through: Mac pointer moves reach the phone as mouse hover (ACTION_HOVER_*), e.g. Chrome's new-tab Lens button reacts as with a real mouse. Brief: .agent/hover/brief.md.
+- [x] D1 Hover pass-through: Mac pointer moves reach the phone as mouse hover (ACTION_HOVER_*), e.g. Chrome's new-tab Lens button reacts as with a real mouse.
 - [x] D2 Clicking a Mac notification runs its action in a Contigua window. Setting: Open on Mac (default) / Open on phone / Do nothing.
 
 ## v0.2 — deeper integrations (planned 2026-10-19, in this order)

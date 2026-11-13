@@ -16,7 +16,7 @@
 #           so no still goes out, and the Mac says stall=1 within 1.5-2.5 s of
 #           the last still
 #
-# The BEFORE phase is round 1's run (5.6 s stall, .agent/static-stall/); it is
+# The BEFORE phase is round 1's run (5.6 s stall, .work/static-stall/); it is
 # not repeated. One boot. The APK and Mac bundle are built before the boot; this
 # script only installs, drives, judges and kills. Run it as
 #
@@ -25,7 +25,7 @@
 set -uo pipefail
 
 WT="$(cd "$(dirname "$0")/../.." && pwd)"
-E="$WT/.agent/static-stall"
+E="$WT/.work/static-stall"
 PORT="${CONTIGUA_PORT:-47994}"
 SERIAL="${CONTIGUA_SERIAL:-emulator-5554}"
 export CONTIGUA_PORT="$PORT" CONTIGUA_SERIAL="$SERIAL"

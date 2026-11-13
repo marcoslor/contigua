@@ -22,7 +22,7 @@
 #   (d) the press still locked the phone (keyguard showing) — nothing here
 #       dismisses it, unlocks it or changes a lock setting.
 # The evidence is the app's own state lines and the gap it measures, never
-# pixels. Results go to .agent/emu/power-lock.log.
+# pixels. Results go to .work/emu/power-lock.log.
 set -u
 
 MODE=run
@@ -41,7 +41,7 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export CONTIGUA_PORT="${CONTIGUA_PORT:-47813}"
 export CONTIGUA_SERIAL=emulator-5554
-export CONTIGUA_AGENT_DIR="$PWD/.agent/emu"
+export CONTIGUA_AGENT_DIR="$PWD/.work/emu"
 export CONTIGUA_FORCE_PANEL_OFF=1
 mkdir -p "$CONTIGUA_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh

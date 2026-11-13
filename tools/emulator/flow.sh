@@ -8,7 +8,7 @@
 # every phase as a PNG -> tap/text/scroll and prove the frames changed.
 # The phone-side work is deckctl's (`apps`, `multi`); the two local bits deckctl
 # cannot do (reading the pairing prompt, judging the PNGs) are in poc.py.
-# Exits non-zero on the first failed step; frames land in .agent/emu/frames/.
+# Exits non-zero on the first failed step; frames land in .work/emu/frames/.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 

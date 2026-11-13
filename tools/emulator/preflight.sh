@@ -167,7 +167,7 @@ if [ "${PD_PREFLIGHT_DRY_RUN:-0}" = "1" ]; then
   ok "boot budget check skipped (dry run; the boot guard still enforces it)"
 else
   NAME="$(basename "$REPO_ROOT")"
-  BUDGET_FILE="$MAIN_REPO/.agent/budgets/$NAME"
+  BUDGET_FILE="$MAIN_REPO/.work/budgets/$NAME"
   LEDGER=/tmp/contigua-boots.ledger
   if [ -f "$BUDGET_FILE" ]; then
     LIMIT="$(sed -n 's/^emulator=\([0-9][0-9]*\)$/\1/p' "$BUDGET_FILE" | head -1)"

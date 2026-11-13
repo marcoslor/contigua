@@ -19,14 +19,14 @@
 #     the marker to a rejoined path, the first frame is within 2 s and frames
 #     keep flowing for 20 s (no gap over 1 s), and no graceExpired follows.
 #
-# It boots once (budget .agent/budgets/direct-p0), and kills only
+# It boots once (budget .work/budgets/direct-p0), and kills only
 # `adb -s emulator-5554 emu kill`. A rig failure in the pair step is retried
 # once; a tap that then died on the Mac is a product failure and stops. Evidence
 # lands in $WORK and the caller's stdout; every line is also teed to
 # $WORK/p1-proof.out (the reviewer's copy).
 # Each phase gets its own `fault-{a,b}.<phase>.{events,log,ctl}` and the drop's
 # verdict reads those events plus the proxies' delivered-byte counts. The table
-# goes to .agent/direct-link/p1-emulator.md.
+# goes to .work/direct-link/p1-emulator.md.
 #
 # Run it as: timeout 2700 bash tools/emulator/p1-proof.sh
 # Rehearse it as the same line with --check (no device, no boot).
@@ -995,7 +995,7 @@ if ! start_rig; then
     # reuses this same boot. Another worktree's debug build on the AVD has a
     # different signing key, which -r -d cannot replace, so uninstall it and
     # let start.sh install this tree's APK. (The adb error itself lands in
-    # .agent/emu/install-failure.log, not in start.log's last line.)
+    # .work/emu/install-failure.log, not in start.log's last line.)
     if device_present && grep -q 'could not install app.contigua' "$WORK/start.log"; then
         printf '[p1-proof] removing the AVD copy of app.contigua so this tree signs it\n'
         "$ADB" -s "$SERIAL" uninstall app.contigua >/dev/null 2>&1 || true
@@ -1405,7 +1405,7 @@ sleep 3
 # watches 60 s. The verdicts come from the frames' own timeline and paths
 # (mirror-blackhole.py).
 section mirror-blackhole
-MIRROR_CONFIRM="$ROOT/.agent/direct-link/p1-confirm"
+MIRROR_CONFIRM="$ROOT/.work/direct-link/p1-confirm"
 
 # mirror_steady — 0 when the last 10 s hold frames with no empty run over 1 s.
 mirror_steady() {

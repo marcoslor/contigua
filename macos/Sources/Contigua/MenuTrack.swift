@@ -11,7 +11,7 @@
 // The menu is opened with `NSMenu.popUp`, which is the same tracking loop a
 // click runs; it is not AX's `AXPress` on the menu bar item because that
 // activates a background app and takes the person's keyboard for the length of
-// the run (the quiet rule in .agent/_common.md). Nothing moves the pointer
+// the run (the quiet rule). Nothing moves the pointer
 // unless the caller names an item to hover (WIN-27's shots): then the menu is
 // positioned so that item's corner is known, the check puts the real pointer
 // there, and the report says which item the tracking loop highlighted.
