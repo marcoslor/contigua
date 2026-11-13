@@ -361,7 +361,7 @@ internal class AudioCapture(
             // The record's attribution must be uid 2000 + com.android.shell (from
             // the ShellContext); our own package at the shell UID is rejected.
             AudioRecord.Builder()
-                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
+                .setContext(ctx)
                 .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
                 .setAudioFormat(
                     AudioFormat.Builder()
@@ -512,7 +512,7 @@ internal class AudioCapture(
             // accepts (the framework's own sink uses the process attribution
             // and is rejected at uid 2000 with a package).
             val rb = AudioRecord.Builder()
-                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
+                .setContext(ctx)
             PolicyAudio.recordSetAttributes.invoke(rb, PolicyAudio.attrsBuild.invoke(ab))
             val rec = rb
                 .setAudioFormat(
