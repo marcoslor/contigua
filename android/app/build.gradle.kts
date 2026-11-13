@@ -16,7 +16,7 @@ android {
         // must be bumped on every install or the previously-bound service keeps
         // running instead of being replaced.
         versionCode = 149
-        versionName = "0.1.0"
+        versionName = rootProject.file("../VERSION").readText().trim()
     }
 
     buildFeatures {
@@ -34,9 +34,27 @@ android {
         jvmTarget = "17"
     }
 
+    // Release signing comes from the environment, never from the repository
+    // (docs/CONTRIBUTING.md, "Versions and releases"). Without it the release
+    // APK is left unsigned and debug builds are unaffected.
+    val releaseKeystore = System.getenv("CONTIGUA_KEYSTORE")
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("CONTIGUA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CONTIGUA_KEY_ALIAS")
+                keyPassword = System.getenv("CONTIGUA_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

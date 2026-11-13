@@ -17,6 +17,8 @@
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# One app version for every bundle, from the repo root.
+APP_VERSION="$(tr -d '[:space:]' < ../VERSION)"
 
 APP="build/Contigua.app"
 VARIANT="dev"
@@ -237,6 +239,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 # Read at launch: only the release build may use the default profile.
+plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$APP/Contents/Info.plist"
 plutil -insert PDBuildVariant -string "$VARIANT" "$APP/Contents/Info.plist"
 # The e2e app starts as an agent, so a quiet (--background) run never has a Dock
 # icon, not even while it launches; a visible run makes itself a regular app.
@@ -301,7 +304,7 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>$APP_VERSION</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -352,6 +355,7 @@ if [ "$WITH_FILES" = 1 ]; then
     sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
         -e "s/__FILES_GROUP__/$FILES_GROUP/" \
         Extensions/Files/Info.plist > "$FILES_APPEX/Contents/Info.plist"
+    plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$FILES_APPEX/Contents/Info.plist"
     codesign --force --sign - --entitlements "$FILES_ENTITLEMENTS" "$FILES_APPEX"
 fi
 
@@ -399,6 +403,7 @@ if [ "$WITH_CONTROLS" = 1 ]; then
     rm -rf "$CONTROLS_OBJ"
     sed -e "s/__CONTROLS_ID__/$CONTROLS_ID/" -e "s/__CONTROLS_TITLE__/$CONTROLS_TITLE/" \
         Extensions/Controls/Info.plist > "$CONTROLS_APPEX/Contents/Info.plist"
+    plutil -replace CFBundleShortVersionString -string "$APP_VERSION" "$CONTROLS_APPEX/Contents/Info.plist"
     codesign --force --sign - --entitlements Extensions/Controls/Controls.entitlements "$CONTROLS_APPEX"
 fi
 
