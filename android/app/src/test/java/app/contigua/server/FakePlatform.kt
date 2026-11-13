@@ -322,13 +322,6 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         return wakeResult
     }
 
-    /** `state.screen` edges the session passed to the power seam (CTRL-7/PHONE-22). */
-    val screenReports = CopyOnWriteArrayList<Boolean>()
-
-    override fun onPersonScreen(on: Boolean) {
-        screenReports.add(on)
-    }
-
     // ---- DeviceSource -------------------------------------------------
 
     private val stateSubscribers = CopyOnWriteArrayList<(DeviceState) -> Unit>()

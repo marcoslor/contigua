@@ -32,10 +32,10 @@ internal object WatchdogPolicy {
 /**
  * Crash-safe cleanup for the panel override.
  *
- * The panel-dark fallback writes `POWER_MODE_OFF` straight into SurfaceFlinger,
- * which the platform does not know about: if the server process dies while the
- * override is applied, a locked phone would keep a dark panel that the platform
- * thinks is on (and no session to ever restore it). While an override is live, a
+ * "Turn Off Phone Screen" ([PanelHold]) writes `POWER_MODE_OFF` straight into
+ * SurfaceFlinger, which the platform does not know about: if the server process
+ * dies while the override is applied, a locked phone would keep a dark panel
+ * that the platform thinks is on (and no session to ever restore it). While an override is live, a
  * tiny second `app_process` (the same APK, no framework UI, no wake lock) holds a
  * loopback socket to the server and blocks on a read. EOF without the clean byte
  * means the server died; the watchdog then restores the panel only when the
@@ -43,9 +43,9 @@ internal object WatchdogPolicy {
  * server restored the panel itself — exists, puts the phone back to sleep, and
  * exits.
  *
- * The watchdog is started lazily, only when the panel is actually forced off, and
- * stopped as soon as that episode ends, so a build that never touches the panel
- * (own display group) never pays for it. Orphan virtual displays are not its job:
+ * The watchdog is started lazily, only when the hold actually forces the panel
+ * off, and stopped as soon as the hold ends, so a session that never holds the
+ * panel never pays for it. Orphan virtual displays are not its job:
  * system_server releases the displays of a dead owner (verified on the emulator,
  * see the report).
  */
