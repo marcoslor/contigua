@@ -221,7 +221,7 @@ struct AppCommands: Commands {
                 Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            // View ▸ Framed / Immersive / Minimal: the style picker for the key
+            // View ▸ Framed / Compact / Immersive: the style picker for the key
             // stream window, built by the commands themselves. An inline Picker
             // renders it as checkmarked radio items with no section title; an
             // AppKit item inserted here is dropped the moment SwiftUI rebuilds
@@ -243,10 +243,10 @@ struct AppCommands: Commands {
                 Text(WindowStyle.framed.label)
                     .tag(WindowStyle.framed)
                     .keyboardShortcut("f", modifiers: [.command, .option])
+                Text(WindowStyle.compact.label)
+                    .tag(WindowStyle.compact)
                 Text(WindowStyle.immersive.label)
                     .tag(WindowStyle.immersive)
-                Text(WindowStyle.minimal.label)
-                    .tag(WindowStyle.minimal)
             } label: {
                 EmptyView()
             }
@@ -258,7 +258,7 @@ struct AppCommands: Commands {
             // The items stay enabled here on purpose — a disabled menu item
             // eats its key equivalent, and ⌥⌘F is on this group.
             // The reveal choice: enabled only while the key window wears
-            // Minimal (its pill's dwell). A pick stores the delay and leaves
+            // Immersive (its pill's dwell). A pick stores the delay and leaves
             // the window's style.
             Menu {
                 ForEach(MenuModel.hideControls, id: \.self) { entry in

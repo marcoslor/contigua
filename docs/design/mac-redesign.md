@@ -318,7 +318,7 @@ toolbar item group:
   `PhoneControlsState(controller:)` and `PhoneControlsActions(controller:openDeck:)`.
 - **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
   SwiftUI rebuilding the bar — which it does on activation — cannot drop one. Nothing is inserted into a SwiftUI menu
-  with AppKit: an inserted item is gone on the next rebuild, which is how v104 lost *Immersive* and v107 lost all three
+  with AppKit: an inserted item is gone on the next rebuild, which is how v104 lost *Compact* and v107 lost all three
   View items. The thing the app does not draw is handled without injection: AppKit's own *Enter Full Screen* is last
   in View, after a separator, and follows the key window itself — the Phone Mirror's `.fullScreenNone` disables it —
   just as in Apple's apps. `MenuCleanup` only *removes* what the frameworks add: AppKit's own *Send … Feedback to
@@ -329,7 +329,7 @@ toolbar item group:
   *Contigua* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
-  *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density › · ── · Enter Full Screen fn‑F) ·
+  *View* (Find Apps ⌘K · ── · Framed / Compact · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density › · ── · Enter Full Screen fn‑F) ·
   *Phone* (Phone Mirror ⌘P · Open <App> on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
   Ringing · ── · Install APK…) ·
   *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
@@ -343,7 +343,7 @@ toolbar item group:
   move…" when a fresh reply says the screen has nothing to open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
   keeps its checkmark on the phone's own `state.panel` report, never a local guess. *Install APK…* and *Ring
   Phone* name what they are doing ("Sending foo.apk… 40%", "Stop Ringing").
-- **View ▸ Framed / Immersive** is one radio pair for the key stream window, built by the commands as an inline
+- **View ▸ Framed / Compact** is one radio pair for the key stream window, built by the commands as an inline
   `Picker`, exactly one checked; ⌥⌘F switches to the other. **Hide Controls ›** holds *Instantly* · *Short* · *Long*
   (the full-screen reveal delays, checkmark on the current one) · separator · *Always Visible*, and is enabled while a
   stream window is key. Picking any item stores the choice as the global setting under `immersive.revealDelay`, the
@@ -359,7 +359,7 @@ toolbar item group:
 - **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
   state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
   drop one; `MenuMarks` (MenuMarks.swift) corrects the few values that follow the running window whenever a menu
-  starts tracking: the Framed/Immersive mark, Hide Controls' enablement and the reveal choice inside it, Show
+  starts tracking: the Framed/Compact mark, Hide Controls' enablement and the reveal choice inside it, Show
   Touches, Live Text, and Density's marks and the Default title. It only writes values onto items SwiftUI already built — nothing is added, removed or replaced — and
   its rules are a pure function over a menu snapshot and `StreamMenuState`, unit-tested in K2. A rebuild can reset a
   mark to its launch value at worst; the next open corrects it.

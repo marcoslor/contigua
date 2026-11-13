@@ -1,4 +1,4 @@
-// The Framed bar's title: its tone machine, its luminance estimate, its pure
+// The Compact bar's title: its tone machine, its luminance estimate, its pure
 // layout, the names each window kind gives it, and the band read off a real
 // pixel buffer (WIN-68, WIN-69, MIRROR-26).
 
@@ -368,7 +368,7 @@ final class BarTitleViewTests: XCTestCase {
         window.appearance = NSAppearance(named: .darkAqua)
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .immersive, toneSource: tone,
+        let chrome = StreamChromeView(video: video, style: .compact, toneSource: tone,
                                       reduceMotion: reduceMotion)
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
@@ -440,9 +440,9 @@ final class BarTitleViewTests: XCTestCase {
         chrome.setStyle(.framed)
         chrome.layoutChrome()
         XCTAssertTrue(chrome.barTitleVisible, "Framed has its title on the frame")
-        chrome.setStyle(.immersive)
+        chrome.setStyle(.compact)
         chrome.layoutChrome()
-        XCTAssertTrue(chrome.barTitleVisible, "Immersive has its title on the bar too")
+        XCTAssertTrue(chrome.barTitleVisible, "Compact has its title on the bar too")
 
         chrome.setBarTitle(nil)
         chrome.layoutChrome()
@@ -496,8 +496,8 @@ final class BarTitleViewTests: XCTestCase {
         chrome.layoutChrome()
         XCTAssertEqual(chrome.framedTitleView.titleText, "Settings (Pixel 9)")
 
-        // Minimal has no bar: nothing to draw.
-        chrome.setStyle(.minimal)
+        // Immersive has no bar: nothing to draw.
+        chrome.setStyle(.immersive)
         chrome.layoutChrome()
         XCTAssertFalse(chrome.barTitleVisible)
         XCTAssertNil(chrome.barTitleRect)

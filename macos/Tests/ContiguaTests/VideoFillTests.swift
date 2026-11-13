@@ -356,7 +356,7 @@ final class VideoFillTests: XCTestCase {
     }
 
     /// The same rule at every size: widths 280…900 pt, 1× and 2× backing,
-    /// portrait and landscape screens, framed (the 28 pt bar) and immersive
+    /// portrait and landscape screens, framed (the 28 pt bar) and compact
     /// (no bar). The phone's frame is the Mac's box floored to 16 px and its
     /// picture is the screen fitted and centred in it; the drawn picture must
     /// leave no device pixel uncovered and every edge must be whole.

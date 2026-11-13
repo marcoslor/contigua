@@ -79,15 +79,15 @@ enum MenuMarks {
                 // nothing) key, none may be checked or enabled.
                 edits.append(.mark([item.title], state.hasStream && state.style == .framed))
                 edits.append(.enable([item.title], state.hasStream))
+            case ("View", "Compact"):
+                edits.append(.mark([item.title], state.hasStream && state.style == .compact))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Immersive"):
                 edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
                 edits.append(.enable([item.title], state.hasStream))
-            case ("View", "Minimal"):
-                edits.append(.mark([item.title], state.hasStream && state.style == .minimal))
-                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Hide Controls"):
-                // The Minimal pill's reveal choice: present but disabled for
-                // Framed and Immersive, where it does nothing. Its own items
+                // The Immersive pill's reveal choice: present but disabled for
+                // Framed and Compact, where it does nothing. Its own items
                 // are disabled with it; the mark inside follows the stored
                 // choice.
                 let enabled = MenuModel.hideControlsEnabled(hasStream: state.hasStream, style: state.style)

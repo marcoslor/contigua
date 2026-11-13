@@ -1,4 +1,4 @@
-// The Framed bar is a blurred mirror of the stream's top edge, not the
+// The Compact bar is a blurred mirror of the stream's top edge, not the
 // picture: a click on it drags the window and must never become a touch on
 // the phone (WIN-61). The extension view fills the window with the stream as
 // its content view — that is how the bar draws its mirror — so the hit test
@@ -13,12 +13,12 @@ import XCTest
 final class BarInertTests: XCTestCase {
     private func makeChrome() -> StreamChromeView {
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780))
-        let chrome = StreamChromeView(video: video, style: .immersive)
+        let chrome = StreamChromeView(video: video, style: .compact)
         chrome.frame = NSRect(x: 0, y: 0, width: 360, height: 800)
         return chrome
     }
 
-    func testAClickOnTheFramedBarsMirrorIsInert() {
+    func testAClickOnTheCompactBarsMirrorIsInert() {
         let chrome = makeChrome()
         chrome.layoutSubtreeIfNeeded()
         // The extension view stretches its content view over the whole window;
@@ -66,7 +66,7 @@ final class BarInertTests: XCTestCase {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 800))
-        let chrome = StreamChromeView(video: video, style: .immersive)
+        let chrome = StreamChromeView(video: video, style: .compact)
         window.contentView = chrome
         window.orderFront(nil)
         window.layoutIfNeeded()

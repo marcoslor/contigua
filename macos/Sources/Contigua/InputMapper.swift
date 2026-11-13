@@ -93,7 +93,7 @@ final class InputMapper {
     /// instead of reaching Android.
     var inputSuspended: () -> Bool = { false }
     var onLiveTextEscape: (() -> Void)?
-    /// ⌥⌘F, the window's style switch (View ▸ Framed/Immersive). The menu item
+    /// ⌥⌘F, the window's style switch (View ▸ Framed/Compact). The menu item
     /// carries the shortcut for display; while that pair is disabled (no stream
     /// window was key when the commands were built) the item cannot take it, so
     /// the key window does — it must never reach the phone (⌘F is the phone's).
@@ -593,7 +593,7 @@ final class InputMapper {
             return
         }
         let flags = event.modifierFlags
-        // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
+        // The window's own ⌥⌘F (View ▸ Framed/Compact), before the phone's
         // ⌘F: a disabled menu item does not consume its key equivalent, so the
         // key arrives here when the style pair is disabled.
         if flags.contains(.command), flags.contains(.option), event.keyCode == Self.keyCodeF {

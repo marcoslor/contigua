@@ -17,7 +17,7 @@ final class CoverRuleTests: XCTestCase {
     }
 
     private func makeChrome(width: CGFloat, height: CGFloat) -> StreamChromeView {
-        let chrome = StreamChromeView(video: makeVideo(width, height), style: .immersive)
+        let chrome = StreamChromeView(video: makeVideo(width, height), style: .compact)
         chrome.frame = NSRect(x: 0, y: 0, width: width, height: height + ChromeBar.height)
         chrome.layoutChrome()
         return chrome

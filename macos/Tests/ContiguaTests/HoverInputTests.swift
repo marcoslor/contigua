@@ -2,7 +2,7 @@
 // exit before a button's touch DOWN, enter again after the release, no hover
 // while dragging, at most one move per 16 ms (the newest point), nothing when
 // the setting is off, and an exit when the pointer enters Mac UI over the
-// video (the Immersive bar, the Framed frame, the full-screen bar).
+// video (the Compact bar, the Framed frame, the full-screen bar).
 
 import AppKit
 import XCTest
@@ -214,9 +214,9 @@ final class HoverInputTests: XCTestCase {
         let name = "app.contigua.tests.hover.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        // These tests exercise the Immersive bar; the Framed margin test sets
+        // These tests exercise the Compact bar; the Framed margin test sets
         // its own style.
-        defaults.set(WindowStyle.immersive.rawValue,
+        defaults.set(WindowStyle.compact.rawValue,
                      forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
@@ -227,7 +227,7 @@ final class HoverInputTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
     }
 
-    func testTheImmersiveBarIsNotThePhone() throws {
+    func testTheCompactBarIsNotThePhone() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -273,10 +273,10 @@ final class HoverInputTests: XCTestCase {
 
     /// The window's top band is the window's own for hover as it is for
     /// clicks: the extension view stretches the picture over the whole
-    /// window, so the framed bar's mirror is still inside the video view, and
+    /// window, so the Compact bar's mirror is still inside the video view, and
     /// moving the pointer there must end the phone's hover and send nothing
     /// while it stays (ISS-49, WIN-61).
-    func testHoverIntoTheImmersiveBandLeavesThePhoneAndStaysOut() throws {
+    func testHoverIntoTheCompactBandLeavesThePhoneAndStaysOut() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -315,7 +315,7 @@ final class HoverInputTests: XCTestCase {
 
     /// The Phone Mirror wears the same chrome: its framed band belongs to the
     /// window, not to the phone's own screen.
-    func testHoverIntoThePhoneMirrorsImmersiveBandLeavesThePhone() throws {
+    func testHoverIntoThePhoneMirrorsCompactBandLeavesThePhone() throws {
         let manager = makeManager()
         let controller = PhoneWindowController(stream: 1, phone: nil, manager: manager)
         defer { controller.window?.close() }
@@ -343,15 +343,15 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent.actions, [.enter, .exit, .enter])
     }
 
-    /// The Minimal pill is Mac UI too: once it appears under a resting pointer,
+    /// The Immersive pill is Mac UI too: once it appears under a resting pointer,
     /// the phone's hover ends without waiting for the next move (WIN-61).
-    func testTheMinimalPillAppearingUnderARestingPointerEndsTheHover() throws {
+    func testTheImmersivePillAppearingUnderARestingPointerEndsTheHover() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
-        controller.setStyle(.minimal)
+        controller.setStyle(.immersive)
         window.orderFront(nil)
         controller.noteFirstFrame()
         var sent = Sent()
@@ -372,14 +372,14 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent.actions, [.enter, .exit, .enter], "the picture below the pill is the phone's")
     }
 
-    /// The Minimal window is the stream: only the pill it shows is Mac UI.
-    func testTheMinimalPillIsNotThePhone() throws {
+    /// The Immersive window is the stream: only the pill it shows is Mac UI.
+    func testTheImmersivePillIsNotThePhone() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
-        controller.setStyle(.minimal)
+        controller.setStyle(.immersive)
         window.orderFront(nil)
         controller.noteFirstFrame()
         var sent = Sent()

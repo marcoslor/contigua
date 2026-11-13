@@ -404,7 +404,7 @@ final class WindowManager {
     }
 
     /// View ▸ Hide Controls' pick: store the reveal choice for every window.
-    /// It never changes a window's style, and only a Minimal window's pill
+    /// It never changes a window's style, and only an Immersive window's pill
     /// (or the full-screen bar) reads it.
     func pickHideControls(_ item: FullScreenMenuItem) {
         guard let pick = FullScreenMenuModel.pick(item) else { return }

@@ -166,7 +166,7 @@ final class VideoLayerView: NSView, BarToneSource {
 
     /// Where the Show Touches dots are drawn. The chrome sets this to a layer
     /// of its own, outside the extension view's mirror: a dot inside the
-    /// mirrored content would be reflected into the framed bar. nil draws on
+    /// mirrored content would be reflected into the Compact bar. nil draws on
     /// the video's own layer (no chrome: tests and previews).
     var touchDotHost: CALayer?
 

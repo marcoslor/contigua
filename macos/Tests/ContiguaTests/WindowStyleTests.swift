@@ -1,5 +1,5 @@
 // The three window styles, their storage, the sizes and frames they ask for,
-// the full-screen reveal machine, the Minimal dwell and the reveal delay. All
+// the full-screen reveal machine, the Immersive dwell and the reveal delay. All
 // pure logic — the views are exercised in the e2e check (C14).
 
 import AppKit
@@ -25,13 +25,13 @@ final class WindowStyleStorageTests: XCTestCase {
         let store = WindowStyleStore(defaults: defaults)
         let inbox = WindowStyleStore.key(forPackage: "com.example.inbox")
         let maps = WindowStyleStore.key(forPackage: "com.example.maps")
+        store.set(.compact, forKey: inbox)
+        XCTAssertEqual(store.style(forKey: inbox), .compact)
+        XCTAssertEqual(store.style(forKey: maps), .framed, "another app keeps its own choice")
+        XCTAssertEqual(defaults.string(forKey: inbox), "bar")
         store.set(.immersive, forKey: inbox)
         XCTAssertEqual(store.style(forKey: inbox), .immersive)
-        XCTAssertEqual(store.style(forKey: maps), .framed, "another app keeps its own choice")
-        XCTAssertEqual(defaults.string(forKey: inbox), "immersive")
-        store.set(.minimal, forKey: inbox)
-        XCTAssertEqual(store.style(forKey: inbox), .minimal)
-        XCTAssertEqual(defaults.string(forKey: inbox), "minimal")
+        XCTAssertEqual(defaults.string(forKey: inbox), "pill")
         store.set(.framed, forKey: inbox)
         XCTAssertEqual(defaults.string(forKey: inbox), "mat",
                        "Framed's stored value is its own; the old \"framed\" string never means it")
@@ -52,10 +52,12 @@ final class WindowStyleStorageTests: XCTestCase {
         XCTAssertEqual(store.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")), .framed)
     }
 
-    /// No migration: an unknown stored value — the old names included — is
-    /// ignored and the window opens the default, Framed.
+    /// No migration (issue #90): an unknown stored value — every value an
+    /// older build wrote included — is ignored and the window opens the
+    /// default, Framed. A stored "immersive" was the bar style on main and the
+    /// pill style before it: it must never open the borderless Immersive.
     func testAnUnknownStoredValueOpensFramed() {
-        for raw in ["sideways", "framed", "compact", "glass", ""] {
+        for raw in ["sideways", "framed", "immersive", "minimal", "compact", "Compact", "Immersive", "glass", ""] {
             let defaults = makeDefaults()
             defaults.set(raw, forKey: WindowStyleStore.key(forPackage: "com.example.app"))
             XCTAssertEqual(WindowStyleStore(defaults: defaults)
@@ -83,17 +85,17 @@ final class ChromeConfigTests: XCTestCase {
         }
     }
 
-    func testFullScreenIsOursExceptMinimalsSystemBar() {
-        for style in [WindowStyle.framed, .immersive] {
+    func testFullScreenIsOursExceptImmersivesSystemBar() {
+        for style in [WindowStyle.framed, .compact] {
             let config = ChromeConfig.forState(style: style, fullScreen: true)
             XCTAssertFalse(config.titleVisible, "\(style)")
             XCTAssertTrue(config.titlebarTransparent, "\(style)")
             XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
         }
-        let minimal = ChromeConfig.forState(style: .minimal, fullScreen: true)
-        XCTAssertTrue(minimal.titleVisible, "Minimal hands the title back to the system")
-        XCTAssertFalse(minimal.titlebarTransparent)
-        XCTAssertTrue(minimal.lightsManagedByAppKit)
+        let immersive = ChromeConfig.forState(style: .immersive, fullScreen: true)
+        XCTAssertTrue(immersive.titleVisible, "Immersive hands the title back to the system")
+        XCTAssertFalse(immersive.titlebarTransparent)
+        XCTAssertTrue(immersive.lightsManagedByAppKit)
     }
 }
 
@@ -101,9 +103,9 @@ final class WindowStyleSizeTests: XCTestCase {
     private let stream = CGSize(width: 900, height: 600)
     private let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)
 
-    func testImmersiveIsTheStreamPlusTheBar() {
-        XCTAssertEqual(WindowStyle.immersive.windowSize(stream: stream), CGSize(width: 900, height: 628))
-        let pad = WindowStyle.immersive.insets(fullScreen: false)
+    func testCompactIsTheStreamPlusTheBar() {
+        XCTAssertEqual(WindowStyle.compact.windowSize(stream: stream), CGSize(width: 900, height: 628))
+        let pad = WindowStyle.compact.insets(fullScreen: false)
         XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [28, 0, 0, 0], "the bar at the top only")
     }
 
@@ -116,16 +118,20 @@ final class WindowStyleSizeTests: XCTestCase {
                        CGSize(width: 330, height: 283), "the minimum stream plus the frame")
     }
 
-    func testMinimalIsTheStreamExactly() {
-        XCTAssertEqual(WindowStyle.minimal.windowSize(stream: stream), stream)
-        let pad = WindowStyle.minimal.insets(fullScreen: false)
+    func testImmersiveIsTheStreamExactly() {
+        XCTAssertEqual(WindowStyle.immersive.windowSize(stream: stream), stream)
+        let pad = WindowStyle.immersive.insets(fullScreen: false)
         XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [0, 0, 0, 0])
     }
 
     func testThePickerOrderAndTheStoredTokens() {
-        XCTAssertEqual(WindowStyle.allCases, [.framed, .immersive, .minimal])
-        XCTAssertEqual(WindowStyle.allCases.map(\.label), ["Framed", "Immersive", "Minimal"])
-        XCTAssertEqual(WindowStyle.allCases.map(\.rawValue), ["mat", "immersive", "minimal"])
+        XCTAssertEqual(WindowStyle.allCases, [.framed, .compact, .immersive])
+        XCTAssertEqual(WindowStyle.allCases.map(\.label), ["Framed", "Compact", "Immersive"])
+        XCTAssertEqual(WindowStyle.allCases.map(\.rawValue), ["mat", "bar", "pill"])
+        XCTAssertEqual(WindowStyle.allCases.map(\.debugName), ["framed", "compact", "immersive"])
+        for style in WindowStyle.allCases {
+            XCTAssertEqual(WindowStyle(debugName: style.debugName), style)
+        }
         XCTAssertEqual(WindowStyle.standard, .framed)
     }
 
@@ -137,10 +143,10 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testTheStreamSizeIsTheWindowSizeWithoutTheChrome() {
-        XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 628)), stream)
+        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: 628)), stream)
         XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 900, height: 600)),
                        CGSize(width: 890, height: 557))
-        XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 20)),
+        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: 20)),
                        CGSize(width: 900, height: 0), "never negative")
     }
 
@@ -154,21 +160,21 @@ final class WindowStyleSizeTests: XCTestCase {
 
     func testSwitchingToFramedGrowsTheWindowAroundTheSameStream() {
         let current = NSRect(x: 200, y: 100, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed, NSRect(x: 195, y: 95, width: 910, height: 643),
                        "the stream keeps its place: 5 pt on the left and bottom, 38 above")
     }
 
-    func testSwitchingBackToImmersiveShrinksTheWindowAroundTheStream() {
+    func testSwitchingBackToCompactShrinksTheWindowAroundTheStream() {
         let current = NSRect(x: 195, y: 95, width: 910, height: 643)
-        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
-        XCTAssertEqual(immersive, NSRect(x: 200, y: 100, width: 900, height: 628))
+        let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
+        XCTAssertEqual(compact, NSRect(x: 200, y: 100, width: 900, height: 628))
     }
 
-    func testSwitchingToMinimalShedsTheBarsAndTheFrame() {
+    func testSwitchingToImmersiveShedsTheBarsAndTheFrame() {
         let current = NSRect(x: 195, y: 95, width: 910, height: 643)
-        let minimal = WindowStyle.framed.frame(switchedTo: .minimal, current: current, visible: screen)
-        XCTAssertEqual(minimal, NSRect(x: 200, y: 100, width: 900, height: 600),
+        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
+        XCTAssertEqual(immersive, NSRect(x: 200, y: 100, width: 900, height: 600),
                        "the stream keeps its place; only the chrome goes")
     }
 
@@ -176,7 +182,7 @@ final class WindowStyleSizeTests: XCTestCase {
         // The window's top edge is at the screen's top: the frame's 10 pt of
         // extra band above the stream has nowhere to go.
         let current = NSRect(x: 200, y: screen.maxY - 628, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY, "the frame fits under the screen's top edge")
         XCTAssertEqual(framed.origin.y, screen.maxY - 643, "moved down by exactly what overflowed")
         XCTAssertEqual(framed.size, CGSize(width: 910, height: 643))
@@ -186,7 +192,7 @@ final class WindowStyleSizeTests: XCTestCase {
         // The window starts 4 pt under the top; the frame's 10 pt above the
         // stream leaves 6 pt to move down.
         let current = NSRect(x: 200, y: screen.maxY - 632, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY)
         XCTAssertEqual(framed.origin.y, screen.maxY - 643, "down by 6 pt, not a whole bar")
         XCTAssertEqual(framed.height, 643)
@@ -196,16 +202,16 @@ final class WindowStyleSizeTests: XCTestCase {
 
     func testShrinkingKeepsTheStreamAndNeverMovesDown() {
         let current = NSRect(x: 200, y: screen.maxY - 643, width: 910, height: 643)
-        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
-        XCTAssertEqual(immersive.origin.y, current.origin.y + FramedChrome.sideInset,
+        let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
+        XCTAssertEqual(compact.origin.y, current.origin.y + FramedChrome.sideInset,
                        "the stream stays where it is: the window sheds the frame's bottom")
-        XCTAssertEqual(immersive.height, 628)
-        XCTAssertLessThan(immersive.maxY, screen.maxY, "shrinking never moves the window down")
+        XCTAssertEqual(compact.height, 628)
+        XCTAssertLessThan(compact.maxY, screen.maxY, "shrinking never moves the window down")
     }
 
     func testSwitchingInFullScreenChangesNothing() {
         let current = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        for (from, to) in [(WindowStyle.framed, WindowStyle.immersive), (.immersive, .framed)] {
+        for (from, to) in [(WindowStyle.framed, WindowStyle.compact), (.compact, .framed)] {
             XCTAssertEqual(from.frame(switchedTo: to, current: current, visible: screen, fullScreen: true), current)
         }
     }
@@ -405,14 +411,14 @@ final class DwellPillTests: XCTestCase {
     }
 
     func testAlwaysVisibleMeansNoDwellAndTheChromeStaysUp() {
-        XCTAssertTrue(MinimalChrome.alwaysVisible(.alwaysVisible))
-        XCTAssertFalse(MinimalChrome.usesDwell(alwaysVisible: true))
-        XCTAssertTrue(MinimalChrome.showsPill(alwaysVisible: true, dwellShown: false))
+        XCTAssertTrue(ImmersiveChrome.alwaysVisible(.alwaysVisible))
+        XCTAssertFalse(ImmersiveChrome.usesDwell(alwaysVisible: true))
+        XCTAssertTrue(ImmersiveChrome.showsPill(alwaysVisible: true, dwellShown: false))
         for delay in [RevealDelay.instantly, .short, .long] {
-            XCTAssertFalse(MinimalChrome.alwaysVisible(delay))
-            XCTAssertTrue(MinimalChrome.usesDwell(alwaysVisible: false))
-            XCTAssertFalse(MinimalChrome.showsPill(alwaysVisible: false, dwellShown: false))
-            XCTAssertTrue(MinimalChrome.showsPill(alwaysVisible: false, dwellShown: true))
+            XCTAssertFalse(ImmersiveChrome.alwaysVisible(delay))
+            XCTAssertTrue(ImmersiveChrome.usesDwell(alwaysVisible: false))
+            XCTAssertFalse(ImmersiveChrome.showsPill(alwaysVisible: false, dwellShown: false))
+            XCTAssertTrue(ImmersiveChrome.showsPill(alwaysVisible: false, dwellShown: true))
         }
     }
 }
@@ -667,7 +673,7 @@ final class FullScreenBarTests: XCTestCase {
 }
 
 final class ChromeBarTests: XCTestCase {
-    /// The framed bar: 28 pt, the 14 pt lights equally inset 7 pt.
+    /// The Compact bar: 28 pt, the 14 pt lights equally inset 7 pt.
     /// BarGeometryTests covers the numbers and the real view geometry.
     func testTheBarIsTwentyEightPointsWithItsEqualInsets() {
         XCTAssertEqual(ChromeBar.height, 28)
@@ -690,34 +696,34 @@ final class PhoneChromeTests: XCTestCase {
     /// phone's aspect fit inside the visible frame, never to the whole display.
     func testThePhoneZoomIsTheAspectFitInsideTheVisibleFrame() {
         let visible = NSRect(x: 100, y: 50, width: 1440, height: 900)
-        let bar = WindowStyle.immersive.insets(fullScreen: false).top
+        let bar = WindowStyle.compact.insets(fullScreen: false).top
         let portrait = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
-                                             style: .immersive, visible: visible)
+                                             style: .compact, visible: visible)
         XCTAssertEqual(portrait.height, visible.height, accuracy: 1)
         XCTAssertEqual(portrait.width, (visible.height - bar) * 1080 / 2340, accuracy: 1)
         XCTAssertEqual(portrait.midX, visible.midX, accuracy: 1)
         XCTAssertEqual(portrait.midY, visible.midY, accuracy: 1)
 
         let landscape = PhoneChrome.zoomFrame(phone: CGSize(width: 2340, height: 1080),
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         XCTAssertEqual(landscape.width, visible.width, accuracy: 1)
         XCTAssertEqual(landscape.height, visible.width * 1080 / 2340 + bar, accuracy: 1)
         XCTAssertTrue(visible.contains(landscape), "the zoom stays inside the screen")
         XCTAssertTrue(visible.contains(portrait), "the zoom stays inside the screen")
 
-        let immersive = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
-                                              style: .immersive, visible: visible)
-        XCTAssertEqual(immersive.height, visible.height, accuracy: 1, "no bar to subtract")
+        let compact = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
+                                              style: .compact, visible: visible)
+        XCTAssertEqual(compact.height, visible.height, accuracy: 1, "no bar to subtract")
     }
 
     func testThePhoneFrameKeepsThePhonesAspectRatioInTheStream() {
         let phone = CGSize(width: 1080, height: 2400)
-        let pad = WindowStyle.immersive.windowSize(stream: .zero)
+        let pad = WindowStyle.compact.windowSize(stream: .zero)
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 540 + pad.width, height: 1100),
-                                         phone: phone, style: .immersive),
+                                         phone: phone, style: .compact),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the width led")
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 450 + pad.width, height: 1200 + pad.height),
-                                         phone: phone, style: .immersive),
+                                         phone: phone, style: .compact),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the height led")
     }
 
@@ -731,8 +737,8 @@ final class PhoneChromeTests: XCTestCase {
         var last = CGSize.zero
         for step in 0..<10 {
             let proposed = CGSize(width: 500 + Double(step) * 30, height: 900 + Double(step) * 40)
-            let size = PhoneChrome.frame(proposed: proposed, phone: phone, style: .immersive)
-            let stream = WindowStyle.immersive.streamSize(window: size)
+            let size = PhoneChrome.frame(proposed: proposed, phone: phone, style: .compact)
+            let stream = WindowStyle.compact.streamSize(window: size)
             XCTAssertEqual(stream.width / stream.height, ratio, accuracy: 0.005,
                            "step \(step) keeps the phone's aspect")
             if last != .zero {
@@ -751,7 +757,7 @@ final class PhoneChromeTests: XCTestCase {
 
     private func assertPhoneShaped(_ size: CGSize, _ message: String,
                                    file: StaticString = #filePath, line: UInt = #line) {
-        let stream = WindowStyle.immersive.streamSize(window: size)
+        let stream = WindowStyle.compact.streamSize(window: size)
         XCTAssertEqual(stream.width / stream.height,
                        phoneShape.width / phoneShape.height, accuracy: 0.005,
                        message, file: file, line: line)
@@ -760,26 +766,26 @@ final class PhoneChromeTests: XCTestCase {
     /// The person's own frame: the bottom edge dragged from 754 to 600 pt.
     func testTheBottomEdgeDragShrinksThePhoneWindowToTheHeight() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
-                                     phone: phoneShape, style: .immersive, edge: .bottom)
+                                     phone: phoneShape, style: .compact, edge: .bottom)
         XCTAssertEqual(size.height, 600, accuracy: 0.5, "the bottom edge sets the height")
         assertPhoneShaped(size, "the width follows the phone's aspect")
     }
 
     func testTheRightEdgeDragShrinksThePhoneWindowToTheWidth() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
-                                     phone: phoneShape, style: .immersive, edge: .right)
+                                     phone: phoneShape, style: .compact, edge: .right)
         XCTAssertEqual(size.width, 280, accuracy: 0.5, "the right edge sets the width")
         assertPhoneShaped(size, "the height follows the phone's aspect")
     }
 
     func testTheTopAndLeftEdgesLeadTheSameWay() {
         let top = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
-                                    phone: phoneShape, style: .immersive, edge: .top)
+                                    phone: phoneShape, style: .compact, edge: .top)
         XCTAssertEqual(top.height, 600, accuracy: 0.5, "the top edge sets the height")
         assertPhoneShaped(top, "the width follows the top edge's height")
 
         let left = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
-                                     phone: phoneShape, style: .immersive, edge: .left)
+                                     phone: phoneShape, style: .compact, edge: .left)
         XCTAssertEqual(left.width, 280, accuracy: 0.5, "the left edge sets the width")
         assertPhoneShaped(left, "the height follows the left edge's width")
     }
@@ -787,7 +793,7 @@ final class PhoneChromeTests: XCTestCase {
     /// A corner keeps the v104 larger-area rule: it may shrink both dimensions.
     func testACornerDragInwardShrinksBothDimensions() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 600),
-                                     phone: phoneShape, style: .immersive, edge: .bottomRight)
+                                     phone: phoneShape, style: .compact, edge: .bottomRight)
         XCTAssertLessThan(size.width, 335)
         XCTAssertLessThan(size.height, 754)
         assertPhoneShaped(size, "the corner drag keeps the phone's aspect")
@@ -801,7 +807,7 @@ final class PhoneChromeTests: XCTestCase {
         for step in 0..<10 {
             let proposed = CGSize(width: 500, height: 1200 - Double(step) * 40)
             let size = PhoneChrome.frame(proposed: proposed, phone: phone,
-                                         style: .immersive, edge: .bottom)
+                                         style: .compact, edge: .bottom)
             if last > 0 {
                 XCTAssertLessThanOrEqual(size.height, last + 0.5,
                                          "step \(step) must follow the bottom edge in")
@@ -837,7 +843,7 @@ final class PhoneChromeTests: XCTestCase {
 
     private func assertStreamAspect(_ frame: NSRect, _ message: String,
                                     file: StaticString = #filePath, line: UInt = #line) {
-        let stream = WindowStyle.immersive.streamSize(window: frame.size)
+        let stream = WindowStyle.compact.streamSize(window: frame.size)
         XCTAssertEqual(stream.width / stream.height,
                        phoneShape.width / phoneShape.height, accuracy: 0.005,
                        message, file: file, line: line)
@@ -847,7 +853,7 @@ final class PhoneChromeTests: XCTestCase {
     func testAWrongShapedSavedFrameOpensInThePhonesShape() {
         let saved = NSRect(x: 120, y: 300, width: 432, height: 870)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "the saved frame opens at the phone's aspect")
         XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5, "the left edge stays")
         XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5, "the top edge stays")
@@ -858,7 +864,7 @@ final class PhoneChromeTests: XCTestCase {
     func testASavedLandscapeFrameForAPortraitPhoneOpensPortrait() {
         let saved = NSRect(x: 200, y: 100, width: 800, height: 400)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "a landscape frame opens in a portrait phone's shape")
         XCTAssertLessThan(frame.width, frame.height)
         XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
@@ -871,7 +877,7 @@ final class PhoneChromeTests: XCTestCase {
     func testASavedFrameTallerThanTheScreenKeepsTheAspect() {
         let saved = NSRect(x: 100, y: 0, width: 335, height: 900)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "the screen's limit keeps the phone's aspect")
         XCTAssertLessThanOrEqual(frame.height, visible.height + 0.5)
         XCTAssertEqual(frame.maxY, visible.maxY, accuracy: 0.5)
@@ -883,17 +889,17 @@ final class PhoneChromeTests: XCTestCase {
     func testTheFirstPictureOfADifferentShapeRefitsTheWindow() {
         let current = NSRect(x: 120, y: 300, width: 864, height: 1712)
         let picture = CGSize(width: 1080, height: 2340)
-        let video = WindowStyle.immersive.streamSize(window: current.size)
+        let video = WindowStyle.compact.streamSize(window: current.size)
 
         XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
                        .refitNow)
-        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .immersive)
+        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .compact)
         assertStreamAspect(refit, "the refit makes the video area the picture's shape")
         XCTAssertEqual(refit.minX, current.minX, accuracy: 0.5, "the left edge stays")
         XCTAssertEqual(refit.maxY, current.maxY, accuracy: 0.5, "the top edge stays")
         XCTAssertEqual(refit.height, current.height, accuracy: 0.5, "the height stays")
         XCTAssertEqual(PhoneChrome.PictureFit.decide(
-            video: WindowStyle.immersive.streamSize(window: refit.size),
+            video: WindowStyle.compact.streamSize(window: refit.size),
             picture: picture, isDragging: false), .none,
             "a picture that matches the window does not refit")
     }

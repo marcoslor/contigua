@@ -2,30 +2,38 @@
 //
 // Framed (the default): a real frame on all four sides — 38 pt above the
 // picture and 5 pt on the other three, a system material, a hairline, a lighter
-// rim and the picture's own 12 pt corners. Immersive: a permanent 28 pt bar
-// above the stream — window material over the stream's own top 28 pt, which an
-// NSBackgroundExtensionView mirrors into the bar and fades into the material by
-// the seam/top alphas — holding the traffic lights and the picture's name.
-// Minimal: the old borderless style — no bar and no borders, the picture fills
-// the window, and the traffic lights and our controls live on a clear-glass
-// pill that fades in at the picture's top-left corner after a rest (DwellPill).
-// The person's names, 2026-11-11: the frame is "Framed" and the default, the
-// bar style is "Immersive", the pill style is "Minimal".
+// rim and the picture's own 12 pt corners. Compact: a permanent 28 pt bar
+// above the stream — the stream's own top 28 pt, which an
+// NSBackgroundExtensionView mirrors into the bar under a progressive blur —
+// holding the traffic lights and the picture's name. Immersive: the borderless
+// style — no bar and no borders, the picture fills the window, and the traffic
+// lights and our controls live on a clear-glass pill that fades in at the
+// picture's top-left corner after a rest (DwellPill).
+// The person's names, 2026-11-13: the frame is "Framed" and the default, the
+// bar style is "Compact", the pill style is "Immersive".
 //
 // Everything in this file is pure: the views (StreamChrome.swift) and the unit
 // tests read the same numbers, and time is always passed in.
 
 import AppKit
 
+/// A style's stored value (`rawValue`) names its geometry, never its label: the
+/// labels are the person's words and may change again, the stored values may
+/// not, because there is no migration (issue #90). Every value an older build
+/// wrote is therefore left unused on purpose, and reads as unknown, which
+/// opens the default, Framed:
+/// - "immersive" was the bar style's value on main before the rename (and the
+///   pill style's before that). Reusing it for either style would silently
+///   turn somebody's stored bar into the borderless pill, or the reverse.
+/// - "framed" was the bar style's value before the frame existed.
+/// - "minimal" was the pill style's value on the unmerged three-style branch.
+/// Framed keeps "mat", its value on main since the frame shipped.
+/// A rename is the `label` switch below (and the debug verbs read from it);
+/// a stored value changes only with a new, never-used string.
 enum WindowStyle: String, CaseIterable {
-    // Framed's stored value is deliberately not "framed": that string was the
-    // old name of the pill style. No migration is attempted, so a stored
-    // "framed" is an unknown value and opens the default, Framed.
     case framed = "mat"
-    case immersive
-    // The old pill style had no token of its own (it was stored as
-    // "immersive", which the bar style still uses); Minimal gets its own.
-    case minimal
+    case compact = "bar"
+    case immersive = "pill"
 
     /// An app with no stored choice, or an unknown one, opens Framed.
     static let standard = WindowStyle.framed
@@ -33,13 +41,24 @@ enum WindowStyle: String, CaseIterable {
     /// The smallest stream a window may hold; the window adds the style's chrome.
     static let minimumStream = CGSize(width: 320, height: 240)
 
-    /// The name the View menu shows, top to bottom in this order.
+    /// The name the View menu shows, top to bottom in this order. The one
+    /// place a style is named: the menus, the chrome state's `style=` and the
+    /// debug verb (`debugName`) all read it.
     var label: String {
         switch self {
         case .framed: return "Framed"
+        case .compact: return "Compact"
         case .immersive: return "Immersive"
-        case .minimal: return "Minimal"
         }
+    }
+
+    /// The debug verb and the chrome state's token: the label in lower case.
+    var debugName: String { label.lowercased() }
+
+    /// The style a debug verb names, nil for anything else.
+    init?(debugName: String) {
+        guard let style = Self.allCases.first(where: { $0.debugName == debugName }) else { return nil }
+        self = style
     }
 
     /// The padding the style adds around the stream. Full screen never has
@@ -47,12 +66,12 @@ enum WindowStyle: String, CaseIterable {
     func insets(fullScreen: Bool) -> NSEdgeInsets {
         guard !fullScreen else { return NSEdgeInsets() }
         switch self {
-        case .immersive:
+        case .compact:
             return NSEdgeInsets(top: ChromeBar.height, left: 0, bottom: 0, right: 0)
         case .framed:
             return NSEdgeInsets(top: FramedChrome.topInset, left: FramedChrome.sideInset,
                                 bottom: FramedChrome.bottomInset, right: FramedChrome.sideInset)
-        case .minimal:
+        case .immersive:
             return NSEdgeInsets()
         }
     }
@@ -114,7 +133,7 @@ enum FramedChrome {
     static let lightInset: CGFloat = (topInset - ChromeBar.trafficLightButtonSide) / 2
 
     /// The right end of the bar's controls mirrors the lights' inset: the
-    /// Immersive bar's 7 pt plus this style's 5 pt frame.
+    /// Compact bar's 7 pt plus this style's 5 pt frame.
     static let controlsRightInset: CGFloat = sideInset + ChromeBar.trafficLightInset
 
     /// The picture's rect in the chrome's coordinates (AppKit's bottom-left
@@ -140,9 +159,9 @@ enum FramedChrome {
 }
 
 /// The window's titlebar and traffic lights in a given state. Windowed, the
-/// chrome owns the lights and hides the system's title: the Immersive bar, the
-/// Framed frame and the Minimal pill all place them themselves. Full screen in
-/// Framed or Immersive is the acrylic bar's (WIN-73); full screen in Minimal is
+/// chrome owns the lights and hides the system's title: the Compact bar, the
+/// Framed frame and the Immersive pill all place them themselves. Full screen in
+/// Framed or Compact is the acrylic bar's (WIN-73); full screen in Immersive is
 /// as it was before the three-style merge: the system's own title bar slides in
 /// with the window's title and standard lights (ChromeConfig).
 struct ChromeConfig: Equatable {
@@ -152,18 +171,18 @@ struct ChromeConfig: Equatable {
     let lightsManagedByAppKit: Bool
 
     static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
-        if fullScreen, style == .minimal {
+        if fullScreen, style == .immersive {
             return ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
         }
         return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
     }
 }
 
-/// The Immersive bar and the full-screen bar: the numbers both share.
+/// The Compact bar and the full-screen bar: the numbers both share.
 enum ChromeBar {
     /// The permanent bar above the stream.
     static let height = BarGeometry.barHeight
-    /// The stream's own corners, as the window's in the Immersive style.
+    /// The stream's own corners, as the window's in the Compact style.
     static let cornerRadius: CGFloat = 16
     /// Traffic lights: `trafficLightInset` in from the window's left edge and
     /// from the bar's top and bottom, `trafficLightButtonSide` square,
@@ -177,14 +196,14 @@ enum ChromeBar {
     static func hazeTopAlpha(dark: Bool) -> CGFloat { dark ? 0.14 : 0.30 }
 }
 
-/// The Minimal style's hot zone, the dwell that brings the lights in and the
+/// The Immersive style's hot zone, the dwell that brings the lights in and the
 /// pill they sit in. Restored from the pre-merge pill style: no bar, no
 /// borders, the picture fills the window and this clear-glass pill is the only
 /// chrome.
 enum DwellChrome {
     /// At the stream's top-left.
     static let hotZone = CGSize(width: 72, height: 32)
-    /// The pill is as tall as the Immersive bar, at the stream's top-left
+    /// The pill is as tall as the Compact bar, at the stream's top-left
     /// corner; its width follows what is in it.
     static var pillHeight: CGFloat { ChromeBar.height }
     static let pillCornerRadius: CGFloat = 8
@@ -205,7 +224,7 @@ enum DwellChrome {
     static var pillActionsX: CGFloat {
         pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
     }
-    /// The pill is as tall as the Immersive bar and as wide as its contents:
+    /// The pill is as tall as the Compact bar and as wide as its contents:
     /// the traffic lights, the window kind's action capsules, then Live Text's
     /// capsule, then the edge.
     static func pillWidth(actions: [HeaderAction]) -> CGFloat {
@@ -214,11 +233,11 @@ enum DwellChrome {
     }
 }
 
-/// The Minimal chrome's rule. Normally the traffic lights and the bar's
+/// The Immersive chrome's rule. Normally the traffic lights and the bar's
 /// capsules hide at rest and the dwell pill brings them in; with Always
 /// Visible there is no hot zone and no hiding — they stay over the stream,
 /// which still fills the window.
-enum MinimalChrome {
+enum ImmersiveChrome {
     static func alwaysVisible(_ delay: RevealDelay) -> Bool {
         delay.keepsChromeVisible
     }
@@ -233,7 +252,7 @@ enum MinimalChrome {
     }
 }
 
-/// The full-screen bar both styles wear: one 28 pt acrylic bar across the
+/// The full-screen bar Framed and Compact wear: one 28 pt acrylic bar across the
 /// screen's top, hidden until the pointer reaches the top edge and revealed by
 /// FullScreenBarMachine. No mirror, no frame: the system material frosts the
 /// stream behind it.
@@ -439,7 +458,7 @@ struct FullScreenBarMachine: Equatable {
 
 /// Settings → General "Reveal controls after" and View ▸ Hide Controls: how
 /// long the pointer rests at the top edge in full screen before the bar shows,
-/// or "Always Visible", which keeps it up; in Minimal it is the dwell that
+/// or "Always Visible", which keeps it up; in Immersive it is the dwell that
 /// brings the pill in. Short is the 350 ms default; the value lives in the
 /// profile's defaults and applies to open windows at once.
 enum RevealDelay: String, CaseIterable {
@@ -687,7 +706,7 @@ struct WindowStyleStore {
     }
 }
 
-/// The Minimal hot zone's rule. The pointer has to rest still inside the zone
+/// The Immersive hot zone's rule. The pointer has to rest still inside the zone
 /// for `dwell` before the pill shows; a click that arrives before that goes to
 /// the app as ordinary touch input (the view passes it straight through) and
 /// starts the rest again, so tapping can never summon the pill mid-tap. While

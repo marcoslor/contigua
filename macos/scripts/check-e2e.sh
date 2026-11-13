@@ -2119,7 +2119,7 @@ check_crisp() {
         sleep 1
         shot_window "$win" "$WORK/crisp-$label-window.png" \
             || { bad "[CRISP] $label: no window capture"; return 1; }
-        # The video is the window's bottom h*scale rows (the framed bar sits
+        # The video is the window's bottom h*scale rows (the Compact bar sits
         # above it). This is the drawn rect for these two sizes both before
         # the fix (the quantisation is stretched) and after it (1:1).
         shot_h="$(sips -g pixelHeight "$WORK/crisp-$label-window.png" 2>/dev/null \
@@ -2777,7 +2777,7 @@ PY
 # --- C14: window chrome ----------------------------------------------------
 
 # chrome_state — the chrome the app last wrote (--debug-chrome-state):
-# "style=immersive|framed lights=shown|hidden fullbar=shown|hidden
+# "style=compact|framed lights=shown|hidden fullbar=shown|hidden
 #  title_visible=yes|no lights_managed=us|appkit fullscreen=yes|no clicks=N"
 # (N = clicks that reached the bar or the pill; in native full screen the
 # system's titlebar shows the title and places the lights).
@@ -2948,7 +2948,7 @@ PY
 # edge_kinds <png> <w-pt> <h-pt> <bar-pt> — the window's own pixels just inside
 # its left, right, bottom and (just under the bar) top edges, as "left=… right=…
 # bottom=… top=…" with each "backdrop", "black" or "stream". <h-pt> is the whole
-# window, bar included; <bar-pt> is the framed bar's height (0 without one).
+# window, bar included; <bar-pt> is the Compact bar's height (0 without one).
 # Black is the video layer's own letterbox (the live-resize fill's opposite).
 edge_kinds() {
     python3 - "$@" <<'PY'
@@ -3017,14 +3017,14 @@ window_gone() {
 # stream's top row at the seam. The virtual display (window.open of the 900x600
 # pt stream at the run's backing scale — 1792x1200 at 2x, 896x592 at 1x — every
 # window.resize at that size) never changes with the style or while switching.
-# Immersive: the window is exactly the stream; a click in the
-# 72x32 hot zone before the dwell reaches the app as ordinary touch, a rest
-# shows the dwell pill (the traffic lights on screen), a click on the minimise
-# light minimises the window and no touch reaches the phone from the chrome.
-# ⌥⌘F flips the style: the window grows or shrinks by the 28 pt bar above the
-# stream; with the bar right at the top of the screen the window moves down by
-# just that bar; the choice lands under chrome.style.<package>. A right-edge
-# drag resizes the window and the display.
+# Immersive: the window is exactly the stream; a click in the 72x32 hot zone
+# before the dwell reaches the app as ordinary touch, a rest shows the dwell
+# pill (the traffic lights on screen), a click on the minimise light minimises
+# the window and no touch reaches the phone from the chrome. ⌥⌘F cycles Framed
+# → Compact → Immersive: the window grows or shrinks by the difference in the
+# styles' insets; with the bar right at the top of the screen the window moves
+# down by just that overflow; the choice lands under chrome.style.<package>. A
+# right-edge drag resizes the window and the display.
 check_chrome() {
     begin_shared || return 1
     rm -f "$WORK/chrome.txt"
@@ -3038,19 +3038,19 @@ check_chrome() {
     wake=$((900 * RUN_SCALE)); hake=$((600 * RUN_SCALE))
     style_key="chrome.style.com.android.settings"
 
-    # --- Immersive: the default bar over the stream ---
-    defaults delete "$DEFAULTS_SUITE" "$style_key" 2>/dev/null
-    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-immersive.txt"
+    # --- Compact: the bar over the stream ---
+    defaults write "$DEFAULTS_SUITE" "$style_key" -string "bar"
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-compact.txt"
     open_shared --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-compact.txt" \
         || { kill "$backdrop"; return 1; }
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
-    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt Immersive window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "[WIN-4] C14 Immersive is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
-    chrome_is "style=immersive lights=shown fullbar=hidden" \
-        && ok "[WIN-7] C14 no stored choice opens Immersive with its bar and lights" \
-        || bad "[WIN-7] C14 Immersive at rest: $(chrome_state)"
+    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt Compact window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "[WIN-4] C14 Compact is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
+    chrome_is "style=compact lights=shown pill=hidden fullbar=hidden" \
+        && ok "[WIN-7] C14 a stored Compact choice opens with its bar and lights" \
+        || bad "[WIN-7] C14 Compact at rest: $(chrome_state)"
     chrome_has "can_fullscreen=1" \
         && ok "[WIN-14] C14 an app window may go full screen" \
         || bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
@@ -3060,15 +3060,15 @@ check_chrome() {
         "open=${wake}x${hake} "*) ok "[WIN-5] C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
         *) bad "[WIN-5] C14 window.open size: $before" ;;
     esac
-    screencapture -x -o -l"$win" "$WORK/chrome-immersive.png" && say "screenshot: $WORK/chrome-immersive.png"
+    screencapture -x -o -l"$win" "$WORK/chrome-compact.png" && say "screenshot: $WORK/chrome-compact.png"
     local bar spread seam tries=40
     while [ "$tries" -gt 0 ]; do
-        bar="$(bar_pixels "$WORK/chrome-immersive.png" 900 628)"
+        bar="$(bar_pixels "$WORK/chrome-compact.png" 900 628)"
         spread="$(echo "$bar" | sed -n 's/.*spread=\([0-9]*\).*/\1/p')"
         seam="$(echo "$bar" | sed -n 's/.*seam=\([0-9]*\).*/\1/p')"
         [ "${spread:-0}" -ge 40 ] && break
         sleep 0.25
-        screencapture -x -o -l"$win" "$WORK/chrome-immersive.png"
+        screencapture -x -o -l"$win" "$WORK/chrome-compact.png"
         tries=$((tries - 1))
     done
     [ "${spread:-0}" -ge 40 ] \
@@ -3079,11 +3079,11 @@ check_chrome() {
         || bad "[WIN-67] C14 the seam does not track the stream (mean diff ${seam:-255})"
     local x y w h edges
     read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
-    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-immersive-frame.png"
-    edges="$(edge_pixels "$WORK/chrome-immersive-frame.png" "$w" "$h")"
+    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-compact-frame.png"
+    edges="$(edge_pixels "$WORK/chrome-compact-frame.png" "$w" "$h")"
     [ "$edges" = "left=stream right=stream bottom=stream" ] \
-        && ok "[WIN-4] C14 the Immersive window's sides and bottom are the stream's edges ($edges)" \
-        || bad "[WIN-4] C14 Immersive window edges: $edges"
+        && ok "[WIN-4] C14 the Compact window's sides and bottom are the stream's edges ($edges)" \
+        || bad "[WIN-4] C14 Compact window edges: $edges"
 
     # WIN-61: real clicks through the window server on the band. A quiet run
     # cannot post them, so this step runs visible.
@@ -3181,25 +3181,83 @@ check_chrome() {
     touch "$WORK/chrome-step-toggle1"
     wait_until 8 win_size "$win" 900 628 \
         && ok "[WIN-7] C14 ⌥⌘F from Framed takes the frame away: 900x628" \
-        || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        || bad "[WIN-7] C14 ⌥⌘F did not reach Compact: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     touch "$WORK/chrome-step-toggle2"
-    wait_until 8 win_size "$win" 910 643 \
-        && ok "[WIN-7] C14 ⌥⌘F from Immersive brings the frame back: 910x643" \
-        || bad "[WIN-7] C14 ⌥⌘F did not reach Framed: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    wait_until 8 win_size "$win" 900 600 \
+        && ok "[WIN-7] C14 ⌥⌘F from Compact takes the bar away too: 900x600 Immersive" \
+        || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    chrome_is "style=immersive lights=hidden pill=hidden" \
+        && ok "[WIN-74] C14 Immersive at rest: the stream alone, no lights and no pill" \
+        || bad "[WIN-74] C14 Immersive at rest: $(chrome_state)"
     touch "$WORK/chrome-step-toggle3"
-    wait_until 8 win_size "$win" 900 628 \
-        && ok "[WIN-7] C14 and again to Immersive: 900x628" \
-        || bad "[WIN-7] C14 the toggle pair did not complete ($(windows | awk -v id="$win" '$1 == id {print $4, $5}'))"
+    wait_until 8 win_size "$win" 910 643 \
+        && ok "[WIN-7] C14 and again to Framed: 910x643, the cycle complete" \
+        || bad "[WIN-7] C14 the toggle cycle did not complete ($(windows | awk -v id="$win" '$1 == id {print $4, $5}'))"
     case "$(resize_sizes)" in
-        "${wake}x${hake}") ok "[WIN-5] C14 the virtual display kept the stream's size through both styles" ;;
+        "${wake}x${hake}") ok "[WIN-5] C14 the virtual display kept the stream's size through the three styles" ;;
         none) ok "[WIN-5] C14 the virtual display changed nothing: one stream size throughout" ;;
         *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
     esac
 
+    # --- Immersive: the dwell pill (WIN-74) ---
+    next_shared
+    defaults write "$DEFAULTS_SUITE" "$style_key" -string "pill"
+    # The script hovers the hot zone, taps before the dwell is up (the app's
+    # ordinary touch, which restarts the rest), and later clicks the pill's
+    # minimise light once the shell has captured the pill. In a VM the scripted
+    # click is an in-app NSEvent pair the window server never sees, so a visible
+    # run clicks through the window server instead.
+    rm -f "$WORK/chrome-step-minimise" "$WORK/chrome-step-pill"
+    if [ "$VISIBLE" = "1" ]; then
+        printf '%s\n' "wait 1" "waitfile $WORK/chrome-step-pill 90" "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise 60" "wait 8" > "$WORK/chrome-immersive.txt"
+    else
+        printf '%s\n' "wait 1" "waitfile $WORK/chrome-step-pill 90" "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise 60" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
+    fi
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
+        || { kill "$backdrop"; return 1; }
+    win="$(await_window '$4 == 900 && $5 == 600')" \
+        || { bad "C14 no 900x600 pt Immersive window (the stream alone)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "[WIN-4] [WIN-74] C14 Immersive is the 900x600 pt stream alone, no bar and no margins"
+    [ "$(defaults read "$DEFAULTS_SUITE" "$style_key" 2>/dev/null)" = "pill" ] \
+        && ok "[WIN-7] C14 Immersive's stored value is its own (pill)" \
+        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "$style_key" 2>&1)"
+    # The dwell waits for the opening cover to go: hover only once a frame is
+    # live, or the script's tap lands on the cover and nothing ever rests.
+    wait_until 45 chrome_has "loading=0" \
+        || { bad "C14 Immersive never got its first frame: $(chrome_state)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    touch "$WORK/chrome-step-pill"
+    wait_until 15 chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "[WIN-74] C14 the 400 ms rest shows the clear-glass pill with its lights ($(chrome_state))" \
+        || bad "[WIN-74] C14 the rest did not show the pill: $(chrome_state)"
+    local pill_touches
+    pill_touches="$(count_events '"kind":"touch","stream":1,"action":0')"
+    [ "$pill_touches" -ge 1 ] \
+        && ok "[WIN-74] C14 the hot zone's early click reached the app as ordinary touch ($pill_touches tap)" \
+        || bad "[WIN-74] C14 no touch from the hot zone's early click"
+    screencapture -x -o -l"$win" "$WORK/chrome-immersive.png" && say "screenshot: $WORK/chrome-immersive.png"
+    spread="$(stream_spread "$WORK/chrome-immersive.png" 900 600)"
+    [ "${spread:-0}" -ge 40 ] \
+        && ok "[WIN-74] C14 the Immersive stream is the live app (mid-row spread $spread)" \
+        || bad "[WIN-74] C14 the Immersive stream is blank (mid-row spread ${spread:-0})"
+    touch "$WORK/chrome-step-minimise"
+    if [ "$VISIBLE" = "1" ]; then
+        cg_input click --window "$win" --dx -406 --top 20
+    fi
+    sleep 1
+    window_gone "$win" \
+        && ok "[WIN-74] C14 a click on the pill's minimise light minimised the window" \
+        || bad "[WIN-74] C14 the minimise light click did not minimise (window is still listed)"
+    [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$pill_touches" ] \
+        && ok "[WIN-74] C14 and no touch reached the phone from the chrome" \
+        || bad "[WIN-74] C14 the chrome's click reached the phone as touch"
+
     # --- Full screen: the acrylic bar, hidden then revealed (WIN-8, WIN-14) ---
     if [ "$VISIBLE" = "1" ]; then
         local style_pair style_name want_windowed want_w want_h
-        for style_pair in "immersive:900x628" "framed:910x643"; do
+        for style_pair in "compact:900x628" "framed:910x643"; do
             style_name="${style_pair%%:*}"
             want_windowed="${style_pair##*:}"
             want_w="${want_windowed%x*}"
@@ -3271,7 +3329,7 @@ check_chrome() {
         # --- Always Visible keeps the full-screen bar up (WIN-9) ---
         next_shared
         rm -f "$WORK/fs-always" "$WORK/fs-short" "$WORK/fs-always-done"
-        printf '%s\n' "wait 1" "hidecontrols always" "wait 1" "fullscreen" "wait 6" \
+        printf '%s\n' "wait 1" "windowstyle compact" "wait 1" "hidecontrols always" "wait 1" "fullscreen" "wait 6" \
             "waitfile $WORK/fs-always 90" "waitfile $WORK/fs-short 90" "hidecontrols short" "wait 3" "fullscreen" "wait 8" \
             "waitfile $WORK/fs-always-done 90" "wait 10" > "$WORK/chrome-fs-always.txt"
         open_shared --open com.android.settings \
@@ -3419,7 +3477,7 @@ PY
 # anywhere (File/Window/Help still carry the system's own trailing separator
 # until the File/Window/Help cleanup), no trailing separator in the app's own
 # menus, the View menu is exactly the design's items in order, exactly one of
-# Framed/Immersive is checked, and every item the app draws belongs to SwiftUI.
+# Framed/Compact is checked, and every item the app draws belongs to SwiftUI.
 # Every dump below is taken after a step that makes SwiftUI re-evaluate the
 # commands, which is where the old injected items vanished and their separators
 # closed the gap.
@@ -3427,7 +3485,7 @@ menu_dump_ok() {
     python3 - "$1" <<'PY'
 import json, re, sys
 APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Open Current App on Mac", "Show Touches",
-             "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
+             "Live Text", "Framed", "Compact", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
              "Back", "Home", "Recents"]
 # SwiftUI items often have no target at all (nil action target); an item the
@@ -3447,7 +3505,7 @@ titles = [i["title"] for i in root["items"]]
 if titles != ["Contigua", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
     problems.append("menus: %r" % (titles,))
 WANT = {
-    "View": ["Find Apps", "—", "Immersive", "Framed", "—", "Hide Controls", "—",
+    "View": ["Find Apps", "—", "Framed", "Compact", "Immersive", "—", "Hide Controls", "—",
              "Show Touches", "Live Text", "—", "Icon Size", "—", "Density"],
     "Phone": ["Phone Mirror", "Open … on Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
@@ -3487,8 +3545,8 @@ for title, want in WANT.items():
 view = next((i for i in root["items"] if i["title"] == "View"), None)
 if view is not None:
     by_title = {item["title"]: item for item in view["submenu"]}
-    states = [by_title.get("Framed", {}).get("state"), by_title.get("Immersive", {}).get("state")]
-    if sorted(states) != ["off", "on"]:
+    states = {name: by_title.get(name, {}).get("state") for name in ("Framed", "Compact", "Immersive")}
+    if sorted(states.values()) != ["off", "off", "on"]:
         problems.append("style radios: %r" % (states,))
 installed = [(i["title"], i.get("targetClass")) for i in walk(root["items"])
              if (i["title"] in APP_ITEMS or re.fullmatch(r"Open .+ on Mac", i["title"]))
@@ -3698,7 +3756,7 @@ e2e_menu_shot() {
 
 # check_menus — the View menu has no section titles; the app draws no
 # full-screen item, and AppKit's own is last in View (fn-F) with the Window
-# tiling group left alone; Framed/Immersive are plain radio items; every item
+# tiling group left alone; Framed/Compact are plain radio items; every item
 # the app draws itself has an SF Symbol. The whole bar is dumped after each kind
 # of rebuild the menu is known to lose items on, the last one with no stream
 # window open (where the person's installed app lost them). The window's
@@ -3867,10 +3925,10 @@ waitfile $WORK/menus-step-2 60
 menupick View/Show Touches
 wait 1.2
 waitfile $WORK/menus-step-3 60
-menupick View/Framed
+menupick View/Immersive
 wait 1.5
 waitfile $WORK/menus-step-4 60
-menupick View/Immersive
+menupick View/Compact
 wait 1.5
 waitfile $WORK/menus-step-7 60
 menupick View/Density/125%
@@ -3883,7 +3941,7 @@ wait 0.3
 fingerpinch 0.5 0.01 1.25 4
 wait 1
 waitfile $WORK/menus-step-framed 60
-key opt+cmd+f
+menupick View/Framed
 wait 1.5
 waitfile $WORK/menus-step-full 60
 fullscreen
@@ -3893,9 +3951,9 @@ fullscreen
 wait 6
 EOF
     # 0: no stream window is open — only the Deck is there, and it is key.
-    # The View menu's style pair acts on the key stream window, so neither item
-    # may be checked or enabled; the Window menu lists the open window the
-    # standard way, with no empty row under "Bring All to Front".
+    # The View menu's three styles act on the key stream window, so none may be
+    # checked or enabled; the Window menu lists the open window the standard
+    # way, with no empty row under "Bring All to Front".
     dump_stable 0 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-0.json" "dump 0"
     if reason="$(full_screen_bar_ok "$WORK/menus-0.json" "dump 0" "$fs_required")"; then
@@ -3908,19 +3966,19 @@ EOF
     else
         bad "[MENU-7] dump 0: $reason"
     fi
-    python3 - "$WORK/menus-0.json" <<'PY' && ok "[MENU-9] with no stream window: Framed/Immersive are disabled and neither is checked" \
-        || bad "[MENU-9] the style pair still acts with no stream window"
+    python3 - "$WORK/menus-0.json" <<'PY' && ok "[MENU-9] with no stream window: Framed/Compact/Immersive are disabled and none is checked" \
+        || bad "[MENU-9] the styles still act with no stream window"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-pair = [by_title.get("Framed"), by_title.get("Immersive")]
-if None in pair:
-    print("the style pair is missing"); sys.exit(1)
-if [item["state"] for item in pair] != ["off", "off"]:
-    print("states:", [item["state"] for item in pair]); sys.exit(1)
-if [item["enabled"] for item in pair] != [False, False]:
-    print("enabled:", [item["enabled"] for item in pair]); sys.exit(1)
+styles = [by_title.get("Framed"), by_title.get("Compact"), by_title.get("Immersive")]
+if None in styles:
+    print("a style is missing"); sys.exit(1)
+if [item["state"] for item in styles] != ["off", "off", "off"]:
+    print("states:", [item["state"] for item in styles]); sys.exit(1)
+if [item["enabled"] for item in styles] != [False, False, False]:
+    print("enabled:", [item["enabled"] for item in styles]); sys.exit(1)
 PY
     local ax_titles
     ax_titles="$(window_titles "$APP_PID")"
@@ -4010,39 +4068,53 @@ if not all(row["command"] for row in rows if not row["separator"] and row["key"]
 PY
     # 2: after View ▸ Show Touches was toggled (the commands read its state).
     touch "$WORK/menus-step-2"; sleep 1.5; dump_now 2
-    # 3 and 4: after switching the style to Framed and back to Immersive.
+    # 3 and 4: after switching the style to Immersive and then Compact. The
+    # window opens Framed, so every pick here is a real change.
     touch "$WORK/menus-step-3"; sleep 1.5
-    wait_until 5 grep -q "style=framed" "$WORK/chrome.txt" \
-        && ok "[MENU-4] choosing Framed took the window to the framed style" \
-        || bad "[MENU-4] choosing Framed left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
+        && ok "[MENU-4] choosing Immersive took the window to the immersive style" \
+        || bad "[MENU-4] choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
-    # The pair's mark and Hide Controls' enablement follow the key window: the
-    # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
-    # their values when the menu opens.
-    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is enabled" \
+    # The styles' marks and Hide Controls' enablement follow the key window:
+    # the items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
+    # their values when the menu opens. Hide Controls is the Immersive pill's
+    # choice, so it and its items are enabled only under Immersive.
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Immersive: it is checked and Hide Controls and its items are enabled" \
         || bad "[MENU-9] the View menu did not follow the style change"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
-    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+if (by_title["Framed"]["state"], by_title["Compact"]["state"],
+        by_title["Immersive"]["state"]) != ("off", "off", "on"):
+    print("states:", {t: by_title[t]["state"] for t in ("Framed", "Compact", "Immersive")}); sys.exit(1)
 hide = by_title.get("Hide Controls")
 if hide is None or not hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
+kids = [i for i in hide.get("submenu") or [] if not i["isSeparator"]]
+if not kids or not all(i["enabled"] for i in kids):
+    print("Hide Controls items:", [(i["title"], i["enabled"]) for i in kids]); sys.exit(1)
 PY
-    touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
-    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] back on Immersive: it is checked and Hide Controls stays enabled (a key stream window)" \
+    touch "$WORK/menus-step-4"; sleep 1.5
+    wait_until 5 grep -q "style=compact" "$WORK/chrome.txt" \
+        && ok "[MENU-4] choosing Compact took the window back to the compact style" \
+        || bad "[MENU-4] choosing Compact left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    dump_now 4
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] back on Compact: it is checked and Hide Controls and its items are disabled" \
         || bad "[MENU-9] the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
-    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+if (by_title["Framed"]["state"], by_title["Compact"]["state"],
+        by_title["Immersive"]["state"]) != ("off", "on", "off"):
+    print("states:", {t: by_title[t]["state"] for t in ("Framed", "Compact", "Immersive")}); sys.exit(1)
 hide = by_title.get("Hide Controls")
-if hide is None or not hide.get("enabled"):
+if hide is None or hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
+kids = [i for i in hide.get("submenu") or [] if not i["isSeparator"]]
+if kids and any(i["enabled"] for i in kids):
+    print("Hide Controls items:", [(i["title"], i["enabled"]) for i in kids]); sys.exit(1)
 PY
     # The Deck's icon size is a stored choice: its checkmark follows ⌘+ / ⌘−
     # while the Deck is key (DECK-6, MENU-9). This is the store the keys write;
@@ -4131,31 +4203,33 @@ if mine:
     print("an app full-screen item is shown in View:", mine); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Compact/Immersive are radio items with exactly one checked, and ⌥⌘F is on the group" \
         || bad "[MENU-4] the style radios are wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-framed, immersive = by_title.get("Framed"), by_title.get("Immersive")
-if not framed or not immersive:
-    print("Framed/Immersive missing"); sys.exit(1)
-if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
-    print("states:", framed["state"], immersive["state"]); sys.exit(1)
-if not (framed["enabled"] and immersive["enabled"]):
-    print("the pair is disabled with a stream window key"); sys.exit(1)
-if framed["hasImage"] or immersive["hasImage"]:
+styles = [by_title.get(name) for name in ("Framed", "Compact", "Immersive")]
+if any(item is None for item in styles):
+    print("a style is missing"); sys.exit(1)
+if sorted(item["state"] for item in styles) != ["off", "off", "on"]:
+    print("states:", [item["state"] for item in styles]); sys.exit(1)
+if not all(item["enabled"] for item in styles):
+    print("a style is disabled with a stream window key"); sys.exit(1)
+if any(item["hasImage"] for item in styles):
     print("a radio item carries an icon"); sys.exit(1)
-# A choice cannot also be a submenu's parent: both are plain items.
-if framed.get("submenu"):
-    print("Framed has a submenu"); sys.exit(1)
-if immersive.get("submenu"):
-    print("Immersive has a submenu"); sys.exit(1)
-# ⌥⌘F belongs to the pair, and the old separate toggle is gone.
-shortcuts = [(i["title"], i["keyEquivalent"], i["modifiers"]) for i in (framed, immersive)
-             if i["keyEquivalent"] == "f"]
-if shortcuts != [("Framed", "f", ["command", "option"])] and shortcuts != [("Immersive", "f", ["command", "option"])]:
-    print("⌥⌘F on the pair:", shortcuts); sys.exit(1)
+# A choice cannot also be a submenu's parent: all three are plain items.
+if any(item.get("submenu") for item in styles):
+    print("a style has a submenu"); sys.exit(1)
+# ⌥⌘F belongs to the group, shown on the checked style, and the old separate
+# toggle is gone.
+checked = next((item for item in styles if item["state"] == "on"), None)
+if checked is None:
+    print("no checked style"); sys.exit(1)
+shortcuts = [(item["title"], item["keyEquivalent"], item["modifiers"]) for item in styles
+             if item["keyEquivalent"] == "f"]
+if shortcuts != [(checked["title"], "f", ["command", "option"])]:
+    print("⌥⌘F on the group:", shortcuts, "checked:", checked["title"]); sys.exit(1)
 if "Toggle Window Style" in by_title:
     print("the separate Toggle Window Style item is still there"); sys.exit(1)
 PY
@@ -4238,16 +4312,17 @@ if any(i["title"] == "Bar Prototype" for i in view["submenu"]):
     print("Bar Prototype is still there"); sys.exit(1)
 PY
 
-    # Immersive is a plain radio item (no submenu); the reveal choice lives in
-    # Hide Controls and follows the key stream window in either style.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is enabled while Framed" \
+    # Compact is a plain radio item (no submenu); the reveal choice lives in
+    # Hide Controls and is enabled only under Immersive. This window opens Framed,
+    # so the item and its items are present but disabled.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is disabled while Framed (its items with it)" \
         || bad "[MENU-4] Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
-imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
+imm = next(i for i in view["submenu"] if i["title"] == "Compact")
 if imm.get("submenu"):
-    print("Immersive has a submenu"); sys.exit(1)
+    print("Compact has a submenu"); sys.exit(1)
 hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
 sub = hide.get("submenu") or []
 seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
@@ -4257,8 +4332,11 @@ if seq != want:
 checked = [item["title"] for item in sub if item["state"] == "on"]
 if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
-if not hide.get("enabled"):
-    print("Hide Controls is disabled"); sys.exit(1)
+if hide.get("enabled"):
+    print("Hide Controls is enabled while framed"); sys.exit(1)
+kids = [item for item in sub if not item["isSeparator"]]
+if any(item["enabled"] for item in kids):
+    print("a Hide Controls item is enabled while framed:", [(i["title"], i["enabled"]) for i in kids]); sys.exit(1)
 PY
 
     # The bar's full-screen structure on the bar a person reads: no app item,
@@ -4335,7 +4413,10 @@ PY
         || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
     # The style pick waits until the dots' shot is taken: Framed draws no dots.
     touch "$WORK/menus-step-framed"
-    sleep 4
+    wait_until 5 grep -q "style=framed" "$WORK/chrome.txt" \
+        && ok "[MENU-4] choosing Framed took the window to the framed style for the rest of the run ($(chrome_state))" \
+        || bad "[MENU-4] choosing Framed left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    sleep 2
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
     # the phone card, not the old status line and its "Open Contigua"/"Phone
@@ -4531,19 +4612,19 @@ def one(title):
         return {}
     return found[0]
 
-for title in ("Framed", "Immersive"):
+for title in ("Framed", "Compact", "Immersive"):
     item = one(title)
     wanted = "on" if scene == "stream-framed" and title == "Framed" else "off"
     if item.get("state") != wanted:
         problems.append("%s checked %r" % (title, item.get("state")))
-    wanted_enabled = scene == "stream-framed"
+    wanted_enabled = scene in ("stream-framed", "stream-immersive")
     if bool(item.get("enabled")) != wanted_enabled:
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Hide Controls", "Density"):
     item = one(title)
-    # Hide Controls follows a key stream window in either style (ISS-45);
-    # Density needs an app window, which this scene has.
-    wanted = scene == "stream-framed"
+    # Hide Controls is the Immersive pill's choice, so it is disabled in this
+    # Framed scene; Density needs an app window, which this scene has.
+    wanted = scene == "stream-framed" and title == "Density"
     if bool(item.get("enabled")) != wanted:
         problems.append("%s enabled %r" % (title, item.get("enabled")))
 for title in ("Show Touches", "Live Text"):
@@ -4595,25 +4676,29 @@ view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
 if by_title["Framed"]["state"] != "on" or not by_title["Framed"]["enabled"]:
     print("Framed:", by_title["Framed"]); sys.exit(1)
+if by_title["Compact"]["state"] != "off" or by_title["Immersive"]["state"] != "off":
+    print("styles:", {t: by_title[t]["state"] for t in ("Framed", "Compact", "Immersive")}); sys.exit(1)
+if by_title["Hide Controls"]["enabled"]:
+    print("Hide Controls is enabled while framed"); sys.exit(1)
 if by_title["Show Touches"]["state"] != "on" or not by_title["Show Touches"]["enabled"]:
     print("Show Touches:", by_title["Show Touches"]); sys.exit(1)
 PY
     tracked_view "$WORK/menus-viewtrack-stream.json"
     view_marks "$WORK/menus-viewtrack-stream.json" stream-framed \
-        && ok "[MENU-9] with a framed stream window key, read while View tracks: Framed checked, the pair, Show Touches and Density enabled, Live Text unchecked, one Enter Full Screen" \
+        && ok "[MENU-9] with a framed stream window key, read while View tracks: Framed checked, the three styles, Show Touches and Density enabled, Hide Controls disabled, Live Text unchecked, one Enter Full Screen" \
         || bad "[MENU-9] a real View open does not follow the key stream window"
     control deckfocus grid || bad "MENUS deckfocus grid (the Deck key): $CONTROL_REPLY"
     sleep 1
     dump_stable 18 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-18.json" "dump 18"
-    python3 - "$WORK/menus-18.json" <<'PY' && ok "[MENU-9] the Deck key with a stream window open behind it: Framed/Immersive, Hide Controls, Show Touches, Live Text and Density are off and disabled" \
+    python3 - "$WORK/menus-18.json" <<'PY' && ok "[MENU-9] the Deck key with a stream window open behind it: Framed/Compact/Immersive, Hide Controls, Show Touches, Live Text and Density are off and disabled" \
         || bad "[MENU-9] the Deck key left a stream-only View item checked or enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
 problems = []
-for title in ("Framed", "Immersive"):
+for title in ("Framed", "Compact", "Immersive"):
     item = by_title.get(title)
     if item is None or item["state"] != "off" or item["enabled"]:
         problems.append("%s: %r" % (title, item))
@@ -4720,7 +4805,7 @@ import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 by_title = {item["title"]: item for item in view["submenu"]}
-pair = [by_title.get("Framed"), by_title.get("Immersive")]
+pair = [by_title.get("Framed"), by_title.get("Compact")]
 if None in pair or [item["state"] for item in pair] != ["off", "off"] \
         or [item["enabled"] for item in pair] != [False, False]:
     print("pair:", pair); sys.exit(1)
@@ -5309,7 +5394,7 @@ window_video_ratio() {
     [ -n "$frame" ] || return 1
     w="${frame%x*}"
     h="${frame#*x}"
-    # The two-style windowed chrome: Immersive adds the 28 pt bar above the
+    # The two-style windowed chrome: Compact adds the 28 pt bar above the
     # stream, Framed insets 38 pt above and 5 pt on the other three sides.
     if [ "$style" = "framed" ]; then
         w=$((w - 10)); h=$((h - 43))
@@ -5352,6 +5437,7 @@ check_mirror() {
     # says it could not open. The fake holds the first frame so a quiet run
     # can see both ends.
     clean
+    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
     rm -f "$WORK/chrome.txt"
     # ISS-63: a remembered frame from another phone, style or screen (432×870
     # for this 1080×2340 phone) must not open the mirror wider than its picture.
@@ -5385,6 +5471,7 @@ check_mirror() {
     stop_fakephone
 
     clean
+    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
     rm -f "$WORK/chrome.txt"
     # ISS-63 again, now with a picture: the first VIDEO_CONFIG's shape must
     # agree with the window's video area, even though the saved frame was not
@@ -5713,6 +5800,7 @@ PY
         # A fresh profile per run: "Turn Off Phone Screen" is remembered per
         # phone, so the first run's clicks would otherwise reopen it already off.
         clean
+    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
         mkdir -p "$WORK/control"
         printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 120" \
             "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/panel-hover.txt"
@@ -5871,6 +5959,7 @@ PY
     # phone for not turning its screen off.
     wait_until 5 no_fakephone
     clean
+    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
     mkdir -p "$WORK/control"
     start_fake || return 1
     dark_args=()
@@ -5978,6 +6067,7 @@ PY
     # open your phone." and Try Again failed the same way.
     wait_until 5 no_fakephone
     clean
+    defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
     mkdir -p "$WORK/control"
     FAKE_ARGS="--mirror-unavailable" start_fake || return 1
     dark_args=()
@@ -12430,16 +12520,16 @@ check_windows() {
     stop_fakephone
 }
 
-# --- Cover bar: WIN-11's opening cover in the immersive geometry ------------
+# --- Cover bar: WIN-11's opening cover in the compact geometry ------------
 #
 # The visual record for the person's 11-03 report: a framed window with no
-# first frame looks exactly as the same window does in immersive — one sheet
-# over the whole window, the bar's band included — and the framed bar returns
+# first frame looks exactly as the same window does in compact — one sheet
+# over the whole window, the bar's band included — and the Compact bar returns
 # with the first frame. A quiet run captures the run's own virtual display;
 # the record the reviewer sees is the VM's visible run. The two check names are
 # the two appearances.
 
-# --- Barname: the Framed bar's heavier blur, tint and centred name ----------
+# --- Barname: the Compact bar's heavier blur, tint and centred name ----------
 #
 # The three fixture pictures (a white page, a dark page and a busy photo) in
 # both appearances at 2x. Each phase reads the chrome state's tone and title
@@ -12475,12 +12565,14 @@ bar_title_measure() {
 }
 
 check_bar_title() {
-    local fixture appearance want win shot bar frame_width seam
+    local fixture appearance want win shot bar frame_width seam style_store
+    style_store="chrome.style.com.android.settings"
     ax_has() { ax_tree | grep -qF -- "$1"; }
     for appearance in light dark; do
         for fixture in white-page dark-page busy-photo; do
             clean
             FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
+            defaults write "$DEFAULTS_SUITE" "$style_store" -string "bar"
             launch --connect "127.0.0.1:$PORT" --appearance "$appearance" \
                 --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
             wait_until 25 events_have '"ev":"video"' \
@@ -12501,8 +12593,8 @@ check_bar_title() {
             chrome_has "bar_blur_radius=30" && chrome_has "bar_tint=0.14 tint=1" \
                 && ok "[WIN-67] BAR-TITLE $appearance/$fixture blur=30 tint=0.14 over the band" \
                 || bad "[WIN-67] BAR-TITLE $appearance/$fixture bar: $(chrome_state)"
-            if wait_until 5 ax_has "value=[Settings]"; then
-                ok "[WIN-68] BAR-TITLE $appearance/$fixture the bar names the app alone"
+            if wait_until 5 ax_has "value=[Settings (FakePhone)]"; then
+                ok "[WIN-68] BAR-TITLE $appearance/$fixture the bar names the app and the phone"
             else
                 bad "[WIN-68] BAR-TITLE $appearance/$fixture the bar's name: $(ax_tree | grep -i 'Settings' | head -2 | tr '\n' '|')"
             fi
@@ -12523,6 +12615,7 @@ check_bar_title() {
     for appearance in light dark; do
         clean
         FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/white-page.png" start_fake || return 1
+        defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "bar"
         launch --connect "127.0.0.1:$PORT" --appearance "$appearance" --open-phone \
             --debug-chrome-state "$WORK/chrome.txt" --quit-after 70
         wait_until 25 events_have '"ev":"video"' \
@@ -12566,11 +12659,11 @@ check_cover_bar() {
     local style_store="chrome.style.com.android.settings"
 
     # The opening cover is one sheet over the stored style's window: Framed's
-    # 5/38 pt frame band is under it, and Immersive's 28 pt bar is. The fake
+    # 5/38 pt frame band is under it, and Compact's 28 pt bar is. The fake
     # holds the first frame (and its video config), so no scripted driver runs.
-    for style in framed immersive; do
+    for style in framed compact; do
         if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-        else key=immersive; width=900; height=628; fi
+        else key=bar; width=900; height=628; fi
         defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
         clean
         FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
@@ -12597,11 +12690,11 @@ check_cover_bar() {
         stop_fakephone
     done
 
-    # The first frame restores the stored style's windowed chrome: Immersive
+    # The first frame restores the stored style's windowed chrome: Compact
     # brings its mirror and haze, Framed its material frame and no haze.
-    for style in framed immersive; do
+    for style in framed compact; do
         if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-        else key=immersive; width=900; height=628; fi
+        else key=bar; width=900; height=628; fi
         defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
         clean
         start_fake || return 1
@@ -12610,9 +12703,9 @@ check_cover_bar() {
         wait_until 20 events_have '"ev":"video"' || bad "COVER-BAR $appearance $style no video"
         wait_until 15 chrome_has "loading=0" \
             || bad "COVER-BAR $appearance $style the first frame did not land: $(chrome_state)"
-        if [ "$style" = "immersive" ]; then
+        if [ "$style" = "compact" ]; then
             wait_until 10 chrome_has "haze=1" \
-                || bad "COVER-BAR $appearance immersive has no mirror"
+                || bad "COVER-BAR $appearance compact has no mirror"
         else
             chrome_has "haze=0" \
                 || bad "COVER-BAR $appearance framed drew a mirror"
@@ -12638,7 +12731,7 @@ check_cover_bar() {
 check_cover_bar_dark() { check_cover_bar dark; }
 check_cover_bar_light() { check_cover_bar light; }
 
-# --- Styles: the two looks over the three fixtures ---------------------------
+# --- Styles: the three styles over the three fixtures -------------------------
 #
 # The reviewer's visual record (ISS-45): every style × app / Phone Mirror ×
 # appearance × windowed, and — in a visible run, where the pointer and the
@@ -12653,11 +12746,12 @@ check_styles_shots() {
     for appearance in light dark; do
         for fixture in white-page dark-page busy-photo; do
             for surface in app mirror; do
-                for style in immersive framed; do
+                for style in compact framed immersive; do
                     clean
                     FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/$fixture.png" start_fake || return 1
                     if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-                    else key=immersive; width=900; height=628; fi
+                    elif [ "$style" = "immersive" ]; then key=pill; width=900; height=600
+                    else key=bar; width=900; height=628; fi
                     defaults write "$DEFAULTS_SUITE" "$style_store" -string "$key"
                     defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
                     rm -f "$WORK/ss-begin" "$WORK/ss-hidden" "$WORK/ss-revealed" "$WORK/ss-exit" "$WORK/ss-done"
@@ -12680,12 +12774,16 @@ check_styles_shots() {
                     wait_until 30 chrome_frame_live \
                         || bad "STYLES-SHOTS $appearance/$fixture/$style/$surface never reached a live picture: $(chrome_state)"
                     if [ "$surface" = "app" ]; then
-                        if [ "$style" = "immersive" ]; then
+                        if [ "$style" = "compact" ]; then
                             wait_until 10 eval 'chrome_has "bar_title=1" && ! chrome_has "bar_title_tone=none"' \
                                 || bad "STYLES-SHOTS $appearance/$fixture/$style no toned bar title: $(chrome_state)"
-                        else
+                        elif [ "$style" = "framed" ]; then
                             wait_until 10 chrome_has "bar_title=1" \
                                 || bad "STYLES-SHOTS $appearance/$fixture/$style no framed title: $(chrome_state)"
+                        else
+                            chrome_has "bar_title=0 bar_title_tone=none bar_title_rect=none" \
+                                && ok "[WIN-74] STYLES-SHOTS $appearance/$fixture/immersive the pill has no title" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/immersive drew a bar title: $(chrome_state)"
                         fi
                     fi
                     sleep 0.3
@@ -12712,6 +12810,30 @@ check_styles_shots() {
                     elif [ "$VISIBLE" = "1" ]; then
                         touch "$WORK/ss-begin"
                         full="$win"
+                        if [ "$style" = "immersive" ]; then
+                            # Immersive full screen is the system's own revealed
+                            # title bar: no acrylic bar of ours runs (WIN-14).
+                            if wait_until 20 chrome_all fullscreen=yes fullbar=hidden lights_managed=appkit title_visible=yes; then
+                                ok "[WIN-14] STYLES-SHOTS $appearance/$fixture/immersive full screen hands the title and lights to the system ($(chrome_state))"
+                            else
+                                bad "[WIN-14] STYLES-SHOTS $appearance/$fixture/immersive did not enter the system title bar: $(chrome_state)"
+                                stop_app
+                                continue
+                            fi
+                            sleep 0.4
+                            shot_window "$full" "$shots/$style-app-$fixture-$appearance-full-titlebar.png" \
+                                && ok "STYLES-SHOTS $appearance/$fixture/$style full titlebar" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style no full-titlebar shot"
+                            touch "$WORK/ss-hidden"
+                            touch "$WORK/ss-revealed"
+                            sleep 0.5
+                            touch "$WORK/ss-exit"
+                            wait_until 15 win_size "$id" "$width" "$height" \
+                                || bad "STYLES-SHOTS $appearance/$fixture/$style did not leave full screen"
+                            touch "$WORK/ss-done"
+                            stop_app
+                            continue
+                        fi
                         if wait_until 20 chrome_all fullscreen=yes fullbar=hidden; then
                             ok "[WIN-8] STYLES-SHOTS $appearance/$fixture/$style full screen starts with the bar hidden ($(chrome_state))"
                         else
@@ -12825,7 +12947,7 @@ PY
 
 # --- Styles: the full-screen bar, app by style and appearance -----------------
 #
-# The reviewer's full-screen proof: both styles × light/dark, the bar hidden at
+# The reviewer's full-screen proof: Framed and Compact × light/dark, the bar hidden at
 # entry (no bar pixels on the 28 pt line), then revealed by a rest at the top
 # edge (an acrylic band, no copied picture, the centred name with ink), then
 # hidden again and the windowed frame restored. The Phone Mirror never goes
@@ -12839,9 +12961,9 @@ check_styles_fullscreen() {
         return 0
     fi
     for appearance in light dark; do
-        for style in immersive framed; do
+        for style in compact framed; do
             if [ "$style" = "framed" ]; then key=mat; width=910; height=643
-            else key=immersive; width=900; height=628; fi
+            else key=bar; width=900; height=628; fi
             clean
             FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
             defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$key"
@@ -12947,8 +13069,8 @@ check_styles_fullscreen() {
             stop_app
         done
         # The Phone Mirror cannot go full screen in either style (WIN-72).
-        for style in immersive framed; do
-            if [ "$style" = "framed" ]; then key=mat; else key=immersive; fi
+        for style in compact framed; do
+            if [ "$style" = "framed" ]; then key=mat; else key=bar; fi
             clean
             FAKE_ARGS="--image-frame $MACOS/scripts/fixtures/bar/busy-photo.png" start_fake || return 1
             defaults write "$DEFAULTS_SUITE" "chrome.style.phone" -string "$key"
@@ -18645,9 +18767,9 @@ PY
     # launch so the chrome state file is that window's.
     local kind stall_ms stale_ms
     stale_ms="$(nfr_limit stale_picture_ms)"
-    for kind in immersive framed; do
+    for kind in compact framed; do
         : > "$WORK/events.jsonl"
-        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$([ "$kind" = framed ] && echo mat || echo "$kind")"
+        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$([ "$kind" = framed ] && echo mat || echo bar)"
         # --stall-for: the encoder restarts after the stall, so the state must
         # clear again (a pill that never goes away would fail the last check).
         FAKE_ARGS="--stall-after 3 --stall-for 6" start_fake || return 1
@@ -18721,7 +18843,7 @@ PY
     # windows), so the app's `occlude` debug command reports what the
     # WindowServer would have said for the first window.
     : > "$WORK/events.jsonl"
-    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string bar
     # --stall-after 8: the caller has to be up and covered before the phone
     # stops, and under load `nfr_wait_ready` alone can take seconds; at 3 the
     # stall (and its 12 s resume) could be over before `occlude on`, leaving the

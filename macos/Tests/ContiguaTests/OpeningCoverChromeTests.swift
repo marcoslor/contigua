@@ -1,6 +1,6 @@
 // WIN-11's opening cover in the chrome: while the cover is up the window wears
 // one sheet from its top edge — no style bar or frame, the traffic lights and
-// our controls on the bar's row — and the windowed chrome (Immersive's mirror
+// our controls on the bar's row — and the windowed chrome (Compact's mirror
 // or Framed's material) waits for the first frame. The stored style never
 // changes; the stall overlay (WIN-39) still spans the whole window.
 
@@ -52,7 +52,7 @@ final class OpeningCoverChromeTests: XCTestCase {
                               width: 900, height: 600),
                        "the stream keeps the framed style's rect, so the virtual display does not move")
         XCTAssertFalse(chrome.barMirrorVisible, "the mirror's band is under the cover, not on screen")
-        XCTAssertFalse(chrome.hazeVisible, "the Immersive haze is not over the cover")
+        XCTAssertFalse(chrome.hazeVisible, "the Compact haze is not over the cover")
         XCTAssertTrue(chrome.framedTitleView.isHidden, "the Framed frame is not drawn under the cover")
 
         chrome.openingCover.show(nil, icon: nil)

@@ -1,6 +1,6 @@
 // WIN-39: the disconnection overlay. The picture's stall (WIN-17) and the
 // link's two down steps (WIN-16) are one screen over the last frame — the app's
-// icon, the title, "Waiting for <phone>…" — with the framed bar under the same
+// icon, the title, "Waiting for <phone>…" — with the Compact bar under the same
 // acrylic. The machine is pure, so every edge is pinned with a fake clock; the
 // window half proves the view is the presentation and that it covers the bar's
 // mirror until a frame restores it.
@@ -130,7 +130,7 @@ final class StallOverlayTests: XCTestCase {
         let name = "app.contigua.tests.stalloverlay.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        defaults.set(WindowStyle.immersive.rawValue,
+        defaults.set(WindowStyle.compact.rawValue,
                      forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
@@ -299,7 +299,7 @@ final class StallOverlayTests: XCTestCase {
                          keyCode: code)!
     }
 
-    /// WIN-39: the overlay reaches over the framed bar, so the bar's mirror is
+    /// WIN-39: the overlay reaches over the Compact bar, so the bar's mirror is
     /// not the bright stream; a frame restores the live mirror.
     func testTheOverlayCoversTheBarAndAFrameRestoresIt() throws {
         let manager = makeManager()

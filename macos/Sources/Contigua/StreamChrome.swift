@@ -1,4 +1,4 @@
-// The stream window's chrome by style (WindowStyle.swift). Immersive: a
+// The stream window's chrome by style (WindowStyle.swift). Compact: a
 // permanent 28 pt bar above the stream. The mirror is NSBackgroundExtensionView:
 // the video view is its contentView and it fills the rest of its frame — here
 // the bar band — with a replica of the content's top edge, so nothing is read
@@ -11,18 +11,18 @@
 // sides (FramedChrome): a system material, a 0.5 pt hairline, a 1 pt rim, a
 // 10 pt top highlight, a 21 pt window radius and a 12 pt picture radius, with
 // our lights, a label-coloured title and our controls in the 38 pt bar.
-// Minimal: the old pill style — no bar, no borders, the picture fills the
+// Immersive: the old pill style — no bar, no borders, the picture fills the
 // window, and the lights and our controls live on a clear-glass pill that the
 // dwell brings in (DwellChrome, DwellPill). Full screen: in Framed and
-// Immersive the stream fills the screen and one 28 pt acrylic bar, hidden until
+// Compact the stream fills the screen and one 28 pt acrylic bar, hidden until
 // the pointer reaches the top edge, carries our lights, title and controls
-// (FullScreenBar, FullScreenBarMachine); in Minimal the system's own title bar
+// (FullScreenBar, FullScreenBarMachine); in Immersive the system's own title bar
 // is returned to AppKit, as it was before the merge.
 
 import AppKit
 import SwiftUI
 
-/// The Minimal style's dwell pill (DwellChrome): clear glass at the stream's
+/// The Immersive style's dwell pill (DwellChrome): clear glass at the stream's
 /// top-left corner — it blurs what is under it without the regular glass's grey
 /// fill — and its empty areas drag the window; the window kind's actions and
 /// the real traffic lights (which ride the window's title area above this view)
@@ -45,7 +45,7 @@ final class DwellPillView: NSGlassEffectView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }  // unrecoverable: no nib or coder builds this view
 
     override func mouseDown(with event: NSEvent) {
         onPress?()
@@ -73,7 +73,7 @@ final class FramedChromeView: NSView {
 
         // The desktop behind the window is the material's backdrop, never a
         // copy of the picture: Framed's bar is a real material bar, not the
-        // Immersive mirror.
+        // Compact mirror.
         material.blendingMode = .behindWindow
         material.state = .active
         material.wantsLayer = true
@@ -121,7 +121,7 @@ final class FramedChromeView: NSView {
         titleLabel.stringValue = title ?? ""
         titleBase = base
         titleRightEdge = rightEdge
-        // Always lay out: the frame is hidden while Immersive, so a title set
+        // Always lay out: the frame is hidden while Compact, so a title set
         // then has no laid-out label yet; the switch to Framed must place it.
         needsLayout = true
     }
@@ -143,7 +143,7 @@ final class FramedChromeView: NSView {
     var rimWidth: CGFloat { rimLayer.lineWidth }
 
     /// The title's rect between the lights and the right-hand controls, with
-    /// the same 8 pt clearance and hide thresholds as the Immersive bar
+    /// the same 8 pt clearance and hide thresholds as the Compact bar
     /// (WIN-68), and the phone suffix dropped first when the room is short.
     private func fitting() -> (text: String, frame: NSRect)? {
         let lightsEnd = FramedChrome.lightInset + 2 * ChromeBar.trafficLightSpacing
@@ -259,7 +259,7 @@ final class FullScreenBarView: NSVisualEffectView {
     }
 }
 
-/// The window's content: the stream, the style's windowed chrome — Immersive's
+/// The window's content: the stream, the style's windowed chrome — Compact's
 /// mirrored bar or Framed's material frame, with the traffic lights and our
 /// controls on their line — the full-screen acrylic bar and its title, the
 /// covers, and the kind's actions at the bar's right end.
@@ -275,7 +275,7 @@ final class StreamChromeView: NSView {
     private let fullBarView = FullScreenBarView()
     /// The full-screen bar's slide: 1 while it is fully off the top edge.
     private(set) var fullBarOffset: CGFloat = FullScreenBar.height
-    /// The FullScreenBarView's sibling for the Minimal style: the clear-glass
+    /// The FullScreenBarView's sibling for the Immersive style: the clear-glass
     /// pill; only a background: the buttons above it are the chrome's own
     /// subviews so they can move between the pill's row and their home slots.
     private let pillView = DwellPillView()
@@ -315,7 +315,7 @@ final class StreamChromeView: NSView {
     private var windowObservers: [NSObjectProtocol] = []
     /// The Show Touches dots: a layer of this view, not of the video. The
     /// extension view mirrors its contentView (the video), so a dot there
-    /// would be reflected into the Immersive bar; this layer is a sibling above
+    /// would be reflected into the Compact bar; this layer is a sibling above
     /// the mirror, so the bar shows the video only.
     private let touchDots = CALayer()
     /// The window kind's actions at the right end (the phone window's
@@ -345,7 +345,7 @@ final class StreamChromeView: NSView {
     /// Live Text is on: the kind's actions are frozen (HeaderActionPolicy).
     private(set) var liveTextActive = false
 
-    /// The Minimal style's pill is up (the dwell or Always Visible brought it
+    /// The Immersive style's pill is up (the dwell or Always Visible brought it
     /// in); only `setPill` moves it.
     private(set) var showsPill = false
     /// The pill's frame in this view while it is up and can show.
@@ -479,11 +479,11 @@ final class StreamChromeView: NSView {
     /// The full-screen bar, for the window tests.
     var fullBarBackground: FullScreenBarView { fullBarView }
 
-    /// The Minimal pill, for the window tests (they look inside).
+    /// The Immersive pill, for the window tests (they look inside).
     var pill: DwellPillView { pillView }
 
     /// The picture's own rect in this view's coordinates (the whole view in
-    /// Immersive; the inset content rect in Framed and while opening).
+    /// Compact; the inset content rect in Framed and while opening).
     var contentRect: NSRect { video.frame }
 
     /// The mirror's frame in the chrome (the e2e's geometry).
@@ -557,7 +557,7 @@ final class StreamChromeView: NSView {
         return style
     }
 
-    /// Right now: the windowed top chrome band's height — Immersive's 28 pt bar
+    /// Right now: the windowed top chrome band's height — Compact's 28 pt bar
     /// or Framed's 38.5 pt bar — or 0 in full screen and while the opening
     /// cover is one sheet over the whole window (WIN-11).
     var barHeight: CGFloat {
@@ -578,11 +578,11 @@ final class StreamChromeView: NSView {
     /// The Framed style's frame is drawn: windowed, cover not up.
     private var framedGeometry: Bool { windowedChrome == .framed }
 
-    /// The Immersive mirror's band is live: windowed, cover up, not Framed.
-    private var immersiveBar: Bool { windowedChrome == .immersive }
+    /// The Compact mirror's band is live: windowed, cover up, not Framed.
+    private var compactBar: Bool { windowedChrome == .compact }
 
-    /// The Minimal style's pill is the windowed chrome: no bar, no frame.
-    private var minimalChrome: Bool { windowedChrome == .minimal }
+    /// The Immersive style's pill is the windowed chrome: no bar, no frame.
+    private var immersiveChrome: Bool { windowedChrome == .immersive }
 
     /// The full-screen bar is visible (revealing, shown or hiding).
     private(set) var fullBarVisible = false
@@ -622,11 +622,11 @@ final class StreamChromeView: NSView {
     }
 
     /// The pill's frame in this view (the window's content): `pillInset` in
-    /// from the stream's top-left corner, as tall as the Immersive bar, wide
+    /// from the stream's top-left corner, as tall as the Compact bar, wide
     /// enough for its contents. nil when it cannot show (a framed window with
     /// no cover, full screen, the opening cover's one sheet).
     private func newPillFrame() -> NSRect? {
-        guard minimalChrome else { return nil }
+        guard immersiveChrome else { return nil }
         return NSRect(x: DwellChrome.pillInset,
                       y: bounds.height - DwellChrome.pillInset - DwellChrome.pillHeight,
                       width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
@@ -634,7 +634,7 @@ final class StreamChromeView: NSView {
 
     /// The stream's rect: Framed's content rect while its frame is drawn; the
     /// stored style's stream rect while the cover is one sheet; the whole view
-    /// in full screen. The extension view fills the view in Immersive so its
+    /// in full screen. The extension view fills the view in Compact so its
     /// bar band is the mirrored top of the stream.
     private func layoutStream() {
         let content = streamContentRect
@@ -719,19 +719,19 @@ final class StreamChromeView: NSView {
         reapplyBarBlur()
     }
 
-    /// The window's own radius: 22 for Framed, 16 for Immersive and Minimal,
-    /// square in full screen except for Minimal, which kept its 16 pt corners
+    /// The window's own radius: 22 for Framed, 16 for Compact and Immersive,
+    /// square in full screen except for Immersive, which kept its 16 pt corners
     /// in full screen before the merge; the cover keeps the stored style's
     /// window radius.
     private var windowCornerRadius: CGFloat {
-        if isFullScreen, style != .minimal { return 0 }
+        if isFullScreen, style != .immersive { return 0 }
         switch style {
-        case .immersive, .minimal: return ChromeBar.cornerRadius
+        case .compact, .immersive: return ChromeBar.cornerRadius
         case .framed: return FramedChrome.outerRadius
         }
     }
 
-    /// Frames and shows the Immersive bar's haze and tint from the current
+    /// Frames and shows the Compact bar's haze and tint from the current
     /// state: the 28 pt band above the stream and nothing below its seam.
     /// Hidden while the opening cover's ground or the stall overlay owns the
     /// bar, and in Framed or full screen (neither mirrors the picture). The
@@ -740,7 +740,7 @@ final class StreamChromeView: NSView {
         let bar = barHeight
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let top = NSColor(white: 1, alpha: ChromeBar.hazeTopAlpha(dark: dark)).cgColor
-        let visible = immersiveBar && bar > 0 && !stallOverlay.isShowing
+        let visible = compactBar && bar > 0 && !stallOverlay.isShowing
             && !phoneOverlay.isShowing
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -760,10 +760,10 @@ final class StreamChromeView: NSView {
     /// Re-applies the system blur radius after an event that can bring a new
     /// backdrop: a layout, the first frame, an appearance, backing-scale, key
     /// or occlusion change. Observation only; nothing runs per frame. Only the
-    /// Immersive mirror has the filter; Framed's material has no backdrop blur
+    /// Compact mirror has the filter; Framed's material has no backdrop blur
     /// of this kind.
     func reapplyBarBlur(reportMissing: Bool = false) {
-        guard window != nil, immersiveBar else { return }
+        guard window != nil, compactBar else { return }
         barBlur.apply(in: ext.layer, reportMissing: reportMissing)
     }
 
@@ -799,9 +799,9 @@ final class StreamChromeView: NSView {
     /// never stored from a proposal.
     private func updateBarTitle() {
         let row = HeaderBar.row(actions.actions, rightEdge: bounds.width)
-        let fitted = immersiveBarTitle(row: row)
+        let fitted = compactBarTitle(row: row)
         titleFrame = fitted?.frame
-        let shows = immersiveBar && fitted != nil
+        let shows = compactBar && fitted != nil
         if shows != titleVisible {
             titleVisible = shows
             if shows {
@@ -826,8 +826,8 @@ final class StreamChromeView: NSView {
         BarTitle.layOut(fitted.text, in: titleDark, frame: fitted.frame)
     }
 
-    private func immersiveBarTitle(row: HeaderBar.Row?) -> (text: String, frame: NSRect)? {
-        guard immersiveBar, !stallOverlay.isShowing, !phoneOverlay.isShowing else { return nil }
+    private func compactBarTitle(row: HeaderBar.Row?) -> (text: String, frame: NSRect)? {
+        guard compactBar, !stallOverlay.isShowing, !phoneOverlay.isShowing else { return nil }
         return BarTitle.fitting(text: BarTitleName.withPhone(titleText, phone: titlePhone),
                                 base: titleText, windowWidth: bounds.width, barHeight: barHeight,
                                 boundsHeight: bounds.height, lightsEnd: BarTitle.lightsEnd,
@@ -851,7 +851,7 @@ final class StreamChromeView: NSView {
     }
 
     private func sampleBarTone(force: Bool) {
-        guard immersiveBar, titleVisible, let frame = titleFrame, !toneSampleInFlight else { return }
+        guard compactBar, titleVisible, let frame = titleFrame, !toneSampleInFlight else { return }
         if !force, let last = lastToneStamp, last == toneSource.frameStamp { return }
         let picture = video.videoRect()
         guard picture.width > 0, picture.height > 0 else { return }
@@ -900,14 +900,13 @@ final class StreamChromeView: NSView {
         case .baseline, .changed, .unresolved:
             applyTone(toneMachine.tone, animated: true)
         }
+        // An unresolved sample that kept the tone is the ignored case for the
+        // view: no fade and no transition line every half second.
+        guard change != .ignored, before != toneMachine.tone.rawValue else { return }
+        applyTone(toneMachine.tone, animated: true)
         let line = String(format: "bar tone: %@ --sample(%.3f..%.3f)--> %@",
                           before, band.low, band.high, toneMachine.tone.rawValue)
         Log.video.notice("\(line, privacy: .public)")  // log-ok: closed tone names and luminances
-        if case .unresolved = change, !loggedUnresolvedTone {
-            loggedUnresolvedTone = true
-            let kept = toneMachine.tone.rawValue
-            Log.video.notice("bar tone: neither ink reaches the contrast limit; keeping \(kept, privacy: .public)")  // log-ok: a closed tone name
-        }
         onBarToneChange?()
     }
 
@@ -934,19 +933,19 @@ final class StreamChromeView: NSView {
     /// and the full-screen bar use the system label colour, so their tone
     /// reads `none` (WIN-71: no tone machine there).
     var barTitleVisible: Bool {
-        if immersiveBar { return titleVisible }
+        if compactBar { return titleVisible }
         if framedGeometry { return !framedView.titleIsHidden }
         if fullBarVisible { return !fullBarView.titleIsHidden }
         return false
     }
     /// The ink drawn now; none until the first sample decides it (the
-    /// Immersive fields are transparent before that).
+    /// Compact fields are transparent before that).
     var barTitleToneName: String {
-        guard immersiveBar, titleVisible else { return "none" }
+        guard compactBar, titleVisible else { return "none" }
         return toneMachine.hasSample ? toneMachine.tone.rawValue : "none"
     }
     var barTitleRect: NSRect? {
-        if immersiveBar { return titleVisible ? titleFrame : nil }
+        if compactBar { return titleVisible ? titleFrame : nil }
         if framedGeometry, !framedView.titleIsHidden {
             return convert(framedView.titleFrame, from: framedView)
         }
@@ -978,11 +977,11 @@ final class StreamChromeView: NSView {
     /// True while the haze is drawn (WIN-40; the e2e reads it).
     var hazeVisible: Bool { !hazeLayer.isHidden }
 
-    /// True when the Immersive bar's mirror band would show. The opening cover
+    /// True when the Compact bar's mirror band would show. The opening cover
     /// is one opaque sheet over it until the first frame (WIN-11), and the
     /// phone cover is one sheet from the window's top edge (WIN-65); the stall
     /// overlay reports its own covering separately (`barMirrorCovered`).
-    var barMirrorVisible: Bool { immersiveBar && !phoneOverlay.isShowing }
+    var barMirrorVisible: Bool { compactBar && !phoneOverlay.isShowing }
 
     /// The top edge and height of the row the controls ride: the windowed
     /// bar, the cover's top row while the style's chrome is one sheet, or the
@@ -1002,23 +1001,23 @@ final class StreamChromeView: NSView {
     /// is the style's, the cover's and the dwell's business.
     private func layoutControls() {
         let side = HeaderBar.liveTextSide
-        // Minimal full screen is the system's own title bar (ChromeConfig):
+        // Immersive full screen is the system's own title bar (ChromeConfig):
         // no chrome of ours there.
-        if isFullScreen, style == .minimal {
+        if isFullScreen, style == .immersive {
             hideControlRow()
             liveTextStatus.isHidden = !liveTextActive
             layoutLiveTextStatus()
             layoutPanelStatus()
             return
         }
-        // Full screen in Framed or Immersive: the acrylic bar's slide decides.
+        // Full screen in Framed or Compact: the acrylic bar's slide decides.
         if isFullScreen, !fullBarVisible {
             hideControlRow()
             liveTextStatus.isHidden = true
             layoutPanelStatus()
             return
         }
-        if minimalChrome {
+        if immersiveChrome {
             guard showsPill, let pill = pillFrame else {
                 hideControlRow()
                 liveTextStatus.isHidden = !liveTextActive
@@ -1072,12 +1071,12 @@ final class StreamChromeView: NSView {
     }
 
     /// The status pill: centred in the chrome row, or just under the window's
-    /// top edge where there is no bar or frame (Minimal, Minimal full screen,
+    /// top edge where there is no bar or frame (Immersive, Immersive full screen,
     /// the opening cover's top row).
     private func layoutLiveTextStatus() {
         guard !liveTextStatus.isHidden else { return }
         let size = liveTextStatus.preferredSize
-        if minimalChrome || (isFullScreen && style == .minimal) {
+        if immersiveChrome || (isFullScreen && style == .immersive) {
             liveTextStatus.frame = NSRect(x: bounds.midX - size.width / 2,
                                           y: bounds.height - size.height - 10,
                                           width: size.width, height: size.height)
@@ -1109,7 +1108,7 @@ final class StreamChromeView: NSView {
         liveTextButton.isOn = active
         actions.setActions(actions.actions, liveTextActive: active)
         liveTextStatus.setText("Live Text")
-        liveTextStatus.isHidden = !active || (isFullScreen && style != .minimal && !fullBarVisible)
+        liveTextStatus.isHidden = !active || (isFullScreen && style != .immersive && !fullBarVisible)
         if active { layoutLiveTextStatus() }
         needsLayout = true
     }
@@ -1166,7 +1165,7 @@ final class StreamChromeView: NSView {
         guard !panelStatus.isHidden else { return }
         let size = panelStatus.preferredSize
         let y: CGFloat
-        if minimalChrome || (isFullScreen && style == .minimal) {
+        if immersiveChrome || (isFullScreen && style == .immersive) {
             y = bounds.height - size.height - 10
         } else {
             y = controlRowTop + (controlRowHeight - size.height) / 2
@@ -1234,7 +1233,7 @@ final class StreamChromeView: NSView {
         liveTextCapsule.material = material
     }
 
-    /// The bottom edge of the band that belongs to the window: the framed bar
+    /// The bottom edge of the band that belongs to the window: the Compact bar
     /// plus whatever the native titlebar covers. The titlebar is taller than
     /// the bar on macOS 26 (32 against 28), and its last rows still show the
     /// stream's top edge at the window's edge. A click there is the bar's, not
@@ -1249,14 +1248,14 @@ final class StreamChromeView: NSView {
     }
 
     /// True at a point in this view that the chrome owns over the picture:
-    /// Immersive's bar and the native titlebar rows above the stream's first
-    /// visible row, Framed's margins and rounded-off corners, Minimal's pill
+    /// Compact's bar and the native titlebar rows above the stream's first
+    /// visible row, Framed's margins and rounded-off corners, Immersive's pill
     /// while it is up, and the full-screen bar's band WHILE it is revealed.
     /// Clicks and hover share this one rule (ISS-49, WIN-61): a point the
     /// chrome owns is never the phone's.
     func ownsPoint(_ point: NSPoint) -> Bool {
         if isFullScreen {
-            return style != .minimal && fullBarVisible && point.y >= bounds.height - FullScreenBar.height
+            return style != .immersive && fullBarVisible && point.y >= bounds.height - FullScreenBar.height
         }
         if framedGeometry {
             return !FramedChrome.contentContains(point, in: bounds)
@@ -1264,7 +1263,7 @@ final class StreamChromeView: NSView {
         if barHeight > 0 {
             return point.y >= inertBandBottom
         }
-        guard minimalChrome, showsPill, let pillFrame else { return false }
+        guard immersiveChrome, showsPill, let pillFrame else { return false }
         return pillFrame.contains(point)
     }
 
@@ -1294,7 +1293,7 @@ final class StreamChromeView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         if barHeight > 0 || framedGeometry || (isFullScreen && fullBarVisible)
-            || (minimalChrome && showsPill) {
+            || (immersiveChrome && showsPill) {
             onBarPress?()
             if event.clickCount == 2 {
                 window.performZoom(nil)
@@ -1304,13 +1303,13 @@ final class StreamChromeView: NSView {
         window.performDrag(with: event)
     }
 
-    /// The Minimal dwell pill came or went (the controller folds time in):
+    /// The Immersive dwell pill came or went (the controller folds time in):
     /// fade it and its buttons in over `fadeIn`, move the controls and the
     /// lights to its slots, and on the way out park everything hidden again.
     /// The real lights live in the title area above this view, so only their
     /// frames change.
     func setPill(_ shown: Bool) {
-        guard !shown || minimalChrome else { return }
+        guard !shown || immersiveChrome else { return }
         guard showsPill != shown else { return }
         showsPill = shown
         let controlViews: [NSView] = [pillView, actions]
@@ -1334,7 +1333,7 @@ final class StreamChromeView: NSView {
             })
             // Unhiding a title-area button makes AppKit assert its standard
             // slot on the next titlebar layout pass; this comes after it.
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async { [weak self] in  // gcd: after AppKit's titlebar pass on this turn
                 if let self, self.showsPill { self.placeTrafficLights() }
             }
         } else {
@@ -1358,8 +1357,8 @@ final class StreamChromeView: NSView {
 
     private func lightsHide() {
         // Only park when no chrome owns the lights: the bar does too, and
-        // Minimal full screen gives them to AppKit.
-        guard minimalChrome, !lightsManagedByAppKit else { return }
+        // Immersive full screen gives them to AppKit.
+        guard immersiveChrome, !lightsManagedByAppKit else { return }
         trafficLights.forEach {
             if !showsPill {
                 $0.isHidden = true
@@ -1487,7 +1486,7 @@ final class StreamChromeView: NSView {
         }
     }
 
-    /// Where the traffic lights ride: the windowed bar's line (Immersive's
+    /// Where the traffic lights ride: the windowed bar's line (Compact's
     /// 7 pt insets or Framed's 12.25), the full-screen bar's line while that
     /// bar is off the top, or out of sight. The lights live in the title area
     /// above the full-size content, so they are placed there in window
@@ -1514,7 +1513,7 @@ final class StreamChromeView: NSView {
                                    y: height - inset - ChromeBar.trafficLightButtonSide,
                                    width: ChromeBar.trafficLightButtonSide, height: ChromeBar.trafficLightButtonSide)
                 light.frame = superview.convert(frame, from: nil)
-            } else if minimalChrome {
+            } else if immersiveChrome {
                 // The pill's row: 8 pt in from its edge, 14x14 centred on the
                 // pill's centre line; out of sight while the chrome is hidden.
                 light.isHidden = !showsPill
@@ -1542,7 +1541,7 @@ final class StreamChromeView: NSView {
     }
 
     /// The style itself changed (⌥⌘F / View menu): relayout, re-place the
-    /// lights; the Minimal pill never survives a switch.
+    /// lights; the Immersive pill never survives a switch.
     func setStyle(_ new: WindowStyle) {
         guard style != new else { return }
         if showsPill { setPill(false) }

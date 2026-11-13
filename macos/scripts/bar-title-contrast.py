@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the Framed bar title's contrast from a real window capture.
+"""Measure the Compact bar title's contrast from a real window capture.
 
 The title's rect comes from the chrome state (window points, top-left origin);
 the capture is the window's own pixels at the run's backing scale. The glyphs

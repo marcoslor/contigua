@@ -12,8 +12,8 @@ final class MenuMarksTests: XCTestCase {
             MenuMarks.Item(title: "Find Apps"),
             MenuMarks.Item(title: "", isSeparator: true),
             MenuMarks.Item(title: "Framed"),
+            MenuMarks.Item(title: "Compact"),
             MenuMarks.Item(title: "Immersive"),
-            MenuMarks.Item(title: "Minimal"),
             MenuMarks.Item(title: "Hide Controls", children: [
                 MenuMarks.Item(title: "Instantly"),
                 MenuMarks.Item(title: "Short"),
@@ -90,25 +90,25 @@ final class MenuMarksTests: XCTestCase {
     // MARK: The styles
 
     func testTheStylesFollowTheKeyWindowsStyle() {
-        let immersive = edits(state(style: .immersive))
-        XCTAssertTrue(immersive.contains(.mark(["Framed"], false)))
-        XCTAssertTrue(immersive.contains(.mark(["Immersive"], true)))
-        XCTAssertTrue(immersive.contains(.enable(["Hide Controls"], false)),
-                      "Hide Controls is the Minimal pill's choice and is disabled on Immersive")
+        let compact = edits(state(style: .compact))
+        XCTAssertTrue(compact.contains(.mark(["Framed"], false)))
+        XCTAssertTrue(compact.contains(.mark(["Compact"], true)))
+        XCTAssertTrue(compact.contains(.enable(["Hide Controls"], false)),
+                      "Hide Controls is the Immersive pill's choice and is disabled on Compact")
 
         let framed = edits(state(style: .framed))
         XCTAssertTrue(framed.contains(.mark(["Framed"], true)))
-        XCTAssertTrue(framed.contains(.mark(["Immersive"], false)))
+        XCTAssertTrue(framed.contains(.mark(["Compact"], false)))
         XCTAssertTrue(framed.contains(.enable(["Hide Controls"], false)),
                       "Hide Controls is disabled on Framed")
 
-        let minimal = edits(state(style: .minimal))
-        XCTAssertTrue(minimal.contains(.mark(["Minimal"], true)))
-        XCTAssertTrue(minimal.contains(.mark(["Framed"], false)))
-        XCTAssertTrue(minimal.contains(.enable(["Hide Controls"], true)),
-                      "Hide Controls is enabled on Minimal")
-        XCTAssertTrue(minimal.contains(.enable(["Hide Controls", "Short"], true)))
-        XCTAssertTrue(minimal.contains(.enable(["Hide Controls", "Always Visible"], true)))
+        let immersive = edits(state(style: .immersive))
+        XCTAssertTrue(immersive.contains(.mark(["Immersive"], true)))
+        XCTAssertTrue(immersive.contains(.mark(["Framed"], false)))
+        XCTAssertTrue(immersive.contains(.enable(["Hide Controls"], true)),
+                      "Hide Controls is enabled on Immersive")
+        XCTAssertTrue(immersive.contains(.enable(["Hide Controls", "Short"], true)))
+        XCTAssertTrue(immersive.contains(.enable(["Hide Controls", "Always Visible"], true)))
     }
 
     /// Exactly one of the three is on, whatever the state: no state leaves two
@@ -326,7 +326,7 @@ final class MenuMarksTests: XCTestCase {
     /// The rules read the state, never the items' current marks, so the next
     /// call writes the same values again.
     func testTheEditsDoNotDependOnWhatTheItemsShowNow() {
-        let key = state(style: .immersive, reveal: .long)
+        let key = state(style: .compact, reveal: .long)
         let launch = edits(key)
         XCTAssertEqual(edits(key), launch)
         XCTAssertEqual(Set(launch.map { String(describing: $0) }).count, launch.count,
@@ -360,14 +360,14 @@ final class MenuMarksTests: XCTestCase {
         }
         defaults.set(1.25, forKey: DeckZoom.key)
         shared.handle(.streamBecameKey(StreamMenuValues(
-            stream: 1, style: .immersive, densityPackage: "com.android.settings")))
+            stream: 1, style: .compact, densityPackage: "com.android.settings")))
         shared.revealDelay = .alwaysVisible
 
         let main = NSMenu(title: "main")
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "Framed", action: nil, keyEquivalent: "")
+        view.addItem(withTitle: "Compact", action: nil, keyEquivalent: "")
         view.addItem(withTitle: "Immersive", action: nil, keyEquivalent: "")
-        view.addItem(withTitle: "Minimal", action: nil, keyEquivalent: "")
         let hide = NSMenu(title: "Hide Controls")
         for title in ["Instantly", "Short", "Long", "Always Visible"] {
             hide.addItem(withTitle: title, action: nil, keyEquivalent: "")
@@ -416,9 +416,9 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(window.items.count, before.4)
 
         XCTAssertEqual(view.items.first { $0.title == "Framed" }?.state, .off)
-        XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .on)
-        XCTAssertEqual(view.items.first { $0.title == "Minimal" }?.state, .off)
-        XCTAssertEqual(hideItem.isEnabled, false, "Hide Controls is disabled on Immersive")
+        XCTAssertEqual(view.items.first { $0.title == "Compact" }?.state, .on)
+        XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .off)
+        XCTAssertEqual(hideItem.isEnabled, false, "Hide Controls is disabled on Compact")
         XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on,
                        "the stored choice's mark still shows, greyed")
         XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
@@ -527,23 +527,23 @@ final class MenuMarksTests: XCTestCase {
     /// edit still lands.
     @MainActor
     func testAMissingItemIsReportedOnceAndThePassGoesOn() {
-        let immersive = NSMenuItem(title: "Immersive", action: nil, keyEquivalent: "")
-        immersive.state = .on
-        immersive.isEnabled = true
+        let compact = NSMenuItem(title: "Compact", action: nil, keyEquivalent: "")
+        compact.state = .on
+        compact.isEnabled = true
         let touches = NSMenuItem(title: "Show Touches", action: nil, keyEquivalent: "")
         touches.state = .on
         touches.isEnabled = true
         let live = NSMenuItem(title: "Live Text", action: nil, keyEquivalent: "")
         live.state = .on
         live.isEnabled = true
-        let main = makeBar(view: [immersive, touches, live])
+        let main = makeBar(view: [compact, touches, live])
         let view = main.items.first { $0.title == "View" }!.submenu!
 
         // A pass over the bar still corrects every item it has, even while one
         // menu of the bar is absent (no Navigate here).
         XCTAssertEqual(MenuMarks.apply(to: main), [])
-        XCTAssertEqual(item("Immersive", view)?.state, .off)
-        XCTAssertEqual(item("Immersive", view)?.isEnabled, false)
+        XCTAssertEqual(item("Compact", view)?.state, .off)
+        XCTAssertEqual(item("Compact", view)?.isEnabled, false)
         XCTAssertEqual(item("Show Touches", view)?.state, .off)
         XCTAssertEqual(item("Show Touches", view)?.isEnabled, false)
         XCTAssertEqual(item("Live Text", view)?.state, .off)
@@ -564,14 +564,14 @@ final class MenuMarksTests: XCTestCase {
     @MainActor
     func testTheCorrectionLandsAfterTheOpenInstallsTheItems() {
         let framed = NSMenuItem(title: "Framed", action: nil, keyEquivalent: "")
-        let immersive = NSMenuItem(title: "Immersive", action: nil, keyEquivalent: "")
+        let compact = NSMenuItem(title: "Compact", action: nil, keyEquivalent: "")
         let touches = NSMenuItem(title: "Show Touches", action: nil, keyEquivalent: "")
-        let main = makeBar(view: [framed, immersive, touches])
+        let main = makeBar(view: [framed, compact, touches])
         let view = main.items.first { $0.title == "View" }?.submenu
         // The launch's values: the style pair checked and enabled, touches on.
         framed.state = .on
         framed.isEnabled = true
-        immersive.isEnabled = true
+        compact.isEnabled = true
         touches.state = .on
         touches.isEnabled = true
         NSApplication.shared.mainMenu = main
@@ -581,14 +581,14 @@ final class MenuMarksTests: XCTestCase {
         // The install a real open runs after the notification, in the same turn.
         framed.state = .on
         framed.isEnabled = true
-        immersive.isEnabled = true
+        compact.isEnabled = true
         touches.state = .on
         touches.isEnabled = true
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
 
         XCTAssertEqual(item("Framed", view!)?.state, .off)
         XCTAssertEqual(item("Framed", view!)?.isEnabled, false)
-        XCTAssertEqual(item("Immersive", view!)?.isEnabled, false)
+        XCTAssertEqual(item("Compact", view!)?.isEnabled, false)
         XCTAssertEqual(item("Show Touches", view!)?.state, .off)
         XCTAssertEqual(item("Show Touches", view!)?.isEnabled, false)
     }

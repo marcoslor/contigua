@@ -1,4 +1,4 @@
-// The framed bar's proportions, shared with the immersive pill.
+// The Compact bar's proportions, shared with the immersive pill.
 //
 // The 14 pt traffic lights sit 7 pt in from the left, the top and the bottom,
 // so the bar is 28 pt; the Live Text button mirrors them 7 pt in from the

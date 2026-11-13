@@ -202,7 +202,7 @@ final class BarAppearanceTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.appearance = appearance
         let chrome = StreamChromeView(video: VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780)),
-                                      style: .immersive)
+                                      style: .compact)
         chrome.frame = NSRect(x: 0, y: 0, width: 380, height: 800)
         window.contentView = chrome
         return (window, chrome)

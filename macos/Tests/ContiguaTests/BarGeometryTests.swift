@@ -1,4 +1,4 @@
-// The framed bar's geometry: the traffic lights equally inset left/top/bottom,
+// The Compact bar's geometry: the traffic lights equally inset left/top/bottom,
 // the Live Text button the same distance in from the right, centred on the
 // lights' line.
 
@@ -12,7 +12,7 @@ final class BarGeometryTests: XCTestCase {
         let name = "app.contigua.tests.bar.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        defaults.set(WindowStyle.immersive.rawValue,
+        defaults.set(WindowStyle.compact.rawValue,
                      forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")

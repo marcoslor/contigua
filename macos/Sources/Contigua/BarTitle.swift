@@ -1,4 +1,4 @@
-// The Framed bar's centred name (WIN-67..69): the app's name, or the phone's
+// The Compact bar's centred name (WIN-67..69): the app's name, or the phone's
 // in the Phone Mirror, on the bar's line, with a tone that follows the band
 // behind it. Everything here is pure or a value type: the view (StreamChrome)
 // reads the same layout and machine the tests pin.
@@ -233,9 +233,10 @@ enum BarTitle {
         field.lineBreakMode = lineBreakMode(text: text, width: frame.width)
     }
 
-    /// The text's one-line width, rounded up like an AppKit field, with two
-    /// points for the cell's own edges so a name that exactly fits does not
-    /// truncate by a rounding step.
+    /// The width a title field needs to draw `text` whole on one line: the
+    /// cell's own measure, its edge padding included, rounded up. The glyphs'
+    /// width plus a guess at the padding fell short by about 2 pt and clipped
+    /// the last glyph of a name that "fit" ("Settings (FakePhone" — #45).
     static func textWidth(_ text: String) -> CGFloat {
         let attributed = NSAttributedString(string: text, attributes: [.font: font()])
         return ceil(attributed.size().width) + 2

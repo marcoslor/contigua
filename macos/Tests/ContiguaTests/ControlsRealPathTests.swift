@@ -52,7 +52,7 @@ final class ControlsRealPathTests: XCTestCase {
     }
 
     func testEveryPhoneBarButtonHitsItselfAndFiresOnce() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             let chrome = makeChrome(style: style)
             var fired: [String] = []
             chrome.setActions(phoneActions { fired.append($0) })
@@ -72,7 +72,7 @@ final class ControlsRealPathTests: XCTestCase {
     }
 
     func testTheLiveTextButtonHitsItselfAndFiresOnceInEveryWindowKind() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             for actions in [[], phoneActions { _ in }] {
                 let chrome = makeChrome(style: style)
                 chrome.setActions(actions)
@@ -89,7 +89,7 @@ final class ControlsRealPathTests: XCTestCase {
     }
 
     func testLiveTextFreezesTheKindActionsButNotItsOwnButton() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             let chrome = makeChrome(style: style)
             var fired: [String] = []
             chrome.setActions(phoneActions { fired.append($0) })

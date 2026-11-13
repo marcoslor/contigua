@@ -254,10 +254,10 @@ class FrostedCoverView: NSView {
     /// A click anywhere on the cover (the sleeping panel wakes from one).
     var onCoverClick: (() -> Void)?
     /// The cover came or went (`isHidden` flipped): the chrome lays out with
-    /// the immersive geometry while a cover is up (WIN-11).
+    /// the compact geometry while a cover is up (WIN-11).
     var onVisibilityChange: (() -> Void)?
 
-    /// The framed bar's height: the words centre in the body below it.
+    /// The bar's height: the words centre in the body below it.
     var topInset: CGFloat = 0 {
         didSet { if topInset != oldValue { needsLayout = true } }
     }

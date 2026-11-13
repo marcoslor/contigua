@@ -17,7 +17,7 @@ final class ChromeLayoutAnimationTests: XCTestCase {
         window.isReleasedWhenClosed = false
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         video.setVideoSizeForTesting(CGSize(width: 900, height: 600))
-        let chrome = StreamChromeView(video: video, style: .immersive)
+        let chrome = StreamChromeView(video: video, style: .compact)
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
         chrome.layoutChrome()

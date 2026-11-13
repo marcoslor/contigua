@@ -7,7 +7,7 @@ import XCTest
 @testable import Contigua
 
 final class MenuSnapshotTests: XCTestCase {
-    private func stream(style: WindowStyle = .immersive, showTouches: Bool = true,
+    private func stream(style: WindowStyle = .compact, showTouches: Bool = true,
                         frozen: Bool = false, liveText: Bool = false,
                         package: String? = "com.example.app",
                         density: Double? = 1.25) -> StreamMenuState {
@@ -38,7 +38,7 @@ final class MenuSnapshotTests: XCTestCase {
         let state = stream()
         let snapshot = MenuSnapshot(stream: state, phone: MenuSnapshot.Phone(phone()))
         XCTAssertTrue(snapshot.hasStream)
-        XCTAssertEqual(snapshot.style, .immersive)
+        XCTAssertEqual(snapshot.style, .compact)
         XCTAssertTrue(snapshot.showTouches)
         XCTAssertEqual(snapshot.densityPackage, "com.example.app")
         XCTAssertEqual(snapshot.densityOverride, 1.25)
@@ -111,7 +111,7 @@ final class MenuSnapshotTests: XCTestCase {
         _ = gate.update(a)
         _ = gate.tracking(true)
         var b = MenuSnapshot()
-        b.style = .minimal
+        b.style = .immersive
         XCTAssertNil(gate.update(b), "nothing may rebuild the items under the pointer")
         XCTAssertEqual(gate.applied, a)
         XCTAssertEqual(gate.tracking(false), b, "and it lands when the menu closes")

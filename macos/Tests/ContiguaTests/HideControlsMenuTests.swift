@@ -26,7 +26,7 @@ final class HideControlsMenuTests: XCTestCase {
     }
 
     /// A pick stores the reveal choice and nothing else: it never carries a
-    /// window style. The choice is the Minimal pill's dwell delay.
+    /// window style. The choice is the Immersive pill's dwell delay.
     func testAPickOnlyStoresTheRevealChoice() {
         XCTAssertEqual(FullScreenMenuModel.pick(.delay(.long)), .long)
         XCTAssertEqual(FullScreenMenuModel.pick(.alwaysVisible), .alwaysVisible)
@@ -45,28 +45,28 @@ final class HideControlsMenuTests: XCTestCase {
         XCTAssertFalse(RevealDelay.short.keepsChromeVisible)
     }
 
-    /// The View menu is SwiftUI's, and so are its Framed / Immersive / Minimal
+    /// The View menu is SwiftUI's, and so are its Framed / Compact / Immersive
     /// and Hide Controls items: the commands build every one of them, so a
     /// SwiftUI rebuild of the menu cannot drop any (an AppKit item inserted
     /// into the menu was dropped exactly that way, and the person's v104 and
     /// v107 menus lost these). The decisions the commands read are here.
     func testTheStyleItemsAndHideControlsAreTheModels() {
-        XCTAssertEqual(MenuModel.styles, [.framed, .immersive, .minimal])
+        XCTAssertEqual(MenuModel.styles, [.framed, .compact, .immersive])
         for key in WindowStyle.allCases {
             let checked = MenuModel.styles.filter { MenuModel.styleChecked($0, key: key) }
             XCTAssertEqual(checked, [key], "exactly one of the styles is checked for \(key)")
         }
-        XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: false, style: .minimal))
+        XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: false, style: .immersive))
         XCTAssertEqual(MenuModel.hideControls.map(\.title),
                        ["Instantly", "Short", "Long", "", "Always Visible"])
     }
 
-    /// Hide Controls is the Minimal pill's dwell choice: the item stays in the
-    /// menu but is disabled for Framed and Immersive, where it does nothing.
-    func testHideControlsIsEnabledOnlyForMinimal() {
+    /// Hide Controls is the Immersive pill's dwell choice: the item stays in the
+    /// menu but is disabled for Framed and Compact, where it does nothing.
+    func testHideControlsIsEnabledOnlyForImmersive() {
         XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: true, style: .framed))
-        XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: true, style: .immersive))
-        XCTAssertTrue(MenuModel.hideControlsEnabled(hasStream: true, style: .minimal))
+        XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: true, style: .compact))
+        XCTAssertTrue(MenuModel.hideControlsEnabled(hasStream: true, style: .immersive))
         for style in WindowStyle.allCases {
             XCTAssertFalse(MenuModel.hideControlsEnabled(hasStream: false, style: style),
                            "no key stream window means nothing to control")

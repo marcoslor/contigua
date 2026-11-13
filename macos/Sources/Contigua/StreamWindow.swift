@@ -38,7 +38,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// feeds it pointer, menu, timer and full-screen events and runs its
     /// actions on the chrome.
     private(set) var fullBar = FullScreenBarMachine()
-    /// The Minimal dwell pill: pure state until its pill view exists (this
+    /// The Immersive dwell pill: pure state until its pill view exists (this
     /// file feeds it; the scripted driver's hover reaches the same path).
     private(set) var dwell = DwellPill()
     
@@ -192,7 +192,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var pointerAtTopEdge = false
     /// Menu tracking ends the bar's hide grace (WIN-8).
     private var menuObservers: [NSObjectProtocol] = []
-    /// Folds the Minimal pill's dwell in; `pointerMoved` also schedules a hide.
+    /// Folds the Immersive pill's dwell in; `pointerMoved` also schedules a hide.
     private var dwellTimer: Timer?
     /// The last pointer point in window coordinates: when the pill appears
     /// under a pointer that is resting in the hot zone, the hover over the
@@ -250,7 +250,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.customZoom = { [weak self] in self?.zoomAsLiveResize() ?? false }
         window.contentView = chrome
         // The cover's coming or going changes the windowed chrome's geometry
-        // (WIN-11); the chrome already relaid out, the Minimal dwell follows.
+        // (WIN-11); the chrome already relaid out, the Immersive dwell follows.
         chrome.onCoverVisibilityChange = { [weak self] in
             self?.configureDwell()
             self?.writeChromeState()
@@ -425,7 +425,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Back/Home/Recents), also inside the immersive pill.
     func headerActions() -> [HeaderAction] { [] }
 
-    /// What the Framed bar names: an app window's app, the Mirror's phone, or
+    /// What the bars name (Compact, Framed, full screen): an app window's app, the Mirror's phone, or
     /// an adopted app for a link/handoff; nil hides the title (WIN-68).
     var barTitle: String? { nil }
 
@@ -687,12 +687,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// The menu selectors (View ▸ Window Style's radio items).
     @objc func useFramedStyle(_ sender: Any?) { setStyle(.framed) }
+    @objc func useCompactStyle(_ sender: Any?) { setStyle(.compact) }
     @objc func useImmersiveStyle(_ sender: Any?) { setStyle(.immersive) }
-    @objc func useMinimalStyle(_ sender: Any?) { setStyle(.minimal) }
 
     /// View ▸ Toggle Window Style (⌥⌘F); the scripted driver's toggle is the
-    /// same action. The cycle walks the picker's order: Framed, Immersive,
-    /// Minimal, then Framed again.
+    /// same action. The cycle walks the picker's order: Framed, Compact,
+    /// Immersive, then Framed again.
     @objc func toggleStyleMenuAction(_ sender: Any?) { toggleStyle() }
 
     func toggleStyle() {
@@ -708,22 +708,22 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if stored != style { setStyle(stored) }
     }
 
-    // MARK: Dwell (the Minimal pill's driver)
+    // MARK: Dwell (the Immersive pill's driver)
 
-    /// The pointer feed that watches the window for the Minimal hot zone.
+    /// The pointer feed that watches the window for the Immersive hot zone.
     private var dwellMonitors: [Any] = []
     private var lastPillShown = false
     /// The chrome stays up by the Always Visible choice (not by a dwell).
     private var chromeAlwaysVisible = false
 
-    /// Only a Minimal non-fullscreen window with no cover dwells; the feed
+    /// Only an Immersive non-fullscreen window with no cover dwells; the feed
     /// stops otherwise and any shown pill is taken away. With Always Visible
     /// there is no dwell at all: the lights and the capsules stay up.
     private func configureDwell() {
-        let minimal = style == .minimal && !isFullScreen && !chrome.openingCover.isShowing
-        let always = MinimalChrome.alwaysVisible(manager.revealDelay)
-        chromeAlwaysVisible = minimal && always
-        if minimal && MinimalChrome.usesDwell(alwaysVisible: always) {
+        let immersive = style == .immersive && !isFullScreen && !chrome.openingCover.isShowing
+        let always = ImmersiveChrome.alwaysVisible(manager.revealDelay)
+        chromeAlwaysVisible = immersive && always
+        if immersive && ImmersiveChrome.usesDwell(alwaysVisible: always) {
             dwell = DwellPill(zone: CGRect(origin: .zero, size: DwellChrome.hotZone), pill: chrome.pillStreamRect,
                               dwell: manager.revealDelay.seconds)
             startDwellFeed()
@@ -763,19 +763,19 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func pointerMoved(toScreen point: NSPoint) {
-        guard let window, window.isVisible, style == .minimal, !isFullScreen,
+        guard let window, window.isVisible, style == .immersive, !isFullScreen,
               !chrome.openingCover.isShowing else { return }
         pointerMoved(toWindowPoint: window.convertPoint(fromScreen: point))
     }
 
     /// Settings → General "Reveal controls after" / View ▸ Hide Controls
     /// changed: a switch into or out of Always Visible reconfigures the
-    /// Minimal chrome; another delay re-times a rest already running (a
-    /// shorter one can show the pill at once). Framed and Immersive hand it to
+    /// Immersive chrome; another delay re-times a rest already running (a
+    /// shorter one can show the pill at once). Framed and Compact hand it to
     /// the full-screen bar, as before.
     func setRevealDelay(_ delay: RevealDelay) {
-        if style == .minimal {
-            let always = MinimalChrome.alwaysVisible(delay)
+        if style == .immersive {
+            let always = ImmersiveChrome.alwaysVisible(delay)
             // Into or out of Always Visible: whether a dwell exists at all
             // changed, so reconfigure. Another delay only re-times the rest.
             if always || chromeAlwaysVisible {
@@ -828,11 +828,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var pointerMonitors: [Any] = []
 
     /// The window entered native full screen: no windowed chrome, the bar
-    /// hidden and its machine ready. Minimal hands the title and lights back to
+    /// hidden and its machine ready. Immersive hands the title and lights back to
     /// the system and has no acrylic bar.
     private func enterFullScreenBar() {
         chrome.fullScreenOverride = true
-        if style == .minimal {
+        if style == .immersive {
             stopPointerFeed()
             fullBar = FullScreenBarMachine(reveal: manager.revealDelay)
             chrome.setFullBarShown(false)
@@ -853,7 +853,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The window left full screen: the bar and its timers go; the windowed
-    /// Minimal chrome comes back as the stored style lays it out.
+    /// Immersive chrome comes back as the stored style lays it out.
     private func exitFullScreenBar() {
         chrome.fullScreenOverride = false
         stopPointerFeed()
@@ -871,7 +871,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Folds one event into the machine, runs its actions and logs a change of
     /// state as `full-screen bar: <from> --<event>--> <to>`.
     private func updateFullBar(_ event: FullScreenBarEvent, name: String) {
-        guard isFullScreen, style != .minimal else { return }
+        guard isFullScreen, style != .immersive else { return }
         let before = fullBar.mode
         let actions = fullBar.handle(event)
         runFullBar(actions)
@@ -957,7 +957,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// A real pointer move: feeds the bar's top band only in full screen, and
     /// only when the pointer crosses into or out of it.
     func pointerMovedForFullScreen(_ screenPoint: NSPoint) {
-        guard let window, isFullScreen, style != .minimal, window.isVisible else { return }
+        guard let window, isFullScreen, style != .immersive, window.isVisible else { return }
         let point = window.convertPoint(fromScreen: screenPoint)
         let fromTop = window.frame.height - point.y
         let band = (fullBar.mode == .hidden ? FullScreenBar.edgeHeight : FullScreenBar.height)
@@ -989,7 +989,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Settings → General "Reveal controls after" / View ▸ Hide Controls
-    /// changed: the Minimal pill's dwell or the full-screen bar re-times.
+    /// changed: the Immersive pill's dwell or the full-screen bar re-times.
     /// (The bank lives above, with the dwell driver.)
 
     /// The chrome state reports the full-screen bar's mode for the e2e.
@@ -1666,13 +1666,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The pointer moved to a point in the window (also the scripted driver's
-    /// hover): the Minimal dwell's feed, and the phone's mouse hover, unless
+    /// hover): the Immersive dwell's feed, and the phone's mouse hover, unless
     /// the point is Mac UI (WIN-61).
     func pointerMoved(toWindowPoint point: CGPoint) {
         lastPointerWindowPoint = point
-        if style == .minimal, !chromeAlwaysVisible, !isFullScreen, !chrome.openingCover.isShowing {
+        if style == .immersive, !chromeAlwaysVisible, !isFullScreen, !chrome.openingCover.isShowing {
             // DwellChrome's zone is in stream coordinates, top-left origin: in
-            // Minimal the window is exactly the stream.
+            // Immersive the window is exactly the stream.
             let height = chrome.bounds.height
             dwell.pointerMoved(to: CGPoint(x: point.x, y: height - point.y), now: now())
             refreshDwell()
@@ -1733,50 +1733,52 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // check reads the screenshot inside it.
         let picture = videoView.convert(videoView.videoRect(), to: nil)
         let pictureTop = (window?.frame.height ?? 0) - picture.maxY
-        let line = "style=\(style.label.lowercased()) lights=\(lights ? "shown" : "hidden")"
-            + " pill=\(chrome.showsPill ? "shown" : "hidden")"
-            + " fullbar=\(fullBarStateName) fullbar_visible=\(chrome.fullBarVisible ? 1 : 0)"
-            + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
-            + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
-            + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
-            + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
-            + " collection=\(window?.collectionBehavior.rawValue ?? 0)"
-            + " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
-            + " can_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
-            + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
-            + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
-            + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
-            + " panel_off=\(chrome.panelOff ? 1 : 0) panel_pill=\(chrome.showsPanelStatus ? 1 : 0)"
-            + " panel_pill_failed=\(chrome.showsPanelStatus && chrome.panelPillText == PhoneScreenOverlay.panelFailedText ? 1 : 0)"
-            + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
-            + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
-            + " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
-            + " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
-            + " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
-            + " paused=\(isPaused ? 1 : 0) expecting=\(expectsFrames ? 1 : 0) opening=\(isOpening ? 1 : 0)"
-            + " frame_age_ms=\(frameClock.lastFrame.map { Int(((now() - $0) * 1000).rounded()) } ?? -1)"
-            + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
-            + " drop_refusal=\(dropFailure ?? "none")"
-            + " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
-            + " loading=\(openingState)"
-            + " cover_phase=\(openingCoverPhase) cover_buttons=\(openingButtons)"
-            + " cover_visible=\(chrome.openingCover.isVisiblyShowing ? 1 : 0)"
-            + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
-            + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
-            + " bar_focus=\(barFocusState)"
-            + " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
-            + " bar_tint=\(String(format: "%.2f", BarTitle.tintAlpha))"
-            + " tint=\(chrome.barTintVisible ? 1 : 0)"
-            + " bar_title=\(chrome.barTitleVisible ? 1 : 0)"
-            + " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
-            + " bar_title_rect=\(barTitleRectState())"
-            + " haze=\(chrome.hazeVisible ? 1 : 0)"
-            + " key=\(window?.isKeyWindow == true ? 1 : 0)"
-            + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
-            + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
-            + " geom=\(geometryLine())"
-            + " video_gap=\(Int(videoView.videoGap().rounded()))"
-            + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
+        // One append per field: a single 40-term `+` chain ran into the
+        // type checker's time limit on a loaded machine.
+        var line = "style=\(style.debugName) lights=\(lights ? "shown" : "hidden")"
+        line += " pill=\(chrome.showsPill ? "shown" : "hidden")"
+        line += " fullbar=\(fullBarStateName) fullbar_visible=\(chrome.fullBarVisible ? 1 : 0)"
+        line += " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
+        line += " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
+        line += " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
+        line += " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
+        line += " collection=\(window?.collectionBehavior.rawValue ?? 0)"
+        line += " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
+        line += " can_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
+        line += " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
+        line += " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
+        line += " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
+        line += " panel_off=\(chrome.panelOff ? 1 : 0) panel_pill=\(chrome.showsPanelStatus ? 1 : 0)"
+        line += " panel_pill_failed=\(chrome.showsPanelStatus && chrome.panelPillText == PhoneScreenOverlay.panelFailedText ? 1 : 0)"
+        line += " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
+        line += " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
+        line += " panel_requests=\((self as? PhoneWindowController)?.panelRequestCount ?? 0)"
+        line += " stall=\(isStalled ? 1 : 0) stall_overlay=\(overlay.isShowing ? 1 : 0)"
+        line += " stall_icon=\(overlay.hasIcon ? 1 : 0) stills=\(stills)"
+        line += " paused=\(isPaused ? 1 : 0) expecting=\(expectsFrames ? 1 : 0) opening=\(isOpening ? 1 : 0)"
+        line += " frame_age_ms=\(frameClock.lastFrame.map { Int(((now() - $0) * 1000).rounded()) } ?? -1)"
+        line += " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
+        line += " drop_refusal=\(dropFailure ?? "none")"
+        line += " paste_pill=\(pastePillState) paste_button=\(pasteButtonShown ? 1 : 0)"
+        line += " loading=\(openingState)"
+        line += " cover_phase=\(openingCoverPhase) cover_buttons=\(openingButtons)"
+        line += " cover_visible=\(chrome.openingCover.isVisiblyShowing ? 1 : 0)"
+        line += " bar_offline=\(phoneControlsOffline ? 1 : 0)"
+        line += " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
+        line += " bar_focus=\(barFocusState)"
+        line += " bar_blur_radius=\(Int(chrome.barBlurRadius.rounded()))"
+        line += " bar_tint=\(String(format: "%.2f", BarTitle.tintAlpha))"
+        line += " tint=\(chrome.barTintVisible ? 1 : 0)"
+        line += " bar_title=\(chrome.barTitleVisible ? 1 : 0)"
+        line += " bar_title_tone=\(chrome.barTitleVisible ? chrome.barTitleToneName : "none")"
+        line += " bar_title_rect=\(barTitleRectState())"
+        line += " haze=\(chrome.hazeVisible ? 1 : 0)"
+        line += " key=\(window?.isKeyWindow == true ? 1 : 0)"
+        line += " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
+        line += " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
+        line += " geom=\(geometryLine())"
+        line += " video_gap=\(Int(videoView.videoGap().rounded()))"
+        line += " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
@@ -1887,7 +1889,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Full screen drops the windowed chrome in every style: in Framed and
-    /// Immersive the bar's own machine owns its band; Minimal gives the title
+    /// Compact the bar's own machine owns its band; Immersive gives the title
     /// and lights back to AppKit. Leaving restores the windowed chrome.
     private func chromeLayoutChanged() {
         chrome.layoutChrome()
@@ -2225,12 +2227,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Input routing
 
-    /// A touch that passed through the Minimal hot zone restarts the rest, so
+    /// A touch that passed through the Immersive hot zone restarts the rest, so
     /// the pill can never appear while the finger is still tapping there
     /// (DwellPill.clickReachedApp; the touch itself goes on as normal input,
     /// with no added delay). Doubles as the scripted check's path.
     func touchInHotZone(_ event: TouchEvent) {
-        guard !chromeAlwaysVisible, style == .minimal, let window, window.isVisible,
+        guard !chromeAlwaysVisible, style == .immersive, let window, window.isVisible,
               !isFullScreen, !chrome.openingCover.isShowing, event.action == .down else { return }
         let bounds = videoBounds()
         guard bounds.width > 0, bounds.height > 0 else { return }
