@@ -268,7 +268,7 @@ final class StreamChromeView: NSView {
     /// The bar's mirror: the extension view spans the whole window, so the
     /// band beyond the video's top edge is its filled replica — blurred
     /// progressively by the system, with no material over it.
-    private let ext = NSBackgroundExtensionView()
+    private let ext = BarMirrorView()
     /// The Framed style's material, hairline, rim, highlight and title.
     private let framedView = FramedChromeView()
     /// The full-screen bar: the acrylic ground and its centred title.
@@ -378,6 +378,8 @@ final class StreamChromeView: NSView {
     /// the mirrored video go now instead of living until the app quits
     /// (WIN-33). Nothing is drawn again from a released chrome.
     func releaseGraphics() {
+        barBlur.windowClosing(root: ext.layer)
+        ext.onSystemPass = nil
         stopToneTimer()
         ext.contentView = nil
         subviews.forEach { $0.removeFromSuperview() }
@@ -397,6 +399,9 @@ final class StreamChromeView: NSView {
         wantsLayer = true
         ext.automaticallyPlacesContentView = false
         ext.contentView = video
+        // The radius follows the extension view's own passes: that is where
+        // the system builds its backdrop, after this view's layout.
+        ext.onSystemPass = { [weak self] in self?.reapplyBarBlur() }
         video.wantsLayer = true
         actions.isHidden = true
         liveTextButton.onPress = { [weak self] in self?.onLiveTextToggle?() }
@@ -757,14 +762,15 @@ final class StreamChromeView: NSView {
         updateBarTitle()
     }
 
-    /// Re-applies the system blur radius after an event that can bring a new
+    /// Re-applies the system blur radius after the extension view's own pass
+    /// (where the system builds its backdrop) or an event that can bring a new
     /// backdrop: a layout, the first frame, an appearance, backing-scale, key
     /// or occlusion change. Observation only; nothing runs per frame. Only the
     /// Compact mirror has the filter; Framed's material has no backdrop blur
     /// of this kind.
-    func reapplyBarBlur(reportMissing: Bool = false) {
+    func reapplyBarBlur() {
         guard window != nil, compactBar else { return }
-        barBlur.apply(in: ext.layer, reportMissing: reportMissing)
+        barBlur.apply(in: ext.layer)
     }
 
     /// The bar's name: an app's, the phone's, or nil for a link or handoff

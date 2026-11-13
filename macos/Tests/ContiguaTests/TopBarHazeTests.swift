@@ -24,11 +24,9 @@ final class TopBarHazeTests: XCTestCase {
         chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
         window.contentView = chrome
         window.makeKeyAndOrderFront(nil)
+        // The extension view builds its backdrop in a pass of its own; the
+        // radius follows that pass (testTheRadiusIsSetWhen…), nothing forced.
         pump(0.2)
-        // The backdrop is built after the stream has a size: the next layout
-        // pass is the first one that can see it.
-        chrome.needsLayout = true
-        chrome.layoutSubtreeIfNeeded()
         return (window, chrome)
     }
 
@@ -186,22 +184,63 @@ final class TopBarHazeTests: XCTestCase {
         XCTAssertTrue(chrome.barTintVisible, "the tint comes back with the Compact bar")
     }
 
-    func testAMissingSystemFilterKeepsTheSystemsOwnRadiusAndSaysSoOnce() throws {
-        var facts = 0
-        let tuner = BarBlurTuner(lookup: { _ in nil }, logFailure: { facts += 1 })
+    func testAMissingSystemFilterKeepsTheSystemsOwnRadiusAndSaysSoOnceAtClose() throws {
+        var facts: [String] = []
+        let tuner = BarBlurTuner(lookup: { _ in nil }, diagnosis: { _ in "backdrops=1 filters=[x]" },
+                                 logFailure: { facts.append($0) })
         let (window, chrome) = makeChrome(barBlur: tuner)
-        defer { window.close() }
         let ownRadius = chrome.barBlurRadius
         XCTAssertGreaterThan(ownRadius, 0, "the system's own filter is still there, untouched")
-        XCTAssertEqual(facts, 0, "a layout before the first frame is not evidence of a missing filter")
         chrome.layoutChrome()
-        chrome.reapplyBarBlur(reportMissing: true)
+        chrome.reapplyBarBlur()
         window.appearance = NSAppearance(named: .aqua)
         pump(0.2)
         chrome.layoutChrome()
         XCTAssertEqual(chrome.barBlurRadius, ownRadius,
                        "the fallback keeps the system's own radius")
-        XCTAssertEqual(facts, 1, "missing is one fact per window, not one per event")
         XCTAssertTrue(chrome.hazeVisible, "the haze still shows with the fallback")
+        XCTAssertEqual(facts, [], "a backdrop not found yet is not evidence: the system builds it late")
+        chrome.releaseGraphics()
+        window.close()
+        XCTAssertEqual(facts, ["backdrops=1 filters=[x]"],
+                       "a window that never found it says so once, when it closes, with what it held")
+    }
+
+    func testAWindowThatFoundTheFilterOrNeverWoreTheBarSaysNothing() {
+        var facts = 0
+        let found = BarBlurTuner(lookup: { _ in 30 }, logFailure: { _ in facts += 1 })
+        XCTAssertTrue(found.apply(in: CALayer()))
+        found.windowClosing(root: CALayer())
+        let neverTried = BarBlurTuner(lookup: { _ in nil }, logFailure: { _ in facts += 1 })
+        neverTried.windowClosing(root: CALayer())
+        XCTAssertEqual(facts, 0)
+        XCTAssertEqual(BarBlur.diagnosis(in: CALayer()), "backdrops=0 portals=0 filters=[]")
+    }
+
+    /// The reported see-through bar (issue #45): the extension view builds its
+    /// backdrop in a pass of its own, after the chrome's layout has looked for
+    /// it, so a window whose first frame came before that pass kept the
+    /// system's 5 pt blur — a near-sharp mirror that reads as a transparent
+    /// bar — until some later event happened to re-layout the chrome. No
+    /// forced layout here: the window opens, the run loop runs, and the radius
+    /// must be the picked one.
+    func testTheRadiusIsSetWhenTheSystemBuildsItsBackdropWithNoOtherEvent() throws {
+        for withFrameFirst in [false, true] {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 628),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
+            let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+            if withFrameFirst { video.setVideoSizeForTesting(CGSize(width: 900, height: 600)) }
+            let chrome = StreamChromeView(video: video, style: .compact)
+            chrome.frame = NSRect(x: 0, y: 0, width: 900, height: 628)
+            window.contentView = chrome
+            window.makeKeyAndOrderFront(nil)
+            pump(0.3)
+            XCTAssertNotNil(variableBlur(in: chrome.layer), "the system built its backdrop")
+            XCTAssertEqual(try XCTUnwrap(radius(variableBlur(in: chrome.layer))), 30, accuracy: 0.01,
+                           "the radius follows the backdrop's own build (frame first: \(withFrameFirst))")
+            window.close()
+        }
     }
 }

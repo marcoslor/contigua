@@ -501,10 +501,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         showOpeningPhase()
         let ms = max(0, at - opening.startedAt) * 1000
         Log.video.notice("stream \(self.stream, privacy: .public): first frame \(String(format: "%.1f", ms), privacy: .public) ms after open, opening cover off")
-        // The extension view builds its backdrop once the stream it mirrors has
-        // a frame: turn its radius up now that it exists (WIN-40). This is also
-        // where a macOS without the filter gets its one fact line.
-        chrome.reapplyBarBlur(reportMissing: true)
+        // The cover's sheet is gone and the bar's band is the mirror again: one
+        // more chance at the radius (WIN-40); the extension view's own pass
+        // tunes it as soon as the system has built the backdrop.
+        chrome.reapplyBarBlur()
         updateFrozen()
         tickFrameWatchdog()
         run(actions)

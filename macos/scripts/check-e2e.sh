@@ -2858,6 +2858,32 @@ print("spread=%d seam=%d" % (series(bar), round(seam)))
 PY
 }
 
+# bar_backdrop_fraction <png> <w-pt> <h-pt> — the percentage of sampled bar-band
+# pixels that are the e2e backdrop's own blue (46,115,217). A transparent bar
+# over the backdrop reads high; the system mirror reads
+# low. The band is 4..24 pt, away from the traffic lights and the right row.
+bar_backdrop_fraction() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+count = hits = 0
+for y in range(int(4 * scale), int(24 * scale), max(1, int(scale))):
+    for x in range(int(20 * scale), w - int(20 * scale), max(1, int(2 * scale))):
+        i = (y * w + x) * 3
+        r, g, b = raw[i], raw[i + 1], raw[i + 2]
+        count += 1
+        if abs(r - 46) <= 12 and abs(g - 115) <= 12 and abs(b - 217) <= 12:
+            hits += 1
+print(round(100 * hits / max(count, 1)))
+PY
+}
+
 # frame_strip_spread <png> <w-pt> <h-pt> — the Framed frame's four 3 pt
 # margins and the picture between them: each margin is material (little
 # variation), the picture is the live stream (spread >= 40).
@@ -3115,6 +3141,27 @@ check_chrome() {
     else
         skip_visible "WIN-61 the bar's band click as a real CGEvent"
     fi
+
+    # WIN-67: the picture starts under the bar (the extension view is the whole
+    # window), and the bar is the stream's own blurred mirror, never the
+    # desktop: the e2e backdrop behind the window is a flat blue, so a
+    # see-through bar would read blue. The radius is the picked 30 without any
+    # event after the first frame (the extension view builds its backdrop after
+    # the chrome's own layout; the tuning rides the view's own pass).
+    chrome_has "video=0,28,900,600" \
+        && chrome_has "bar:28" \
+        && chrome_has "video_gap=0" \
+        && ok "[WIN-67] C14 the picture runs under the 28 pt bar (video=0,28,900,600, no gap)" \
+        || bad "[WIN-67] C14 the picture does not start under the bar: $(chrome_state)"
+    chrome_has "bar_blur_radius=30" \
+        && ok "[WIN-67] C14 the bar's system blur is 30 pt from the first frame on" \
+        || bad "[WIN-67] C14 the bar's blur radius: $(chrome_state | grep -oE 'bar_blur_radius=[0-9]+')"
+    # Not `backdrop`: that name holds the backdrop helper's PID for the kills.
+    local see_through
+    see_through="$(bar_backdrop_fraction "$WORK/chrome-compact.png" 900 628)"
+    [ "${see_through:-100}" -le 5 ] \
+        && ok "[WIN-67] C14 no desktop pixels show through the bar (${see_through}% backdrop blue)" \
+        || bad "[WIN-67] C14 the bar is see-through: ${see_through}% of it is the desktop backdrop"
     next_shared
 
     # --- Framed: the real frame round the picture ---
