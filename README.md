@@ -14,22 +14,33 @@ staying locked.
 |---|---|
 | ![Spotify in a Mac window](docs/images/app-window.png) | ![The phone mirror](docs/images/phone-mirror.png) |
 
-## What it does
+## Features
 
-- **One window per app.** Open any phone app in its own resizable Mac window;
-  the app re-lays out to whatever shape you give it.
-- **Real input.** Keyboard, clicks, scroll and trackpad gestures go to the app.
-- **Audio, clipboard, links, files.** Phone audio plays on the Mac, the
-  clipboard goes both ways, links and files move between them, and the phone's
-  storage shows up in Finder.
-- **The phone stays locked.** Apps run on separate virtual displays; Contigua
-  never unlocks the phone.
-- **Local only.** One encrypted connection over your network: mutual TLS 1.3
-  with keys pinned at pairing. No accounts, no cloud, no analytics.
-- **AI agents (optional, off by default).** A local MCP server lets an agent on
-  your Mac see and use the phone.
+| | Feature |
+|---|---|
+| ✅ | Any phone app in its own resizable Mac window, several at once |
+| ✅ | Phone mirror: the phone's own screen, with Back, Home and Recents |
+| ✅ | Keyboard, mouse, scroll and trackpad gestures |
+| ✅ | Phone audio plays on the Mac |
+| ✅ | Clipboard both ways, text and images |
+| ✅ | Links and shares between Mac and phone |
+| ✅ | Drag files onto a phone window; install APKs from the Mac |
+| ✅ | The phone's storage as a location in Finder |
+| ✅ | Phone apps in the Dock, Launchpad and Spotlight |
+| ✅ | Mac Focus turns on the phone's Do Not Disturb |
+| ✅ | Live Text on any window |
+| ✅ | AI agents through a local MCP server (off by default) |
+| 🧪 | Phone notifications in Notification Center, with reply |
+| 🧪 | Phone media in Now Playing |
+| 🚧 | Control Center controls |
+| 🚧 | Phone as a Mac camera |
 
-Everything, including what is still unproven: [docs/FEATURES.md](docs/FEATURES.md).
+✅ works in a source build · 🧪 built, not yet proven on a real phone and Mac ·
+🚧 in progress
+
+Always: the phone stays locked, everything stays on your network (mutual TLS
+1.3, keys pinned at pairing), no accounts, no analytics. Details and known
+limits: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Requirements
 
