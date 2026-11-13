@@ -70,7 +70,7 @@ class DeckService(private val appContext: Context?) :
     /**
      * Clear data kills the app process, and uninstall removes it: in both the
      * app's binder dies. That notification is immediate and needs no broadcast
-     * permission, so it works on API 30–36 (see docs/design/e2ee.md §10).
+     * permission, so it works on API 34–36 (see docs/design/e2ee.md §10).
      */
     private val appDeath = object : IBinder.DeathRecipient {
         override fun binderDied() {

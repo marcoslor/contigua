@@ -32,7 +32,7 @@ What you need to have before you start. The versions come from
 | JDK | 17 | `compileOptions` and `jvmTarget` are 17. |
 | Android SDK | Platform 36, build-tools 36.0.0, platform-tools (for `adb`) | `compileSdk = 36`; `tools/emulator/lib.sh` uses `build-tools/36.0.0/aapt2`. |
 | Gradle | Nothing to install | `android/gradlew` downloads Gradle 8.11.1 on first run. |
-| Phone | Android 11 or later (API 30, `minSdk`) | Tested on Android 16 only. |
+| Phone | Android 14 or later (API 34, `minSdk`) | Tested on Android 16 only. App windows need their own display group (see Known limitations). |
 | Python | 3.11 or later, built on OpenSSL 3 | Only for the fake phone, the e2e checks and the emulator rig. The macOS system `python3` (3.9, LibreSSL) cannot do TLS 1.3 (`macos/scripts/check-e2e.sh`, `tools/fakephone/README.md`). |
 | ffmpeg | Any current Homebrew build | Only for the e2e checks and the emulator rig. |
 
@@ -535,13 +535,16 @@ the VM, with the reason.
 
 ## Known limitations (SM-S936B, Android 16)
 
-- This Samsung build puts the virtual display in the panel's display group, so
-  the server powers the physical panel off (SurfaceFlinger) while a window
-  streams: the locked phone shows nothing, frames keep arriving and input
-  works. Closing the last window restores the panel and puts the phone back to
-  sleep. While the fallback holds, the platform still counts the screen as on
-  (the panel is dark, not asleep), and pressing the power button hands the phone
-  back to normal Android behaviour until the screen has been off again.
+- App windows run on displays made by an Android virtual device, which gives
+  them a display group of their own: the phone's own screen sleeps on its own
+  timeout while windows keep streaming and taking input. The first window
+  creates one companion device association for it (shell user, address
+  `02:c0:4e:00:00:01`); **Forget all Macs** removes it, and so does
+  `adb shell cmd companiondevice disassociate 0 com.android.shell 02:c0:4e:00:00:01`.
+  A phone that still puts a window display in the screen's own group cannot open
+  app windows; the Mac says so, and the Phone Mirror still works. Whether one
+  power press locks or wakes the phone with a window open is not yet checked
+  (#3, #24).
 - Chrome stable (`com.android.chrome`) is disabled for user 0 by the vendor;
   use **Chrome Dev** (`com.chrome.dev`) from the app list.
 - After about 20 min with no stream the phone can stop answering mDNS while

@@ -124,15 +124,26 @@ Tested on:
 - A Samsung phone running One UI on Android 16.
 - macOS 26 or later (the deployment target in `macos/Package.swift`).
 
-Everything else is untested: other Android versions (the minimum is Android 11,
-API 30, but it has not been run), other phone makers and macOS releases before
-26. Shizuku must be installed and running on the phone.
+Everything else is untested: other Android versions (the minimum is Android 14,
+API 34, but only Android 16 has been run), other phone makers and macOS releases
+before 26. Shizuku must be installed and running on the phone.
+
+App windows need a phone that gives their virtual displays a display group of
+their own, so they keep running while the phone's own screen sleeps. Contigua
+gets that from an Android virtual device: the first app window creates one
+companion device association for it (owned by the shell user, address
+`02:c0:4e:00:00:01`). It is reused for every later window, and **Forget all
+Macs** removes it. To remove it by hand:
+`adb shell cmd companiondevice disassociate 0 com.android.shell 02:c0:4e:00:00:01`.
+On a phone where a window display still lands in the phone screen's own group,
+app windows do not open: the Mac says "This phone can't give app windows a
+screen of their own." The Phone Mirror still works there.
 
 Known limits from [docs/TRY-IT.md](TRY-IT.md):
 
-- On the Samsung build, the server powers the physical panel off while a window
-  streams. Pressing the power button hands the phone back to normal Android
-  behaviour until the screen has been off again.
+- With an app window open, the phone's own screen keeps its normal timeout and
+  power button. Whether one press locks or wakes it on the Samsung phone is not
+  yet checked (#3, #24).
 - Chrome stable is disabled for the user by the vendor on that phone; use
   Chrome Dev from the app list.
 - After about 20 minutes with no stream, a dozing phone can stop answering mDNS;

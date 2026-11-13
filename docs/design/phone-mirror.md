@@ -26,10 +26,9 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   display 0, input doesn't poke, and a mirrored frame is not a reason to light
   the panel). The panel is woken only by an explicit `phone.wake` (window open,
   Wake Screen); it is never unlocked: a locked phone shows its lock screen.
-  While the Phone Mirror is open and unpaused the panel is also never powered off
-  behind the mirror (`PanelStrategy.PANEL_ALONE`): the mirror shows what the
-  panel shows, and an app window sharing the panel's group still renders on the
-  group the keep-alive holds awake.
+  App windows never touch the panel either: their displays sit in a group of
+  their own (docs/specs/app-windows.md WIN-74), so the mirror shows what the
+  panel shows while app windows render beside it.
 - "Turn Off Phone Screen" (`phone.panel`, off by default) is the one exception,
   and only when the person asks for it: their Phone Mirror's Navigate menu item
   or its bar control holds the panel's power mode off while the mirror keeps
@@ -132,13 +131,9 @@ is touched, and the panel turns off again on the phone's own screen timeout.
 There is no keep-awake for display 0 beyond the platform's normal input
 activity.
 
-**The panel the streams forced dark comes back the moment the person uses the
-phone.** Where the streaming displays share the panel's group (One UI), the
-panel is powered off under them; the person's unlock, a touch or a key on
-display 0, or the power key then powers it back to NORMAL at once, with the
-lock screen untouched and one `panel_yield reason=unlock|touch|key|power` line,
-and it is not darkened again while they use the phone. See
-docs/specs/controls.md CTRL-11/12.
+**App windows never darken the panel.** Their displays sit in a group of
+their own (docs/specs/app-windows.md WIN-74), so the only thing that ever powers
+the panel off is the person's own Turn Off Phone Screen.
 
 The Wake Screen button sends the same `phone.wake`; it is there for a person
 who does not want to reopen the window.

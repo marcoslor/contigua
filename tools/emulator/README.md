@@ -94,6 +94,20 @@ is in `.work/budgets/<worktree>` and the ledger is
 `/tmp/contigua-boots.ledger`; one boot per run, `adb -s emulator-5554 emu
 kill` only.
 
+### vd-group: window displays in a group of their own
+
+```sh
+bash tools/emulator/start.sh          # once: boot, install, launch
+bash tools/emulator/vd-group.sh       # the checks, on the running rig
+```
+
+It opens windows on the default route (a virtual device), with
+`debug.contigua.vd_plain=1` (a plain `OWN_DISPLAY_GROUP` display) and with
+`debug.contigua.vd_panel_group=1` (a display in group 0, which must be
+refused), opens two windows on one device, and opens one on a locked,
+screen-off rig: its display draws while display 0 stays off. The lines are
+`ok [WIN-74]`, `ok [WIN-75]` and `ok [CTRL-14]`, in `.work/emu/vd-group.log`.
+
 ### Reliability rules (each one cost a boot once)
 
 - **Run every script as `bash <script>`.** Do not rely on the exec bit: a fresh

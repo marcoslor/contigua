@@ -113,7 +113,7 @@ FRESH_APPS=""
 # log_install_failure <pkg> <apk> <install output> — a failed install used to
 # die with an empty reason. Log the failed command's output in full, a plain
 # `adb install -r -t -g` retry, /data space and the package list, into the file
-# the caller names (panel-power.sh points it at panel-power.log). Logging only:
+# the caller names (PD_INSTALL_LOG). Logging only:
 # the boot still stops on the failure.
 log_install_failure() {
   local pkg="$1" apk="$2" out="$3"
@@ -360,13 +360,6 @@ PY
 emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
 emu shell "run-as $PKG sh -c 'cat > shared_prefs/contigua.xml'" <"$PREFS" ||
   die "cannot seed $PKG prefs (is the build debuggable?)"
-
-if [ "${CONTIGUA_FORCE_PANEL_OFF:-0}" = "1" ]; then
-  step "setting debug.contigua.force_panel_off=1 before the server starts"
-  emu shell setprop debug.contigua.force_panel_off 1 >/dev/null 2>&1 || true
-  [ "$(emu shell getprop debug.contigua.force_panel_off | tr -d '\r')" = "1" ] ||
-    die "debug.contigua.force_panel_off did not stick"
-fi
 
 emu logcat -c >/dev/null 2>&1 || true
 step "launching $PKG"

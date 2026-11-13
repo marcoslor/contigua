@@ -107,11 +107,10 @@ Evidence (spike s1-mac, two rounds):
   keep the spike cheap, as the phase-1 document is the only place that notes it.
 - **Exporter on the phone (rev 3)**: `android.net.ssl.SSLSockets
   .exportKeyingMaterial(socket, label, context, length)` is **API 31**; the
-  app's `minSdk` is 30. The call is guarded by
-  `TlsExporter.exportSupported(Build.VERSION.SDK_INT)` (31+) and
-  `SSLSockets.isSupportedSocket(socket)`. On API 30 the helper returns null
-  and pairing fails closed with `pair_exporter`; the phone never reaches the
-  missing method. The planned media plane would derive no keys either, and no
+  app's `minSdk` is 34 (it was 30 when this was written). The call is still
+  guarded by `TlsExporter.exportSupported(Build.VERSION.SDK_INT)` (31+) and
+  `SSLSockets.isSupportedSocket(socket)`; below 31 the helper would return
+  null and pairing would fail closed with `pair_exporter`. The planned media plane would derive no keys either, and no
   media code exists in this merge. It operates on the platform `SSLSocket`, so the shell-UID
   server terminates each session on a **`SSLSocket`** (not `SSLEngine`) and asks
   that same socket for the 32 bytes after the handshake (§4b). No additional
@@ -243,7 +242,7 @@ Acquisition per stack (both are named by the review):
 - **Phone (Conscrypt)**: `android.net.ssl.SSLSockets.exportKeyingMaterial(
   sslSocket, "EXPORTER-contigua-pair", empty context, 32)` on the platform
   `SSLSocket` (public SDK API, **API 31+**; `isSupportedSocket` guard, plus a
-  `Build.VERSION.SDK_INT >= 31` guard because minSdk is 30). JVM unit vector
+  `Build.VERSION.SDK_INT >= 31` guard, kept from when minSdk was 30). JVM unit vector
   (K1) pins the HKDF math; the on-device engine call is K4.
 
 ## 5. Cost on the video path: negligible at 20 Mbit/s
@@ -444,7 +443,7 @@ closes it:
   the cached TLS material, then adopts the new state.
 - **Detection**: the app's `IDeckCallback` binder is watched with
   `Binder.linkToDeath`, so the shell learns of Clear data, uninstall or a kill
-  immediately. That works on API 30–36 with no broadcast permission, no package
+  immediately. That works on every supported release (API 34–36) with no broadcast permission, no package
   query and no polling; `ACTION_PACKAGE_DATA_CLEARED` is not delivered to a
   process without a real app context (the user service has none), and a `pm`
   probe would be a poll. The binder dying and the data being cleared are the same

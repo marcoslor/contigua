@@ -12,6 +12,7 @@ not been checked on a real Mac and phone.
 ### Windows and input
 
 - One resizable Mac window per Android app, several at once, running on the phone while it stays locked.
+- App windows run on displays made by an Android virtual device, in a display group of their own: the phone's own screen keeps its timeout while they stream. A phone that cannot give them their own group says so on the Mac instead of opening the window.
 - A Phone window that mirrors the phone's own screen, with Back, Home and Recents.
 - Typed keys, clicks, drags, scroll, hover, trackpad scroll with fling, and pinch and rotate.
 - Framed and Immersive window styles, remembered per app.
@@ -58,9 +59,9 @@ not been checked on a real Mac and phone.
 
 ### Known limits
 
-- Tested on an Android 16 emulator, one Samsung phone and macOS 26. Everything else is untested; Shizuku must be running.
+- Needs Android 14 or later. Tested on an Android 16 emulator, one Samsung phone and macOS 26. Everything else is untested; Shizuku must be running.
 - One Mac at a time per phone.
-- On the Samsung build the physical panel is powered off while a window streams.
+- App windows create one companion device association on the phone; Forget all Macs removes it.
 - A dozing phone can stop answering discovery after about 20 minutes; wake its screen once.
 - Windows over 2560 px of virtual display are scaled down.
 - The mouse's Forward button does nothing yet.

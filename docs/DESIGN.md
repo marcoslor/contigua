@@ -230,10 +230,10 @@ using the phone with fingers.
 - The Deck's status pill opens the same view in a `.popover` (one component, one copy, no footer, no gear).
 - Nothing is modal: pairing failures are inline in the code sheet.
 
-## 2. Android (Compose + Material 3, minSdk 30)
+## 2. Android (Compose + Material 3, minSdk 34)
 
 ### Theme
-- `ContiguaTheme`: `if (Build.VERSION.SDK_INT >= 31) dynamicLight/DarkColorScheme(context) else lightScheme/darkScheme`, dark from `isSystemInDarkTheme()`.
+- `ContiguaTheme`: `dynamicLight/DarkColorScheme(context)` (every supported release has dynamic color), dark from `isSystemInDarkTheme()`.
 - Fallback schemes: generate with Material Theme Builder from **seed `#5B6CF0`** (scheme "Tonal Spot"), paste all roles into `ui/theme/Color.kt`. No other hex in code.
 - Typography: default `Typography()`; used styles: `headlineMedium` (onboarding titles), `titleLarge` (status card title), `titleMedium` (list headers), `bodyLarge`/`bodyMedium`, `labelLarge` (buttons), `labelSmall` (grid labels).
 - Pairing code: `displayLarge.copy(fontFamily = FontFamily.Monospace, letterSpacing = 6.sp, fontFeatureSettings = "tnum")`, formatted "482 913", color `primary`.
