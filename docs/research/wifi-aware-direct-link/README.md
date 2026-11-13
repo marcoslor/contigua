@@ -45,7 +45,7 @@ The router stays the default and the fallback for every route.
 
 **Notes from the [WiFiles Wi-Fi Direct research (issue #3, Aug 2026)](https://github.com/felixlix45/WiFiles/issues/3).** It's an automated research pass on Android OEMs, not a hands-on test, and it says nothing about Apple or Wi-Fi Aware. What applies to us:
 
-- **Wi-Fi Direct works only as an opportunistic fast path, never as the main link.** Samsung still supports it, but a Feb 2025 patch reportedly broke Quick Share's transport on the S24 until a later fix.
+- **Wi-Fi Direct works only as an opportunistic fast path, never as the main link.** Samsung still supports it, but a Feb 2025 patch reportedly broke the vendor file-sharing feature's transport on the S24 until a later fix.
 - **Location services must be on for discovery** on every Android version, which is a common cause of silent failures. Android 13+ also needs the nearby-devices permission at runtime.
 - **The group owner always makes a 5 GHz group;** asking for 2.4 GHz is ignored (AOSP 271303579, Won't Fix).
 - **TLS cost:** a file-sharing app's P2P link measured 50 MB/s over plain HTTP vs 7 MB/s over HTTPS. Our session is TLS, so measure with it on.
@@ -58,12 +58,12 @@ Six routes are ruled out. Each one below was tested or read on this Mac or the S
 
 | Route | Why it's dead | Evidence |
 | --- | --- | --- |
-| AWDL (the link AirDrop and iPhone Mirroring use) from Android | Apple-only protocol. The open re-implementation needs Wi-Fi monitor mode and frame injection, which a stock S25+ can't do, even with Shizuku (shell user, no root) | Research, not a test on the phone |
+| AWDL (the link Apple's file-sharing and phone-mirroring features use) from Android | Apple-only protocol. The open re-implementation needs Wi-Fi monitor mode and frame injection, which a stock S25+ can't do, even with Shizuku (shell user, no root) | Research, not a test on the phone |
 | Wi-Fi Aware through Mac Catalyst | Apple's docs list Mac Catalyst 26.0+, but the framework there does nothing | Xcode 27 SDK marks all 31 symbols unavailable on macOS and Catalyst; a Catalyst build fails with "no such module 'WiFiAware'"; [Apple's engineer](https://developer.apple.com/forums/thread/827887): it ships only so iPhone apps can launch on a Mac |
 | Apple's public Wi-Fi Aware API on macOS 27.2 | Says "not supported" even with the permission | `WACapabilities.supportedFeatures` is empty. From the disassembly, it looks for feature 1 in the service's answer; the service reports only feature 0 |
 | The hidden `WiFiAwareOnMacOS` switch | Turning it on doesn't change the service's answer | Override is read: `os_feature_enabled` returns 1 in both domains (a known switch reads 1, a made-up one 0). The service's answer stays the same after a reboot |
 | Self-signed permission with code signing on | macOS kills the program at launch | Exit 137; AMFI: "adhoc signed but contains restricted entitlements" |
-| Borrowing an Apple program that has the permission | Only background services hold it, none can be driven by hand | Holders found: sharingd, rapportd, airportd, mDNSResponder, SidecarRelay, ContinuityCaptureAgent, avconferenced and a few more |
+| Borrowing an Apple program that has the permission | Only background services hold it, none can be driven by hand | Holders found: sharingd, rapportd, airportd, mDNSResponder, Apple's display-sharing and camera-handoff services, avconferenced and a few more |
 
 ## What could change (Apple's side)
 

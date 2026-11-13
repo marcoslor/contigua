@@ -58,15 +58,15 @@ Both two-press wakes in the session came 2.0 s and 2.5 s after a lock press. Tha
 - The emulator's display controllers didn't run ColorFade on the virtual displays (boot 8 logged one ColorFade, for the panel). Its dark picture came from steps 3–4 alone: the sleep token pauses the app, its window leaves the display (`no touchable window … on display 5`), and the display composes nothing until the app redraws after the wake.
 - The emulator's black was also a real composed picture, so `fix/flicker`'s phone-side gate failed for the same reason it would on the phone. It waited for a key frame newer than the edge, and that frame was itself black: the controller turns the virtual display on 2–4 ms after the wake (`Unblocked screen on after 2 ms`), before the app has drawn.
 
-## Why DeX never fades (read on the same phone, 2026-11-03)
+## Why the vendor desktop mode never fades (read on the same phone, 2026-11-03)
 
-The person reports that a DeX session doesn't show the fade. With DeX on a cable to a monitor, `dumpsys display` shows why:
-- DeX's screen is a physical external display (`local:` id, 3840×2160) carrying Samsung's own `FLAG_EXTERNAL_DEX_HOSTING`;
+The person reports that a vendor desktop-mode session doesn't show the fade. With the desktop mode on a cable to a monitor, `dumpsys display` shows why:
+- The desktop mode's screen is a physical external display (`local:` id, 3840×2160) carrying Samsung's own `FLAG_EXTERNAL_DEX_HOSTING`;
 - it sits in **display group 2**, so the phone's lock and wake never touch it;
 - Contigua's window display sits in group 0 at the same moment, **although its `DisplayInfo` carries `FLAG_OWN_DISPLAY_GROUP`**. So One UI keeps the flag and its group mapper ignores it: case 2 in display-groups.md, now confirmed.
 
 **Samsung's group rule**, read from the phone's `services.jar`. `assignDisplayGroupLocked` is inlined into `LogicalDisplayMapper.updateLogicalDisplaysLocked` there, so this is a reading of bytecode:
-- group 2 is hard-wired for the desktop (DeX) display;
+- group 2 is hard-wired for the desktop (vendor desktop mode) display;
 - group 4 goes to CarLife displays when the build's `CARLIFE_DISPLAY_GROUP` feature is on (device flag `1 << 31`);
 - the displays of a **virtual device** get a group per device (`mDeviceDisplayGroupIds`, keyed by the device id);
 - the AOSP own-group path (`FLAG_OWN_DISPLAY_GROUP` or a group name) is still there, but an earlier branch overrides it for Contigua's display. That branch isn't decoded.

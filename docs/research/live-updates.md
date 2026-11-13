@@ -215,15 +215,15 @@ A native Mac countdown needs a **deadline**: a `when` plus `countDown`, a `Progr
 
 ## macOS
 
-### How macOS 26 shows an iPhone's Live Activities
+### How macOS 26 shows an iPhone's live status items
 
-Apple's support page (120684) says an iPhone's Live Activities appear in the Mac's menu bar after iPhone Mirroring has connected, even when Mirroring is not open. Depending on space, the Mac shows either a small Live Activity icon or a compact view; a click shows more detail, and a double-click opens iPhone Mirroring when the phone is nearby. A close button on the detail removes that activity for its duration. The setting is **System Settings → Notifications → Allow Live Activities from iPhone**, and it exists on macOS 26 and later.
+Apple's support page (120684) says an iPhone's live status items appear in the Mac's menu bar after phone mirroring has connected, even when the mirroring window is not open. Depending on space, the Mac shows either a small status-item icon or a compact view; a click shows more detail, and a double-click opens phone mirroring when the phone is nearby. A close button on the detail removes that activity for its duration. The setting is the iPhone live-status-items switch under **System Settings → Notifications**, and it exists on macOS 26 and later.
 
 The page does not state a limit on how many activities show at once, nor what happens at the notch. In practice the menu bar's right region is finite; this is the same space problem the app's own status item has. **(unverified for several at once and for the notch.)**
 
-### Can a Mac app post a Live Activity?
+### Can a Mac app post a live status item?
 
-`ActivityKit` lists macOS **27.3 beta** as its first macOS platform; iOS, iPadOS and Mac Catalyst have had it since 16.1. Contigua's deployment target is **macOS 26.0** and the person's Mac runs macOS 26. So a Mac app cannot post a Live Activity today, and the app cannot use ActivityKit even on macOS 27.0 or 27.1. The framework's macOS support is a future path, not a current one.
+`ActivityKit` lists macOS **27.3 beta** as its first macOS platform; iOS, iPadOS and Mac Catalyst have had it since 16.1. Contigua's deployment target is **macOS 26.0** and the person's Mac runs macOS 26. So a Mac app cannot post a live status item today, and the app cannot use ActivityKit even on macOS 27.0 or 27.1. The framework's macOS support is a future path, not a current one.
 
 The public model is also iPhone-first: Apple's support page is about an iPhone's activities appearing on the Mac. Where a Mac-originated ActivityKit activity would appear on macOS 27.3 is not documented in a form this note could verify. **(unverified.)**
 
@@ -298,7 +298,7 @@ This ran on an APK of main plus `spike/liveany`, against Samsung's Clock on the 
 - Whether a Mac app can start `AlarmClock.ACTION_SET_TIMER` from the background on One UI 9, and whether Samsung Clock honours `EXTRA_SKIP_UI`.
 - The exact clock skew between the Mac and the phone.
 - Status-item visibility under the notch on the person's Mac, and macOS 27's overflow behaviour with several items.
-- Where a Mac-originated ActivityKit Live Activity would appear on macOS 27.3.
+- Where a Mac-originated ActivityKit live status item would appear on macOS 27.3.
 - Whether an ad-hoc Mac app's WidgetKit extension can be discovered and added on macOS 26.
 - The phone-side power cost of a rendered snapshot per update.
 
@@ -330,7 +330,7 @@ Primary sources first. AOSP links point at the `android16-qpr1-release` branch w
 22. AOSP DeskClock, `TimerNotificationBuilder.kt`: https://android.googlesource.com/platform/packages/apps/DeskClock/+/android16-qpr1-release/src/com/android/deskclock/data/TimerNotificationBuilder.kt
 23. AOSP DeskClock, `StopwatchNotificationBuilder.kt`: https://android.googlesource.com/platform/packages/apps/DeskClock/+/android16-qpr1-release/src/com/android/deskclock/data/StopwatchNotificationBuilder.kt
 24. AOSP DeskClock, `HandleApiCalls.kt`: https://android.googlesource.com/platform/packages/apps/DeskClock/+/android16-qpr1-release/src/com/android/deskclock/HandleApiCalls.kt
-25. Apple Support, "Manage iPhone notifications and Live Activities on Mac" (120684): https://support.apple.com/en-us/120684
+25. Apple Support, page on managing iPhone notifications on Mac (120684): https://support.apple.com/en-us/120684
 26. Apple Developer, ActivityKit (macOS 27.3 beta): https://developer.apple.com/documentation/activitykit
 27. Apple Developer, `NSStatusItem.variableLength`: https://developer.apple.com/documentation/appkit/nsstatusitem/variablelength
 28. Apple Developer, `NSStatusItem.isVisible`: https://developer.apple.com/documentation/appkit/nsstatusitem/isvisible

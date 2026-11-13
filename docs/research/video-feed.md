@@ -32,7 +32,7 @@ So both complaints come from one loop:
 
 ## The link stalls, and the radio is not the cause
 
-Phone Wi-Fi: 11ax, 5 GHz, −25 dBm, 2161 Mbps link rate. Mac Wi-Fi: 11ax on the same channel, 80 MHz, with AWDL (`awdl0`, used by AirDrop, Universal Control and Continuity) active.
+Phone Wi-Fi: 11ax, 5 GHz, −25 dBm, 2161 Mbps link rate. Mac Wi-Fi: 11ax on the same channel, 80 MHz, with AWDL (`awdl0`, used by Apple's file-sharing, input-sharing and handoff features) active.
 
 Pings from the Mac every 50 ms, 3 × 15 s per arm, to the router and to the phone at the same time (a stall seen on both at once is the Mac's side; one only on the phone is the phone's side):
 
@@ -71,7 +71,7 @@ Game streaming (Moonlight/Sunshine, Parsec, Steam Remote Play, GeForce NOW) and 
    - Today we do the opposite: `KEY_REPEAT_PREVIOUS_FRAME_AFTER` repeats the blocky last motion frame. This is ISS-40 (d).
 6. **More bits on a LAN.** Defaults are far above 8 Mbps:
    - Moonlight's client defaults are about 20 Mbps at 1080p60, and it recommends 40–80 Mbps for 1440p/4K;
-   - scrcpy's default is 8 Mbps, but over USB.
+   - An open-source Android mirroring tool's default is 8 Mbps, but over USB.
    - HEVC gives the same quality for about 30–50 % fewer bits, and the Mac decodes it in hardware (ISS-40 c).
 7. **Mark the traffic as video on the air.** WebRTC sets DSCP AF41 on video packets. Wi-Fi maps it to the WMM video access category, which wins contention against best-effort traffic. On macOS, a socket's service type does the same.
 8. **Don't send pixels the screen can't show.** On a scaled display ("looks like 3008×1692" on a 3840×2160 panel), a window's backing store is 6016/3840 = 1.57× the panel on each axis. That is 2.45× the panel's pixels. Asking the phone for backing pixels spends 2.45× the bits for detail the panel throws away.
@@ -126,7 +126,7 @@ The list above is the shared core of game and desktop streaming. Four more ideas
 
 Left out on purpose:
 - **L4S:** it needs a router that marks ECN, which most home routers don't.
-- **AWDL off:** it is an admin setting that breaks AirDrop and Universal Control. The 0.3–0.7 s stalls it causes are the person's choice to remove, not the app's.
+- **AWDL off:** it is an admin setting that breaks Apple's file-sharing and input-sharing features. The 0.3–0.7 s stalls it causes are the person's choice to remove, not the app's.
 
 The order after round 2:
 1. X0 rides along in round 2.
@@ -847,7 +847,7 @@ The default for app windows is likely quality, since they are mostly text. A gam
 - [IronRDP: progressive refinement and a lossless text codec (proposal)](https://github.com/Devolutions/IronRDP/issues/1158)
 - [Android: low-latency media](https://source.android.com/devices/media/low-latency-media)
 - [Android: MediaFormat keys](https://developer.android.com/reference/android/media/MediaFormat)
-- [scrcpy manual: bitrate, max fps, render only the latest frame](https://manpages.ubuntu.com/manpages/focal/man1/scrcpy.1.html)
+- An open-source Android mirroring tool's manual: bitrate, max fps, render only the latest frame
 - [L4S congestion control for cloud real-time streaming](https://ieeexplore.ieee.org/document/10539241/)
 - [L4S-enabled adaptive WebRTC video (MMSys '26 demo)](https://dl.acm.org/doi/10.1145/3793853.3798195)
 - [Adaptive bitrate in cloud gaming (GamingAnywhere, WPI)](https://digital.wpi.edu/downloads/pc289k608?locale=en)
