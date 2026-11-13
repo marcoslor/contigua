@@ -1,45 +1,48 @@
 # Contigua
 
-Android apps in native Mac windows, over your home network, with the phone
-staying locked.
+Mac-style continuity for Android phones. Contigua uses
+[Shizuku](https://shizuku.rikka.app/) and modern Android APIs to put your
+phone's apps on your Mac, each in its own window, while the phone stays locked
+in your pocket.
 
-> **Alpha. There are no downloads yet: build it yourself.** The Mac app has to
-> be signed with your own local certificate, or macOS will not let it reach
-> your phone over the network. The two-command setup is in
-> [docs/TRY-IT.md](docs/TRY-IT.md). Expect rough edges.
+> **Alpha: expect rough edges.**
+>
+> - **Android:** the app will be on the [Releases](https://github.com/marcoslor/contigua/releases) page.
+> - **Mac:** there is no public build yet. A Mac app that others can download
+>   needs an Apple Developer certificate (US$99 a year). Until then, build the Mac app
+>   yourself and sign it with a free local certificate. Two commands, in
+>   [docs/TRY-IT.md](docs/TRY-IT.md).
+>
+> Want a ready-made Mac download sooner?
+> [Buy me a coffee](https://buymeacoffee.com/marcoslor): it goes toward the certificate.
 
-![An Android app and the phone's own screen as Mac windows](docs/images/desktop.jpg)
+![Phone apps and the phone's own screen as Mac windows](docs/images/desktop.jpg)
 
-| One Android app, one Mac window | The phone's own screen, mirrored |
+## What you can do
+
+| | |
 |---|---|
-| ![Spotify in a Mac window](docs/images/app-window.png) | ![The phone mirror](docs/images/phone-mirror.png) |
+| ✅ | 🪟 Open any phone app in its own Mac window, and resize it to any shape |
+| ✅ | 📱 See and use your phone's whole screen on the Mac |
+| ✅ | ⌨️ Type, click and scroll in phone apps with your Mac's keyboard and trackpad |
+| ✅ | 🔊 Hear the phone's sound on the Mac |
+| ✅ | 📋 Copy on one, paste on the other: text and pictures |
+| ✅ | 🔗 Send links and shares between the Mac and the phone |
+| ✅ | 📂 Drag files onto the phone, or install Android apps from the Mac |
+| ✅ | 🗂️ Browse the phone's files in Finder |
+| ✅ | 🚀 Start phone apps from the Dock, Launchpad or Spotlight |
+| ✅ | 🌙 Mac Focus mode silences the phone too |
+| ✅ | 🔍 Select and copy text inside any phone app window |
+| ✅ | 🤖 Let an AI agent on your Mac use the phone (off unless you turn it on) |
+| 🧪 | 🔔 Phone notifications on the Mac, with reply |
+| 🧪 | 🎵 Phone music in the Mac's Now Playing |
+| 🚧 | 🎛️ Phone controls in Control Center |
+| 🚧 | 📷 Use the phone as the Mac's camera |
 
-## Features
+✅ works · 🧪 built, still being tested on real devices · 🚧 in progress
 
-| | Feature |
-|---|---|
-| ✅ | Any phone app in its own resizable Mac window, several at once |
-| ✅ | Phone mirror: the phone's own screen, with Back, Home and Recents |
-| ✅ | Keyboard, mouse, scroll and trackpad gestures |
-| ✅ | Phone audio plays on the Mac |
-| ✅ | Clipboard both ways, text and images |
-| ✅ | Links and shares between Mac and phone |
-| ✅ | Drag files onto a phone window; install APKs from the Mac |
-| ✅ | The phone's storage as a location in Finder |
-| ✅ | Phone apps in the Dock, Launchpad and Spotlight |
-| ✅ | Mac Focus turns on the phone's Do Not Disturb |
-| ✅ | Live Text on any window |
-| ✅ | AI agents through a local MCP server (off by default) |
-| 🧪 | Phone notifications in Notification Center, with reply |
-| 🧪 | Phone media in Now Playing |
-| 🚧 | Control Center controls |
-| 🚧 | Phone as a Mac camera |
-
-✅ works in a source build · 🧪 built, not yet proven on a real phone and Mac ·
-🚧 in progress
-
-Always: the phone stays locked, everything stays on your network (mutual TLS
-1.3, keys pinned at pairing), no accounts, no analytics. Details and known
+🔒 Always: the phone stays locked, nothing leaves your home network (encrypted
+end to end, keys made at pairing), no accounts, no tracking. Details and known
 limits: [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Requirements
@@ -53,8 +56,8 @@ Tested on Android 16 (an emulator and a Samsung phone) and macOS 26 and later.
 
 ## Get started
 
-[docs/TRY-IT.md](docs/TRY-IT.md) walks through building both apps, signing
-the Mac app and pairing.
+[docs/TRY-IT.md](docs/TRY-IT.md) walks through installing the phone app, building and signing
+the Mac app, and pairing.
 
 ## Docs
 
