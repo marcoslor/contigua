@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared helpers for the headless-VM e2e scripts (vm-prepare.sh, vm-e2e.sh):
 # tart boot/IP/ssh/rsync plumbing, the machine-wide heavy lock and the memory
-# gate from .agent/RULES.md. Sourced, never run on its own.
+# gate. Sourced, never run on its own.
 
 VM="${PD_E2E_VM:-pd-e2e}"
 BASE_IMAGE="${PD_E2E_BASE:-ghcr.io/cirruslabs/macos-tahoe-base:latest}"
@@ -18,7 +18,7 @@ HEAVY_LOCK="/tmp/contigua-heavy.lock"
 say() { printf '%s\n' "$*"; }
 
 # heavy_lock — RULES.md 14: every heavy step is serialized machine-wide. A
-# caller that is already inside .agent/heavy.sh must not take the lock again
+# caller that already holds the lock (for example under .agent/heavy.sh) must not take it again
 # (that would deadlock on itself): if the lock's holder is one of our
 # ancestors, we ARE the step it is running.
 heavy_held_by_ancestor() {

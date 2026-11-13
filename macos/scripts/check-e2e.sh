@@ -47,7 +47,7 @@ PROFILE="${PD_E2E_PROFILE:-e2e}"
 # system python3 links LibreSSL, so PD_FAKE_TLS_PYTHON names python3.11+.
 FAKE_PY="${PD_FAKE_TLS_PYTHON:-$(command -v python3.11 || echo /usr/bin/python3)}"
 "$FAKE_PY" -c 'import sys, ssl; sys.exit(0 if sys.version_info[:2] >= (3,11) and not ssl.OPENSSL_VERSION.startswith("LibreSSL") else 3)' 2>/dev/null || {
-    say "$FAKE_PY cannot serve TLS 1.3; set PD_FAKE_TLS_PYTHON to a python3.11+ built on OpenSSL 3"
+    echo "$FAKE_PY cannot serve TLS 1.3; set PD_FAKE_TLS_PYTHON to a python3.11+ built on OpenSSL 3" >&2
     exit 3
 }
 E2E_BUNDLE="${PD_E2E_PREBUILT:-$MACOS/build/e2e/Contigua.app}"
@@ -15877,9 +15877,9 @@ check_deckstart() {
 # display: the press and the click's linger at 760 and 1000 wide, light and
 # dark. PD_RAILPRESS_SHOT_TAG names the build (feat/main); PD_RAILPRESS_SHOT_MODE
 # hover captures main's hover-driven emphasis instead (it has no press state).
-# The shots go to ~/dev/contigua/.agent/railpress/shots/ and are judged by eye.
+# The shots go to $ROOT/.agent/railpress/shots/ (gitignored) and are judged by eye.
 railpress_shots() {
-    local out="$HOME/dev/contigua/.agent/railpress/shots"
+    local out="$ROOT/.agent/railpress/shots"
     local tag="${PD_RAILPRESS_SHOT_TAG:-feat}"
     local mode="${PD_RAILPRESS_SHOT_MODE:-press}"
     mkdir -p "$out"

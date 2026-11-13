@@ -7,7 +7,7 @@
 # the screen is asleep before the asks and still asleep after them.
 #
 #   tools/emulator/start.sh
-#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/thumb.sh
+#   bash tools/emulator/thumb.sh
 #
 # The files are generated (ffmpeg + sips for HEIC), never a real photo, and are
 # removed at the end. No File Provider and no Mac app are involved.

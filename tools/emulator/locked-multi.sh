@@ -5,7 +5,7 @@
 # window stays short (CTRL-16). ONE boot (docs/specs/controls.md,
 # docs/PROTOCOL.md "Phone screen").
 #
-#   bash tools/emulator/locked-multi.sh            the run (heavy.sh owns the
+#   bash tools/emulator/locked-multi.sh            the run (it runs under the
 #                                                 lock and the boot budget)
 #   bash tools/emulator/locked-multi.sh --no-boot  the same checks on a rig that
 #                                                 is already up and paired
@@ -209,7 +209,7 @@ PY
   echo "start.sh --no-build; set force_panel_off + vd_panel_group; install the APK;"
   echo "pkill the shell service; ensure Shizuku; restart_server; prove the forced init;"
   echo "(pair with the rig PIN on a boot); lock.sh; run the driver; read the dumps + logcat."
-  echo "--- budget: $(tr '\n' ' ' < "$HOME/dev/contigua/.agent/budgets/locked-multi" 2>/dev/null) ---"
+  echo "--- budget: $(tr '\n' ' ' < "$MAIN_REPO/.agent/budgets/locked-multi" 2>/dev/null) ---"
   echo "--- boots already in the ledger for locked-multi: $(ledger_boots /tmp/contigua-boots.ledger locked-multi) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"

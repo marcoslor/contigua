@@ -3,10 +3,10 @@
 # helper must start under both `su` syntaxes.
 #
 #   bash tools/emulator/clip-root.sh --check    rehearsal: no device, no boot
-#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/clip-root.sh
+#   bash tools/emulator/clip-root.sh
 #
-# ONE emulator boot. The APKs must already be built with the Docker K1
-# (`k1-docker.sh <android> :app:assembleDebug`):
+# ONE emulator boot. The APKs must already be built with K1
+# (`cd android && ./gradlew :app:assembleDebug`):
 #   .agent/clip-su/app-debug-main.apk    built from the branch point
 #   .agent/clip-su/app-debug-fixed.apk   built from this branch
 #   .agent/clip-life/app-debug-life.apk  built from fix/clip-life

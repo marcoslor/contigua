@@ -9,8 +9,8 @@
 #                                               and paired (a retry, or the
 #                                               second APK of one boot)
 #
-# The APK must already be built with the Docker K1
-# (`k1-docker.sh <android> :app:assembleDebug`); start.sh runs with --no-build so
+# The APK must already be built with K1
+# (`cd android && ./gradlew :app:assembleDebug`); start.sh runs with --no-build so
 # no JVM runs on the host. The driver opens one session, focuses Settings' search
 # field on display 0, opens app windows and taps the field again, then proves the
 # windows' own typing, TextRuns text, image paste, drop and title still work. It
@@ -51,8 +51,8 @@ check_mode() {
   "$PYTHON" -m py_compile tools/emulator/ime-focus.py \
     || { echo "CHECK FAIL: py_compile ime-focus.py"; return 1; }
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; return 1; }
-  [ -f "$APK" ] || { echo "CHECK FAIL: no $APK (k1-docker :app:assembleDebug)"; return 1; }
-  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/ime-focus" 2>/dev/null || echo '?')"
+  [ -f "$APK" ] || { echo "CHECK FAIL: no $APK (gradlew :app:assembleDebug)"; return 1; }
+  echo "--- budget: $(cat "$MAIN_REPO/.agent/budgets/ime-focus" 2>/dev/null || echo '?')"
   echo "--- boots in the ledger for ime-focus: $(ledger_boots /tmp/contigua-boots.ledger ime-focus)"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"

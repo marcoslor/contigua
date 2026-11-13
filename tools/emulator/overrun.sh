@@ -6,10 +6,10 @@
 # own drop and bitrate lines.
 #
 #   bash tools/emulator/overrun.sh --check    # rehearse: no device, no boot
-#   heavy.sh timeout 2700 bash tools/emulator/overrun.sh
+#   timeout 2700 bash tools/emulator/overrun.sh
 #
-# Build the APK first, in Docker only:
-#   heavy.sh bash .agent/k1-docker.sh <worktree>/android :app:assembleDebug
+# Build the APK first:
+#   cd <worktree>/android && ./gradlew :app:assembleDebug
 # and the e2e Mac bundle (once per tree):
 #   bash macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
 #
@@ -37,7 +37,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
 
 WORK="${PD_OVERRUN_WORK:-/tmp/pd-overrun-emu}"
-OUT="${PD_OVERRUN_OUT:-$HOME/dev/contigua/.agent/overrun/emu}"
+OUT="${PD_OVERRUN_OUT:-$MAIN_REPO/.agent/overrun/emu}"
 BUNDLE="$ROOT/macos/build/e2e/Contigua.app"
 APP="$BUNDLE/Contents/MacOS/Contigua"
 SHIM="$BUNDLE/Contents/Helpers/contigua-mcp"
@@ -171,7 +171,7 @@ if [ "$MODE" = check ]; then
         [ -z "$stale" ] || cfail "the Mac app is older than $stale"
     fi
     APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-    [ -f "$APK" ] || cfail "no debug APK at $APK (build it in Docker)"
+    [ -f "$APK" ] || cfail "no debug APK at $APK (build it first)"
     if [ -f "$APK" ]; then
         stale="$(find "$ROOT/android/app/src/main" -type f -newer "$APK" -print -quit 2>/dev/null)"
         [ -z "$stale" ] || cfail "the APK is older than $stale (rebuild :app:assembleDebug)"

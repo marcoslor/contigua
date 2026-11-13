@@ -5,7 +5,7 @@
 #   bash tools/emulator/update-race.sh [--apk PATH] [--runs N] [--check]
 #
 # Runs against an already booted rig (tools/emulator/start.sh) and boots
-# nothing: the caller owns the emulator's whole life inside ONE heavy.sh call.
+# nothing: the caller owns the emulator's whole life inside ONE call.
 #
 # Each round reproduces the person's 2026-11-04 order. Shizuku's server is
 # stopped first, so the process has no binder; the APK is installed over itself

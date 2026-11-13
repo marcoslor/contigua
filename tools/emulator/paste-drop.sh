@@ -4,10 +4,10 @@
 #   bash tools/emulator/paste-drop.sh --check    rehearsal: preflight, syntax,
 #                                                deckctl verbs, the debug activity
 #                                                in the APK; no device
-#   ~/dev/contigua/.agent/heavy.sh bash tools/emulator/paste-drop.sh
+#   bash tools/emulator/paste-drop.sh
 #
-# The APK must already be built with the Docker K1
-# (`k1-docker.sh <android> :app:assembleDebug`); start.sh runs with --no-build so
+# The APK must already be built with K1
+# (`cd android && ./gradlew :app:assembleDebug`); start.sh runs with --no-build so
 # no JVM ever runs on the host. The emulator, the checks and the kill are this
 # one call. Pairing is poc.py's prompt-and-Allow path, once.
 #
@@ -65,7 +65,7 @@ check_mode() {
   "$PYTHON" tools/fakephone/deckctl.py dropbatch --help >/dev/null \
     || { section deckctl FAIL "dropbatch"; return 1; }
   section deckctl PASS "clipimage, drop and dropbatch verbs"
-  [ -f "$APK" ] || { section apk FAIL "no $APK (build it with k1-docker)"; return 1; }
+  [ -f "$APK" ] || { section apk FAIL "no $APK (build it with gradlew)"; return 1; }
   "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null |
     grep -q "PasteDebugActivity" \
     && section apk PASS "debug activity in the merged manifest" \
@@ -87,7 +87,7 @@ trap 'kill_emulator' EXIT
   echo "commit $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo none)"
 } > "$LOG"
 
-[ -f "$APK" ] || die "no $APK (build it with k1-docker :app:assembleDebug)"
+[ -f "$APK" ] || die "no $APK (build it with gradlew :app:assembleDebug)"
 step "booting $SERIAL (one boot budget)"
 if ! bash tools/emulator/start.sh --no-build > "$OUT/paste-drop-start.log" 2>&1; then
   tail -5 "$OUT/paste-drop-start.log" | tee -a "$LOG"

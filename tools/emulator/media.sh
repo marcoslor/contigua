@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Deeper media control (ROADMAP v0.2 #9) on the emulator rig — ONE boot.
 #
-#   tools/emulator/media.sh            the run (heavy.sh owns the lock and the
-#                                      boot budget; boot + checks + kill belong
-#                                      to one heavy.sh call, see the README)
+#   tools/emulator/media.sh            the run (it runs under the boot budget; boot + checks + kill belong
+#                                      to one call, see the README)
 #   tools/emulator/media.sh --no-boot  the same checks on a rig that is already
 #                                      up and paired (verify-batch.sh)
 #   tools/emulator/media.sh --check    a dry run: preflight (syntax, files, the

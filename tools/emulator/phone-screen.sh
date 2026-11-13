@@ -2,8 +2,8 @@
 # `state.screen` and `phone.wake` on the emulator rig — ONE boot
 # (docs/design/phone-mirror.md "Screen off and wake").
 #
-#   tools/emulator/phone-screen.sh            the run (heavy.sh owns the lock
-#                                             and the boot budget)
+#   tools/emulator/phone-screen.sh            the run (it runs
+#                                             under the boot budget)
 #   tools/emulator/phone-screen.sh --no-boot  the same checks on a rig that is
 #                                             already up and paired (verify-batch.sh)
 #   tools/emulator/phone-screen.sh --check    a dry run: preflight (syntax,

@@ -17,8 +17,8 @@
 #     `frame length too large`;
 #   * no Reconnecting and no `path down` before the switch.
 #
-# Run it as: heavy.sh timeout 2700 bash tools/emulator/probe-join.sh
-# Rehearse it as the same heavy.sh line with --check (no device, no boot).
+# Run it as: timeout 2700 bash tools/emulator/probe-join.sh
+# Rehearse it as the same line with --check (no device, no boot).
 #
 # The one boot is killed only with `adb -s emulator-5554 emu kill`, in the
 # script's own cleanup, so boot, checks and kill stay inside one heavy call.

@@ -27,7 +27,6 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 . tools/emulator/lib.sh
 
 APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-MAIN_REPO="$HOME/dev/contigua"
 FAILED=0
 fail() { echo "PREFLIGHT FAIL: $*"; FAILED=1; }
 ok() { echo "PREFLIGHT OK: $*"; }

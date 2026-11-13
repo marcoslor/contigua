@@ -21,7 +21,7 @@
 # script only installs, drives, judges and kills. Run it as
 #
 #   bash tools/emulator/static-stall.sh --check     # no device, no boot
-#   ~/dev/contigua/.agent/heavy.sh timeout 2400 bash tools/emulator/static-stall.sh
+#   timeout 2400 bash tools/emulator/static-stall.sh
 set -uo pipefail
 
 WT="$(cd "$(dirname "$0")/../.." && pwd)"

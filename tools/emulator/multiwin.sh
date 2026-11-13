@@ -5,13 +5,13 @@
 #   bash tools/emulator/multiwin.sh --check    # rehearse: no device, no boot
 #   bash tools/emulator/multiwin.sh            # against an already booted rig
 #
-# The caller owns the emulator's whole life in ONE heavy.sh call:
+# The caller owns the emulator's whole life in ONE call:
 #   bash tools/emulator/start.sh && bash tools/emulator/multiwin.sh; r=$?
 #   adb -s emulator-5554 emu kill; exit $r
 #
 # Exit status is non-zero when any PASS/FAIL line failed. Screenshots, the cost
 # phase files, the logcat and summary.json land in $CONTIGUA_MW_OUT (default
-# ~/dev/contigua/.agent/mw-phone).
+# $MAIN_REPO/.agent/mw-phone).
 set -uo pipefail
 
 MODE=boot
@@ -25,7 +25,7 @@ esac
 cd "$REPO_ROOT"
 
 WT="$REPO_ROOT"
-OUT="${CONTIGUA_MW_OUT:-$HOME/dev/contigua/.agent/mw-phone}"
+OUT="${CONTIGUA_MW_OUT:-$MAIN_REPO/.agent/mw-phone}"
 # A fresh pairing state per run: boot 4 was lost because a reused state file made
 # every attempt die on the phone's "handshake timeout" (a key it had revoked).
 # A new file pairs like a new Mac, so no earlier pairing can poison the run.
@@ -56,7 +56,7 @@ PY
   PD_PREFLIGHT_DRY_RUN=1 bash "$WT/tools/emulator/preflight.sh" || { echo "CHECK FAIL: preflight"; rc=1; }
   echo "--- the boot start.sh will run ---"
   echo "$EMULATOR -avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -no-window -gpu swiftshader_indirect"
-  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/mw-phone" 2>/dev/null || echo '?') boot(s) ---"
+  echo "--- budget: $(cat "$MAIN_REPO/.agent/budgets/mw-phone" 2>/dev/null || echo '?') boot(s) ---"
   echo "--- boots already in the ledger for mw-phone: $(ledger_boots /tmp/contigua-boots.ledger mw-phone) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"

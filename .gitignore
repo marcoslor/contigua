@@ -21,3 +21,7 @@ __pycache__/
 
 # Per-machine agent rules
 *.local.md
+
+# Signing keys never belong here
+*.jks
+*.keystore

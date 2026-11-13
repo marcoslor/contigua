@@ -5,7 +5,7 @@
 #   bash tools/emulator/shizuku-restart.sh [--runs N] [--check]
 #
 # Runs against an already booted rig (tools/emulator/start.sh) and boots
-# nothing: the caller owns the emulator's whole life inside ONE heavy.sh call.
+# nothing: the caller owns the emulator's whole life inside ONE call.
 #
 # Each round is the person's 10-28 sequence: Shizuku's server dies (wireless
 # debugging dropped), which takes the Contigua shell service with it, then the

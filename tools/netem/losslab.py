@@ -8,7 +8,7 @@ every video frame's arrival time is on disk.
 
     python3 tools/netem/losslab.py <condition> [--runs N]
 
-Run it through ~/dev/contigua/.agent/heavy.sh: it starts a container.
+Run it alone on the machine: it starts a container.
 Data: /tmp/pd-losslab-<condition>/run<N>/ (frames.tsv, audio.json, ss.txt,
 timeline.json, events.jsonl, app.log, phone.log). Nothing personal is read.
 """

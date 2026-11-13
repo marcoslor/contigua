@@ -13,7 +13,7 @@
 # visible run), one run at a time:
 #
 #   macos/scripts/bundle.sh macos/build/e2e/Contigua.app --variant e2e
-#   ~/dev/contigua/.agent/heavy.sh macos/scripts/menubar-toggle.sh
+#   macos/scripts/menubar-toggle.sh
 #
 # It prints one line per step, check-e2e style, and exits non-zero on a FAIL.
 # Never touches /Applications/Contigua.app or the person's own item: the app

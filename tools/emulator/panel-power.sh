@@ -2,8 +2,8 @@
 # The phone's panel with the Mac's windows opening, covering and closing — ONE
 # boot. docs/design/phone-mirror.md, docs/PROTOCOL.md "Phone screen".
 #
-#   tools/emulator/panel-power.sh            the run (heavy.sh owns the lock
-#                                            and the boot budget)
+#   tools/emulator/panel-power.sh            the run (it runs
+#                                            under the boot budget)
 #   tools/emulator/panel-power.sh --no-boot  the same checks on a rig that is
 #                                            already up, paired and built with
 #                                            debug.contigua.force_panel_off=1

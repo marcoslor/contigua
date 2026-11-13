@@ -6,7 +6,7 @@
 #   bash tools/emulator/background-switch.sh [--check]
 #
 # Runs against an already booted rig and boots nothing: the caller owns the
-# emulator's whole life inside ONE heavy.sh call. Exits non-zero when any check
+# emulator's whole life inside ONE call. Exits non-zero when any check
 # failed (the pre-fix run fails the tap checks).
 set -euo pipefail
 
@@ -21,7 +21,7 @@ esac
 cd "$REPO_ROOT"
 
 PKG=app.contigua
-SHOTS="${CONTIGUA_SHOTS:-$HOME/dev/contigua/.agent/phone-reset/shots}"
+SHOTS="${CONTIGUA_SHOTS:-$MAIN_REPO/.agent/phone-reset/shots}"
 
 ui_text() {
   emu shell uiautomator dump --compressed "$1" >/dev/null 2>&1 || true

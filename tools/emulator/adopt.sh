@@ -5,10 +5,10 @@
 #   bash tools/emulator/adopt.sh --check    # rehearse: no device, no boot
 #   bash tools/emulator/adopt.sh            # against an already booted rig
 #
-# Build the APK first (K1 in Docker, never Gradle on the host):
-#   bash ~/dev/contigua/.agent/k1-docker.sh "$PWD/android" :app:assembleDebug
+# Build the APK first (K1):
+#   cd android && ./gradlew :app:assembleDebug
 #
-# The caller owns the emulator's whole life in ONE heavy.sh call:
+# The caller owns the emulator's whole life in ONE call:
 #   bash tools/emulator/start.sh --no-build && bash tools/emulator/adopt.sh; r=$?
 #   adb -s emulator-5554 emu kill; exit $r
 #
@@ -17,7 +17,7 @@
 # Back/close on the adopted window with the first untouched, then opens the
 # streamed app from the phone's launcher and expects moved_to_phone and no
 # second window.task. Artefacts land in $CONTIGUA_ADOPT_OUT
-# (default ~/dev/contigua/.agent/adopt/emu).
+# (default $MAIN_REPO/.agent/adopt/emu).
 set -uo pipefail
 
 MODE=boot
@@ -31,7 +31,7 @@ esac
 cd "$REPO_ROOT"
 
 WT="$REPO_ROOT"
-OUT="${CONTIGUA_ADOPT_OUT:-$HOME/dev/contigua/.agent/adopt/emu}"
+OUT="${CONTIGUA_ADOPT_OUT:-$MAIN_REPO/.agent/adopt/emu}"
 # A fresh pairing state per run: a reused one can be on the phone's revoked
 # side and every attempt then dies on the handshake.
 STATE="$CACHE_DIR/deckctl-state-adopt-$(date +%s).json"
@@ -89,7 +89,7 @@ PY
   PD_PREFLIGHT_DRY_RUN=1 bash "$WT/tools/emulator/preflight.sh" || { echo "CHECK FAIL: preflight"; rc=1; }
   echo "--- the boot start.sh will run ---"
   echo "$EMULATOR -avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -no-window -gpu swiftshader_indirect"
-  echo "--- budget: $(cat "$HOME/dev/contigua/.agent/budgets/adopt" 2>/dev/null || echo '?') boot(s) ---"
+  echo "--- budget: $(cat "$MAIN_REPO/.agent/budgets/adopt" 2>/dev/null || echo '?') boot(s) ---"
   echo "--- boots already in the ledger for adopt: $(ledger_boots /tmp/contigua-boots.ledger adopt) ---"
   if device_present; then
     echo "CHECK FAIL: $SERIAL is already up (a boot would be wasted)"
