@@ -1,6 +1,6 @@
 # Contigua — architecture
 
-Continuity-style Android ⇄ macOS: run Android apps in native, resizable Mac
+Mac-style continuity for Android: run Android apps in native, resizable Mac
 windows (one window per app, several at once) and a "phone" window — **while the
 phone stays locked**. LAN only. Open source.
 

@@ -161,7 +161,7 @@ Ignored events, stated so nobody builds them: a post for a phone whose switch is
 - A notification centre or a durable history: the history is at most 20 per phone, in memory, cleared on quit.
 - Posting a live item back to the phone, or changing the phone's Clock, alarm, DND or lock settings.
 - A desktop widget in this round. The research says an ad-hoc app's WidgetKit extension is unproven; a VM spike must prove registration before the plan promises one.
-- macOS Live Activities / ActivityKit: the app targets macOS 26, and ActivityKit for Mac apps is macOS 27.3 beta.
+- macOS live status items / ActivityKit: the app targets macOS 26, and ActivityKit for Mac apps is macOS 27.3 beta.
 - Reading a custom `RemoteViews` by reflection, OCR or the Clock app's private provider.
 - A phone-side UI beyond the Clock's own timer screen; no new Contigua notification on the phone.
 - Any third-party service: nothing leaves the two devices.

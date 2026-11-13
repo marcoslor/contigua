@@ -11,7 +11,7 @@ at amplitude 8000 (RMS 5657) in a separate process:
 - Plain `AudioRecord(REMOTE_SUBMIX, 48k, stereo)` with no AudioPolicy: opening
   the input routes media to the submix output (`dumpsys audio`: `Devices:
   remote_submix(8000)`; audio_flinger: speaker thread `0 active` tracks while
-  the submix thread has the tone). Same technique as scrcpy's "output" source.
+  the submix thread has the tone). Open-source mirroring tools capture audio the same way.
 - Captured RMS 134 at first, then 5656 after raising the music volume: the
   submix device has its own volume index (was 5/15 → −32 dB). An earlier probe
   read that attenuation as "silent" and wrongly concluded a policy was needed;

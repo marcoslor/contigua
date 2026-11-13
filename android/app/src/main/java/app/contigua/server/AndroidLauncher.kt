@@ -19,7 +19,7 @@ import java.io.ByteArrayOutputStream
  * Lists launchable apps, renders icons and starts activities on a display.
  *
  * Launching goes through `IActivityManager.startActivity` with
- * `ActivityOptions.setLaunchDisplayId` (scrcpy's approach) and falls back to
+ * `ActivityOptions.setLaunchDisplayId` (the approach open-source mirroring tools use) and falls back to
  * `am start --display N`, which works because this process is shell. The
  * binder call returns an int: a negative value (e.g. `START_PERMISSION_DENIED`,
  * `START_CLASS_NOT_FOUND`) means the activity was not started, so the next

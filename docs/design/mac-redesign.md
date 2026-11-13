@@ -248,7 +248,7 @@ second group is **This Mac**: **General**, **Input**, **Automation**. The detail
 ### 3.7 Stream windows (AppKit)
 
 - `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`,
-  `titlebarAppearsTransparent = true`, title = app label (no icon, hidden: Window menu only). Frameless like Apple's iPhone Mirroring: at rest only the
+  `titlebarAppearsTransparent = true`, title = app label (no icon, hidden: Window menu only). Frameless like Apple's phone-mirroring feature: at rest only the
   stream with rounded corners and its shadow, the window's sides and bottom being the stream's edges; the window carries a hidden 52 pt band above
   the stream, which fades in as glass (traffic lights where a standard toolbar window has them) at once on hover and out as soon as the pointer
   leaves, never covering or moving the stream or resizing the virtual display
