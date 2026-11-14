@@ -1,5 +1,6 @@
 package app.contigua.server
 
+import android.annotation.SuppressLint
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -77,6 +78,10 @@ internal class PanelPower(private val log: (String) -> Unit) {
 
     fun panelNormal(): Boolean = setMode(POWER_MODE_NORMAL)
 
+    // Shell-only path: the server runs at uid 2000, where hidden-API
+    // restrictions do not apply (the reason all of server/ may use them). The
+    // release lint checks the target SDK, not the process.
+    @SuppressLint("BlockedPrivateApi")
     private fun loadDisplayControl(): Class<*>? = runCatching {
         val factory = Class.forName("com.android.internal.os.ClassLoaderFactory")
         val create = factory.methods.firstOrNull {

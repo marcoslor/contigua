@@ -7,7 +7,7 @@ in your pocket.
 
 > **Alpha: expect rough edges.**
 >
-> - **Android:** the app will be on the [Releases](https://github.com/marcoslor/contigua/releases) page.
+> - **Android:** the signed APK is on the [Releases](https://github.com/marcoslor/contigua/releases) page.
 > - **Mac:** there is no public build yet. A Mac app that others can download
 >   needs an Apple Developer certificate (US$99 a year). Until then, build the Mac app
 >   yourself and sign it with a free local certificate. Two commands, in

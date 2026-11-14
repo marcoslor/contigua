@@ -3,11 +3,12 @@
 All notable changes are listed here, in the style of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The version follows [SemVer](https://semver.org/), 0.x, and lives in `VERSION`.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-14)
 
-The first public alpha. There are no binaries; build from source with
-[docs/TRY-IT.md](docs/TRY-IT.md). Items marked "unproven" are built but have
-not been checked on a real Mac and phone.
+The first public alpha. The signed Android APK is on the
+[Releases](https://github.com/marcoslor/contigua/releases) page; the Mac app
+still builds and signs locally with [docs/TRY-IT.md](docs/TRY-IT.md). Items
+marked "unproven" are built but have not been checked on a real Mac and phone.
 
 ### Windows and input
 
