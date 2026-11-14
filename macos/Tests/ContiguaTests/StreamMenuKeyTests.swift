@@ -57,7 +57,7 @@ final class StreamMenuKeyTests: XCTestCase {
     /// again) replaces the values whole.
     func testAnotherStreamWindowReplacesTheValues() {
         var machine = machineWithStreamKey()
-        let next = values(stream: 2, style: .immersive, densityPackage: nil, densityOverride: nil)
+        let next = values(stream: 2, style: .compact, densityPackage: nil, densityOverride: nil)
         XCTAssertEqual(machine.handle(.streamBecameKey(next)), [.correctMenu])
         XCTAssertEqual(machine.values, next)
         XCTAssertEqual(machine.handle(.streamBecameKey(next)), [],
@@ -68,14 +68,14 @@ final class StreamMenuKeyTests: XCTestCase {
     /// Deck is ignored.
     func testValuesChangesFollowTheKeyWindowOnly() {
         var machine = machineWithStreamKey()
-        let immersive = values(style: .immersive, liveText: true)
-        XCTAssertEqual(machine.handle(.streamValuesChanged(immersive)), [.correctMenu])
-        XCTAssertEqual(machine.values, immersive)
-        XCTAssertEqual(machine.handle(.streamValuesChanged(immersive)), [],
+        let compact = values(style: .compact, liveText: true)
+        XCTAssertEqual(machine.handle(.streamValuesChanged(compact)), [.correctMenu])
+        XCTAssertEqual(machine.values, compact)
+        XCTAssertEqual(machine.handle(.streamValuesChanged(compact)), [],
                        "the same values are no change")
-        let behind = values(stream: 2, style: .immersive)
+        let behind = values(stream: 2, style: .compact)
         XCTAssertEqual(machine.handle(.streamValuesChanged(behind)), [])
-        XCTAssertEqual(machine.values, immersive, "the window behind the Deck cannot change the menu")
+        XCTAssertEqual(machine.values, compact, "the window behind the Deck cannot change the menu")
         XCTAssertEqual(machine.handle(.streamValuesChanged(values())), [.correctMenu])
     }
 

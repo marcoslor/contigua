@@ -179,3 +179,31 @@ final class OpeningCoverTests: XCTestCase {
         XCTAssertTrue(view.displayedReason.isEmpty)
     }
 }
+
+/// Issue #45's e2e: a window that opened on a stream id the phone had just
+/// closed kept its opening cover for good, the ⌥⌘F cycle stuck behind it.
+/// The closed stream's last frame arrived after the close, with no window,
+/// and still took the id's one "first frame" note; the new window's real
+/// first frame was then never noted.
+@MainActor
+final class FirstFrameNoteTests: XCTestCase {
+    private func makeManager() -> WindowManager {
+        let name = "app.contigua.tests.firstframe.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
+                              clientId: "test-client", pinStore: PhonePinStoreV2())
+        return WindowManager(session: session, defaults: defaults)
+    }
+
+    func testAFrameWithNoWindowDoesNotTakeTheNextWindowsFirstFrame() {
+        let manager = makeManager()
+        XCTAssertTrue(manager.markFirstFrame(stream: 1, hasWindow: true), "the window's first frame")
+        XCTAssertFalse(manager.markFirstFrame(stream: 1, hasWindow: true), "noted once")
+        manager.remove(stream: 1)
+        XCTAssertFalse(manager.markFirstFrame(stream: 1, hasWindow: false),
+                       "the closed stream's late frame has no window to note")
+        XCTAssertTrue(manager.markFirstFrame(stream: 1, hasWindow: true),
+                      "the next window on the same id still gets its first frame")
+    }
+}

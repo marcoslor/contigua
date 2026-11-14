@@ -5,7 +5,7 @@ Usage:
     seam-gap.py PNG WINDOW_WIDTH BAR_POINTS
 
 WINDOW_WIDTH is the window's width in points (the chrome state's `frame=`),
-BAR_POINTS its framed bar's height (`bar=`). The capture's pixels per point
+BAR_POINTS its Compact bar's height (`bar=`). The capture's pixels per point
 come from its own width; the seam row is the bar's height in capture pixels.
 The picture's first rows must meet the bar there: a row in the three pixels
 starting at the seam that is darker than both the row three pixels above it

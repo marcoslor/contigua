@@ -1,9 +1,9 @@
-// The framed bar's proportions, shared with the immersive pill.
+// The 28 pt row's proportions: the Immersive pill and the covers' top row.
 //
 // The 14 pt traffic lights sit 7 pt in from the left, the top and the bottom,
-// so the bar is 28 pt; the Live Text button mirrors them 7 pt in from the
-// right on the same centre line. The stream keeps its size and the bar grows
-// upward.
+// so the row is 28 pt; the Live Text button mirrors them 7 pt in from the
+// right on the same centre line. Compact's title bar is AppKit's own, at the
+// system's height.
 
 import AppKit
 

@@ -41,6 +41,9 @@ enum MenuMarks {
         case mark([String], Bool)
         case enable([String], Bool)
         case retitle([String], String)
+        /// The style group's ⌥⌘F, written onto the checked style only, so the
+        /// item a person sees with the key is the one a press re-picks.
+        case shortcut([String], String)
         /// The handoff item, addressed by its ⇧⌘C key because its title is one
         /// of the values that follows the phone (PANEL-28).
         case handoff(title: String, enabled: Bool, help: String?)
@@ -70,25 +73,41 @@ enum MenuMarks {
     /// holds are named, so the result is the same whatever SwiftUI last wrote
     /// on them: a rebuild that resets a mark to its launch value is corrected
     /// by the next call.
+    /// One style item's check, enablement and share of the group's ⌥⌘F:
+    /// the key sits on the checked style, or on Framed while no stream
+    /// window is key (MENU-8: the key always shows in the menu).
+    static func styleEdits(_ title: String, _ style: WindowStyle, _ state: StreamMenuState) -> [Edit] {
+        let checked = state.hasStream && state.style == style
+        let holdsKey = state.hasStream ? checked : style == .framed
+        return [.mark([title], checked), .enable([title], state.hasStream),
+                .shortcut([title], holdsKey ? "f" : "")]
+    }
+
     static func edits(menu: String, items: [Item], state: StreamMenuState) -> [Edit] {
         var edits: [Edit] = []
         for item in items where !item.isSeparator {
             switch (menu, item.title) {
             case ("View", "Framed"):
-                // The pair acts on the key stream window: with the Deck (or
-                // nothing) key, neither may be checked or enabled.
-                edits.append(.mark([item.title], state.hasStream && state.style == .framed))
-                edits.append(.enable([item.title], state.hasStream))
+                // The styles act on the key stream window: with the Deck (or
+                // nothing) key, none may be checked or enabled.
+                // The group's ⌥⌘F rides the checked style (MENU-4); with no
+                // stream key it stays on Framed so the menu still shows it.
+                edits.append(contentsOf: styleEdits(item.title, .framed, state))
+            case ("View", "Compact"):
+                edits.append(contentsOf: styleEdits(item.title, .compact, state))
             case ("View", "Immersive"):
-                edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
-                edits.append(.enable([item.title], state.hasStream))
+                edits.append(contentsOf: styleEdits(item.title, .immersive, state))
             case ("View", "Hide Controls"):
-                // The full-screen reveal choice needs a key stream window in
-                // either style; the mark inside follows the stored choice.
-                edits.append(.enable([item.title], MenuModel.hideControlsEnabled(hasStream: state.hasStream)))
+                // The Immersive pill's reveal choice: present but disabled for
+                // Framed and Compact, where it does nothing. Its own items
+                // are disabled with it; the mark inside follows the stored
+                // choice.
+                let enabled = MenuModel.hideControlsEnabled(hasStream: state.hasStream, style: state.style)
+                edits.append(.enable([item.title], enabled))
                 for child in item.children where !child.isSeparator {
                     guard let entry = FullScreenMenuModel.items.first(where: { $0.title == child.title }),
                           entry != .separator else { continue }
+                    edits.append(.enable([item.title, child.title], enabled))
                     edits.append(.mark([item.title, child.title],
                                        FullScreenMenuModel.isChecked(entry, reveal: state.revealDelay)))
                 }
@@ -329,6 +348,10 @@ extension MenuMarks {
         case .retitle(let path, let title):
             guard let item = resolve(path, in: menu) else { return missing(path) }
             item.title = title
+        case .shortcut(let path, let key):
+            guard let item = resolve(path, in: menu) else { return missing(path) }
+            item.keyEquivalent = key
+            item.keyEquivalentModifierMask = key.isEmpty ? [] : [.command, .option]
         case .handoff(let title, let enabled, let help):
             // By the shortcut, never by title: the title is what changes.
             guard let item = menu.items.first(where: {

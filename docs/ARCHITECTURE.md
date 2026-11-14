@@ -171,12 +171,16 @@ system-privileged steps):
   (`DialPolicy`). Profiles isolate all of this (`--profile <name>`, never the
   default).
 - **Windows**: `AppWindow`/`StreamWindow` + `StreamChrome`. The style system
-  (`WindowStyle`, remembered per app in the profile defaults) has two shapes:
-  **Immersive** (the default: a permanent 28 pt bar with the traffic lights and
-  the picture mirrored under a blur) and **Framed** (a real 38/5 pt frame
-  round the picture with the system material, hairline, rim and rounded
-  corners). Full screen in either style fills the screen with the stream and
-  reveals one acrylic bar from the top edge. Style flips (⌥⌘F / View menu)
+  (`WindowStyle`, remembered per app in the profile defaults) has three shapes:
+  **Framed** (the default: a real 38/5 pt frame round the picture with the
+  system material, hairline, rim and rounded corners), **Compact** (the
+  stream under a band of AppKit's title-bar height: the stream's top edge
+  mirrored up by the system's `NSBackgroundExtensionView` under clear glass, in
+  AppKit's transparent title bar, our title in the band's tone and our
+  controls in its trailing accessory) and **Immersive** (the stream alone; a dwell pill at the top-left
+  brings the lights back). Full screen looks the same in every style: the
+  stream fills the screen and the window's own native title bar comes down
+  with the menu bar (WIN-14). Style flips (⌥⌘F / View menu)
   resize the window around the same stream and never re-open the window.
 - **Video**: H.264 Annex-B → `CMSampleBuffer` →
   `AVSampleBufferDisplayLayer` with `DisplayImmediately`. No CPU readback, no
@@ -186,8 +190,8 @@ system-privileged steps):
   socket reader thread with cached reflection handles. Hover: the video's
   tracking area sends ENTER/MOVE/EXIT (moves at most one per 16 ms, the newest
   point) and the phone injects `ACTION_HOVER_*` as a mouse; a button down sends
-  EXIT before the touch, and Mac UI over the video (the Immersive bar, the
-  Framed frame, the full-screen bar) or a window losing key ends it. Trackpad: two-finger
+  EXIT before the touch, and Mac UI over or beside the video (Compact's
+  title bar, the Framed frame, the Immersive pill) or a window losing key ends it. Trackpad: two-finger
   scroll is a touch drag (Android gets flings; a mouse wheel is a SCROLL
   frame), pinch/rotate are two pointers from the raw fingers; a mouse side
   Back button maps to one Android Back per press.

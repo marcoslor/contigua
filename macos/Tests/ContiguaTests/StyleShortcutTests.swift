@@ -1,4 +1,4 @@
-// ⌥⌘F, the window's style shortcut (View ▸ Framed/Immersive). The menu pair
+// ⌥⌘F, the window's style shortcut (View ▸ Framed/Compact). The menu pair
 // carries it for display, but a disabled item does not consume its key
 // equivalent: with no stream window key when the commands were built, the key
 // arrives at the window, which must switch the style itself — and must never

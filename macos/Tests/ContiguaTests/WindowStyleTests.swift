@@ -1,6 +1,6 @@
-// The two window styles, their storage, the sizes and frames they ask for, the
-// full-screen reveal machine and the reveal delay. All pure logic — the views are
-// exercised in the e2e check (C14).
+// The three window styles, their storage, the sizes and frames they ask for,
+// the full-screen reveal machine, the Immersive dwell and the reveal delay. All
+// pure logic — the views are exercised in the e2e check (C14).
 
 import AppKit
 import XCTest
@@ -14,10 +14,10 @@ final class WindowStyleStorageTests: XCTestCase {
         return defaults
     }
 
-    func testAnAppWithNoStoredChoiceOpensImmersive() {
+    func testAnAppWithNoStoredChoiceOpensFramed() {
         let store = WindowStyleStore(defaults: makeDefaults())
-        XCTAssertEqual(store.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")), .immersive)
-        XCTAssertEqual(WindowStyle.standard, .immersive)
+        XCTAssertEqual(store.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")), .framed)
+        XCTAssertEqual(WindowStyle.standard, .framed)
     }
 
     func testTheChoiceIsRememberedPerPackage() {
@@ -25,12 +25,13 @@ final class WindowStyleStorageTests: XCTestCase {
         let store = WindowStyleStore(defaults: defaults)
         let inbox = WindowStyleStore.key(forPackage: "com.example.inbox")
         let maps = WindowStyleStore.key(forPackage: "com.example.maps")
-        store.set(.framed, forKey: inbox)
-        XCTAssertEqual(store.style(forKey: inbox), .framed)
-        XCTAssertEqual(store.style(forKey: maps), .immersive, "another app keeps its own choice")
+        store.set(.compact, forKey: inbox)
+        XCTAssertEqual(store.style(forKey: inbox), .compact)
+        XCTAssertEqual(store.style(forKey: maps), .framed, "another app keeps its own choice")
+        XCTAssertEqual(defaults.string(forKey: inbox), "bar")
         store.set(.immersive, forKey: inbox)
         XCTAssertEqual(store.style(forKey: inbox), .immersive)
-        XCTAssertEqual(defaults.string(forKey: inbox), "immersive")
+        XCTAssertEqual(defaults.string(forKey: inbox), "pill")
         store.set(.framed, forKey: inbox)
         XCTAssertEqual(defaults.string(forKey: inbox), "mat",
                        "Framed's stored value is its own; the old \"framed\" string never means it")
@@ -48,18 +49,20 @@ final class WindowStyleStorageTests: XCTestCase {
         let store = WindowStyleStore(defaults: makeDefaults())
         store.set(.framed, forKey: WindowStyleStore.phoneKey)
         XCTAssertEqual(store.style(forKey: WindowStyleStore.phoneKey), .framed)
-        XCTAssertEqual(store.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")), .immersive)
+        XCTAssertEqual(store.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")), .framed)
     }
 
-    /// No migration: an unknown stored value — the old names included — is
-    /// ignored and the window opens the default, Immersive.
-    func testAnUnknownStoredValueOpensImmersive() {
-        for raw in ["sideways", "framed", "compact", "minimal", ""] {
+    /// No migration (issue #90): an unknown stored value — every value an
+    /// older build wrote included — is ignored and the window opens the
+    /// default, Framed. A stored "immersive" was the bar style on main and the
+    /// pill style before it: it must never open the borderless Immersive.
+    func testAnUnknownStoredValueOpensFramed() {
+        for raw in ["sideways", "framed", "immersive", "minimal", "compact", "Compact", "Immersive", "glass", ""] {
             let defaults = makeDefaults()
             defaults.set(raw, forKey: WindowStyleStore.key(forPackage: "com.example.app"))
             XCTAssertEqual(WindowStyleStore(defaults: defaults)
                             .style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
-                           .immersive, raw)
+                           .framed, raw)
         }
     }
 
@@ -68,33 +71,64 @@ final class WindowStyleStorageTests: XCTestCase {
         let store = WindowStyleStore(defaults: defaults)
         store.set(.framed, forKey: nil)
         XCTAssertNil(defaults.string(forKey: WindowStyleStore.phoneKey))
-        XCTAssertEqual(store.style(forKey: nil), .immersive)
+        XCTAssertEqual(store.style(forKey: nil), .framed)
     }
 }
 
 final class ChromeConfigTests: XCTestCase {
-    func testBothStatesHideTheSystemTitleAndOwnTheLights() {
-        for fullScreen in [false, true] {
-            let config = ChromeConfig.forState(fullScreen: fullScreen)
-            XCTAssertFalse(config.titleVisible, "\(fullScreen)")
-            XCTAssertTrue(config.titlebarTransparent, "\(fullScreen)")
-            XCTAssertFalse(config.lightsManagedByAppKit, "\(fullScreen)")
+    /// Framed and Immersive draw their own chrome under a hidden, clear title
+    /// bar and place the lights. Compact's band is the mirrored stream under
+    /// AppKit's transparent title bar: AppKit's own lights, our toned title
+    /// over the band instead of the system's (WIN-7, WIN-69).
+    func testWindowedFramedAndImmersiveOwnTheLightsAndCompactWearsAppKitsOverItsBand() {
+        for style in [WindowStyle.framed, .immersive] {
+            let config = ChromeConfig.forState(style: style, fullScreen: false)
+            XCTAssertFalse(config.titleVisible, "\(style)")
+            XCTAssertTrue(config.titlebarTransparent, "\(style)")
+            XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
         }
+        let compact = ChromeConfig.forState(style: .compact, fullScreen: false)
+        XCTAssertFalse(compact.titleVisible, "the band's title is ours, in the band's tone")
+        XCTAssertTrue(compact.titlebarTransparent, "the band shows through AppKit's title bar")
+        XCTAssertTrue(compact.lightsManagedByAppKit, "AppKit's own lights, where AppKit puts them")
     }
 
-    func testTheStyleDoesNotChangeTheTitlebarRule() {
-        XCTAssertEqual(ChromeConfig.forState(fullScreen: false), ChromeConfig.forState(fullScreen: true))
+    /// Full screen looks the same in every style: the window's own native
+    /// title bar, which the system brings down with the menu bar (WIN-14).
+    func testFullScreenIsTheSystemTitleBarInEveryStyle() {
+        for style in WindowStyle.allCases {
+            let config = ChromeConfig.forState(style: style, fullScreen: true)
+            XCTAssertTrue(config.titleVisible, "\(style): the system's title")
+            XCTAssertFalse(config.titlebarTransparent, "\(style): a solid title bar")
+            XCTAssertTrue(config.lightsManagedByAppKit, "\(style): the standard lights where AppKit puts them")
+        }
     }
 }
 
 final class WindowStyleSizeTests: XCTestCase {
     private let stream = CGSize(width: 900, height: 600)
     private let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)
+    /// AppKit's frame for the 900×600 stream in a standard titled window, and
+    /// its title bar: the system's height on this macOS, never a number of ours.
+    private var compactHeight: CGFloat {
+        NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: stream),
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable]).height
+    }
+    private var titleBar: CGFloat { compactHeight - stream.height }
 
-    func testImmersiveIsTheStreamPlusTheBar() {
-        XCTAssertEqual(WindowStyle.immersive.windowSize(stream: stream), CGSize(width: 900, height: 628))
-        let pad = WindowStyle.immersive.insets(fullScreen: false)
-        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [28, 0, 0, 0], "the bar at the top only")
+    /// WIN-4, WIN-67: Compact's band above the stream is exactly AppKit's
+    /// title-bar height, never a number of ours: the content view spans the
+    /// window under the transparent title bar and the stream sits below it.
+    func testCompactIsTheStreamUnderABandAsTallAsAppKitsTitleBar() {
+        XCTAssertGreaterThan(titleBar, 0)
+        XCTAssertEqual(WindowStyle.compact.windowSize(stream: stream), CGSize(width: 900, height: compactHeight))
+        XCTAssertEqual(WindowStyle.compact.contentSize(stream: stream), CGSize(width: 900, height: compactHeight),
+                       "the content view is the whole window: the band is ours to draw")
+        let pad = WindowStyle.compact.insets(fullScreen: false)
+        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [titleBar, 0, 0, 0])
+        for style in WindowStyle.allCases {
+            XCTAssertTrue(style.styleMask.contains(.fullSizeContentView), "\(style)")
+        }
     }
 
     func testFramedIsTheStreamInsideTheFrame() {
@@ -106,7 +140,24 @@ final class WindowStyleSizeTests: XCTestCase {
                        CGSize(width: 330, height: 283), "the minimum stream plus the frame")
     }
 
-    func testFullScreenHasNoWindowedChromeInEitherStyle() {
+    func testImmersiveIsTheStreamExactly() {
+        XCTAssertEqual(WindowStyle.immersive.windowSize(stream: stream), stream)
+        let pad = WindowStyle.immersive.insets(fullScreen: false)
+        XCTAssertEqual([pad.top, pad.left, pad.bottom, pad.right], [0, 0, 0, 0])
+    }
+
+    func testThePickerOrderAndTheStoredTokens() {
+        XCTAssertEqual(WindowStyle.allCases, [.framed, .compact, .immersive])
+        XCTAssertEqual(WindowStyle.allCases.map(\.label), ["Framed", "Compact", "Immersive"])
+        XCTAssertEqual(WindowStyle.allCases.map(\.rawValue), ["mat", "bar", "pill"])
+        XCTAssertEqual(WindowStyle.allCases.map(\.debugName), ["framed", "compact", "immersive"])
+        for style in WindowStyle.allCases {
+            XCTAssertEqual(WindowStyle(debugName: style.debugName), style)
+        }
+        XCTAssertEqual(WindowStyle.standard, .framed)
+    }
+
+    func testFullScreenHasNoWindowedChromeInAnyStyle() {
         for style in WindowStyle.allCases {
             XCTAssertEqual(style.windowSize(stream: stream, fullScreen: true), stream, "\(style)")
             XCTAssertEqual(style.streamSize(window: stream, fullScreen: true), stream, "\(style)")
@@ -114,10 +165,10 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testTheStreamSizeIsTheWindowSizeWithoutTheChrome() {
-        XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 628)), stream)
+        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: compactHeight)), stream)
         XCTAssertEqual(WindowStyle.framed.streamSize(window: CGSize(width: 900, height: 600)),
                        CGSize(width: 890, height: 557))
-        XCTAssertEqual(WindowStyle.immersive.streamSize(window: CGSize(width: 900, height: 20)),
+        XCTAssertEqual(WindowStyle.compact.streamSize(window: CGSize(width: 900, height: 20)),
                        CGSize(width: 900, height: 0), "never negative")
     }
 
@@ -130,52 +181,62 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 
     func testSwitchingToFramedGrowsTheWindowAroundTheSameStream() {
-        let current = NSRect(x: 200, y: 100, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+        let current = NSRect(x: 200, y: 100, width: 900, height: compactHeight)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed, NSRect(x: 195, y: 95, width: 910, height: 643),
                        "the stream keeps its place: 5 pt on the left and bottom, 38 above")
     }
 
-    func testSwitchingBackToImmersiveShrinksTheWindowAroundTheStream() {
+    func testSwitchingBackToCompactShrinksTheWindowAroundTheStream() {
         let current = NSRect(x: 195, y: 95, width: 910, height: 643)
-        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
-        XCTAssertEqual(immersive, NSRect(x: 200, y: 100, width: 900, height: 628))
+        let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
+        XCTAssertEqual(compact, NSRect(x: 200, y: 100, width: 900, height: compactHeight),
+                       "the stream keeps its place: its top edge is under AppKit's title bar")
     }
 
-    func testSwitchingNearTheTopMovesTheWindowDownJustEnough() {
-        // The window's top edge is at the screen's top: the frame's 10 pt of
-        // extra band above the stream has nowhere to go.
-        let current = NSRect(x: 200, y: screen.maxY - 628, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+    func testSwitchingToImmersiveShedsTheBarsAndTheFrame() {
+        let current = NSRect(x: 195, y: 95, width: 910, height: 643)
+        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
+        XCTAssertEqual(immersive, NSRect(x: 200, y: 100, width: 900, height: 600),
+                       "the stream keeps its place; only the chrome goes")
+    }
+
+    func testSwitchingNearTheTopMovesTheWindowDownJustEnough() throws {
+        // The window's top edge is at the screen's top: what the frame's 38 pt
+        // bar adds over AppKit's title bar has nowhere to go.
+        let overflow = FramedChrome.topInset - titleBar
+        try XCTSkipIf(overflow <= 0, "this title bar (\(titleBar) pt) is as tall as the frame's bar")
+        let current = NSRect(x: 200, y: screen.maxY - compactHeight, width: 900, height: compactHeight)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY, "the frame fits under the screen's top edge")
         XCTAssertEqual(framed.origin.y, screen.maxY - 643, "moved down by exactly what overflowed")
         XCTAssertEqual(framed.size, CGSize(width: 910, height: 643))
     }
 
-    func testSwitchingNearTheTopMovesItDownOnlyByWhatItOverflows() {
-        // The window starts 4 pt under the top; the frame's 10 pt above the
-        // stream leaves 6 pt to move down.
-        let current = NSRect(x: 200, y: screen.maxY - 632, width: 900, height: 628)
-        let framed = WindowStyle.immersive.frame(switchedTo: .framed, current: current, visible: screen)
+    func testSwitchingNearTheTopMovesItDownOnlyByWhatItOverflows() throws {
+        // The window starts 1 pt under the top: one point less to move down.
+        let overflow = FramedChrome.topInset - titleBar - 1
+        try XCTSkipIf(overflow <= 0, "this title bar (\(titleBar) pt) leaves nothing to overflow")
+        let current = NSRect(x: 200, y: screen.maxY - compactHeight - 1, width: 900, height: compactHeight)
+        let framed = WindowStyle.compact.frame(switchedTo: .framed, current: current, visible: screen)
         XCTAssertEqual(framed.maxY, screen.maxY)
-        XCTAssertEqual(framed.origin.y, screen.maxY - 643, "down by 6 pt, not a whole bar")
         XCTAssertEqual(framed.height, 643)
-        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -6,
+        XCTAssertEqual(framed.origin.y - (current.origin.y - FramedChrome.sideInset), -overflow,
                        "just the overflow, never more")
     }
 
     func testShrinkingKeepsTheStreamAndNeverMovesDown() {
         let current = NSRect(x: 200, y: screen.maxY - 643, width: 910, height: 643)
-        let immersive = WindowStyle.framed.frame(switchedTo: .immersive, current: current, visible: screen)
-        XCTAssertEqual(immersive.origin.y, current.origin.y + FramedChrome.sideInset,
+        let compact = WindowStyle.framed.frame(switchedTo: .compact, current: current, visible: screen)
+        XCTAssertEqual(compact.origin.y, current.origin.y + FramedChrome.sideInset,
                        "the stream stays where it is: the window sheds the frame's bottom")
-        XCTAssertEqual(immersive.height, 628)
-        XCTAssertLessThan(immersive.maxY, screen.maxY, "shrinking never moves the window down")
+        XCTAssertEqual(compact.height, compactHeight)
+        XCTAssertLessThan(compact.maxY, screen.maxY, "shrinking never moves the window down")
     }
 
     func testSwitchingInFullScreenChangesNothing() {
         let current = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        for (from, to) in [(WindowStyle.framed, WindowStyle.immersive), (.immersive, .framed)] {
+        for (from, to) in [(WindowStyle.framed, WindowStyle.compact), (.compact, .framed)] {
             XCTAssertEqual(from.frame(switchedTo: to, current: current, visible: screen, fullScreen: true), current)
         }
     }
@@ -191,7 +252,6 @@ final class RevealDelayTests: XCTestCase {
 
     func testShortIsTheDefault() {
         XCTAssertEqual(RevealDelay.stored(in: makeDefaults()), .short, "nothing stored opens Short")
-        XCTAssertEqual(RevealDelay.short.seconds, FullScreenBar.revealDelay)
         XCTAssertEqual(RevealDelay.short.seconds, 0.35)
     }
 
@@ -222,6 +282,168 @@ final class RevealDelayTests: XCTestCase {
         XCTAssertEqual(RevealDelay.long.label, "Long")
         XCTAssertEqual(RevealDelay.alwaysVisible.label, "Always Visible")
         XCTAssertEqual(RevealDelay.allCases, [.instantly, .short, .long, .alwaysVisible])
+    }
+}
+
+final class DwellPillTests: XCTestCase {
+    /// The hot zone and a pill that covers it.
+    private func makePill() -> DwellPill {
+        DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
+                  pill: CGRect(x: 0, y: 0, width: 100, height: 28))
+    }
+
+    func testNothingShowsBeforeTheDwell() {
+        var pill = makePill()
+        XCTAssertFalse(pill.shown)
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.34)
+        XCTAssertFalse(pill.shown, "349 ms is not a rest")
+        pill.update(now: 0.35)
+        XCTAssertTrue(pill.shown, "350 ms in the zone is")
+    }
+
+    func testThePointerHasToBeInTheZone() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 200, y: 100), now: 0)
+        pill.update(now: 1)
+        XCTAssertFalse(pill.shown, "a rest elsewhere in the stream shows nothing")
+        pill.pointerMoved(to: CGPoint(x: 71, y: 31), now: 1)
+        pill.update(now: 1.4)
+        XCTAssertTrue(pill.shown, "the zone's far corner counts")
+    }
+
+    func testAClickBeforeTheDwellGoesThroughAndStartsTheRestAgain() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.clickReachedApp(at: CGPoint(x: 20, y: 10), now: 0.2)
+        pill.update(now: 0.3)
+        XCTAssertFalse(pill.shown, "the click was the app's, and the rest is younger than the dwell")
+        pill.update(now: 0.55)
+        XCTAssertTrue(pill.shown, "350 ms of quiet after the tap is a rest")
+    }
+
+    func testMovementOverThreePointsRestartsTheRest() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.pointerMoved(to: CGPoint(x: 22, y: 10), now: 0.2)
+        pill.update(now: 0.4)
+        XCTAssertTrue(pill.shown, "2 pt of drift is still a rest")
+    }
+
+    func testMovementBeyondTheToleranceRestartsTheRest() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.pointerMoved(to: CGPoint(x: 24, y: 10), now: 0.3)
+        pill.update(now: 0.4)
+        XCTAssertFalse(pill.shown, "4 pt of travel is a new rest")
+        pill.update(now: 0.65)
+        XCTAssertTrue(pill.shown)
+    }
+
+    func testLeavingTheZoneCancelsTheRest() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.pointerMoved(to: CGPoint(x: 300, y: 200), now: 0.2)
+        pill.update(now: 2)
+        XCTAssertFalse(pill.shown, "the pointer left; the rest is gone with it")
+    }
+
+    func testThePillHidesSixHundredMsAfterThePointerLeavesIt() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        XCTAssertTrue(pill.shown)
+        pill.pointerMoved(to: CGPoint(x: 400, y: 300), now: 1)
+        pill.update(now: 1.5)
+        XCTAssertTrue(pill.shown, "still there half a second later")
+        pill.update(now: 1.6)
+        XCTAssertFalse(pill.shown, "gone at 600 ms")
+    }
+
+    func testComingBackBeforeTheHideCancelsIt() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        pill.pointerMoved(to: CGPoint(x: 400, y: 300), now: 1)
+        pill.pointerMoved(to: CGPoint(x: 30, y: 10), now: 1.2)
+        pill.update(now: 5)
+        XCTAssertTrue(pill.shown, "the pointer came back to the pill")
+    }
+
+    func testTheZoneKeepsThePillAliveBelowThePill() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        // Under the pill's 28 pt but still in the 32 pt zone.
+        pill.pointerMoved(to: CGPoint(x: 60, y: 30), now: 1)
+        pill.update(now: 10)
+        XCTAssertTrue(pill.shown, "the zone is the pill's own resting place")
+    }
+
+    func testOnceHiddenARestCanShowItAgain() {
+        var pill = makePill()
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        pill.pointerMoved(to: CGPoint(x: 400, y: 300), now: 1)
+        pill.update(now: 2)
+        XCTAssertFalse(pill.shown)
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 3)
+        pill.update(now: 3.1)
+        XCTAssertFalse(pill.shown, "the rest starts from the re-entry")
+        pill.update(now: 3.36)
+        XCTAssertTrue(pill.shown)
+    }
+
+    func testEachRevealDelayShowsThePillAtItsOwnTime() {
+        let cases: [(RevealDelay, TimeInterval, TimeInterval)] = [
+            (.instantly, 0, 0),
+            (.short, 0.34, 0.35),
+            (.long, 0.69, 0.7),
+        ]
+        for (delay, early, due) in cases {
+            var pill = DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
+                                 pill: CGRect(x: 0, y: 0, width: 100, height: 28),
+                                 dwell: delay.seconds)
+            pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+            pill.update(now: early)
+            XCTAssertEqual(pill.shown, early >= delay.seconds, "\(delay) at \(early) s")
+            pill.update(now: due)
+            XCTAssertTrue(pill.shown, "\(delay) at \(due) s")
+        }
+    }
+
+    func testChangingTheDelayRetimesARestAlreadyRunning() {
+        var pill = DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
+                             pill: CGRect(x: 0, y: 0, width: 100, height: 28),
+                             dwell: RevealDelay.long.seconds)
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        XCTAssertFalse(pill.shown, "Long is not up at 400 ms")
+        pill.setDwell(RevealDelay.short.seconds)
+        pill.update(now: 0.4)
+        XCTAssertTrue(pill.shown, "Short's 350 ms had already passed when it was picked")
+    }
+
+    func testTheHotZoneAndPillAreTheOnesTheDesignAsksFor() {
+        XCTAssertEqual(DwellChrome.hotZone, CGSize(width: 72, height: 32))
+        XCTAssertEqual(DwellChrome.pillHeight, 28)
+        XCTAssertEqual(DwellChrome.pillCornerRadius, 8)
+        XCTAssertEqual(DwellChrome.dwell, 0.35)
+        XCTAssertEqual(DwellChrome.hideDelay, 0.6)
+        XCTAssertEqual(DwellChrome.pillFade, 0.15)
+        XCTAssertEqual(DwellChrome.tolerance, 3)
+    }
+
+    func testAlwaysVisibleMeansNoDwellAndTheChromeStaysUp() {
+        XCTAssertTrue(ImmersiveChrome.alwaysVisible(.alwaysVisible))
+        XCTAssertFalse(ImmersiveChrome.usesDwell(alwaysVisible: true))
+        XCTAssertTrue(ImmersiveChrome.showsPill(alwaysVisible: true, dwellShown: false))
+        for delay in [RevealDelay.instantly, .short, .long] {
+            XCTAssertFalse(ImmersiveChrome.alwaysVisible(delay))
+            XCTAssertTrue(ImmersiveChrome.usesDwell(alwaysVisible: false))
+            XCTAssertFalse(ImmersiveChrome.showsPill(alwaysVisible: false, dwellShown: false))
+            XCTAssertTrue(ImmersiveChrome.showsPill(alwaysVisible: false, dwellShown: true))
+        }
     }
 }
 
@@ -276,207 +498,9 @@ final class FramedGeometryTests: XCTestCase {
     }
 }
 
-final class FullScreenBarTests: XCTestCase {
-    private func run(_ machine: inout FullScreenBarMachine,
-                     _ events: [FullScreenBarEvent]) -> [[FullScreenBarAction]] {
-        events.map { machine.handle($0) }
-    }
-
-    func testTheNumbersAreTheDesigns() {
-        XCTAssertEqual(FullScreenBar.height, 28)
-        XCTAssertEqual(FullScreenBar.edgeHeight, 8)
-        XCTAssertEqual(FullScreenBar.revealDelay, 0.35)
-        XCTAssertEqual(FullScreenBar.hideDelay, 0.6)
-        XCTAssertEqual(FullScreenBar.revealDuration, 0.18)
-        XCTAssertEqual(FullScreenBar.hideDuration, 0.15)
-        XCTAssertEqual(FullScreenBar.material, .fullScreenUI)
-        XCTAssertEqual(FullScreenBar.titleColor, .labelColor)
-    }
-
-    func testEnteringFullScreenStartsHiddenWithNoTimer() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        let actions = machine.handle(.enterFullScreen)
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(actions, [.cancelTimer, .hide(animated: false)])
-    }
-
-    func testARestAtTheTopEdgeRevealsAfterTheChoice() {
-        for (delay, want) in [(RevealDelay.instantly, 0.0), (.short, 0.35), (.long, 0.7)] {
-            var machine = FullScreenBarMachine(reveal: delay)
-            XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .scheduleReveal(want)], "\(delay)")
-            XCTAssertEqual(machine.mode, .hidden)
-            XCTAssertEqual(machine.pending, .reveal)
-            XCTAssertEqual(machine.handle(.delayElapsed), [.reveal(animated: true)], "\(delay)")
-            XCTAssertEqual(machine.mode, .revealing)
-            XCTAssertEqual(machine.handle(.animationFinished), [])
-            XCTAssertEqual(machine.mode, .shown)
-        }
-    }
-
-    func testAPointerThatLeavesBeforeTheRestCancelsTheReveal() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        _ = machine.handle(.pointerAtTopEdge)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer])
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "the late timer does nothing")
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testThePointerReturningDuringTheHideGraceKeepsTheBar() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished])
-        XCTAssertEqual(machine.mode, .shown)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer, .scheduleHide(0.6)])
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer])
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "the cancelled grace does nothing")
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testTheBarHidesAfterTheGrace() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished, .pointerLeaves])
-        XCTAssertEqual(machine.handle(.delayElapsed), [.hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testLeavingDuringTheSlideInReversesIt() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed])
-        XCTAssertEqual(machine.mode, .revealing)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-
-    func testReturningDuringTheSlideOutRevealsAgain() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished, .pointerLeaves, .delayElapsed])
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-    }
-
-    func testASlideInThatFinishesAfterThePointerLeftHidesAgain() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .pointerLeaves])
-        // pointerLeaves reversed the slide, so a stale animationFinished is
-        // ignored for the revealing state's opposite; a fresh one ends hiding.
-        XCTAssertEqual(machine.mode, .hiding)
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.mode, .hidden)
-
-        var slow = FullScreenBarMachine()
-        _ = run(&slow, [.pointerAtTopEdge, .delayElapsed])
-        slow.handle(.pointerLeaves)
-        _ = slow.handle(.pointerAtTopEdge) // back in, revealing
-        // The reveal completes while the pointer is still at the edge.
-        XCTAssertEqual(slow.handle(.animationFinished), [])
-        XCTAssertEqual(slow.mode, .shown)
-    }
-
-    func testAMenuRevealsTheBarAndKeepsIt() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.menuTracking(true)), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [], "a menu keeps the bar up")
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testTheMenuEndingSchedulesTheHideOnlyWhenThePointerIsAway() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.menuTracking(true), .animationFinished])
-        XCTAssertEqual(machine.handle(.menuTracking(false)), [.scheduleHide(0.6)])
-        XCTAssertEqual(machine.mode, .shown)
-
-        var resting = FullScreenBarMachine()
-        _ = resting.handle(.menuTracking(true))
-        _ = resting.handle(.pointerAtTopEdge)
-        _ = resting.handle(.animationFinished)
-        XCTAssertEqual(resting.handle(.menuTracking(false)), [], "the pointer is still at the edge")
-    }
-
-    func testExitFullScreenTakesTheBarWithEveryTimer() {
-        var machine = FullScreenBarMachine()
-        _ = run(&machine, [.pointerAtTopEdge, .delayElapsed, .animationFinished])
-        XCTAssertEqual(machine.handle(.exitFullScreen), [.cancelTimer, .hide(animated: false)])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .scheduleReveal(0.35)])
-    }
-
-    func testAlwaysVisibleShowsAtOnceAndNeverHides() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        XCTAssertEqual(machine.handle(.pointerAtTopEdge), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.pointerLeaves), [])
-        XCTAssertEqual(machine.mode, .shown)
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.mode, .shown)
-    }
-
-    func testPickingATimedChoiceFromAlwaysVisibleHidesAShownBarWhenThePointerIsAway() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.animationFinished)
-        _ = machine.handle(.pointerLeaves)
-        XCTAssertEqual(machine.mode, .shown, "Always Visible ignores the leave")
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer, .hide(animated: true)])
-        XCTAssertEqual(machine.mode, .hiding)
-    }
-
-    func testPickingATimedChoiceWhileThePointerRestsKeepsTheBarAndHidesOnLeave() {
-        var machine = FullScreenBarMachine(reveal: .alwaysVisible)
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer])
-        XCTAssertEqual(machine.mode, .shown, "the pointer is still at the edge")
-        XCTAssertEqual(machine.handle(.pointerLeaves), [.cancelTimer, .scheduleHide(0.6)])
-        XCTAssertEqual(machine.handle(.configurationChanged(.long)), [],
-                       "a hide grace is not re-timed by another delay")
-    }
-
-    func testRetimingARunningRestUsesTheNewDelay() {
-        var machine = FullScreenBarMachine(reveal: .long)
-        _ = machine.handle(.pointerAtTopEdge)
-        XCTAssertEqual(machine.handle(.configurationChanged(.short)), [.cancelTimer, .scheduleReveal(0.35)])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertEqual(machine.pending, .reveal)
-    }
-
-    func testPickingAlwaysVisibleRevealsAHiddenBar() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.configurationChanged(.alwaysVisible)), [.cancelTimer, .reveal(animated: true)])
-        XCTAssertEqual(machine.mode, .revealing)
-    }
-
-    func testIgnoredEventsChangeNothing() {
-        var machine = FullScreenBarMachine()
-        XCTAssertEqual(machine.handle(.delayElapsed), [])
-        XCTAssertEqual(machine.handle(.animationFinished), [])
-        XCTAssertEqual(machine.handle(.pointerLeaves), [])
-        XCTAssertEqual(machine.handle(.menuTracking(false)), [])
-        XCTAssertEqual(machine.mode, .hidden)
-        XCTAssertNil(machine.pending)
-
-        _ = machine.handle(.pointerAtTopEdge)
-        _ = machine.handle(.delayElapsed)
-        _ = machine.handle(.animationFinished)
-        XCTAssertEqual(machine.handle(.delayElapsed), [], "shown has no pending timer")
-        XCTAssertEqual(machine.handle(.enterFullScreen), [.cancelTimer, .hide(animated: false)])
-        XCTAssertEqual(machine.mode, .hidden)
-    }
-}
-
 final class ChromeBarTests: XCTestCase {
-    /// The framed bar: 28 pt, the 14 pt lights equally inset 7 pt.
-    /// BarGeometryTests covers the numbers and the real view geometry.
+    /// The 28 pt row (the Immersive pill, the covers' top row): the 14 pt
+    /// lights equally inset 7 pt. BarGeometryTests covers the numbers.
     func testTheBarIsTwentyEightPointsWithItsEqualInsets() {
         XCTAssertEqual(ChromeBar.height, 28)
         XCTAssertEqual(ChromeBar.trafficLightInset, 7)
@@ -498,34 +522,34 @@ final class PhoneChromeTests: XCTestCase {
     /// phone's aspect fit inside the visible frame, never to the whole display.
     func testThePhoneZoomIsTheAspectFitInsideTheVisibleFrame() {
         let visible = NSRect(x: 100, y: 50, width: 1440, height: 900)
-        let bar = WindowStyle.immersive.insets(fullScreen: false).top
+        let bar = WindowStyle.compact.insets(fullScreen: false).top
         let portrait = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
-                                             style: .immersive, visible: visible)
+                                             style: .compact, visible: visible)
         XCTAssertEqual(portrait.height, visible.height, accuracy: 1)
         XCTAssertEqual(portrait.width, (visible.height - bar) * 1080 / 2340, accuracy: 1)
         XCTAssertEqual(portrait.midX, visible.midX, accuracy: 1)
         XCTAssertEqual(portrait.midY, visible.midY, accuracy: 1)
 
         let landscape = PhoneChrome.zoomFrame(phone: CGSize(width: 2340, height: 1080),
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         XCTAssertEqual(landscape.width, visible.width, accuracy: 1)
         XCTAssertEqual(landscape.height, visible.width * 1080 / 2340 + bar, accuracy: 1)
         XCTAssertTrue(visible.contains(landscape), "the zoom stays inside the screen")
         XCTAssertTrue(visible.contains(portrait), "the zoom stays inside the screen")
 
-        let immersive = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
-                                              style: .immersive, visible: visible)
-        XCTAssertEqual(immersive.height, visible.height, accuracy: 1, "no bar to subtract")
+        let compact = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
+                                              style: .compact, visible: visible)
+        XCTAssertEqual(compact.height, visible.height, accuracy: 1, "no bar to subtract")
     }
 
     func testThePhoneFrameKeepsThePhonesAspectRatioInTheStream() {
         let phone = CGSize(width: 1080, height: 2400)
-        let pad = WindowStyle.immersive.windowSize(stream: .zero)
+        let pad = WindowStyle.compact.windowSize(stream: .zero)
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 540 + pad.width, height: 1100),
-                                         phone: phone, style: .immersive),
+                                         phone: phone, style: .compact),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the width led")
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 450 + pad.width, height: 1200 + pad.height),
-                                         phone: phone, style: .immersive),
+                                         phone: phone, style: .compact),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the height led")
     }
 
@@ -539,8 +563,8 @@ final class PhoneChromeTests: XCTestCase {
         var last = CGSize.zero
         for step in 0..<10 {
             let proposed = CGSize(width: 500 + Double(step) * 30, height: 900 + Double(step) * 40)
-            let size = PhoneChrome.frame(proposed: proposed, phone: phone, style: .immersive)
-            let stream = WindowStyle.immersive.streamSize(window: size)
+            let size = PhoneChrome.frame(proposed: proposed, phone: phone, style: .compact)
+            let stream = WindowStyle.compact.streamSize(window: size)
             XCTAssertEqual(stream.width / stream.height, ratio, accuracy: 0.005,
                            "step \(step) keeps the phone's aspect")
             if last != .zero {
@@ -559,7 +583,7 @@ final class PhoneChromeTests: XCTestCase {
 
     private func assertPhoneShaped(_ size: CGSize, _ message: String,
                                    file: StaticString = #filePath, line: UInt = #line) {
-        let stream = WindowStyle.immersive.streamSize(window: size)
+        let stream = WindowStyle.compact.streamSize(window: size)
         XCTAssertEqual(stream.width / stream.height,
                        phoneShape.width / phoneShape.height, accuracy: 0.005,
                        message, file: file, line: line)
@@ -568,26 +592,26 @@ final class PhoneChromeTests: XCTestCase {
     /// The person's own frame: the bottom edge dragged from 754 to 600 pt.
     func testTheBottomEdgeDragShrinksThePhoneWindowToTheHeight() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
-                                     phone: phoneShape, style: .immersive, edge: .bottom)
+                                     phone: phoneShape, style: .compact, edge: .bottom)
         XCTAssertEqual(size.height, 600, accuracy: 0.5, "the bottom edge sets the height")
         assertPhoneShaped(size, "the width follows the phone's aspect")
     }
 
     func testTheRightEdgeDragShrinksThePhoneWindowToTheWidth() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
-                                     phone: phoneShape, style: .immersive, edge: .right)
+                                     phone: phoneShape, style: .compact, edge: .right)
         XCTAssertEqual(size.width, 280, accuracy: 0.5, "the right edge sets the width")
         assertPhoneShaped(size, "the height follows the phone's aspect")
     }
 
     func testTheTopAndLeftEdgesLeadTheSameWay() {
         let top = PhoneChrome.frame(proposed: CGSize(width: 335, height: 600),
-                                    phone: phoneShape, style: .immersive, edge: .top)
+                                    phone: phoneShape, style: .compact, edge: .top)
         XCTAssertEqual(top.height, 600, accuracy: 0.5, "the top edge sets the height")
         assertPhoneShaped(top, "the width follows the top edge's height")
 
         let left = PhoneChrome.frame(proposed: CGSize(width: 280, height: 754),
-                                     phone: phoneShape, style: .immersive, edge: .left)
+                                     phone: phoneShape, style: .compact, edge: .left)
         XCTAssertEqual(left.width, 280, accuracy: 0.5, "the left edge sets the width")
         assertPhoneShaped(left, "the height follows the left edge's width")
     }
@@ -595,7 +619,7 @@ final class PhoneChromeTests: XCTestCase {
     /// A corner keeps the v104 larger-area rule: it may shrink both dimensions.
     func testACornerDragInwardShrinksBothDimensions() {
         let size = PhoneChrome.frame(proposed: CGSize(width: 280, height: 600),
-                                     phone: phoneShape, style: .immersive, edge: .bottomRight)
+                                     phone: phoneShape, style: .compact, edge: .bottomRight)
         XCTAssertLessThan(size.width, 335)
         XCTAssertLessThan(size.height, 754)
         assertPhoneShaped(size, "the corner drag keeps the phone's aspect")
@@ -609,7 +633,7 @@ final class PhoneChromeTests: XCTestCase {
         for step in 0..<10 {
             let proposed = CGSize(width: 500, height: 1200 - Double(step) * 40)
             let size = PhoneChrome.frame(proposed: proposed, phone: phone,
-                                         style: .immersive, edge: .bottom)
+                                         style: .compact, edge: .bottom)
             if last > 0 {
                 XCTAssertLessThanOrEqual(size.height, last + 0.5,
                                          "step \(step) must follow the bottom edge in")
@@ -645,7 +669,7 @@ final class PhoneChromeTests: XCTestCase {
 
     private func assertStreamAspect(_ frame: NSRect, _ message: String,
                                     file: StaticString = #filePath, line: UInt = #line) {
-        let stream = WindowStyle.immersive.streamSize(window: frame.size)
+        let stream = WindowStyle.compact.streamSize(window: frame.size)
         XCTAssertEqual(stream.width / stream.height,
                        phoneShape.width / phoneShape.height, accuracy: 0.005,
                        message, file: file, line: line)
@@ -655,7 +679,7 @@ final class PhoneChromeTests: XCTestCase {
     func testAWrongShapedSavedFrameOpensInThePhonesShape() {
         let saved = NSRect(x: 120, y: 300, width: 432, height: 870)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "the saved frame opens at the phone's aspect")
         XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5, "the left edge stays")
         XCTAssertEqual(frame.maxY, saved.maxY, accuracy: 0.5, "the top edge stays")
@@ -666,7 +690,7 @@ final class PhoneChromeTests: XCTestCase {
     func testASavedLandscapeFrameForAPortraitPhoneOpensPortrait() {
         let saved = NSRect(x: 200, y: 100, width: 800, height: 400)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "a landscape frame opens in a portrait phone's shape")
         XCTAssertLessThan(frame.width, frame.height)
         XCTAssertEqual(frame.minX, saved.minX, accuracy: 0.5)
@@ -679,7 +703,7 @@ final class PhoneChromeTests: XCTestCase {
     func testASavedFrameTallerThanTheScreenKeepsTheAspect() {
         let saved = NSRect(x: 100, y: 0, width: 335, height: 900)
         let frame = PhoneChrome.restoredFrame(saved: saved, phone: phoneShape,
-                                              style: .immersive, visible: visible)
+                                              style: .compact, visible: visible)
         assertStreamAspect(frame, "the screen's limit keeps the phone's aspect")
         XCTAssertLessThanOrEqual(frame.height, visible.height + 0.5)
         XCTAssertEqual(frame.maxY, visible.maxY, accuracy: 0.5)
@@ -691,17 +715,17 @@ final class PhoneChromeTests: XCTestCase {
     func testTheFirstPictureOfADifferentShapeRefitsTheWindow() {
         let current = NSRect(x: 120, y: 300, width: 864, height: 1712)
         let picture = CGSize(width: 1080, height: 2340)
-        let video = WindowStyle.immersive.streamSize(window: current.size)
+        let video = WindowStyle.compact.streamSize(window: current.size)
 
         XCTAssertEqual(PhoneChrome.PictureFit.decide(video: video, picture: picture, isDragging: false),
                        .refitNow)
-        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .immersive)
+        let refit = PhoneChrome.refitFrame(current: current, picture: picture, style: .compact)
         assertStreamAspect(refit, "the refit makes the video area the picture's shape")
         XCTAssertEqual(refit.minX, current.minX, accuracy: 0.5, "the left edge stays")
         XCTAssertEqual(refit.maxY, current.maxY, accuracy: 0.5, "the top edge stays")
         XCTAssertEqual(refit.height, current.height, accuracy: 0.5, "the height stays")
         XCTAssertEqual(PhoneChrome.PictureFit.decide(
-            video: WindowStyle.immersive.streamSize(window: refit.size),
+            video: WindowStyle.compact.streamSize(window: refit.size),
             picture: picture, isDragging: false), .none,
             "a picture that matches the window does not refit")
     }
@@ -731,4 +755,42 @@ final class PhoneChromeTests: XCTestCase {
         XCTAssertEqual(snapped.height - snappedStream.height, 43, accuracy: 0.5)
     }
 
+}
+
+/// The View menu's style group (MENU-4): ⌥⌘F is the group's key and always
+/// means "the next style", whichever item holds it when the press arrives —
+/// before, a press from Compact picked the item that carried the key
+/// (Framed) or nothing, and the cycle never reached Immersive (issue #45).
+final class StyleMenuPickTests: XCTestCase {
+    func testTheGroupsKeyAlwaysCyclesAndAClickPicks() {
+        for current in WindowStyle.allCases {
+            for picked in WindowStyle.allCases {
+                XCTAssertEqual(WindowStyle.menuPick(picked, current: current, fromStyleKey: true), .next,
+                               "⌥⌘F from \(current) on the \(picked) item")
+            }
+        }
+        XCTAssertEqual(WindowStyle.menuPick(.compact, current: .compact, fromStyleKey: false), .next,
+                       "re-picking the checked item is the group's key")
+        XCTAssertEqual(WindowStyle.menuPick(.immersive, current: .compact, fromStyleKey: false),
+                       .set(.immersive), "a click on another item picks it")
+    }
+
+    func testTheCycleVisitsEveryStyleInMenuOrder() {
+        XCTAssertEqual(WindowStyle.framed.next, .compact)
+        XCTAssertEqual(WindowStyle.compact.next, .immersive)
+        XCTAssertEqual(WindowStyle.immersive.next, .framed)
+    }
+
+    @MainActor func testOnlyOptionCommandFIsTheGroupsKey() throws {
+        func key(_ chars: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: 0, windowNumber: 0, context: nil,
+                                           characters: chars, charactersIgnoringModifiers: chars,
+                                           isARepeat: false, keyCode: 3))
+        }
+        XCTAssertTrue(WindowStyle.isGroupKey(try key("f", [.command, .option])))
+        XCTAssertFalse(WindowStyle.isGroupKey(try key("f", [.command])), "⌘F is the phone's")
+        XCTAssertFalse(WindowStyle.isGroupKey(try key("f", [.command, .control])), "⌃⌘F is full screen")
+        XCTAssertFalse(WindowStyle.isGroupKey(nil), "a menu click has no key")
+    }
 }

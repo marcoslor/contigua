@@ -17,9 +17,12 @@ waiting for a hands-on check on a real Mac and phone.
   Back, middle-click is Home, and a mouse's side **Back** button sends Back. On
   a trackpad, two-finger scroll drags the page like a finger (with fling) and
   pinch/rotate are two fingers around the pointer.
-- **Window styles** — a Framed bar (always visible, holds the traffic lights)
-  or Immersive (the window *is* the app; a dwell pill brings the lights back).
-  Switch with View ▸ Window Style or ⌥⌘F; the choice is remembered per app.
+- **Window styles** — Framed (the default: a Quick Look-like frame whose
+  material bar holds the lights, the title and the controls), Compact (the
+  app under a slim band: its own top edge mirrored and blurred behind the
+  lights and the title) or Immersive (the window
+  *is* the app; a dwell pill brings the lights back). Switch with View ▸
+  Window Style or ⌥⌘F; the choice is remembered per app.
 - **Open <App> on Mac (handoff)** — move the task in the phone's foreground onto
   the Mac (the card's row, the Phone menu, or ⌘⇧C): same app, a new window.
 - **Live Text** — View ▸ Live Text (⌘⇧T) freezes a window on its current frame:

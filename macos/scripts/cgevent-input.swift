@@ -442,7 +442,7 @@ case "click", "rclick", "drag", "scroll", "move", "bpress":
                          hold: doubleArgument("--hold") ?? 0.08)
     case "drag":
         // `--right-edge`: grab the window's right edge (a resize) instead of its centre;
-        // `--top N`: grab N pt below the window's top edge (the framed bar, a window move).
+        // `--top N`: grab N pt below the window's top edge (the Compact bar, a window move).
         let start: CGPoint
         if hasFlag("--right-edge") {
             start = CGPoint(x: target.x + target.width, y: center.y)

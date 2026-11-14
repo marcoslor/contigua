@@ -103,8 +103,8 @@ frozen frame either.
 ## Chrome, copy and drag
 
 - View ▸ Live Text (⌘⇧T) and the bar's `text.viewfinder` button toggle the mode.
-  The button is at the right end of the bar (either style); in full screen it
-  rides the acrylic bar once it is revealed, so the menu is the way in there.
+  The button is at the right end of the bar (either style); full screen is the
+  system's title bar, so the menu is the way in there.
 - A small "Live Text" pill in the bar (top centre of the stream where there is
   no bar) says the window is frozen and input is paused.
 - ⌘C while the overlay has no text selection copies the frozen frame as PNG +

@@ -21,7 +21,7 @@
 //                            with the fingers down at the end (for looking at the overlay)
 //   fingerrotate NX NY DEGREES [HOLD]  the same rotate from raw trackpad fingers
 //   showtouches on|off             View > Show Touches
-//   windowstyle framed|immersive|toggle   the key window's chrome style
+//   windowstyle framed|compact|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
 //   hidecontrols instantly|short|long|always
 //                                  View > Hide Controls' pick: the full-screen
@@ -46,12 +46,12 @@
 //   pastefiles PATH...             a Finder file copy on the pasteboard (the
 //                                  paths, plus the first one's name as text)
 //   pasteimage PATH                an image on the pasteboard, no text
-//   hover NX NY                    the pointer moves to NX NY (in immersive, the window
+//   hover NX NY                    the pointer moves to NX NY (in compact, the window
 //                                  over the chrome's top band); over the video it is
 //                                  a mouse hover on the phone
 //   hoverout                       the pointer leaves the video (hover EXIT)
 //   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
-//   menupick View/Immersive
+//   menupick View/Compact
 //                    choose that menu item, as a click does (the item's own
 //                    target and action)
 //   menudump PATH                  the main menu tree as JSON (MenuDump.swift):
@@ -167,7 +167,7 @@ enum DebugInputAction: Equatable {
     case clickAt(dx: Double, top: Double)
     /// The main menu tree written as JSON (e2e menus check).
     case menuDump(String)
-    /// The menu item a person clicks, by its title path ("View/Immersive"):
+    /// The menu item a person clicks, by its title path ("View/Compact"):
     /// AppKit's own dispatch, so the item's target and action run as on a click.
     case menuPick(String)
     /// The menu bar's Live section written as JSON (e2e notify-media check).
@@ -287,12 +287,12 @@ enum DebugInputScript {
             default: throw LineError(message: "shortcutsall needs on or off")
             }
         case "windowstyle":
-            switch args.first {
-            case "framed" where args.count == 1: return .windowStyle("framed")
-            case "immersive" where args.count == 1: return .windowStyle("immersive")
-            case "toggle" where args.count == 1: return .windowStyle("toggle")
-            default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
+            // The styles' own debug names (WindowStyle.debugName), or toggle.
+            let verbs = WindowStyle.allCases.map(\.debugName) + ["toggle"]
+            guard args.count == 1, let verb = args.first, verbs.contains(verb) else {
+                throw LineError(message: "windowstyle needs \(verbs.joined(separator: ", "))")
             }
+            return .windowStyle(verb)
         case "hidecontrols":
             switch args.first {
             case "instantly" where args.count == 1: return .hideControls(.delay(.instantly))
@@ -340,7 +340,7 @@ enum DebugInputScript {
             // the path, joined back with the spaces the script wrote.
             let path = args.joined(separator: " ")
             guard !path.isEmpty, path.contains("/") else {
-                throw LineError(message: "menupick needs a title path, e.g. View/Immersive")
+                throw LineError(message: "menupick needs a title path, e.g. View/Compact")
             }
             return .menuPick(path)
         case "menudump":
@@ -819,10 +819,10 @@ final class DebugInputDriver {
             shortcutsAll?(on)
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
-            switch target {
-            case "framed": controller.setStyle(.framed)
-            case "immersive": controller.setStyle(.immersive)
-            default: controller.toggleStyle()
+            if let style = WindowStyle(debugName: target) {
+                controller.setStyle(style)
+            } else {
+                controller.toggleStyle()
             }
         case .hideControls(let item):
             (view.window?.windowController as? StreamWindowController)?.manager.pickHideControls(item)
@@ -1134,13 +1134,16 @@ final class DebugInputDriver {
         pumpRunLoop()
     }
 
-    /// A click at a window point on the control the content's hit test finds,
+    /// A click at a window point on the control the window's hit test finds,
     /// for a check that must click a real control and not call its action.
     /// AppKit's own window dispatch delivers no synthetic mouse event to a
     /// quiet run (the app is never active, its windows sit on a virtual
     /// display), so the pair goes to the view the window would have used.
     static func clickControl(at point: CGPoint, in window: NSWindow) {
-        guard let content = window.contentView, let view = content.hitTest(point) else { return }
+        // The window's own hit test starts at its frame view, so a control in
+        // the title bar (Compact's accessory) is found as a real click finds it.
+        guard let root = window.contentView?.superview ?? window.contentView,
+              let view = root.hitTest(point) else { return }
         func event(_ type: NSEvent.EventType) -> NSEvent? {
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                                timestamp: ProcessInfo.processInfo.systemUptime,

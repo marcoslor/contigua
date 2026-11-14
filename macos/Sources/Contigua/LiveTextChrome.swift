@@ -2,10 +2,10 @@
 // `text.viewfinder` button that toggles the mode and drags the frozen frame out
 // as a PNG, and the small "Live Text" pill that says input is paused.
 //
-// Both wear the chrome they sit in: the framed bar's line at the window's top
-// right of the bar. In full screen it waits on the acrylic bar, so
-// only the View menu reaches the mode and the status pill floats at the top
-// edge of the stream.
+// Both wear the chrome they sit in: the Compact bar's line at the window's top
+// right of the bar. Full screen is the system's title bar, so only the View
+// menu reaches the mode there and the status pill floats at the top edge of
+// the stream.
 
 import AppKit
 

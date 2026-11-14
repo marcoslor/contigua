@@ -207,7 +207,7 @@ enum HeaderBar {
     /// The gap between the traffic lights and the row's first capsule.
     static let barGap: CGFloat = 8
 
-    /// The narrowest window whose framed bar holds the lights and this row:
+    /// The narrowest window whose bar holds the lights and this row:
     /// where the lights end, the gap, the row and the right inset. A control
     /// added to a window's bar widens the row, so a window's minimum width
     /// follows the geometry instead of a guess.

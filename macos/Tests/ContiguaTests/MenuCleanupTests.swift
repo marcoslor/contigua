@@ -39,7 +39,7 @@ final class MenuCleanupTests: XCTestCase {
     }
 
     func testACleanMenuHasNothingToRemove() {
-        let menu = items(["Find Apps", "—", "Framed", "Immersive"])
+        let menu = items(["Find Apps", "—", "Framed", "Compact"])
         XCTAssertEqual(MenuCleanup.removals(menu: "View", items: menu), [])
     }
 

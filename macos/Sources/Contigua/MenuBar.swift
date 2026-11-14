@@ -221,42 +221,45 @@ struct AppCommands: Commands {
                 Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            // View ▸ Immersive / Framed: one radio pair for the key stream
-            // window, built by the commands themselves. An inline Picker renders
-            // it as checkmarked radio items with no section title; an AppKit
-            // item inserted here is dropped the moment SwiftUI rebuilds the
-            // menu — how the person's v104 and v107 menus lost these. ⌥⌘F is
-            // the pair's: it re-picks the checked style, which this binding
-            // reads as "the other one".
+            // View ▸ Framed / Compact / Immersive: the style picker for the key
+            // stream window, built by the commands themselves. An inline Picker
+            // renders it as checkmarked radio items with no section title; an
+            // AppKit item inserted here is dropped the moment SwiftUI rebuilds
+            // the menu — how the person's v104 and v107 menus lost these. ⌥⌘F
+            // is the group's: it re-picks the checked style, which this binding
+            // reads as "the next one". MenuMarks moves the key onto the
+            // checked style; this one is only where SwiftUI first puts it.
             Picker(selection: Binding(
                 get: { MenuBarModel.shared.snapshot.style },
                 set: { picked in
-                    // The pair's ⌥⌘F re-picks the checked style, which this
-                    // binding reads as "the other one"; a pick of the other
-                    // style sets it.
-                    if picked == MenuBarModel.shared.snapshot.style {
-                        controller.windows.toggleKeyWindowStyle()
-                    } else {
-                        controller.windows.setKeyWindowStyle(picked)
+                    // The group's ⌥⌘F is "the next style" whichever item
+                    // holds it; a click on another style sets that one.
+                    switch WindowStyle.menuPick(picked, current: MenuBarModel.shared.snapshot.style,
+                                                fromStyleKey: WindowStyle.isGroupKey(NSApp.currentEvent)) {
+                    case .next: controller.windows.toggleKeyWindowStyle()
+                    case .set(let style): controller.windows.setKeyWindowStyle(style)
                     }
                 })) {
-                Text(WindowStyle.immersive.label)
-                    .tag(WindowStyle.immersive)
-                    .keyboardShortcut("f", modifiers: [.command, .option])
                 Text(WindowStyle.framed.label)
                     .tag(WindowStyle.framed)
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Text(WindowStyle.compact.label)
+                    .tag(WindowStyle.compact)
+                Text(WindowStyle.immersive.label)
+                    .tag(WindowStyle.immersive)
             } label: {
                 EmptyView()
             }
             .pickerStyle(.inline)
             .labelsHidden()
-            // The pair acts on the key stream window only, and SwiftUI builds
+            // The styles act on the key stream window only, and SwiftUI builds
             // the items once: MenuMarks writes both the mark and the enabled
             // flag when the menu opens and whenever the key window changes.
             // The items stay enabled here on purpose — a disabled menu item
-            // eats its key equivalent, and ⌥⌘F is on this pair.
-            // The reveal choice: enabled while a stream window is key. A pick
-            // stores the full-screen reveal and leaves the window's style.
+            // eats its key equivalent, and ⌥⌘F is on this group.
+            // The reveal choice: enabled only while the key window wears
+            // Immersive (its pill's dwell). A pick stores the delay and leaves
+            // the window's style.
             Menu {
                 ForEach(MenuModel.hideControls, id: \.self) { entry in
                     if entry == .separator {
@@ -270,7 +273,7 @@ struct AppCommands: Commands {
             } label: {
                 Text("Hide Controls")
             }
-            .disabled(!MenuModel.hideControlsEnabled(hasStream: menu.hasStream))
+            .disabled(!MenuModel.hideControlsEnabled(hasStream: menu.hasStream, style: menu.style))
             Divider()
             Toggle(isOn: Binding(
                 get: { menu.showTouches },

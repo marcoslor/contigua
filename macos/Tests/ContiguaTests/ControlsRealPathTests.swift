@@ -19,6 +19,13 @@ final class ControlsRealPathTests: XCTestCase {
         return chrome
     }
 
+    /// Where the controls live: our chrome in Framed, AppKit's title-bar
+    /// accessory in Compact (WIN-7), whose own hit test the window routes
+    /// title-bar clicks through.
+    private func host(_ chrome: StreamChromeView) -> NSView {
+        chrome.style == .compact ? chrome.titlebarControls.view : chrome
+    }
+
     private func allButtons(in view: NSView) -> [HeaderActionButton] {
         var found: [HeaderActionButton] = []
         for sub in view.subviews {
@@ -52,19 +59,20 @@ final class ControlsRealPathTests: XCTestCase {
     }
 
     func testEveryPhoneBarButtonHitsItselfAndFiresOnce() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             let chrome = makeChrome(style: style)
             var fired: [String] = []
             chrome.setActions(phoneActions { fired.append($0) })
             chrome.layoutSubtreeIfNeeded()
-            let buttons = allButtons(in: chrome)
+            let root = host(chrome)
+            let buttons = allButtons(in: root)
             XCTAssertEqual(buttons.map(\.action.kind), [.back, .home, .recents],
                            "\(style): the phone window's trio")
             for (index, button) in buttons.enumerated() {
-                let point = centre(of: button, in: chrome)
-                XCTAssertTrue(chrome.hitTest(point) === button,
+                let point = centre(of: button, in: root)
+                XCTAssertTrue(root.hitTest(point) === button,
                               "\(style): \(button.action.help)'s centre must hit its button")
-                _ = click(button, in: chrome)
+                _ = click(button, in: root)
                 XCTAssertEqual(fired, Array(["back", "home", "recents"].prefix(index + 1)),
                                "\(style): \(button.action.help) must fire exactly once")
             }
@@ -72,45 +80,47 @@ final class ControlsRealPathTests: XCTestCase {
     }
 
     func testTheLiveTextButtonHitsItselfAndFiresOnceInEveryWindowKind() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             for actions in [[], phoneActions { _ in }] {
                 let chrome = makeChrome(style: style)
                 chrome.setActions(actions)
                 var presses = 0
                 chrome.liveTextButton.onPress = { presses += 1 }
                 chrome.layoutSubtreeIfNeeded()
-                let point = centre(of: chrome.liveTextButton, in: chrome)
-                XCTAssertTrue(chrome.hitTest(point) === chrome.liveTextButton,
+                let root = host(chrome)
+                let point = centre(of: chrome.liveTextButton, in: root)
+                XCTAssertTrue(root.hitTest(point) === chrome.liveTextButton,
                               "\(style) with \(actions.count) kind actions: Live Text's centre")
-                _ = click(chrome.liveTextButton, in: chrome)
+                _ = click(chrome.liveTextButton, in: root)
                 XCTAssertEqual(presses, 1, "\(style): one click, one toggle")
             }
         }
     }
 
     func testLiveTextFreezesTheKindActionsButNotItsOwnButton() {
-        for style in [WindowStyle.framed, .immersive] {
+        for style in [WindowStyle.framed, .compact] {
             let chrome = makeChrome(style: style)
             var fired: [String] = []
             chrome.setActions(phoneActions { fired.append($0) })
             chrome.setLiveText(active: true)
             chrome.layoutSubtreeIfNeeded()
-            let buttons = allButtons(in: chrome)
+            let root = host(chrome)
+            let buttons = allButtons(in: root)
             XCTAssertEqual(buttons.count, 3)
             for button in buttons {
-                let point = centre(of: button, in: chrome)
+                let point = centre(of: button, in: root)
                 // The frozen button still takes the click and swallows it: if
                 // it answered nil, the click would fall through to the video
                 // under the bar and become a tap on the phone. It runs nothing.
-                XCTAssertTrue(chrome.hitTest(point) === button,
+                XCTAssertTrue(root.hitTest(point) === button,
                               "\(style): \(button.action.help) swallows its click while frozen")
-                _ = click(button, in: chrome)
+                _ = click(button, in: root)
             }
             XCTAssertTrue(fired.isEmpty, "\(style): no kind action ran while frozen")
 
             var presses = 0
             chrome.liveTextButton.onPress = { presses += 1 }
-            _ = click(chrome.liveTextButton, in: chrome)
+            _ = click(chrome.liveTextButton, in: root)
             XCTAssertEqual(presses, 1, "\(style): Live Text's own button stays live")
         }
     }

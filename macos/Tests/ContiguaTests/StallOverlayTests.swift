@@ -1,6 +1,6 @@
 // WIN-39: the disconnection overlay. The picture's stall (WIN-17) and the
 // link's two down steps (WIN-16) are one screen over the last frame — the app's
-// icon, the title, "Waiting for <phone>…" — with the framed bar under the same
+// icon, the title, "Waiting for <phone>…" — with the Compact bar under the same
 // acrylic. The machine is pure, so every edge is pinned with a fake clock; the
 // window half proves the view is the presentation and that it covers the bar's
 // mirror until a frame restores it.
@@ -130,6 +130,8 @@ final class StallOverlayTests: XCTestCase {
         let name = "app.contigua.tests.stalloverlay.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        defaults.set(WindowStyle.compact.rawValue,
+                     forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
                               clientId: "test-client")
         return WindowManager(session: session, defaults: defaults)
@@ -297,26 +299,29 @@ final class StallOverlayTests: XCTestCase {
                          keyCode: code)!
     }
 
-    /// WIN-39: the overlay reaches over the framed bar, so the bar's mirror is
-    /// not the bright stream; a frame restores the live mirror.
-    func testTheOverlayCoversTheBarAndAFrameRestoresIt() throws {
+    /// WIN-39: in Compact the overlay is one sheet over the whole content
+    /// view, the band included, so the band never mirrors the bright stream
+    /// while it is up; AppKit's lights and our controls stay above it. A frame
+    /// takes the overlay away.
+    func testInCompactTheOverlayReachesOverTheBand() throws {
         let manager = makeManager()
         let controller = try makeWindow(manager)
         defer { controller.window?.close() }
         let chrome = controller.chrome
-        XCTAssertEqual(chrome.barHeight, ChromeBar.height, "the baseline: a framed window with its bar")
-        XCTAssertFalse(chrome.barMirrorCovered)
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertEqual(controller.style, .compact)
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView), "the band is under AppKit's title bar")
 
         let t0 = ProcessInfo.processInfo.systemUptime
         stall(controller, at: t0)
-        XCTAssertTrue(chrome.barMirrorCovered, "the overlay covers the bar's mirror")
-        XCTAssertEqual(chrome.stallOverlay.frame, chrome.bounds, "one sheet from the window's top edge")
-        XCTAssertGreaterThan(chrome.stallOverlay.frame.height, chrome.video.frame.height,
-                             "the overlay is taller than the stream: it includes the bar")
+        XCTAssertEqual(chrome.stallOverlay.frame, chrome.bounds, "one sheet over the content, the band included")
+        XCTAssertEqual(chrome.stallOverlay.topInset, chrome.barHeight, "its words stay under the band")
+        XCTAssertGreaterThan(chrome.barHeight, 0)
+        XCTAssertGreaterThan(chrome.stallOverlay.layer?.zPosition ?? 0, chrome.bandGlass.layer?.zPosition ?? 0,
+                             "over the band's glass and title")
 
         controller.frameClock.note(at: t0 + 2.1)
         controller.tickFrameWatchdog(at: t0 + 2.1)
-        XCTAssertFalse(chrome.barMirrorCovered, "a frame brings the bar's live mirror back")
         XCTAssertFalse(chrome.stallOverlay.isShowing, "the overlay is logically gone at once")
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
         XCTAssertTrue(chrome.stallOverlay.isHidden, "the 200 ms fade-out ends hidden")
@@ -336,7 +341,6 @@ final class StallOverlayTests: XCTestCase {
         stall(controller, at: t0)
         XCTAssertEqual(controller.chrome.stallOverlay.frame, controller.chrome.bounds)
         XCTAssertEqual(controller.chrome.stallOverlay.topInset, 0)
-        XCTAssertFalse(controller.chrome.barMirrorCovered)
     }
 
     /// WIN-39, light mode: the secondary line keeps WCAG AA against the
@@ -366,8 +370,9 @@ final class StallOverlayTests: XCTestCase {
         XCTAssertEqual(view.secondaryColor, StallOverlayStyle.dark.secondary)
     }
 
-    /// WIN-39: the overlay takes every click that is not the bar's: no input
-    /// reaches the phone while it is up.
+    /// WIN-39: the overlay takes every click on the content: no input reaches
+    /// the phone while it is up. Compact's title bar is AppKit's, outside our
+    /// view, and still drags the window.
     func testTheOverlaySwallowsTheStreamsClicks() throws {
         let manager = makeManager()
         let controller = try makeWindow(manager)
@@ -376,13 +381,12 @@ final class StallOverlayTests: XCTestCase {
         let t0 = ProcessInfo.processInfo.systemUptime
         stall(controller, at: t0)
 
-        let point = NSPoint(x: chrome.bounds.midX, y: chrome.video.frame.midY)
+        let point = NSPoint(x: chrome.bounds.midX, y: chrome.contentRect.midY)
         XCTAssertTrue(chrome.hitTest(point) === chrome.stallOverlay,
                       "a click on the frozen picture is the overlay's, not the stream's")
-        // The bar's own band still drags the window, as the mirror does.
-        let barPoint = NSPoint(x: chrome.bounds.midX, y: chrome.bounds.maxY - 4)
-        XCTAssertTrue(chrome.hitTest(barPoint) === chrome,
-                      "the bar's empty band is still the window's own drag")
+        let topEdge = NSPoint(x: chrome.bounds.midX, y: chrome.bounds.maxY - 4)
+        XCTAssertTrue(chrome.hitTest(topEdge) === chrome,
+                      "the band is still the window's own drag")
     }
 }
 
