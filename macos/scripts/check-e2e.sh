@@ -3181,8 +3181,8 @@ check_chrome() {
         && ok "[WIN-7] C14 ⌥⌘F from Compact takes the band away too: 900x600 Immersive" \
         || bad "[WIN-7] C14 ⌥⌘F did not reach Immersive: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     chrome_is "style=immersive lights=hidden pill=hidden" \
-        && ok "[WIN-74] C14 Immersive at rest: the stream alone, no lights and no pill" \
-        || bad "[WIN-74] C14 Immersive at rest: $(chrome_state)"
+        && ok "[WIN-77] C14 Immersive at rest: the stream alone, no lights and no pill" \
+        || bad "[WIN-77] C14 Immersive at rest: $(chrome_state)"
     touch "$WORK/chrome-step-toggle3"
     wait_until 8 win_size "$win" 910 643 \
         && ok "[WIN-7] C14 and again to Framed: 910x643, the cycle complete" \
@@ -3193,7 +3193,7 @@ check_chrome() {
         *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
     esac
 
-    # --- Immersive: the dwell pill (WIN-74) ---
+    # --- Immersive: the dwell pill (WIN-77) ---
     next_shared
     defaults write "$DEFAULTS_SUITE" "$style_key" -string "pill"
     # The script hovers the hot zone, taps before the dwell is up (the app's
@@ -3214,7 +3214,7 @@ check_chrome() {
         || { kill "$backdrop"; return 1; }
     win="$(await_window '$4 == 900 && $5 == 600')" \
         || { bad "C14 no 900x600 pt Immersive window (the stream alone)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "[WIN-4] [WIN-74] C14 Immersive is the 900x600 pt stream alone, no bar and no margins"
+    ok "[WIN-4] [WIN-77] C14 Immersive is the 900x600 pt stream alone, no bar and no margins"
     [ "$(defaults read "$DEFAULTS_SUITE" "$style_key" 2>/dev/null)" = "pill" ] \
         && ok "[WIN-7] C14 Immersive's stored value is its own (pill)" \
         || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "$style_key" 2>&1)"
@@ -3224,29 +3224,29 @@ check_chrome() {
         || { bad "C14 Immersive never got its first frame: $(chrome_state)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     touch "$WORK/chrome-step-pill"
     wait_until 15 chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "[WIN-74] C14 the 400 ms rest shows the clear-glass pill with its lights ($(chrome_state))" \
-        || bad "[WIN-74] C14 the rest did not show the pill: $(chrome_state)"
+        && ok "[WIN-77] C14 the 400 ms rest shows the clear-glass pill with its lights ($(chrome_state))" \
+        || bad "[WIN-77] C14 the rest did not show the pill: $(chrome_state)"
     local pill_touches
     pill_touches="$(count_events '"kind":"touch","stream":1,"action":0')"
     [ "$pill_touches" -ge 1 ] \
-        && ok "[WIN-74] C14 the hot zone's early click reached the app as ordinary touch ($pill_touches tap)" \
-        || bad "[WIN-74] C14 no touch from the hot zone's early click"
+        && ok "[WIN-77] C14 the hot zone's early click reached the app as ordinary touch ($pill_touches tap)" \
+        || bad "[WIN-77] C14 no touch from the hot zone's early click"
     screencapture -x -o -l"$win" "$WORK/chrome-immersive.png" && say "screenshot: $WORK/chrome-immersive.png"
     spread="$(stream_spread "$WORK/chrome-immersive.png" 900 600)"
     [ "${spread:-0}" -ge 40 ] \
-        && ok "[WIN-74] C14 the Immersive stream is the live app (mid-row spread $spread)" \
-        || bad "[WIN-74] C14 the Immersive stream is blank (mid-row spread ${spread:-0})"
+        && ok "[WIN-77] C14 the Immersive stream is the live app (mid-row spread $spread)" \
+        || bad "[WIN-77] C14 the Immersive stream is blank (mid-row spread ${spread:-0})"
     touch "$WORK/chrome-step-minimise"
     if [ "$VISIBLE" = "1" ]; then
         cg_input click --window "$win" --dx -406 --top 20
     fi
     sleep 1
     window_gone "$win" \
-        && ok "[WIN-74] C14 a click on the pill's minimise light minimised the window" \
-        || bad "[WIN-74] C14 the minimise light click did not minimise (window is still listed)"
+        && ok "[WIN-77] C14 a click on the pill's minimise light minimised the window" \
+        || bad "[WIN-77] C14 the minimise light click did not minimise (window is still listed)"
     [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$pill_touches" ] \
-        && ok "[WIN-74] C14 and no touch reached the phone from the chrome" \
-        || bad "[WIN-74] C14 the chrome's click reached the phone as touch"
+        && ok "[WIN-77] C14 and no touch reached the phone from the chrome" \
+        || bad "[WIN-77] C14 the chrome's click reached the phone as touch"
 
     # --- Full screen: the system's own title bar in every style (WIN-14) ---
     if [ "$VISIBLE" = "1" ]; then
@@ -12738,7 +12738,7 @@ check_styles_shots() {
                                 || bad "STYLES-SHOTS $appearance/$fixture/$style no framed title: $(chrome_state)"
                         else
                             chrome_has "bar_title=0 bar_title_rect=none" \
-                                && ok "[WIN-74] STYLES-SHOTS $appearance/$fixture/immersive the pill has no title" \
+                                && ok "[WIN-77] STYLES-SHOTS $appearance/$fixture/immersive the pill has no title" \
                                 || bad "STYLES-SHOTS $appearance/$fixture/immersive drew a bar title: $(chrome_state)"
                         fi
                     fi

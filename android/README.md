@@ -128,6 +128,19 @@ own screen sleeps on its own timeout, a power press works as usual, and the
 keyguard is never dismissed. A virtual device's group never times out on its
 own, so the server releases its displays itself.
 
+**Refresh floor (One UI).** SurfaceFlinger paces every display by the built-in
+panel, so a window display draws no faster than the panel's render rate. In
+Always-On Display the AOD plugin caps the panel at 30 Hz with a
+`RefreshRateMaxLimitToken` (`PRIORITY_REFRESH_RATE_MAX_LIMIT`, priority 1).
+While the window device is open the server holds a 60 Hz
+`RefreshRateMinLimitToken` (hidden
+`IDisplayManager.acquireRefreshRateMinLimitToken`, tag `contigua`), whose
+`PRIORITY_REFRESH_RATE_MIN_LIMIT` (priority 2) outranks it; the device's
+`made` log line says `floor=60` or `floor=none`. The token is linked to the
+service's binder, so it goes when the process dies; no setting changes and
+the panel is never woken (`RefreshFloor`, docs/specs/app-windows.md WIN-76).
+`dumpsys display` lists it under `RefreshRateTokens`.
+
 A device display keeps the platform's *global* wakefulness awake while group 0
 dozes, so every "is the phone's screen on" check reads display 0
 (`ScreenState.read`), never `PowerManager.isInteractive()`.

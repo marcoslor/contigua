@@ -699,7 +699,7 @@ final class StreamChromeStyleTests: XCTestCase {
         XCTAssertTrue(controller.chrome.pill.isHidden)
     }
 
-    /// WIN-74: the pill is one unit. Its glass, its capsules, the Live Text
+    /// WIN-77: the pill is one unit. Its glass, its capsules, the Live Text
     /// button and the three lights fade in together and out together over
     /// `pillFade`, and a layout pass in the middle of the fade hides none of
     /// them early. Before: the lights and Live Text took alpha 1 at once on
@@ -748,7 +748,7 @@ final class StreamChromeStyleTests: XCTestCase {
     }
 
     /// Reduce Motion: the pill and its members show and go at once, together,
-    /// with no fade (WIN-74, CONV-MAC-22).
+    /// with no fade (WIN-77, CONV-MAC-22).
     func testThePillDoesNotFadeUnderReduceMotion() throws {
         let manager = makeManager(choose: .immersive)
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
@@ -780,7 +780,7 @@ final class StreamChromeStyleTests: XCTestCase {
         }
     }
 
-    /// The pill's fade is snappy: 0.15 s in and out (WIN-74).
+    /// The pill's fade is snappy: 0.15 s in and out (WIN-77).
     func testThePillFadeIsSnappy() {
         XCTAssertEqual(DwellChrome.pillFade, 0.15)
     }

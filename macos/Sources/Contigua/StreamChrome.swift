@@ -270,7 +270,7 @@ final class StreamChromeView: NSView {
     /// The pill is on screen: from the start of its fade-in to the end of its
     /// fade-out. Its pieces (the glass, the capsules, Live Text, the lights)
     /// show and hide on this one flag and fade on one opacity, so no layout
-    /// pass during a fade can hide or show one of them on its own (WIN-74).
+    /// pass during a fade can hide or show one of them on its own (WIN-77).
     private(set) var pillOnScreen = false
     /// The pill's frame in this view while it is up and can show.
     private var pillFrame: NSRect?

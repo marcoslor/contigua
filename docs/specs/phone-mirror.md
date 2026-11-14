@@ -132,7 +132,7 @@ Ignored events, stated so nobody builds them: a `screen`/`secure`/panel report w
 | CONV-MAC-16 | applies: MIRROR-16 (a drop is accepted with progress or refused with a reason) |
 | CONV-MAC-20 | applies: the window, its cover and its bar render in light and dark, with the accent and Increase Contrast |
 | CONV-MAC-21 | applies: MIRROR-22 |
-| CONV-MAC-22 | applies: Reduce Motion removes the reconnecting pulse and the pill's fade (WIN-74); Reduce Transparency is the system glass's own: the capsules (`NSGlassEffectView`) go solid by themselves; the screen-off cover fades in over 200 ms and out when the screen comes on (MIRROR-6, WIN-65) |
+| CONV-MAC-22 | applies: Reduce Motion removes the reconnecting pulse and the pill's fade (WIN-77); Reduce Transparency is the system glass's own: the capsules (`NSGlassEffectView`) go solid by themselves; the screen-off cover fades in over 200 ms and out when the screen comes on (MIRROR-6, WIN-65) |
 | CONV-MAC-23 | applies: MIRROR-6/MIRROR-8 (the cover is words, not a colour), MIRROR-22 (text size follows the system) |
 | CONV-MAC-24 | applies: the window asks for no permission; waking the panel needs none |
 | CONV-MAC-25 | applies: every bar button and capsule has a hover and pressed state, and a frozen button is dimmed neutral (MIRROR-13) |

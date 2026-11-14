@@ -13,6 +13,7 @@ not been checked on a real Mac and phone.
 
 - One resizable Mac window per Android app, several at once, running on the phone while it stays locked.
 - App windows run on displays made by an Android virtual device, in a display group of their own: the phone's own screen keeps its timeout while they stream. A phone that cannot give them their own group says so on the Mac instead of opening the window.
+- On One UI, app windows keep 60 fps while the phone's own screen shows Always-On Display: Contigua holds a refresh-rate floor while a window is open, which the system drops when Contigua stops (unproven in AOD).
 - A Phone window that mirrors the phone's own screen, with Back, Home and Recents.
 - Typed keys, clicks, drags, scroll, hover, trackpad scroll with fling, and pinch and rotate.
 - Framed and Immersive window styles, remembered per app.
