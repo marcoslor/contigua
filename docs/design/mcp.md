@@ -78,7 +78,8 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `open_app` | `app`: package or label | the opened window's id, package and label |
 | `list_windows` | — | `id`, `package` (null for the Phone Mirror), width and height (stream pixels) |
 | `screenshot` | `window` | PNG image content of the last displayed frame, longest side ≤ 1280 px |
-| `tap` | `window`, `x`, `y` | down/up at the point |
+| `ui_tree` | `window` | the display's accessibility tree, trimmed for a reader: one row per label or control, with its text, view id, bounds and a tap point in 0..1 |
+| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref named in the latest `ui_tree` |
 | `long_press` | `window`, `x`, `y`, `ms` ≤ 3000 | down, wait, up |
 | `swipe` | `window`, `x1`, `y1`, `x2`, `y2`, `ms` ≤ 2000 | down, interpolated moves at ~60 Hz, up |
 | `type_text` | `window`, `text` ≤ 2000 chars | the same `text` frame the keyboard sends |
@@ -90,9 +91,47 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 
 `open_app`, `send_link` and `send_file` reuse the App Intents core and bridge
 (`IntentsCore`, `IntentsBridge`): the same phone resolution, app matching, link
-policy and drop limits. There is deliberately no notification reading and no UI
-tree in this batch: screenshots plus input cover the screen, and notifications
-are a separate privacy surface.
+policy and drop limits. There is deliberately no notification reading:
+notifications are a separate privacy surface.
+
+## The accessibility tree
+
+`ui_tree` exists because a window's screen is not only pixels. The window's app
+runs on its own virtual display, where neither an accessibility service nor
+`uiautomator dump` can see it; at shell UID the phone can, so it reads that
+display's tree and the Mac answers with it (PROTOCOL.md "UI tree", WIN-79).
+
+The phone trims it for a reader, following what accessibility-driven automation
+clients learned the hard way:
+
+- **What can be acted on, not the layout.** A node with no label and no action is
+  folded away and its children take its place, so a screen reads as its labels
+  and controls rather than as `FrameLayout` after `FrameLayout`.
+- **Short names, no defaults.** `Button`, not `android.widget.Button`; `save`,
+  not `com.example:id/save`; a false flag is left out, and only a checkable
+  box's `check: false` is sent, because it is a real answer.
+- **A tap point, not arithmetic.** Each node carries its bounds in display
+  pixels and `at`, the centre as 0..1 of the window: exactly the space `tap`
+  takes. Models that compute a tap from a scaled screenshot tap the wrong
+  quarter of the screen; this leaves nothing to scale.
+- **A ref, so the action names the element.** Every node also carries `ref`,
+  and `tap` takes a ref as well as a point. The refs belong to the tree that was
+  just read: a newer tree replaces them, so a ref the client kept from an older
+  screen is refused instead of pressing whatever moved under that point. This is
+  the same ref-per-snapshot rule accessibility-driven automation clients use;
+  it turns "tap at 0.42, 0.31" into "tap that button".
+- **An empty tree says so.** `nodes: []` with a `note`, never a silent blank
+  screen. `truncated` marks the node cap; scrolling and asking again is the
+  way through a long list.
+- **Password fields carry no text**, only `pwd: true`.
+
+Text in the answer is on-screen content, so it lives in the tool result only:
+the app logs the tool name and duration, and the phone logs counts and the
+display, never a label (PROTOCOL.md "UI tree" §5). The tool sits behind the same
+Settings › Automation switch as every other one, and the agent indicator and
+Disconnect stay visible while it runs. #[111](https://github.com/marcoslor/contigua/issues/111)
+still owns the per-app allowlist and confirmations before launch; screenshots
+already expose the same text, so this adds no new surface of its own.
 
 Screenshots use the frame routes Live Text freezes on (docs/design/livetext.md):
 the frame the display layer shows (`copyDisplayedFrame()`, the same frame the

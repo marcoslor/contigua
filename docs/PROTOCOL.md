@@ -1493,6 +1493,53 @@ The panel's "Open <App> on Mac" row names the app in front without opening a str
    stale and ignored. `not_available` (no task-manager access) and `pkg: null` both leave
    the row off; nothing else changes on the phone.
 
+## UI tree
+
+The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of pixels
+(docs/design/mcp.md, WIN-79). It is a pull, one read per call.
+
+1. Mac → `{"t":"ui.tree","stream":N,"seq":S}`. The phone finds the display the stream's
+   window lives on and reads that display's accessibility tree at shell UID through
+   `UiAutomation`. Only the shell can: an accessibility service sees only the display it
+   runs on, and `uiautomator dump` only reads display 0, so neither can see an app window
+   on its own virtual display (ISS-143).
+2. The phone trims the tree before sending it. The reply is
+   `{"t":"ui.tree","stream":N,"seq":S,"ok":true,"display":D,"snapshot":K,"truncated":B,"windows":[…],"nodes":[…]}`:
+   - `windows`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
+     `system`, `overlay`, `divider`, `magnifier`, or the platform's number), `focused`,
+     `active`.
+   - `nodes`: one row per node worth reading, in document order (the reading order):
+     `i` the index, `ref` the name this node answers to in this tree (`e12`), `p` the
+     nearest kept ancestor's index (absent at a root), `w` the window's index, `role`
+     the class's last part (`Button`), `text`, `desc` (absent when it repeats `text`),
+     `id` the view id's part after `:id/`, `box`
+     `[left,top,right,bottom]` in display pixels, `at` the box's centre as 0..1 of the
+     window (the same coordinates TOUCH and the MCP `tap` tool take), and the states that
+     are true: `click`, `edit`, `scroll`, `check` (true **or** false, only when the node is
+     checkable), `sel`, `focus`, `disabled`, `pwd`.
+   - A node with no text, label, action or state, or with no drawable bounds, is folded
+     away and its children take its place; only what a reader or a model can act on is
+     sent. A password node carries no `text` or `desc` at all, only `pwd`.
+   - `ref` is unique within the reply and names nothing outside it: the Mac keeps the
+     reply's refs for that stream and resolves `tap`'s `ref` to `at` there. A newer reply
+     replaces them, so a ref from an older reply is refused rather than pressed. Refs never
+     cross the wire.
+   - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
+     tree. `snapshot` counts this session's reads from 1.
+   - An empty tree keeps `nodes: []` and carries a `note` saying the display has no
+     accessible content, so an empty list is never read as a blank screen.
+3. A read that cannot happen answers
+   `{"t":"ui.tree","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`
+   (no such stream), `not_available` (this phone cannot read a tree), `busy` (the previous
+   read is still running), `no_display` (the display went away), `no_a11y` (the platform
+   refused the connection) or `failed`.
+4. One read at a time per session. The Mac asks only when the tool is called and waits at
+   most 3 s; an older phone ignores the request, so the tool answers that the phone did
+   not respond.
+5. Text is on-screen content: it travels in this message and into the tool result, never
+   into a log line. The phone logs the stream, display, window and node counts and the
+   duration; the Mac logs the tool name and its duration.
+
 ## Secure screens
 
 Android blanks secure surfaces in a screen capture: a `FLAG_SECURE` app (banking, password

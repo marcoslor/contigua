@@ -162,6 +162,11 @@ class Session(
     private val onPathReaderStart: (String) -> Unit = {},
     /** Test seam: a new path writer's first wake, by path id. */
     private val onPathWriterStart: (String) -> Unit = {},
+    /**
+     * `ui.tree`: the display's accessibility tree for the Mac's `ui_tree` tool
+     * (docs/PROTOCOL.md "UI tree", WIN-79); null refuses it.
+     */
+    private val uiTree: UiTreeSource? = null,
 ) : VideoSink, AudioSink, LiveSession {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -253,6 +258,11 @@ class Session(
     @Volatile private var readerThread: Thread? = null
 
     private val streams = LinkedHashMap<Int, StreamState>()
+
+    /** `ui.tree` (WIN-79): one read at a time, and the snapshot each reply names. */
+    private val uiTreeBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val uiTreeSnapshot = java.util.concurrent.atomic.AtomicInteger(0)
+
     /** Each stream's negotiated codec, for the drop line's NAL scan. */
     private val streamCodecs = java.util.concurrent.ConcurrentHashMap<Int, VideoCodec>()
     /** The task-arrival rules (WIN-44, WIN-48, WIN-49); actions run in [performArrival]. */
@@ -1719,6 +1729,7 @@ class Session(
                 "window.launch" -> onWindowLaunch(obj, frame)
                 "task.continue" -> onTaskContinue(obj, frame)
                 "task.front" -> onTaskFront(obj)
+                "ui.tree" -> onUiTree(obj)
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
@@ -1987,6 +1998,71 @@ class Session(
         // Mac ignores the message, so no version bump.
         val reply = linkedMapOf<String, Any?>("t" to "task.front", "pkg" to task?.pkg)
         if (seq != null) reply["seq"] = seq
+        sendJson(reply)
+    }
+
+    /**
+     * `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): the accessibility tree of
+     * the display the named stream's window lives on — a display no ordinary
+     * accessibility service or `uiautomator dump` can read (ISS-143).
+     *
+     * The read runs off the reader thread (a UiAutomation read takes tens of
+     * milliseconds and can wait on the platform); one read at a time. The log
+     * line counts nodes and windows only: never text, never a label.
+     */
+    private fun onUiTree(obj: Map<String, Any?>) {
+        val stream = Json.int(obj["stream"]) ?: return
+        val seq = Json.int(obj["seq"])
+        val where = synchronized(streams) { streams[stream]?.let { it.displayId to it.size } }
+        if (where == null) {
+            sendUiTree(stream, seq, UiTree.failure("no_window", "There is no window $stream."))
+            return
+        }
+        val source = uiTree
+        if (source == null) {
+            sendUiTree(stream, seq, UiTree.failure(
+                "not_available", "This phone cannot read an accessibility tree.",
+            ))
+            return
+        }
+        if (!uiTreeBusy.compareAndSet(false, true)) {
+            sendUiTree(stream, seq, UiTree.failure("busy", "The last accessibility read is still running."))
+            return
+        }
+        val (displayId, size) = where
+        val started = now()
+        Thread({
+            val answer = try {
+                source.dump(displayId, size)
+            } catch (t: Throwable) {
+                UiTree.Answer.Failure("failed", "The accessibility tree could not be read.")
+            } finally {
+                uiTreeBusy.set(false)
+            }
+            when (answer) {
+                is UiTree.Answer.Tree -> {
+                    val windows = answer.windows
+                    log(
+                        "ui.tree stream=$stream display=$displayId windows=${windows.size} " +
+                            "nodes=${windows.sumOf { it.nodes.size }} took_ms=${now() - started}",
+                    )
+                    sendUiTree(stream, seq, UiTree.reply(displayId, size, uiTreeSnapshot.incrementAndGet(), windows))
+                }
+                is UiTree.Answer.Failure -> {
+                    log("ui.tree stream=$stream display=$displayId failed=${answer.code}")
+                    sendUiTree(stream, seq, UiTree.failure(answer.code, answer.sentence))
+                }
+            }
+        }, "ui-tree-$stream").start()
+    }
+
+    /** One `ui.tree` reply: the body, then what every reply carries. */
+    private fun sendUiTree(stream: Int, seq: Int?, body: Map<String, Any?>) {
+        val reply = LinkedHashMap<String, Any?>()
+        reply["t"] = "ui.tree"
+        reply["stream"] = stream
+        if (seq != null) reply["seq"] = seq
+        reply.putAll(body)
         sendJson(reply)
     }
 

@@ -208,9 +208,9 @@ def png_stats(data):
 # --- checks ---------------------------------------------------------------
 
 TOOLS = [
-    "phone_status", "list_apps", "open_app", "list_windows", "screenshot",
+    "phone_status", "list_apps", "open_app", "list_windows", "screenshot", "ui_tree",
     "tap", "long_press", "swipe", "type_text", "press_key",
-    "close_window", "send_link", "send_file",
+    "input_probe", "close_window", "send_link", "send_file",
 ]
 
 
@@ -315,6 +315,41 @@ def main():
         report(isinstance(width, int) and width > 0 and isinstance(height, int) and height > 0,
                "MCP the fakephone configured the window's stream (%sx%s)" % (width, height))
 
+        # [WIN-79] The accessibility tree: a label, the button with its tap
+        # point, and a password field that carries no text.
+        tree = client.text("ui_tree", {"window": window})
+        nodes = tree.get("nodes") or []
+        button = next((n for n in nodes if n.get("text") == "Continue"), None)
+        report(bool(button and button.get("click")),
+               "MCP ui_tree lists the window's button with its text and click")
+        report(bool(button and isinstance(button.get("at"), list) and len(button["at"]) == 2
+                    and all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in button["at"])),
+               "MCP ui_tree gives the button a tap point in 0..1")
+        report(bool(button and button.get("id") == "continue"),
+               "MCP ui_tree keeps the view id")
+        report(isinstance(tree.get("display"), int) and tree["display"] > 0,
+               "MCP ui_tree names the window's display")
+        password = next((n for n in nodes if n.get("pwd")), None)
+        report(password is not None and "text" not in password,
+               "MCP ui_tree marks the password field and sends no text for it")
+        read = wait_event(args.events,
+                          lambda e: e.get("ev") == "ui.tree" and e.get("stream") == window,
+                          5, "the fakephone's ui.tree read")
+        report(read is not None, "MCP ui_tree reached the phone once")
+        # A ref names an element: tapping it lands on that element's point, the
+        # late-bound way an agent should press instead of guessing coordinates.
+        ref_point = (button or {}).get("at") or [0, 0]
+        by_ref = client.text("tap", {"window": window, "ref": (button or {}).get("ref")})
+        report(abs((by_ref.get("x") or -1) - ref_point[0]) < 1e-6
+               and abs((by_ref.get("y") or -1) - ref_point[1]) < 1e-6,
+               "MCP tap by ref resolves to the element's own point")
+        try:
+            client.text("ui_tree", {"window": 999})
+            report(False, "MCP ui_tree on an unknown window must fail")
+        except RuntimeError as error:
+            report("No window 999" in str(error),
+                   "MCP ui_tree on an unknown window says which window is missing")
+
         # The screenshot: correct size, top side <= 1280, not a flat frame.
         shot = None
         last_error = None
@@ -380,6 +415,9 @@ def main():
         tap_down = [e for e in downs if within_px(e.get("nx", -1), 0.25, width)
                     and within_px(e.get("ny", -1), 0.4, height)]
         report(bool(tap_down), "MCP tap arrives as a TOUCH down within 1 px of (0.25, 0.4)")
+        ref_down = [e for e in downs if within_px(e.get("nx", -1), ref_point[0], width)
+                    and within_px(e.get("ny", -1), ref_point[1], height)]
+        report(bool(ref_down), "MCP tap by ref arrives as a TOUCH down on that element's point")
         report(any(within_px(e.get("nx", -1), 0.25, width) and within_px(e.get("ny", -1), 0.4, height)
                    for e in ups), "MCP tap lifts at the same point")
 
@@ -424,8 +462,9 @@ def main():
                     and e.get("stream") == window and e.get("action") == 1 and e.get("keycode") == 66]
         report(bool(enter_down and enter_up), "MCP press_key sends KEYCODE_ENTER down and up")
 
-        report(len(downs) == 3 and len(ups) == 3,
-               "MCP delivered three gestures (%d downs, %d ups, %d moves)" % (len(downs), len(ups), len(moves)))
+        # Four: the tap, the tap by ref, the long press and the swipe.
+        report(len(downs) == 4 and len(ups) == 4,
+               "MCP delivered four gestures (%d downs, %d ups, %d moves)" % (len(downs), len(ups), len(moves)))
 
         closed = client.text("close_window", {"window": window})
         wait_event(args.events, lambda e: e.get("ev") == "rx" and isinstance(e.get("msg"), dict)

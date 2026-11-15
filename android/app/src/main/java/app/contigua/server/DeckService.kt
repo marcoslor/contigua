@@ -234,6 +234,8 @@ class DeckService(private val appContext: Context?) :
                 ringerMode = ringerControl,
                 volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
+                // WIN-79: the window displays' accessibility trees, at shell UID.
+                uiTree = UiAutomationTree(::log),
                 preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, debug builds only: the platform stack

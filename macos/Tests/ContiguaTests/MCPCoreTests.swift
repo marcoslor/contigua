@@ -87,7 +87,7 @@ final class MCPCoreTests: XCTestCase {
         let result = try XCTUnwrap(response["result"] as? [String: Any])
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
         XCTAssertEqual(tools.compactMap { $0["name"] as? String }, [
-            "phone_status", "list_apps", "open_app", "list_windows", "screenshot",
+            "phone_status", "list_apps", "open_app", "list_windows", "screenshot", "ui_tree",
             "tap", "long_press", "swipe", "type_text", "press_key",
             "input_probe", "close_window", "send_link", "send_file",
         ])
@@ -105,7 +105,7 @@ final class MCPCoreTests: XCTestCase {
         let expected: [String: Any] = [
             "type": "object",
             "additionalProperties": false,
-            "required": ["window", "x", "y"],
+            "required": ["window"],
             "properties": [
                 "window": ["type": "integer", "minimum": 1, "maximum": 1_000_000,
                            "description": "Window id from list_windows."],
@@ -113,9 +113,23 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Horizontal position, 0 (left) to 1 (right), in the window's video rect."],
                 "y": ["type": "number", "minimum": 0, "maximum": 1,
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
+                "ref": ["type": "string", "minLength": 1, "maxLength": 16,
+                        "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
             ],
         ]
         XCTAssertEqual(tap.schema as NSDictionary, expected as NSDictionary)
+    }
+
+    func testTapTakesARefOrAPointButNotNeither() throws {
+        // WIN-79: a ref names an element in the tree the client just read.
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "ref": "e5"]),
+                       .tapRef(window: 3, ref: "e5"))
+        // A ref wins over a point, so a client may send both.
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "ref": "e5", "x": 0.2, "y": 0.4]),
+                       .tapRef(window: 3, ref: "e5"))
+        XCTAssertThrowsError(try MCPArguments.call("tap", ["window": 3]))
+        XCTAssertThrowsError(try MCPArguments.call("tap", ["window": 3, "x": 0.5]))
+        XCTAssertThrowsError(try MCPArguments.call("tap", ["window": 3, "ref": ""]))
     }
 
     // MARK: argument validation, every tool
@@ -129,6 +143,7 @@ final class MCPCoreTests: XCTestCase {
              .openApp("com.android.chrome", newWindow: true)),
             ("list_windows", [:], .listWindows),
             ("screenshot", ["window": 3], .screenshot(window: 3)),
+            ("ui_tree", ["window": 3], .uiTree(window: 3)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),
             ("long_press", ["window": 3, "x": 0, "y": 0.5, "ms": 3000],
              .longPress(window: 3, x: 0, y: 0.5, ms: 3000)),

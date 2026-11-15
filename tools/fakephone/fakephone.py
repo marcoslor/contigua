@@ -1179,6 +1179,11 @@ class EventLog(object):
         """`task.front` was read; only presence is recorded (no package)."""
         self._emit({"ev": "front", "seq": seq, "present": present, "ts": time.time()})
 
+    def ui_tree(self, stream, nodes):
+        """`ui.tree` was read: the stream and how many nodes the answer held,
+        never a label (WIN-79)."""
+        self._emit({"ev": "ui.tree", "stream": stream, "nodes": nodes, "ts": time.time()})
+
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
@@ -3499,6 +3504,7 @@ class Session(object):
             "window.launch": self._on_window_launch,
             "task.continue": self._on_task_continue,
             "task.front": self._on_task_front,
+            "ui.tree": self._on_ui_tree,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -5289,6 +5295,51 @@ class Session(object):
             reply["seq"] = seq
         self._send(reply)
 
+    # -- ui.tree (docs/PROTOCOL.md "UI tree", WIN-79): the display's a11y tree.
+    def _on_ui_tree(self, msg):
+        """Answer with the trimmed tree a real phone sends. `--ignore-ui-tree`
+        models a phone that cannot read one (the tool must say so, not hang)."""
+        if self.phone.args.ignore_ui_tree:
+            return
+        stream = msg.get("stream")
+        seq = msg.get("seq")
+        window = self.windows.get(stream)
+        w = window.w if window is not None else SCREEN_W
+        h = window.h if window is not None else SCREEN_H
+        display = window.display_id if window is not None else 0
+        box_label = [0, int(h * 0.05), w, int(h * 0.15)]
+        box_button = [int(w * 0.1), int(h * 0.6), int(w * 0.9), int(h * 0.7)]
+        box_password = [int(w * 0.1), int(h * 0.75), int(w * 0.9), int(h * 0.85)]
+
+        def at(box):
+            return [round((box[0] + box[2]) / 2.0 / max(w, 1), 3),
+                    round((box[1] + box[3]) / 2.0 / max(h, 1), 3)]
+
+        nodes = [
+            {"i": 0, "ref": "e0", "w": 0, "role": "TextView", "text": "Fake phone screen",
+             "box": box_label, "at": at(box_label)},
+            {"i": 1, "ref": "e1", "p": 0, "w": 0, "role": "Button", "text": "Continue",
+             "id": "continue", "box": box_button, "at": at(box_button), "click": True},
+            # A password field carries no text at all, only that it is one.
+            {"i": 2, "ref": "e2", "p": 0, "w": 0, "role": "EditText", "pwd": True, "edit": True,
+             "box": box_password, "at": at(box_password)},
+        ]
+        self.phone.events.ui_tree(stream, len(nodes))
+        reply = {
+            "t": "ui.tree",
+            "stream": stream,
+            "ok": True,
+            "display": display,
+            "snapshot": 1,
+            "truncated": False,
+            "windows": [{"i": 0, "title": window.pkg if window is not None else None,
+                         "type": "app", "focused": True, "active": True}],
+            "nodes": nodes,
+        }
+        if seq is not None:
+            reply["seq"] = seq
+        self._send(reply)
+
     def _on_window_resize(self, msg):
         window = self._stream_or_error(msg)
         if window is None:
@@ -6400,6 +6451,8 @@ def build_parser():
     p.add_argument("--foreground-pkg", default="com.android.settings", metavar="PKG",
                    help="the package task.continue reports as the foreground app "
                         "('none' means nothing continuable)")
+    p.add_argument("--ignore-ui-tree", action="store_true",
+                   help="never answer ui.tree (the MCP tool must say so, not hang)")
     p.add_argument("--ignore-task-front", action="store_true",
                    help="never answer task.front (the panel must keep its row hidden)")
     p.add_argument("--fs-root", default=os.environ.get("PD_FAKE_FS_ROOT"),

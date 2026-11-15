@@ -173,6 +173,9 @@ enum SessionEvent {
     /// (docs/PROTOCOL.md "Foreground app"). `seq` echoes the request; `pkg` is
     /// nil when nothing continuable was in front.
     case frontApp(seq: Int, pkg: String?)
+    /// `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): the accessibility tree of
+    /// the display a stream's window lives on. `seq` echoes the request.
+    case uiTree(UITree)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     /// `power.locked`: the phone's own power press with app streams up (its VD
@@ -1790,6 +1793,8 @@ final class Session {
                              stats: PhoneStreamStats(json: message.raw)))
         case "task.front":
             emit(.frontApp(seq: message.int("seq") ?? 0, pkg: message.string("pkg")))
+        case "ui.tree":
+            if let tree = UITree(message: message) { emit(.uiTree(tree)) }
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
             if let cap = message.int("maxWindows") {
@@ -2323,6 +2328,12 @@ final class Session {
     /// (docs/PROTOCOL.md "Foreground app"); the reply echoes `seq`.
     func requestFront(seq: Int) {
         sendJSON(["t": "task.front", "seq": seq])
+    }
+    /// `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): one read of the display a
+    /// stream's window lives on. The reply echoes `seq` and is not a watch.
+    func requestUITree(stream: UInt32, seq: Int) {
+        sendPing()
+        sendJSON(["t": "ui.tree", "stream": Int(stream), "seq": seq])
     }
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
