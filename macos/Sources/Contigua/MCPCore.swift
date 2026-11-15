@@ -36,6 +36,7 @@ enum MCPToolName: String, CaseIterable {
     case openApp = "open_app"
     case listWindows = "list_windows"
     case screenshot
+    case uiTree = "ui_tree"
     case tap
     case longPress = "long_press"
     case swipe
@@ -83,7 +84,11 @@ enum MCPCall: Equatable {
     case openApp(String, newWindow: Bool)
     case listWindows
     case screenshot(window: Int)
+    /// WIN-79: the display's accessibility tree, for finding a node by its text.
+    case uiTree(window: Int)
     case tap(window: Int, x: Double, y: Double)
+    /// WIN-79: tap the element a `ui_tree` ref named.
+    case tapRef(window: Int, ref: String)
     case longPress(window: Int, x: Double, y: Double, ms: Int)
     case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int)
     case typeText(window: Int, text: String)
@@ -167,10 +172,16 @@ enum MCPTools {
         MCPTool(name: .screenshot,
                 description: "PNG of the last frame the window displayed, longest side at most 1280 px.",
                 schema: object(["window": window], required: ["window"])),
+        MCPTool(name: .uiTree,
+                description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds and a tap point ready for tap. Cheaper and more exact than a screenshot for finding what to press.",
+                schema: object(["window": window], required: ["window"])),
         MCPTool(name: .tap,
-                description: "Tap a point in the Phone Mirror.",
-                schema: object(["window": window, "x": pointX, "y": pointY],
-                               required: ["window", "x", "y"])),
+                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y and is refused once a newer tree replaced it.",
+                schema: object([
+                    "window": window, "x": pointX, "y": pointY,
+                    "ref": ["type": "string", "minLength": 1, "maxLength": 16,
+                            "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
+                ], required: ["window"])),
         MCPTool(name: .longPress,
                 description: "Press and hold a point in the Phone Mirror.",
                 schema: object(["window": window, "x": pointX, "y": pointY,
@@ -319,8 +330,14 @@ enum MCPArguments {
             return .listWindows
         case .screenshot:
             return .screenshot(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
+        case .uiTree:
+            return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
         case .tap:
-            return .tap(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
+            let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
+            if args["ref"] != nil {
+                return .tapRef(window: window, ref: try string(args, "ref", maximum: 16))
+            }
+            return .tap(window: window,
                         x: try coordinate(args, "x"), y: try coordinate(args, "y"))
         case .longPress:
             return .longPress(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),

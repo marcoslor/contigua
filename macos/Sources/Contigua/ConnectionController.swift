@@ -213,6 +213,11 @@ final class ConnectionController {
     @ObservationIgnored private var frontSeq = 0
     @ObservationIgnored private var frontWatchCount = 0
     @ObservationIgnored private var frontTimer: Timer?
+    /// `ui.tree` (WIN-79): each MCP read waits for the reply carrying its seq.
+    @ObservationIgnored private var uiTreeSeq = 0
+    @ObservationIgnored private var uiTreeWaiters: [Int: CheckedContinuation<UITree, Error>] = [:]
+    /// The last tree's refs per window, so `tap` can name an element.
+    @ObservationIgnored private var uiTreeRefs = UITreeRefs()
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -1280,6 +1285,52 @@ final class ConnectionController {
         frontApp.reset()
         frontAppRepliedAt = nil
         frontSeq += 1
+    }
+
+    // MARK: The accessibility tree (WIN-79)
+
+    /// The accessibility tree of the display a window's app runs on, for the
+    /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
+    /// phone's answer arrives as `.uiTree`. A closed session fails at once and
+    /// a silent phone at the deadline, so a tool call never hangs.
+    func uiTree(stream: UInt32, timeout: TimeInterval = 3) async throws -> UITree {
+        guard link.isOnline, let session else { throw UITreeError.notConnected }
+        uiTreeSeq += 1
+        let seq = uiTreeSeq
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UITree, Error>) in
+            uiTreeWaiters[seq] = continuation
+            session.requestUITree(stream: stream, seq: seq)
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in  // gcd: the read's deadline, not a hop
+                self?.resolveUITree(seq: seq, .failure(UITreeError.timedOut))
+            }
+        }
+    }
+
+    private func resolveUITree(seq: Int, _ result: Result<UITree, Error>) {
+        guard let waiter = uiTreeWaiters.removeValue(forKey: seq) else { return }
+        waiter.resume(with: result)
+    }
+
+    private func uiTreeReplied(_ tree: UITree) {
+        uiTreeRefs.remember(tree)
+        resolveUITree(seq: tree.seq, .success(tree))
+    }
+
+    /// The point `ref` named in the tree last read for that window (WIN-79).
+    /// Throws `.staleRef` when the client kept a ref from an older screen.
+    func uiTreePoint(ref: String, stream: UInt32) throws -> UITree.Point {
+        guard let point = uiTreeRefs.point(ref: ref, stream: stream) else {
+            throw UITreeError.staleRef
+        }
+        return point
+    }
+
+    /// A closed session, or a phone switch, has no tree to answer with.
+    private func failUITrees(_ error: UITreeError) {
+        uiTreeRefs.forgetAll()
+        let waiting = uiTreeWaiters
+        uiTreeWaiters.removeAll()
+        for (_, waiter) in waiting { waiter.resume(throwing: error) }
     }
 
     /// The panel's row: only while online and the machine knows a package.
@@ -2504,6 +2555,7 @@ final class ConnectionController {
 
     private func resetPhoneData(for ref: PhoneRef) {
         resetFrontApp()
+        failUITrees(.notConnected)
         windows.setPhoneName(displayName(for: ref))
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
@@ -3005,6 +3057,7 @@ final class ConnectionController {
             case .failed(let reason):
                 clearPathOutage()
                 resetFrontApp()
+                failUITrees(.notConnected)
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3022,6 +3075,7 @@ final class ConnectionController {
             case .closed:
                 clearPathOutage()
                 resetFrontApp()
+                failUITrees(.notConnected)
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3205,6 +3259,8 @@ final class ConnectionController {
             recheckOpenWindows()
         case .frontApp(let seq, let pkg):
             frontReplied(seq: seq, pkg: pkg)
+        case .uiTree(let tree):
+            uiTreeReplied(tree)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  volume: volume, volumeMax: volumeMax, screen: screen)

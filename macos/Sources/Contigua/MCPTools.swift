@@ -23,8 +23,12 @@ struct MCPToolHost {
                 return .text(try json(listWindows()))
             case .screenshot(let window):
                 return try await screenshot(window)
+            case .uiTree(let window):
+                return try await uiTree(window)
             case .tap(let window, let x, let y):
                 return try tap(window: window, x: x, y: y)
+            case .tapRef(let window, let ref):
+                return try tap(window: window, ref: ref)
             case .longPress(let window, let x, let y, let ms):
                 return try await longPress(window: window, x: x, y: y, ms: ms)
             case .swipe(let window, let x1, let y1, let x2, let y2, let ms):
@@ -122,6 +126,27 @@ struct MCPToolHost {
         return nil
     }
 
+    // MARK: Accessibility tree
+
+    /// WIN-79/ISS-160: the display's accessibility tree, trimmed by the phone
+    /// for a reader. The text in it is on-screen content and lives in the result
+    /// only; the app's log line for the call carries the tool name and duration.
+    private func uiTree(_ id: Int) async throws -> MCPToolResult {
+        _ = try requireWindow(id)
+        let tree: UITree
+        do {
+            tree = try await controller.uiTree(stream: UInt32(id))
+        } catch UITreeError.timedOut {
+            throw MCPToolFailure("The phone did not answer the accessibility read in time.")
+        } catch UITreeError.notConnected {
+            throw MCPToolFailure("No phone is connected.")
+        }
+        guard tree.ok else {
+            throw MCPToolFailure(tree.message ?? "The phone could not read that display's accessibility tree.")
+        }
+        return .text(tree.encoded())
+    }
+
     // MARK: Screenshot
 
     private func screenshot(_ id: Int) async throws -> MCPToolResult {
@@ -180,6 +205,22 @@ struct MCPToolHost {
         send(.touch(TouchEvent(action: .down, nx: Float(x), ny: Float(y))), to: window)
         send(.touch(TouchEvent(action: .up, nx: Float(x), ny: Float(y))), to: window)
         return .text(try json(["ok": true, "window": id]))
+    }
+
+    /// WIN-79: the element a ref named in the tree last read for this window.
+    /// The ref is resolved here, and the TOUCH carries the same 0..1 point a
+    /// coordinate tap would; a ref from an older tree is refused, never used.
+    private func tap(window id: Int, ref: String) throws -> MCPToolResult {
+        let window = try requireInputWindow(id)
+        let point: UITree.Point
+        do {
+            point = try controller.uiTreePoint(ref: ref, stream: window.stream)
+        } catch UITreeError.staleRef {
+            throw MCPToolFailure("No element \(ref) in the latest tree for that window. Call ui_tree again.")
+        }
+        send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
+        send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
+        return .text(try json(["ok": true, "window": id, "ref": ref, "x": point.x, "y": point.y]))
     }
 
     private func longPress(window id: Int, x: Double, y: Double, ms: Int) async throws -> MCPToolResult {
