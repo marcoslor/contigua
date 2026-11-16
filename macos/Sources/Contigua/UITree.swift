@@ -391,6 +391,9 @@ enum UITreeRefusal {
 /// so the unit tests drive the whole lifecycle without a socket.
 @MainActor
 final class UITreeBroker {
+    /// How long a `ui.tree` read waits for the phone (WIN-79, MCP-70).
+    nonisolated static let deadline: TimeInterval = 5
+
     private var seq = 0
     private var waiters: [Int: CheckedContinuation<UITree, Error>] = [:]
     private var refs = UITreeRefs()

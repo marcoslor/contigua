@@ -67,7 +67,7 @@ final class MCPToolErrorTests: XCTestCase {
         XCTAssertNil(on, "a ref that resolves is not a failure")
 
         let ambiguous = MCPToolError.ambiguous("C", matches: [
-            AppInfo(pkg: "a.calc", label: "Calc"), AppInfo(pkg: "a.cam", label: "Camera"),
+            AppInfo(json: ["pkg": "a.calc", "label": "Calc"])!, AppInfo(json: ["pkg": "a.cam", "label": "Camera"])!,
         ])
         XCTAssertEqual(ambiguous.code, .ambiguous)
         XCTAssertEqual((ambiguous.extra["matches"] as? [[String: String]])?.count, 2)
