@@ -24,7 +24,9 @@ class SettleWatchTest {
      * Feeds [feed] (events and [Found] results) at their own times, firing the
      * machine's scheduled tick whenever it comes first. Returns the first reply.
      */
-    private fun runWatch(quietMs: Long = 300, timeoutMs: Long = 2_000, feed: List<Any> = emptyList()): Action.Reply? {
+    private fun runWatch(
+        quietMs: Long = 300, timeoutMs: Long = 2_000, feed: List<Any> = emptyList(), windowed: Boolean = true,
+    ): Action.Reply? {
         var state: State = State.Idle
         var reply: Action.Reply? = null
         var lastCheck = 0
@@ -48,7 +50,7 @@ class SettleWatchTest {
             else -> error("unsupported feed item $item")
         }
 
-        apply(Event.Start(quietMs, timeoutMs, 0))
+        apply(Event.Start(quietMs, timeoutMs, 0, windowed))
         while (reply == null) {
             val next = queue.peekFirst()
             if (next == null && nextTick == Long.MAX_VALUE) return null
@@ -94,7 +96,7 @@ class SettleWatchTest {
 
     @Test
     fun testIdleIgnoresEverythingButStart() { // [MCP-81]
-        for (event in listOf(content(1), Event.Tick(1), Event.DisplayGone, Event.SessionEnd)) {
+        for (event in listOf(content(1), Event.Tick(1), Event.SessionEnd)) {
             assertEquals(SettleWatch.Step(State.Idle, emptyList()), SettleWatch.reduce(State.Idle, event))
         }
     }
@@ -143,11 +145,10 @@ class SettleWatchTest {
 
     @Test
     fun testDisplayGoneAnswersNoDisplay() { // [MCP-81]
-        for (state in listOf(watching(), checking())) {
-            val step = SettleWatch.reduce(state, Event.DisplayGone)
-            assertEquals(State.Idle, step.state)
-            assertEquals(listOf(Action.StopListening, Action.Reply.NoDisplay), step.actions)
-        }
+        // The check finds the display no longer listed, after it had a window.
+        val step = SettleWatch.reduce(checking(), Event.Loading(false, 1, 320, listed = false))
+        assertEquals(State.Idle, step.state)
+        assertEquals(listOf(Action.StopListening, Action.Reply.NoDisplay), step.actions)
     }
 
     @Test
@@ -257,5 +258,48 @@ class SettleWatchTest {
     fun testATimeoutAfterAChangeSaysChanges() { // [MCP-107]
         val feed = (300L..1_800L step 300).map<Long, Any> { Found(true, it) } + content(1_900)
         assertEquals(Action.Reply.StillChanging(2_000, 1, "changes"), runWatch(feed = feed))
+    }
+
+    // A display with no window yet is still opening (MCP-103, MCP-107)
+
+    private fun opening() = SettleWatch.reduce(State.Idle, Event.Start(300, 2_000, 0, windowed = false)).state
+
+    @Test
+    fun testAnEmptyDisplayIsStillOpening() { // [MCP-107]
+        // No window at the start and none arrives: every check finds the
+        // display empty, and the timeout says it is still loading.
+        val step = SettleWatch.reduce(State.Idle, Event.Start(300, 2_000, 0, windowed = false))
+        assertEquals(State.Watching(300, 2_000, 0, 0, 0, loading = true, check = 0, windowed = false), step.state)
+        assertEquals(listOf(Action.Listen, Action.ScheduleTick(300)), step.actions)
+        val feed = (300L..1_800L step 300).map { Found(true, it) }
+        assertEquals(Action.Reply.StillChanging(2_000, 0, "loading"), runWatch(feed = feed, windowed = false))
+        assertEquals(Action.Reply.StillChanging(2_000, 0, "loading"), runWatch(windowed = false))
+    }
+
+    @Test
+    fun testTheFirstWindowIsACountedChange() { // [MCP-107]
+        val arrived = SettleWatch.reduce(opening(), content(500))
+        assertEquals(State.Watching(300, 2_000, 0, 500, 1, loading = false, check = 0, windowed = true), arrived.state)
+        val reply = runWatch(feed = listOf(Found(true, 300), content(500), Found(false, 800)), windowed = false)
+        assertEquals(Action.Reply.Settled(800, 1), reply)
+    }
+
+    @Test
+    fun testAnUnlistedDisplayBeforeItsFirstWindowIsLoading() { // [MCP-107]
+        // A check that finds the display not listed yet is a loading signal,
+        // not a gone display: the watch keeps going.
+        val checkingOpen = SettleWatch.reduce(opening(), Event.Tick(300)).state
+        assertTrue(checkingOpen is State.Checking)
+        val step = SettleWatch.reduce(checkingOpen, Event.Loading(false, 1, 320, listed = false))
+        assertEquals(State.Watching(300, 2_000, 0, 0, 0, loading = true, check = 1, windowed = false), step.state)
+        assertEquals(listOf(Action.ScheduleTick(620)), step.actions)
+    }
+
+    @Test
+    fun testADisplayGoneAfterItsFirstWindowAnswersNoDisplay() { // [MCP-81]
+        val arrived = SettleWatch.reduce(opening(), content(100)).state
+        val checked = SettleWatch.reduce(arrived, Event.Tick(400)).state
+        val step = SettleWatch.reduce(checked, Event.Loading(false, 1, 420, listed = false))
+        assertEquals(listOf(Action.StopListening, Action.Reply.NoDisplay), step.actions)
     }
 }
