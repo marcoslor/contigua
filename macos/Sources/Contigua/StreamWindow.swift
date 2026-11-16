@@ -113,7 +113,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The picture watchdog (FrameWatchdog): frames counted from the session
     /// queue, the decision on the main thread. `window.still` messages are a
     /// second heartbeat for encoders that drop the repeat on a still screen.
-    @ObservationIgnored let frameClock = FrameClock()
+    @ObservationIgnored let frameClock = FrameClockStore()
+    /// The agent hold (MCP-22): unpaused while an agent uses the window.
+    @ObservationIgnored private(set) var agentHold = AgentHold.State.released
+    /// The window has started closing (MCP-21's `closed`).
+    @ObservationIgnored private(set) var hasClosed = false
     /// This window's stats window (ISS-40): frames in, frames shown, freezes,
     /// delays and the phone's latest counters. Fed from the video and main
     /// queues; the 5 s line reads it.
@@ -1092,6 +1096,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        hasClosed = true
+        runHold(.windowClosed)
         liveText.exit(.close)
         stopZoomAnimation()
         openingTimer?.invalidate()
@@ -1397,7 +1403,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                                        key: window.isKeyWindow,
                                        main: window.isMainWindow,
                                        occludedVisible: window.occlusionState.contains(.visible),
-                                       menuTracking: MenuTracking.isTracking)
+                                       menuTracking: MenuTracking.isTracking,
+                                       agentHold: AgentHold.isHeld(agentHold))
     }
 
     func setPaused(_ paused: Bool) {
@@ -1417,6 +1424,35 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// caller has no new state of its own.
     func reevaluatePause() {
         setPaused(shouldPause)
+    }
+
+    // MARK: The agent hold (MCP-22)
+
+    /// A tool naming this window started or ended: hold its stream unpaused
+    /// until 15 s from now, resuming a covered or minimised window.
+    func agentCalled(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard !hasClosed else { return }
+        runHold(.agentCall(now: now))
+    }
+
+    private func runHold(_ event: AgentHold.Event) {
+        let (next, actions) = AgentHold.next(agentHold, event)
+        agentHold = next
+        for action in actions {
+            switch action {
+            case .reevaluatePause: reevaluatePause()
+            }
+        }
+    }
+
+    /// MCP-21: the window's lifecycle for the closed state token.
+    var mcpLifecycle: MCPWindowState.Lifecycle {
+        if hasClosed { return .closed }
+        if isLinkDown { return .offline }
+        if isOpening { return .opening }
+        if isStalled { return .stalled }
+        if isPaused { return .paused }
+        return .live
     }
 
     // MARK: Focus
@@ -1821,6 +1857,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The tick with the clock passed in, so a test can drive the window's
     /// rule (expectation changes included) without waiting in real time.
     func tickFrameWatchdog(at now: TimeInterval) {
+        // The hold's release re-decides pause by WIN's rule (MCP-22).
+        runHold(.tick(now: now))
         if let last = frameClock.lastFrame {
             if watchdog.frame(at: last) { setStalled(false) }
         }
