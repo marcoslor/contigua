@@ -271,10 +271,11 @@ final class ScreenshotSourceTests: XCTestCase {
     // [MCP-61] A window that closed while the call waited fails no_window,
     // not no_frame pointing at ui_tree.
     func testAWindowClosedAtTheBoundIsNoWindow() async throws {
-        var calls = 0
+        // Live when the call starts; closed once it is waiting for a keyframe.
+        let source = FakeSource(newestSeq: 0, deliver: nil)
         do {
-            _ = try await Screenshot.result(id: 3, state: { calls += 1; return calls == 1 ? "live" : "closed" },
-                                            source: FakeSource(newestSeq: 0, deliver: nil),
+            _ = try await Screenshot.result(id: 3, state: { source.askedAfter == nil ? "live" : "closed" },
+                                            source: source,
                                             size: (1080, 2400), crop: nil)
             XCTFail("expected no_window")
         } catch let error as MCPToolError {

@@ -21,20 +21,11 @@ extension MCPToolHost {
             try ScreenshotCrop.box(for: controller.uiTreeResolved(ref: $0, stream: window.stream),
                                    ref: $0, window: id, size: size)
         }
-        do {
-            let result = try await Screenshot.result(id: id, state: { self.stateToken(for: window) },
-                                                     source: window, size: size, crop: crop,
-                                                     online: controller.link.isOnline, phone: phoneName)
-            // MCP-21: the state as it is when the answer is made. A window's
-            // first frame can end its opening while the call waits for it.
-            guard case .image(let png, var answer) = result else { return result }
-            answer["state"] = stateToken(for: window)
-            return .image(png, answer)
-        } catch let error as MCPToolError where error.code == .noFrame {
-            // The state at the bound, not at the call: an opening window may
-            // have gone live, a live one may have stalled.
-            throw MCPToolError.noFrame(window: id, state: stateToken(for: window))
-        }
+        // MCP-21: the state is read when the answer (or the failure) is made:
+        // a window's first frame can end its opening while the call waits.
+        return try await Screenshot.result(id: id, state: { self.stateToken(for: window) },
+                                           source: window, size: size, crop: crop,
+                                           online: controller.link.isOnline, phone: phoneName)
     }
 
     /// P0 (pmaxx): the tap goes through the same session path a click does;
@@ -151,17 +142,22 @@ enum Screenshot {
     static let timeout: TimeInterval = 2
 
     /// The `.image` answer for the first keyframe after the call, or `no_frame`.
+    /// `state` is read when the answer or failure is made, not at the call:
+    /// an opening window may have gone live, a live one stalled or closed.
     static func result(id: Int, state: () -> String, source: ScreenshotSource,
                        size: (Int, Int), crop: [Int]?,
                        online: Bool = true, phone: String? = nil,
                        encode: @escaping @Sendable (CVPixelBuffer, [Int]?) -> Data? = { FrameGrab.png(from: $0, crop: $1) })
         async throws -> MCPToolResult {
-        let state = state()
         // MCP-61: an offline window can make no picture; say so before asking.
         guard online else { throw MCPToolError.phoneOffline(phone) }
         let start = source.newestSeq
         guard let frame = await source.nextKeyframe(after: start, timeout: timeout) else {
-            throw MCPToolError.noFrame(window: id, state: state)
+            // MCP-61: a window that closed while the call waited is gone,
+            // not short of a picture.
+            let now = state()
+            if now == "closed" { throw MCPToolError.noWindow(id) }
+            throw MCPToolError.noFrame(window: id, state: now)
         }
         let buffer = frame.buffer
         let frameSize = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
@@ -170,11 +166,15 @@ enum Screenshot {
         let encoded = await Task.detached(priority: .userInitiated) { () -> (Data?, Bool) in
             (encode(buffer, frameCrop), ScreenshotBlank.isBlank(buffer))
         }.value
-        guard let png = encoded.0 else { throw MCPToolError.noFrame(window: id, state: state) }
+        guard let png = encoded.0 else {
+            // A picture arrived; it is the encode that failed (MCP-61).
+            throw MCPToolError.failed("Window \(id)'s picture arrived but could not be made into a PNG. Try again.",
+                                      window: id)
+        }
         let image = FrameGrab.scaledSize(sourceWidth: frameSize.0, sourceHeight: frameSize.1, crop: frameCrop)
         var answer: [String: Any] = [
             "window": id,
-            "state": state,
+            "state": state(),
             "frame": FrameClock.object(seq: frame.seq, ageMs: frame.ageMs),
             "image": [image.0, image.1],
             "size": [size.0, size.1],
