@@ -15,7 +15,7 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertThrowsError(try MCPToolHost.chooseApp("Settings", in: [])) { error in
             XCTAssertEqual((error as? MCPToolError)?.code, .notReady)
         }
-        let apps = [AppInfo(pkg: "com.android.settings", label: "Settings")]
+        let apps = [AppInfo(json: ["pkg": "com.android.settings", "label": "Settings"])!]
         XCTAssertEqual(try MCPToolHost.chooseApp("Settings", in: apps).pkg, "com.android.settings")
         let answer = try? MCPToolHost.appsAnswer(apps)
         XCTAssertEqual((answer?["apps"] as? [[String: String]])?.first?["package"], "com.android.settings")

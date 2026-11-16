@@ -1296,7 +1296,7 @@ final class ConnectionController {
     /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
     /// phone's answer arrives as `.uiTree`. A closed session fails at once and
     /// a silent phone at the deadline, so a tool call never hangs.
-    func uiTree(stream: UInt32, timeout: TimeInterval = 5) async throws -> UITree {
+    func uiTree(stream: UInt32, timeout: TimeInterval = UITreeBroker.deadline) async throws -> UITree {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
         return try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
             session.requestUITree(stream: stream, seq: seq)
