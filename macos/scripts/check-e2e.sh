@@ -6500,6 +6500,24 @@ PY
     if ! grep -q '^DRIVER passed=' "$WORK/mcp-driver.log"; then
         bad "MCP the driver never completed"
     fi
+    if python3 "$MACOS/scripts/mcp/suite_shim.py" \
+            --shim "$shim" --profile "$PROFILE" \
+            > "$WORK/suite-shim.log" 2>&1; then
+        :
+    else
+        say "shim suite output:"; cat "$WORK/suite-shim.log"
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            PASS\ *) ok "${line#PASS }" ;;
+            FAIL\ *) bad "${line#FAIL }" ;;
+            DRIVER\ passed*) : ;;
+            DRIVER\ *) say "MCP ${line#DRIVER }" ;;
+        esac
+    done < "$WORK/suite-shim.log"
+    if ! grep -q '^DRIVER passed=' "$WORK/suite-shim.log"; then
+        bad "MCP the shim suite never completed"
+    fi
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "MCP the app logged no fatal/protocol error" \
         || bad "MCP the app log has fatal/protocol lines"
