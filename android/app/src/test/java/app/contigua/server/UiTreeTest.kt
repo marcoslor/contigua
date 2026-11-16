@@ -100,10 +100,14 @@ class UiTreeTest {
     }
 
     @Test
-    fun aPointOutsideTheWindowIsClamped() {
+    fun WIN79_nodeStraddlingTheEdgeTapsItsVisiblePart() {
+        // The box runs past the right and bottom edges: `box` is clipped to the
+        // display and `at` is the centre of the visible part, not a clamped
+        // outside point (F9).
         val tree = node(box = UiTree.Box(900, 1_800, 1_200, 2_200), clickable = true)
         val row = nodes(reply(listOf(layer(tree))))[0]
-        assertEquals(listOf(1.0, 1.0), row["at"])
+        assertEquals(listOf(900, 1_800, 1_000, 2_000), row["box"])
+        assertEquals(listOf(0.95, 0.95), row["at"])
     }
 
     @Test
@@ -137,10 +141,13 @@ class UiTreeTest {
     }
 
     @Test
-    fun aZeroSizedWindowDoesNotDivideByZero() {
+    fun aZeroSizedDisplayDoesNotDivideByZero() {
+        // A display with no size maps nothing: the node is off, never a bogus
+        // point from a division by zero.
         val tree = node(box = UiTree.Box(10, 10, 20, 20), clickable = true)
         val row = nodes(reply(listOf(layer(tree)), size = IntSize(0, 0)))[0]
-        assertEquals(listOf(1.0, 1.0), row["at"])
+        assertEquals(true, row["off"])
+        assertFalse(row.containsKey("at"))
     }
 
     @Test
