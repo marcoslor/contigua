@@ -141,7 +141,8 @@ enum Screenshot {
 
     /// The `.image` answer for the first keyframe after the call, or `no_frame`.
     static func result(id: Int, state: String, source: ScreenshotSource,
-                       streamSize: (Int, Int), crop: [Int]?) async throws -> MCPToolResult {
+                       streamSize: (Int, Int), crop: [Int]?,
+                       online: Bool = true, phone: String? = nil) async throws -> MCPToolResult {
         let start = source.newestSeq
         guard let frame = await source.nextKeyframe(after: start, timeout: timeout) else {
             throw MCPToolError.noFrame(window: id, state: state)
