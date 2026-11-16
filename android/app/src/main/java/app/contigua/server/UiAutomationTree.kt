@@ -6,8 +6,11 @@ import android.content.Context
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -68,6 +71,155 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             }
         }
     }
+
+    // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)
+
+    /** The watches running now, one per session at most; fed on the looper thread. */
+    private val watches = CopyOnWriteArrayList<Watch>()
+
+    /**
+     * Watches [displayId] until no content change came for [quietMs] and nothing
+     * on it is loading, or [timeoutMs] passes. Blocking: the session calls it
+     * off its reader thread. The [SettleWatch] machine runs on the looper thread,
+     * where events and ticks arrive; the loading check walks the display on a
+     * thread of its own and posts its answer back, so it never holds up events.
+     */
+    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer {
+        if (disconnected) return SettleAnswer.Failure("no_a11y", NO_WATCH)
+        val automation = ensureAutomation()
+            ?: return SettleAnswer.Failure("no_a11y", failure ?: NO_WATCH)
+        val h = handler ?: return SettleAnswer.Failure("no_a11y", NO_WATCH)
+        val watch = Watch(displayId, automation, h)
+        if (!h.post { watch.begin(quietMs, timeoutMs) }) return SettleAnswer.Failure("no_a11y", NO_WATCH)
+        if (!watch.gate.await(timeoutMs + WATCH_MARGIN_MS, TimeUnit.MILLISECONDS)) {
+            h.post { watch.finish(SettleAnswer.Failure("failed", "The display could not be watched.")) }
+            watch.gate.await(WATCH_MARGIN_MS, TimeUnit.MILLISECONDS)
+        }
+        return watch.answer ?: SettleAnswer.Failure("failed", "The display could not be watched.")
+    }
+
+    /** Every accessibility event, on the looper thread: each running watch sees it. */
+    private fun onEvent(event: AccessibilityEvent) {
+        if (watches.isEmpty()) return
+        val type = event.eventType
+        val windowId = event.windowId
+        for (watch in watches) watch.onEvent(type, windowId)
+    }
+
+    /** One `ui.settle`; every method but [gate]/[answer] runs on the looper thread. */
+    private inner class Watch(val displayId: Int, val automation: UiAutomation, val h: Handler) {
+        val gate = CountDownLatch(1)
+        @Volatile var answer: SettleAnswer? = null
+        private var state: SettleWatch.State = SettleWatch.State.Idle
+        private val tick = Runnable { drive(SettleWatch.Event.Tick(now())) }
+        /** Window id -> display id, from the latest `windowsOnAllDisplays` read. */
+        private val windowDisplay = HashMap<Int, Int>()
+        private val refreshedFor = HashSet<Int>()
+
+        fun begin(quietMs: Long, timeoutMs: Long) {
+            if (answer != null) return
+            if (!readWindows()) {
+                finish(SettleAnswer.Failure("no_display", "That window is not on a display this phone can read."))
+                return
+            }
+            watches.add(this)
+            drive(SettleWatch.Event.Start(quietMs, timeoutMs, now()))
+        }
+
+        fun onEvent(type: Int, windowId: Int) {
+            if (!SettleWatch.isContentChange(type)) return // the machine ignores it too
+            // A window the last read did not know (a new activity's, a dialog's):
+            // read the window list again, once per id.
+            if (windowId !in windowDisplay && refreshedFor.add(windowId)) readWindows()
+            drive(SettleWatch.Event.A11y(type, windowDisplay[windowId] == displayId, now()))
+        }
+
+        fun finish(value: SettleAnswer) {
+            if (answer != null) return
+            answer = value
+            watches.remove(this)
+            h.removeCallbacks(tick)
+            gate.countDown()
+        }
+
+        private fun drive(event: SettleWatch.Event) {
+            if (answer != null) return
+            val step = SettleWatch.reduce(state, event)
+            state = step.state
+            for (action in step.actions) when (action) {
+                SettleWatch.Action.Listen -> Unit // the listener is always on; [watches] is the filter
+                SettleWatch.Action.StopListening -> watches.remove(this)
+                is SettleWatch.Action.CheckLoading -> checkLoading(action.check)
+                is SettleWatch.Action.ScheduleTick -> {
+                    h.removeCallbacks(tick)
+                    h.postDelayed(tick, maxOf(0L, action.atMs - now()))
+                }
+                is SettleWatch.Action.Reply -> finish(answerFor(action))
+            }
+        }
+
+        private fun checkLoading(check: Int) {
+            Thread({
+                val found = try {
+                    loadingOn(automation, displayId)
+                } catch (t: Throwable) {
+                    log("ui.settle: check ${t.javaClass.simpleName}") // log-ok: class only
+                    return@Thread // no answer: the timeout tick still ends the watch
+                }
+                h.post {
+                    drive(
+                        if (found == null) SettleWatch.Event.DisplayGone
+                        else SettleWatch.Event.Loading(found, check, now()),
+                    )
+                }
+            }, "contigua-ui-loading").start()
+        }
+
+        /** Re-reads which display each window is on; false when [displayId] has none. */
+        private fun readWindows(): Boolean = runCatching {
+            val all = automation.windowsOnAllDisplays
+            windowDisplay.clear()
+            for (i in 0 until all.size()) {
+                val display = all.keyAt(i)
+                for (window in all.valueAt(i)) windowDisplay[window.id] = display
+            }
+            all.get(displayId) != null
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Whether any node on [displayId] is a loading signal (MCP-103); null when
+     * the display is gone. Walks at most [LOADING_WALK_NODES] nodes and stops at
+     * the first signal; never reads a node's text.
+     */
+    private fun loadingOn(automation: UiAutomation, displayId: Int): Boolean? {
+        val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
+        var budget = LOADING_WALK_NODES
+        fun walk(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (--budget < 0 || depth >= UiTree.MAX_DEPTH) return false
+            val children = node.childCount
+            if (LoadingSignal.loading(node.className?.toString() ?: "", node.isVisibleToUser, node.rangeInfo != null, children)) {
+                return true
+            }
+            for (index in 0 until children) {
+                val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                if (walk(child, depth + 1)) return true
+            }
+            return false
+        }
+        return windows.any { window -> window.root?.let { walk(it, 0) } ?: false }
+    }
+
+    private fun answerFor(reply: SettleWatch.Action.Reply): SettleAnswer = when (reply) {
+        is SettleWatch.Action.Reply.Settled -> SettleAnswer.Settled(reply.waitedMs, reply.events)
+        is SettleWatch.Action.Reply.StillChanging ->
+            SettleAnswer.StillChanging(reply.waitedMs, reply.events, reply.reason)
+        SettleWatch.Action.Reply.Busy -> SettleAnswer.Failure("busy", "The last accessibility request is still running.")
+        SettleWatch.Action.Reply.NoDisplay ->
+            SettleAnswer.Failure("no_display", "That window's display went away.")
+    }
+
+    private fun now() = SystemClock.uptimeMillis()
 
     /**
      * The one connection this process owns is dropped here, never by a session
@@ -165,7 +317,10 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
             AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
             AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        // The settle watch (MCP-107) hears every event type and filters them itself.
+        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
         made.serviceInfo = info
+        made.setOnAccessibilityEventListener { event -> onEvent(event) }
         return made
     }
 
@@ -262,6 +417,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         // deadline, so a first read answers before the Mac gives up on it.
         const val CONNECT_TIMEOUT_MS = 2_500L
         const val THREAD_START_MS = 1_000L
+        // The machine answers by start + timeoutMs itself; this covers a looper
+        // that never runs the watch's last tick.
+        const val WATCH_MARGIN_MS = 2_000L
+        const val LOADING_WALK_NODES = 5_000
+        const val NO_WATCH = "This phone cannot watch the display right now."
     }
 }
 
