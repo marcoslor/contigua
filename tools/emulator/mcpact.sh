@@ -252,6 +252,10 @@ try:
     tree = answer.get("tree") or tree_of(client, window)
     shown = display_digits(tree)
     print("[mcpact] timer display before: %s digits" % (len(shown) if shown is not None else "no"))
+    digits = [(label(r), bool(r.get("click")), bool(r.get("ref")), bool(r.get("off")), r.get("role"))
+              for r in (tree.get("nodes") or []) if label(r) in list("0123456789")]
+    print("[mcpact] timer tap: settle=%s rows=%d tree_from_answer=%s digit_rows=%s"
+          % (json.dumps(answer.get("settle")), len(tree.get("nodes") or []), "tree" in answer, digits))
 
     # [MCP-81] Digits by ref, default arguments, no ui_tree between taps.
     typed = ""
