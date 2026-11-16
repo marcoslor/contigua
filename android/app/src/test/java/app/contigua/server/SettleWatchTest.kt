@@ -89,9 +89,22 @@ class SettleWatchTest {
 
     @Test
     fun testATimeoutShorterThanQuietMsTicksAtTheTimeout() { // [MCP-81]
-        val step = SettleWatch.reduce(State.Idle, Event.Start(2_000, 200, 0))
+        // The session clamps quietMs to at most timeoutMs, so the shortest
+        // watch the machine sees is quietMs == timeoutMs: the one tick is the
+        // timeout's, and the timeout wins it.
+        val step = SettleWatch.reduce(State.Idle, Event.Start(200, 200, 0))
         assertTrue(Action.ScheduleTick(200) in step.actions)
-        assertEquals(Action.Reply.StillChanging(200, 0, "changes"), runWatch(quietMs = 2_000, timeoutMs = 200))
+        assertEquals(Action.Reply.StillChanging(200, 0, "changes"), runWatch(quietMs = 200, timeoutMs = 200))
+    }
+
+    @Test
+    fun testTheEventMaskIsTheFiveContentChanges() { // [MCP-107]
+        assertEquals(
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED or AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
+                AccessibilityEvent.TYPE_VIEW_SCROLLED,
+            SettleWatch.EVENT_MASK,
+        )
     }
 
     @Test
