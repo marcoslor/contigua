@@ -201,7 +201,7 @@ enum MCPTools {
                     "app": ["type": "string", "minLength": 1, "maxLength": 200,
                             "description": "Package name or app label (or a unique prefix)."],
                     "newWindow": ["type": "boolean",
-                                  "description": "Open another window of an app that opens several at a time, instead of raising its window."],
+                                  "description": "Open another window of an app that opens several at a time, instead of raising its window. With no window of the app open it opens the first one, as without the flag; an app that opens one window at a time and already has one fails."],
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
                 description: "The open stream windows: id, package, size ([w, h] in the display pixels ui_tree's box uses), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
