@@ -22,7 +22,6 @@ class UiTreeSessionTest : SessionFixture() {
     fun WIN79_mirrorTapPointUsesInputSpace() {
         // The mirror stream is 590×1280 but the input space (display 0's real
         // pixels) is 1440×3120: `box` lives there, so `at` must too (F2).
-        platform.screenSize = IntSize(1_440, 3_120)
         val source = UiTreeSource { _, _ ->
             UiTree.Answer.Tree(listOf(UiTree.Layer("Mirror", "app", true, true, listOf(
                 UiTree.Node(role = "android.widget.Button", text = "Buy",
@@ -30,12 +29,14 @@ class UiTreeSessionTest : SessionFixture() {
             ))))
         }
         connect(uiTree = source)
+        platform.screenSize = IntSize(1_440, 3_120) // the platform is made by connect()
         openPhoneMirror(590, 1_280)
         send(mapOf("t" to "ui.tree", "stream" to 1, "seq" to 1))
         val reply = readUntil("ui.tree")
         val nodes = (reply["nodes"] as? List<*>)?.filterIsInstance<Map<String, Any?>>().orEmpty()
         assertEquals(listOf(0.5, 0.5), nodes[0]["at"])
-        assertEquals(listOf(1_440, 3_120), reply["size"])
+        // The JSON reader decodes numbers as Long or Double: compare the values.
+        assertEquals(listOf(1_440, 3_120), (reply["size"] as List<*>).map { (it as Number).toInt() })
     }
 
     @Test
