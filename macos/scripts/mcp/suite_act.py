@@ -25,14 +25,25 @@ def mode(args, *words):
 
 
 def open_window(client):
+    """Wait for the phone's app list (this suite may run first), then open
+    Settings; the last error is in the failure."""
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        reply = client.tool("list_apps")
+        apps = (reply.get("structuredContent") or {}).get("apps") or []
+        if any(a.get("package") == "com.android.settings" for a in apps):
+            break
+        time.sleep(0.5)
+    last = None
     for _ in range(40):
-        reply = client.tool("open_app", {"app": "com.android.settings", "newWindow": True})
+        reply = client.tool("open_app", {"app": "com.android.settings"})
         if not reply.get("isError"):
             window = (reply.get("structuredContent") or {}).get("window")
             if window:
                 return window
+        last = (reply.get("content") or [{}])[0].get("text")
         time.sleep(0.25)
-    raise RuntimeError("open_app gave no window")
+    raise RuntimeError("open_app gave no window (%s)" % last)
 
 
 def act(client, name, arguments):
