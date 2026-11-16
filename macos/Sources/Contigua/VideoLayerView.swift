@@ -756,20 +756,23 @@ final class VideoLayerView: NSView {
     /// Asks the phone for a keyframe and decodes it with a private
     /// decompression session, only until the first frame arrives. This is the
     /// route for windows whose display layer reports no displayed buffer
-    /// (occluded windows, quiet e2e runs). `handler(nil)` when there is no
-    /// format yet or the decoder cannot start.
-    func beginFrameSnapshot(_ handler: @escaping (CVPixelBuffer?) -> Void) {
+    /// (occluded windows, quiet e2e runs), and a screenshot's only route
+    /// (MCP-60). `handler` gets the frame and its stamp; `(nil, nil)` when
+    /// there is no format yet or the decoder cannot start. With `after`, only a
+    /// keyframe counted later than that seq is decoded.
+    func beginFrameSnapshot(after: Int = 0,
+                            _ handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) {
         videoQueue.async { [weak self] in
             guard let self else { return }
             self.snapshotter?.cancel()
             guard let format = self.formatDescription else {
-                DispatchQueue.main.async { handler(nil) }
+                DispatchQueue.main.async { handler(nil, nil) }
                 return
             }
             let snapshotter = KeyframeSnapshotter()
             self.snapshotter = snapshotter
-            snapshotter.begin(format: format) { buffer in
-                DispatchQueue.main.async { handler(buffer) }
+            snapshotter.begin(format: format, after: after) { buffer, stamp in
+                DispatchQueue.main.async { handler(buffer, stamp) }
             }
             DispatchQueue.main.async { [weak self] in self?.onRequestKeyframe?() }
         }
@@ -873,7 +876,9 @@ final class VideoLayerView: NSView {
         }
     }
 
-    func enqueue(_ frame: VideoFrameData) {
+    /// `stamp` is the frame's count on the window's clock (MCP-20), carried to
+    /// the snapshot decoder so a screenshot names the frame it decoded.
+    func enqueue(_ frame: VideoFrameData, stamp: FrameStamp? = nil) {
         videoQueue.async { [weak self] in
             guard let self else { return }
             // Every stream sends VIDEO_CONFIG before its frames; without one
@@ -902,7 +907,7 @@ final class VideoLayerView: NSView {
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
-            self.snapshotter?.feed(sample)
+            self.snapshotter?.feed(sample, stamp: stamp, keyframe: keyframe)
             self.probeDecoder?.feed(sample)
             // The byte work above is the expensive part and stays off the main
             // thread, but CALayer is main-thread-only: reading or mutating the

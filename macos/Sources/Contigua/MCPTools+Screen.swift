@@ -1,58 +1,34 @@
 // screenshot and input_probe (docs/design/mcp.md, MCP-60…64, MCP-99).
+//
+// A screenshot is the phone's next keyframe for the window, decoded once by
+// the window's snapshot decoder and stamped with its seq (MCP-60); the answer
+// says how fresh it is and what state the window is in.
 
 import AVFoundation
+import CoreVideo
 import Foundation
 
 extension MCPToolHost {
     // MARK: Screenshot
 
-    func screenshot(_ id: Int) async throws -> MCPToolResult {
+    /// MCP-60…63: a frame from after the call, never the display layer's last
+    /// buffer (the layer stops presenting behind other windows, #165).
+    func screenshot(_ id: Int, ref: String?) async throws -> MCPToolResult {
         let window = try requireWindow(id)
-        // The same two routes as Live Text's freeze: the frame the display
-        // layer shows (what the person sees), else the phone's next keyframe
-        // decoded once, for a window whose layer reports no displayed buffer
-        // (occluded, or a quiet/headless run).
-        if let buffer = window.videoView.copyDisplayedFrame(),
-           let data = await encode(buffer) {
-            return .image(data, ["window": id])
+        let size = (Int(window.videoView.videoSize.width.rounded()),
+                    Int(window.videoView.videoSize.height.rounded()))
+        let crop = try ref.map {
+            try ScreenshotCrop.box(for: controller.uiTreeResolved(ref: $0, stream: window.stream),
+                                   ref: $0, window: id, frameSize: size)
         }
-        if let buffer = await snapshot(window), let data = await encode(buffer) {
-            return .image(data, ["window": id])
+        do {
+            return try await Screenshot.result(id: id, state: stateToken(for: window), source: window,
+                                               streamSize: size, crop: crop)
+        } catch let error as MCPToolError where error.code == .noFrame {
+            // The state at the bound, not at the call: an opening window may
+            // have gone live, a live one may have stalled.
+            throw MCPToolError.noFrame(window: id, state: stateToken(for: window))
         }
-        throw MCPToolError.noFrame(window: id, state: controller.link.isOnline ? "live" : "offline")
-    }
-
-    func encode(_ buffer: CVPixelBuffer) async -> Data? {
-        await Task.detached(priority: .userInitiated) {
-            FrameGrab.png(from: buffer)
-        }.value
-    }
-
-    /// The phone's next keyframe, decoded (VideoLayerView.beginFrameSnapshot).
-    /// nil after 2 s: no format yet, the phone is gone, or Live Text took the
-    /// decoder for its own freeze in the meantime.
-    func snapshot(_ window: StreamWindowController) async -> CVPixelBuffer? {
-        final class Once {
-            var continuation: CheckedContinuation<CVPixelBuffer?, Never>?
-            func finish(_ buffer: CVPixelBuffer?) {
-                continuation?.resume(returning: buffer)
-                continuation = nil
-            }
-        }
-        let once = Once()
-        let view = window.videoView
-        let buffer = await withCheckedContinuation { continuation in
-            once.continuation = continuation
-            view.beginFrameSnapshot { buffer in MainActor.assumeIsolated { once.finish(buffer) } }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {  // gcd: moved unchanged from MCPTools.swift (T1 split)
-                MainActor.assumeIsolated {
-                    guard once.continuation != nil else { return }
-                    view.cancelFrameSnapshot()
-                    once.finish(nil)
-                }
-            }
-        }
-        return buffer
     }
 
     /// P0 (pmaxx): the tap goes through the same session path a click does;
@@ -90,4 +66,136 @@ extension MCPToolHost {
         return body
     }
 
+}
+
+// MARK: - The screenshot source (MCP-60)
+
+/// A decoded frame from after the call and its count on the window's clock.
+struct SnapshotFrame {
+    let buffer: CVPixelBuffer
+    let seq: Int
+    let ageMs: Int?
+}
+
+/// What a screenshot reads its frame from: a window, or a fake in the tests.
+/// `copyDisplayedFrame` is here so a fake can prove it is never read.
+@MainActor
+protocol ScreenshotSource: AnyObject {
+    /// The newest counted frame when the call starts.
+    var newestSeq: Int { get }
+    /// The display layer's buffer: never a screenshot's answer (MCP-60).
+    func copyDisplayedFrame() -> CVPixelBuffer?
+    /// The first keyframe counted after `seq`, decoded; nil after `timeout`.
+    func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame?
+}
+
+extension StreamWindowController: ScreenshotSource {
+    var newestSeq: Int { frameClock.newest }
+
+    func copyDisplayedFrame() -> CVPixelBuffer? { videoView.copyDisplayedFrame() }
+
+    func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
+        // Live Text's freeze holds the one snapshot decoder: wait for it to
+        // finish (at most the same bound) rather than take it away.
+        let start = ProcessInfo.processInfo.systemUptime
+        while liveText.state == .capturing,
+              ProcessInfo.processInfo.systemUptime - start < timeout {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard liveText.state != .capturing else { return nil }
+        final class Once {
+            var continuation: CheckedContinuation<SnapshotFrame?, Never>?
+            func finish(_ frame: SnapshotFrame?) {
+                continuation?.resume(returning: frame)
+                continuation = nil
+            }
+        }
+        let once = Once()
+        let view = videoView
+        return await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            view.beginFrameSnapshot(after: seq) { buffer, stamp in
+                MainActor.assumeIsolated {
+                    guard let buffer, let stamp else { once.finish(nil); return }
+                    let now = ProcessInfo.processInfo.systemUptime
+                    once.finish(SnapshotFrame(buffer: buffer, seq: stamp.seq,
+                                              ageMs: FrameClock.ms(since: stamp.at, now: now)))
+                }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard once.continuation != nil else { return }
+                view.cancelFrameSnapshot()
+                once.finish(nil)
+            }
+        }
+    }
+}
+
+// MARK: - The answer (MCP-60…63)
+
+@MainActor
+enum Screenshot {
+    /// The bound for a keyframe to arrive (MCP-61).
+    static let timeout: TimeInterval = 2
+
+    /// The `.image` answer for the first keyframe after the call, or `no_frame`.
+    static func result(id: Int, state: String, source: ScreenshotSource,
+                       streamSize: (Int, Int), crop: [Int]?) async throws -> MCPToolResult {
+        let start = source.newestSeq
+        guard let frame = await source.nextKeyframe(after: start, timeout: timeout) else {
+            throw MCPToolError.noFrame(window: id, state: state)
+        }
+        let buffer = frame.buffer
+        let encoded = await Task.detached(priority: .userInitiated) { () -> (Data?, Bool) in
+            (FrameGrab.png(from: buffer, crop: crop), ScreenshotBlank.isBlank(buffer))
+        }.value
+        guard let png = encoded.0 else { throw MCPToolError.noFrame(window: id, state: state) }
+        let image = FrameGrab.scaledSize(sourceWidth: CVPixelBufferGetWidth(buffer),
+                                         sourceHeight: CVPixelBufferGetHeight(buffer), crop: crop)
+        var answer: [String: Any] = [
+            "window": id,
+            "state": state,
+            "frame": FrameClock.object(seq: frame.seq, ageMs: frame.ageMs),
+            "image": [image.0, image.1],
+            "size": [streamSize.0, streamSize.1],
+        ]
+        if encoded.1 { answer["blank"] = true }
+        if let crop { answer["crop"] = crop }
+        return .image(png, answer)
+    }
+}
+
+// MARK: - Blank (MCP-62)
+
+enum ScreenshotBlank {
+    /// Every cell of the frame's 16×16 luma grid within 2 levels of the others:
+    /// a black or one-colour frame. The input probe's grid, no new image path.
+    static func isBlank(_ buffer: CVPixelBuffer) -> Bool {
+        guard let grid = ProbeSignal.signature(of: buffer, region: .whole),
+              let low = grid.cells.min(), let high = grid.cells.max() else { return false }
+        return Int(high) - Int(low) <= 2
+    }
+}
+
+// MARK: - Ref crop (MCP-63)
+
+enum ScreenshotCrop {
+    /// The window pixels added on each side of a ref's box.
+    static let margin = 8
+
+    /// The ref's box plus the margin, clamped to the frame, or the failure the
+    /// ref maps to: `stale_ref` for a ref the latest tree does not name,
+    /// `off_screen` for an off-screen node (the tap's own refusals).
+    static func box(for resolution: UITreeResolution, ref: String, window: Int,
+                    frameSize: (Int, Int)) throws -> [Int] {
+        if let refusal = MCPToolError.tapRefusal(resolution, ref: ref, window: window) {
+            throw refusal
+        }
+        guard case .placed(_, let placed) = resolution, let box = placed.box, box.count == 4 else {
+            throw MCPToolError(.offScreen, UITreeRefusal.offScreen(ref), ["window": window, "ref": ref])
+        }
+        return [max(0, box[0] - margin), max(0, box[1] - margin),
+                min(frameSize.0, box[2] + margin), min(frameSize.1, box[3] + margin)]
+    }
 }
