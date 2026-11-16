@@ -64,6 +64,7 @@ internal class SettleWatches(
     private val handler: Handler,
     private val port: SettlePort,
     private val log: (String) -> Unit,
+    /** The service's session clock (`uptimeMillis`), the one `arrivedAt` is on. */
     private val now: () -> Long = SystemClock::uptimeMillis,
     /** Runs a loading check off the looper. */
     private val runCheck: (Runnable) -> Unit = { Thread(it, "contigua-ui-loading").start() },

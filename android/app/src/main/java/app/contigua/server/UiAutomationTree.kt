@@ -102,19 +102,20 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
 
     /**
      * Watches [displayId] until no content change came for [quietMs] and nothing
-     * on it is loading, or [timeoutMs] passes. Blocking: the session calls it
-     * off its reader thread. A watch that cannot start answers `not_available`
-     * (item 7), never `ui.tree`'s `no_a11y`.
+     * on it is loading, or [timeoutMs] passes, counting from [arrivedAt].
+     * Blocking: the session calls it off its reader thread. The whole call is
+     * bounded by `arrivedAt + timeoutMs + WATCH_MARGIN_MS + FINISH_MS`, under
+     * the Mac's `timeoutMs + 5 s`, however long the connect took. A watch that
+     * cannot start answers `not_available` (item 7), never `ui.tree`'s `no_a11y`.
      */
-    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer {
-        val started = now()
-        val deadline = started + timeoutMs + WATCH_MARGIN_MS
+    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long): SettleAnswer {
+        val deadline = arrivedAt + timeoutMs + WATCH_MARGIN_MS
         if (disconnected) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (ensureAutomation() == null) {
             return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, synchronized(lock) { failure } ?: NO_WATCH)
         }
         val all = watches ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
-        val watch = all.start(Any(), displayId, quietMs, timeoutMs, started)
+        val watch = all.start(Any(), displayId, quietMs, timeoutMs, arrivedAt)
             ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (!watch.gate.await(maxOf(0L, deadline - now()), TimeUnit.MILLISECONDS)) {
             all.fail(watch, SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched."))
@@ -150,6 +151,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         return windows.any { window -> window.root?.let { walk(it, 0) } ?: false }
     }
 
+    /** The service's session clock (DeckService passes `uptimeMillis`), so [settle]'s `arrivedAt` is on it. */
     private fun now() = SystemClock.uptimeMillis()
 
     /**
@@ -384,8 +386,10 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         // deadline, so a first read answers before the Mac gives up on it.
         private const val CONNECT_TIMEOUT_MS = 2_500L
         private const val THREAD_START_MS = 1_000L
-        // The machine answers by start + timeoutMs itself; this covers a looper
-        // that never runs the watch's last tick.
+        // The machine answers by arrival + timeoutMs itself; this covers a slow
+        // connect and a looper that never runs the watch's last tick. With
+        // FINISH_MS the call ends by arrival + timeoutMs + 2.5 s, under the
+        // Mac's timeoutMs + 5 s.
         private const val WATCH_MARGIN_MS = 2_000L
         private const val FINISH_MS = 500L
         private const val LOADING_WALK_NODES = 5_000
