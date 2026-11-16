@@ -28,6 +28,10 @@ final class MCPSocketServer {
     let path: String
     private let handler: (Data) async -> Data?
 
+    /// Whether a connecting process's uid is the app's own (MCP-2). Tests inject
+    /// "not ours" to exercise the refusal; the default is the real `getpeereid`.
+    private nonisolated let peerIsOurs: @Sendable (Int32) -> Bool
+
     private let queue = DispatchQueue(label: "app.contigua.mcp.io")
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
@@ -41,9 +45,14 @@ final class MCPSocketServer {
         didSet { if clientCount != oldValue { onClientCountChanged?(clientCount) } }
     }
 
-    init(path: String, handler: @escaping (Data) async -> Data?) {
+    init(path: String,
+         handler: @escaping (Data) async -> Data?,
+         peerIsOurs: @escaping @Sendable (Int32) -> Bool = { fd in
+             MCPSocketServer.checkPeerIsOurs(fd)
+         }) {
         self.path = path
         self.handler = handler
+        self.peerIsOurs = peerIsOurs
     }
 
     deinit {
@@ -139,7 +148,7 @@ final class MCPSocketServer {
         while true {
             let fd = accept(listenFD, nil, nil)
             guard fd >= 0 else { return } // EAGAIN when the backlog is empty
-            let ours = MCPSocketServer.peerIsOurs(fd)
+            let ours = self.peerIsOurs(fd)
             if !ours {
                 close(fd)
                 continue
@@ -150,7 +159,7 @@ final class MCPSocketServer {
         }
     }
 
-    private nonisolated static func peerIsOurs(_ fd: Int32) -> Bool {
+    nonisolated static func checkPeerIsOurs(_ fd: Int32) -> Bool {
         var uid: uid_t = 0
         var gid: gid_t = 0
         guard getpeereid(fd, &uid, &gid) == 0 else { return false }
