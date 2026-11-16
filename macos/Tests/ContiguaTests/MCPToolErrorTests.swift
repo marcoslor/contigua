@@ -48,7 +48,10 @@ final class MCPToolErrorTests: XCTestCase {
         XCTAssertEqual(MCPToolError.mapping(IntentFailure.noPhone, phone: nil).message,
                        "No phone is paired with Contigua. Pair one in Contigua's Settings, then try again.")
         let several = MCPToolError.mapping(IntentFailure.severalApps("C"), phone: nil)
-        XCTAssertEqual(several.message, "Several apps match \"C\". Call list_apps with a query to see them.")
+        // list_apps takes no query until T9 (MCP-33 target): never name an argument that does not exist.
+        XCTAssertEqual(several.message, "Several apps match \"C\". Call list_apps and pass one package as app.")
+        XCTAssertEqual(MCPToolError.mapping(IntentFailure.appNotFound("Calc"), phone: nil).message,
+                       "No app on the phone matches \"Calc\". Call list_apps and pass its package as app.")
         XCTAssertEqual(MCPToolError.mapping(Other(), phone: nil).message,
                        "Contigua could not do that. Try again; if it keeps failing, check phone_status.")
 
