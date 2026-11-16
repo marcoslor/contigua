@@ -83,7 +83,8 @@ extension MCPToolHost {
         return ["ok": true, "window": id, "key": key.rawValue]
     }
 
-    func send(_ command: InputMapper.Command, to window: StreamWindowController) {        let session = controller.windows.session
+    func send(_ command: InputMapper.Command, to window: StreamWindowController) {
+        let session = controller.windows.session
         switch command {
         case .touch(let event): session.touch(event, stream: window.stream)
         case .key(let event): session.key(event, stream: window.stream)
