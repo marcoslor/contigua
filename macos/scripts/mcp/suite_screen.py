@@ -85,7 +85,8 @@ def suite(args):
         report(isinstance(seq1, int) and isinstance(seq2, int) and seq2 > seq1,
                "MCP [MCP-60] a second screenshot is a later frame (seq %s then %s)" % (seq1, seq2))
         report(first.get("state") == "live" and second.get("state") == "live",
-               "MCP [MCP-21] both screenshots say state live")
+               "MCP [MCP-21] both screenshots say state live (%s, %s)"
+               % (first.get("state"), second.get("state")))
         report(after - before == 1,
                "MCP [MCP-60] one window.keyframe per screenshot (%d)" % (after - before))
         image = second.get("image") or [0, 0]
