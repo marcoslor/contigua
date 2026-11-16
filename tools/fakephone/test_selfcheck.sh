@@ -110,6 +110,24 @@ grep -q "phase quality" "$WORK/quality.txt" || die "quality-test printed no qual
 grep -q "phase stall" "$WORK/quality.txt" || die "quality-test printed no stall phase"
 grep -q "window.quality" "$WORK/fh.err" || die "fakephone did not log window.quality"
 
+# --- ui.settle (MCP-81 fake-phone selfcheck) --------------------------------
+note "ui-settle (answers settled after --settle-ms)"
+"${DECK[@]}" ui-settle > "$WORK/settle.txt" 2>"$WORK/settle.err" \
+    || die "ui-settle failed: $(cat "$WORK/settle.err")"
+cat "$WORK/settle.txt"
+"$PY" - "$WORK/settle.txt" <<'PY' || die "ui-settle reply assertions failed"
+import re
+import sys
+
+line = open(sys.argv[1]).read().strip()
+m = re.search(r"ok=True settled=True waitedMs=(\d+) events=(\d+) reason=None elapsed_ms=(\d+)", line)
+assert m, "unexpected ui-settle line: %r" % line
+assert int(m.group(1)) >= 120, "waitedMs < 120: %s" % m.group(1)
+assert int(m.group(2)) == 0, "events != 0: %s" % m.group(2)
+assert int(m.group(3)) < 300, "answered after %s ms, not within 300" % m.group(3)
+print("  settle waitedMs=%s" % m.group(1))
+PY
+
 # --- second simultaneous session must be rejected --------------------------
 note "busy: a second session is rejected while the first keeps streaming"
 "${DECK[@]}" open --phone --w 1080 --h 2340 --dpi 450 --seconds 4 \

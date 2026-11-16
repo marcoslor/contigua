@@ -1556,6 +1556,56 @@ def cmd_volume(client, args):
     raise DeckError("no state with volume within %ss (an old phone omits it)" % args.wait)
 
 
+def cmd_ui_settle(client, args):
+    """`ui.settle` on the phone (docs/PROTOCOL.md "UI tree" §7): open a phone
+    mirror, ask the phone to settle it and print the reply (MCP-81's wire)."""
+    stream = 1
+    client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                      "dpi": args.dpi, "mode": "phone"})
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed before window.opened")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") == "window.opened":
+            break
+    else:
+        raise DeckError("no window.opened within %ss" % args.wait)
+
+    started = time.monotonic()
+    client.send_json({"t": "ui.settle", "stream": stream, "seq": 1,
+                      "quietMs": args.quiet_ms, "timeoutMs": args.timeout_ms})
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during ui.settle")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") == "ui.settle":
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            print("ui.settle ok=%s settled=%s waitedMs=%s events=%s reason=%s elapsed_ms=%d" % (
+                msg.get("ok"), msg.get("settled"), msg.get("waitedMs"), msg.get("events"),
+                msg.get("reason"), elapsed_ms))
+            if msg.get("ok") is not True:
+                raise DeckError("ui.settle failed: code=%s message=%s"
+                                % (msg.get("code"), msg.get("message", "")))
+            return 0
+    raise DeckError("no ui.settle reply within %ss" % args.wait)
+
+
 def cmd_wake(client, args):
     """Send `phone.wake` and print the state the phone reports afterwards.
 
@@ -3088,6 +3138,14 @@ def build_parser():
     sp.add_argument("--h", type=int, default=2340)
     sp.add_argument("--dpi", type=int, default=450)
 
+    sp = sub.add_parser("ui-settle", help="open a phone mirror and read ui.settle", **spp)
+    sp.add_argument("--w", type=int, default=400)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--quiet-ms", type=int, default=300, dest="quiet_ms")
+    sp.add_argument("--timeout-ms", type=int, default=2000, dest="timeout_ms")
+    sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for the reply")
+
     sp = sub.add_parser("latency", help="ping round-trip latency", **spp)
     sp.add_argument("--count", type=int, default=20)
 
@@ -3717,6 +3775,7 @@ COMMANDS = {
     "resize-test": cmd_resize_test,
     "input-test": cmd_input_test,
     "pause-test": cmd_pause_test,
+    "ui-settle": cmd_ui_settle,
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,
