@@ -53,7 +53,7 @@ final class MCPCoreTests: XCTestCase {
             line: request(1, "initialize", ["protocolVersion": MCPProtocol.version,
                                            "capabilities": [:],
                                            "clientInfo": ["name": "test", "version": "1"]]),
-            perform: { _ in .text("never") }))
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
         XCTAssertEqual(response["jsonrpc"] as? String, "2.0")
         XCTAssertEqual(response["id"] as? Int, 1)
         let result = try XCTUnwrap(response["result"] as? [String: Any])
@@ -68,13 +68,13 @@ final class MCPCoreTests: XCTestCase {
     func testInitializedNotificationGetsNoReply() async {
         let data = await MCPDispatcher.handle(
             line: line(["jsonrpc": "2.0", "method": "notifications/initialized"]),
-            perform: { _ in .text("never") })
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertNil(data)
     }
 
     func testPingAnswersAnEmptyResult() async throws {
         let response = try decode(await MCPDispatcher.handle(
-            line: request(7, "ping"), perform: { _ in .text("never") }))
+            line: request(7, "ping"), client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
         XCTAssertEqual((response["result"] as? [String: Any])?.count, 0)
     }
 
@@ -83,7 +83,7 @@ final class MCPCoreTests: XCTestCase {
     func testToolListIsStable() async throws {
         let response = try decode(await MCPDispatcher.handle(
             line: request(2, "tools/list", [:]),
-            perform: { _ in .text("never") }))
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
         let result = try XCTUnwrap(response["result"] as? [String: Any])
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
         XCTAssertEqual(tools.compactMap { $0["name"] as? String }, [
@@ -237,31 +237,34 @@ final class MCPCoreTests: XCTestCase {
         let recorder = Recorder()
         let response = try decode(await MCPDispatcher.handle(
             line: callRequest("tap", ["window": 4, "x": 0.5, "y": 0.75]),
-            perform: { call in recorder.add(call); return .text("ok") }))
+            client: MCPClientID(1), perform: { call, _ in recorder.add(call); return .answer(["ok": true]) }))
         XCTAssertEqual(recorder.calls, [.tap(window: 4, x: 0.5, y: 0.75)])
         let result = try XCTUnwrap(response["result"] as? [String: Any])
-        XCTAssertNil(result["isError"])
+        XCTAssertEqual(result["isError"] as? Bool, false)
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         XCTAssertEqual(content.first?["type"] as? String, "text")
-        XCTAssertEqual(content.first?["text"] as? String, "ok")
+        XCTAssertEqual(content.first?["text"] as? String, #"{"ok":true}"#)
     }
 
     func testRuntimeFailureIsAToolErrorNotAProtocolError() async throws {
         let response = try decode(await MCPDispatcher.handle(
             line: callRequest("screenshot", ["window": 7]),
-            perform: { _ in .error("No window 7.") }))
+            client: MCPClientID(1), perform: { _, _ in .failure(.noWindow(7)) }))
         XCTAssertNil(response["error"])
         let result = try XCTUnwrap(response["result"] as? [String: Any])
         XCTAssertEqual(result["isError"] as? Bool, true)
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
-        XCTAssertEqual(content.first?["text"] as? String, "No window 7.")
+        let text = try XCTUnwrap(content.first?["text"] as? String)
+        let error = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, "no_window")
+        XCTAssertEqual(error["message"] as? String, "No window 7. Call list_windows to see what is open.")
     }
 
     func testImageResultCarriesBase64PNG() async throws {
         let png = Data([0x89, 0x50, 0x4e, 0x47])
         let response = try decode(await MCPDispatcher.handle(
             line: callRequest("screenshot", ["window": 1]),
-            perform: { _ in .image(png) }))
+            client: MCPClientID(1), perform: { _, _ in .image(png, ["window": 1]) }))
         let result = try XCTUnwrap(response["result"] as? [String: Any])
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         XCTAssertEqual(content.first?["type"] as? String, "image")
@@ -269,23 +272,115 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertEqual(Data(base64Encoded: content.first?["data"] as? String ?? ""), png)
     }
 
+    // MARK: Answers, errors and the log line (plan T1)
+
+    private func call(_ name: String, _ args: [String: Any],
+                      _ result: MCPToolResult) async throws -> [String: Any] {
+        let response = try decode(await MCPDispatcher.handle(
+            line: callRequest(name, args), client: MCPClientID(1),
+            perform: { _, _ in result }))
+        return try XCTUnwrap(response["result"] as? [String: Any])
+    }
+
+    // [MCP-5]
+    func testEveryAnswerIsStructuredAndMirroredAsText() async throws {
+        let data = await MCPDispatcher.handle(
+            line: callRequest("list_windows", [:]), client: MCPClientID(1),
+            perform: { _, _ in .answer(["window": 3]) })
+        let text = String(decoding: try XCTUnwrap(data), as: UTF8.self)
+        XCTAssertTrue(text.contains(
+            #""result":{"content":[{"text":"{\"window\":3}","type":"text"}],"isError":false,"structuredContent":{"window":3}}"#),
+            text)
+        let result = try await call("list_windows", [:], .answer(["window": 3]))
+        XCTAssertEqual(result["isError"] as? Bool, false)
+        XCTAssertEqual((result["structuredContent"] as? [String: Any])?["window"] as? Int, 3)
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        XCTAssertEqual(content.count, 1)
+        XCTAssertEqual(content[0]["type"] as? String, "text")
+        XCTAssertEqual(content[0]["text"] as? String, #"{"window":3}"#)
+        // No 17-digit doubles: a point prints as it was written.
+        let point = try await call("list_windows", [:], .answer(["x": 0.651]))
+        let pointText = (point["content"] as? [[String: Any]])?.first?["text"] as? String
+        XCTAssertEqual(pointText, #"{"x":0.651}"#)
+    }
+
+    // [MCP-5]
+    func testImageAnswerPutsTheImageFirst() async throws {
+        let png = Data([0x89, 0x50, 0x4e, 0x47])
+        let result = try await call("screenshot", ["window": 3], .image(png, ["window": 3]))
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        XCTAssertEqual(content.count, 2)
+        XCTAssertEqual(content[0]["type"] as? String, "image")
+        XCTAssertEqual(content[0]["mimeType"] as? String, "image/png")
+        XCTAssertEqual(Data(base64Encoded: content[0]["data"] as? String ?? ""), png)
+        XCTAssertEqual(content[1]["type"] as? String, "text")
+        XCTAssertEqual(content[1]["text"] as? String, #"{"window":3}"#)
+        XCTAssertEqual((result["structuredContent"] as? [String: Any])?["window"] as? Int, 3)
+    }
+
+    // [MCP-5]
+    func testToolListDeclaresAnOutputSchemaForEveryTool() async throws {
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list"), client: MCPClientID(1),
+            perform: { _, _ in .answer([:]) }))
+        let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, MCPToolName.allCases.count)
+        for tool in tools {
+            let schema = try XCTUnwrap(tool["outputSchema"] as? [String: Any], "\(tool["name"] ?? "?")")
+            XCTAssertEqual(schema["type"] as? String, "object")
+            let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+            XCTAssertFalse(properties.isEmpty, "\(tool["name"] ?? "?")")
+        }
+    }
+
+    // [MCP-14]
+    func testTheLogLineCarriesNameDurationCodeAndWindowOnly() async throws {
+        final class Box: @unchecked Sendable {
+            var entries: [(MCPToolName, TimeInterval, MCPErrorCode?, Int?)] = []
+        }
+        let box = Box()
+        _ = await MCPDispatcher.handle(
+            line: callRequest("type_text", ["window": 3, "text": "secret"]), client: MCPClientID(1),
+            perform: { _, _ in .answer(["window": 3, "characters": 6]) },
+            log: { tool, duration, code, window in box.entries.append((tool, duration, code, window)) })
+        XCTAssertEqual(box.entries.count, 1)
+        let entry = try XCTUnwrap(box.entries.first)
+        XCTAssertEqual(entry.0, .typeText)
+        XCTAssertGreaterThanOrEqual(entry.1, 0)
+        XCTAssertNil(entry.2)
+        XCTAssertEqual(entry.3, 3)
+        let line = MCPLogLine.format(tool: entry.0, duration: entry.1, code: entry.2, window: entry.3)
+        XCTAssertFalse(line.contains("secret"), line)
+        XCTAssertTrue(line.hasPrefix("mcp type_text "), line)
+        XCTAssertTrue(line.contains("window=3"), line)
+
+        _ = await MCPDispatcher.handle(
+            line: callRequest("ui_tree", ["window": 9]), client: MCPClientID(1),
+            perform: { _, _ in .failure(.noWindow(9)) },
+            log: { tool, duration, code, window in box.entries.append((tool, duration, code, window)) })
+        XCTAssertEqual(box.entries.last?.2, .noWindow)
+        let failed = MCPLogLine.format(tool: .uiTree, duration: 0.012, code: .noWindow, window: 9)
+        XCTAssertEqual(failed, "mcp ui_tree 12 ms code=no_window window=9")
+        XCTAssertFalse(failed.contains("No window"), failed)
+    }
+
     func testUnknownToolIsInvalidParams() async throws {
         let data = await MCPDispatcher.handle(
             line: callRequest("teleport", ["window": 1]),
-            perform: { _ in .text("never") })
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32602)
     }
 
     func testInvalidArgumentsAreInvalidParams() async throws {
         let data = await MCPDispatcher.handle(
             line: callRequest("tap", ["window": 1, "x": 9, "y": 0.5]),
-            perform: { _ in .text("never") })
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32602)
     }
 
     func testUnknownMethodIsMethodNotFound() async throws {
         let data = await MCPDispatcher.handle(
-            line: request(3, "resources/list"), perform: { _ in .text("never") })
+            line: request(3, "resources/list"), client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32601)
     }
 
@@ -293,27 +388,27 @@ final class MCPCoreTests: XCTestCase {
 
     func testMalformedJSONIsAParseError() async throws {
         let data = await MCPDispatcher.handle(
-            line: Data("{not json\n".utf8), perform: { _ in .text("never") })
+            line: Data("{not json\n".utf8), client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32700)
     }
 
     func testNonObjectAndWrongVersionAreInvalidRequests() async throws {
         let array = await MCPDispatcher.handle(
-            line: Data("[1,2]\n".utf8), perform: { _ in .text("never") })
+            line: Data("[1,2]\n".utf8), client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(array), -32600)
         let version = await MCPDispatcher.handle(
             line: line(["jsonrpc": "1.0", "id": 1, "method": "ping"]),
-            perform: { _ in .text("never") })
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(version), -32600)
         let badId = await MCPDispatcher.handle(
             line: line(["jsonrpc": "2.0", "id": 1.5, "method": "ping"]),
-            perform: { _ in .text("never") })
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(badId), -32600)
     }
 
     func testAnOversizedLineIsRefused() async throws {
         let oversized = Data(repeating: 0x20, count: MCPProtocol.maxLineBytes + 1)
-        let data = await MCPDispatcher.handle(line: oversized, perform: { _ in .text("never") })
+        let data = await MCPDispatcher.handle(line: oversized, client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32600)
     }
 }
