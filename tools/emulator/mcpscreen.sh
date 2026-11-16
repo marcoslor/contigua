@@ -295,9 +295,10 @@ try:
     if seven is None:
         sys.exit(1)
     tapped = client.text("tap", {"window": calc_window, "ref": seven["ref"]})
-    report(tapped.get("ok") is True and "frame" in tapped and "state" in tapped,
-           "the tap by ref answers ok with state=%s frame.seq=%s"
-           % (tapped.get("state"), (tapped.get("frame") or {}).get("seq")))
+    # MCP-80: the act envelope has no `ok`; `did` names the press, `state` the window.
+    report("ok" not in tapped and "did" in tapped and "state" in tapped,
+           "the tap by ref answers the act envelope with state=%s settle=%s"
+           % (tapped.get("state"), (tapped.get("settle") or {}).get("state")))
     time.sleep(0.7)
     after, path1 = shot(client, calc_window, "after")
     frame = after.get("frame") or {}
