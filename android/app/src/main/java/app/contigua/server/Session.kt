@@ -2081,6 +2081,9 @@ class Session(
      * `ui.*` request at a time (item 6); the watch runs off the reader thread.
      */
     private fun onUiSettle(obj: Map<String, Any?>) {
+        // MCP-81: `waitedMs` and the deadline count from here, the request's
+        // arrival, not from when the watch got going.
+        val arrivedAt = now()
         val stream = Json.int(obj["stream"]) ?: run {
             sendUiSettle(0, Json.int(obj["seq"]), UiTree.failure(UiCodes.NO_WINDOW, "There is no window to settle."))
             return
@@ -2107,10 +2110,10 @@ class Session(
         // A quiet period longer than the watch could never end it: quietMs is
         // at most timeoutMs (MCP-81).
         val quietMs = clamp(obj["quietMs"], MIN_QUIET_MS, MAX_QUIET_MS, DEFAULT_QUIET_MS).coerceAtMost(timeoutMs)
-        val started = now()
+        val started = arrivedAt
         Thread({
             val answer = try {
-                source.settle(displayId, quietMs, timeoutMs)
+                source.settle(displayId, quietMs, timeoutMs, arrivedAt)
             } catch (t: Throwable) {
                 SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
             } finally {
