@@ -4,11 +4,16 @@
 #
 #   bash tools/emulator/settle.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/settle.sh           # boot, pair, prove, kill (one boot)
+#   bash tools/emulator/settle.sh --ab      # the same, plus the tree-read A/B:
+#     debug.contigua.ui_cache=keep (no cache clear) against the fix (MCP-107)
 #
 # Checks, all on native apps (the API 36 image has no Calculator and its
 # browser exposes no page nodes; web spinners are not a loading signal, MCP-103):
-#   1. a tap on a Clock tab, found by its tree row, settles within 2 s;
-#   2. a running stopwatch answers settled false, reason changes, at 2000 ms;
+#   0. the rig's stopwatch (an earlier run may have left it running) is
+#      paused and reset through its own buttons, by ref;
+#   1. a tap on the Clock's Alarm tab, found by its tree row, settles within 2 s;
+#   2. a running stopwatch answers settled false, reason changes, at 2000 ms,
+#      and is then stopped and reset;
 #   3. a native indeterminate ProgressBar (Settings screens that scan or load)
 #      is marked `loading` on its row and the reply, and a settle during it
 #      answers reason loading;
@@ -22,7 +27,7 @@ MODE=boot
 AB=()
 case "${1:-}" in
   --check) MODE=check ;;
-  --ab) AB=(--ab) ;;  # the B1 regression A/B (debug.contigua.ui_probe), one boot
+  --ab) AB=(--ab) ;;  # also the B1 regression A/B (debug.contigua.ui_cache), same boot
   "") ;;
   *) echo "[settle] error: unknown flag $1" >&2; exit 2 ;;
 esac
@@ -180,29 +185,34 @@ def opening_settle(phone, stream, msg, tag):
     return opened
 
 
-def ab(phone, adb, clock):
-    """The B1 regression A/B: the same ui.tree with the event listener off,
-    on, and on with the node cache cleared (debug.contigua.ui_probe)."""
-    targets = [(1, dict(SIZE, t="window.open", stream=1, pkg=clock)),
-               (2, dict(SIZE, t="window.open", stream=2, pkg="com.android.settings"))]
-    for stream, msg in targets:
-        o = open_window(phone, msg, stream)
-        line("INFO", "AB", "stream %d open: %s" % (stream, o and o.get("t")))
-    time.sleep(4)
+def ab(phone, adb, streams, tag):
+    """The B1 regression A/B: the same ui.tree with the node-cache clear
+    skipped (debug.contigua.ui_cache=keep, the branch before the fix) and
+    with it (the fix). Counts only."""
     counts = {}
     for rnd in range(3):
-        for mode in ("off", "on", "clear"):
-            adb("shell", "setprop", "debug.contigua.ui_probe", mode)
-            for stream, _ in targets:
+        for mode in ("keep", "clear"):
+            adb("shell", "setprop", "debug.contigua.ui_cache", mode)
+            for stream in streams:
                 t = tree(phone, stream)
-                n = len(t.get("nodes") or [])
-                counts.setdefault((mode, stream), []).append(n)
-                line("INFO", "AB", "round=%d mode=%s stream=%d ok=%s nodes=%d code=%s" % (
-                    rnd, mode, stream, t.get("ok"), n, t.get("code")))
-    adb("shell", "setprop", "debug.contigua.ui_probe", "''")
+                counts.setdefault((mode, stream), []).append(len(t.get("nodes") or []))
+    adb("shell", "setprop", "debug.contigua.ui_cache", "clear")
     for (mode, stream), ns in sorted(counts.items()):
-        line("INFO", "AB", "summary mode=%s stream=%d nodes=%s" % (mode, stream, ns))
-    return 0
+        line("INFO", "AB", "%s mode=%s stream=%d nodes=%s" % (tag, mode, stream, ns))
+    return counts
+
+
+def stopwatch_reset(phone, stream):
+    """Leave the rig's stopwatch stopped at zero: Pause if it runs, then Reset, by ref."""
+    pause = find(phone, stream, ("Pause", "Stop"), 3)
+    if pause:
+        phone.tap(stream, pause["at"])
+        time.sleep(0.8)
+    reset = find(phone, stream, ("Reset",), 3)
+    if reset:
+        phone.tap(stream, reset["at"])
+        time.sleep(0.8)
+    return bool(pause), bool(reset)
 
 
 def main():
@@ -237,9 +247,6 @@ def main():
     clock = next((p for p in apps if "deskclock" in p), None)
     line("INFO", "apps", "%d apps listed, clock=%s" % (len(apps), bool(clock)))
 
-    if args.ab:
-        return ab(phone, adb, clock)
-
     # 4a. window.open: a settle with the open and one at window.opened.
     if clock:
         opening_settle(phone, 1, dict(SIZE, t="window.open", stream=1, pkg=clock), "window.open")
@@ -247,20 +254,43 @@ def main():
         line("FAIL", "MCP-81", "no Clock app on this image")
         return 1
 
-    # 1. A tap on a Clock tab, by its row, settles within the 2 s bound.
     settle(phone, 1, 300, 2000)  # let the launch finish first
-    tab = find(phone, 1, ("Timer",)) or find(phone, 1, ("Clock",), 3)
+    if args.ab:
+        o = open_window(phone, dict(SIZE, t="window.open", stream=9, pkg="com.android.settings"), 9)
+        time.sleep(3)
+        c = ab(phone, adb, (1, 9), "after open")
+        whole = all(min(c[("clear", s_)]) > 1 for s_ in (1, 9))
+        check(whole, "MCP-107", "with the cache cleared every read is whole (min rows %s)" % (
+            [min(c[("clear", s_)]) for s_ in (1, 9)]))
+
+    # 0. The rig's stopwatch, left running by an earlier run, is stopped and reset.
+    sw = find(phone, 1, ("Stopwatch",))
+    if sw:
+        phone.tap(1, sw["at"])
+        time.sleep(1.5)
+        paused, reset = stopwatch_reset(phone, 1)
+        line("INFO", "rig", "stopwatch at start: was running=%s, reset=%s" % (paused, reset))
+    else:
+        line("FAIL", "MCP-81", "no Stopwatch tab row found")
+
+    # 1. A tap on the Alarm tab (a static list), by its row, settles within 2 s.
+    tab = find(phone, 1, ("Alarm", "Alarms"))
     if tab:
         phone.tap(1, tab["at"])
         r = settle(phone, 1, 300, 2000)
         check(r.get("ok") is True and r.get("settled") is True and (r.get("waitedMs") or 9999) < 2000,
-              "MCP-81", "Clock tab tap (row %s): %s" % (tab.get("role"), describe(r)))
+              "MCP-81", "Alarm tab tap (row %s): %s" % (tab.get("role"), describe(r)))
         check((r.get("events") or 0) >= 1, "MCP-107",
               "the tap's content changes were counted on the virtual display (events=%s)" % r.get("events"))
     else:
-        line("FAIL", "MCP-81", "no Clock tab row found")
+        line("FAIL", "MCP-81", "no Alarm tab row found")
 
-    # 2. A running stopwatch: settled false, reason changes, at 2000 ms.
+    if args.ab:
+        # Events have flowed (the tap, the settle): the A/B again.
+        ab(phone, adb, (1, 9), "after a settle")
+        close(phone, 9)
+
+    # 2. A running stopwatch: settled false, reason changes, at 2000 ms; then stop and reset it.
     sw = find(phone, 1, ("Stopwatch",))
     running = False
     if sw:
@@ -275,9 +305,8 @@ def main():
         r = settle(phone, 1, 300, 2000)
         check(r.get("ok") is True and r.get("settled") is False and r.get("reason") == "changes"
               and abs((r.get("waitedMs") or 0) - 2000) <= 50, "MCP-81", "running stopwatch: " + describe(r))
-        pause = find(phone, 1, ("Pause", "Stop"), 3)
-        if pause:
-            phone.tap(1, pause["at"])  # leave the stopwatch as it was found: stopped
+        paused, reset = stopwatch_reset(phone, 1)
+        check(paused and reset, "rig", "stopwatch stopped=%s and reset=%s by ref" % (paused, reset))
     else:
         line("FAIL", "MCP-81", "could not start the stopwatch (tab=%s)" % bool(sw))
     close(phone, 1)
