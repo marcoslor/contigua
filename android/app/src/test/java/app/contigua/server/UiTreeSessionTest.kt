@@ -111,7 +111,7 @@ class UiTreeSessionTest : SessionFixture() {
     ) : UiTreeSource {
         @Volatile var args: Triple<Int, Long, Long>? = null
         override fun dump(displayId: Int, size: IntSize): UiTree.Answer = UiTree.Answer.Tree(emptyList())
-        override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer {
+        override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
             args = Triple(displayId, quietMs, timeoutMs)
             started.countDown()
             release?.await(5, TimeUnit.SECONDS)
@@ -198,5 +198,65 @@ class UiTreeSessionTest : SessionFixture() {
         assertEquals(1L, (readUntil("ui.settle")["seq"] as Number).toLong())
         send(mapOf("t" to "ui.tree", "stream" to 1, "seq" to 4))
         assertEquals(true, readUntil("ui.tree")["ok"])
+    }
+
+    @Test
+    fun testUiSettleClampsQuietMsToTimeoutMs() { // [MCP-81]
+        val source = SettleSource()
+        connect(uiTree = source)
+        openPhoneMirror(640, 480)
+        send(mapOf("t" to "ui.settle", "stream" to 1, "seq" to 1, "quietMs" to 2_000, "timeoutMs" to 300))
+        assertEquals(true, readUntil("ui.settle")["ok"])
+        assertEquals(300L to 300L, source.args!!.let { it.second to it.third })
+    }
+
+    @Test
+    fun testUiSettleWaitedMsCountsFromArrival() { // [MCP-81]
+        // A source that starts 500 ms after the request arrived (a slow
+        // connect): its waitedMs counts from the arrival the session hands it.
+        val source = object : UiTreeSource {
+            override fun dump(displayId: Int, size: IntSize): UiTree.Answer = UiTree.Answer.Tree(emptyList())
+            override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
+                clock += 500
+                return SettleAnswer.Settled(clock - arrivedAt, 0)
+            }
+        }
+        connect(uiTree = source)
+        openPhoneMirror(640, 480)
+        send(mapOf("t" to "ui.settle", "stream" to 1, "seq" to 1, "quietMs" to 300, "timeoutMs" to 2_000))
+        val reply = readUntil("ui.settle")
+        assertTrue((reply["waitedMs"] as Number).toLong() >= 500)
+    }
+
+    @Test
+    fun testSessionEndStopsTheWatch() { // [MCP-81]
+        val started = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val ended = CountDownLatch(1)
+        var cancelledOwner: Any? = null
+        var settleOwner: Any? = null
+        val source = object : UiTreeSource {
+            override fun dump(displayId: Int, size: IntSize): UiTree.Answer = UiTree.Answer.Tree(emptyList())
+            override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
+                settleOwner = owner
+                started.countDown()
+                cancelled.await(5, TimeUnit.SECONDS)
+                ended.countDown()
+                return SettleAnswer.Cancelled
+            }
+            override fun cancel(owner: Any) {
+                cancelledOwner = owner
+                cancelled.countDown()
+            }
+        }
+        connect(uiTree = source)
+        openPhoneMirror(640, 480)
+        send(mapOf("t" to "ui.settle", "stream" to 1, "seq" to 1, "quietMs" to 300, "timeoutMs" to 10_000))
+        assertTrue("the watch is running", started.await(2, TimeUnit.SECONDS))
+        session!!.close()
+        // The session's end cancels its own watch, well before the 10 s timeout.
+        assertTrue("the session end cancels the watch", cancelled.await(3, TimeUnit.SECONDS))
+        assertTrue(ended.await(2, TimeUnit.SECONDS))
+        assertTrue(cancelledOwner != null && cancelledOwner === settleOwner)
     }
 }

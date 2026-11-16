@@ -341,4 +341,20 @@ class UiTreeTest {
         val body = reply(listOf(layer(node(text = "Hello", clickable = true))))
         assertFalse(body.containsKey("loading"))
     }
+
+    @Test
+    fun testAWebViewCutByTheDepthCapIsNotLoading() { // [MCP-103]
+        // A WebView at the depth cap keeps its child count but none of its
+        // children: the tree judges "empty" by the count, as the check does.
+        val web = UiTree.Node(
+            role = "android.webkit.WebView", box = UiTree.Box(0, 0, 100, 100),
+            children = emptyList(), childCount = 3,
+        )
+        val body = reply(listOf(layer(web)))
+        assertFalse(body.containsKey("loading"))
+        assertTrue(nodes(body).none { it["loading"] == true })
+        // An uncut empty WebView is still loading.
+        val empty = UiTree.Node(role = "android.webkit.WebView", box = UiTree.Box(0, 0, 100, 100))
+        assertEquals(true, reply(listOf(layer(empty)))["loading"])
+    }
 }
