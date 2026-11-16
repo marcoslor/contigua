@@ -86,6 +86,7 @@ protocol ScreenshotSource: AnyObject {
     /// The display layer's buffer: never a screenshot's answer (MCP-60).
     func copyDisplayedFrame() -> CVPixelBuffer?
     /// The first keyframe counted after `seq`, decoded; nil after `timeout`.
+    /// Called only once Live Text no longer holds the decoder.
     func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame?
 }
 
@@ -97,14 +98,6 @@ extension StreamWindowController: ScreenshotSource {
     func copyDisplayedFrame() -> CVPixelBuffer? { videoView.copyDisplayedFrame() }
 
     func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
-        // Live Text's freeze holds the one snapshot decoder: wait for it to
-        // finish (at most the same bound) rather than take it away.
-        let start = ProcessInfo.processInfo.systemUptime
-        while liveText.state == .capturing,
-              ProcessInfo.processInfo.systemUptime - start < timeout {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
-        guard liveText.state != .capturing else { return nil }
         final class Once {
             var continuation: CheckedContinuation<SnapshotFrame?, Never>?
             func finish(_ frame: SnapshotFrame?) {
@@ -152,7 +145,17 @@ enum Screenshot {
         // MCP-61: an offline window can make no picture; say so before asking.
         guard online else { throw MCPToolError.phoneOffline(phone) }
         let start = source.newestSeq
-        guard let frame = await source.nextKeyframe(after: start, timeout: timeout) else {
+        // Live Text's freeze holds the one snapshot decoder: wait for it to
+        // finish rather than take it away. The wait is inside the one 2 s
+        // bound; the keyframe gets only the time left (MCP-61).
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while source.isCapturing, ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let left = deadline - ProcessInfo.processInfo.systemUptime
+        let frame = source.isCapturing || left <= 0
+            ? nil : await source.nextKeyframe(after: start, timeout: left)
+        guard let frame else {
             // MCP-61: a window that closed while the call waited is gone,
             // not short of a picture.
             let now = state()
