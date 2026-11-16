@@ -213,6 +213,8 @@ final class ConnectionController {
     @ObservationIgnored private var frontSeq = 0
     @ObservationIgnored private var frontWatchCount = 0
     @ObservationIgnored private var frontTimer: Timer?
+    /// `ui.tree` (WIN-79): each MCP read waits for the reply carrying its seq.
+    @ObservationIgnored private var uiTreeBroker = UITreeBroker()
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -765,7 +767,10 @@ final class ConnectionController {
         }
         mcp.start()
         windows.onStreamClosed = { [weak self] stream in
-            DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
+            DispatchQueue.main.async {  // gcd: the close arrives on the session queue; hop to main first
+                self?.uiTreeBroker.forget(stream: stream) // F4: a closed window's refs die with it
+                self?.dockFollowWindowClosed(stream)
+            }
         }
         windows.onFilesDropped = { [weak self] urls, target in
             MainActor.assumeIsolated { self?.dropFiles(urls, target: target) }
@@ -775,6 +780,9 @@ final class ConnectionController {
         }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
+        }
+        windows.onStreamAllocated = { [weak self] stream in
+            MainActor.assumeIsolated { self?.uiTreeBroker.forget(stream: stream) }
         }
         // The phone refused an extra window at its cap (WIN-32): the Deck says
         // so in the same words the menu item would have.
@@ -1280,6 +1288,36 @@ final class ConnectionController {
         frontApp.reset()
         frontAppRepliedAt = nil
         frontSeq += 1
+    }
+
+    // MARK: The accessibility tree (WIN-79)
+
+    /// The accessibility tree of the display a window's app runs on, for the
+    /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
+    /// phone's answer arrives as `.uiTree`. A closed session fails at once and
+    /// a silent phone at the deadline, so a tool call never hangs.
+    func uiTree(stream: UInt32, timeout: TimeInterval = 5) async throws -> UITree {
+        guard link.isOnline, let session else { throw UITreeError.notConnected }
+        return try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
+            session.requestUITree(stream: stream, seq: seq)
+        }
+    }
+
+    private func uiTreeReplied(_ tree: UITree) {
+        uiTreeBroker.reply(tree)
+    }
+
+    /// The element `ref` named in the tree last read for that window (WIN-79),
+    /// with the read it came from. `.stale` when the client kept a ref from an
+    /// older screen, `.noTree` when the window has no read since it opened or
+    /// since the phone reconnected.
+    func uiTreeResolved(ref: String, stream: UInt32) -> UITreeResolution {
+        uiTreeBroker.resolved(ref: ref, stream: stream)
+    }
+
+    /// A closed session, or a phone switch, has no tree to answer with.
+    private func failUITrees(_ error: UITreeError) {
+        uiTreeBroker.fail(error)
     }
 
     /// The panel's row: only while online and the machine knows a package.
@@ -2504,6 +2542,7 @@ final class ConnectionController {
 
     private func resetPhoneData(for ref: PhoneRef) {
         resetFrontApp()
+        failUITrees(.notConnected)
         windows.setPhoneName(displayName(for: ref))
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
@@ -3005,6 +3044,7 @@ final class ConnectionController {
             case .failed(let reason):
                 clearPathOutage()
                 resetFrontApp()
+                failUITrees(.notConnected)
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3022,6 +3062,7 @@ final class ConnectionController {
             case .closed:
                 clearPathOutage()
                 resetFrontApp()
+                failUITrees(.notConnected)
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3205,6 +3246,8 @@ final class ConnectionController {
             recheckOpenWindows()
         case .frontApp(let seq, let pkg):
             frontReplied(seq: seq, pkg: pkg)
+        case .uiTree(let tree):
+            uiTreeReplied(tree)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  volume: volume, volumeMax: volumeMax, screen: screen)
