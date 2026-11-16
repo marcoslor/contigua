@@ -405,7 +405,7 @@ class UiTreeTest {
         // The close button sits at the right end: the link's centre is clear.
         val clear = banner(UiTree.Box(900, 2_180, 1_080, 2_320))
         val link = clear.first { it["text"] == "Terms" }
-        assertEquals(listOf(0.5, 0.937), link["at"])
+        assertEquals(listOf(0.5, 0.938), link["at"]) // 2250 / 2400 = 0.9375
         assertFalse(link.containsKey("covered"))
         // The banner spans the width: the link is covered by it, and not the reverse.
         val covered = banner(UiTree.Box(0, 2_180, 1_080, 2_320))
