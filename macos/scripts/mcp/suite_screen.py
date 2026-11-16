@@ -78,6 +78,7 @@ def suite(args):
         first = screenshot(client, window)
         before = len(rx(events(args.events), "window.keyframe", window))
         second = screenshot(client, window)
+        held_from = time.time()  # the hold runs to 15 s after this call
         after = len(rx(events(args.events), "window.keyframe", window))
         seq1 = (first.get("frame") or {}).get("seq")
         seq2 = (second.get("frame") or {}).get("seq")
@@ -102,11 +103,18 @@ def suite(args):
         if not args.control:
             report(False, "MCP [MCP-22] the suite needs --control for the pause setup")
             return
+        # The second screenshot holds the window (list_windows names none):
+        # minimised now, it stays live until the hold ends, then pauses.
+        last_call = held_from
         answer = control(args.control, "open --minimize-stream %d:0" % window)
         report(answer == "ok", "MCP [MCP-22] setup: minimise the window (%s)" % answer)
         paused = wait_event(args.events, lambda e: e.get("ev") == "rx" and isinstance(e.get("msg"), dict)
                             and e["msg"].get("t") == "window.pause"
-                            and e["msg"].get("stream") == window, 15, "window.pause")
+                            and e["msg"].get("stream") == window
+                            and e.get("ts", 0) >= last_call, 25, "window.pause")
+        report(paused.get("ts", 0) - last_call >= 14,
+               "MCP [MCP-22] a window minimised during the hold pauses only when it ends (%.1f s)"
+               % (paused.get("ts", 0) - last_call))
         time.sleep(1)
         called = time.time()
         shot = screenshot(client, window)
