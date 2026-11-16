@@ -9,24 +9,47 @@ import Foundation
 
 @MainActor
 final class PhoneReadQueue {
+    private enum Turn { case holds, failed, timedOut }
+
+    private struct Waiter {
+        let id: Int
+        let cont: CheckedContinuation<Turn, Never>
+    }
+
     private var running = false
-    /// Each waiter is resumed with true when it holds the slot, false when the
-    /// session it queued for ended (it never sends).
-    private var waiting: [CheckedContinuation<Bool, Never>] = []
+    private var waiting: [Waiter] = []
+    private var nextWaiter = 0
     private var lastFailure: Error = UITreeError.notConnected
 
-    /// Run `body` when every earlier request has finished.
-    func run<T>(_ body: () async throws -> T) async throws -> T {
+    /// Run `body` when every earlier request has finished, within the
+    /// caller's bound `until` (MCP-9): a waiter still queued at `until`
+    /// leaves the queue unsent and fails `timedOut`, and `body` is given only
+    /// the time left.
+    func run<T>(until: ContinuousClock.Instant, _ body: (Duration) async throws -> T) async throws -> T {
         if running {
-            let holds = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                waiting.append(cont)
+            nextWaiter += 1
+            let id = nextWaiter
+            let timer = Task { [weak self] in
+                try? await Task.sleep(until: until, clock: .continuous)
+                guard !Task.isCancelled else { return }
+                self?.expire(id)
             }
-            guard holds else { throw lastFailure }
+            let turn = await withCheckedContinuation { (cont: CheckedContinuation<Turn, Never>) in
+                waiting.append(Waiter(id: id, cont: cont))
+            }
+            timer.cancel()
+            switch turn {
+            case .holds: break
+            case .failed: throw lastFailure
+            case .timedOut: throw UITreeError.timedOut
+            }
         } else {
             running = true
         }
         defer { release() }
-        return try await body()
+        let left = until - .now
+        guard left > .zero else { throw UITreeError.timedOut }
+        return try await body(left)
     }
 
     /// The session ended: every queued request fails without being sent. The
@@ -35,15 +58,34 @@ final class PhoneReadQueue {
         lastFailure = error
         let failed = waiting
         waiting.removeAll()
-        for waiter in failed { waiter.resume(returning: false) }
+        for waiter in failed { waiter.cont.resume(returning: .failed) }
+    }
+
+    private func expire(_ id: Int) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: index).cont.resume(returning: .timedOut)
     }
 
     private func release() {
         if waiting.isEmpty {
             running = false
         } else {
-            waiting.removeFirst().resume(returning: true)
+            waiting.removeFirst().cont.resume(returning: .holds)
         }
+    }
+}
+
+extension PhoneReadQueue {
+    /// No caller bound: tests and reads whose broker carries the whole bound.
+    func run<T>(_ body: () async throws -> T) async throws -> T {
+        try await run(until: .now + .seconds(3600)) { _ in try await body() }
+    }
+}
+
+extension Duration {
+    /// In seconds, for the brokers' `TimeInterval` deadlines.
+    var seconds: TimeInterval {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }
 
@@ -86,14 +128,20 @@ struct UISettleReply: Equatable {
 /// `timedOut`, and a late reply finds no waiter and is ignored.
 @MainActor
 final class UISettleBroker {
+    /// The phone answers by `timeoutMs` + 2.5 s; the Mac adds 3 s for the
+    /// link (MCP-9).
+    nonisolated static let grace: TimeInterval = 5.5
+
     private var seq = 0
     private var waiters: [Int: CheckedContinuation<UISettleReply, Error>] = [:]
 
-    func settle(stream: UInt32, quietMs: Int, timeoutMs: Int, grace: TimeInterval,
-                send: (Int) -> Void) async throws -> UISettleReply {
+    /// `within`: the caller's time left (MCP-9); the wait is never longer.
+    func settle(stream: UInt32, quietMs: Int, timeoutMs: Int, grace: TimeInterval = UISettleBroker.grace,
+                within: TimeInterval? = nil, send: (Int) -> Void) async throws -> UISettleReply {
         seq += 1
         let id = seq
-        let wait = Double(timeoutMs) / 1000 + max(0, grace)
+        let own = Double(timeoutMs) / 1000 + max(0, grace)
+        let wait = within.map { min(own, max(0, $0)) } ?? own
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UISettleReply, Error>) in
             waiters[id] = cont
             send(id)
