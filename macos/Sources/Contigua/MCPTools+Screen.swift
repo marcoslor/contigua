@@ -23,7 +23,8 @@ extension MCPToolHost {
         }
         do {
             return try await Screenshot.result(id: id, state: stateToken(for: window), source: window,
-                                               streamSize: size, crop: crop)
+                                               streamSize: size, crop: crop,
+                                               online: controller.link.isOnline, phone: phoneName)
         } catch let error as MCPToolError where error.code == .noFrame {
             // The state at the bound, not at the call: an opening window may
             // have gone live, a live one may have stalled.
@@ -143,6 +144,8 @@ enum Screenshot {
     static func result(id: Int, state: String, source: ScreenshotSource,
                        streamSize: (Int, Int), crop: [Int]?,
                        online: Bool = true, phone: String? = nil) async throws -> MCPToolResult {
+        // MCP-61: an offline window can make no picture; say so before asking.
+        guard online else { throw MCPToolError.phoneOffline(phone) }
         let start = source.newestSeq
         guard let frame = await source.nextKeyframe(after: start, timeout: timeout) else {
             throw MCPToolError.noFrame(window: id, state: state)
