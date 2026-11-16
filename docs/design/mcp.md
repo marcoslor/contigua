@@ -126,8 +126,8 @@ that names the next step. Extra fields depend on the code:
 | `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
 | `covered` | the ref's element is under another one | Element <ref> is covered by <cover ref \| another window>. Close or move what covers it, or tap the cover. | `window`, `ref`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
-| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
-| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps with a query to see them. | `matches: [{label, package}]` (empty in the second form) |
+| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps and pass its package as app. (T9: "Call list_apps with a query to find it.") | — |
+| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps and pass one package as app. (T9: "…with a query to see them.") | `matches: [{label, package}]` (empty in the second form) |
 | `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |

@@ -77,7 +77,7 @@ extension MCPToolError {
         .notReady, "The phone's app list has not arrived yet; try again in a few seconds.")
 
     static func notFound(_ query: String) -> MCPToolError {
-        MCPToolError(.notFound, "No app on the phone matches \"\(query)\". Call list_apps with a query to find it.")
+        MCPToolError(.notFound, "No app on the phone matches \"\(query)\". Call list_apps and pass its package as app.")
     }
 
     static func ambiguous(_ query: String, matches: [AppInfo]) -> MCPToolError {
@@ -127,7 +127,7 @@ extension MCPToolError {
                 // This path has no list to give (open_app's own chooseApp
                 // does); point at the call that lists them.
                 return MCPToolError(.ambiguous,
-                    "Several apps match \"\(query)\". Call list_apps with a query to see them.", ["matches": [Any]()])
+                    "Several apps match \"\(query)\". Call list_apps and pass one package as app.", ["matches": [Any]()])
             case .badLink: return badURL
             case .fileMissing, .fileUnreadable: return badFile
             }
