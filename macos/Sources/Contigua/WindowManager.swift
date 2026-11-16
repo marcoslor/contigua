@@ -39,6 +39,8 @@ final class WindowManager {
     var onStreamClosed: ((UInt32) -> Void)?
     /// MCP-84: the person's pointer or keys reached a window (StreamWindow).
     var onPersonInput: ((UInt32) -> Void)?
+    /// The Mac closed a stream window itself; true when `close_window` did.
+    var onMacClosed: ((UInt32, Bool) -> Void)?
 
     /// Fired when a stream id is handed out (F4): a reused id must forget any
     /// refs a closed window left behind.
