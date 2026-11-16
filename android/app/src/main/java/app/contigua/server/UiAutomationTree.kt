@@ -55,6 +55,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             "no_a11y", failure ?: "This phone cannot read an accessibility tree right now.",
         )
         try {
+            probe(automation)
             read(automation, displayId)
         } catch (t: Throwable) {
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
@@ -70,6 +71,36 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 UiTree.Answer.Failure("no_a11y", "This phone cannot read an accessibility tree right now.")
             }
         }
+    }
+
+    /**
+     * TEMPORARY A/B probe (B1 regression, debug builds only):
+     * `debug.contigua.ui_probe=off` detaches the event listener before a read,
+     * `clear` keeps it and clears the connection's node cache, anything else
+     * keeps it as the branch has it. Removed by the fix.
+     */
+    private fun probe(automation: UiAutomation) {
+        if (!app.contigua.BuildConfig.DEBUG) return
+        val mode = Hidden.systemProperty("debug.contigua.ui_probe") ?: ""
+        val h = handler ?: return
+        val gate = CountDownLatch(1)
+        h.post {
+            runCatching {
+                val info = automation.serviceInfo
+                if (mode == "off") {
+                    automation.setOnAccessibilityEventListener(null)
+                    info.eventTypes = 0
+                } else {
+                    info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+                    automation.setOnAccessibilityEventListener { event -> onEvent(event) }
+                }
+                automation.serviceInfo = info
+                if (mode == "clear") automation.clearCache()
+            }
+            gate.countDown()
+        }
+        gate.await(1, TimeUnit.SECONDS)
+        log("ui.tree: probe=${if (mode == "off" || mode == "clear") mode else "on"}") // log-ok: mode only
     }
 
     // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)

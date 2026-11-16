@@ -19,8 +19,10 @@
 set -uo pipefail
 
 MODE=boot
+AB=()
 case "${1:-}" in
   --check) MODE=check ;;
+  --ab) AB=(--ab) ;;  # the B1 regression A/B (debug.contigua.ui_probe), one boot
   "") ;;
   *) echo "[settle] error: unknown flag $1" >&2; exit 2 ;;
 esac
@@ -178,11 +180,37 @@ def opening_settle(phone, stream, msg, tag):
     return opened
 
 
+def ab(phone, adb, clock):
+    """The B1 regression A/B: the same ui.tree with the event listener off,
+    on, and on with the node cache cleared (debug.contigua.ui_probe)."""
+    targets = [(1, dict(SIZE, t="window.open", stream=1, pkg=clock)),
+               (2, dict(SIZE, t="window.open", stream=2, pkg="com.android.settings"))]
+    for stream, msg in targets:
+        o = open_window(phone, msg, stream)
+        line("INFO", "AB", "stream %d open: %s" % (stream, o and o.get("t")))
+    time.sleep(4)
+    counts = {}
+    for rnd in range(3):
+        for mode in ("off", "on", "clear"):
+            adb("shell", "setprop", "debug.contigua.ui_probe", mode)
+            for stream, _ in targets:
+                t = tree(phone, stream)
+                n = len(t.get("nodes") or [])
+                counts.setdefault((mode, stream), []).append(n)
+                line("INFO", "AB", "round=%d mode=%s stream=%d ok=%s nodes=%d code=%s" % (
+                    rnd, mode, stream, t.get("ok"), n, t.get("code")))
+    adb("shell", "setprop", "debug.contigua.ui_probe", "''")
+    for (mode, stream), ns in sorted(counts.items()):
+        line("INFO", "AB", "summary mode=%s stream=%d nodes=%s" % (mode, stream, ns))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     for name in ("--host", "--state", "--wt", "--adb", "--serial", "--out"):
         ap.add_argument(name, required=True)
     ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--ab", action="store_true")
     args = ap.parse_args()
     sys.path.insert(0, os.path.join(args.wt, "tools", "fakephone"))
     import deckctl
@@ -208,6 +236,9 @@ def main():
     phone = Phone(client, proto, deckctl)
     clock = next((p for p in apps if "deskclock" in p), None)
     line("INFO", "apps", "%d apps listed, clock=%s" % (len(apps), bool(clock)))
+
+    if args.ab:
+        return ab(phone, adb, clock)
 
     # 4a. window.open: a settle with the open and one at window.opened.
     if clock:
@@ -337,7 +368,7 @@ done
 echo "[settle] paired"
 emu logcat -c >/dev/null 2>&1 || true
 "$PYTHON" "$CLIENT" --host 127.0.0.1 --port "$PORT" --state "$STATE" --wt "$REPO_ROOT" \
-  --adb "$ADB" --serial "$SERIAL" --out "$OUT"
+  --adb "$ADB" --serial "$SERIAL" --out "$OUT" ${AB[@]+"${AB[@]}"}
 rc=$?
 emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep -E "ui\.settle|ui\.tree" > "$OUT/logcat-ui.txt" || true
 echo "[settle] logcat ui lines: $(wc -l < "$OUT/logcat-ui.txt"); total $(( $(date +%s) - T0 ))s"
