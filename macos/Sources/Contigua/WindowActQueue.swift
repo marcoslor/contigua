@@ -8,52 +8,95 @@ import Foundation
 
 @MainActor
 final class WindowActQueue {
-    private var busy: Set<UInt32> = []
-    private var waiting: [UInt32: [CheckedContinuation<Void, Never>]] = [:]
-    private var listeners: [UInt32: (MCPActMachine.Event) -> Void] = [:]
+    private struct Waiter {
+        let id: Int
+        let client: MCPClientID?
+        let cont: CheckedContinuation<Bool, Never>
+    }
 
-    /// Wait for the window's turn.
-    func enter(window: UInt32) async {
-        guard busy.contains(window) else {
-            busy.insert(window)
-            return
+    private struct Holder {
+        let client: MCPClientID?
+        var listener: ((MCPActMachine.Event) -> Void)?
+    }
+
+    private var holders: [UInt32: Holder] = [:]
+    private var waiting: [UInt32: [Waiter]] = [:]
+    private var nextWaiter = 0
+
+    /// Wait for the window's turn. False: the client left while it queued,
+    /// and the call must send nothing (MCP-84).
+    func enter(window: UInt32, client: MCPClientID? = nil) async -> Bool {
+        guard holders[window] != nil else {
+            holders[window] = Holder(client: client)
+            return true
         }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            waiting[window, default: []].append(cont)
+        nextWaiter += 1
+        let id = nextWaiter
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            waiting[window, default: []].append(Waiter(id: id, client: client, cont: cont))
         }
     }
 
     /// The holder of the window's turn hears other input, the window's close
     /// and the link's loss until it leaves.
     func listen(window: UInt32, _ listener: @escaping (MCPActMachine.Event) -> Void) {
-        listeners[window] = listener
+        holders[window]?.listener = listener
     }
 
     func leave(window: UInt32) {
-        listeners[window] = nil
         if var queue = waiting[window], !queue.isEmpty {
             let next = queue.removeFirst()
             waiting[window] = queue.isEmpty ? nil : queue
-            next.resume()
+            holders[window] = Holder(client: next.client)
+            next.cont.resume(returning: true)
         } else {
-            busy.remove(window)
+            holders[window] = nil
         }
     }
 
-    /// Input from another source (`person`, `another_agent`) reached the
-    /// window: the call holding its turn lists it in `alsoActed`.
+    /// Run `body` holding the window's turn (input_probe, MCP-84).
+    func exclusive<T>(window: UInt32, client: MCPClientID?, _ body: () async throws -> T) async rethrows -> T? {
+        guard await enter(window: window, client: client) else { return nil }
+        defer { leave(window: window) }
+        return try await body()
+    }
+
+    /// Input from the person reached the window: the call holding its turn
+    /// lists it in `alsoActed`.
     func report(window: UInt32, source: String) {
-        listeners[window]?(.otherInput(source))
+        holders[window]?.listener?(.otherInput(source))
+    }
+
+    /// An MCP client's input reached the window: `another_agent` for the
+    /// holder when the input is not its own client's.
+    func agentInput(window: UInt32, client: MCPClientID?) {
+        guard let holder = holders[window], holder.client != client else { return }
+        holder.listener?(.otherInput("another_agent"))
     }
 
     /// The window closed (MCP-83): the call holding its turn answers why.
     func closed(window: UInt32, reason: String, by: String) {
-        listeners[window]?(.windowClosed(reason: reason, by: by))
+        holders[window]?.listener?(.windowClosed(reason: reason, by: by))
     }
 
     /// The link went down: every call holding a turn answers or fails.
     func linkLost() {
-        for listener in Array(listeners.values) { listener(.linkLost) }
+        for listener in holders.values.compactMap(\.listener) { listener(.linkLost) }
+    }
+
+    /// A connection closed: its queued calls leave without sending, and its
+    /// running ones end with no answer (MCP-84).
+    func clientGone(_ client: MCPClientID) {
+        for (window, queue) in waiting {
+            let gone = queue.filter { $0.client == client }
+            guard !gone.isEmpty else { continue }
+            let kept = queue.filter { $0.client != client }
+            waiting[window] = kept.isEmpty ? nil : kept
+            for waiter in gone { waiter.cont.resume(returning: false) }
+        }
+        for holder in holders.values where holder.client == client {
+            holder.listener?(.clientGone)
+        }
     }
 }
 
@@ -62,9 +105,21 @@ enum MCPCloseReason {
     static let all: Set<String> = ["closed", "app_exited", "moved_to_phone", "phone_closed",
                                    "open_failed", "phone_switched"]
 
-    /// A reason outside the set is the app ending its own screen.
+    /// The phone's `requested`/`error` is `phone_closed` (design/mcp.md
+    /// "Close reasons"); a reason outside the set is the app ending its own
+    /// screen.
     static func token(phone reason: String) -> String {
-        all.contains(reason) ? reason : "app_exited"
+        switch reason {
+        case "requested", "error": return "phone_closed"
+        default: return all.contains(reason) ? reason : "app_exited"
+        }
+    }
+
+    /// The Mac closed the stream itself: ⌘W, the close light, Close All
+    /// (`person`) or `close_window` (`agent`). Which connection asked is T7's
+    /// ledger (MCP-52).
+    static func mac(byAgent: Bool) -> MCPActMachine.Closed {
+        MCPActMachine.Closed(reason: "closed", by: byAgent ? "agent" : "person")
     }
 }
 
@@ -94,8 +149,9 @@ protocol MCPActEnvironment: AnyObject {
     func sendInput() async
     func sendPress() async -> MCPActMachine.Event
     func sendType() async -> MCPActMachine.Event
-    func settle(quietMs: Int, timeoutMs: Int) async -> MCPSettleResult
-    func readTree() async -> MCPTreeResult
+    /// `until`: the call's own deadline; a read queued past it fails `timeout` (MCP-9).
+    func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult
+    func readTree(until: ContinuousClock.Instant) async -> MCPTreeResult
 }
 
 @MainActor
@@ -107,38 +163,44 @@ final class MCPActRunner {
     private var continuation: CheckedContinuation<MCPActOutcome, Never>?
     private var holdsTurn = false
     private var deadlineTask: Task<Void, Never>?
-    private let started = ContinuousClock.now
+    private let client: MCPClientID?
+    private var deadlineAt = ContinuousClock.now
+    /// When `sendSettle` went out: the deadline's `waitedMs` counts from it (MCP-8).
+    private var settleSentAt: ContinuousClock.Instant?
 
-    private init(_ machine: MCPActMachine, env: MCPActEnvironment, window: UInt32, queue: WindowActQueue?) {
+    private init(_ machine: MCPActMachine, env: MCPActEnvironment, window: UInt32, queue: WindowActQueue?,
+                 client: MCPClientID?) {
         self.machine = machine
         self.env = env
         self.window = window
         self.queue = queue
+        self.client = client
     }
 
     /// Run one call to its answer, within `deadline` from now (MCP-8). `ref`
     /// marks S1's ref tap, which the window's latest tree may refuse.
     static func run(_ machine: MCPActMachine, window: UInt32, queue: WindowActQueue?,
-                    deadline: Duration, env: MCPActEnvironment, ref: Bool = false) async -> MCPActOutcome {
-        let runner = MCPActRunner(machine, env: env, window: window, queue: queue)
+                    deadline: Duration, env: MCPActEnvironment, ref: Bool = false,
+                    client: MCPClientID? = nil) async -> MCPActOutcome {
+        let runner = MCPActRunner(machine, env: env, window: window, queue: queue, client: client)
         return await runner.run(deadline: deadline, ref: ref)
     }
 
     private func run(deadline: Duration, ref: Bool) async -> MCPActOutcome {
         await withCheckedContinuation { (cont: CheckedContinuation<MCPActOutcome, Never>) in
             continuation = cont
+            deadlineAt = .now + deadline
             deadlineTask = Task { [weak self] in
                 try? await Task.sleep(for: deadline)
                 guard !Task.isCancelled, let self else { return }
-                _ = self.feed(.deadline(waitedMs: self.elapsedMs))
+                _ = self.feed(.deadline(waitedMs: self.settleSentAt.map { Self.ms(.now - $0) }))
             }
             Task { await self.drive(ref: ref) }
         }
     }
 
-    private var elapsedMs: Int {
-        let elapsed = ContinuousClock.now - started
-        return Int(elapsed.components.seconds * 1000)
+    private static func ms(_ elapsed: Duration) -> Int {
+        Int(elapsed.components.seconds * 1000)
             + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
     }
 
@@ -147,7 +209,10 @@ final class MCPActRunner {
         switch machine.state {
         case .queued:
             if let queue {
-                await queue.enter(window: window)
+                guard await queue.enter(window: window, client: client) else {
+                    _ = feed(.clientGone)  // the client left while the call queued: nothing is sent
+                    return
+                }
                 holdsTurn = true
                 if machine.state == .done {  // the deadline ended the call while it queued
                     releaseTurn()
@@ -173,21 +238,29 @@ final class MCPActRunner {
             switch action {
             case .sendInput:
                 await env.sendInput()
+                // Fed even after an answer: a draining call releases the turn here.
+                pending += feed(.inputSent)
             case .sendPress:
                 pending += feed(await env.sendPress())
             case .sendType:
                 pending += feed(await env.sendType())
             case .sendSettle(let req, let quietMs, let timeoutMs):
-                switch await env.settle(quietMs: quietMs, timeoutMs: timeoutMs) {
+                settleSentAt = .now
+                switch await env.settle(quietMs: quietMs, timeoutMs: timeoutMs, until: deadlineAt) {
                 case .reply(let settled, let waitedMs, let reason):
                     pending += feed(.settleReply(req: req, settled: settled, waitedMs: waitedMs, reason: reason))
                 case .failed(let code):
                     pending += feed(.settleFailed(req: req, code: code))
                 }
             case .sendTree(let req):
-                switch await env.readTree() {
+                switch await env.readTree(until: deadlineAt) {
                 case .ok(let tree): pending += feed(.treeReply(req: req, tree))
                 case .failed(let code): pending += feed(.treeFailed(req: req, code: code))
+                }
+            case .waitForClose(let ms):
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(ms))
+                    _ = self?.feed(.closeWaitOver)
                 }
             case .answer(let answer):
                 complete(.answer(answer))  // after the sends before it
@@ -202,6 +275,9 @@ final class MCPActRunner {
     func feed(_ event: MCPActMachine.Event) -> [MCPActMachine.Action] {
         let (next, actions) = MCPActMachine.step(machine, event)
         machine = next
+        // The turn is released only when Done: a draining call still has
+        // its input going out (MCP-84).
+        if machine.state == .done { releaseTurn() }
         // An answer that follows sends in the same step (wait none, observe
         // none) waits for `drive` to run them first; one alone answers now.
         let sends = actions.filter {
@@ -227,7 +303,7 @@ final class MCPActRunner {
 
     private func complete(_ outcome: MCPActOutcome) {
         deadlineTask?.cancel()
-        releaseTurn()
+        if machine.state == .done { releaseTurn() }
         guard let continuation else { return }
         self.continuation = nil
         continuation.resume(returning: outcome)

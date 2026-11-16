@@ -48,6 +48,8 @@ final class MCPSocketServer {
 
     /// Called on the main actor whenever the accepted-client count changes.
     var onClientCountChanged: ((Int) -> Void)?
+    /// A connection closed: its queued and running calls end (MCP-84).
+    var onClientClosed: ((MCPClientID) -> Void)?
 
     private(set) var clientCount = 0 {
         didSet { if clientCount != oldValue { onClientCountChanged?(clientCount) } }
@@ -294,6 +296,7 @@ final class MCPSocketServer {
     /// reply already queued is written before the cancel handler closes the fd.
     /// A suspended source runs that handler only once resumed.
     private func closeClient(_ client: Client) {
+        onClientClosed?(client.id)  // MCP-84: its queued and running calls end
         nonisolated(unsafe) let source = client.source
         let suspended = client.halfClosed
         queue.async {

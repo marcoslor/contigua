@@ -51,7 +51,19 @@ extension MCPToolHost {
     /// input-to-photon.
     func inputProbe(window id: Int, x: Double, y: Double,
                             width: Double?, height: Double?) async throws -> [String: Any] {
+        // MCP-84: the probe's tap holds the window's turn like an input call.
+        let client = self.client
+        let acts = controller.windowActs
+        guard let body = try await acts.exclusive(window: UInt32(id), client: client, {
+            try await probe(window: id, x: x, y: y, width: width, height: height)
+        }) else { throw MCPToolError.failed("The connection closed.", window: id) }
+        return body
+    }
+
+    private func probe(window id: Int, x: Double, y: Double,
+                       width: Double?, height: Double?) async throws -> [String: Any] {
         let window = try requireInputWindow(id)
+        controller.windowActs.agentInput(window: UInt32(id), client: client)
         let region: ProbeRegion = {
             if let width, let height {
                 return ProbeRegion.around(x: x, y: y, width: width, height: height)

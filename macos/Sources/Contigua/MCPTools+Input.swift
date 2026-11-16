@@ -7,8 +7,11 @@
 import Foundation
 
 extension MCPToolHost {
-    /// MCP-8: an input tool's bound is the settle's (2 s) plus 3 s.
-    nonisolated static let actDeadline: Duration = .milliseconds(MCPActMachine.timeoutMs + 3000)
+    /// MCP-8: an input tool's bound is its gesture's `ms` plus 5 s (the
+    /// settle's 2 s plus 3 s).
+    nonisolated static func actDeadline(gestureMs: Int = 0) -> Duration {
+        .milliseconds(gestureMs + MCPActMachine.timeoutMs + 3000)
+    }
 
     // MARK: Input
 
@@ -47,7 +50,7 @@ extension MCPToolHost {
     func longPress(window id: Int, x: Double, y: Double, ms: Int,
                    wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let stream = UInt32(id)
-        return try await act(id, wait: wait, observe: observe,
+        return try await act(id, wait: wait, observe: observe, gestureMs: ms,
                              did: { MCPActDid.tap(x: x, y: y, holdMs: ms,
                                                   latest: controller.uiTreeLatest(stream: stream)) },
                              input: { window in
@@ -61,7 +64,7 @@ extension MCPToolHost {
     /// intermediate steps never overshoot either end.
     func swipe(window id: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int,
                wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        try await act(id, wait: wait, observe: observe,
+        try await act(id, wait: wait, observe: observe, gestureMs: ms,
                       did: { MCPActDid.swipe(from: [x1, y1], to: [x2, y2], ms: ms) },
                       input: { window in
                           let steps = max(1, Int((Double(ms) / 1000 * 60).rounded()))
@@ -119,13 +122,19 @@ extension MCPToolHost {
     /// Run one input call through its machine and build the envelope. `did`
     /// is computed when the call's turn comes (from the window's latest tree
     /// then), `input` sends it.
-    private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil,
+    private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil, gestureMs: Int = 0,
                      did: @escaping @MainActor () -> MCPActDid,
                      input: @escaping @MainActor (StreamWindowController) async -> Void) async throws -> [String: Any] {
-        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, did: did, input: input)
+        let client = self.client
+        let acts = controller.windowActs
+        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, did: did, input: { window in
+            acts.agentInput(window: UInt32(id), client: client)  // MCP-84: another_agent for any other holder
+            await input(window)
+        })
         let outcome = await MCPActRunner.run(MCPActMachine(path: .input, wait: wait, observe: observe),
-                                             window: UInt32(id), queue: controller.windowActs,
-                                             deadline: Self.actDeadline, env: env, ref: ref != nil)
+                                             window: UInt32(id), queue: acts,
+                                             deadline: Self.actDeadline(gestureMs: gestureMs), env: env,
+                                             ref: ref != nil, client: client)
         switch outcome {
         case .answer(let answer):
             var envelope = MCPActEnvelope.answer(window: id, did: env.didNow ?? did(),
@@ -159,23 +168,27 @@ extension MCPToolHost {
 
     /// The phone's settle of the window's display (MCP-81), as the machine's
     /// result.
-    func settleResult(_ id: Int, quietMs: Int, timeoutMs: Int) async -> MCPSettleResult {
+    func settleResult(_ id: Int, quietMs: Int, timeoutMs: Int,
+                      until: ContinuousClock.Instant) async -> MCPSettleResult {
         do {
-            let reply = try await controller.uiSettle(stream: UInt32(id), quietMs: quietMs, timeoutMs: timeoutMs)
+            let reply = try await controller.uiSettle(stream: UInt32(id), quietMs: quietMs,
+                                                      timeoutMs: timeoutMs, until: until)
             guard reply.ok else { return .failed(reply.code ?? "failed") }
             return .reply(settled: reply.settled, waitedMs: reply.waitedMs, reason: reply.reason)
         } catch UITreeError.timedOut {
             return .failed("timeout")
+        } catch UITreeError.notConnected {
+            return .failed("not_connected")
         } catch {
-            return .failed("not_available")
+            return .failed("failed")
         }
     }
 
     /// The `ui_tree` answer read after the settle (MCP-82), stamped with the
     /// window's state and frame, as JSON text; or the failure's code.
-    func observedTree(_ id: Int) async -> MCPTreeResult {
+    func observedTree(_ id: Int, until: ContinuousClock.Instant? = nil) async -> MCPTreeResult {
         do {
-            var answer = try await uiTree(id)
+            var answer = try await uiTree(id, until: until)
             if let window = controller.windows.controller(for: UInt32(id)) {
                 answer = MCPFreshness.stamp(answer, state: stateToken(for: window),
                                             frame: frameObject(for: window))
@@ -246,11 +259,13 @@ final class MCPHostActEnvironment: MCPActEnvironment {
     func sendPress() async -> MCPActMachine.Event { .pressFailed("gone") }  // T10: ui.press
     func sendType() async -> MCPActMachine.Event { .typeFailed("not_supported") }  // T13: ui.type
 
-    func settle(quietMs: Int, timeoutMs: Int) async -> MCPSettleResult {
-        await host.settleResult(id, quietMs: quietMs, timeoutMs: timeoutMs)
+    func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult {
+        await host.settleResult(id, quietMs: quietMs, timeoutMs: timeoutMs, until: until)
     }
 
-    func readTree() async -> MCPTreeResult { await host.observedTree(id) }
+    func readTree(until: ContinuousClock.Instant) async -> MCPTreeResult {
+        await host.observedTree(id, until: until)
+    }
 
     /// The failure a machine's `fail(code)` throws, with its sentence.
     func error(for code: String) -> MCPToolError {
