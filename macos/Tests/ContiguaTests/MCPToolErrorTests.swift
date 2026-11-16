@@ -40,6 +40,18 @@ final class MCPToolErrorTests: XCTestCase {
             XCTAssertEqual(MCPToolError.mapping(error, phone: "Pixel").code, code, "\(error)")
         }
 
+        // Every sentence names the next step a model can take.
+        let notInUse = MCPToolError.mapping(IntentFailure.choosePhone(["A", "B"]), phone: nil)
+        XCTAssertEqual(notInUse.code, .noPhone)
+        XCTAssertEqual(notInUse.message,
+                       "No phone is in use: 2 phones are paired and none is connected. Connect one in Contigua, then call phone_status.")
+        XCTAssertEqual(MCPToolError.mapping(IntentFailure.noPhone, phone: nil).message,
+                       "No phone is paired with Contigua. Pair one in Contigua's Settings, then try again.")
+        let several = MCPToolError.mapping(IntentFailure.severalApps("C"), phone: nil)
+        XCTAssertEqual(several.message, "Several apps match \"C\". Call list_apps with a query to see them.")
+        XCTAssertEqual(MCPToolError.mapping(Other(), phone: nil).message,
+                       "Contigua could not do that. Try again; if it keeps failing, check phone_status.")
+
         // #162's ref refusals keep their sentences; all but the off-screen
         // one are stale_ref with the window's latest snapshot.
         let older = MCPToolError.tapRefusal(.stale(ref: "s1e4", snapshot: 1, latest: 2),
@@ -112,5 +124,25 @@ final class MCPToolErrorTests: XCTestCase {
             XCTAssertEqual(MCPToolError.mapping(error, phone: "Pixel").code, .timeout)
         }
         XCTAssertEqual(UITreeBroker.deadline, 5)
+    }
+
+    // [MCP-5] The text mirror is JSON: escapes, booleans apart from 1,
+    // shortest numbers, and nil as null.
+    func testMCPJSONWritesValidShortestJSON() throws {
+        let missing: Int? = nil
+        let value: [String: Any] = [
+            "s": "a\u{1}\u{8}\"\\\n/",
+            "flags": [true, 1, false, 0] as [Any],
+            "x": 0.651,
+            "whole": 3.0,
+            "tiny": 1e-7,
+            "null": NSNull(),
+            "missing": missing as Any,
+        ]
+        let text = MCPJSON.string(value)
+        XCTAssertEqual(text, #"{"flags":[true,1,false,0],"missing":null,"null":null,"s":"a\u0001\b\"\\\n/","tiny":1e-07,"whole":3,"x":0.651}"#)
+        let back = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(back["tiny"] as? Double, 1e-7)
+        XCTAssertEqual(back["s"] as? String, "a\u{1}\u{8}\"\\\n/")
     }
 }

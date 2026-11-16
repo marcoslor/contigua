@@ -50,6 +50,12 @@ def main():
         return subprocess.call([sys.executable, path,
                                 "--shim", args.shim, "--profile", args.profile])
     module.suite(args)
+    if common.ANSWERS_CHECKED:
+        # MCP-5: check_answer printed a FAIL naming each answer that broke its
+        # schema or its text mirror; this line sums them up.
+        common.report(common.ANSWERS_BROKEN == 0,
+                      "[MCP-5] MCP the %s suite's %d answers match their outputSchema and text mirror (%d broke)"
+                      % (args.suite, common.ANSWERS_CHECKED, common.ANSWERS_BROKEN))
     print("DRIVER passed=%d failed=%d" % (common.PASSED, common.FAILED))
     return 1 if common.FAILED else 0
 
