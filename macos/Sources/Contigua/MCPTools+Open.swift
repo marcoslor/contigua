@@ -16,7 +16,7 @@ extension MCPToolHost {
             .filter { (controller.windows.controller(for: $0) as? AppWindowController)?.pkg == app.pkg }
             .max()
         guard let stream else {
-            throw MCPToolError.failed("The app couldn't open a window.")
+            throw MCPToolError.failed("The app couldn't open a window. Call list_windows, then try open_app again.")
         }
         return ["window": Int(stream), "package": app.pkg, "label": app.label]
     }

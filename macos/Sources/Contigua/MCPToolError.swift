@@ -67,6 +67,12 @@ extension MCPToolError {
     static let noPhone = MCPToolError(
         .noPhone, "No phone is paired with Contigua. Pair one in Contigua's Settings, then try again.")
 
+    /// Phones are paired, but none is the one in use (several, none connected).
+    static func noPhoneInUse(paired: Int) -> MCPToolError {
+        MCPToolError(.noPhone,
+                     "No phone is in use: \(paired) phones are paired and none is connected. Connect one in Contigua, then call phone_status.")
+    }
+
     static let appsNotReady = MCPToolError(
         .notReady, "The phone's app list has not arrived yet; try again in a few seconds.")
 
@@ -112,12 +118,16 @@ extension MCPToolError {
             return failure
         case let failure as IntentFailure:
             switch failure {
-            case .noPhone, .unknownPhone, .choosePhone: return noPhone
+            case .noPhone, .unknownPhone: return noPhone
+            case .choosePhone(let names): return noPhoneInUse(paired: names.count)
             case .phoneNotConnected, .phoneNotReady: return phoneOffline(phone)
             case .phoneNoDnd: return MCPToolError(.notSupported, failure.message)
             case .appNotFound(let query): return notFound(query)
-            case .severalApps(let query): return MCPToolError(.ambiguous,
-                "Several apps match \"\(query)\". Pass one of these packages as app.", ["matches": [Any]()])
+            case .severalApps(let query):
+                // This path has no list to give (open_app's own chooseApp
+                // does); point at the call that lists them.
+                return MCPToolError(.ambiguous,
+                    "Several apps match \"\(query)\". Call list_apps with a query to see them.", ["matches": [Any]()])
             case .badLink: return badURL
             case .fileMissing, .fileUnreadable: return badFile
             }
@@ -127,7 +137,7 @@ extension MCPToolError {
             case .timedOut: return timeout(phone)
             }
         default:
-            return failed("Contigua could not do that.")
+            return failed("Contigua could not do that. Try again; if it keeps failing, check phone_status.")
         }
     }
 
@@ -213,9 +223,16 @@ enum MCPJSON {
         default:
             // A nil that reached a dictionary as Any, or a value with no JSON form.
             let mirror = Mirror(reflecting: value)
-            if mirror.displayStyle == .optional, let wrapped = mirror.children.first?.value {
-                write(wrapped, into: &out)
+            if mirror.displayStyle == .optional {
+                if let wrapped = mirror.children.first?.value {
+                    write(wrapped, into: &out)
+                } else {
+                    out += "null"
+                }
             } else {
+                // A Date, a struct or another type with no JSON form reached an
+                // answer: a schema's non-null field would silently become null.
+                assertionFailure("MCPJSON: no JSON form for \(type(of: value))")
                 out += "null"
             }
         }

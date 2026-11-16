@@ -118,7 +118,7 @@ that names the next step. Extra fields depend on the code:
 
 | code | means | sentence (`<…>` filled in) | extra fields |
 |---|---|---|---|
-| `no_phone` | no phone is paired or in use | No phone is paired with Contigua. Pair one in Contigua's Settings, then try again. | — |
+| `no_phone` | no phone is paired or in use | No phone is paired with Contigua. Pair one in Contigua's Settings, then try again. — or, with phones paired and none in use: No phone is in use: <n> phones are paired and none is connected. Connect one in Contigua, then call phone_status. | — |
 | `phone_offline` | the phone in use is connecting, reconnecting or offline; nothing was sent or queued | <phone> is not connected. Wait until phone_status says connected, then try again. | — |
 | `no_window` | the window is not open | No window <id>. Call list_windows to see what is open. — or, when it closed recently: Window <id> closed <n> s ago: <reason sentence>. Call list_windows to see what is open. | `window`, `closed` when it closed recently (MCP-53) |
 | `not_ready` | the window is `opening` or `stalled`, or the app list has not arrived | Window <id> is <opening: still opening \| stalled: not responding>. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. | `window`, `state` |
@@ -127,7 +127,7 @@ that names the next step. Extra fields depend on the code:
 | `covered` | the ref's element is under another one | Element <ref> is covered by <cover ref \| another window>. Close or move what covers it, or tap the cover. | `window`, `ref`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
 | `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
-| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. | `matches: [{label, package}]` |
+| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps with a query to see them. | `matches: [{label, package}]` (empty in the second form) |
 | `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
