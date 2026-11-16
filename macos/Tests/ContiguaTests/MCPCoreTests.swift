@@ -113,8 +113,8 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Horizontal position, 0 (left) to 1 (right), in the window's video rect."],
                 "y": ["type": "number", "minimum": 0, "maximum": 1,
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
-                "ref": ["type": "string", "minLength": 1, "maxLength": 16,
-                        "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
+                "ref": ["type": "string", "minLength": 1, "maxLength": 32,
+                        "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
             ],
         ]
         XCTAssertEqual(tap.schema as NSDictionary, expected as NSDictionary)

@@ -214,10 +214,7 @@ final class ConnectionController {
     @ObservationIgnored private var frontWatchCount = 0
     @ObservationIgnored private var frontTimer: Timer?
     /// `ui.tree` (WIN-79): each MCP read waits for the reply carrying its seq.
-    @ObservationIgnored private var uiTreeSeq = 0
-    @ObservationIgnored private var uiTreeWaiters: [Int: CheckedContinuation<UITree, Error>] = [:]
-    /// The last tree's refs per window, so `tap` can name an element.
-    @ObservationIgnored private var uiTreeRefs = UITreeRefs()
+    @ObservationIgnored private var uiTreeBroker = UITreeBroker()
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -770,7 +767,10 @@ final class ConnectionController {
         }
         mcp.start()
         windows.onStreamClosed = { [weak self] stream in
-            DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
+            DispatchQueue.main.async {
+                self?.uiTreeBroker.forget(stream: stream) // F4: a closed window's refs die with it
+                self?.dockFollowWindowClosed(stream)
+            }
         }
         windows.onFilesDropped = { [weak self] urls, target in
             MainActor.assumeIsolated { self?.dropFiles(urls, target: target) }
@@ -780,6 +780,9 @@ final class ConnectionController {
         }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
+        }
+        windows.onStreamAllocated = { [weak self] stream in
+            MainActor.assumeIsolated { self?.uiTreeBroker.forget(stream: stream) }
         }
         // The phone refused an extra window at its cap (WIN-32): the Deck says
         // so in the same words the menu item would have.
@@ -1293,45 +1296,27 @@ final class ConnectionController {
     /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
     /// phone's answer arrives as `.uiTree`. A closed session fails at once and
     /// a silent phone at the deadline, so a tool call never hangs.
-    func uiTree(stream: UInt32, timeout: TimeInterval = 3) async throws -> UITree {
+    func uiTree(stream: UInt32, timeout: TimeInterval = 5) async throws -> UITree {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
-        uiTreeSeq += 1
-        let seq = uiTreeSeq
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UITree, Error>) in
-            uiTreeWaiters[seq] = continuation
+        return try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
             session.requestUITree(stream: stream, seq: seq)
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in  // gcd: the read's deadline, not a hop
-                self?.resolveUITree(seq: seq, .failure(UITreeError.timedOut))
-            }
         }
-    }
-
-    private func resolveUITree(seq: Int, _ result: Result<UITree, Error>) {
-        guard let waiter = uiTreeWaiters.removeValue(forKey: seq) else { return }
-        waiter.resume(with: result)
     }
 
     private func uiTreeReplied(_ tree: UITree) {
-        uiTreeRefs.remember(tree)
-        resolveUITree(seq: tree.seq, .success(tree))
+        uiTreeBroker.reply(tree)
     }
 
     /// The element `ref` named in the tree last read for that window (WIN-79),
-    /// with the read it came from. Throws `.staleRef` when the client kept a ref
-    /// from an older screen.
-    func uiTreeResolved(ref: String, stream: UInt32) throws -> (snapshot: Int, placed: UITreeRefs.Placed) {
-        guard let resolved = uiTreeRefs.resolved(ref: ref, stream: stream) else {
-            throw UITreeError.staleRef
-        }
-        return resolved
+    /// with the read it came from. `.stale` when the client kept a ref from an
+    /// older screen, `.windowClosed` when the window is gone.
+    func uiTreeResolved(ref: String, stream: UInt32) -> UITreeResolution {
+        uiTreeBroker.resolved(ref: ref, stream: stream)
     }
 
     /// A closed session, or a phone switch, has no tree to answer with.
     private func failUITrees(_ error: UITreeError) {
-        uiTreeRefs.forgetAll()
-        let waiting = uiTreeWaiters
-        uiTreeWaiters.removeAll()
-        for (_, waiter) in waiting { waiter.resume(throwing: error) }
+        uiTreeBroker.fail(error)
     }
 
     /// The panel's row: only while online and the machine knows a package.

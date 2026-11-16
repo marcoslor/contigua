@@ -38,6 +38,10 @@ final class WindowManager {
     /// Fired once per window that closed, whoever closed it (Dock apps follow their window).
     var onStreamClosed: ((UInt32) -> Void)?
 
+    /// Fired when a stream id is handed out (F4): a reused id must forget any
+    /// refs a closed window left behind.
+    var onStreamAllocated: ((UInt32) -> Void)?
+
     /// Fired when a phone-app window becomes dockable (docs/design/dock.md
     /// §Lifecycle): app windows at open, link windows once the phone reports
     /// the package that displays the link. pkg, stream.
@@ -1090,6 +1094,7 @@ final class WindowManager {
 
     private func allocateStream() -> UInt32 {
         defer { nextStream += 1 }
+        onStreamAllocated?(nextStream)
         return nextStream
     }
 

@@ -1496,54 +1496,70 @@ The panel's "Open <App> on Mac" row names the app in front without opening a str
 ## UI tree
 
 The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of pixels
-(docs/design/mcp.md, WIN-79). It is a pull, one read per call.
+(docs/design/mcp.md, WIN-79). It is a pull, one read per call. The phone answers any
+paired session: the Settings › Automation switch is the Mac's own gate on the tool, not
+something the phone checks.
 
 1. Mac → `{"t":"ui.tree","stream":N,"seq":S}`. The phone finds the display the stream's
    window lives on and reads that display's accessibility tree at shell UID through
    `UiAutomation`. Only the shell can: an accessibility service sees only the display it
    runs on, and `uiautomator dump` only reads display 0, so neither can see an app window
-   on its own virtual display (ISS-143).
+   on its own virtual display (ISS-143). The phone holds one `UiAutomation` connection
+   per process, shared by every session and dropped only when the service stops, never
+   when a session ends.
 2. The phone trims the tree before sending it. The reply is
-   `{"t":"ui.tree","stream":N,"seq":S,"ok":true,"displayId":D,"snapshot":K,"truncated":B,"windows":[…],"nodes":[…]}`:
-   - `windows`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
+   `{"t":"ui.tree","stream":N,"seq":S,"ok":true,"displayId":D,"size":[w,h],"truncated":B,"layers":[…],"nodes":[…]}`:
+   - `size` is the display's pixel space — the space `box` is in and TOUCH maps over
+     (display 0's real size for a mirror, the virtual display's size otherwise), not the
+     stream's video size.
+   - `layers`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
      `system`, `overlay`, `divider`, `magnifier`, or the platform's number), `focused`,
      `active`.
    - `nodes`: one row per node worth reading, in document order (the reading order):
-     `i` the index, `ref` the name this node answers to in this tree (`e12`), `p` the
-     nearest kept ancestor's index (absent at a root), `w` the window's index, `role`
-     the class's last part (`Button`), `text`, `desc` (absent when it repeats `text`),
-     `id` the view id's part after `:id/`, `box`
-     `[left,top,right,bottom]` in display pixels, `at` the box's centre as 0..1 of the
-     window (the same coordinates TOUCH and the MCP `tap` tool take), and the states that
-     are true: `click`, `edit`, `scroll`, `check` (true **or** false, only when the node is
-     checkable), `sel`, `focus`, `disabled`, `pwd`.
+     `i` the index, `p` the nearest kept ancestor's index (absent at a root), `l` the
+     layer's index, `role` the class's last part (`Button`), `text`, `desc` (absent when
+     it repeats `text`), `id` the view id's part after `:id/`, `box`
+     `[left,top,right,bottom]` in display pixels (clipped to the display), `at` the box's
+     centre as 0..1 of the display's input space (the same coordinates TOUCH and the MCP
+     `tap` tool take), and the states that are true: `click`, `edit`, `scroll`, `check`
+     (true **or** false, only when the node is checkable), `sel`, `focus`, `disabled`,
+     `pwd`.
+   - A node whose box does not intersect the display, that is not visible to the user, or
+     whose visible part is under 8×8 px carries `off: true` and no `at`: its text is still
+     there so a reader knows to scroll, but a tap by its ref is refused. `box` is the
+     clipped part and `at` the centre of it, never a clamped outside point.
    - A node with no text, label, action or state, or with no drawable bounds, is folded
      away and its children take its place; only what a reader or a model can act on is
      sent. A password node carries no `text` or `desc` at all, only `pwd`. Code points in
      Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
      dropped from a label: an icon font draws art there, not a word, and a label made only
      of them is no label.
-   - `ref` is unique within the reply and names nothing outside it: the Mac keeps the
-     reply's refs for that stream and resolves `tap`'s `ref` to `at` there. A newer reply
-     replaces them, so a ref from an older reply is refused rather than pressed. Refs never
-     cross the wire. A ref protects against a newer *tree*, not against a newer *screen*:
-     an overlay that appears after the read can cover the node, and the tap lands where the
+   - The phone sends no `ref` and no `snapshot`: a ref never crosses the wire. The Mac
+     keeps a read counter per window (starting at 1, kept across reconnects) and names
+     each node `s<snapshot>e<row>`, and `snapshot` in the tool result is that counter. A
+     ref from any reply but the window's latest is refused with a sentence naming both
+     snapshots. A ref protects against a newer *tree*, not against a newer *screen*: an
+     overlay that appears after the read can cover the node, and the tap lands where the
      node was. The tool says so, and the tap answer names the read it came from.
    - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
-     tree. `snapshot` counts this session's reads from 1; `displayId` is the display's own
-     id (a virtual display's is in the sixties on current builds), never a counter.
+     tree. `displayId` is the display's own id (a virtual display's is in the sixties on
+     current builds), never a counter.
    - An empty tree keeps `nodes: []` and carries a `note` saying the display has no
      accessible content, so an empty list is never read as a blank screen.
 3. A read that cannot happen answers
    `{"t":"ui.tree","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`
    (no such stream), `not_available` (this phone cannot read a tree), `busy` (the previous
    read is still running), `no_display` (the display went away), `no_a11y` (the platform
-   refused the connection) or `failed`.
-4. One read at a time per session. The Mac asks only when the tool is called and waits at
-   most 3 s; an older phone ignores the request, so the tool answers that the phone did
-   not respond.
+   refused the connection) or `failed`. A `ui.tree` without a `stream` answers `no_window`,
+   never a silence.
+4. One read at a time per session. The Mac serializes `ui_tree` calls per session, so a
+   second window's read waits for the first instead of being refused `busy`; it asks only
+   when the tool is called and waits at most 5 s. The phone's own connect step has a
+   shorter deadline, so a phone that cannot connect answers before the Mac's deadline. A
+   late reply whose read already timed out is ignored: it neither resolves a read nor
+   replaces the window's refs.
 5. Text is on-screen content: it travels in this message and into the tool result, never
-   into a log line. The phone logs the stream, display, window and node counts and the
+   into a log line. The phone logs the stream, display, layer and node counts and the
    duration; the Mac logs the tool name and its duration.
 
 ## Secure screens
