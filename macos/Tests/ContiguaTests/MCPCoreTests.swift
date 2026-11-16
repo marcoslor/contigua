@@ -142,7 +142,8 @@ final class MCPCoreTests: XCTestCase {
             ("open_app", ["app": "com.android.chrome", "newWindow": true],
              .openApp("com.android.chrome", newWindow: true)),
             ("list_windows", [:], .listWindows),
-            ("screenshot", ["window": 3], .screenshot(window: 3)),
+            ("screenshot", ["window": 3], .screenshot(window: 3, ref: nil)),
+            ("screenshot", ["window": 3, "ref": "s2e1"], .screenshot(window: 3, ref: "s2e1")),
             ("ui_tree", ["window": 3], .uiTree(window: 3)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),
             ("long_press", ["window": 3, "x": 0, "y": 0.5, "ms": 3000],
@@ -331,6 +332,33 @@ final class MCPCoreTests: XCTestCase {
             let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
             XCTAssertFalse(properties.isEmpty, "\(tool["name"] ?? "?")")
         }
+    }
+
+    // [MCP-20] [MCP-21] Every answer that reflects a window's screen declares
+    // `state` and `frame` as required, and the stamp fills them in.
+    func testScreenAnswersRequireStateAndFrame() throws {
+        for tool: MCPToolName in [.screenshot, .uiTree, .tap, .longPress, .swipe, .typeText,
+                                  .pressKey, .inputProbe] {
+            let schema = MCPOutputSchemas.schema(for: tool)
+            let required = schema["required"] as? [String] ?? []
+            XCTAssertTrue(required.contains("state") && required.contains("frame"), "\(tool)")
+            let frame = (schema["properties"] as? [String: Any])?["frame"] as? [String: Any]
+            XCTAssertEqual(frame?["required"] as? [String], ["seq", "ageMs"], "\(tool)")
+        }
+        let windows = MCPOutputSchemas.schema(for: .listWindows)
+        let row = ((windows["properties"] as? [String: Any])?["windows"] as? [String: Any])?["items"]
+            as? [String: Any]
+        XCTAssertEqual(Set(row?["required"] as? [String] ?? []),
+                       ["id", "package", "size", "state", "frame"])
+        let screenshot = MCPOutputSchemas.schema(for: .screenshot)["required"] as? [String] ?? []
+        XCTAssertEqual(Set(screenshot), ["window", "state", "frame", "image", "size"])
+
+        let stamped = MCPFreshness.stamp(["ok": true, "window": 3], state: "paused",
+                                         frame: FrameClock.object(seq: 0, ageMs: nil))
+        XCTAssertEqual(stamped["state"] as? String, "paused")
+        XCTAssertEqual((stamped["frame"] as? [String: Any])?["seq"] as? Int, 0)
+        XCTAssertTrue((stamped["frame"] as? [String: Any])?["ageMs"] is NSNull)
+        XCTAssertEqual(stamped["ok"] as? Bool, true)
     }
 
     // [MCP-14]
