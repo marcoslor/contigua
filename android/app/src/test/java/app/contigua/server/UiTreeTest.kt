@@ -46,6 +46,7 @@ class UiTreeTest {
         enabled: Boolean = true,
         password: Boolean = false,
         visibleToUser: Boolean = true,
+        hasRange: Boolean = true,
     ): UiTree.Node = UiTree.Node(
         role = role,
         text = text,
@@ -62,6 +63,7 @@ class UiTreeTest {
         enabled = enabled,
         password = password,
         visibleToUser = visibleToUser,
+        hasRange = hasRange,
         children = children,
     )
 
@@ -315,5 +317,28 @@ class UiTreeTest {
         assertEquals(false, body["ok"])
         assertEquals("no_a11y", body["code"])
         assertTrue((body["message"] as String).isNotEmpty())
+    }
+
+    @Test
+    fun testALoadingNodeIsKeptAndMarked() { // [MCP-103]
+        // An unlabelled indeterminate ProgressBar is layout by the ordinary rule,
+        // but a loading signal is kept and marked, and the reply says so.
+        val spinner = node(
+            role = "android.widget.ProgressBar",
+            box = UiTree.Box(0, 0, 108, 108),
+            hasRange = false,
+        )
+        val body = reply(listOf(layer(spinner)))
+        val rows = nodes(body)
+        assertEquals(1, rows.size)
+        assertEquals(true, rows[0]["loading"])
+        assertNull(rows[0]["text"])
+        assertEquals(true, body["loading"])
+    }
+
+    @Test
+    fun testATreeWithNoLoadingSignalCarriesNoLoadingKey() { // [MCP-103]
+        val body = reply(listOf(layer(node(text = "Hello", clickable = true))))
+        assertFalse(body.containsKey("loading"))
     }
 }
