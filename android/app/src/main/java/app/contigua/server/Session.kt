@@ -259,8 +259,8 @@ class Session(
 
     private val streams = LinkedHashMap<Int, StreamState>()
 
-    /** `ui.tree` (WIN-79): one read at a time per session. */
-    private val uiTreeBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** One `ui.*` request at a time per session (WIN-79 item 4, PROTOCOL "UI tree" item 6). */
+    private val uiBusy = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Each stream's negotiated codec, for the drop line's NAL scan. */
     private val streamCodecs = java.util.concurrent.ConcurrentHashMap<Int, VideoCodec>()
@@ -1730,6 +1730,7 @@ class Session(
                 "task.continue" -> onTaskContinue(obj, frame)
                 "task.front" -> onTaskFront(obj)
                 "ui.tree" -> onUiTree(obj)
+                "ui.settle" -> onUiSettle(obj)
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
@@ -2030,7 +2031,7 @@ class Session(
             ))
             return
         }
-        if (!uiTreeBusy.compareAndSet(false, true)) {
+        if (!uiBusy.compareAndSet(false, true)) {
             sendUiTree(stream, seq, UiTree.failure("busy", "The last accessibility read is still running."))
             return
         }
@@ -2044,7 +2045,7 @@ class Session(
             } catch (t: Throwable) {
                 UiTree.Answer.Failure("failed", "The accessibility tree could not be read.")
             } finally {
-                uiTreeBusy.set(false)
+                uiBusy.set(false)
             }
             when (answer) {
                 is UiTree.Answer.Tree -> {
@@ -2071,6 +2072,84 @@ class Session(
         if (seq != null) reply["seq"] = seq
         reply.putAll(body)
         sendJson(reply)
+    }
+
+    /**
+     * `ui.settle` (docs/PROTOCOL.md "UI tree" §7, MCP-81/MCP-107): watch the
+     * display the named stream's window lives on until its content stops
+     * changing for `quietMs` with nothing loading, or `timeoutMs` passes. One
+     * `ui.*` request at a time (item 6); the watch runs off the reader thread.
+     */
+    private fun onUiSettle(obj: Map<String, Any?>) {
+        val stream = Json.int(obj["stream"]) ?: run {
+            sendUiSettle(0, Json.int(obj["seq"]), UiTree.failure("no_window", "There is no window to settle."))
+            return
+        }
+        val seq = Json.int(obj["seq"])
+        val displayId = synchronized(streams) { streams[stream]?.displayId }
+        if (displayId == null) {
+            sendUiSettle(stream, seq, UiTree.failure("no_window", "There is no window $stream."))
+            return
+        }
+        val source = uiTree
+        if (source == null) {
+            sendUiSettle(stream, seq, UiTree.failure(
+                "not_available", "This phone cannot watch the display.",
+            ))
+            return
+        }
+        if (!uiBusy.compareAndSet(false, true)) {
+            sendUiSettle(stream, seq, UiTree.failure("busy", "The last accessibility request is still running."))
+            return
+        }
+        // Item 7: quietMs 100–2000, timeoutMs 200–10000; a value outside is clamped.
+        val quietMs = clamp(obj["quietMs"], MIN_QUIET_MS, MAX_QUIET_MS, DEFAULT_QUIET_MS)
+        val timeoutMs = clamp(obj["timeoutMs"], MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
+        val started = now()
+        Thread({
+            val answer = try {
+                source.settle(displayId, quietMs, timeoutMs)
+            } catch (t: Throwable) {
+                SettleAnswer.Failure("failed", "The display could not be watched.")
+            } finally {
+                uiBusy.set(false)
+            }
+            when (answer) {
+                is SettleAnswer.Settled -> {
+                    log("ui.settle stream=$stream display=$displayId settled waited_ms=${answer.waitedMs} events=${answer.events} took_ms=${now() - started}")
+                    sendUiSettle(stream, seq, linkedMapOf(
+                        "ok" to true, "settled" to true, "waitedMs" to answer.waitedMs, "events" to answer.events,
+                    ))
+                }
+                is SettleAnswer.StillChanging -> {
+                    log("ui.settle stream=$stream display=$displayId reason=${answer.reason} waited_ms=${answer.waitedMs} events=${answer.events} took_ms=${now() - started}")
+                    sendUiSettle(stream, seq, linkedMapOf(
+                        "ok" to true, "settled" to false, "waitedMs" to answer.waitedMs,
+                        "events" to answer.events, "reason" to answer.reason,
+                    ))
+                }
+                is SettleAnswer.Failure -> {
+                    log("ui.settle stream=$stream display=$displayId failed=${answer.code}")
+                    sendUiSettle(stream, seq, UiTree.failure(answer.code, answer.sentence))
+                }
+            }
+        }, "ui-settle-$stream").start()
+    }
+
+    /** One `ui.settle` reply: the body, then what every reply carries. */
+    private fun sendUiSettle(stream: Int, seq: Int?, body: Map<String, Any?>) {
+        val reply = LinkedHashMap<String, Any?>()
+        reply["t"] = "ui.settle"
+        reply["stream"] = stream
+        if (seq != null) reply["seq"] = seq
+        reply.putAll(body)
+        sendJson(reply)
+    }
+
+    /** Clamps a JSON number to [min]..[max]; a missing or non-number value is [default]. */
+    private fun clamp(value: Any?, min: Long, max: Long, default: Long): Long {
+        val n = (value as? Number)?.toLong() ?: return default
+        return n.coerceIn(min, max)
     }
 
     /** After a successful move the phone's own screen shows nothing: go home. */
@@ -4318,6 +4397,15 @@ class Session(
         const val KEYCODE_HOME = 3
         const val KEYCODE_PASTE = 279
         const val KEYCODE_APP_SWITCH = 187
+
+        // `ui.settle` clamps (docs/PROTOCOL.md "UI tree" §7): quietMs 100–2000,
+        // timeoutMs 200–10000. The MCP tools send 300 and 2000.
+        const val MIN_QUIET_MS = 100L
+        const val MAX_QUIET_MS = 2_000L
+        const val DEFAULT_QUIET_MS = 300L
+        const val MIN_TIMEOUT_MS = 200L
+        const val MAX_TIMEOUT_MS = 10_000L
+        const val DEFAULT_TIMEOUT_MS = 2_000L
 
         /**
          * The only types a session may send before `welcome` (docs/PROTOCOL.md

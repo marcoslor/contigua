@@ -291,8 +291,17 @@ object UiTree {
     }
 }
 
-/** The shell side of `ui.tree`; null in a session that cannot read a tree. */
+/** The shell side of `ui.tree` and `ui.settle`; null in a session that cannot read a tree. */
 fun interface UiTreeSource {
     /** Reads [displayId]'s tree. Blocking: the session calls it off the reader thread. */
     fun dump(displayId: Int, size: IntSize): UiTree.Answer
+
+    /**
+     * Watches [displayId] until it is quiet for [quietMs] with nothing loading,
+     * or [timeoutMs] passes (docs/PROTOCOL.md "UI tree" item 7). Blocking: the
+     * session calls it off the reader thread. A source that cannot listen to
+     * accessibility events answers `not_available`.
+     */
+    fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer =
+        SettleAnswer.Failure("not_available", "This phone cannot watch the display.")
 }
