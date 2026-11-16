@@ -4,7 +4,7 @@ summarise the per-window `stats …` lines each run wrote.
 
 The app must already be running with its automation socket on (Settings ›
 Automation, or the e2e bundle's `--mcp-enable`); this script only drives it
-through the same stdio shim `mcp-driver.py` uses. It never launches, quits or
+through the same stdio shim `mcp/driver.py` uses. It never launches, quits or
 changes the Mac app.
 
     tools/stream-bench/bench.py --profile default --serial R58M1234 \
@@ -154,8 +154,8 @@ class BenchFailure(Exception):
 
 
 def load_mcp():
-    """The stdio MCP client mcp-driver.py already proves against the app."""
-    path = os.path.join(MACOS, "scripts", "mcp-driver.py")
+    """The stdio MCP client mcp/driver.py already proves against the app."""
+    path = os.path.join(MACOS, "scripts", "mcp", "driver.py")
     spec = importlib.util.spec_from_file_location("pd_mcp_driver", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
