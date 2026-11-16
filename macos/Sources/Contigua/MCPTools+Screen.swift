@@ -13,6 +13,21 @@ extension MCPToolHost {
 
     /// MCP-60…63: a frame from after the call, never the display layer's last
     /// buffer (the layer stops presenting behind other windows, #165).
+    func screenshot(_ id: Int, ref: String?, wait: MCPWait) async throws -> MCPToolResult {
+        guard wait == .settle else { return try await screenshot(id, ref: ref) }
+        _ = try requireWindow(id)
+        // MCP-64: settle first, then the frame from after the call; the
+        // answer carries the settle beside it.
+        let settle = await settleOnly(id)
+        switch try await screenshot(id, ref: ref) {
+        case .image(let png, var answer):
+            answer["settle"] = MCPActEnvelope.settle(settle)
+            return .image(png, answer)
+        case let other:
+            return other
+        }
+    }
+
     func screenshot(_ id: Int, ref: String?) async throws -> MCPToolResult {
         let window = try requireWindow(id)
         // MCP-50/62/63: the display's pixels, the space of the tree's boxes.

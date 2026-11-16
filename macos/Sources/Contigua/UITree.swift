@@ -52,6 +52,8 @@ struct UITree: Equatable {
         let focused: Bool
         let disabled: Bool
         let password: Bool
+        /// A loading signal: an indeterminate spinner or an empty WebView (MCP-103).
+        var loading: Bool = false
     }
 
     let seq: Int
@@ -68,6 +70,8 @@ struct UITree: Equatable {
     let layers: [Layer]
     let nodes: [Node]
     let note: String?
+    /// True while any node is a loading signal (MCP-103).
+    let loading: Bool
 
     /// Nil when the message is not a usable `ui.tree` reply at all (an older
     /// phone, or a torn one); the caller ignores it as it ignores any unknown
@@ -86,6 +90,7 @@ struct UITree: Equatable {
         self.size = rawSize?.count == 2 ? rawSize!.map(\.intValue) : nil
         self.truncated = message.bool("truncated") ?? false
         self.note = message.string("note")
+        self.loading = message.bool("loading") ?? false
         self.layers = (message.array("layers") ?? []).enumerated().compactMap { index, raw in
             guard let type = raw["type"] as? String else { return nil }
             return Layer(index: raw["i"] as? Int ?? index,
@@ -118,13 +123,14 @@ struct UITree: Equatable {
                         selected: raw["sel"] as? Bool ?? false,
                         focused: raw["focus"] as? Bool ?? false,
                         disabled: raw["disabled"] as? Bool ?? false,
-                        password: raw["pwd"] as? Bool ?? false)
+                        password: raw["pwd"] as? Bool ?? false,
+                        loading: raw["loading"] as? Bool ?? false)
         }
     }
 
     init(seq: Int, stream: UInt32, ok: Bool, code: String?, message: String?,
          displayId: Int?, snapshot: Int?, size: [Int]?, truncated: Bool,
-         layers: [Layer], nodes: [Node], note: String?) {
+         layers: [Layer], nodes: [Node], note: String?, loading: Bool = false) {
         self.seq = seq
         self.stream = stream
         self.ok = ok
@@ -137,6 +143,7 @@ struct UITree: Equatable {
         self.layers = layers
         self.nodes = nodes
         self.note = note
+        self.loading = loading
     }
 
     /// The same tree with the Mac's read counter [snapshot] and every node's
@@ -150,7 +157,7 @@ struct UITree: Equatable {
                    named.ref = "s\(snapshot)e\(node.index)"
                    return named
                },
-               note: note)
+               note: note, loading: loading)
     }
 
     /// The tool result: the trimmed tree as JSON text, only the fields the
@@ -189,6 +196,7 @@ struct UITree: Equatable {
                 let focus: Bool?
                 let disabled: Bool?
                 let pwd: Bool?
+                let loading: Bool?
             }
 
             let window: Int
@@ -200,6 +208,7 @@ struct UITree: Equatable {
             let layers: [Layer]
             let nodes: [Node]
             let note: String?
+            let loading: Bool?
         }
 
         // `l` earns its bytes only when the display holds more than one layer:
@@ -229,9 +238,11 @@ struct UITree: Equatable {
                          sel: node.selected ? true : nil,
                          focus: node.focused ? true : nil,
                          disabled: node.disabled ? true : nil,
-                         pwd: node.password ? true : nil)
+                         pwd: node.password ? true : nil,
+                         loading: node.loading ? true : nil)
             },
-            note: note)
+            note: note,
+            loading: loading ? true : nil)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(out) else { return "{}" }
@@ -260,6 +271,9 @@ struct UITreeRefs {
     }
 
     private var reads: [UInt32: Read] = [:]
+    /// The latest read itself, for an answer's `did.node` and `did.hit`
+    /// (MCP-87, MCP-108).
+    private var trees: [UInt32: UITree] = [:]
     private var counters: [UInt32: Int] = [:]
 
     /// The next read's snapshot for this window, counting from 1 (S1). Kept
@@ -278,6 +292,7 @@ struct UITreeRefs {
         for node in tree.nodes {
             nodes[node.ref] = Placed(point: node.at, box: node.box, off: node.off)
         }
+        trees[tree.stream] = tree
         reads[tree.stream] = Read(snapshot: snapshot, nodes: nodes,
                                   size: tree.size?.count == 2 ? tree.size : nil)
     }
@@ -286,6 +301,7 @@ struct UITreeRefs {
     /// reused (F4).
     mutating func forget(stream: UInt32) {
         reads[stream] = nil
+        trees[stream] = nil
         counters[stream] = nil
     }
 
@@ -293,7 +309,10 @@ struct UITreeRefs {
     /// read count, S1).
     mutating func forgetAll() {
         reads.removeAll()
+        trees.removeAll()
     }
+
+    func latestTree(for stream: UInt32) -> UITree? { trees[stream] }
 
     func resolved(ref: String, stream: UInt32) -> UITreeResolution {
         guard let read = reads[stream] else { return .noTree }
@@ -392,7 +411,7 @@ enum UITreeRefusal {
 }
 
 /// The Mac's read lifecycle for `ui.tree` (WIN-79): pairs each read to its
-/// reply by `seq`, serializes reads (F6), remembers refs per window, and
+/// reply by `seq` (PhoneReadQueue serializes reads, F6), remembers refs per window, and
 /// answers `tap` by ref. Owned by the controller but a plain, main-actor type
 /// so the unit tests drive the whole lifecycle without a socket.
 @MainActor
@@ -403,31 +422,13 @@ final class UITreeBroker {
     private var seq = 0
     private var waiters: [Int: CheckedContinuation<UITree, Error>] = [:]
     private var refs = UITreeRefs()
-    /// F6: one read at a time; a second read waits for the first.
-    private var reading = false
-    private var queue: [CheckedContinuation<Void, Never>] = []
-    /// Bumped by [fail]: a read queued behind a session that ended fails too,
-    /// rather than sending on the next session and waiting out its deadline.
-    private var generation = 0
-    private var lastFailure: UITreeError = .notConnected
 
     /// Start a read. `send` carries the request out with the allocated `seq`;
     /// the reply arrives as [reply], the session's end as [fail], and a silent
     /// phone as the timeout.
+    /// One read at a time is `PhoneReadQueue`'s job (F6, MCP-9): the caller
+    /// runs this inside it.
     func read(stream: UInt32, timeout: TimeInterval, send: (Int) -> Void) async throws -> UITree {
-        if reading {
-            let joined = generation
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                queue.append(cont)
-            }
-            // Woken holding the read slot: pass it on before failing.
-            if generation != joined {
-                releaseRead()
-                throw lastFailure
-            }
-        }
-        reading = true
-        defer { releaseRead() }
         seq += 1
         let id = seq
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UITree, Error>) in
@@ -459,8 +460,6 @@ final class UITreeBroker {
 
     /// A closed session has no tree to answer with.
     func fail(_ error: UITreeError) {
-        generation += 1
-        lastFailure = error
         refs.forgetAll()
         let waiting = Array(waiters.values)
         waiters.removeAll()
@@ -478,17 +477,14 @@ final class UITreeBroker {
         refs.resolved(ref: ref, stream: stream)
     }
 
+    /// The window's latest successful read (MCP-87, MCP-108).
+    func latestTree(stream: UInt32) -> UITree? {
+        refs.latestTree(for: stream)
+    }
+
     private func finish(id: Int, _ result: Result<UITree, Error>) {
         guard let waiter = waiters.removeValue(forKey: id) else { return }
         waiter.resume(with: result)
     }
 
-    private func releaseRead() {
-        if let next = queue.first {
-            queue.removeFirst()
-            next.resume()
-        } else {
-            reading = false
-        }
-    }
 }

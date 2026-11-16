@@ -115,6 +115,11 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
                 "ref": ["type": "string", "minLength": 1, "maxLength": 32,
                         "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
+                // MCP-81, MCP-82 (T5).
+                "wait": ["type": "string", "enum": ["settle", "none"],
+                         "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once."],
+                "observe": ["type": "string", "enum": ["tree", "none"],
+                            "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen."],
             ],
         ]
         XCTAssertEqual(tap.schema as NSDictionary, expected as NSDictionary)

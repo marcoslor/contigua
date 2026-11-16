@@ -181,7 +181,8 @@ Two arguments recur on every tool that acts or opens:
   until the window's accessibility tree has not changed for 300 ms, at most 2 s
   (MCP-81).
 - `observe`: `"tree"` (the default), `"text"` or `"none"`: what screen to
-  return after the settle (MCP-82).
+  return after the settle (MCP-82). `"text"` is taken once T9 ships the text
+  view (MCP-74); until then the argument is `"tree"` or `"none"`.
 
 `open_app` and `send_link` also take `shape`: `"phone"` (the default for a new
 window) or `"window"` (MCP-100, "A window an agent opens" below).
