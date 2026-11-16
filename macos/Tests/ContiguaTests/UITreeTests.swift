@@ -343,7 +343,7 @@ final class UITreeTests: XCTestCase {
         await waitUntil { seq1 != 0 }
         let second = Task { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) }
         // The second read waits for the first instead of racing it (F6).
-        await Task.sleep(nanoseconds: 20_000_000) // real-time: let a wrongly-racing second read run
+        try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let a wrongly-racing second read run
         XCTAssertEqual(seq2, 0, "the second window's read must wait")
         broker.reply(okTree(stream: 1, seq: seq1))
         _ = try await first.value
@@ -362,6 +362,8 @@ final class UITreeTests: XCTestCase {
             XCTFail("expected a timeout")
         } catch let error as UITreeError {
             XCTAssertEqual(error, .timedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
         }
     }
 
@@ -377,6 +379,8 @@ final class UITreeTests: XCTestCase {
             XCTFail("expected a failure")
         } catch let error as UITreeError {
             XCTAssertEqual(error, .notConnected)
+        } catch {
+            XCTFail("unexpected error: \(error)")
         }
     }
 
