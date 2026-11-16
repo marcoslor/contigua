@@ -64,6 +64,8 @@ def suite(args):
         report(bool(settings) and settings[0].get("label") == "Settings",
                "MCP list_apps lists Settings (com.android.settings)")
 
+        # Only this suite's opens count: an earlier suite (act) opened its own.
+        opens_since = time.time()
         opened = client.text("open_app", {"app": "com.android.settings"})
         window = opened.get("window")
         report(isinstance(window, int) and opened.get("package") == "com.android.settings",
@@ -88,7 +90,8 @@ def suite(args):
                     continue
                 msg = event.get("msg") or {}
                 if (event.get("ev") == "rx" and msg.get("t") == "window.open"
-                        and msg.get("pkg") == "com.android.settings"):
+                        and msg.get("pkg") == "com.android.settings"
+                        and event.get("ts", 0) >= opens_since):
                     opens += 1
         except OSError:
             opens = -1
