@@ -1315,6 +1315,11 @@ final class ConnectionController {
         uiTreeBroker.resolved(ref: ref, stream: stream)
     }
 
+    /// The pixel space of the window's latest tree, nil before one (MCP-50).
+    func uiTreeSize(stream: UInt32) -> [Int]? {
+        uiTreeBroker.latestSize(stream: stream)
+    }
+
     /// A closed session, or a phone switch, has no tree to answer with.
     private func failUITrees(_ error: UITreeError) {
         uiTreeBroker.fail(error)

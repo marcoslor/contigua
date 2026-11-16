@@ -750,36 +750,41 @@ final class VideoLayerView: NSView {
 
     // MARK: Frame snapshot (Live Text's second route)
 
-    /// Touched only on `videoQueue`.
-    private var snapshotter: KeyframeSnapshotter?
+    /// The one snapshot decoder, shared by screenshots and Live Text (MCP-60).
+    private let snapshots = SnapshotSlot()
 
     /// Asks the phone for a keyframe and decodes it with a private
     /// decompression session, only until the first frame arrives. This is the
     /// route for windows whose display layer reports no displayed buffer
-    /// (occluded windows, quiet e2e runs). `handler(nil)` when there is no
-    /// format yet or the decoder cannot start.
-    func beginFrameSnapshot(_ handler: @escaping (CVPixelBuffer?) -> Void) {
+    /// (occluded windows, quiet e2e runs), and a screenshot's only route
+    /// (MCP-60). `handler` gets the frame and its stamp; `(nil, nil)` when
+    /// there is no format yet or the decoder cannot start. With `after`, only a
+    /// keyframe counted later than that seq is decoded. A newer begin
+    /// displaces this one, whose handler then gets `(nil, nil)` at once. The
+    /// token is what [cancelFrameSnapshot] takes.
+    @discardableResult
+    func beginFrameSnapshot(after: Int = 0,
+                            _ handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) -> SnapshotSlot.Token {
+        let token = snapshots.reserve()
         videoQueue.async { [weak self] in
             guard let self else { return }
-            self.snapshotter?.cancel()
             guard let format = self.formatDescription else {
-                DispatchQueue.main.async { handler(nil) }
+                DispatchQueue.main.async { handler(nil, nil) }  // gcd: the existing hop from the video queue, its handler re-signed for the stamp
                 return
             }
-            let snapshotter = KeyframeSnapshotter()
-            self.snapshotter = snapshotter
-            snapshotter.begin(format: format) { buffer in
-                DispatchQueue.main.async { handler(buffer) }
+            self.snapshots.begin(token, format: format, after: after) { buffer, stamp in
+                DispatchQueue.main.async { handler(buffer, stamp) }  // gcd: the existing hop from the video queue, its handler re-signed for the stamp
             }
             DispatchQueue.main.async { [weak self] in self?.onRequestKeyframe?() }
         }
+        return token
     }
 
-    /// The mode left before a frame arrived: drop the decoder.
-    func cancelFrameSnapshot() {
+    /// The caller gave up before a frame arrived: drop its decoder, only if it
+    /// is still the current one (MCP-60).
+    func cancelFrameSnapshot(_ token: SnapshotSlot.Token) {
         videoQueue.async { [weak self] in
-            self?.snapshotter?.cancel()
-            self?.snapshotter = nil
+            self?.snapshots.cancel(token)
         }
     }
 
@@ -873,7 +878,9 @@ final class VideoLayerView: NSView {
         }
     }
 
-    func enqueue(_ frame: VideoFrameData) {
+    /// `stamp` is the frame's count on the window's clock (MCP-20), carried to
+    /// the snapshot decoder so a screenshot names the frame it decoded.
+    func enqueue(_ frame: VideoFrameData, stamp: FrameStamp? = nil) {
         videoQueue.async { [weak self] in
             guard let self else { return }
             // Every stream sends VIDEO_CONFIG before its frames; without one
@@ -902,7 +909,7 @@ final class VideoLayerView: NSView {
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
-            self.snapshotter?.feed(sample)
+            self.snapshots.feed(sample, stamp: stamp, keyframe: keyframe)
             self.probeDecoder?.feed(sample)
             // The byte work above is the expensive part and stays off the main
             // thread, but CALayer is main-thread-only: reading or mutating the
