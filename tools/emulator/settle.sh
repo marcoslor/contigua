@@ -18,7 +18,9 @@
 #      is marked `loading` on its row and the reply, and a settle during it
 #      answers reason loading;
 #   4. a settle sent right after `window.open` or `link.open` never answers
-#      `no_display` (a display with no window yet is still opening, MCP-107).
+#      `no_display` (a display with no window yet is still opening, MCP-107);
+#   5. the debug log line names `contigua-ui-tree` as the thread a watch ran
+#      its events on, whatever thread the listener fired on (MCP-107).
 # Output is counts, codes, states, durations and class names only; a node's
 # text is matched here to find a tab, never printed.
 set -uo pipefail
@@ -401,4 +403,14 @@ emu logcat -c >/dev/null 2>&1 || true
 rc=$?
 emu logcat -d -s ContiguaSvc:I 2>/dev/null | grep -E "ui\.settle|ui\.tree" > "$OUT/logcat-ui.txt" || true
 echo "[settle] logcat ui lines: $(wc -l < "$OUT/logcat-ui.txt"); total $(( $(date +%s) - T0 ))s"
+# MCP-107: the debug build logs, once, the listener's thread and the thread the
+# watch ran the event on; the watch's must be its own looper.
+thread_line=$(grep -m1 "ui.settle: event thread=" "$OUT/logcat-ui.txt" | sed 's/.*ui.settle: //')
+if [ -z "$thread_line" ]; then
+  echo "FAIL [MCP-107] no event-thread line in the log"; rc=1
+elif [[ "$thread_line" == *"watch thread=contigua-ui-tree"* ]]; then
+  echo "ok [MCP-107] $thread_line"
+else
+  echo "FAIL [MCP-107] $thread_line"; rc=1
+fi
 exit $rc
