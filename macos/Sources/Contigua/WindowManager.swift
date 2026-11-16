@@ -513,8 +513,10 @@ final class WindowManager {
     func openAdditional(pkg: String, activity: String? = nil, deviceId: String? = nil) -> AppWindowController? {
         let phone = deviceId ?? activeDeviceId
         let existing = appWindows(pkg: pkg, deviceId: phone)
-        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
+        // No window yet: the explicit ask opens the first one, as if it were
+        // absent, even for an app that opens one window at a time (MCP-40, #183).
         if existing.isEmpty { return openOrRaise(pkg: pkg, activity: activity, deviceId: phone) }
+        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
         let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
         let stream = allocateStream()
         let controller = AppWindowController(stream: stream, pkg: pkg, activity: activity,
