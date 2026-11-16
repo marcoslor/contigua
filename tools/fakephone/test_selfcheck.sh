@@ -138,6 +138,12 @@ note "ui-settle clamps quietMs to timeoutMs (quietMs 2000, timeoutMs 300)"
 grep -q "ui.settle stream=1 quiet_ms=300 timeout_ms=300" "$WORK/fh.err" \
     || die "fakephone did not clamp quietMs to timeoutMs"
 
+# --- ui.tree keys, heading, covered (MCP-71/72/73): its own fake phones -----
+note "ui-tree keys (test_tree_keys.sh)"
+bash "$HERE/test_tree_keys.sh" > "$WORK/treekeys.txt" 2>&1 \
+    || die "tree keys: $(cat "$WORK/treekeys.txt")"
+cat "$WORK/treekeys.txt"
+
 # --- second simultaneous session must be rejected --------------------------
 note "busy: a second session is rejected while the first keeps streaming"
 "${DECK[@]}" open --phone --w 1080 --h 2340 --dpi 450 --seconds 4 \

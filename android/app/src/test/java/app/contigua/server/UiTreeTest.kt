@@ -357,4 +357,95 @@ class UiTreeTest {
         val empty = UiTree.Node(role = "android.webkit.WebView", box = UiTree.Box(0, 0, 100, 100))
         assertEquals(true, reply(listOf(layer(empty)))["loading"])
     }
+
+    // MARK: B2: keys, heading, covered (docs/PROTOCOL.md "UI tree" item 9)
+
+    @Test
+    fun testEveryRowCarriesItsKeyAcrossReads() { // [MCP-71]
+        val keys = UiTreeKeys()
+        fun read(vararg ids: String) = nodes(UiTree.reply(7, IntSize(1_000, 2_000), listOf(layer(
+            *ids.map { UiTree.Node(role = "Button", text = it, box = UiTree.Box(0, 0, 100, 100), clickable = true, identity = it) }
+                .toTypedArray(),
+        )), keys))
+        assertEquals(listOf(1, 2), read("A", "B").map { it["k"] })
+        val second = read("B", "C")
+        assertEquals(listOf(2, 3), second.map { it["k"] })
+        assertEquals(listOf("B", "C"), second.map { it["text"] })
+    }
+
+    @Test
+    fun testAHeadingIsMarked() { // [MCP-72]
+        val heading = UiTree.Node(role = "TextView", text = "Alarms", box = UiTree.Box(0, 0, 100, 100), heading = true)
+        val plain = UiTree.Node(role = "TextView", text = "7:00", box = UiTree.Box(0, 100, 100, 200))
+        val rows = nodes(reply(listOf(layer(heading, plain))))
+        assertEquals(true, rows[0]["heading"])
+        assertFalse(rows[1].containsKey("heading"))
+    }
+
+    private fun banner(closeBox: UiTree.Box): List<Map<String, Any?>> {
+        val link = UiTree.Node(
+            role = "TextView", text = "Terms", clickable = true, drawingOrder = 1,
+            box = UiTree.Box(0, 2_200, 1_080, 2_300),
+        )
+        val close = UiTree.Node(
+            role = "ImageButton", desc = "Close", clickable = true, drawingOrder = 2, box = closeBox,
+        )
+        val root = UiTree.Node(
+            role = "FrameLayout", box = UiTree.Box(0, 0, 1_080, 2_400),
+            children = listOf(
+                UiTree.Node(role = "LinearLayout", box = UiTree.Box(0, 0, 1_080, 2_400), drawingOrder = 1, children = listOf(link)),
+                UiTree.Node(role = "FrameLayout", box = UiTree.Box(0, 2_100, 1_080, 2_400), drawingOrder = 2, children = listOf(close)),
+            ),
+        )
+        return nodes(reply(listOf(layer(root)), IntSize(1_080, 2_400)))
+    }
+
+    @Test
+    fun testAPointUnderALaterSiblingIsCovered() { // [MCP-73]
+        // The close button sits at the right end: the link's centre is clear.
+        val clear = banner(UiTree.Box(900, 2_180, 1_080, 2_320))
+        val link = clear.first { it["text"] == "Terms" }
+        assertEquals(listOf(0.5, 0.937), link["at"])
+        assertFalse(link.containsKey("covered"))
+        // The banner spans the width: the link is covered by it, and not the reverse.
+        val covered = banner(UiTree.Box(0, 2_180, 1_080, 2_320))
+        val under = covered.first { it["text"] == "Terms" }
+        val over = covered.first { it["desc"] == "Close" }
+        assertEquals(over["k"], under["covered"])
+        assertFalse(over.containsKey("covered"))
+    }
+
+    @Test
+    fun testAWindowAboveCoversTheNode() { // [MCP-73]
+        val button = UiTree.Node(role = "Button", text = "Pay", clickable = true, box = UiTree.Box(100, 900, 900, 1_100))
+        val app = UiTree.Layer("Shop", "app", false, false, listOf(button), windowLayer = 1)
+        val blank = UiTree.Node(role = "FrameLayout", box = UiTree.Box(0, 0, 1_000, 2_000))
+        val overlay = UiTree.Layer(null, "overlay", true, true, listOf(blank), windowLayer = 5,
+            bounds = UiTree.Box(0, 0, 1_000, 2_000))
+        val rows = nodes(reply(listOf(overlay, app)))
+        assertEquals("window", rows.single { it["text"] == "Pay" }["covered"])
+        // A readable node of the window above is named by its key instead.
+        val ok = UiTree.Node(role = "Button", text = "OK", clickable = true, box = UiTree.Box(0, 800, 1_000, 1_200))
+        val dialog = UiTree.Layer(null, "system", true, true, listOf(ok), windowLayer = 5,
+            bounds = UiTree.Box(0, 0, 1_000, 2_000))
+        val both = nodes(reply(listOf(dialog, app)))
+        assertEquals(both.single { it["text"] == "OK" }["k"], both.single { it["text"] == "Pay" }["covered"])
+        assertFalse(both.single { it["text"] == "OK" }.containsKey("covered"))
+        // A window above that does not reach the point covers nothing.
+        val strip = UiTree.Layer(null, "system", false, false, emptyList(), windowLayer = 5,
+            bounds = UiTree.Box(0, 0, 1_000, 100))
+        assertFalse(nodes(reply(listOf(strip, app))).single().containsKey("covered"))
+    }
+
+    @Test
+    fun testAChildIsNotCoveredByItsOwnParent() { // [MCP-73]
+        val label = UiTree.Node(role = "TextView", text = "Send", drawingOrder = 3, box = UiTree.Box(100, 100, 300, 200))
+        val button = UiTree.Node(
+            role = "Button", desc = "Send message", clickable = true, drawingOrder = 1,
+            box = UiTree.Box(100, 100, 300, 200), children = listOf(label),
+        )
+        val rows = nodes(reply(listOf(layer(button))))
+        assertEquals(2, rows.size)
+        assertTrue(rows.none { it.containsKey("covered") })
+    }
 }
