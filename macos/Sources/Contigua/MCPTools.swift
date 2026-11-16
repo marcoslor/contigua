@@ -136,10 +136,8 @@ struct MCPToolHost {
         let tree: UITree
         do {
             tree = try await controller.uiTree(stream: UInt32(id))
-        } catch UITreeError.timedOut {
-            throw MCPToolFailure("The phone did not answer the accessibility read in time.")
-        } catch UITreeError.notConnected {
-            throw MCPToolFailure("No phone is connected.")
+        } catch let error as UITreeError {
+            throw MCPToolFailure(error.sentence)
         }
         guard tree.ok else {
             throw MCPToolFailure(tree.message ?? "The phone could not read that display's accessibility tree.")
@@ -214,25 +212,18 @@ struct MCPToolHost {
     /// client can tell which screen it pressed on rather than guess.
     private func tap(window id: Int, ref: String) throws -> MCPToolResult {
         let window = try requireInputWindow(id)
-        switch controller.uiTreeResolved(ref: ref, stream: window.stream) {
-        case .placed(let snapshot, let placed):
-            guard let point = placed.point else {
-                // F9: an off-screen node keeps its text but has no point to press.
-                throw MCPToolFailure(UITreeRefusal.offScreen(ref))
-            }
+        switch UITreeTapPlan(controller.uiTreeResolved(ref: ref, stream: window.stream), ref: ref) {
+        case .press(let point, let snapshot, let box):
             send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
             send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
             var answer: [String: Any] = ["ok": true, "window": id, "ref": ref,
                                          "snapshot": snapshot,
                                          "x": point.x, "y": point.y]
-            if let box = placed.box { answer["box"] = box }
+            if let box { answer["box"] = box }
             return .text(try json(answer))
-        case .stale(let ref, let snapshot, let latest):
-            // F1: a ref from an older tree names both snapshots, presses nothing.
-            throw MCPToolFailure(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))
-        case .windowClosed:
-            // F4: the window is gone; its refs went with it.
-            throw MCPToolFailure(UITreeRefusal.windowClosed)
+        case .refuse(let sentence):
+            // A stale (F1), closed (F4) or off-screen (F9) ref presses nothing.
+            throw MCPToolFailure(sentence)
         }
     }
 
