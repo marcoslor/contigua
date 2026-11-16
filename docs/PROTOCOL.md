@@ -1604,7 +1604,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    cannot happen answers
    `{"t":"ui.settle","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`,
    `no_display` (the display had a window and went away during the watch; a stream with no display at the start answers `no_window`), `not_available` (this phone cannot
-   listen to accessibility events), `busy` (item 6) or `failed`. The watch is a pure state
+   listen to accessibility events, or its connection could not be made: never `ui.tree`'s
+   `no_a11y`), `busy` (item 6) or `failed`. The watch is a pure state
    machine (docs/specs/mcp.md "Settling a display"); it reads event types, window ids and the
    loading check's yes or no, and logs the stream, the outcome, `waitedMs` and `events`.
 8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H}`, `k` a

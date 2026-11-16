@@ -48,11 +48,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     override fun dump(displayId: Int, size: IntSize): UiTree.Answer = synchronized(readLock) {
         if (disconnected) {
             return@synchronized UiTree.Answer.Failure(
-                "no_a11y", "This phone cannot read an accessibility tree right now.",
+                UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
         }
         val automation = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
-            "no_a11y", failure ?: "This phone cannot read an accessibility tree right now.",
+            UiCodes.NO_A11Y, failure ?: "This phone cannot read an accessibility tree right now.",
         )
         try {
             read(automation, displayId)
@@ -60,14 +60,14 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
             restart()
             val again = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
-                "no_a11y", "This phone cannot read an accessibility tree right now.",
+                UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
             try {
                 read(again, displayId)
             } catch (t: Throwable) {
                 log("ui.tree: read again ${t.javaClass.simpleName}") // log-ok: class only
                 restart()
-                UiTree.Answer.Failure("no_a11y", "This phone cannot read an accessibility tree right now.")
+                UiTree.Answer.Failure(UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.")
             }
         }
     }
@@ -85,17 +85,17 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * thread of its own and posts its answer back, so it never holds up events.
      */
     override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer {
-        if (disconnected) return SettleAnswer.Failure("no_a11y", NO_WATCH)
+        if (disconnected) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         val automation = ensureAutomation()
-            ?: return SettleAnswer.Failure("no_a11y", failure ?: NO_WATCH)
-        val h = handler ?: return SettleAnswer.Failure("no_a11y", NO_WATCH)
+            ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, failure ?: NO_WATCH)
+        val h = handler ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         val watch = Watch(displayId, automation, h)
-        if (!h.post { watch.begin(quietMs, timeoutMs) }) return SettleAnswer.Failure("no_a11y", NO_WATCH)
+        if (!h.post { watch.begin(quietMs, timeoutMs) }) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (!watch.gate.await(timeoutMs + WATCH_MARGIN_MS, TimeUnit.MILLISECONDS)) {
-            h.post { watch.finish(SettleAnswer.Failure("failed", "The display could not be watched.")) }
+            h.post { watch.finish(SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")) }
             watch.gate.await(WATCH_MARGIN_MS, TimeUnit.MILLISECONDS)
         }
-        return watch.answer ?: SettleAnswer.Failure("failed", "The display could not be watched.")
+        return watch.answer ?: SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
     }
 
     /** Every accessibility event, on the looper thread: each running watch sees it. */
@@ -213,9 +213,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         is SettleWatch.Action.Reply.Settled -> SettleAnswer.Settled(reply.waitedMs, reply.events)
         is SettleWatch.Action.Reply.StillChanging ->
             SettleAnswer.StillChanging(reply.waitedMs, reply.events, reply.reason)
-        SettleWatch.Action.Reply.Busy -> SettleAnswer.Failure("busy", "The last accessibility request is still running.")
+        SettleWatch.Action.Reply.Busy -> SettleAnswer.Failure(UiCodes.BUSY, "The last accessibility request is still running.")
         SettleWatch.Action.Reply.NoDisplay ->
-            SettleAnswer.Failure("no_display", "That window's display went away.")
+            SettleAnswer.Failure(UiCodes.NO_DISPLAY, "That window's display went away.")
     }
 
     private fun now() = SystemClock.uptimeMillis()
@@ -349,10 +349,10 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         val all = automation.windowsOnAllDisplays
         val windows = all.get(displayId)
             ?: return UiTree.Answer.Failure(
-                "no_display", "That window is not on a display this phone can read.",
+                UiCodes.NO_DISPLAY, "That window is not on a display this phone can read.",
             )
         if (windows.isEmpty()) {
-            return UiTree.Answer.Failure("no_display", "That display has no windows.")
+            return UiTree.Answer.Failure(UiCodes.NO_DISPLAY, "That display has no windows.")
         }
         val trees = windows.map { window ->
             UiTree.Layer(

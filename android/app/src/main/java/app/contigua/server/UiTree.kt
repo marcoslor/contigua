@@ -309,5 +309,18 @@ fun interface UiTreeSource {
      * accessibility events answers `not_available`.
      */
     fun settle(displayId: Int, quietMs: Long, timeoutMs: Long): SettleAnswer =
-        SettleAnswer.Failure("not_available", "This phone cannot watch the display.")
+        SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, "This phone cannot watch the display.")
+}
+
+/** The closed failure codes of `ui.tree` and `ui.settle` (docs/PROTOCOL.md "UI tree"). */
+object UiCodes {
+    const val NO_WINDOW = "no_window"
+    const val NO_DISPLAY = "no_display"
+    const val NOT_AVAILABLE = "not_available"
+    const val NO_A11Y = "no_a11y"
+    const val BUSY = "busy"
+    const val FAILED = "failed"
+
+    /** Every code `ui.settle` may answer (item 7); `no_a11y` is `ui.tree`'s only. */
+    val SETTLE = setOf(NO_WINDOW, NO_DISPLAY, NOT_AVAILABLE, BUSY, FAILED)
 }
