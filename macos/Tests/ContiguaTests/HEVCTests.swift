@@ -274,7 +274,7 @@ final class HEVCTests: XCTestCase {
         snapshotter.feed(built[0], stamp: FrameStamp(seq: 5, at: 1), keyframe: true)
         snapshotter.feed(built[1], stamp: FrameStamp(seq: 6, at: 2), keyframe: false)
         // Give an async decode the time it would take to call back.
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: an async VideoToolbox decode has no clock to drive; this proves it never calls back
         lock.lock()
         XCTAssertEqual(stamps.count, 0, "a keyframe stamped 5 and a delta stamped 6 give no callback")
         lock.unlock()

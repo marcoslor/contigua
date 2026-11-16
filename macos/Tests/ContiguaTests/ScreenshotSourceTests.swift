@@ -66,9 +66,9 @@ final class ScreenshotSourceTests: XCTestCase {
             askedAfter = seq
             askedTimeout = timeout
             if deliver == nil, waitsOutBound {
-                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
             } else if deliverAfter > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(deliverAfter * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(deliverAfter * 1_000_000_000))  // real-time: the answer's age is wall-clock (MCP-20)
             }
             return deliver
         }
