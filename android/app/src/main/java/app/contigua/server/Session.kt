@@ -2015,24 +2015,24 @@ class Session(
         // WIN-79 F8: a `ui.tree` without a stream answers `no_window`, never a
         // silence that makes the Mac wait out its deadline.
         val stream = Json.int(obj["stream"]) ?: run {
-            sendUiTree(0, Json.int(obj["seq"]), UiTree.failure("no_window", "There is no window to read."))
+            sendUiTree(0, Json.int(obj["seq"]), UiTree.failure(UiCodes.NO_WINDOW, "There is no window to read."))
             return
         }
         val seq = Json.int(obj["seq"])
         val displayId = synchronized(streams) { streams[stream]?.displayId }
         if (displayId == null) {
-            sendUiTree(stream, seq, UiTree.failure("no_window", "There is no window $stream."))
+            sendUiTree(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
             return
         }
         val source = uiTree
         if (source == null) {
             sendUiTree(stream, seq, UiTree.failure(
-                "not_available", "This phone cannot read an accessibility tree.",
+                UiCodes.NOT_AVAILABLE, "This phone cannot read an accessibility tree.",
             ))
             return
         }
         if (!uiBusy.compareAndSet(false, true)) {
-            sendUiTree(stream, seq, UiTree.failure("busy", "The last accessibility read is still running."))
+            sendUiTree(stream, seq, UiTree.failure(UiCodes.BUSY, "The last accessibility read is still running."))
             return
         }
         // F2: `box` is in the display's pixels, so `at` is normalized by the
@@ -2043,7 +2043,7 @@ class Session(
             val answer = try {
                 source.dump(displayId, size)
             } catch (t: Throwable) {
-                UiTree.Answer.Failure("failed", "The accessibility tree could not be read.")
+                UiTree.Answer.Failure(UiCodes.FAILED, "The accessibility tree could not be read.")
             } finally {
                 uiBusy.set(false)
             }
@@ -2082,24 +2082,24 @@ class Session(
      */
     private fun onUiSettle(obj: Map<String, Any?>) {
         val stream = Json.int(obj["stream"]) ?: run {
-            sendUiSettle(0, Json.int(obj["seq"]), UiTree.failure("no_window", "There is no window to settle."))
+            sendUiSettle(0, Json.int(obj["seq"]), UiTree.failure(UiCodes.NO_WINDOW, "There is no window to settle."))
             return
         }
         val seq = Json.int(obj["seq"])
         val displayId = synchronized(streams) { streams[stream]?.displayId }
         if (displayId == null) {
-            sendUiSettle(stream, seq, UiTree.failure("no_window", "There is no window $stream."))
+            sendUiSettle(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
             return
         }
         val source = uiTree
         if (source == null) {
             sendUiSettle(stream, seq, UiTree.failure(
-                "not_available", "This phone cannot watch the display.",
+                UiCodes.NOT_AVAILABLE, "This phone cannot watch the display.",
             ))
             return
         }
         if (!uiBusy.compareAndSet(false, true)) {
-            sendUiSettle(stream, seq, UiTree.failure("busy", "The last accessibility request is still running."))
+            sendUiSettle(stream, seq, UiTree.failure(UiCodes.BUSY, "The last accessibility request is still running."))
             return
         }
         // Item 7: quietMs 100–2000, timeoutMs 200–10000; a value outside is clamped.
@@ -2110,7 +2110,7 @@ class Session(
             val answer = try {
                 source.settle(displayId, quietMs, timeoutMs)
             } catch (t: Throwable) {
-                SettleAnswer.Failure("failed", "The display could not be watched.")
+                SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
             } finally {
                 uiBusy.set(false)
             }
