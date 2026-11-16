@@ -50,7 +50,7 @@ An AI agent on this Mac (any MCP client) drives the connected phone through Cont
 |---|---|---|
 | MCP-20 | **target.** THE Mac SHALL count, per window, the video access units it receives from the phone (a whole `VIDEO_FRAME` or a reassembled `VIDEO_CHUNK` set), starting at 1 for the window's first frame and never reset while the window lives; EVERY answer that reflects a window's screen (`ui_tree`, `screenshot`, `wait`, every input tool, `list_windows`) SHALL carry `frame: {"seq": N, "ageMs": A}` — N the newest counted frame when the answer was made (0 before the first), A the milliseconds since it arrived (null before the first). | untested — plan T3: K2 `FrameClockTests.testSeqCountsAccessUnitsAndAgeIsSinceArrival` `[MCP-20]` |
 | MCP-21 | **target.** THE same answers SHALL carry `state`, the window's closed state token: `opening` (no first frame), `live`, `paused` (the Mac paused the stream), `stalled` (WIN-17's "Not responding"), `offline` (link down, reconnecting or offline), or `closed`. | untested — plan T3: K2 `MCPWindowStateTests.testEveryLifecycleStateHasOneToken` `[MCP-21]` |
-| MCP-22 | **target.** WHEN a client calls any tool naming a window THE Mac SHALL hold that window's stream unpaused from the call's start until 15 s after it ends (the agent hold), for a covered and a minimised window alike, so a window keeps sending frames while an agent uses it; WHEN the hold ends THE window SHALL pause or stay live by WIN's own rule at that moment. | untested — plan T3: K2 `StreamPauseTests.testAnAgentHoldKeepsACoveredWindowLive` `[MCP-22]`, `StreamPauseTests.testAnAgentHoldKeepsAMinimisedWindowLive` `[MCP-22]`, `AgentHoldTests` (every transition) `[MCP-22]` |
+| MCP-22 | WHEN a client calls any tool naming a window THE Mac SHALL hold that window's stream unpaused from the call's start until 15 s after it ends (the agent hold), for a covered and a minimised window alike, so a window keeps sending frames while an agent uses it; WHEN the hold ends THE window SHALL pause or stay live by WIN's own rule at that moment. | K2 `StreamPauseTests.testAnAgentHoldKeepsACoveredWindowLive` `[MCP-22]`, `StreamPauseTests.testAnAgentHoldKeepsAMinimisedWindowLive` `[MCP-22]`, `AgentHoldTests` (one test per row of "The agent hold") `[MCP-22]` |
 
 ### Phone and apps
 
@@ -197,7 +197,7 @@ One watch per session (the Mac sends one `ui.*` request at a time, MCP-9). Acces
 | Watching · Checking | `sessionEnd` | Idle | stop listening; no reply |
 | Idle | `loading(…)` | Idle | ignored (a check that outlived its watch) |
 
-### The agent hold (Mac, `AgentHold`, target, per window)
+### The agent hold (Mac, `AgentHold`, per window)
 
 | State | Event | Next state | Actions |
 |---|---|---|---|

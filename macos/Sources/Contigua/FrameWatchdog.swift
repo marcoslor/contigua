@@ -106,22 +106,3 @@ struct FrameWatchdog: Equatable {
         return true
     }
 }
-
-/// The last frame's time, written from the session queue and read by the
-/// window's main-thread watchdog.
-final class FrameClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var last: TimeInterval?
-
-    func note(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        lock.lock()
-        last = time
-        lock.unlock()
-    }
-
-    var lastFrame: TimeInterval? {
-        lock.lock()
-        defer { lock.unlock() }
-        return last
-    }
-}

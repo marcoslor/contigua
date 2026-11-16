@@ -15,6 +15,13 @@ struct MCPToolHost {
 
     /// `client` is the connection the call came on; no tool uses it yet.
     func perform(_ call: MCPCall, client: MCPClientID) async -> MCPToolResult {
+        // MCP-22: the hold runs from the call's start until 15 s after its end.
+        hold(call)
+        defer { hold(call) }
+        return await run(call)
+    }
+
+    private func run(_ call: MCPCall) async -> MCPToolResult {
         do {
             switch call {
             case .phoneStatus:
@@ -58,6 +65,23 @@ struct MCPToolHost {
 
     // MARK: Helpers
 
+    /// MCP-22: a call naming an open window holds its stream unpaused.
+    func hold(_ call: MCPCall) {
+        guard let id = call.window, let window = controller.windows.controller(for: UInt32(id))
+        else { return }
+        window.agentCalled()
+    }
+
+    /// MCP-20: the window's `frame` object now.
+    func frameObject(for window: StreamWindowController) -> [String: Any] {
+        window.frameClock.object(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// MCP-21: the window's closed state token.
+    func stateToken(for window: StreamWindowController) -> String {
+        MCPWindowState.token(window.mcpLifecycle)
+    }
+
     /// The phone's name for a sentence's blank; never logged (MCP-14).
     var phoneName: String? {
         (try? IntentsBridge.resolve(nil))?.name
@@ -92,6 +116,25 @@ struct MCPToolHost {
         case .app(let app): return app
         case .ambiguous(let matches): throw MCPToolError.ambiguous(query, matches: matches)
         case .none: throw MCPToolError.notFound(query)
+        }
+    }
+}
+
+/// MCP-21: a window's closed set of state tokens. The three link-down steps
+/// all read `offline` to a client.
+enum MCPWindowState {
+    enum Lifecycle: Equatable {
+        case opening, live, paused, stalled, linkDown, reconnecting, offline, closed
+    }
+
+    static func token(_ state: Lifecycle) -> String {
+        switch state {
+        case .opening: return "opening"
+        case .live: return "live"
+        case .paused: return "paused"
+        case .stalled: return "stalled"
+        case .linkDown, .reconnecting, .offline: return "offline"
+        case .closed: return "closed"
         }
     }
 }

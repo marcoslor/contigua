@@ -157,7 +157,7 @@ final class StreamPauseTests: XCTestCase {
     private func pause(miniaturized: Bool = false, key: Bool = false, main: Bool = false,
                        visible: Bool = false, menu: Bool = false) -> Bool {
         StreamPause.shouldPause(miniaturized: miniaturized, key: key, main: main,
-                                occludedVisible: visible, menuTracking: menu)
+                                occludedVisible: visible, menuTracking: menu, agentHold: false)
     }
 
     func testACoveredWindowPauses() {
