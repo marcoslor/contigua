@@ -123,6 +123,16 @@ never answers `no_display`. `--check` rehearses without a device. `--ab` adds th
 clear, after an open and after a settle. Output is
 counts, codes, states, durations and class names only.
 
+### tree-keys: a row's `k` across reads (MCP-71)
+
+`bash tools/emulator/tree-keys.sh` boots once, pairs, opens the Clock, taps its
+Alarm tab by its row and settles, then reads the idle tab twice: every node
+keeps its `k` (nodes paired by role, view id, labels and box), the keys are
+unique integers in each reply and no row carries a `ref`. It prints the counts of
+`heading` and `covered` rows without checking them. `--check` rehearses without
+a device. It installs the APK already built (`start.sh --no-build`): build it
+first. Output is counts, keys and durations only.
+
 ### Reliability rules (each one cost a boot once)
 
 - **Run every script as `bash <script>`.** Do not rely on the exec bit: a fresh

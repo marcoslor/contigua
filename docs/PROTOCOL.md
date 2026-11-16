@@ -1637,18 +1637,21 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      from a node's identity — its window id and source node id, the pair
      `AccessibilityNodeInfo.equals` compares — to its key. A node seen again in a later read
      keeps its key; a new node gets the next unused one (1, 2, …); a key is never given to
-     another node while the display exists, and the table is dropped with the display. At most
+     another node while the display exists, and the table is dropped once a read no longer
+     finds the display listed. A node met twice in one read gets a second key. At most
      4096 identities are remembered per display; past it the oldest that are not in the latest
      read are forgotten (a forgotten node that returns gets a new key). `k` is unique within a
      reply. The Mac names the row's ref `e<k>` (T10); the key crosses back to the phone only in
      `ui.press` (item 8).
    - **`heading` (B2).** `true` when `AccessibilityNodeInfo.isHeading`.
-   - **`covered` (B2).** The `k` of the topmost node whose bounds contain this row's `at` point
-     and that is drawn after it — a later `getDrawingOrder` among the branches that do not
-     hold this node, or any node of a layer above this row's layer on the display (by
-     `AccessibilityWindowInfo.getLayer`) — counting only nodes that are clickable or carry a
-     label; `"window"` when the cover is a layer above with no such node; absent when nothing
-     covers the point.
+   - **`covered` (B2).** The `k` of the topmost row whose visible `box` contains this row's
+     `at` point and that is drawn after it — a later `getDrawingOrder` where their branches
+     part (an ancestor or a descendant never covers), or any row of a layer above this row's
+     layer on the display (by `AccessibilityWindowInfo.getLayer`) — counting only rows that
+     carry `at` and are clickable or carry a label. A layer above that reaches the point (by
+     its window bounds, or a counted row of it there) wins over the row's own layer: the
+     highest such layer names its topmost counted row at the point, or `"window"` when it has
+     none there. Absent when nothing covers the point, and on a row with no `at`.
    - **`hint`, `hintText` (B6).** A row whose node `isShowingHintText` carries `hint: true` and
      the hint's words as `hintText`, and no `text`.
    - **`active` on a layer; `focus` (B6).** Exactly the layer with input focus

@@ -20,6 +20,10 @@ package app.contigua.server
  * that goes wrong when a screenshot is scaled, and an empty tree says so
  * instead of reading as a blank screen. The phone sends no `ref` and no
  * `snapshot`: the Mac issues both, so a ref never crosses the wire.
+ *
+ * Each row carries `k`, its node's key in the display's [UiTreeKeys] table
+ * (MCP-71), `heading` when the node is one (MCP-72), and `covered` when a node
+ * drawn after it, or a window above it, holds its tap point (MCP-73).
  */
 object UiTree {
 
@@ -49,6 +53,15 @@ object UiTree {
          * WebView by this, as the settle's check does (MCP-103).
          */
         val childCount: Int = children.size,
+        /** `AccessibilityNodeInfo.isHeading` (MCP-72). */
+        val heading: Boolean = false,
+        /** `getDrawingOrder`: the order the node draws among its siblings (MCP-73). */
+        val drawingOrder: Int = 0,
+        /**
+         * What [UiTreeKeys] keys the node by: its window id and source node id
+         * on the phone. Null is a node with no identity, keyed fresh each read.
+         */
+        val identity: Any? = null,
     )
 
     /** A node's bounds in display pixels, origin at the display's top left. */
@@ -65,11 +78,16 @@ object UiTree {
         val focused: Boolean,
         val active: Boolean,
         val nodes: List<Node>,
+        /** `AccessibilityWindowInfo.getLayer`: a higher one draws above (MCP-73). */
+        val windowLayer: Int = 0,
+        /** The window's bounds in display pixels, when known (MCP-73's `"window"`). */
+        val bounds: Box? = null,
     )
 
     /** What a read produced: a tree, or the reason there is none. */
     sealed class Answer {
-        data class Tree(val layers: List<Layer>) : Answer()
+        /** [keys] is the display's key table (MCP-71); a fresh one when the reader keeps none. */
+        data class Tree(val layers: List<Layer>, val keys: UiTreeKeys = UiTreeKeys()) : Answer()
 
         /** A closed code the Mac passes on, and one sentence a person could read. */
         data class Failure(val code: String, val sentence: String) : Answer()
@@ -93,15 +111,23 @@ object UiTree {
     /**
      * Builds the `ok: true` reply body for a read. `size` is the display's
      * input space — the pixel space `box` is in and TOUCH maps over — not the
-     * stream's video size (F2).
+     * stream's video size (F2). [keys] is the display's key table: a row's `k`
+     * comes from it, so the same node keeps its `k` across reads (MCP-71).
      */
-    fun reply(display: Int, size: IntSize, layers: List<Layer>): LinkedHashMap<String, Any?> {
+    fun reply(
+        display: Int,
+        size: IntSize,
+        layers: List<Layer>,
+        keys: UiTreeKeys = UiTreeKeys(),
+    ): LinkedHashMap<String, Any?> {
         val out = LinkedHashMap<String, Any?>()
         val nodes = ArrayList<LinkedHashMap<String, Any?>>()
         val builder = Builder(size, nodes)
         layers.forEachIndexed { index, layer ->
             builder.layer(index, layer)
         }
+        builder.key(keys)
+        builder.cover(layers)
         out["ok"] = true
         // The display's own id, not a counter: virtual displays are numbered in
         // the sixties on current Android builds, which reads like a sequence
@@ -202,37 +228,145 @@ object UiTree {
     private fun loading(node: Node): Boolean =
         LoadingSignal.loading(node.role, node.visibleToUser, node.hasRange, node.childCount)
 
+    /**
+     * One step from a layer's root to a node: its drawing order among its
+     * siblings and its index among them, folded nodes included.
+     */
+    private data class Step(val order: Int, val index: Int)
+
+    /** What [Builder.cover] needs of a row: where it is, and whether it can cover. */
+    private class Placed(
+        val layer: Int,
+        val path: List<Step>,
+        val identity: Any?,
+        /** The visible box, or null for an `off` row. */
+        val box: Box?,
+        /** Clickable or labelled (MCP-73): what can cover another row. */
+        val readable: Boolean,
+    )
+
     private class Builder(val size: IntSize, val nodes: ArrayList<LinkedHashMap<String, Any?>>) {
         var truncated = false
+        private val placed = ArrayList<Placed>()
 
         fun layer(index: Int, layer: Layer) {
-            add(index, layer.nodes, -1, 0)
+            add(index, layer.nodes, -1, 0, emptyList())
         }
 
-        private fun add(layer: Int, list: List<Node>, parent: Int, depth: Int) {
+        /** Gives every row its `k` from the display's table, in row order (MCP-71). */
+        fun key(keys: UiTreeKeys) {
+            val found = keys.read(placed.map { it.identity ?: Any() })
+            nodes.forEachIndexed { index, row -> row["k"] = found[index] }
+        }
+
+        /**
+         * Marks `covered` on each row whose tap point lies inside a readable
+         * node drawn after it, naming the topmost (MCP-73). A window above with
+         * no readable node at the point covers it as `"window"`.
+         */
+        fun cover(layers: List<Layer>) {
+            for ((index, row) in placed.withIndex()) {
+                val box = row.box ?: continue
+                val x = (box.left + box.right) / 2.0
+                val y = (box.top + box.bottom) / 2.0
+                val over = coverOf(index, row, x, y, layers) ?: continue
+                nodes[index]["covered"] = over
+            }
+        }
+
+        private fun coverOf(target: Int, row: Placed, x: Double, y: Double, layers: List<Layer>): Any? {
+            val below = layers[row.layer].windowLayer
+            // A window above wins over anything in the row's own window: the
+            // highest one that reaches the point names its topmost readable
+            // node there, or itself.
+            var topLayer: Int? = null
+            for ((index, layer) in layers.withIndex()) {
+                if (layer.windowLayer <= below) continue
+                val reaches = layer.bounds?.let { inside(it, x, y) } == true ||
+                    placed.any { it.layer == index && it.readable && it.box != null && inside(it.box, x, y) }
+                if (reaches && (topLayer == null || layer.windowLayer > layers[topLayer].windowLayer)) {
+                    topLayer = index
+                }
+            }
+            if (topLayer != null) {
+                val top = topmost(placed.indices.filter { other ->
+                    val it = placed[other]
+                    it.layer == topLayer && it.readable && it.box != null && inside(it.box, x, y)
+                })
+                return top?.let { nodes[it]["k"] } ?: "window"
+            }
+            val top = topmost(placed.indices.filter { other ->
+                val it = placed[other]
+                other != target && it.layer == row.layer && it.readable && it.box != null &&
+                    inside(it.box, x, y) && drawnAfter(it.path, row.path)
+            })
+            return top?.let { nodes[it]["k"] }
+        }
+
+        /** The row that draws last of [rows], all in one window: a later branch, or a descendant. */
+        private fun topmost(rows: List<Int>): Int? = rows.maxWithOrNull { a, b -> paint(placed[a].path, placed[b].path) }
+
+        private fun paint(a: List<Step>, b: List<Step>): Int {
+            for (i in 0 until minOf(a.size, b.size)) {
+                if (a[i] != b[i]) {
+                    return compareValuesBy(a[i], b[i], { it.order }, { it.index })
+                }
+            }
+            return a.size.compareTo(b.size)
+        }
+
+        /**
+         * Whether [over] draws after [under] in another branch: a later drawing
+         * order where their paths part. An ancestor or a descendant never
+         * covers: a button's own label is part of it.
+         */
+        private fun drawnAfter(over: List<Step>, under: List<Step>): Boolean {
+            for (i in 0 until minOf(over.size, under.size)) {
+                if (over[i] != under[i]) return over[i].order > under[i].order
+            }
+            return false
+        }
+
+        private fun inside(box: Box, x: Double, y: Double): Boolean =
+            x >= box.left && x < box.right && y >= box.top && y < box.bottom
+
+        private fun add(layer: Int, list: List<Node>, parent: Int, depth: Int, path: List<Step>) {
             if (depth > MAX_DEPTH) {
                 truncated = true
                 return
             }
-            for (node in list) {
+            for ((position, node) in list.withIndex()) {
                 if (nodes.size >= MAX_NODES) {
                     truncated = true
                     return
                 }
+                val here = path + Step(node.drawingOrder, position)
                 if (!kept(node)) {
                     // Fold it: its children keep its parent.
-                    add(layer, node.children, parent, depth + 1)
+                    add(layer, node.children, parent, depth + 1, here)
                     continue
                 }
                 val index = nodes.size
-                nodes.add(row(layer, index, parent, node))
-                add(layer, node.children, index, depth + 1)
+                val row = row(layer, index, parent, node)
+                nodes.add(row)
+                val visible = (row["box"] as? List<*>)?.takeIf { row["at"] != null }
+                    ?.let { Box(it[0] as Int, it[1] as Int, it[2] as Int, it[3] as Int) }
+                placed.add(Placed(
+                    layer = layer,
+                    path = here,
+                    identity = node.identity,
+                    box = visible,
+                    readable = node.clickable || label(node.text) != null || label(node.desc) != null,
+                ))
+                add(layer, node.children, index, depth + 1, here)
             }
         }
 
         private fun row(layer: Int, index: Int, parent: Int, node: Node): LinkedHashMap<String, Any?> {
             val row = LinkedHashMap<String, Any?>()
             row["i"] = index
+            // The display's key for the node, filled in by [key] (MCP-71).
+            row["k"] = null
             // No `ref` here: the Mac issues refs from its own per-window read
             // counter, so a ref never crosses the wire (S1).
             if (parent >= 0) row["p"] = parent
@@ -270,6 +404,7 @@ object UiTree {
             if (!node.enabled) row["disabled"] = true
             if (node.password) row["pwd"] = true
             if (loading(node)) row["loading"] = true
+            if (node.heading) row["heading"] = true
             return row
         }
 
