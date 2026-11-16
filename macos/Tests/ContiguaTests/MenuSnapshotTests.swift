@@ -179,4 +179,18 @@ final class StreamPauseTests: XCTestCase {
     func testAMinimisedWindowStillPausesWhileAMenuTracks() {
         XCTAssertTrue(pause(miniaturized: true, menu: true))
     }
+
+    // [MCP-22]
+    func testAnAgentHoldKeepsACoveredWindowLive() {
+        XCTAssertFalse(StreamPause.shouldPause(miniaturized: false, key: false, main: false,
+                                               occludedVisible: false, menuTracking: false,
+                                               agentHold: true))
+    }
+
+    // [MCP-22]
+    func testAnAgentHoldKeepsAMinimisedWindowLive() {
+        XCTAssertFalse(StreamPause.shouldPause(miniaturized: true, key: false, main: false,
+                                               occludedVisible: false, menuTracking: false,
+                                               agentHold: true))
+    }
 }
