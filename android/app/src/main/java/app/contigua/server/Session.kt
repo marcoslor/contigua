@@ -259,9 +259,8 @@ class Session(
 
     private val streams = LinkedHashMap<Int, StreamState>()
 
-    /** `ui.tree` (WIN-79): one read at a time, and the snapshot each reply names. */
+    /** `ui.tree` (WIN-79): one read at a time per session. */
     private val uiTreeBusy = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val uiTreeSnapshot = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Each stream's negotiated codec, for the drop line's NAL scan. */
     private val streamCodecs = java.util.concurrent.ConcurrentHashMap<Int, VideoCodec>()
@@ -2011,10 +2010,15 @@ class Session(
      * line counts nodes and windows only: never text, never a label.
      */
     private fun onUiTree(obj: Map<String, Any?>) {
-        val stream = Json.int(obj["stream"]) ?: return
+        // WIN-79 F8: a `ui.tree` without a stream answers `no_window`, never a
+        // silence that makes the Mac wait out its deadline.
+        val stream = Json.int(obj["stream"]) ?: run {
+            sendUiTree(0, Json.int(obj["seq"]), UiTree.failure("no_window", "There is no window to read."))
+            return
+        }
         val seq = Json.int(obj["seq"])
-        val where = synchronized(streams) { streams[stream]?.let { it.displayId to it.size } }
-        if (where == null) {
+        val displayId = synchronized(streams) { streams[stream]?.displayId }
+        if (displayId == null) {
             sendUiTree(stream, seq, UiTree.failure("no_window", "There is no window $stream."))
             return
         }
@@ -2029,7 +2033,9 @@ class Session(
             sendUiTree(stream, seq, UiTree.failure("busy", "The last accessibility read is still running."))
             return
         }
-        val (displayId, size) = where
+        // F2: `box` is in the display's pixels, so `at` is normalized by the
+        // input space TOUCH maps over, not by the stream's video size.
+        val size = display.size(stream)
         val started = now()
         Thread({
             val answer = try {
@@ -2041,12 +2047,12 @@ class Session(
             }
             when (answer) {
                 is UiTree.Answer.Tree -> {
-                    val windows = answer.windows
+                    val layers = answer.layers
                     log(
-                        "ui.tree stream=$stream display=$displayId windows=${windows.size} " +
-                            "nodes=${windows.sumOf { it.nodes.size }} took_ms=${now() - started}",
+                        "ui.tree stream=$stream display=$displayId layers=${layers.size} " +
+                            "nodes=${layers.sumOf { it.nodes.size }} took_ms=${now() - started}",
                     )
-                    sendUiTree(stream, seq, UiTree.reply(displayId, size, uiTreeSnapshot.incrementAndGet(), windows))
+                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers))
                 }
                 is UiTree.Answer.Failure -> {
                     log("ui.tree stream=$stream display=$displayId failed=${answer.code}")

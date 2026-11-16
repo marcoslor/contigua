@@ -7,15 +7,19 @@ package app.contigua.server
  * Pure: the shell side hands in what it read from UiAutomation and this decides
  * what a model sees. The tree is trimmed for a reader, not mirrored: a node
  * with no label and nothing to act on is folded into its children, classes and
- * view ids are shortened, defaults are omitted, and every node carries the
- * centre of its bounds as 0..1 of the window, the same coordinates `tap` takes.
- * A password field never carries its text.
+ * view ids are shortened, defaults are omitted, and every on-screen node
+ * carries the centre of its visible bounds as 0..1 of the display's input space
+ * (the same coordinates TOUCH and `tap` take). A node whose box does not
+ * intersect the display, that is not visible to the user, or whose visible part
+ * is under 8×8 px is kept with `off: true` and no tap point, so a reader still
+ * sees its text and knows to scroll. A password field never carries its text.
  *
  * The shape follows what accessibility-driven automation clients settled on:
  * a compact, actionable list beats a faithful XML tree (a layout node says
  * nothing a model can act on), the tap point spares the model the arithmetic
  * that goes wrong when a screenshot is scaled, and an empty tree says so
- * instead of reading as a blank screen.
+ * instead of reading as a blank screen. The phone sends no `ref` and no
+ * `snapshot`: the Mac issues both, so a ref never crosses the wire.
  */
 object UiTree {
 
@@ -35,6 +39,7 @@ object UiTree {
         val focused: Boolean = false,
         val enabled: Boolean = true,
         val password: Boolean = false,
+        val visibleToUser: Boolean = true,
         val children: List<Node> = emptyList(),
     )
 
@@ -45,8 +50,8 @@ object UiTree {
         val empty: Boolean get() = width <= 0 || height <= 0
     }
 
-    /** One window on the display: the app, or the keyboard or a system window over it. */
-    data class Window(
+    /** One layer on the display: the app, or the keyboard or a system window over it. */
+    data class Layer(
         val title: String?,
         val type: String,
         val focused: Boolean,
@@ -56,7 +61,7 @@ object UiTree {
 
     /** What a read produced: a tree, or the reason there is none. */
     sealed class Answer {
-        data class Tree(val windows: List<Window>) : Answer()
+        data class Tree(val layers: List<Layer>) : Answer()
 
         /** A closed code the Mac passes on, and one sentence a person could read. */
         data class Failure(val code: String, val sentence: String) : Answer()
@@ -74,31 +79,36 @@ object UiTree {
     /** Deeper than this is a broken tree, not a screen. */
     const val MAX_DEPTH = 60
 
+    /** Less than this much visible area is a sliver, not a target (WIN-79 F9). */
+    const val MIN_VISIBLE = 8
+
     /**
-     * Builds the `ok: true` reply body for a read. `size` is the stream's
-     * pixel size, the space `at` is normalized to.
+     * Builds the `ok: true` reply body for a read. `size` is the display's
+     * input space — the pixel space `box` is in and TOUCH maps over — not the
+     * stream's video size (F2).
      */
-    fun reply(display: Int, size: IntSize, snapshot: Int, windows: List<Window>): LinkedHashMap<String, Any?> {
+    fun reply(display: Int, size: IntSize, layers: List<Layer>): LinkedHashMap<String, Any?> {
         val out = LinkedHashMap<String, Any?>()
         val nodes = ArrayList<LinkedHashMap<String, Any?>>()
         val builder = Builder(size, nodes)
-        windows.forEachIndexed { index, window ->
-            builder.window(index, window)
+        layers.forEachIndexed { index, layer ->
+            builder.layer(index, layer)
         }
         out["ok"] = true
         // The display's own id, not a counter: virtual displays are numbered in
         // the sixties on current Android builds, which reads like a sequence
-        // number when the field is called `display`. `snapshot` is the counter.
+        // number when the field is called `display`.
         out["displayId"] = display
-        out["snapshot"] = snapshot
+        // The space `box` is in, so a reader knows what the pixels mean (S2).
+        out["size"] = listOf(size.w, size.h)
         out["truncated"] = builder.truncated
-        out["windows"] = windows.mapIndexed { index, window ->
+        out["layers"] = layers.mapIndexed { index, layer ->
             linkedMapOf<String, Any?>(
                 "i" to index,
-                "title" to window.title,
-                "type" to window.type,
-                "focused" to window.focused,
-                "active" to window.active,
+                "title" to layer.title,
+                "type" to layer.type,
+                "focused" to layer.focused,
+                "active" to layer.active,
             )
         }
         out["nodes"] = nodes
@@ -164,6 +174,10 @@ object UiTree {
      * or acted on: anything else is layout or invisible, and its children take
      * its place. A node with no drawable bounds is not on screen (a collapsed
      * row, a view behind another), so it is never offered as something to tap.
+     *
+     * A node whose box is off the display, or that is not visible to the user,
+     * is still kept when it has something to read: [Builder.row] marks it
+     * `off: true` with no tap point rather than dropping the text (F9).
      */
     private fun kept(node: Node): Boolean {
         val box = node.box ?: return false
@@ -176,11 +190,11 @@ object UiTree {
     private class Builder(val size: IntSize, val nodes: ArrayList<LinkedHashMap<String, Any?>>) {
         var truncated = false
 
-        fun window(index: Int, window: Window) {
-            add(index, window.nodes, -1, 0)
+        fun layer(index: Int, layer: Layer) {
+            add(index, layer.nodes, -1, 0)
         }
 
-        private fun add(window: Int, list: List<Node>, parent: Int, depth: Int) {
+        private fun add(layer: Int, list: List<Node>, parent: Int, depth: Int) {
             if (depth > MAX_DEPTH) {
                 truncated = true
                 return
@@ -192,23 +206,22 @@ object UiTree {
                 }
                 if (!kept(node)) {
                     // Fold it: its children keep its parent.
-                    add(window, node.children, parent, depth + 1)
+                    add(layer, node.children, parent, depth + 1)
                     continue
                 }
                 val index = nodes.size
-                nodes.add(row(window, index, parent, node))
-                add(window, node.children, index, depth + 1)
+                nodes.add(row(layer, index, parent, node))
+                add(layer, node.children, index, depth + 1)
             }
         }
 
-        private fun row(window: Int, index: Int, parent: Int, node: Node): LinkedHashMap<String, Any?> {
+        private fun row(layer: Int, index: Int, parent: Int, node: Node): LinkedHashMap<String, Any?> {
             val row = LinkedHashMap<String, Any?>()
             row["i"] = index
-            // A ref names the element in this tree, for the Mac's tap. A new
-            // tree replaces them, so an old ref cannot press what moved.
-            row["ref"] = "e$index"
+            // No `ref` here: the Mac issues refs from its own per-window read
+            // counter, so a ref never crosses the wire (S1).
             if (parent >= 0) row["p"] = parent
-            row["w"] = window
+            row["l"] = layer
             row["role"] = role(node.role)
             // A password field says it is one and keeps its text on the phone.
             if (!node.password) {
@@ -219,8 +232,19 @@ object UiTree {
             viewId(node.viewId)?.let { row["id"] = it }
             val box = node.box
             if (box != null && !box.empty) {
-                row["box"] = listOf(box.left, box.top, box.right, box.bottom)
-                row["at"] = at(box)
+                val clipped = clip(box)
+                if (clipped == null) {
+                    // No part of it is on the display (or the display has no
+                    // size): keep the text, refuse a tap (F9).
+                    row["off"] = true
+                } else {
+                    row["box"] = listOf(clipped.left, clipped.top, clipped.right, clipped.bottom)
+                    if (!node.visibleToUser || clipped.width < MIN_VISIBLE || clipped.height < MIN_VISIBLE) {
+                        row["off"] = true
+                    } else {
+                        row["at"] = at(clipped)
+                    }
+                }
             }
             if (node.clickable) row["click"] = true
             if (node.editable) row["edit"] = true
@@ -233,12 +257,23 @@ object UiTree {
             return row
         }
 
-        /** The centre of the bounds as 0..1 of the window, rounded to 1e-3. */
+        /** The part of [box] on the display, or null when none (F9). */
+        private fun clip(box: Box): Box? {
+            if (size.w <= 0 || size.h <= 0) return null
+            val left = box.left.coerceIn(0, size.w)
+            val top = box.top.coerceIn(0, size.h)
+            val right = box.right.coerceIn(0, size.w)
+            val bottom = box.bottom.coerceIn(0, size.h)
+            val clipped = Box(left, top, right, bottom)
+            return if (clipped.empty) null else clipped
+        }
+
+        /** The centre of the visible bounds as 0..1 of the input space, rounded to 1e-3. */
         private fun at(box: Box): List<Double> {
-            val w = if (size.w > 0) size.w.toDouble() else 1.0
-            val h = if (size.h > 0) size.h.toDouble() else 1.0
-            val x = ((box.left + box.right) / 2.0 / w).coerceIn(0.0, 1.0)
-            val y = ((box.top + box.bottom) / 2.0 / h).coerceIn(0.0, 1.0)
+            val w = size.w.toDouble()
+            val h = size.h.toDouble()
+            val x = (box.left + box.right) / 2.0 / w
+            val y = (box.top + box.bottom) / 2.0 / h
             return listOf(round(x), round(y))
         }
 

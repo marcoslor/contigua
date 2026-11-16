@@ -5316,12 +5316,12 @@ class Session(object):
                     round((box[1] + box[3]) / 2.0 / max(h, 1), 3)]
 
         nodes = [
-            {"i": 0, "ref": "e0", "w": 0, "role": "TextView", "text": "Fake phone screen",
+            {"i": 0, "l": 0, "role": "TextView", "text": "Fake phone screen",
              "box": box_label, "at": at(box_label)},
-            {"i": 1, "ref": "e1", "p": 0, "w": 0, "role": "Button", "text": "Continue",
+            {"i": 1, "l": 0, "role": "Button", "text": "Continue",
              "id": "continue", "box": box_button, "at": at(box_button), "click": True},
             # A password field carries no text at all, only that it is one.
-            {"i": 2, "ref": "e2", "p": 0, "w": 0, "role": "EditText", "pwd": True, "edit": True,
+            {"i": 2, "l": 0, "role": "EditText", "pwd": True, "edit": True,
              "box": box_password, "at": at(box_password)},
         ]
         self.phone.events.ui_tree(stream, len(nodes))
@@ -5330,10 +5330,10 @@ class Session(object):
             "stream": stream,
             "ok": True,
             "displayId": display,
-            "snapshot": 1,
+            "size": [w, h],
             "truncated": False,
-            "windows": [{"i": 0, "title": window.pkg if window is not None else None,
-                         "type": "app", "focused": True, "active": True}],
+            "layers": [{"i": 0, "title": window.pkg if window is not None else None,
+                        "type": "app", "focused": True, "active": True}],
             "nodes": nodes,
         }
         if seq is not None:

@@ -1,6 +1,6 @@
 // The Mac's half of `ui.tree` (WIN-79, ISS-160): parse the phone's trimmed
-// accessibility tree, refuse a malformed one, and write the tool result with
-// only the fields the contract names.
+// accessibility tree, refuse a malformed one, issue refs from a per-window read
+// counter, and write the tool result with only the fields the contract names.
 
 import XCTest
 @testable import Contigua
@@ -9,63 +9,80 @@ final class UITreeTests: XCTestCase {
 
     private func message(_ raw: [String: Any]) -> JSONMessage { JSONMessage(raw: raw) }
 
-    /// A reply shaped like the phone's: one app window, a label, a button and a
-    /// password field.
-    private func phoneReply(extra: [String: Any] = [:]) -> JSONMessage {
+    /// A reply shaped like the phone's: one app layer, a label and a button.
+    /// No `ref` and no `snapshot`: the Mac issues both (S1).
+    private func phoneReply(stream: Int = 3, seq: Int = 9, extra: [String: Any] = [:]) -> JSONMessage {
         var raw: [String: Any] = [
             "t": "ui.tree",
-            "stream": 3,
-            "seq": 9,
+            "stream": stream,
+            "seq": seq,
             "ok": true,
             "displayId": 47,
-            "snapshot": 12,
+            "size": [1_440, 3_120],
             "truncated": false,
-            "windows": [
+            "layers": [
                 ["i": 0, "title": "Calculator", "type": "app", "focused": true, "active": true],
-                ["i": 1, "title": "Keyboard", "type": "ime", "focused": false, "active": false],
             ],
             "nodes": [
-                ["i": 0, "ref": "e0", "w": 0, "role": "TextView", "text": "42 + 1",
+                ["i": 0, "l": 0, "role": "TextView", "text": "42 + 1",
                  "box": [100, 200, 500, 400], "at": [0.3, 0.15]],
-                ["i": 1, "ref": "e1", "p": 0, "w": 0, "role": "Button", "text": "Equals",
+                ["i": 1, "l": 0, "role": "Button", "text": "Equals",
                  "id": "equals", "box": [540, 640, 780, 760], "at": [0.66, 0.35], "click": true],
-                ["i": 2, "ref": "e2", "p": 0, "w": 0, "role": "EditText", "pwd": true, "edit": true,
-                 "box": [100, 800, 900, 900], "at": [0.5, 0.425]],
             ],
         ]
         for (key, value) in extra { raw[key] = value }
         return message(raw)
     }
 
-    func testAPhoneReplyParsesIntoWindowsAndNodes() throws {
+    private func failedReply(stream: Int = 3, seq: Int = 9) -> UITree {
+        UITree(seq: seq, stream: UInt32(stream), ok: false, code: "no_a11y",
+               message: "This phone cannot read an accessibility tree right now.",
+               displayId: nil, snapshot: nil, size: nil, truncated: false,
+               layers: [], nodes: [], note: nil)
+    }
+
+    private func okTree(stream: UInt32, seq: Int) -> UITree {
+        UITree(seq: seq, stream: stream, ok: true, code: nil, message: nil,
+               displayId: 47, snapshot: nil, size: nil, truncated: false,
+               layers: [UITree.Layer(index: 0, title: "App", type: "app", focused: true, active: true)],
+               nodes: [UITree.Node(index: 0, ref: "", parent: nil, layer: 0, role: "Button",
+                                   text: "X", desc: nil, id: nil, box: [0, 0, 10, 10],
+                                   at: UITree.Point(x: 0.5, y: 0.5), off: false,
+                                   click: true, edit: false, scroll: false, check: nil,
+                                   selected: false, focused: false, disabled: false, password: false)],
+               note: nil)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<2_000 {
+            if condition() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    // MARK: Parsing (new shape)
+
+    func testAPhoneReplyParsesIntoLayersAndNodes() throws {
         let tree = try XCTUnwrap(UITree(message: phoneReply()))
         XCTAssertEqual(tree.seq, 9)
         XCTAssertEqual(tree.stream, 3)
         XCTAssertTrue(tree.ok)
         XCTAssertEqual(tree.displayId, 47)
-        XCTAssertEqual(tree.snapshot, 12)
+        XCTAssertEqual(tree.size, [1_440, 3_120])
         XCTAssertFalse(tree.truncated)
-        XCTAssertEqual(tree.windows.count, 2)
-        XCTAssertEqual(tree.windows[0].title, "Calculator")
-        XCTAssertEqual(tree.windows[1].type, "ime")
-        XCTAssertEqual(tree.nodes.count, 3)
+        XCTAssertEqual(tree.layers.count, 1)
+        XCTAssertEqual(tree.layers[0].title, "Calculator")
+        XCTAssertEqual(tree.nodes.count, 2)
         XCTAssertEqual(tree.nodes[1].role, "Button")
-        XCTAssertEqual(tree.nodes[1].parent, 0)
         XCTAssertEqual(tree.nodes[1].id, "equals")
         XCTAssertEqual(tree.nodes[1].box, [540, 640, 780, 760])
         XCTAssertEqual(tree.nodes[1].at, UITree.Point(x: 0.66, y: 0.35))
-        XCTAssertEqual(tree.nodes[1].ref, "e1")
         XCTAssertTrue(tree.nodes[1].click)
-        XCTAssertTrue(tree.nodes[2].password)
-        XCTAssertNil(tree.nodes[2].text)
+        XCTAssertFalse(tree.nodes[1].off)
     }
 
     func testAFailedReadCarriesItsCodeAndSentence() throws {
-        let raw: [String: Any] = [
-            "t": "ui.tree", "stream": 3, "seq": 9, "ok": false,
-            "code": "no_a11y", "message": "This phone cannot read an accessibility tree right now.",
-        ]
-        let tree = try XCTUnwrap(UITree(message: message(raw)))
+        let tree = failedReply()
         XCTAssertFalse(tree.ok)
         XCTAssertEqual(tree.code, "no_a11y")
         XCTAssertEqual(tree.message, "This phone cannot read an accessibility tree right now.")
@@ -81,58 +98,74 @@ final class UITreeTests: XCTestCase {
         let raw: [String: Any] = [
             "t": "ui.tree", "stream": 3, "seq": 1, "ok": true,
             "nodes": [
-                ["i": 0, "ref": "e0", "w": 0, "role": "Button", "text": "Save"],
-                ["ref": "e1", "w": 0, "role": "TextView", "text": "no index"],
-                ["i": 2, "ref": "e2", "w": 0, "text": "no role"],
-                ["i": 3, "w": 0, "role": "Button", "text": "no ref"],
+                ["i": 0, "l": 0, "role": "Button", "text": "Save"],
+                ["l": 0, "role": "TextView", "text": "no index"],
+                ["i": 2, "l": 0, "text": "no role"],
             ],
         ]
         let tree = try XCTUnwrap(UITree(message: message(raw)))
         XCTAssertEqual(tree.nodes.map(\.role), ["Button"])
     }
 
+    func testAnOffScreenNodeIsParsed() throws {
+        let raw: [String: Any] = [
+            "t": "ui.tree", "stream": 3, "seq": 1, "ok": true,
+            "nodes": [["i": 0, "l": 0, "role": "Button", "text": "Checkout",
+                       "box": [0, 2_500, 100, 2_600], "off": true]],
+        ]
+        let tree = try XCTUnwrap(UITree(message: message(raw)))
+        XCTAssertTrue(tree.nodes[0].off)
+        XCTAssertNil(tree.nodes[0].at)
+    }
+
+    // MARK: Encoding
+
     func testTheResultCarriesOnlyTheContractsFields() throws {
         let tree = try XCTUnwrap(UITree(message: phoneReply(extra: [
             "secret": "not in the contract",
-        ])))
+        ]))).assigning(snapshot: 12)
         let text = tree.encoded()
         XCTAssertFalse(text.contains("secret"))
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         XCTAssertEqual(object["window"] as? Int, 3)
         XCTAssertEqual(object["displayId"] as? Int, 47)
+        XCTAssertEqual(object["snapshot"] as? Int, 12)
+        XCTAssertEqual(object["size"] as? [Int], [1_440, 3_120])
         XCTAssertEqual(object["truncated"] as? Bool, false)
         let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
-        XCTAssertEqual(nodes.count, 3)
+        XCTAssertEqual(nodes.count, 2)
         XCTAssertEqual(nodes[1]["text"] as? String, "Equals")
         XCTAssertEqual(nodes[1]["at"] as? [Double], [0.66, 0.35])
-        XCTAssertEqual(nodes[1]["ref"] as? String, "e1")
-        XCTAssertNil(nodes[2]["text"])
-        XCTAssertEqual(nodes[2]["pwd"] as? Bool, true)
+        XCTAssertEqual(nodes[1]["ref"] as? String, "s12e1")
+        XCTAssertNil(nodes[1]["off"])
     }
 
-    func testTheWindowIndexIsLeftOutWhenThereIsOneWindow() throws {
-        var raw = phoneReply().raw
-        raw["windows"] = [["i": 0, "title": "Calculator", "type": "app", "focused": true, "active": true]]
-        let one = try XCTUnwrap(UITree(message: JSONMessage(raw: raw)))
+    func testTheLayerIndexIsLeftOutWhenThereIsOneLayer() throws {
+        let one = try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1)
         let oneNodes = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(one.encoded().utf8)) as? [String: Any])["nodes"]
             as? [[String: Any]]
         XCTAssertNotNil(oneNodes)
-        XCTAssertTrue(oneNodes?.allSatisfy { $0["w"] == nil } ?? false,
-                      "one window: every row would repeat the same 0")
-        // Two windows: the index is the only thing that says whose row it is.
-        let two = try XCTUnwrap(UITree(message: phoneReply()))
-        XCTAssertTrue(two.encoded().contains("\"w\":0"))
+        XCTAssertTrue(oneNodes?.allSatisfy { $0["l"] == nil } ?? false,
+                      "one layer: every row would repeat the same 0")
+        // Two layers: the index is the only thing that says whose row it is.
+        var raw = phoneReply().raw
+        raw["layers"] = [
+            ["i": 0, "title": "Calculator", "type": "app", "focused": true, "active": true],
+            ["i": 1, "title": "Keyboard", "type": "ime", "focused": false, "active": false],
+        ]
+        let two = try XCTUnwrap(UITree(message: JSONMessage(raw: raw))).assigning(snapshot: 1)
+        XCTAssertTrue(two.encoded().contains("\"l\":0"))
     }
 
     func testATapPointIsPrintedAtThreeDecimals() throws {
         // Foundation's JSON writer prints 0.949 as 0.94899999999999995; a tree
         // read on a real screen carried that noise on every row.
         var raw = phoneReply().raw
-        raw["nodes"] = [["i": 0, "ref": "e0", "w": 0, "role": "Button", "text": "Buy",
+        raw["nodes"] = [["i": 0, "l": 0, "role": "Button", "text": "Buy",
                          "box": [0, 0, 10, 10], "at": [0.949, 0.123]]]
-        let tree = try XCTUnwrap(UITree(message: JSONMessage(raw: raw)))
+        let tree = try XCTUnwrap(UITree(message: JSONMessage(raw: raw))).assigning(snapshot: 1)
         let text = tree.encoded()
         XCTAssertTrue(text.contains("0.949"), text)
         XCTAssertTrue(text.contains("0.123"), text)
@@ -149,49 +182,208 @@ final class UITreeTests: XCTestCase {
     }
 
     func testDefaultsAreNotInvented() throws {
-        // The phone omits what is false; the parse must not turn a missing
-        // click into an explicit one.
         let raw: [String: Any] = [
             "t": "ui.tree", "stream": 3, "seq": 1, "ok": true,
-            "nodes": [["i": 0, "ref": "e0", "w": 0, "role": "TextView", "text": "plain"]],
+            "nodes": [["i": 0, "l": 0, "role": "TextView", "text": "plain"]],
         ]
-        let tree = try XCTUnwrap(UITree(message: message(raw)))
+        let tree = try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 1)
         let text = tree.encoded()
         XCTAssertFalse(text.contains("\"click\""))
         XCTAssertFalse(text.contains("\"disabled\""))
         XCTAssertFalse(text.contains("\"check\""))
-    }
-
-    func testRefsAreRememberedUntilTheNextTree() throws {
-        var refs = UITreeRefs()
-        refs.remember(try XCTUnwrap(UITree(message: phoneReply())))
-        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.placed.point,
-                       UITree.Point(x: 0.66, y: 0.35))
-        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.placed.box, [540, 640, 780, 760])
-        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.snapshot, 12)
-        XCTAssertNil(refs.resolved(ref: "e9", stream: 3))
-        XCTAssertNil(refs.resolved(ref: "e1", stream: 4), "a ref belongs to its window")
-        // A second tree replaces the first: the old names mean new elements.
-        var moved = phoneReply()
-        var raw = moved.raw
-        raw["snapshot"] = 13
-        raw["nodes"] = [["i": 0, "ref": "e0", "w": 0, "role": "Button", "text": "New",
-                         "box": [0, 0, 10, 10], "at": [0.01, 0.01]]]
-        moved = JSONMessage(raw: raw)
-        refs.remember(try XCTUnwrap(UITree(message: moved)))
-        XCTAssertNil(refs.resolved(ref: "e1", stream: 3), "an older tree's ref is gone")
-        XCTAssertEqual(refs.resolved(ref: "e0", stream: 3)?.placed.point, UITree.Point(x: 0.01, y: 0.01))
-        refs.forget(stream: 3)
-        XCTAssertNil(refs.resolved(ref: "e0", stream: 3))
+        XCTAssertFalse(text.contains("\"off\""))
     }
 
     func testAnUncheckedBoxKeepsItsFalse() throws {
         let raw: [String: Any] = [
             "t": "ui.tree", "stream": 3, "seq": 1, "ok": true,
-            "nodes": [["i": 0, "ref": "e0", "w": 0, "role": "CheckBox", "text": "Wi-Fi", "check": false]],
+            "nodes": [["i": 0, "l": 0, "role": "CheckBox", "text": "Wi-Fi", "check": false]],
         ]
         let tree = try XCTUnwrap(UITree(message: message(raw)))
         XCTAssertEqual(tree.nodes[0].check, false)
         XCTAssertTrue(tree.encoded().contains("\"check\":false"))
+    }
+
+    // MARK: Refs (S1, F1, F4, F6, F9)
+
+    func test_WIN79_refsCarryTheirSnapshot() throws {
+        let tree = try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 13)
+        XCTAssertEqual(tree.snapshot, 13)
+        for node in tree.nodes {
+            XCTAssertEqual(node.ref, "s13e\(node.index)")
+            let matches = node.ref.range(of: #"^s\d+e\d+$"#, options: .regularExpression) != nil
+            XCTAssertTrue(matches, node.ref)
+        }
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(tree.encoded().utf8)) as? [String: Any])
+        XCTAssertEqual(object["snapshot"] as? Int, 13)
+    }
+
+    func test_WIN79_refFromOlderTreeIsRefused() throws {
+        var refs = UITreeRefs()
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply(seq: 10))).assigning(snapshot: 2))
+        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3),
+                       .stale(ref: "s1e1", snapshot: 1, latest: 2))
+        let sentence = UITreeRefusal.stale(ref: "s1e1", snapshot: 1, latest: 2)
+        XCTAssertTrue(sentence.contains("s1"), sentence)
+        XCTAssertTrue(sentence.contains("s2"), sentence)
+    }
+
+    func test_WIN79_refsForgottenWhenWindowCloses() throws {
+        var refs = UITreeRefs()
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
+        refs.forget(stream: 3)
+        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3), .windowClosed)
+        XCTAssertTrue(UITreeRefusal.windowClosed.contains("closed"))
+    }
+
+    func test_WIN79_refsForgottenWhenStreamIdReused() throws {
+        var refs = UITreeRefs()
+        _ = refs.nextSnapshot(for: 3) // s1
+        _ = refs.nextSnapshot(for: 3) // s2
+        refs.forget(stream: 3)        // the id is handed out again
+        XCTAssertEqual(refs.nextSnapshot(for: 3), 1, "a reused id starts its read count at 1")
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
+        XCTAssertEqual(refs.resolved(ref: "s2e1", stream: 3),
+                       .stale(ref: "s2e1", snapshot: 2, latest: 1))
+    }
+
+    func test_WIN79_failedReadKeepsPreviousRefs() throws {
+        var refs = UITreeRefs()
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
+        refs.remember(failedReply(seq: 10))
+        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3),
+                       .placed(snapshot: 1, placed: UITreeRefs.Placed(
+                           point: UITree.Point(x: 0.66, y: 0.35),
+                           box: [540, 640, 780, 760], off: false)))
+    }
+
+    func test_WIN79_offScreenRefIsRefused() throws {
+        var refs = UITreeRefs()
+        let raw: [String: Any] = [
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
+            "nodes": [["i": 0, "l": 0, "role": "Button", "text": "Checkout",
+                       "box": [0, 2_500, 100, 2_600], "off": true]],
+        ]
+        refs.remember(try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 4))
+        let resolution = refs.resolved(ref: "s4e0", stream: 3)
+        guard case .placed(let snapshot, let placed) = resolution else {
+            return XCTFail("expected a placed node, got \(resolution)")
+        }
+        XCTAssertEqual(snapshot, 4)
+        XCTAssertTrue(placed.off)
+        XCTAssertNil(placed.point)
+        XCTAssertTrue(UITreeRefusal.offScreen("s4e0").contains("off screen"))
+    }
+
+    func testRefsAreRememberedUntilTheNextTree() throws {
+        var refs = UITreeRefs()
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 12))
+        XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 3),
+                       .placed(snapshot: 12, placed: UITreeRefs.Placed(
+                           point: UITree.Point(x: 0.66, y: 0.35),
+                           box: [540, 640, 780, 760], off: false)))
+        XCTAssertEqual(refs.resolved(ref: "s12e9", stream: 3),
+                       .stale(ref: "s12e9", snapshot: 12, latest: 12))
+        XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 4), .windowClosed,
+                       "a ref belongs to its window")
+        // A second tree replaces the first: the old names mean new elements.
+        var moved = phoneReply()
+        var raw = moved.raw
+        raw["nodes"] = [["i": 0, "l": 0, "role": "Button", "text": "New",
+                         "box": [0, 0, 10, 10], "at": [0.01, 0.01]]]
+        moved = JSONMessage(raw: raw)
+        refs.remember(try XCTUnwrap(UITree(message: moved)).assigning(snapshot: 13))
+        XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 3),
+                       .stale(ref: "s12e1", snapshot: 12, latest: 13))
+        refs.forget(stream: 3)
+        XCTAssertEqual(refs.resolved(ref: "s13e0", stream: 3), .windowClosed)
+    }
+
+    // MARK: The read lifecycle (F5, F6, F8)
+
+    @MainActor
+    func test_WIN79_lateReplyAfterTimeoutDoesNotReplaceRefs() async throws {
+        let broker = UITreeBroker()
+        // First read resolves normally: s1.
+        var seq1 = 0
+        let first = Task { try await broker.read(stream: 3, timeout: 5, send: { seq1 = $0 }) }
+        await waitUntil { seq1 != 0 }
+        broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq1))))
+        _ = try await first.value
+
+        // Second read times out (no reply).
+        var seq2 = 0
+        let second = Task { try await broker.read(stream: 3, timeout: 0.05, send: { seq2 = $0 }) }
+        await waitUntil { seq2 != 0 }
+        do {
+            _ = try await second.value
+            XCTFail("expected a timeout")
+        } catch let error as UITreeError {
+            XCTAssertEqual(error, .timedOut)
+        }
+
+        // The late reply must not replace the refs: s1 still answers, s2 does not.
+        broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq2))))
+        XCTAssertEqual(broker.resolved(ref: "s1e1", stream: 3),
+                       .placed(snapshot: 1, placed: UITreeRefs.Placed(
+                           point: UITree.Point(x: 0.66, y: 0.35),
+                           box: [540, 640, 780, 760], off: false)))
+        XCTAssertEqual(broker.resolved(ref: "s2e1", stream: 3),
+                       .stale(ref: "s2e1", snapshot: 2, latest: 1))
+    }
+
+    @MainActor
+    func test_WIN79_twoWindowsReadOneAfterTheOther() async throws {
+        let broker = UITreeBroker()
+        var seq1 = 0
+        var seq2 = 0
+        let first = Task { try await broker.read(stream: 1, timeout: 5, send: { seq1 = $0 }) }
+        await waitUntil { seq1 != 0 }
+        let second = Task { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) }
+        // The second read waits for the first instead of racing it (F6).
+        await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(seq2, 0, "the second window's read must wait")
+        broker.reply(okTree(stream: 1, seq: seq1))
+        _ = try await first.value
+        await waitUntil { seq2 != 0 }
+        broker.reply(okTree(stream: 2, seq: seq2))
+        let secondTree = try await second.value
+        XCTAssertTrue(secondTree.ok)
+    }
+
+    @MainActor
+    func test_WIN79_timeoutAnswersASentence() async {
+        let broker = UITreeBroker()
+        var seq = 0
+        do {
+            _ = try await broker.read(stream: 3, timeout: 0.05, send: { seq = $0 })
+            XCTFail("expected a timeout")
+        } catch let error as UITreeError {
+            XCTAssertEqual(error, .timedOut)
+        }
+    }
+
+    @MainActor
+    func test_WIN79_disconnectFailsPendingReads() async {
+        let broker = UITreeBroker()
+        var seq = 0
+        let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+        await waitUntil { seq != 0 }
+        broker.fail(.notConnected)
+        do {
+            _ = try await read.value
+            XCTFail("expected a failure")
+        } catch let error as UITreeError {
+            XCTAssertEqual(error, .notConnected)
+        }
+    }
+
+    func test_WIN79_staleRefSentence() {
+        let sentence = UITreeRefusal.stale(ref: "s4e12", snapshot: 4, latest: 9)
+        XCTAssertTrue(sentence.contains("s4"), sentence)
+        XCTAssertTrue(sentence.contains("s9"), sentence)
+        XCTAssertTrue(sentence.contains("ui_tree"), sentence)
     }
 }

@@ -31,22 +31,32 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
 
     private val lock = Any()
     private val startLock = Any()
+    private val readLock = Any()
 
     @Volatile private var looperThread: Thread? = null
     @Volatile private var handler: Handler? = null
     private var automation: UiAutomation? = null
     private var failure: String? = null
 
-    override fun dump(displayId: Int, size: IntSize): UiTree.Answer {
-        val automation = ensureAutomation() ?: return UiTree.Answer.Failure(
+    /** Whether [disconnect] was called; a disconnected source answers `no_a11y`. */
+    @Volatile var disconnected = false
+        private set
+
+    override fun dump(displayId: Int, size: IntSize): UiTree.Answer = synchronized(readLock) {
+        if (disconnected) {
+            return@synchronized UiTree.Answer.Failure(
+                "no_a11y", "This phone cannot read an accessibility tree right now.",
+            )
+        }
+        val automation = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
             "no_a11y", failure ?: "This phone cannot read an accessibility tree right now.",
         )
-        return try {
+        try {
             read(automation, displayId)
         } catch (t: Throwable) {
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
             restart()
-            val again = ensureAutomation() ?: return UiTree.Answer.Failure(
+            val again = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
                 "no_a11y", "This phone cannot read an accessibility tree right now.",
             )
             try {
@@ -56,6 +66,23 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 restart()
                 UiTree.Answer.Failure("no_a11y", "This phone cannot read an accessibility tree right now.")
             }
+        }
+    }
+
+    /**
+     * The one connection this process owns is dropped here, never by a session
+     * ending (WIN-79 F3). Idempotent: the service stops once, a second stop is
+     * a no-op.
+     */
+    fun disconnect() {
+        synchronized(readLock) {
+            if (disconnected) return
+            disconnected = true
+            restart()
+            val threadHandler = handler
+            handler = null
+            looperThread = null
+            threadHandler?.post { Looper.myLooper()?.quitSafely() }
         }
     }
 
@@ -73,7 +100,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             val made = try {
                 connect()
             } catch (t: Throwable) {
-                failure = sentence(t)
+                synchronized(lock) { failure = sentence(t) } // WIN-79 F10: under the lock
                 log("ui.tree: connect ${t.javaClass.simpleName}") // log-ok: class only
                 null
             }
@@ -85,7 +112,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         } ?: return null
         if (!posted) return null
         if (!gate.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-            failure = "The accessibility connection did not answer."
+            synchronized(lock) { failure = "The accessibility connection did not answer." }
             return null
         }
         return synchronized(lock) { automation }
@@ -173,7 +200,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             return UiTree.Answer.Failure("no_display", "That display has no windows.")
         }
         val trees = windows.map { window ->
-            UiTree.Window(
+            UiTree.Layer(
                 title = UiTree.label(window.title?.toString()),
                 type = typeName(window.type),
                 focused = window.isFocused,
@@ -211,6 +238,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             focused = node.isFocused,
             enabled = node.isEnabled,
             password = node.isPassword,
+            visibleToUser = node.isVisibleToUser,
             children = children(node, depth + 1),
         )
     }
@@ -232,4 +260,17 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         const val CONNECT_TIMEOUT_MS = 3_000L
         const val THREAD_START_MS = 2_000L
     }
+}
+
+/**
+ * The one [UiAutomationTree] per process (WIN-79 F3): every session's factory
+ * asks [get] and receives the same source, so a session ending never tears down
+ * the connection another session still uses. Only [disconnect] — the service's
+ * stop — drops it.
+ */
+internal class UiTreeSourceOwner(private val log: (String) -> Unit) {
+    private val source = UiAutomationTree(log)
+
+    fun get(): UiAutomationTree = source
+    fun disconnect() = source.disconnect()
 }

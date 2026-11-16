@@ -214,20 +214,26 @@ struct MCPToolHost {
     /// client can tell which screen it pressed on rather than guess.
     private func tap(window id: Int, ref: String) throws -> MCPToolResult {
         let window = try requireInputWindow(id)
-        let resolved: (snapshot: Int, placed: UITreeRefs.Placed)
-        do {
-            resolved = try controller.uiTreeResolved(ref: ref, stream: window.stream)
-        } catch UITreeError.staleRef {
-            throw MCPToolFailure("No element \(ref) in the latest tree for that window. Call ui_tree again.")
+        switch controller.uiTreeResolved(ref: ref, stream: window.stream) {
+        case .placed(let snapshot, let placed):
+            guard let point = placed.point else {
+                // F9: an off-screen node keeps its text but has no point to press.
+                throw MCPToolFailure(UITreeRefusal.offScreen(ref))
+            }
+            send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
+            send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
+            var answer: [String: Any] = ["ok": true, "window": id, "ref": ref,
+                                         "snapshot": snapshot,
+                                         "x": point.x, "y": point.y]
+            if let box = placed.box { answer["box"] = box }
+            return .text(try json(answer))
+        case .stale(let ref, let snapshot, let latest):
+            // F1: a ref from an older tree names both snapshots, presses nothing.
+            throw MCPToolFailure(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))
+        case .windowClosed:
+            // F4: the window is gone; its refs went with it.
+            throw MCPToolFailure(UITreeRefusal.windowClosed)
         }
-        let point = resolved.placed.point
-        send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
-        send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
-        var answer: [String: Any] = ["ok": true, "window": id, "ref": ref,
-                                     "snapshot": resolved.snapshot,
-                                     "x": point.x, "y": point.y]
-        if let box = resolved.placed.box { answer["box"] = box }
-        return .text(try json(answer))
     }
 
     private func longPress(window id: Int, x: Double, y: Double, ms: Int) async throws -> MCPToolResult {

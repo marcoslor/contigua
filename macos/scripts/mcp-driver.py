@@ -329,10 +329,12 @@ def main():
                "MCP ui_tree keeps the view id")
         report(isinstance(tree.get("displayId"), int) and tree["displayId"] > 0,
                "MCP ui_tree names the window's display id")
+        report(isinstance(tree.get("size"), list) and len(tree["size"]) == 2,
+               "MCP ui_tree names the pixel space box is in")
         report(tree.get("snapshot") is not None,
                "MCP ui_tree names the read a tap can refer back to")
-        report("w" not in (button or {}),
-               "MCP ui_tree leaves out the window index when the display has one window")
+        report("l" not in (button or {}),
+               "MCP ui_tree leaves out the layer index when the display has one layer")
         password = next((n for n in nodes if n.get("pwd")), None)
         report(password is not None and "text" not in password,
                "MCP ui_tree marks the password field and sends no text for it")
