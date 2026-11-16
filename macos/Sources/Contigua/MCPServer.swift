@@ -17,6 +17,9 @@ final class MCPSocketServer {
         var buffer = Data()
         var pending: [Data] = []
         var busy = false
+        /// The client closed its write side (read EOF): keep running and replying,
+        /// then close once the queue drains (MCP-10).
+        var halfClosed = false
 
         init(fd: Int32, source: DispatchSourceRead) {
             self.fd = fd
@@ -122,7 +125,7 @@ final class MCPSocketServer {
         acceptSource?.cancel()
         acceptSource = nil
         listenFD = -1
-        for client in clients.values { client.source.cancel() }
+        for client in clients.values { closeClient(client) }
         clients.removeAll()
         clientCount = 0
         unlink(path)
@@ -131,7 +134,7 @@ final class MCPSocketServer {
     /// The menu bar's "Disconnect agent": close every accepted client but keep
     /// the listener (and the socket) in place for later clients.
     func disconnectClients() {
-        for client in clients.values { client.source.cancel() }
+        for client in clients.values { closeClient(client) }
         clients.removeAll()
         clientCount = 0
     }
@@ -174,7 +177,9 @@ final class MCPSocketServer {
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         let client = Client(fd: fd, source: source)
         source.setEventHandler { [weak self] in self?.read(client: fd) }
-        source.setCancelHandler { close(fd) }
+        // No cancel handler closes the fd here: closeClient() closes it after any
+        // queued write, and a half-closed client cancels its read source while
+        // keeping the fd open long enough to write its pending replies.
         clients[fd] = client
         source.resume()
         clientCount = clients.count
@@ -186,11 +191,22 @@ final class MCPSocketServer {
         var bytes = [UInt8](repeating: 0, count: 65536)
         let count = Darwin.read(fd, &bytes, bytes.count)
         guard count > 0 else {
-            Task { @MainActor [weak self] in self?.drop(fd) }
+            Task { @MainActor [weak self] in self?.halfClose(fd) }
             return
         }
         let chunk = Data(bytes: bytes, count: count)
         Task { @MainActor [weak self] in self?.receive(chunk, from: fd) }
+    }
+
+    /// The client's read side reached EOF (the shim half-closed after its stdin
+    /// closed). Keep the connection open to finish and write the requests already
+    /// read, then close (MCP-10).
+    private func halfClose(_ fd: Int32) {
+        guard let client = clients[fd] else { return }
+        client.halfClosed = true
+        client.source.cancel()     // stop the read source; the fd stays open to write
+        client.buffer.removeAll()  // a buffered tail without a newline is dropped
+        finishIfDone(client)
     }
 
     private func receive(_ chunk: Data, from fd: Int32) {
@@ -223,7 +239,11 @@ final class MCPSocketServer {
     }
 
     private func drain(_ client: Client) {
-        guard !client.busy, !client.pending.isEmpty else { return }
+        guard !client.busy else { return }
+        guard !client.pending.isEmpty else {
+            finishIfDone(client)
+            return
+        }
         let line = client.pending.removeFirst()
         client.busy = true
         Task { @MainActor [weak self] in
@@ -235,6 +255,12 @@ final class MCPSocketServer {
             client.busy = false
             self.drain(client)
         }
+    }
+
+    /// A half-closed client with nothing left to run or write is closed (MCP-10).
+    private func finishIfDone(_ client: Client) {
+        guard client.halfClosed, !client.busy, client.pending.isEmpty else { return }
+        drop(client.fd)
     }
 
     // MARK: Writing and closing
@@ -250,8 +276,15 @@ final class MCPSocketServer {
 
     private func drop(_ fd: Int32) {
         guard let client = clients.removeValue(forKey: fd) else { return }
-        client.source.cancel()
+        closeClient(client)
         clientCount = clients.count
+    }
+
+    /// Cancel a client's read source and close its fd after any queued write, so
+    /// a reply already being written is flushed before the socket goes away.
+    private func closeClient(_ client: Client) {
+        client.source.cancel()
+        queue.async { close(client.fd) }
     }
 
     private nonisolated static func writeAll(_ fd: Int32, _ data: Data) -> Bool {
