@@ -8,6 +8,7 @@ for the call and pauses again by WIN's rule 15 s after it. Run it through
 driver.py (`--suite screen`); the pause setup needs `--control`.
 """
 
+import json
 import os
 import time
 
@@ -39,13 +40,20 @@ def control(directory, line, seq=[0]):
 
 
 def screenshot(client, window):
-    """The screenshot's answer object, retried while the window opens."""
+    """The screenshot's answer object, retried only while the app is not
+    ready or the window is still opening; any other error fails the check."""
     last = None
     for _ in range(20):
         reply = client.tool("screenshot", {"window": window}, timeout=30)
         if not reply.get("isError"):
             return reply.get("structuredContent") or {}
         last = (reply.get("content") or [{}])[0].get("text")
+        try:
+            error = json.loads(last or "{}").get("error") or {}
+        except ValueError:
+            error = {}
+        if error.get("code") != "not_ready" and error.get("state") != "opening":
+            raise RuntimeError("screenshot failed (%s)" % (last or "no error text"))
         time.sleep(0.25)
     raise RuntimeError("screenshot never returned an image (%s)" % (last or "no error text"))
 
