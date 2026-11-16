@@ -32,7 +32,7 @@ final class FakeActEnvironment: MCPActEnvironment {
         log.append("\(name).settle")
         settleStarted?()
         if settleNeverAnswers {
-            try? await Task.sleep(for: .seconds(30))
+            try? await Task.sleep(for: .seconds(30)) // real-time: a phone that never answers; the deadline ends the call
             return .failed("timeout")
         }
         if holdSettle {
@@ -61,7 +61,7 @@ final class WindowActQueueTests: XCTestCase {
     private func untilTrue(_ condition: @MainActor () -> Bool) async {
         for _ in 0..<500 where !condition() {
             await Task.yield()
-            try? await Task.sleep(for: .milliseconds(2))
+            try? await Task.sleep(for: .milliseconds(2)) // real-time: let the runner reach its held settle
         }
     }
 
