@@ -323,17 +323,15 @@ The task sections below are grouped by area; the schedule above is the order.
     while a settle runs → `{"t":"ui.tree","stream":3,"seq":2,"ok":false,"code":"busy",…}`.
   - fake phone selfcheck: `ui.settle` with `--settle-ms 120` answers
     `settled: true, waitedMs ≥ 120` within 300 ms.
-  - emulator ⚠ `[MCP-81]`: Calculator window, TOUCH `7`, then `ui.settle`
-    (300/2000) → `settled: true`, `waitedMs < 1500`; Clock stopwatch running
-    → `settled: false`, `reason: "changes"`, `waitedMs == 2000 ± 50`; a local
-    page (served from the host as `tools/emulator/overrun.sh` serves its page)
-    that shows an indeterminate spinner and fills a list after 1.2 s, opened in
-    a link window → `settled: true` with `waitedMs ≥ 1200`; the same page with
-    the fill removed → `settled: false`, `reason: "loading"`, and a `ui.tree`
-    read then has `"loading":true`. The spec's assumptions (events carry a
-    window id on the virtual display; an indeterminate View and Compose
-    progress indicator report the `ProgressBar` class with no range) are proved
-    here or the PR stops and reports.
+  - emulator `[MCP-81]` `[MCP-103]` `[MCP-107]`, `tools/emulator/settle.sh`
+    (the image has no Calculator and its browser exposes no page nodes, so the
+    vehicles are native): a tap on a Clock tab by ref → `settled: true` within
+    2 s; Clock stopwatch running → `settled: false`, `reason: "changes"`,
+    `waitedMs == 2000 ± 50`; a native indeterminate `ProgressBar` found through
+    `ui.tree` class names → `loading: true` on its row and the reply, and a
+    settle during it → `reason: "loading"`; a settle sent right after
+    `window.open` or `link.open` → never `no_display`. Web spinners are not a
+    loading signal (MCP-103), so no web page is used.
 - **Tier** K1, fake-phone selfcheck, emulator. **Depends** —.
 
 ## T5 — Every action answers the envelope, settles and observes

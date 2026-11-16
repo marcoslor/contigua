@@ -108,6 +108,21 @@ refused), opens two windows on one device, and opens one on a locked,
 screen-off rig: its display draws while display 0 stays off. The lines are
 `ok [WIN-74]`, `ok [WIN-75]` and `ok [CTRL-14]`, in `.work/emu/vd-group.log`.
 
+### settle: `ui.settle` and the loading signal (MCP-81, MCP-103, MCP-107)
+
+`bash tools/emulator/settle.sh` boots once, pairs and runs its checks on
+native apps (the API 36 image has no Calculator, and its browser exposes no
+page nodes): it first pauses and resets the Clock's stopwatch by ref (a running
+one keeps the display changing); a tap on the Alarm tab settles within 2 s; a
+running stopwatch answers `reason: "changes"` at 2000 ms and is stopped and
+reset; a native indeterminate `ProgressBar` on a
+Settings screen is marked `loading` and a settle during it answers
+`reason: "loading"`; a settle sent right after `window.open` or `link.open`
+never answers `no_display`. `--check` rehearses without a device. `--ab` adds the tree-read A/B: the same
+`ui.tree` with `debug.contigua.ui_cache=keep` (no node-cache clear) and with the
+clear, after an open and after a settle. Output is
+counts, codes, states, durations and class names only.
+
 ### Reliability rules (each one cost a boot once)
 
 - **Run every script as `bash <script>`.** Do not rely on the exec bit: a fresh
