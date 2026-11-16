@@ -108,20 +108,24 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * the Mac's `timeoutMs + 5 s`, however long the connect took. A watch that
      * cannot start answers `not_available` (item 7), never `ui.tree`'s `no_a11y`.
      */
-    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long): SettleAnswer {
+    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
         val deadline = arrivedAt + timeoutMs + WATCH_MARGIN_MS
         if (disconnected) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (ensureAutomation() == null) {
             return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, synchronized(lock) { failure } ?: NO_WATCH)
         }
         val all = watches ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
-        val watch = all.start(Any(), displayId, quietMs, timeoutMs, arrivedAt)
+        val watch = all.start(owner, displayId, quietMs, timeoutMs, arrivedAt)
             ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (!watch.gate.await(maxOf(0L, deadline - now()), TimeUnit.MILLISECONDS)) {
             all.fail(watch, SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched."))
             watch.gate.await(FINISH_MS, TimeUnit.MILLISECONDS)
         }
         return watch.answer ?: SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
+    }
+
+    override fun cancel(owner: Any) {
+        watches?.cancel(owner)
     }
 
     /**

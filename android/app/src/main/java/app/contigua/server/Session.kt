@@ -1070,6 +1070,8 @@ class Session(
         // the transport, so only the cleanup below is left.
         if (teardown.get() == SessionTeardown.State.FINISHED) return
         apply(SessionTeardown.Event.Ended)
+        // MCP-81: a settle watch this session started stops listening and answers nothing.
+        runCatching { uiTree?.cancel(this) }
         // The Mac's session ended: stop forwarding and tell the app.
         notifyWanted = false
         // The app's attention item is local state and must go even when the
@@ -2113,7 +2115,7 @@ class Session(
         val started = arrivedAt
         Thread({
             val answer = try {
-                source.settle(displayId, quietMs, timeoutMs, arrivedAt)
+                source.settle(displayId, quietMs, timeoutMs, arrivedAt, this)
             } catch (t: Throwable) {
                 SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
             } finally {

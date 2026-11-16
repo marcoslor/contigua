@@ -306,12 +306,16 @@ fun interface UiTreeSource {
      * Watches [displayId] until it is quiet for [quietMs] with nothing loading,
      * or [timeoutMs] passes (docs/PROTOCOL.md "UI tree" item 7). [arrivedAt] is
      * the request's arrival on the session's clock (`SystemClock.uptimeMillis`
-     * in the service): `waitedMs` and the deadline count from it. Blocking: the session
+     * in the service): `waitedMs` and the deadline count from it. [owner] is
+     * the session, so [cancel] ends only its own watch. Blocking: the session
      * calls it off the reader thread. A source that cannot listen to
      * accessibility events answers `not_available`.
      */
-    fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long): SettleAnswer =
+    fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer =
         SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, "This phone cannot watch the display.")
+
+    /** [owner]'s session ended: its watch stops listening and answers [SettleAnswer.Cancelled]. */
+    fun cancel(owner: Any) {}
 }
 
 /** The closed failure codes of `ui.tree` and `ui.settle` (docs/PROTOCOL.md "UI tree"). */
