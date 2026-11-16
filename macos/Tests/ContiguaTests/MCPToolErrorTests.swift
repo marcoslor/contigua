@@ -107,7 +107,7 @@ final class MCPToolErrorTests: XCTestCase {
     func testTreeFailuresMapToClosedCodes() async throws {
         let table: [(String, MCPErrorCode)] = [
             ("no_window", .noWindow), ("not_available", .notSupported),
-            ("no_a11y", .notSupported), ("no_display", .noWindow),
+            ("no_a11y", .notSupported), ("no_display", .notReady),
             ("busy", .failed), ("failed", .failed),
         ]
         for (phoneCode, code) in table {
@@ -115,6 +115,13 @@ final class MCPToolErrorTests: XCTestCase {
                                                     window: 3, phone: "Pixel")
             XCTAssertEqual(failure.code, code, phoneCode)
         }
+        // The Mac has the window, but its display has nothing to read yet (an
+        // app still opening, seen on the emulator right after open_app): that
+        // is "try again", never "no window" (MCP-70).
+        let empty = MCPToolError.uiTreeFailed(code: "no_display", message: nil, window: 3, phone: "Pixel")
+        XCTAssertEqual(empty.message,
+                       "Window 3 has nothing on screen to read yet: its app may still be opening. Try again in a moment.")
+        XCTAssertEqual(empty.extra["window"] as? Int, 3)
         // A silent phone, through the read's real deadline.
         let broker = UITreeBroker()
         do {
