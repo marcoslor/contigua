@@ -55,7 +55,6 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             "no_a11y", failure ?: "This phone cannot read an accessibility tree right now.",
         )
         try {
-            probe(automation)
             read(automation, displayId)
         } catch (t: Throwable) {
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
@@ -71,36 +70,6 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 UiTree.Answer.Failure("no_a11y", "This phone cannot read an accessibility tree right now.")
             }
         }
-    }
-
-    /**
-     * TEMPORARY A/B probe (B1 regression, debug builds only):
-     * `debug.contigua.ui_probe=off` detaches the event listener before a read,
-     * `clear` keeps it and clears the connection's node cache, anything else
-     * keeps it as the branch has it. Removed by the fix.
-     */
-    private fun probe(automation: UiAutomation) {
-        if (!app.contigua.BuildConfig.DEBUG) return
-        val mode = Hidden.systemProperty("debug.contigua.ui_probe") ?: ""
-        val h = handler ?: return
-        val gate = CountDownLatch(1)
-        h.post {
-            runCatching {
-                val info = automation.serviceInfo
-                if (mode == "off") {
-                    automation.setOnAccessibilityEventListener(null)
-                    info.eventTypes = 0
-                } else {
-                    info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
-                    automation.setOnAccessibilityEventListener { event -> onEvent(event) }
-                }
-                automation.serviceInfo = info
-                if (mode == "clear") automation.clearCache()
-            }
-            gate.countDown()
-        }
-        gate.await(1, TimeUnit.SECONDS)
-        log("ui.tree: probe=${if (mode == "off" || mode == "clear") mode else "on"}") // log-ok: mode only
     }
 
     // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)
@@ -221,6 +190,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * the first signal; never reads a node's text.
      */
     private fun loadingOn(automation: UiAutomation, displayId: Int): Boolean? {
+        freshNodes(automation)
         val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
         if (windows.isEmpty()) return true
         var budget = LOADING_WALK_NODES
@@ -375,6 +345,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         // The window list fills in after the flags land; the debug dump waits
         // 300 ms for the same reason.
         Thread.sleep(SETTLE_MS)
+        freshNodes(automation)
         val all = automation.windowsOnAllDisplays
         val windows = all.get(displayId)
             ?: return UiTree.Answer.Failure(
@@ -393,6 +364,19 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             )
         }
         return UiTree.Answer.Tree(trees)
+    }
+
+    /**
+     * Drops the connection's node cache before a walk (MCP-107 B1 regression).
+     * With the settle watch's listener on, the platform's cache keeps nodes
+     * from past events, and a window's root came back from it childless: every
+     * `ui.tree` read one row. A walk from a cleared cache asks the app.
+     * `debug.contigua.ui_cache=keep` (debug builds only) skips the clear, so
+     * the rig can A/B it.
+     */
+    private fun freshNodes(automation: UiAutomation) {
+        if (UiCacheDebug.keep()) return
+        runCatching { automation.clearCache() }
     }
 
     private fun children(node: AccessibilityNodeInfo, depth: Int): List<UiTree.Node> {
@@ -452,6 +436,16 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         const val LOADING_WALK_NODES = 5_000
         const val NO_WATCH = "This phone cannot watch the display right now."
     }
+}
+
+/** The rig's A/B knob for [UiAutomationTree]'s cache clear; a release build never reads it. */
+internal object UiCacheDebug {
+    const val CACHE = "debug.contigua.ui_cache"
+
+    fun keep(debug: Boolean, property: String?): Boolean = debug && property == "keep"
+
+    fun keep(): Boolean =
+        app.contigua.BuildConfig.DEBUG && keep(true, Hidden.systemProperty(CACHE))
 }
 
 /**

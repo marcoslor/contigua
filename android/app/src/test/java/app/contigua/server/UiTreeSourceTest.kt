@@ -27,4 +27,13 @@ class UiTreeSourceTest {
         owner.disconnect()
         assertTrue(first.disconnected)
     }
+
+    /** MCP-107: only a debug build with `debug.contigua.ui_cache=keep` skips the cache clear. */
+    @Test
+    fun MCP107_theCacheClearIsSkippedOnlyByTheDebugKnob() {
+        assertTrue(UiCacheDebug.keep(true, "keep"))
+        assertFalse(UiCacheDebug.keep(false, "keep"))
+        assertFalse(UiCacheDebug.keep(true, null))
+        assertFalse(UiCacheDebug.keep(true, "1"))
+    }
 }
