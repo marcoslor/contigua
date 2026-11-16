@@ -403,12 +403,14 @@ final class UITreeTests: XCTestCase {
 
     @MainActor
     func test_WIN79_twoWindowsReadOneAfterTheOther() async throws {
+        // F6 lives in PhoneReadQueue (MCP-9), which the controller reads through.
         let broker = UITreeBroker()
+        let reads = PhoneReadQueue()
         var seq1 = 0
         var seq2 = 0
-        let first = Task { try await broker.read(stream: 1, timeout: 5, send: { seq1 = $0 }) }
+        let first = Task { try await reads.run { try await broker.read(stream: 1, timeout: 5, send: { seq1 = $0 }) } }
         await waitUntil { seq1 != 0 }
-        let second = Task { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) }
+        let second = Task { try await reads.run { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) } }
         // The second read waits for the first instead of racing it (F6).
         try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let a wrongly-racing second read run
         XCTAssertEqual(seq2, 0, "the second window's read must wait")
@@ -437,13 +439,16 @@ final class UITreeTests: XCTestCase {
     @MainActor
     func test_WIN79_disconnectFailsPendingReads() async {
         let broker = UITreeBroker()
+        let reads = PhoneReadQueue()
         var seq = 0
         var queuedSent = false
-        let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+        let read = Task { try await reads.run { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) } }
         await waitUntil { seq != 0 }
         // A second window's read queued behind the first (F6).
-        let queued = Task { try await broker.read(stream: 4, timeout: 5, send: { _ in queuedSent = true }) }
+        let queued = Task { try await reads.run { try await broker.read(stream: 4, timeout: 5, send: { _ in queuedSent = true }) } }
         try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let the queued read join the queue
+        // The controller's session end fails both (failUITrees).
+        reads.fail(UITreeError.notConnected)
         broker.fail(.notConnected)
         for task in [read, queued] {
             do {

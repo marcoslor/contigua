@@ -2156,6 +2156,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func handle(_ command: InputMapper.Command) {
         switch command {
+        case .touch, .scroll, .key, .text, .nav:
+            manager.onPersonInput?(stream)  // MCP-84: an agent's call on this window hears it
+        default:
+            break
+        }
+        switch command {
         case .touch(let event):
             touchInHotZone(event)
             session.touch(event, stream: stream)

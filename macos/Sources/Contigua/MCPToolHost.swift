@@ -25,13 +25,17 @@ struct MCPToolHost {
     /// and `frame` as they are when the answer is made.
     private func stamped(_ result: MCPToolResult, for call: MCPCall) -> MCPToolResult {
         switch call {
-        case .uiTree, .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey, .inputProbe:
+        case .uiTree, .inputProbe:
             guard case .answer(let answer) = result, let id = call.window,
                   let window = controller.windows.controller(for: UInt32(id)) else { return result }
             return .answer(MCPFreshness.stamp(answer, state: stateToken(for: window),
                                               frame: frameObject(for: window)))
         case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
              .sendLink, .sendFile:
+            return result
+        case .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey:
+            // The envelope stamps itself: a window that closed during the call
+            // keeps `state: closed` and the frame it last had (MCP-83).
             return result
         }
     }
@@ -47,22 +51,24 @@ struct MCPToolHost {
                 return .answer(try openApp(query, newWindow: newWindow))
             case .listWindows:
                 return .answer(listWindows())
-            case .screenshot(let window, let ref):
-                return try await screenshot(window, ref: ref)
-            case .uiTree(let window):
-                return .answer(try await uiTree(window))
-            case .tap(let window, let x, let y):
-                return .answer(try tap(window: window, x: x, y: y))
-            case .tapRef(let window, let ref):
-                return .answer(try tap(window: window, ref: ref))
-            case .longPress(let window, let x, let y, let ms):
-                return .answer(try await longPress(window: window, x: x, y: y, ms: ms))
-            case .swipe(let window, let x1, let y1, let x2, let y2, let ms):
-                return .answer(try await swipe(window: window, x1: x1, y1: y1, x2: x2, y2: y2, ms: ms))
-            case .typeText(let window, let text):
-                return .answer(try typeText(window: window, text: text))
-            case .pressKey(let window, let key):
-                return .answer(try pressKey(window: window, key: key))
+            case .screenshot(let window, let ref, let wait):
+                return try await screenshot(window, ref: ref, wait: wait)
+            case .uiTree(let window, let wait):
+                return .answer(try await uiTree(window, wait: wait))
+            case .tap(let window, let x, let y, let wait, let observe):
+                return .answer(try await tap(window: window, x: x, y: y, wait: wait, observe: observe))
+            case .tapRef(let window, let ref, let wait, let observe):
+                return .answer(try await tap(window: window, ref: ref, wait: wait, observe: observe))
+            case .longPress(let window, let x, let y, let ms, let wait, let observe):
+                return .answer(try await longPress(window: window, x: x, y: y, ms: ms,
+                                                   wait: wait, observe: observe))
+            case .swipe(let window, let x1, let y1, let x2, let y2, let ms, let wait, let observe):
+                return .answer(try await swipe(window: window, x1: x1, y1: y1, x2: x2, y2: y2, ms: ms,
+                                               wait: wait, observe: observe))
+            case .typeText(let window, let text, let wait, let observe):
+                return .answer(try await typeText(window: window, text: text, wait: wait, observe: observe))
+            case .pressKey(let window, let key, let wait, let observe):
+                return .answer(try await pressKey(window: window, key: key, wait: wait, observe: observe))
             case .inputProbe(let window, let x, let y, let width, let height):
                 return .answer(try await inputProbe(window: window, x: x, y: y,
                                                     width: width, height: height))

@@ -83,16 +83,21 @@ enum MCPCall: Equatable {
     case listApps
     case openApp(String, newWindow: Bool)
     case listWindows
-    case screenshot(window: Int, ref: String?)
+    /// `wait: settle` settles the window first (MCP-64).
+    case screenshot(window: Int, ref: String?, wait: MCPWait = .none)
     /// WIN-79: the display's accessibility tree, for finding a node by its text.
-    case uiTree(window: Int)
-    case tap(window: Int, x: Double, y: Double)
+    case uiTree(window: Int, wait: MCPWait = .none)
+    // Every input tool settles and observes (MCP-81, MCP-82): `wait` defaults
+    // to settle and `observe` to tree.
+    case tap(window: Int, x: Double, y: Double, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     /// WIN-79: tap the element a `ui_tree` ref named.
-    case tapRef(window: Int, ref: String)
-    case longPress(window: Int, x: Double, y: Double, ms: Int)
-    case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int)
-    case typeText(window: Int, text: String)
-    case pressKey(window: Int, key: MCPKey)
+    case tapRef(window: Int, ref: String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case longPress(window: Int, x: Double, y: Double, ms: Int,
+                   wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int,
+               wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case typeText(window: Int, text: String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case pressKey(window: Int, key: MCPKey, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     /// P0 (pmaxx): tap, then time the first displayed frame that changed.
     case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
     case closeWindow(window: Int)
@@ -106,10 +111,10 @@ extension MCPCall {
         switch self {
         case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
             return nil
-        case .screenshot(let window, _), .uiTree(let window), .closeWindow(let window),
-             .tap(let window, _, _), .tapRef(let window, _),
-             .longPress(let window, _, _, _), .swipe(let window, _, _, _, _, _),
-             .typeText(let window, _), .pressKey(let window, _),
+        case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window),
+             .tap(let window, _, _, _, _), .tapRef(let window, _, _, _),
+             .longPress(let window, _, _, _, _, _), .swipe(let window, _, _, _, _, _, _, _),
+             .typeText(let window, _, _, _), .pressKey(let window, _, _, _),
              .inputProbe(let window, _, _, _, _):
             return window
         }
@@ -182,6 +187,17 @@ enum MCPTools {
         return schema
     }
 
+    /// MCP-81: `wait` on a tool that acts or reads.
+    static let wait: [String: Any] = [
+        "type": "string", "enum": MCPWait.allCases.map(\.rawValue),
+        "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once.",
+    ]
+    /// MCP-82: `observe` on a tool that acts.
+    static let observe: [String: Any] = [
+        "type": "string", "enum": MCPObserve.allCases.map(\.rawValue),
+        "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen.",
+    ]
+
     private static func duration(_ maximum: Int) -> [String: Any] {
         ["type": "integer", "minimum": 1, "maximum": maximum,
          "description": "How long the gesture lasts, in milliseconds (at most \(maximum))."]
@@ -212,27 +228,29 @@ enum MCPTools {
                     "window": window,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32,
                             "description": "Element ref from ui_tree, e.g. \"s13e5\". Crop the picture to that element's box plus 8 px."],
+                    "wait": wait,
                 ], required: ["window"])),
         MCPTool(name: .uiTree,
                 description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. Read it again after an action: a ref only protects against a newer tree, not against a screen that changed under it.",
-                schema: object(["window": window], required: ["window"])),
+                schema: object(["window": window, "wait": wait], required: ["window"])),
         MCPTool(name: .tap,
-                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. It is refused, with a sentence saying what to do, when a newer tree replaced it, when the window has had no tree read since it opened or since the phone reconnected, or when the node is off screen. The answer echoes the snapshot the ref came from and the node's box.",
+                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. It is refused, with a sentence saying what to do, when a newer tree replaced it, when the window has had no tree read since it opened or since the phone reconnected, or when the node is off screen, and nothing is pressed. The answer names what was pressed and the tree it came from (on.snapshot). By default the call waits for the screen to settle and returns the new tree.",
                 schema: object([
                     "window": window, "x": pointX, "y": pointY,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32,
                             "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
+                    "wait": wait, "observe": observe,
                 ], required: ["window"])),
         MCPTool(name: .longPress,
                 description: "Press and hold a point in the Phone Mirror.",
                 schema: object(["window": window, "x": pointX, "y": pointY,
-                                "ms": duration(3000)],
+                                "ms": duration(3000), "wait": wait, "observe": observe],
                                required: ["window", "x", "y"])),
         MCPTool(name: .swipe,
                 description: "Swipe from one point to another in the Phone Mirror.",
                 schema: object([
                     "window": window, "x1": pointX, "y1": pointY, "x2": pointX, "y2": pointY,
-                    "ms": duration(2000),
+                    "ms": duration(2000), "wait": wait, "observe": observe,
                 ], required: ["window", "x1", "y1", "x2", "y2"])),
         MCPTool(name: .typeText,
                 description: "Type text into the Phone Mirror, on the same path as the keyboard.",
@@ -240,6 +258,7 @@ enum MCPTools {
                     "window": window,
                     "text": ["type": "string", "maxLength": 2000,
                              "description": "Up to 2000 characters."],
+                    "wait": wait, "observe": observe,
                 ], required: ["window", "text"])),
         MCPTool(name: .pressKey,
                 description: "Press one key in the Phone Mirror.",
@@ -247,7 +266,8 @@ enum MCPTools {
                     "window": window,
                     "key": ["type": "string",
                             "enum": MCPKey.allCases.map(\.rawValue),
-                            "description": "back, home and recents are navigation; the rest are keys."],
+                            "description": "back, home and recents are navigation; the rest are keys. back on an app's last screen closes the window, and the answer says so."],
+                    "wait": wait, "observe": observe,
                 ], required: ["window", "key"])),
         MCPTool(name: .inputProbe,
                 description: "Tap a point and return how long until the displayed picture changed: input-to-photon, in milliseconds.",
@@ -305,6 +325,30 @@ enum MCPOutputSchemas {
     private static let stateToken: [String: Any] = [
         "type": "string", "enum": ["opening", "live", "paused", "stalled", "offline", "closed"]]
 
+    /// MCP-81's settle: a closed state, how long it waited, and why it stopped.
+    private static let settleObject = object([
+        "state": ["type": "string",
+                  "enum": ["settled", "still_changing", "not_waited", "not_ready", "unavailable",
+                           "window_closed", "interrupted"]],
+        "waitedMs": integer,
+        "reason": ["type": "string", "enum": ["changes", "loading"]],
+    ], required: ["state"])
+
+    /// MCP-80: the act envelope every input tool answers. No `ok`.
+    private static let actEnvelope = object([
+        "window": integer,
+        "did": object(["action": string], required: ["action"]),
+        "on": object(["snapshot": nullable("integer"), "frame": nullable("integer")],
+                     required: ["snapshot", "frame"]),
+        "settle": settleObject,
+        "state": stateToken,
+        "frame": frameObject,
+        "alsoActed": array(["type": "string", "enum": ["person", "another_agent"]]),
+        "closed": object(["reason": string, "closedBy": string], required: ["reason", "closedBy"]),
+        "tree": ["type": "object"],
+        "treeError": string,
+    ], required: ["window", "did", "on", "settle", "state", "frame"])
+
     static func schema(for tool: MCPToolName) -> [String: Any] {
         switch tool {
         case .phoneStatus:
@@ -328,32 +372,18 @@ enum MCPOutputSchemas {
         case .screenshot:
             return object(["window": integer, "state": stateToken, "frame": frameObject,
                            "image": array(integer), "size": array(integer),
-                           "blank": boolean, "crop": array(integer)],
+                           "blank": boolean, "crop": array(integer), "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
             return object(["window": integer, "ok": boolean, "displayId": integer,
                            "snapshot": integer, "size": array(integer), "truncated": boolean,
                            "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
-                           "note": string, "state": stateToken, "frame": frameObject],
+                           "note": string, "loading": boolean,
+                           "state": stateToken, "frame": frameObject],
                           required: ["window", "ok", "truncated", "layers", "nodes",
                                      "state", "frame"])
-        case .tap:
-            return object(["ok": boolean, "window": integer, "ref": string, "snapshot": integer,
-                           "x": number, "y": number, "box": array(integer),
-                           "state": stateToken, "frame": frameObject],
-                          required: ["ok", "window", "state", "frame"])
-        case .longPress, .swipe:
-            return object(["ok": boolean, "window": integer, "ms": integer,
-                           "state": stateToken, "frame": frameObject],
-                          required: ["ok", "window", "state", "frame"])
-        case .typeText:
-            return object(["ok": boolean, "window": integer, "characters": integer,
-                           "state": stateToken, "frame": frameObject],
-                          required: ["ok", "window", "characters", "state", "frame"])
-        case .pressKey:
-            return object(["ok": boolean, "window": integer, "key": string,
-                           "state": stateToken, "frame": frameObject],
-                          required: ["ok", "window", "key", "state", "frame"])
+        case .tap, .longPress, .swipe, .typeText, .pressKey:
+            return actEnvelope
         case .inputProbe:
             return object(["ok": boolean, "window": integer, "frames": integer,
                            "sent_ms": nullable("number"), "changed_ms": nullable("number"),
@@ -421,6 +451,25 @@ enum MCPArguments {
         return value.boolValue
     }
 
+    private static func token<T: RawRepresentable & CaseIterable>(
+        _ args: [String: Any], _ key: String, default fallback: T
+    ) throws -> T where T.RawValue == String {
+        guard let raw = args[key] else { return fallback }
+        guard let text = raw as? String, let value = T(rawValue: text) else {
+            let allowed = T.allCases.map(\.rawValue).joined(separator: " or ")
+            throw MCPArgumentError(message: "“\(key)” must be \(allowed)")
+        }
+        return value
+    }
+
+    private static func wait(_ args: [String: Any], default fallback: MCPWait = .settle) throws -> MCPWait {
+        try token(args, "wait", default: fallback)
+    }
+
+    private static func observe(_ args: [String: Any]) throws -> MCPObserve {
+        try token(args, "observe", default: MCPObserve.tree)
+    }
+
     private static func coordinate(_ args: [String: Any], _ key: String) throws -> Double {
         let value = try number(args, key)
         guard (0...1).contains(value) else {
@@ -460,35 +509,41 @@ enum MCPArguments {
         case .screenshot:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             let ref = args["ref"] != nil ? try string(args, "ref", maximum: 32) : nil
-            return .screenshot(window: window, ref: ref)
+            return .screenshot(window: window, ref: ref, wait: try wait(args, default: .none))
         case .uiTree:
-            return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
+            return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
+                           wait: try wait(args, default: .none))
         case .tap:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             if args["ref"] != nil {
-                return .tapRef(window: window, ref: try string(args, "ref", maximum: 16))
+                return .tapRef(window: window, ref: try string(args, "ref", maximum: 16),
+                               wait: try wait(args), observe: try observe(args))
             }
             return .tap(window: window,
-                        x: try coordinate(args, "x"), y: try coordinate(args, "y"))
+                        x: try coordinate(args, "x"), y: try coordinate(args, "y"),
+                        wait: try wait(args), observe: try observe(args))
         case .longPress:
             return .longPress(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                               x: try coordinate(args, "x"), y: try coordinate(args, "y"),
-                              ms: try integer(args, "ms", minimum: 1, maximum: 3000))
+                              ms: try integer(args, "ms", minimum: 1, maximum: 3000),
+                              wait: try wait(args), observe: try observe(args))
         case .swipe:
             return .swipe(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                           x1: try coordinate(args, "x1"), y1: try coordinate(args, "y1"),
                           x2: try coordinate(args, "x2"), y2: try coordinate(args, "y2"),
-                          ms: try integer(args, "ms", minimum: 1, maximum: 2000))
+                          ms: try integer(args, "ms", minimum: 1, maximum: 2000),
+                          wait: try wait(args), observe: try observe(args))
         case .typeText:
             return .typeText(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                             text: try string(args, "text", minimum: 0, maximum: 2000))
+                             text: try string(args, "text", minimum: 0, maximum: 2000),
+                             wait: try wait(args), observe: try observe(args))
         case .pressKey:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             let raw = try string(args, "key", maximum: 20)
             guard let key = MCPKey(rawValue: raw) else {
                 throw MCPArgumentError(message: "“key” must be one of \(MCPKey.allCases.map(\.rawValue).joined(separator: ", "))")
             }
-            return .pressKey(window: window, key: key)
+            return .pressKey(window: window, key: key, wait: try wait(args), observe: try observe(args))
         case .inputProbe:
             return .inputProbe(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                                x: try coordinate(args, "x"), y: try coordinate(args, "y"),
