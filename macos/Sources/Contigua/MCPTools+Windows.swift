@@ -8,8 +8,10 @@ extension MCPToolHost {
             guard let window = controller.windows.controller(for: stream) else { return nil }
             var row: [String: Any] = [
                 "id": Int(stream),
-                "width": Int(window.videoView.videoSize.width.rounded()),
-                "height": Int(window.videoView.videoSize.height.rounded()),
+                "size": [Int(window.videoView.videoSize.width.rounded()),
+                         Int(window.videoView.videoSize.height.rounded())],
+                "state": stateToken(for: window),
+                "frame": frameObject(for: window),
             ]
             row["package"] = package(of: window).map { $0 as Any } ?? NSNull()
             return row

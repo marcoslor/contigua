@@ -83,7 +83,7 @@ enum MCPCall: Equatable {
     case listApps
     case openApp(String, newWindow: Bool)
     case listWindows
-    case screenshot(window: Int)
+    case screenshot(window: Int, ref: String?)
     /// WIN-79: the display's accessibility tree, for finding a node by its text.
     case uiTree(window: Int)
     case tap(window: Int, x: Double, y: Double)
@@ -106,7 +106,7 @@ extension MCPCall {
         switch self {
         case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
             return nil
-        case .screenshot(let window), .uiTree(let window), .closeWindow(let window),
+        case .screenshot(let window, _), .uiTree(let window), .closeWindow(let window),
              .tap(let window, _, _), .tapRef(let window, _),
              .longPress(let window, _, _, _), .swipe(let window, _, _, _, _, _),
              .typeText(let window, _), .pressKey(let window, _),
@@ -204,11 +204,15 @@ enum MCPTools {
                                   "description": "Open another window of an app that opens several at a time, instead of raising its window."],
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
-                description: "The open Phone Mirrors: id, package, and stream size in pixels.",
+                description: "The open stream windows: id, package, size ([w, h] in stream pixels), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
                 schema: object([:], required: [])),
         MCPTool(name: .screenshot,
-                description: "PNG of the last frame the window displayed, longest side at most 1280 px. The image is scaled: ui_tree's box is in the display's pixels, so the two do not share a scale factor. No timestamp is attached to a frame.",
-                schema: object(["window": window], required: ["window"])),
+                description: "PNG of a frame from after the call: the phone's next keyframe for the window, scaled to a longest side of at most 1280 px. frame.seq counts the window's frames and grows with every new picture; frame.ageMs is how old this one is; state says whether the window is live. image is the PNG's pixels, size the window's (the space ui_tree's box uses). blank: true marks a black or one-colour frame. No keyframe within 2 s fails no_frame. Pass ref to crop to a ui_tree element's box plus 8 px; crop names the box.",
+                schema: object([
+                    "window": window,
+                    "ref": ["type": "string", "minLength": 1, "maxLength": 32,
+                            "description": "Element ref from ui_tree, e.g. \"s13e5\". Crop the picture to that element's box plus 8 px."],
+                ], required: ["window"])),
         MCPTool(name: .uiTree,
                 description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. Read it again after an action: a ref only protects against a newer tree, not against a screen that changed under it.",
                 schema: object(["window": window], required: ["window"])),
@@ -294,8 +298,12 @@ enum MCPOutputSchemas {
     private static func nullable(_ type: String) -> [String: Any] { ["type": [type, "null"]] }
     private static func array(_ items: [String: Any]) -> [String: Any] { ["type": "array", "items": items] }
 
-    private static let gesture = object(["ok": boolean, "window": integer, "ms": integer],
-                                        required: ["ok", "window"])
+    /// MCP-20's `frame` object, carried by every answer that reflects a screen.
+    private static let frameObject = object(["seq": integer, "ageMs": nullable("integer")],
+                                            required: ["seq", "ageMs"])
+    /// MCP-21's closed state token.
+    private static let stateToken: [String: Any] = [
+        "type": "string", "enum": ["opening", "live", "paused", "stalled", "offline", "closed"]]
 
     static func schema(for tool: MCPToolName) -> [String: Any] {
         switch tool {
@@ -313,33 +321,45 @@ enum MCPOutputSchemas {
                           required: ["window", "package", "label"])
         case .listWindows:
             return object(["windows": array(object(["id": integer, "package": nullable("string"),
-                                                    "width": integer, "height": integer],
-                                                   required: ["id", "package", "width", "height"]))],
+                                                    "size": array(integer), "state": stateToken,
+                                                    "frame": frameObject],
+                                                   required: ["id", "package", "size", "state", "frame"]))],
                           required: ["windows"])
         case .screenshot:
-            return object(["window": integer], required: ["window"])
+            return object(["window": integer, "state": stateToken, "frame": frameObject,
+                           "image": array(integer), "size": array(integer),
+                           "blank": boolean, "crop": array(integer)],
+                          required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
             return object(["window": integer, "ok": boolean, "displayId": integer,
                            "snapshot": integer, "size": array(integer), "truncated": boolean,
                            "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
-                           "note": string],
-                          required: ["window", "ok", "truncated", "layers", "nodes"])
+                           "note": string, "state": stateToken, "frame": frameObject],
+                          required: ["window", "ok", "truncated", "layers", "nodes",
+                                     "state", "frame"])
         case .tap:
             return object(["ok": boolean, "window": integer, "ref": string, "snapshot": integer,
-                           "x": number, "y": number, "box": array(integer)],
-                          required: ["ok", "window"])
+                           "x": number, "y": number, "box": array(integer),
+                           "state": stateToken, "frame": frameObject],
+                          required: ["ok", "window", "state", "frame"])
         case .longPress, .swipe:
-            return gesture
+            return object(["ok": boolean, "window": integer, "ms": integer,
+                           "state": stateToken, "frame": frameObject],
+                          required: ["ok", "window", "state", "frame"])
         case .typeText:
-            return object(["ok": boolean, "window": integer, "characters": integer],
-                          required: ["ok", "window", "characters"])
+            return object(["ok": boolean, "window": integer, "characters": integer,
+                           "state": stateToken, "frame": frameObject],
+                          required: ["ok", "window", "characters", "state", "frame"])
         case .pressKey:
-            return object(["ok": boolean, "window": integer, "key": string],
-                          required: ["ok", "window", "key"])
+            return object(["ok": boolean, "window": integer, "key": string,
+                           "state": stateToken, "frame": frameObject],
+                          required: ["ok", "window", "key", "state", "frame"])
         case .inputProbe:
             return object(["ok": boolean, "window": integer, "frames": integer,
-                           "sent_ms": nullable("number"), "changed_ms": nullable("number")],
-                          required: ["ok", "window", "frames", "sent_ms", "changed_ms"])
+                           "sent_ms": nullable("number"), "changed_ms": nullable("number"),
+                           "state": stateToken, "frame": frameObject],
+                          required: ["ok", "window", "frames", "sent_ms", "changed_ms",
+                                     "state", "frame"])
         case .closeWindow:
             return object(["ok": boolean, "window": integer], required: ["ok", "window"])
         case .sendLink, .sendFile:
@@ -438,7 +458,9 @@ enum MCPArguments {
         case .listWindows:
             return .listWindows
         case .screenshot:
-            return .screenshot(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
+            let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
+            let ref = args["ref"] != nil ? try string(args, "ref", maximum: 32) : nil
+            return .screenshot(window: window, ref: ref)
         case .uiTree:
             return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
         case .tap:

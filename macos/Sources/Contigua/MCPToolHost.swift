@@ -18,7 +18,22 @@ struct MCPToolHost {
         // MCP-22: the hold runs from the call's start until 15 s after its end.
         hold(call)
         defer { hold(call) }
-        return await run(call)
+        return stamped(await run(call), for: call)
+    }
+
+    /// MCP-20/21: the tree and every input answer carry the window's `state`
+    /// and `frame` as they are when the answer is made.
+    private func stamped(_ result: MCPToolResult, for call: MCPCall) -> MCPToolResult {
+        switch call {
+        case .uiTree, .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey, .inputProbe:
+            guard case .answer(let answer) = result, let id = call.window,
+                  let window = controller.windows.controller(for: UInt32(id)) else { return result }
+            return .answer(MCPFreshness.stamp(answer, state: stateToken(for: window),
+                                              frame: frameObject(for: window)))
+        case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
+             .sendLink, .sendFile:
+            return result
+        }
     }
 
     private func run(_ call: MCPCall) async -> MCPToolResult {
@@ -32,8 +47,8 @@ struct MCPToolHost {
                 return .answer(try openApp(query, newWindow: newWindow))
             case .listWindows:
                 return .answer(listWindows())
-            case .screenshot(let window):
-                return try await screenshot(window)
+            case .screenshot(let window, let ref):
+                return try await screenshot(window, ref: ref)
             case .uiTree(let window):
                 return .answer(try await uiTree(window))
             case .tap(let window, let x, let y):
@@ -136,5 +151,15 @@ enum MCPWindowState {
         case .linkDown, .reconnecting, .offline: return "offline"
         case .closed: return "closed"
         }
+    }
+}
+
+/// MCP-20/21: the freshness fields an answer about a window's screen carries.
+enum MCPFreshness {
+    static func stamp(_ answer: [String: Any], state: String, frame: [String: Any]) -> [String: Any] {
+        var answer = answer
+        answer["state"] = state
+        answer["frame"] = frame
+        return answer
     }
 }

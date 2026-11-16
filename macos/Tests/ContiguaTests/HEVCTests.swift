@@ -237,7 +237,7 @@ final class HEVCTests: XCTestCase {
         let snapshotter = KeyframeSnapshotter()
         let snapshot = expectation(description: "snapshot")
         var snapshotBuffer: CVPixelBuffer?
-        snapshotter.begin(format: format) { buffer in
+        snapshotter.begin(format: format) { buffer, _ in
             snapshotBuffer = buffer
             snapshot.fulfill()
         }

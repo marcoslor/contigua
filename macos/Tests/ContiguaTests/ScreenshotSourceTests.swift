@@ -7,6 +7,7 @@ import CoreVideo
 import XCTest
 @testable import Contigua
 
+@MainActor
 final class ScreenshotSourceTests: XCTestCase {
 
     private func makeBuffer(width: Int, height: Int, value: UInt8,
@@ -37,6 +38,7 @@ final class ScreenshotSourceTests: XCTestCase {
 
     /// A source that delivers one frame (or none) and traps on the display
     /// layer's buffer, which a screenshot must never read.
+    @MainActor
     private final class FakeSource: ScreenshotSource {
         let newestSeq: Int
         let deliver: SnapshotFrame?
@@ -55,8 +57,15 @@ final class ScreenshotSourceTests: XCTestCase {
         }
     }
 
-    private func image(_ result: MCPToolResult) -> [String: Any]? {
-        guard case .image(_, let answer) = result else { return nil }
+    /// The screenshot's answer object; fails the test when it is not an image.
+    private func shot(id: Int, state: String, source: ScreenshotSource, streamSize: (Int, Int),
+                      crop: [Int]?) async throws -> [String: Any] {
+        let result = try await Screenshot.result(id: id, state: state, source: source,
+                                                 streamSize: streamSize, crop: crop)
+        guard case .image(_, let answer) = result else {
+            XCTFail("expected an image")
+            return [:]
+        }
         return answer
     }
 
@@ -64,8 +73,8 @@ final class ScreenshotSourceTests: XCTestCase {
     func testTheAnswerIsAFrameThatArrivedAfterTheCall() async throws {
         let source = FakeSource(newestSeq: 40, deliver: SnapshotFrame(
             buffer: makeBuffer(width: 64, height: 64, value: 128), seq: 41, ageMs: 12))
-        let answer = try XCTUnwrap(image(try await Screenshot.result(
-            id: 3, state: "live", source: source, streamSize: (64, 64), crop: nil)))
+        let answer = try await shot(
+            id: 3, state: "live", source: source, streamSize: (64, 64), crop: nil)
         XCTAssertEqual(source.askedAfter, 40, "the frame must come after the call's newest")
         let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
         XCTAssertEqual(frame["seq"] as? Int, 41)
@@ -81,8 +90,8 @@ final class ScreenshotSourceTests: XCTestCase {
     func testTheImageIsScaledButSizeIsTheWindows() async throws {
         let source = FakeSource(newestSeq: 0, deliver: SnapshotFrame(
             buffer: makeBuffer(width: 1080, height: 2400, value: 90), seq: 1, ageMs: 0))
-        let answer = try XCTUnwrap(image(try await Screenshot.result(
-            id: 3, state: "live", source: source, streamSize: (1080, 2400), crop: nil)))
+        let answer = try await shot(
+            id: 3, state: "live", source: source, streamSize: (1080, 2400), crop: nil)
         XCTAssertEqual(answer["image"] as? [Int], [576, 1280])
         XCTAssertEqual(answer["size"] as? [Int], [1080, 2400])
     }
@@ -120,13 +129,13 @@ final class ScreenshotSourceTests: XCTestCase {
     func testAOneColourFrameIsBlank() async throws {
         let black = makeBuffer(width: 64, height: 64, value: 0)
         let half = makeBuffer(width: 64, height: 64, value: 0, whiteLeftColumns: 32)
-        let blank = try XCTUnwrap(image(try await Screenshot.result(
+        let blank = try await shot(
             id: 3, state: "live", source: FakeSource(newestSeq: 0, deliver: SnapshotFrame(
-                buffer: black, seq: 1, ageMs: 0)), streamSize: (64, 64), crop: nil)))
+                buffer: black, seq: 1, ageMs: 0)), streamSize: (64, 64), crop: nil)
         XCTAssertEqual(blank["blank"] as? Bool, true)
-        let notBlank = try XCTUnwrap(image(try await Screenshot.result(
+        let notBlank = try await shot(
             id: 3, state: "live", source: FakeSource(newestSeq: 0, deliver: SnapshotFrame(
-                buffer: half, seq: 1, ageMs: 0)), streamSize: (64, 64), crop: nil)))
+                buffer: half, seq: 1, ageMs: 0)), streamSize: (64, 64), crop: nil)
         XCTAssertNil(notBlank["blank"])
     }
 
@@ -144,8 +153,8 @@ final class ScreenshotSourceTests: XCTestCase {
         // The answer is the crop, scaled, and names it.
         let source = FakeSource(newestSeq: 0, deliver: SnapshotFrame(
             buffer: makeBuffer(width: 1080, height: 2400, value: 90), seq: 1, ageMs: 0))
-        let answer = try XCTUnwrap(image(try await Screenshot.result(
-            id: 3, state: "live", source: source, streamSize: (1080, 2400), crop: crop)))
+        let answer = try await shot(
+            id: 3, state: "live", source: source, streamSize: (1080, 2400), crop: crop)
         XCTAssertEqual(answer["crop"] as? [Int], [92, 192, 308, 268])
         XCTAssertEqual(answer["image"] as? [Int], [216, 76])
         // A ref the window's latest tree does not name fails stale_ref.

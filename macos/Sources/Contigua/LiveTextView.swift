@@ -111,12 +111,19 @@ enum LiveTextImage {
 final class KeyframeSnapshotter {
     private let lock = NSLock()
     private var session: VTDecompressionSession?
-    private var handler: ((CVPixelBuffer?) -> Void)?
+    private var handler: ((CVPixelBuffer?, FrameStamp?) -> Void)?
     private var finished = true
+    /// Samples counted at or before this seq are from before the request.
+    private var after = 0
+    /// A keyframe from after the request has been fed; deltas may follow it.
+    private var started = false
 
     /// Prepares a decoder for `format`; `handler` gets the first decoded frame
-    /// on an arbitrary queue (the video view hops to main).
-    func begin(format: CMVideoFormatDescription, handler: @escaping (CVPixelBuffer?) -> Void) {
+    /// and its stamp (MCP-20) on an arbitrary queue (the video view hops to
+    /// main). With `after`, only a keyframe counted later than that seq starts
+    /// the decode (MCP-60: a frame from after the call).
+    func begin(format: CMVideoFormatDescription, after: Int = 0,
+               handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) {
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
@@ -127,28 +134,35 @@ final class KeyframeSnapshotter {
             decoderSpecification: nil, imageBufferAttributes: attributes as CFDictionary,
             outputCallback: nil, decompressionSessionOut: &session)
         guard status == noErr, let session else {
-            handler(nil)
+            handler(nil, nil)
             return
         }
         lock.lock()
         self.session = session
         self.handler = handler
+        self.after = after
+        self.started = false
         self.finished = false
         lock.unlock()
     }
 
     /// Feeds one sample (in decode order). Errors are ignored: a frame from
     /// before the requested keyframe cannot decode, and the keyframe follows.
-    func feed(_ sample: CMSampleBuffer) {
+    /// `stamp` is the sample's count; `keyframe` whether it can start a decode.
+    func feed(_ sample: CMSampleBuffer, stamp: FrameStamp? = nil, keyframe: Bool = true) {
         lock.lock()
         guard !finished, let session else { lock.unlock(); return }
+        if !started {
+            guard keyframe, (stamp?.seq ?? Int.max) > after else { lock.unlock(); return }
+            started = true
+        }
         lock.unlock()
         let status = VTDecompressionSessionDecodeFrame(
             session, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression],
             infoFlagsOut: nil
         ) { [weak self] status, _, image, _, _ in
             guard status == noErr, let image else { return }
-            self?.finish(image)
+            self?.finish(image, stamp: stamp)
         }
         if status != noErr {
             Log.video.debug("livetext: snapshot decode refused (\(status, privacy: .public))")
@@ -168,7 +182,7 @@ final class KeyframeSnapshotter {
         }
     }
 
-    private func finish(_ image: CVPixelBuffer) {
+    private func finish(_ image: CVPixelBuffer, stamp: FrameStamp?) {
         lock.lock()
         guard !finished else { lock.unlock(); return }
         finished = true
@@ -185,7 +199,7 @@ final class KeyframeSnapshotter {
                 VTDecompressionSessionInvalidate(session)
             }
         }
-        handler?(image)
+        handler?(image, stamp)
     }
 }
 
@@ -286,7 +300,7 @@ final class LiveTextSession {
         }
         mode.handle(.enter)
         onStateChange?(.capturing, nil)
-        host.beginFrameSnapshot { [weak self] buffer in
+        host.beginFrameSnapshot { [weak self] buffer, _ in
             guard let self else { return }
             guard self.mode.state == .capturing, let buffer,
                   self.adopt(buffer, source: "a decoded keyframe", on: host) else {
