@@ -329,6 +329,37 @@ enum UITreeResolution: Equatable {
 enum UITreeError: Error, Equatable {
     case notConnected
     case timedOut
+
+    /// The tool's answer for this failure: one sentence, never a silence (F8).
+    var sentence: String {
+        switch self {
+        case .notConnected: "No phone is connected."
+        case .timedOut: "The phone did not answer the accessibility read in time."
+        }
+    }
+}
+
+/// What `tap` by ref does with a resolution (WIN-79): press one point, or
+/// refuse with a sentence and press nothing. Pure, so the tests prove that a
+/// stale, closed or off-screen ref never becomes a TOUCH.
+enum UITreeTapPlan: Equatable {
+    case press(point: UITree.Point, snapshot: Int, box: [Int]?)
+    case refuse(String)
+
+    init(_ resolution: UITreeResolution, ref: String) {
+        switch resolution {
+        case .placed(let snapshot, let placed):
+            if let point = placed.point, !placed.off {
+                self = .press(point: point, snapshot: snapshot, box: placed.box)
+            } else {
+                self = .refuse(UITreeRefusal.offScreen(ref))  // F9
+            }
+        case .stale(let ref, let snapshot, let latest):
+            self = .refuse(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))  // F1
+        case .windowClosed:
+            self = .refuse(UITreeRefusal.windowClosed)  // F4
+        }
+    }
 }
 
 /// The `tap` tool's refusals as human sentences (WIN-79). Kept here, not in the

@@ -219,34 +219,56 @@ final class UITreeTests: XCTestCase {
         XCTAssertEqual(object["snapshot"] as? Int, 13)
     }
 
-    func test_WIN79_refFromOlderTreeIsRefused() throws {
-        var refs = UITreeRefs()
-        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
-        refs.remember(try XCTUnwrap(UITree(message: phoneReply(seq: 10))).assigning(snapshot: 2))
-        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3),
-                       .stale(ref: "s1e1", snapshot: 1, latest: 2))
-        let sentence = UITreeRefusal.stale(ref: "s1e1", snapshot: 1, latest: 2)
+    @MainActor
+    func test_WIN79_refFromOlderTreeIsRefused() async throws {
+        // Two reads of one window; row 1 exists in both.
+        let broker = UITreeBroker()
+        for _ in 0..<2 {
+            var seq = 0
+            let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+            await waitUntil { seq != 0 }
+            broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
+            _ = try await read.value
+        }
+        let plan = UITreeTapPlan(broker.resolved(ref: "s1e1", stream: 3), ref: "s1e1")
+        guard case .refuse(let sentence) = plan else {
+            return XCTFail("an older tree's ref must press nothing, got \(plan)")
+        }
         XCTAssertTrue(sentence.contains("s1"), sentence)
         XCTAssertTrue(sentence.contains("s2"), sentence)
+        // The latest tree's ref for the same row still presses.
+        guard case .press(_, let snapshot, _) = UITreeTapPlan(broker.resolved(ref: "s2e1", stream: 3), ref: "s2e1") else {
+            return XCTFail("the latest ref must press")
+        }
+        XCTAssertEqual(snapshot, 2)
     }
 
     func test_WIN79_refsForgottenWhenWindowCloses() throws {
         var refs = UITreeRefs()
         refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
-        refs.forget(stream: 3)
+        refs.forget(stream: 3) // window.closed
         XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3), .windowClosed)
+        XCTAssertEqual(UITreeTapPlan(refs.resolved(ref: "s1e1", stream: 3), ref: "s1e1"),
+                       .refuse(UITreeRefusal.windowClosed))
         XCTAssertTrue(UITreeRefusal.windowClosed.contains("closed"))
     }
 
+    @MainActor
     func test_WIN79_refsForgottenWhenStreamIdReused() throws {
+        // The window manager hands stream 3 out again: the old window's ref
+        // must not press on the new window.
+        let fixture = MultiWindowFixture()
+        let first = fixture.open()
+        let stream = first.stream
         var refs = UITreeRefs()
-        _ = refs.nextSnapshot(for: 3) // s1
-        _ = refs.nextSnapshot(for: 3) // s2
-        refs.forget(stream: 3)        // the id is handed out again
-        XCTAssertEqual(refs.nextSnapshot(for: 3), 1, "a reused id starts its read count at 1")
-        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
-        XCTAssertEqual(refs.resolved(ref: "s2e1", stream: 3),
-                       .stale(ref: "s2e1", snapshot: 2, latest: 1))
+        refs.remember(try XCTUnwrap(UITree(message: phoneReply(stream: Int(stream)))).assigning(snapshot: 1))
+        // Only the allocation forgets here, so the test proves that hook.
+        fixture.manager.onStreamAllocated = { refs.forget(stream: $0) }
+        fixture.manager.resetForNextCheck(forgetPrefs: true)
+        XCTAssertEqual(fixture.open().stream, stream, "the id is handed out again")
+        let plan = UITreeTapPlan(refs.resolved(ref: "s1e1", stream: stream), ref: "s1e1")
+        XCTAssertEqual(plan, .refuse(UITreeRefusal.windowClosed))
+        XCTAssertEqual(refs.nextSnapshot(for: stream), 1, "a reused id starts its read count at 1")
     }
 
     func test_WIN79_failedReadKeepsPreviousRefs() throws {
@@ -263,18 +285,11 @@ final class UITreeTests: XCTestCase {
         var refs = UITreeRefs()
         let raw: [String: Any] = [
             "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
-            "nodes": [["i": 0, "l": 0, "role": "Button", "text": "Checkout",
-                       "box": [0, 2_500, 100, 2_600], "off": true]],
+            "nodes": [["i": 12, "l": 0, "role": "Button", "text": "Checkout", "off": true]],
         ]
         refs.remember(try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 4))
-        let resolution = refs.resolved(ref: "s4e0", stream: 3)
-        guard case .placed(let snapshot, let placed) = resolution else {
-            return XCTFail("expected a placed node, got \(resolution)")
-        }
-        XCTAssertEqual(snapshot, 4)
-        XCTAssertTrue(placed.off)
-        XCTAssertNil(placed.point)
-        XCTAssertTrue(UITreeRefusal.offScreen("s4e0").contains("off screen"))
+        XCTAssertEqual(UITreeTapPlan(refs.resolved(ref: "s4e12", stream: 3), ref: "s4e12"),
+                       .refuse("s4e12 is off screen: scroll it into view and read the tree again."))
     }
 
     func testRefsAreRememberedUntilTheNextTree() throws {
@@ -356,12 +371,12 @@ final class UITreeTests: XCTestCase {
     @MainActor
     func test_WIN79_timeoutAnswersASentence() async {
         let broker = UITreeBroker()
-        var seq = 0
         do {
-            _ = try await broker.read(stream: 3, timeout: 0.05, send: { seq = $0 })
+            _ = try await broker.read(stream: 3, timeout: 0.05, send: { _ in })
             XCTFail("expected a timeout")
         } catch let error as UITreeError {
             XCTAssertEqual(error, .timedOut)
+            XCTAssertEqual(error.sentence, "The phone did not answer the accessibility read in time.")
         } catch {
             XCTFail("unexpected error: \(error)")
         }
