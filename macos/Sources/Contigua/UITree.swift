@@ -386,14 +386,24 @@ final class UITreeBroker {
     /// F6: one read at a time; a second read waits for the first.
     private var reading = false
     private var queue: [CheckedContinuation<Void, Never>] = []
+    /// Bumped by [fail]: a read queued behind a session that ended fails too,
+    /// rather than sending on the next session and waiting out its deadline.
+    private var generation = 0
+    private var lastFailure: UITreeError = .notConnected
 
     /// Start a read. `send` carries the request out with the allocated `seq`;
     /// the reply arrives as [reply], the session's end as [fail], and a silent
     /// phone as the timeout.
     func read(stream: UInt32, timeout: TimeInterval, send: (Int) -> Void) async throws -> UITree {
         if reading {
+            let joined = generation
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 queue.append(cont)
+            }
+            // Woken holding the read slot: pass it on before failing.
+            if generation != joined {
+                releaseRead()
+                throw lastFailure
             }
         }
         reading = true
@@ -429,6 +439,8 @@ final class UITreeBroker {
 
     /// A closed session has no tree to answer with.
     func fail(_ error: UITreeError) {
+        generation += 1
+        lastFailure = error
         refs.forgetAll()
         let waiting = Array(waiters.values)
         waiters.removeAll()

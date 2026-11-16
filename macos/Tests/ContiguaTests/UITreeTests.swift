@@ -386,17 +386,24 @@ final class UITreeTests: XCTestCase {
     func test_WIN79_disconnectFailsPendingReads() async {
         let broker = UITreeBroker()
         var seq = 0
+        var queuedSent = false
         let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
         await waitUntil { seq != 0 }
+        // A second window's read queued behind the first (F6).
+        let queued = Task { try await broker.read(stream: 4, timeout: 5, send: { _ in queuedSent = true }) }
+        try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let the queued read join the queue
         broker.fail(.notConnected)
-        do {
-            _ = try await read.value
-            XCTFail("expected a failure")
-        } catch let error as UITreeError {
-            XCTAssertEqual(error, .notConnected)
-        } catch {
-            XCTFail("unexpected error: \(error)")
+        for task in [read, queued] {
+            do {
+                _ = try await task.value
+                XCTFail("expected a failure")
+            } catch let error as UITreeError {
+                XCTAssertEqual(error, .notConnected)
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
         }
+        XCTAssertFalse(queuedSent, "a read queued behind an ended session is never sent")
     }
 
     func test_WIN79_staleRefSentence() {
