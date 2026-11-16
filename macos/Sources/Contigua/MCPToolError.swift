@@ -144,8 +144,14 @@ extension MCPToolError {
     /// MCP-70: the phone's `ui.tree` failure codes.
     static func uiTreeFailed(code: String?, message: String?, window id: Int, phone: String?) -> MCPToolError {
         switch code {
-        case "no_window", "no_display":
+        case "no_window":
             return noWindow(id)
+        case "no_display":
+            // The Mac has the window (requireWindow ran first); its display
+            // has no accessibility window yet: an app still opening.
+            return MCPToolError(.notReady,
+                                "Window \(id) has nothing on screen to read yet: its app may still be opening. Try again in a moment.",
+                                ["window": id])
         case "not_available", "no_a11y":
             return MCPToolError(.notSupported,
                                 "\(phone ?? "The phone") can't read this window's accessibility tree.",
