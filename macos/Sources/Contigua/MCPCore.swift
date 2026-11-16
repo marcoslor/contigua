@@ -204,10 +204,10 @@ enum MCPTools {
                                   "description": "Open another window of an app that opens several at a time, instead of raising its window."],
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
-                description: "The open stream windows: id, package, size ([w, h] in stream pixels), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
+                description: "The open stream windows: id, package, size ([w, h] in the display pixels ui_tree's box uses), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
                 schema: object([:], required: [])),
         MCPTool(name: .screenshot,
-                description: "PNG of a frame from after the call: the phone's next keyframe for the window, scaled to a longest side of at most 1280 px. frame.seq counts the window's frames and grows with every new picture; frame.ageMs is how old this one is; state says whether the window is live. image is the PNG's pixels, size the window's (the space ui_tree's box uses). blank: true marks a black or one-colour frame. No keyframe within 2 s fails no_frame. Pass ref to crop to a ui_tree element's box plus 8 px; crop names the box.",
+                description: "PNG of a frame from after the call: the phone's next keyframe for the window, scaled to a longest side of at most 1280 px. frame.seq counts the window's frames and grows with every new picture; frame.ageMs is how old this one is; state says whether the window is live. image is the PNG's pixels, size the window's display pixels (the space ui_tree's box uses). blank: true marks a black or one-colour frame. No keyframe within 2 s fails no_frame. Pass ref to crop to a ui_tree element's box plus 8 px; crop names the box in size's pixels.",
                 schema: object([
                     "window": window,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32,

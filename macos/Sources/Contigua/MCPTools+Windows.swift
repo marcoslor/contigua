@@ -8,8 +8,7 @@ extension MCPToolHost {
             guard let window = controller.windows.controller(for: stream) else { return nil }
             var row: [String: Any] = [
                 "id": Int(stream),
-                "size": [Int(window.videoView.videoSize.width.rounded()),
-                         Int(window.videoView.videoSize.height.rounded())],
+                "size": { let size = pixelSize(of: window); return [size.0, size.1] }(),
                 "state": stateToken(for: window),
                 "frame": frameObject(for: window),
             ]

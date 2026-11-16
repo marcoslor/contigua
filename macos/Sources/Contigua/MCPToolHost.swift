@@ -92,6 +92,16 @@ struct MCPToolHost {
         window.frameClock.object(now: ProcessInfo.processInfo.systemUptime)
     }
 
+    /// MCP-50/62: the window's pixel space, the one `ui_tree`'s `box` is in:
+    /// the display's pixels for that window, not the stream's.
+    func pixelSize(of window: StreamWindowController) -> (Int, Int) {
+        let stream = (Int(window.videoView.videoSize.width.rounded()),
+                      Int(window.videoView.videoSize.height.rounded()))
+        return MCPWindowSize.pixels(treeSize: controller.uiTreeSize(stream: window.stream),
+                                    mirrorScreen: (window as? PhoneWindowController)?.phoneScreen,
+                                    stream: stream)
+    }
+
     /// MCP-21: the window's closed state token.
     func stateToken(for window: StreamWindowController) -> String {
         MCPWindowState.token(window.mcpLifecycle)
