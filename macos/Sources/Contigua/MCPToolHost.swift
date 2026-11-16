@@ -12,13 +12,21 @@ import Foundation
 @MainActor
 struct MCPToolHost {
     unowned let controller: ConnectionController
+    /// The connection the call came on: its window turns (MCP-84).
+    var client: MCPClientID?
 
-    /// `client` is the connection the call came on; no tool uses it yet.
+    init(controller: ConnectionController, client: MCPClientID? = nil) {
+        self.controller = controller
+        self.client = client
+    }
+
     func perform(_ call: MCPCall, client: MCPClientID) async -> MCPToolResult {
+        var host = self
+        host.client = client
         // MCP-22: the hold runs from the call's start until 15 s after its end.
-        hold(call)
-        defer { hold(call) }
-        return stamped(await run(call), for: call)
+        host.hold(call)
+        defer { host.hold(call) }
+        return host.stamped(await host.run(call), for: call)
     }
 
     /// MCP-20/21: the tree and every input answer carry the window's `state`

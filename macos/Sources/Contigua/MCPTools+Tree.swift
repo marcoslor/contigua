@@ -23,16 +23,16 @@ extension MCPToolHost {
         let env = MCPHostActEnvironment(host: self, id: id, ref: nil,
                                         did: { MCPActDid.key("none") }, input: { _ in })
         let outcome = await MCPActRunner.run(MCPActMachine(screenshotWaiting: ()), window: UInt32(id),
-                                             queue: nil, deadline: Self.actDeadline, env: env)
+                                             queue: nil, deadline: Self.actDeadline(), env: env)
         switch outcome {
         case .answer(let answer): return answer.settle
         case .fail: return MCPActMachine.Settle(state: "unavailable")
         }
     }
 
-    func uiTree(_ id: Int) async throws -> [String: Any] {
+    func uiTree(_ id: Int, until: ContinuousClock.Instant? = nil) async throws -> [String: Any] {
         _ = try requireWindow(id)
-        let tree = try await controller.uiTree(stream: UInt32(id))
+        let tree = try await controller.uiTree(stream: UInt32(id), until: until)
         guard tree.ok else {
             throw MCPToolError.uiTreeFailed(code: tree.code, message: tree.message,
                                             window: id, phone: phoneName)

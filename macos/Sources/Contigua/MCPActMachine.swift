@@ -25,6 +25,9 @@ struct MCPActMachine: Equatable {
     /// Fixed by MCP-81: no tool argument changes them.
     static let quietMs = 300
     static let timeoutMs = 2000
+    /// How long a settle that found the display gone waits for the phone's
+    /// `window.closed` reason (MCP-83).
+    static let closeWaitMs = 500
 
     /// How the input reaches the phone: as input frames (a point, a key, a
     /// swipe, and S1's ref tap), as `ui.press` (T10) or as `ui.type` (T13).
@@ -35,11 +38,19 @@ struct MCPActMachine: Equatable {
     enum State: Equatable {
         case queued
         case opening
+        /// The input is going out; the call holds the window's turn until it has.
+        case sending
+        /// Answered (or abandoned) while sending: the turn is held until the
+        /// input finishes (MCP-84), and nothing else is answered.
+        case draining
         case pressing
         case typing
         case sent
         case settling(Int)
         case observing(Int)
+        /// The settle found the display gone: up to 500 ms for the phone's
+        /// close reason (MCP-83).
+        case closing
         case done
     }
 
@@ -110,6 +121,8 @@ struct MCPActMachine: Equatable {
         case opened
         case openBound
         case openFailed(String)
+        /// The input finished going out (`sendInput` returned).
+        case inputSent
         /// Entering Sent: the input is on the phone.
         case entry
         case settleReply(req: Int, settled: Bool, waitedMs: Int, reason: String?)
@@ -118,7 +131,10 @@ struct MCPActMachine: Equatable {
         case treeFailed(req: Int, code: String)
         case windowClosed(reason: String, by: String)
         case linkLost
-        case deadline(waitedMs: Int)
+        /// `waitedMs` is the time since `sendSettle`, nil when none was sent.
+        case deadline(waitedMs: Int?)
+        /// The 500 ms wait for a close reason ran out.
+        case closeWaitOver
         case clientGone
         case otherInput(String)
     }
@@ -129,6 +145,8 @@ struct MCPActMachine: Equatable {
         case sendType
         case sendSettle(req: Int, quietMs: Int, timeoutMs: Int)
         case sendTree(req: Int)
+        /// Feed `closeWaitOver` after `ms` (MCP-83).
+        case waitForClose(ms: Int)
         case answer(Answer)
         case fail(String)
     }
@@ -175,32 +193,37 @@ struct MCPActMachine: Equatable {
 
     private mutating func handle(_ event: Event) -> [Action] {
         if state == .done { return [] }
+        if state == .draining {
+            if event == .inputSent { state = .done }
+            return []
+        }
         switch event {
         case .otherInput(let source):
             if !alsoActed.contains(source) { alsoActed.append(source) }
             return []
         case .clientGone:
-            state = .done
-            return []
+            return finish(nil)
         case .deadline(let waitedMs):
             return onDeadline(waitedMs)
         case .linkLost:
             switch state {
             case .queued, .opening, .pressing, .typing:
                 return finish(.fail("phone_offline"))
-            case .sent, .settling, .observing:
+            case .sending, .sent, .settling, .observing:
                 return finish(answer(settle: Settle(state: "interrupted"), state: "offline"))
-            case .done:
+            case .closing:
+                return finish(answer(settle: Settle(state: "window_closed"), state: "closed"))
+            case .draining, .done:
                 return []
             }
         case .windowClosed(let reason, let by):
             switch state {
             case .queued, .opening, .pressing, .typing:
                 return finish(.fail("no_window"))
-            case .sent, .settling, .observing:
+            case .sending, .sent, .settling, .observing, .closing:
                 return finish(answer(settle: Settle(state: "window_closed"), state: "closed",
                                      closed: Closed(reason: reason, by: by)))
-            case .done:
+            case .draining, .done:
                 return []
             }
         default:
@@ -219,7 +242,7 @@ struct MCPActMachine: Equatable {
                     state = .typing
                     return [.sendType]
                 case .input:
-                    state = .sent
+                    state = .sending
                     return [.sendInput]
                 }
             case .notReady: return finish(.fail("not_ready"))
@@ -247,6 +270,10 @@ struct MCPActMachine: Equatable {
         case (.typing, .typeFailed(let code)):
             return finish(.fail(code))
 
+        case (.sending, .inputSent):
+            state = .sent
+            return []
+
         case (.opening, .opened):
             state = .sent
             return []
@@ -272,12 +299,22 @@ struct MCPActMachine: Equatable {
                 : Settle(state: "still_changing", waitedMs: waitedMs, reason: reason ?? "changes")
             return observeOrAnswer()
         case (.settling(let req), .settleFailed(let got, let code)) where got == req:
-            // A Mac-side timeout of the settle read is the screen not settling
-            // in time; anything else is a phone that cannot watch (MCP-81).
-            settle = code == "timeout"
-                ? Settle(state: "still_changing", waitedMs: Self.timeoutMs, reason: "changes")
-                : Settle(state: "unavailable")
+            switch code {
+            case "no_window", "no_display":
+                // The display is gone: the phone's close reason is on its way.
+                state = .closing
+                return [.waitForClose(ms: Self.closeWaitMs)]
+            case "timeout":
+                // The Mac's own wait on the settle ran out (MCP-8).
+                settle = Settle(state: "still_changing", waitedMs: Self.timeoutMs, reason: "deadline")
+            default:
+                // busy, failed, not_available, not_connected: the phone cannot watch (MCP-81).
+                settle = Settle(state: "unavailable")
+            }
             return observeOrAnswer()
+
+        case (.closing, .closeWaitOver):
+            return finish(answer(settle: Settle(state: "window_closed"), state: "closed"))
 
         case (.observing(let req), .treeReply(let got, let tree)) where got == req:
             return finish(answer(settle: settle ?? Settle(state: "not_waited"), tree: tree))
@@ -290,19 +327,26 @@ struct MCPActMachine: Equatable {
         }
     }
 
-    private mutating func onDeadline(_ waitedMs: Int) -> [Action] {
+    private mutating func onDeadline(_ waitedMs: Int?) -> [Action] {
         switch state {
-        case .queued, .opening, .pressing, .typing:
-            if state == .opening {
-                return finish(answer(settle: Settle(state: "not_ready"), state: "opening"))
-            }
+        case .queued, .pressing, .typing:
             return finish(.fail("timeout"))
-        case .sent, .settling:
+        case .opening:
+            return finish(answer(settle: Settle(state: "not_ready"), state: "opening"))
+        case .sending, .sent:
+            return finish(answer(settle: Settle(state: "not_waited", reason: "deadline")))
+        case .settling:
+            // waitedMs counts from sendSettle (MCP-8).
+            guard let waitedMs else {
+                return finish(answer(settle: Settle(state: "not_waited", reason: "deadline")))
+            }
             return finish(answer(settle: Settle(state: "still_changing", waitedMs: waitedMs,
-                                                reason: "changes")))
+                                                reason: "deadline")))
+        case .closing:
+            return finish(answer(settle: Settle(state: "window_closed"), state: "closed"))
         case .observing:
             return finish(answer(settle: settle ?? Settle(state: "not_waited"), treeError: "timeout"))
-        case .done:
+        case .draining, .done:
             return []
         }
     }
@@ -330,8 +374,10 @@ struct MCPActMachine: Equatable {
                        treeError: treeError, alsoActed: alsoActed, entry: entry, via: via))
     }
 
-    private mutating func finish(_ action: Action) -> [Action] {
-        state = .done
-        return [action]
+    /// End the call. While the input is still going out the call drains:
+    /// answered, but holding the window's turn until `inputSent` (MCP-84).
+    private mutating func finish(_ action: Action?) -> [Action] {
+        state = state == .sending ? .draining : .done
+        return action.map { [$0] } ?? []
     }
 }

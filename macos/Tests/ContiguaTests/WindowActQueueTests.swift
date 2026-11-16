@@ -150,7 +150,7 @@ final class WindowActQueueTests: XCTestCase {
                                              window: 3, queue: queue, deadline: .milliseconds(200), env: a)
         guard case .answer(let answer) = outcome else { return XCTFail("\(outcome)") }
         XCTAssertEqual(answer.settle.state, "still_changing")
-        XCTAssertEqual(answer.settle.reason, "changes")
+        XCTAssertEqual(answer.settle.reason, "deadline")
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
         // The window's queue moves on after a call the deadline ended.
         let b = FakeActEnvironment(name: "B")
@@ -242,7 +242,8 @@ final class WindowActQueueTests: XCTestCase {
         }
         for _ in 0..<20 { await Task.yield() }
         queue.clientGone(MCPClientID(2))
-        XCTAssertEqual(await second.value, .fail("cancelled"))
+        let gone = await second.value
+        XCTAssertEqual(gone, .fail("cancelled"))
         a.release()
         _ = await first.value
         XCTAssertEqual(b.log, [])
@@ -263,7 +264,8 @@ final class WindowActQueueTests: XCTestCase {
         queue.agentInput(window: 3, client: MCPClientID(1))
         queue.agentInput(window: 3, client: MCPClientID(2))
         a.release()
-        XCTAssertEqual(await call.value, .answer(MCPActMachine.Answer(
+        let outcome = await call.value
+        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(
             settle: MCPActMachine.Settle(state: "settled", waitedMs: 300), alsoActed: ["another_agent"])))
     }
 
