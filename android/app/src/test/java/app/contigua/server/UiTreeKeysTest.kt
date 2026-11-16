@@ -54,4 +54,17 @@ class UiTreeKeysTest {
         assertEquals(1, out[0])
         assertNotEquals(out[0], out[1])
     }
+
+    @Test
+    fun testADisplayUnlistedForAMomentNeverReusesAKey() { // [MCP-71]
+        // windowsOnAllDisplays lists only displays with a window, so a display
+        // between two activities drops out of a read of another display. Its
+        // table may go, but its next key must not start again at 1.
+        val tables = UiTreeKeyTables()
+        assertEquals(listOf(1, 2), tables.table(1) { it == 1 }.read(listOf("A", "B")))
+        tables.table(2) { it == 2 }.read(listOf("X"))
+        assertEquals(listOf(3), tables.table(1) { it == 1 }.read(listOf("C")))
+        // Each display numbers its own keys.
+        assertEquals(listOf(2), tables.table(2) { true }.read(listOf("Y")))
+    }
 }
