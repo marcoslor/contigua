@@ -118,12 +118,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
 
         fun begin(quietMs: Long, timeoutMs: Long) {
             if (answer != null) return
-            if (!readWindows()) {
-                finish(SettleAnswer.Failure("no_display", "That window is not on a display this phone can read."))
-                return
-            }
+            // A display with no window yet, or not listed yet, is still opening
+            // (MCP-107): the watch starts loading, and the first window counts.
+            val windowed = readWindows()
             watches.add(this)
-            drive(SettleWatch.Event.Start(quietMs, timeoutMs, now()))
+            drive(SettleWatch.Event.Start(quietMs, timeoutMs, now(), windowed))
         }
 
         fun onEvent(type: Int, windowId: Int) {
@@ -167,15 +166,12 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                     return@Thread // no answer: the timeout tick still ends the watch
                 }
                 h.post {
-                    drive(
-                        if (found == null) SettleWatch.Event.DisplayGone
-                        else SettleWatch.Event.Loading(found, check, now()),
-                    )
+                    drive(SettleWatch.Event.Loading(found ?: false, check, now(), listed = found != null))
                 }
             }, "contigua-ui-loading").start()
         }
 
-        /** Re-reads which display each window is on; false when [displayId] has none. */
+        /** Re-reads which display each window is on; false when [displayId] has no window. */
         private fun readWindows(): Boolean = runCatching {
             val all = automation.windowsOnAllDisplays
             windowDisplay.clear()
@@ -183,17 +179,19 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 val display = all.keyAt(i)
                 for (window in all.valueAt(i)) windowDisplay[window.id] = display
             }
-            all.get(displayId) != null
+            !all.get(displayId).isNullOrEmpty()
         }.getOrDefault(false)
     }
 
     /**
-     * Whether any node on [displayId] is a loading signal (MCP-103); null when
-     * the display is gone. Walks at most [LOADING_WALK_NODES] nodes and stops at
+     * Whether any node on [displayId] is a loading signal (MCP-103), or the
+     * display is listed with no window yet (MCP-107: still opening); null when
+     * it is not listed. Walks at most [LOADING_WALK_NODES] nodes and stops at
      * the first signal; never reads a node's text.
      */
     private fun loadingOn(automation: UiAutomation, displayId: Int): Boolean? {
         val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
+        if (windows.isEmpty()) return true
         var budget = LOADING_WALK_NODES
         fun walk(node: AccessibilityNodeInfo, depth: Int): Boolean {
             if (--budget < 0 || depth >= UiTree.MAX_DEPTH) return false
