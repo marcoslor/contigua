@@ -56,7 +56,7 @@ struct UITree: Equatable {
     let ok: Bool
     let code: String?
     let message: String?
-    let display: Int?
+    let displayId: Int?
     let snapshot: Int?
     let truncated: Bool
     let windows: [Window]
@@ -74,7 +74,7 @@ struct UITree: Equatable {
         self.ok = ok
         self.code = message.string("code")
         self.message = message.string("message")
-        self.display = message.int("display")
+        self.displayId = message.int("displayId")
         self.snapshot = message.int("snapshot")
         self.truncated = message.bool("truncated") ?? false
         self.note = message.string("note")
@@ -116,41 +116,82 @@ struct UITree: Equatable {
 
     /// The tool result: the trimmed tree as JSON text, only the fields the
     /// contract names, so a phone's extra field never leaks into an answer.
+    ///
+    /// `JSONEncoder`, not `JSONSerialization`: the latter prints a Double in its
+    /// full 17-digit expansion, so the tap point `0.949` reached a client as
+    /// `0.94899999999999995` and the noise was a tenth of a real tree's tokens.
     func encoded() -> String {
-        var root: [String: Any] = [
-            "window": Int(stream),
-            "ok": ok,
-        ]
-        if let display { root["display"] = display }
-        if let snapshot { root["snapshot"] = snapshot }
-        root["truncated"] = truncated
-        root["windows"] = windows.map { window -> [String: Any] in
-            var row: [String: Any] = ["i": window.index, "type": window.type,
-                                      "focused": window.focused, "active": window.active]
-            if let title = window.title { row["title"] = title }
-            return row
+        struct Out: Encodable {
+            struct Window: Encodable {
+                let i: Int
+                let title: String?
+                let type: String
+                let focused: Bool
+                let active: Bool
+            }
+
+            struct Node: Encodable {
+                let i: Int
+                let ref: String
+                let p: Int?
+                let w: Int?
+                let role: String
+                let text: String?
+                let desc: String?
+                let id: String?
+                let box: [Int]?
+                let at: [Double]?
+                let click: Bool?
+                let edit: Bool?
+                let scroll: Bool?
+                let check: Bool?
+                let sel: Bool?
+                let focus: Bool?
+                let disabled: Bool?
+                let pwd: Bool?
+            }
+
+            let window: Int
+            let ok: Bool
+            let displayId: Int?
+            let snapshot: Int?
+            let truncated: Bool
+            let windows: [Window]
+            let nodes: [Node]
+            let note: String?
         }
-        root["nodes"] = nodes.map { node -> [String: Any] in
-            var row: [String: Any] = ["i": node.index, "ref": node.ref,
-                                      "w": node.window, "role": node.role]
-            if let parent = node.parent { row["p"] = parent }
-            if let text = node.text { row["text"] = text }
-            if let desc = node.desc { row["desc"] = desc }
-            if let id = node.id { row["id"] = id }
-            if let box = node.box { row["box"] = box }
-            if let at = node.at { row["at"] = [at.x, at.y] }
-            if node.click { row["click"] = true }
-            if node.edit { row["edit"] = true }
-            if node.scroll { row["scroll"] = true }
-            if let check = node.check { row["check"] = check }
-            if node.selected { row["sel"] = true }
-            if node.focused { row["focus"] = true }
-            if node.disabled { row["disabled"] = true }
-            if node.password { row["pwd"] = true }
-            return row
-        }
-        if let note { root["note"] = note }
-        let data = (try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])) ?? Data()
+
+        // `w` earns its bytes only when the display holds more than one window:
+        // with one, every row would repeat the same 0.
+        let severalWindows = windows.count > 1
+        let out = Out(
+            window: Int(stream),
+            ok: ok,
+            displayId: displayId,
+            snapshot: snapshot,
+            truncated: truncated,
+            windows: windows.map {
+                Out.Window(i: $0.index, title: $0.title, type: $0.type,
+                           focused: $0.focused, active: $0.active)
+            },
+            nodes: nodes.map { node in
+                Out.Node(i: node.index, ref: node.ref, p: node.parent,
+                         w: severalWindows ? node.window : nil,
+                         role: node.role, text: node.text, desc: node.desc, id: node.id,
+                         box: node.box, at: node.at.map { [$0.x, $0.y] },
+                         click: node.click ? true : nil,
+                         edit: node.edit ? true : nil,
+                         scroll: node.scroll ? true : nil,
+                         check: node.check,
+                         sel: node.selected ? true : nil,
+                         focus: node.focused ? true : nil,
+                         disabled: node.disabled ? true : nil,
+                         pwd: node.password ? true : nil)
+            },
+            note: note)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(out) else { return "{}" }
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 }
@@ -159,9 +200,16 @@ struct UITree: Equatable {
 /// them, so a ref the client kept from an older screen fails loudly instead of
 /// pressing whatever has moved under that point.
 struct UITreeRefs {
+    /// One element as the tree placed it. The box rides along so a tap can say
+    /// what it pressed, in the same pixels the tree named.
+    struct Placed: Equatable {
+        let point: UITree.Point
+        let box: [Int]?
+    }
+
     private struct Read {
         let snapshot: Int
-        let points: [String: UITree.Point]
+        let nodes: [String: Placed]
     }
 
     private var reads: [UInt32: Read] = [:]
@@ -171,23 +219,22 @@ struct UITreeRefs {
             reads[tree.stream] = nil
             return
         }
-        var points: [String: UITree.Point] = [:]
+        var nodes: [String: Placed] = [:]
         for node in tree.nodes {
-            if let at = node.at { points[node.ref] = at }
+            if let at = node.at { nodes[node.ref] = Placed(point: at, box: node.box) }
         }
-        reads[tree.stream] = Read(snapshot: tree.snapshot ?? 0, points: points)
+        reads[tree.stream] = Read(snapshot: tree.snapshot ?? 0, nodes: nodes)
     }
 
     mutating func forget(stream: UInt32) { reads[stream] = nil }
     mutating func forgetAll() { reads.removeAll() }
 
-    /// The point this ref named in the tree last read for that window.
-    func point(ref: String, stream: UInt32) -> UITree.Point? {
-        reads[stream]?.points[ref]
+    /// The element this ref named in the tree last read for that window, and the
+    /// read it came from.
+    func resolved(ref: String, stream: UInt32) -> (snapshot: Int, placed: Placed)? {
+        guard let read = reads[stream], let placed = read.nodes[ref] else { return nil }
+        return (read.snapshot, placed)
     }
-
-    /// The read a ref came from, for a sentence that says how old it is.
-    func snapshot(stream: UInt32) -> Int? { reads[stream]?.snapshot }
 }
 
 /// Why a `ui.tree` read, or a tap by ref, produced nothing. The tool turns

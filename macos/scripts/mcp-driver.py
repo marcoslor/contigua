@@ -327,8 +327,12 @@ def main():
                "MCP ui_tree gives the button a tap point in 0..1")
         report(bool(button and button.get("id") == "continue"),
                "MCP ui_tree keeps the view id")
-        report(isinstance(tree.get("display"), int) and tree["display"] > 0,
-               "MCP ui_tree names the window's display")
+        report(isinstance(tree.get("displayId"), int) and tree["displayId"] > 0,
+               "MCP ui_tree names the window's display id")
+        report(tree.get("snapshot") is not None,
+               "MCP ui_tree names the read a tap can refer back to")
+        report("w" not in (button or {}),
+               "MCP ui_tree leaves out the window index when the display has one window")
         password = next((n for n in nodes if n.get("pwd")), None)
         report(password is not None and "text" not in password,
                "MCP ui_tree marks the password field and sends no text for it")
@@ -343,6 +347,12 @@ def main():
         report(abs((by_ref.get("x") or -1) - ref_point[0]) < 1e-6
                and abs((by_ref.get("y") or -1) - ref_point[1]) < 1e-6,
                "MCP tap by ref resolves to the element's own point")
+        report(by_ref.get("snapshot") == tree.get("snapshot")
+               and by_ref.get("box") == (button or {}).get("box"),
+               "MCP tap by ref echoes the read it came from and the node's box")
+        report(isinstance(by_ref.get("x"), (int, float))
+               and len(str(by_ref.get("x")).split(".")[-1]) <= 3,
+               "MCP tap by ref prints its point to three decimals")
         try:
             client.text("ui_tree", {"window": 999})
             report(False, "MCP ui_tree on an unknown window must fail")

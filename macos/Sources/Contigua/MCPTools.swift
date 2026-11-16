@@ -210,17 +210,24 @@ struct MCPToolHost {
     /// WIN-79: the element a ref named in the tree last read for this window.
     /// The ref is resolved here, and the TOUCH carries the same 0..1 point a
     /// coordinate tap would; a ref from an older tree is refused, never used.
+    /// The answer echoes the read the ref came from and the node's box, so a
+    /// client can tell which screen it pressed on rather than guess.
     private func tap(window id: Int, ref: String) throws -> MCPToolResult {
         let window = try requireInputWindow(id)
-        let point: UITree.Point
+        let resolved: (snapshot: Int, placed: UITreeRefs.Placed)
         do {
-            point = try controller.uiTreePoint(ref: ref, stream: window.stream)
+            resolved = try controller.uiTreeResolved(ref: ref, stream: window.stream)
         } catch UITreeError.staleRef {
             throw MCPToolFailure("No element \(ref) in the latest tree for that window. Call ui_tree again.")
         }
+        let point = resolved.placed.point
         send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
         send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
-        return .text(try json(["ok": true, "window": id, "ref": ref, "x": point.x, "y": point.y]))
+        var answer: [String: Any] = ["ok": true, "window": id, "ref": ref,
+                                     "snapshot": resolved.snapshot,
+                                     "x": point.x, "y": point.y]
+        if let box = resolved.placed.box { answer["box"] = box }
+        return .text(try json(answer))
     }
 
     private func longPress(window id: Int, x: Double, y: Double, ms: Int) async throws -> MCPToolResult {

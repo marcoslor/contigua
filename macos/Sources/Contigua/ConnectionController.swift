@@ -1316,13 +1316,14 @@ final class ConnectionController {
         resolveUITree(seq: tree.seq, .success(tree))
     }
 
-    /// The point `ref` named in the tree last read for that window (WIN-79).
-    /// Throws `.staleRef` when the client kept a ref from an older screen.
-    func uiTreePoint(ref: String, stream: UInt32) throws -> UITree.Point {
-        guard let point = uiTreeRefs.point(ref: ref, stream: stream) else {
+    /// The element `ref` named in the tree last read for that window (WIN-79),
+    /// with the read it came from. Throws `.staleRef` when the client kept a ref
+    /// from an older screen.
+    func uiTreeResolved(ref: String, stream: UInt32) throws -> (snapshot: Int, placed: UITreeRefs.Placed) {
+        guard let resolved = uiTreeRefs.resolved(ref: ref, stream: stream) else {
             throw UITreeError.staleRef
         }
-        return point
+        return resolved
     }
 
     /// A closed session, or a phone switch, has no tree to answer with.

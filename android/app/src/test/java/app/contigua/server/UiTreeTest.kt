@@ -191,8 +191,31 @@ class UiTreeTest {
         assertTrue(nodes(body).isEmpty())
         assertTrue((body["note"] as String).isNotEmpty())
         assertEquals(true, body["ok"])
-        assertEquals(7, body["display"])
+        assertEquals(7, body["displayId"])
         assertEquals(3, body["snapshot"])
+    }
+
+    @Test
+    fun anIconGlyphIsNotAWord() {
+        // A Material icon draws U+EF9E; the label beside it is the text.
+        val row = nodes(reply(listOf(window(node(text = "\uEF9E Save")))))[0]
+        assertEquals("Save", row["text"])
+    }
+
+    @Test
+    fun aLabelOfOnlyGlyphsFoldsTheNodeAway() {
+        // Nothing a person can read is left, so the node is layout.
+        val body = reply(listOf(window(node(text = "\uEF9E\uEEE8"))))
+        assertTrue(nodes(body).isEmpty())
+    }
+
+    @Test
+    fun aSupplementaryPrivateUseGlyphIsDroppedToo() {
+        // U+100123, a supplementary private use code point, as its UTF-16 pair.
+        val row = nodes(reply(listOf(window(
+            node(text = "\uDBC0\uDD23 Continue", clickable = true),
+        ))))[0]
+        assertEquals("Continue", row["text"])
     }
 
     @Test

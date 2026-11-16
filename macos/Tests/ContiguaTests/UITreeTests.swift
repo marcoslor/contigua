@@ -17,7 +17,7 @@ final class UITreeTests: XCTestCase {
             "stream": 3,
             "seq": 9,
             "ok": true,
-            "display": 47,
+            "displayId": 47,
             "snapshot": 12,
             "truncated": false,
             "windows": [
@@ -42,7 +42,7 @@ final class UITreeTests: XCTestCase {
         XCTAssertEqual(tree.seq, 9)
         XCTAssertEqual(tree.stream, 3)
         XCTAssertTrue(tree.ok)
-        XCTAssertEqual(tree.display, 47)
+        XCTAssertEqual(tree.displayId, 47)
         XCTAssertEqual(tree.snapshot, 12)
         XCTAssertFalse(tree.truncated)
         XCTAssertEqual(tree.windows.count, 2)
@@ -100,7 +100,7 @@ final class UITreeTests: XCTestCase {
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         XCTAssertEqual(object["window"] as? Int, 3)
-        XCTAssertEqual(object["display"] as? Int, 47)
+        XCTAssertEqual(object["displayId"] as? Int, 47)
         XCTAssertEqual(object["truncated"] as? Bool, false)
         let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
         XCTAssertEqual(nodes.count, 3)
@@ -109,6 +109,34 @@ final class UITreeTests: XCTestCase {
         XCTAssertEqual(nodes[1]["ref"] as? String, "e1")
         XCTAssertNil(nodes[2]["text"])
         XCTAssertEqual(nodes[2]["pwd"] as? Bool, true)
+    }
+
+    func testTheWindowIndexIsLeftOutWhenThereIsOneWindow() throws {
+        var raw = phoneReply().raw
+        raw["windows"] = [["i": 0, "title": "Calculator", "type": "app", "focused": true, "active": true]]
+        let one = try XCTUnwrap(UITree(message: JSONMessage(raw: raw)))
+        let oneNodes = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(one.encoded().utf8)) as? [String: Any])["nodes"]
+            as? [[String: Any]]
+        XCTAssertNotNil(oneNodes)
+        XCTAssertTrue(oneNodes?.allSatisfy { $0["w"] == nil } ?? false,
+                      "one window: every row would repeat the same 0")
+        // Two windows: the index is the only thing that says whose row it is.
+        let two = try XCTUnwrap(UITree(message: phoneReply()))
+        XCTAssertTrue(two.encoded().contains("\"w\":0"))
+    }
+
+    func testATapPointIsPrintedAtThreeDecimals() throws {
+        // Foundation's JSON writer prints 0.949 as 0.94899999999999995; a tree
+        // read on a real screen carried that noise on every row.
+        var raw = phoneReply().raw
+        raw["nodes"] = [["i": 0, "ref": "e0", "w": 0, "role": "Button", "text": "Buy",
+                         "box": [0, 0, 10, 10], "at": [0.949, 0.123]]]
+        let tree = try XCTUnwrap(UITree(message: JSONMessage(raw: raw)))
+        let text = tree.encoded()
+        XCTAssertTrue(text.contains("0.949"), text)
+        XCTAssertTrue(text.contains("0.123"), text)
+        XCTAssertFalse(text.contains("0.94899"), text)
     }
 
     func testAnEmptyTreeKeepsItsNote() throws {
@@ -137,9 +165,12 @@ final class UITreeTests: XCTestCase {
     func testRefsAreRememberedUntilTheNextTree() throws {
         var refs = UITreeRefs()
         refs.remember(try XCTUnwrap(UITree(message: phoneReply())))
-        XCTAssertEqual(refs.point(ref: "e1", stream: 3), UITree.Point(x: 0.66, y: 0.35))
-        XCTAssertNil(refs.point(ref: "e9", stream: 3))
-        XCTAssertNil(refs.point(ref: "e1", stream: 4), "a ref belongs to its window")
+        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.placed.point,
+                       UITree.Point(x: 0.66, y: 0.35))
+        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.placed.box, [540, 640, 780, 760])
+        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3)?.snapshot, 12)
+        XCTAssertNil(refs.resolved(ref: "e9", stream: 3))
+        XCTAssertNil(refs.resolved(ref: "e1", stream: 4), "a ref belongs to its window")
         // A second tree replaces the first: the old names mean new elements.
         var moved = phoneReply()
         var raw = moved.raw
@@ -148,10 +179,10 @@ final class UITreeTests: XCTestCase {
                          "box": [0, 0, 10, 10], "at": [0.01, 0.01]]]
         moved = JSONMessage(raw: raw)
         refs.remember(try XCTUnwrap(UITree(message: moved)))
-        XCTAssertNil(refs.point(ref: "e1", stream: 3), "an older tree's ref is gone")
-        XCTAssertEqual(refs.point(ref: "e0", stream: 3), UITree.Point(x: 0.01, y: 0.01))
+        XCTAssertNil(refs.resolved(ref: "e1", stream: 3), "an older tree's ref is gone")
+        XCTAssertEqual(refs.resolved(ref: "e0", stream: 3)?.placed.point, UITree.Point(x: 0.01, y: 0.01))
         refs.forget(stream: 3)
-        XCTAssertNil(refs.point(ref: "e0", stream: 3))
+        XCTAssertNil(refs.resolved(ref: "e0", stream: 3))
     }
 
     func testAnUncheckedBoxKeepsItsFalse() throws {

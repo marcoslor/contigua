@@ -5329,7 +5329,7 @@ class Session(object):
             "t": "ui.tree",
             "stream": stream,
             "ok": True,
-            "display": display,
+            "displayId": display,
             "snapshot": 1,
             "truncated": False,
             "windows": [{"i": 0, "title": window.pkg if window is not None else None,
