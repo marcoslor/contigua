@@ -2103,8 +2103,10 @@ class Session(
             return
         }
         // Item 7: quietMs 100–2000, timeoutMs 200–10000; a value outside is clamped.
-        val quietMs = clamp(obj["quietMs"], MIN_QUIET_MS, MAX_QUIET_MS, DEFAULT_QUIET_MS)
         val timeoutMs = clamp(obj["timeoutMs"], MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)
+        // A quiet period longer than the watch could never end it: quietMs is
+        // at most timeoutMs (MCP-81).
+        val quietMs = clamp(obj["quietMs"], MIN_QUIET_MS, MAX_QUIET_MS, DEFAULT_QUIET_MS).coerceAtMost(timeoutMs)
         val started = now()
         Thread({
             val answer = try {
@@ -4398,8 +4400,8 @@ class Session(
         const val KEYCODE_PASTE = 279
         const val KEYCODE_APP_SWITCH = 187
 
-        // `ui.settle` clamps (docs/PROTOCOL.md "UI tree" §7): quietMs 100–2000,
-        // timeoutMs 200–10000. The MCP tools send 300 and 2000.
+        // `ui.settle` clamps (docs/PROTOCOL.md "UI tree" §7): quietMs 100–2000
+        // and at most timeoutMs, timeoutMs 200–10000. The MCP tools send 300 and 2000.
         const val MIN_QUIET_MS = 100L
         const val MAX_QUIET_MS = 2_000L
         const val DEFAULT_QUIET_MS = 300L

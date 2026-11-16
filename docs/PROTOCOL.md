@@ -1587,7 +1587,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    time (for `ui.settle`, its `timeoutMs`).
 7. **`ui.settle` (B1).** Mac → `{"t":"ui.settle","stream":N,"seq":S,"quietMs":Q,"timeoutMs":T}`,
    `Q` 100–2000 and `T` 200–10000 (the MCP tools send 300 and 2000); a value outside its
-   range is clamped. The phone listens to `UiAutomation`'s accessibility events and counts
+   range is clamped, and then `Q` is clamped to at most `T`. The phone listens to `UiAutomation`'s accessibility events and counts
    the content changes — `TYPE_WINDOW_CONTENT_CHANGED`, `TYPE_WINDOW_STATE_CHANGED`,
    `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_TEXT_CHANGED`, `TYPE_VIEW_SCROLLED` — whose window is on
    the stream's display (by window id, from the latest `windowsOnAllDisplays` read, refreshed
