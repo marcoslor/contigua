@@ -299,12 +299,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         if (windows.isEmpty()) {
             return UiTree.Answer.Failure(UiCodes.NO_DISPLAY, "That display has no windows.")
         }
-        val keys = synchronized(tables) {
-            // A display no longer listed is gone: its table goes with it (MCP-71).
-            tables.keys.retainAll { all.get(it) != null }
-            latest.keys.retainAll { all.get(it) != null }
-            tables.getOrPut(displayId) { UiTreeKeys() }
-        }
+        // A display no longer listed drops its table, never its next key (MCP-71).
+        val keys = tables.table(displayId) { all.get(it) != null }
+        synchronized(latest) { latest.keys.retainAll { all.get(it) != null } }
         val nodes = HashMap<Any, AccessibilityNodeInfo>()
         val trees = windows.map { window ->
             val bounds = Rect().also { window.getBoundsInScreen(it) }
@@ -319,19 +316,19 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             )
         }
         // The latest read's nodes, by identity, for `ui.press` (B3).
-        synchronized(tables) { latest[displayId] = nodes }
+        synchronized(latest) { latest[displayId] = nodes }
         return UiTree.Answer.Tree(trees, keys)
     }
 
-    /** Each display's key table (MCP-71), dropped when the display is no longer listed. */
-    private val tables = HashMap<Int, UiTreeKeys>()
+    /** Each display's key table (MCP-71). */
+    private val tables = UiTreeKeyTables()
 
     /** Each display's latest read: identity → node, for `ui.press` to refresh (B3). */
     private val latest = HashMap<Int, Map<Any, AccessibilityNodeInfo>>()
 
     /** The node [identity] names in [displayId]'s latest read, or null. */
     fun latestNode(displayId: Int, identity: Any): AccessibilityNodeInfo? =
-        synchronized(tables) { latest[displayId]?.get(identity) }
+        synchronized(latest) { latest[displayId]?.get(identity) }
 
     /**
      * Drops the connection's node cache before a walk (MCP-107): a guard

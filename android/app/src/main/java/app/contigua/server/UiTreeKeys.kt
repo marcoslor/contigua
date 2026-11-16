@@ -6,7 +6,7 @@ package app.contigua.server
  *
  * A node seen again in a later read keeps its key; a new node gets the next
  * unused one (1, 2, …); a key is never given to another node for as long as
- * the table lives, which is as long as its display. At most [capacity]
+ * its display lives (see [UiTreeKeyTables]). At most [capacity]
  * identities are remembered: past it, the ones seen longest ago that are not in
  * the latest read are forgotten, so a forgotten node that returns gets a new
  * key, never an old one.
@@ -15,12 +15,16 @@ package app.contigua.server
  * accessibility node's window id and source node id). Thread-safe: two
  * sessions may read the same display.
  */
-class UiTreeKeys(private val capacity: Int = CAPACITY) {
+class UiTreeKeys(private val capacity: Int = CAPACITY, first: Int = 1) {
 
     /** Identity → key, in last-seen order: the head was seen longest ago. */
     private val table = LinkedHashMap<Any, Int>()
     private val byKey = HashMap<Int, Any>()
-    private var next = 1
+    private var next = first
+
+    /** The key the next new identity gets: a later table for the display starts here. */
+    val nextKey: Int
+        @Synchronized get() = next
 
     /**
      * Keys [identities], one read's rows in order, and returns their keys in
@@ -61,5 +65,28 @@ class UiTreeKeys(private val capacity: Int = CAPACITY) {
     companion object {
         /** Identities remembered per display (CONV-PD-06). */
         const val CAPACITY = 4_096
+    }
+}
+
+/**
+ * The phone's key tables, one per display (MCP-71). A read drops the tables of
+ * displays it no longer finds listed, to free their memory; a display's next
+ * key outlives its table, because `windowsOnAllDisplays` leaves out a display
+ * that is between two windows, and a table started again at 1 would give an
+ * old key to another node. A dropped table's nodes get new keys, as evicted
+ * ones do.
+ */
+class UiTreeKeyTables {
+    private val tables = HashMap<Int, UiTreeKeys>()
+
+    /** Each dropped display's next key; display ids are not reused while the phone runs. */
+    private val resume = HashMap<Int, Int>()
+
+    /** [display]'s table; first drops every table whose display [listed] says is gone. */
+    @Synchronized
+    fun table(display: Int, listed: (Int) -> Boolean): UiTreeKeys {
+        val gone = tables.keys.filterNot(listed)
+        for (id in gone) resume[id] = tables.remove(id)!!.nextKey
+        return tables.getOrPut(display) { UiTreeKeys(first = resume.remove(display) ?: 1) }
     }
 }
