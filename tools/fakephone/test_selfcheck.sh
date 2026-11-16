@@ -127,6 +127,16 @@ assert int(m.group(2)) == 0, "events != 0: %s" % m.group(2)
 assert int(m.group(3)) < 300, "answered after %s ms, not within 300" % m.group(3)
 print("  settle waitedMs=%s" % m.group(1))
 PY
+note "ui-settle with no stream (answers stream 0, no_window)"
+"${DECK[@]}" ui-settle --no-stream > "$WORK/settle0.txt" 2>"$WORK/settle0.err" \
+    || die "ui-settle --no-stream failed: $(cat "$WORK/settle0.err")"
+grep -q "^ui.settle stream=0 code=no_window$" "$WORK/settle0.txt" \
+    || die "ui-settle with no stream: $(cat "$WORK/settle0.txt")"
+note "ui-settle clamps quietMs to timeoutMs (quietMs 2000, timeoutMs 300)"
+"${DECK[@]}" ui-settle --quiet-ms 2000 --timeout-ms 300 > "$WORK/settleq.txt" 2>"$WORK/settleq.err" \
+    || die "ui-settle clamp failed: $(cat "$WORK/settleq.err")"
+grep -q "ui.settle stream=1 quiet_ms=300 timeout_ms=300" "$WORK/fh.err" \
+    || die "fakephone did not clamp quietMs to timeoutMs"
 
 # --- second simultaneous session must be rejected --------------------------
 note "busy: a second session is rejected while the first keeps streaming"
