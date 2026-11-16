@@ -370,13 +370,13 @@ final class PhoneWindowController: StreamWindowController {
     @objc func navigateHome(_ sender: Any?) {
         guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
                                                      offline: phoneControlsOffline) else { return }
-        session.nav(stream: stream, action: "home")
+        personSession().nav(stream: stream, action: "home")
     }
 
     @objc func navigateRecents(_ sender: Any?) {
         guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
                                                      offline: phoneControlsOffline) else { return }
-        session.nav(stream: stream, action: "recents")
+        personSession().nav(stream: stream, action: "recents")
     }
 
     override func sendOpen() {
@@ -481,5 +481,5 @@ final class PhoneWindowController: StreamWindowController {
 
     override var frameKey: String { "phone" }
 
-    private func nav(_ action: String) { session.nav(stream: stream, action: action) }
+    private func nav(_ action: String) { personSession().nav(stream: stream, action: action) }
 }

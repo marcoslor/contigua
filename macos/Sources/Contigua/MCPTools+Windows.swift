@@ -27,6 +27,7 @@ extension MCPToolHost {
 
     func closeWindow(_ id: Int) throws -> [String: Any] {
         let window = try requireWindow(id)
+        window.closedByAgent = true
         window.window?.close()
         return ["ok": true, "window": id]
     }

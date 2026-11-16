@@ -296,7 +296,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         paste.sendKey = { [weak self] event in
             guard let self else { return }
-            self.session.key(event, stream: self.stream)
+            self.personSession().key(event, stream: self.stream)
         }
         paste.cancelImage = { [weak self] id in self?.session.clipImageAbort(id: id) }
         paste.share = { [weak self] data, mime in self?.sharePastedImage(data, mime: mime) }
@@ -1117,7 +1117,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // A closed window is not a key window, whether or not AppKit sent a
         // resign first.
         performMenuKey(.streamResigned(stream: stream))
-        if !closingFromRemote { sendClose() }
+        if !closingFromRemote {
+            manager.onMacClosed?(stream, closedByAgent)  // MCP-83: a call on it answers `closed`
+            sendClose()
+        }
         let count = stills
         Log.video.notice("stream \(self.stream, privacy: .public): closed, stills=\(count, privacy: .public)")
         // AppKit keeps a closed window in `NSApp.windows`, and with it the whole
@@ -2133,7 +2136,18 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     @objc func navigateBack(_ sender: Any?) {
         guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
                                                      offline: phoneControlsOffline) else { return }
-        session.nav(stream: stream, action: "back")
+        personSession().nav(stream: stream, action: "back")
+    }
+
+    /// `close_window` sets it before closing: the close is the agent's (MCP-52).
+    var closedByAgent = false
+
+    /// MCP-84: the one way the person's input reaches the phone (clicks,
+    /// keys, Back, Home, Recents, the paste key): an agent's call on this
+    /// window hears it.
+    func personSession() -> Session {
+        manager.onPersonInput?(stream)
+        return session
     }
 
     // MARK: Input routing
@@ -2156,25 +2170,19 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func handle(_ command: InputMapper.Command) {
         switch command {
-        case .touch, .scroll, .key, .text, .nav:
-            manager.onPersonInput?(stream)  // MCP-84: an agent's call on this window hears it
-        default:
-            break
-        }
-        switch command {
         case .touch(let event):
             touchInHotZone(event)
-            session.touch(event, stream: stream)
+            personSession().touch(event, stream: stream)
         case .scroll(let event):
-            session.scroll(event, stream: stream)
+            personSession().scroll(event, stream: stream)
         case .hover(let event):
             session.hover(event, stream: stream)
         case .key(let event):
-            session.key(event, stream: stream)
+            personSession().key(event, stream: stream)
         case .text(let text):
-            session.text(stream: stream, text: text)
+            personSession().text(stream: stream, text: text)
         case .nav(let action):
-            session.nav(stream: stream, action: action)
+            personSession().nav(stream: stream, action: action)
         case .adjustDensity(let delta):
             adjustDensity(delta)
         case .resetDensity:
