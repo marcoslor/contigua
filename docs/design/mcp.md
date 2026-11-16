@@ -78,8 +78,8 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `open_app` | `app`: package or label | the opened window's id, package and label |
 | `list_windows` | — | `id`, `package` (null for the Phone Mirror), width and height (stream pixels) |
 | `screenshot` | `window` | PNG image content of the last displayed frame, longest side ≤ 1280 px |
-| `ui_tree` | `window` | the display's accessibility tree, trimmed for a reader: one row per label or control, with its text, view id, bounds in the window's pixels and a tap point in 0..1; `displayId` names the display, `snapshot` the read |
-| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref named in the latest `ui_tree`; the answer echoes that read's `snapshot` and the node's `box` |
+| `ui_tree` | `window` | the display's accessibility tree, trimmed for a reader: one row per label or control, with its text, view id, bounds in the display's pixels and a tap point in 0..1 of the display's input space; `displayId` names the display, `size` the pixel space, `snapshot` this window's read count, and an off-screen node keeps its text with `off: true` and no tap point |
+| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref (`s<snapshot>e<row>`) named in the latest `ui_tree`; a ref from an older tree, a closed window or an off-screen node is refused; the answer echoes that read's `snapshot` and the node's `box` |
 | `long_press` | `window`, `x`, `y`, `ms` ≤ 3000 | down, wait, up |
 | `swipe` | `window`, `x1`, `y1`, `x2`, `y2`, `ms` ≤ 2000 | down, interpolated moves at ~60 Hz, up |
 | `type_text` | `window`, `text` ≤ 2000 chars | the same `text` frame the keyboard sends |
@@ -111,20 +111,23 @@ clients learned the hard way:
   not `com.example:id/save`; a false flag is left out, and only a checkable
   box's `check: false` is sent, because it is a real answer.
 - **A tap point, not arithmetic.** Each node carries its bounds in display
-  pixels and `at`, the centre as 0..1 of the window: exactly the space `tap`
-  takes. Models that compute a tap from a scaled screenshot tap the wrong
-  quarter of the screen; this leaves nothing to scale.
-- **A ref, so the action names the element.** Every node also carries `ref`,
-  and `tap` accepts a ref as well as a point. The refs belong to the tree that
-  was just read: a newer tree replaces them, so a ref the client kept from an
-  older screen is refused instead of pressing whatever moved under that point.
-  This is the same ref-per-snapshot rule accessibility-driven automation clients
-  use; it turns "tap at 0.42, 0.31" into "tap that button". A ref is not a
-  promise the screen is the same: an overlay that appears after the read can
-  cover the node, and the tap lands where the node was. The `tap` answer echoes
-  the `snapshot` the ref came from and the node's `box`, so a client can tell
-  which read it pressed on; reading again after an action is still the only way
-  to know a screen.
+  pixels and `at`, the centre as 0..1 of the display's input space (the space
+  TOUCH and `tap` take), and the answer names that pixel space as `size`.
+  Models that compute a tap from a scaled screenshot tap the wrong quarter of
+  the screen; this leaves nothing to scale.
+- **A ref, so the action names the element.** The phone sends no `ref`; the Mac
+  issues one per node from its own per-window read counter, `s<snapshot>e<row>`,
+  so a ref never crosses the wire. `tap` accepts a ref as well as a point. The
+  refs belong to the tree that was just read: a newer tree replaces them, so a
+  ref the client kept from an older screen is refused with a sentence naming
+  both snapshots instead of pressing whatever moved under that point, and a ref
+  whose window closed is refused too. This is the same ref-per-snapshot rule
+  accessibility-driven automation clients use; it turns "tap at 0.42, 0.31" into
+  "tap that button". A ref is not a promise the screen is the same: an overlay
+  that appears after the read can cover the node, and the tap lands where the
+  node was. The `tap` answer echoes the `snapshot` the ref came from and the
+  node's `box`, so a client can tell which read it pressed on; reading again
+  after an action is still the only way to know a screen.
 - **An empty tree says so.** `nodes: []` with a `note`, never a silent blank
   screen. `truncated` marks the node cap; scrolling and asking again is the
   way through a long list.
@@ -132,10 +135,16 @@ clients learned the hard way:
   (`U+EF9E`, `U+EEE8`); those code points are dropped from a label, and a label
   made only of them is no label at all.
 - **Password fields carry no text**, only `pwd: true`.
-- **`displayId` is an id, `snapshot` is the counter.** Both are on the reply:
-  the display's own number (virtual displays are in the sixties on current
-  builds) and this session's read count. The tool result leaves `w` out when
-  the display holds one window, where every row would repeat `0`.
+- **Off-screen nodes keep their text, not a tap point.** A node whose box does
+  not intersect the display, that is not visible to the user, or whose visible
+  part is under 8×8 px carries `off: true` and no `at` (its `box` is clipped to
+  the display): a reader still sees the text and knows to scroll, and `tap` by
+  its ref is refused with "… is off screen".
+- **`displayId` is an id, `snapshot` is the counter.** The reply names the
+  display's own number (virtual displays are in the sixties on current builds)
+  and `size`, the pixel space `box` is in; `snapshot` is the Mac's per-window
+  read count. The tool result leaves `l` out when the display holds one layer,
+  where every row would repeat `0`.
 
 Text in the answer is on-screen content, so it lives in the tool result only:
 the app logs the tool name and duration, and the phone logs counts and the
@@ -153,8 +162,8 @@ person sees), else the phone's next keyframe decoded once
 
 Two consequences a client has to know, because neither is visible in the answer:
 
-- **The image is scaled and `box` is not.** `box`/`at` are the window's own
-  pixels; the PNG is at most 1280 px on its long side. A client that crops or
+- **The image is scaled and `box` is not.** `box` is in the display's pixels;
+  the PNG is at most 1280 px on its long side. A client that crops or
   measures with `box` has to scale by the frame's size first — on a 2860×1654
   window the PNG is 1280×740, a factor of 2.234.
 - **A displayed frame has no timestamp.** `copyDisplayedFrame()` returns what
