@@ -239,6 +239,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             enabled = node.isEnabled,
             password = node.isPassword,
             visibleToUser = node.isVisibleToUser,
+            hasRange = node.rangeInfo != null,
             children = children(node, depth + 1),
         )
     }
