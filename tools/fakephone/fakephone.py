@@ -5318,11 +5318,13 @@ class Session(object):
         nodes = [
             {"i": 0, "l": 0, "role": "TextView", "text": "Fake phone screen",
              "box": box_label, "at": at(box_label)},
-            {"i": 1, "l": 0, "role": "Button", "text": "Continue",
+            {"i": 1, "p": 0, "l": 0, "role": "Button", "text": "Continue",
              "id": "continue", "box": box_button, "at": at(box_button), "click": True},
             # A password field carries no text at all, only that it is one.
-            {"i": 2, "l": 0, "role": "EditText", "pwd": True, "edit": True,
+            {"i": 2, "p": 0, "l": 0, "role": "EditText", "pwd": True, "edit": True,
              "box": box_password, "at": at(box_password)},
+            # Below the display (a cart's lower rows): its text, no tap point.
+            {"i": 3, "p": 0, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
         ]
         self.phone.events.ui_tree(stream, len(nodes))
         reply = {

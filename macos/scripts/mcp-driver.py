@@ -355,6 +355,29 @@ def main():
         report(isinstance(by_ref.get("x"), (int, float))
                and len(str(by_ref.get("x")).split(".")[-1]) <= 3,
                "MCP tap by ref prints its point to three decimals")
+        # [WIN-79 S1] The Mac names refs s<snapshot>e<row> from its own count.
+        report(bool(nodes) and all(re.match(r"^s%se\d+$" % tree.get("snapshot"), n.get("ref") or "")
+                                   for n in nodes),
+               "MCP ui_tree's refs carry the answer's snapshot")
+        # [WIN-79 F9] An off-screen node keeps its text, has no tap point, and
+        # a tap by its ref is refused.
+        below = next((n for n in nodes if n.get("text") == "Below the fold"), None)
+        report(bool(below and below.get("off") is True and "at" not in below),
+               "MCP ui_tree marks an off-screen node off with no tap point")
+        try:
+            client.text("tap", {"window": window, "ref": (below or {}).get("ref") or "s0e0"})
+            report(False, "MCP tap by an off-screen ref must fail")
+        except RuntimeError as error:
+            report("off screen" in str(error), "MCP tap by an off-screen ref is refused")
+        # [WIN-79 F1] A newer read makes the older refs stale: refused, naming both reads.
+        newer = client.text("ui_tree", {"window": window})
+        try:
+            client.text("tap", {"window": window, "ref": (button or {}).get("ref")})
+            report(False, "MCP tap by an older tree's ref must fail")
+        except RuntimeError as error:
+            report(("s%s" % tree.get("snapshot")) in str(error)
+                   and ("s%s" % newer.get("snapshot")) in str(error),
+                   "MCP tap by an older tree's ref is refused, naming both reads")
         try:
             client.text("ui_tree", {"window": 999})
             report(False, "MCP ui_tree on an unknown window must fail")
