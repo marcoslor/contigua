@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--events")
     parser.add_argument("--file")
     parser.add_argument("--link", default="https://example.com/mcp")
+    parser.add_argument("--control", help="the app's --debug-control folder (setup verbs)")
     args = parser.parse_args()
 
     path, module = load(args.suite)
