@@ -331,7 +331,7 @@ app_connected() {
 # The Mac app resolves `open_app` against the phone's app list; a fresh session
 # can race the first `apps` reply. Ask for the list until the browser is in it.
 warm_catalog() {
-    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, sys, time
 shim, profile, browser, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
@@ -352,7 +352,7 @@ PY
 
 # open_window — one MCP call, then the client closes; the window stays open.
 open_window() {
-    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, json, sys
 shim, profile, browser, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
@@ -367,7 +367,7 @@ PY
 }
 
 close_window() { # close_window <window>
-    "$PYTHON" - "$SHIM" "$PROFILE" "$1" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$1" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, json, sys
 shim, profile, window, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)

@@ -324,7 +324,7 @@ app_connected() {
 # app matches" while arm B, minutes later, found it). Ask for the list until
 # the browser is in it, before the bench's first call.
 warm_catalog() {
-    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, sys, time
 shim, profile, browser, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
