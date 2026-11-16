@@ -11,9 +11,44 @@ settle and an app that exits on back. Run it through driver.py (`--suite act`).
 
 import json
 import os
+import threading
 import time
 
 from common import MCP, report
+
+
+def control(directory, line, seq=[0]):
+    """One debug-control command (DebugControl.swift); its one-line answer."""
+    seq[0] += 1
+    name = os.path.join(directory, "act%d" % seq[0])
+    with open(name + ".tmp", "w") as handle:
+        handle.write(line + "\n")
+    os.rename(name + ".tmp", name + ".cmd")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if os.path.exists(name + ".done") and os.path.getsize(name + ".done") > 0:
+            with open(name + ".done") as handle:
+                answer = handle.read().strip()
+            os.remove(name + ".done")
+            return answer
+        time.sleep(0.1)
+    return "no answer in 10 s"
+
+
+def during_held_tap(client, window, other):
+    """Tap with a settle that never ends (fake `never-settle`); run `other`
+    0.5 s into the settle; the tap's reply."""
+    box = {}
+
+    def run():
+        box["reply"] = client.tool("tap", {"window": window, "x": 0.5, "y": 0.65}, timeout=30)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    time.sleep(0.5)
+    other()
+    thread.join(30)
+    return box.get("reply") or {}
 
 
 def mode(args, *words):
@@ -95,9 +130,19 @@ def suite(args):
         report(on.get("snapshot") is None or isinstance(on.get("snapshot"), int),
                "[MCP-87] MCP tap's on.snapshot is the tree the hit came from (%s)" % on)
 
+        # [MCP-87] The next point tap names the fake phone's Continue button,
+        # read from the tree the first tap observed.
+        button = next((n for n in nodes if n.get("text") == "Continue"), {})
+        first_snapshot = (answer.get("tree") or {}).get("snapshot")
+
         # [MCP-81] A screen that never stops answers still_changing at 2 s.
         mode(args, "never-settle")
         answer, elapsed = act(client, "tap", {"window": window, "x": 0.5, "y": 0.65})
+        hit = (answer.get("did") or {}).get("hit") or {}
+        report(button.get("ref") is not None and hit.get("ref") == button.get("ref")
+               and (answer.get("on") or {}).get("snapshot") == first_snapshot,
+               "[MCP-87] MCP a point tap's did.hit.ref is the button under it (%s vs %s)"
+               % (hit.get("ref"), button.get("ref")))
         settle = answer.get("settle") or {}
         report(settle.get("state") == "still_changing" and settle.get("reason") == "changes"
                and 1900 <= (settle.get("waitedMs") or -1) <= 2100 and elapsed < 3.5,
@@ -117,7 +162,8 @@ def suite(args):
         mode(args, "ignore-ui-settle")
         answer, elapsed = act(client, "tap", {"window": window, "x": 0.5, "y": 0.65})
         settle = answer.get("settle") or {}
-        report(settle.get("state") == "still_changing" and elapsed < 5.5,
+        report(settle.get("state") == "still_changing" and settle.get("reason") == "deadline"
+               and elapsed < 5.5,
                "[MCP-8] MCP a settle the phone never answers ends at the bound: %s in %.2f s"
                % (json.dumps(settle), elapsed))
         mode(args)
@@ -135,6 +181,19 @@ def suite(args):
         report(not reply.get("isError") and (shot.get("settle") or {}).get("state") == "settled",
                "[MCP-64] MCP screenshot with wait settle carries settle (%s)" % shot.get("settle"))
 
+        # [MCP-84] The person's Back (the Navigate menu's path) during a held
+        # settle is reported in alsoActed.
+        if args.control:
+            mode(args, "never-settle")
+            reply = during_held_tap(client, window,
+                                    lambda: control(args.control, "nav back %d" % window))
+            mode(args)
+            answer = reply.get("structuredContent") or {}
+            report(not reply.get("isError") and answer.get("alsoActed") == ["person"],
+                   "[MCP-84] MCP Back during a held settle answers alsoActed person (%s)"
+                   % answer.get("alsoActed"))
+            live(client, window)
+
         # [MCP-83] Back on the app's last screen closes the window: an answer, not an error.
         mode(args, "close-on-back")
         reply = client.tool("press_key", {"window": window, "key": "back"}, timeout=30)
@@ -146,6 +205,28 @@ def suite(args):
                "[MCP-83] MCP press_key back that ends the app answers closed: %s"
                % json.dumps({k: answer.get(k) for k in ("state", "closed", "settle")}))
         mode(args)
+
+        # [MCP-52] [MCP-83] close_window from another connection during a held
+        # settle: the Mac closed it, so never app_exited.
+        window = open_window(client)
+        live(client, window)
+        other = MCP(args.shim, args.profile)
+        try:
+            other.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                         "clientInfo": {"name": "suite-act-2", "version": "1"}})
+            other.notify("notifications/initialized")
+            mode(args, "never-settle")
+            reply = during_held_tap(client, window,
+                                    lambda: other.tool("close_window", {"window": window}))
+        finally:
+            mode(args)
+            other.close()
+        answer = reply.get("structuredContent") or {}
+        closed = answer.get("closed") or {}
+        report(not reply.get("isError") and answer.get("state") == "closed"
+               and closed.get("reason") == "closed" and closed.get("closedBy") == "agent",
+               "[MCP-52] MCP close_window during a held settle answers closed by agent, not app_exited (%s)"
+               % json.dumps(closed))
     finally:
         mode(args)
         client.close()
