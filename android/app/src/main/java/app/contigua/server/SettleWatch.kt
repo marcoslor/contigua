@@ -22,6 +22,10 @@ object SettleWatch {
     const val TYPE_VIEW_SCROLLED = 0x00001000
     const val TYPE_WINDOWS_CHANGED = 0x00400000
 
+    /** The connection's `eventTypes` while a watch listens: the five types above, nothing else. */
+    const val EVENT_MASK = TYPE_VIEW_TEXT_CHANGED or TYPE_WINDOW_STATE_CHANGED or
+        TYPE_WINDOW_CONTENT_CHANGED or TYPE_VIEW_SCROLLED or TYPE_WINDOWS_CHANGED
+
     fun isContentChange(type: Int): Boolean = when (type) {
         TYPE_VIEW_TEXT_CHANGED, TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED,
         TYPE_VIEW_SCROLLED, TYPE_WINDOWS_CHANGED -> true
@@ -180,4 +184,7 @@ sealed interface SettleAnswer {
     data class Settled(val waitedMs: Long, val events: Int) : SettleAnswer
     data class StillChanging(val waitedMs: Long, val events: Int, val reason: String) : SettleAnswer
     data class Failure(val code: String, val sentence: String) : SettleAnswer
+
+    /** The session ended during the watch: nothing is sent. */
+    data object Cancelled : SettleAnswer
 }

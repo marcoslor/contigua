@@ -2134,6 +2134,8 @@ class Session(
                     log("ui.settle stream=$stream display=$displayId failed=${answer.code}")
                     sendUiSettle(stream, seq, UiTree.failure(answer.code, answer.sentence))
                 }
+                // The session ended during the watch: there is no one to answer.
+                SettleAnswer.Cancelled -> log("ui.settle stream=$stream display=$displayId cancelled")
             }
         }, "ui-settle-$stream").start()
     }
