@@ -169,6 +169,24 @@ final class KeyframeSnapshotter {
         }
     }
 
+    /// A newer snapshot took the window's decoder: stop, and tell this one's
+    /// caller at once with `(nil, nil)` so it fails now rather than waiting
+    /// out its bound (MCP-60).
+    func displace() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let handler = self.handler
+        let session = self.session
+        self.session = nil
+        self.handler = nil
+        lock.unlock()
+        if let session {
+            VTDecompressionSessionInvalidate(session)
+        }
+        handler?(nil, nil)
+    }
+
     func cancel() {
         lock.lock()
         guard !finished else { lock.unlock(); return }
@@ -203,13 +221,19 @@ final class KeyframeSnapshotter {
     }
 }
 
-/// A window's one snapshot decoder (MCP-60).
+/// A window's one snapshot decoder, shared by screenshots and Live Text's
+/// freeze (MCP-60). Each begin gets a token; a cancel acts only while its
+/// token is still the current one, so one caller's timeout can never kill
+/// another caller's decoder. A newer begin displaces the current snapshot,
+/// whose handler hears `(nil, nil)` at once. Thread-safe.
 final class SnapshotSlot: @unchecked Sendable {
     struct Token: Hashable { let id: Int }
     private let lock = NSLock()
     private var counter = 0
-    private var current: KeyframeSnapshotter?
+    private var current: (token: Token, snapshotter: KeyframeSnapshotter)?
 
+    /// A token for a begin that will follow (the caller needs it before the
+    /// video queue runs the begin).
     func reserve() -> Token {
         lock.lock(); defer { lock.unlock() }
         counter += 1
@@ -226,19 +250,29 @@ final class SnapshotSlot: @unchecked Sendable {
 
     func begin(_ token: Token, format: CMVideoFormatDescription, after: Int,
                handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) {
-        current?.cancel()
         let snapshotter = KeyframeSnapshotter()
-        current = snapshotter
+        lock.lock()
+        let displaced = current?.snapshotter
+        current = (token, snapshotter)
+        lock.unlock()
+        displaced?.displace()
         snapshotter.begin(format: format, after: after, handler: handler)
     }
 
+    /// Cancels the snapshot `token` began, only if it is still current.
     func cancel(_ token: Token) {
-        current?.cancel()
-        current = nil
+        lock.lock()
+        guard let current, current.token == token else { lock.unlock(); return }
+        self.current = nil
+        lock.unlock()
+        current.snapshotter.cancel()
     }
 
     func feed(_ sample: CMSampleBuffer, stamp: FrameStamp?, keyframe: Bool) {
-        current?.feed(sample, stamp: stamp, keyframe: keyframe)
+        lock.lock()
+        let snapshotter = current?.snapshotter
+        lock.unlock()
+        snapshotter?.feed(sample, stamp: stamp, keyframe: keyframe)
     }
 }
 
@@ -305,6 +339,8 @@ final class LiveTextSession {
     /// while the mode is up.
     private var keyMonitor: Any?
     private var snapshotTimeout: DispatchWorkItem?
+    /// The freeze's own snapshot, so leaving cancels only it (MCP-60).
+    private var snapshotToken: SnapshotSlot.Token?
 
     var state: LiveTextState { mode.state }
     var isActive: Bool { mode.isActive }
@@ -339,7 +375,7 @@ final class LiveTextSession {
         }
         mode.handle(.enter)
         onStateChange?(.capturing, nil)
-        host.beginFrameSnapshot { [weak self] buffer, _ in
+        snapshotToken = host.beginFrameSnapshot { [weak self] buffer, _ in
             guard let self else { return }
             guard self.mode.state == .capturing, let buffer,
                   self.adopt(buffer, source: "a decoded keyframe", on: host) else {
@@ -448,7 +484,8 @@ final class LiveTextSession {
         removeKeyMonitor()
         snapshotTimeout?.cancel()
         snapshotTimeout = nil
-        host?.cancelFrameSnapshot()
+        if let snapshotToken { host?.cancelFrameSnapshot(snapshotToken) }
+        snapshotToken = nil
         frame = nil
         frameStats = nil
         attemptChars = []
