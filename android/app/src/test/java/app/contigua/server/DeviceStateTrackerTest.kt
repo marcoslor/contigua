@@ -22,23 +22,23 @@ class DeviceStateTrackerTest {
     @Test
     fun `a repeated lock event is not re-sent`() {
         tracker.update(DeviceState(false, 55, false))
-        tracker.onLockChanged(true)
-        tracker.onLockChanged(true)
-        tracker.onLockChanged(true)
+        tracker.onLockChanged(true, LockSource.KEYGUARD_LISTENER)
+        tracker.onLockChanged(true, LockSource.KEYGUARD_LISTENER)
+        tracker.onLockChanged(true, LockSource.KEYGUARD_LISTENER)
         assertEquals(2, emitted.size)
-        assertEquals(DeviceState(true, 55, false), emitted.last())
+        assertEquals(DeviceState(true, 55, false, lockSource = LockSource.KEYGUARD_LISTENER), emitted.last())
     }
 
     @Test
     fun `locking and unlocking each produce exactly one change`() {
         tracker.update(DeviceState(false, 55, false))
-        tracker.onLockChanged(true)
-        tracker.onLockChanged(false)
+        tracker.onLockChanged(true, LockSource.KEYGUARD_LISTENER)
+        tracker.onLockChanged(false, LockSource.KEYGUARD_LISTENER)
         assertEquals(
             listOf(
                 DeviceState(false, 55, false),
-                DeviceState(true, 55, false),
-                DeviceState(false, 55, false),
+                DeviceState(true, 55, false, lockSource = LockSource.KEYGUARD_LISTENER),
+                DeviceState(false, 55, false, lockSource = LockSource.KEYGUARD_LISTENER),
             ),
             emitted,
         )
@@ -81,9 +81,32 @@ class DeviceStateTrackerTest {
     @Test
     fun `events keep the fields they do not carry`() {
         tracker.update(DeviceState(true, 80, true))
-        tracker.onLockChanged(false)
-        assertEquals(DeviceState(false, 80, true), emitted.last())
+        tracker.onLockChanged(false, LockSource.KEYGUARD_LISTENER)
+        assertEquals(DeviceState(false, 80, true, lockSource = LockSource.KEYGUARD_LISTENER), emitted.last())
         tracker.onBatteryChanged(79, false)
-        assertEquals(DeviceState(false, 79, false), emitted.last())
+        assertEquals(DeviceState(false, 79, false, lockSource = LockSource.KEYGUARD_LISTENER), emitted.last())
+    }
+
+    /** MCP-31: every lock change records the source that reported it, and a
+     *  change of source alone is a change (PROTOCOL.md `state.lockSource`). */
+    @Test
+    fun everyLockChangeNamesItsSource() {
+        // The read at start is the source until an event replaces it.
+        tracker.update(DeviceState(true, 55, false, lockSource = LockSource.INITIAL_READ))
+        // The hidden window-manager listener is the accurate source.
+        tracker.onLockChanged(false, LockSource.KEYGUARD_LISTENER)
+        // A broadcast that repeats the value but comes from a different source is
+        // still a change: one state, named `broadcast`.
+        tracker.onLockChanged(false, LockSource.BROADCAST)
+        // The same value from the same source is not re-sent.
+        tracker.onLockChanged(false, LockSource.BROADCAST)
+        assertEquals(
+            listOf(
+                DeviceState(true, 55, false, lockSource = LockSource.INITIAL_READ),
+                DeviceState(false, 55, false, lockSource = LockSource.KEYGUARD_LISTENER),
+                DeviceState(false, 55, false, lockSource = LockSource.BROADCAST),
+            ),
+            emitted,
+        )
     }
 }
