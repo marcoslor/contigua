@@ -43,6 +43,12 @@ object UiTree {
         /** Whether the node reports a range (`getRangeInfo()` non-null); false = indeterminate. */
         val hasRange: Boolean = true,
         val children: List<Node> = emptyList(),
+        /**
+         * The node's own child count, which [children] can fall short of when
+         * the walk stops at [MAX_DEPTH]: the loading signal judges an empty
+         * WebView by this, as the settle's check does (MCP-103).
+         */
+        val childCount: Int = children.size,
     )
 
     /** A node's bounds in display pixels, origin at the display's top left. */
@@ -194,7 +200,7 @@ object UiTree {
 
     /** A loading signal (MCP-103): kept and marked even with no label. */
     private fun loading(node: Node): Boolean =
-        LoadingSignal.loading(node.role, node.visibleToUser, node.hasRange, node.children.size)
+        LoadingSignal.loading(node.role, node.visibleToUser, node.hasRange, node.childCount)
 
     private class Builder(val size: IntSize, val nodes: ArrayList<LinkedHashMap<String, Any?>>) {
         var truncated = false
