@@ -378,7 +378,7 @@ enum MCPOutputSchemas {
             return object(["window": integer, "ok": boolean, "displayId": integer,
                            "snapshot": integer, "size": array(integer), "truncated": boolean,
                            "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
-                           "note": string, "loading": boolean,
+                           "note": string, "loading": boolean, "settle": settleObject,
                            "state": stateToken, "frame": frameObject],
                           required: ["window", "ok", "truncated", "layers", "nodes",
                                      "state", "frame"])
