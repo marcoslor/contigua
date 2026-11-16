@@ -417,6 +417,9 @@ changes close it:
   keyframe and decodes the first one that arrives with the window's snapshot
   decoder (`beginFrameSnapshot`), stamped with its `seq`. The display layer's
   buffer is never the answer, so a screenshot cannot be older than the call.
+  The decoder is one per window, shared with Live Text's freeze: each begin
+  gets a token, a cancel acts only on its own token, and a newer begin
+  displaces the older request, which fails at once.
   The cost is one keyframe per screenshot. A window that sends none in 2 s
   fails `no_frame` with its state.
 

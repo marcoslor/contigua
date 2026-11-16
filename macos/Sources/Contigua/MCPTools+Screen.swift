@@ -125,7 +125,7 @@ extension StreamWindowController: ScreenshotSource {
         let view = videoView
         return await withCheckedContinuation { continuation in
             once.continuation = continuation
-            view.beginFrameSnapshot(after: seq) { buffer, stamp in
+            let token = view.beginFrameSnapshot(after: seq) { buffer, stamp in
                 MainActor.assumeIsolated {
                     guard let buffer, let stamp else { once.finish(nil); return }
                     let now = ProcessInfo.processInfo.systemUptime
@@ -136,7 +136,7 @@ extension StreamWindowController: ScreenshotSource {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard once.continuation != nil else { return }
-                view.cancelFrameSnapshot()
+                view.cancelFrameSnapshot(token)
                 once.finish(nil)
             }
         }
