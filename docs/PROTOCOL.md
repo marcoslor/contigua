@@ -763,7 +763,7 @@ Mac → phone (after `welcome`):
 | `fs.cancel` | `id` | abandon a running `fs.read`; the phone stops streaming and drops what is queued |
 | `ui.tree` | `stream`, `seq`, `offscreen`? (**wire change, #171 B6**) | read that window's display's accessibility tree; see "UI tree" |
 | `ui.settle` | `stream`, `seq`, `quietMs`, `timeoutMs` | **wire change (#171 B1):** answer when the display's content stops changing for `quietMs` with nothing loading, or at `timeoutMs`; see "UI tree" §7 |
-| `ui.press` | `stream`, `seq`, `k`, `holdMs`? | **wire change (#171 B3):** press the node whose key `k` the latest read named, at its bounds now; see "UI tree" §8 |
+| `ui.press` | `stream`, `seq`, `k`, `holdMs`?, `expect`? | **wire change (#171 B3):** press the node whose key `k` the latest read named, at its bounds now; see "UI tree" §8 |
 | `ui.type` | `stream`, `seq`, `text`, `clear`?, `submit`? | **wire change (#171 B5):** type into the focused field of that display as keys or by setting its text, never through the clipboard; see "UI tree" §10 |
 
 Phone → Mac:
@@ -807,7 +807,7 @@ Phone → Mac:
 | `fs.read.end` | `id`, `size`, `sha256` — the requested range is complete and correct |
 | `ui.tree` | `stream`, `seq`, `ok`; success: the tree of "UI tree" §2 (as #162 leaves it) plus #171's `loading`, `omitted` and row fields (§9); failure: `code`, `message` — see "UI tree" |
 | `ui.settle` | `stream`, `seq`, `ok`; success: `settled`, `waitedMs`, `events`, `reason`?; failure: `code`, `message` — **wire change (#171 B1)**, see "UI tree" §7 |
-| `ui.press` | `stream`, `seq`, `ok`; success: `box`, `at`, `role`, `text`?, `desc`?; failure: `code`, `message`, `coveredBy`? — **wire change (#171 B3)**, see "UI tree" §8 |
+| `ui.press` | `stream`, `seq`, `ok`; success: `box`, `at`, `role`, `text`?, `desc`?; failure: `code`, `message`, `coveredBy`?, `now`? — **wire change (#171 B3)**, see "UI tree" §8 |
 | `ui.type` | `stream`, `seq`, `ok`; success: `entry`, `via`, `characters`; failure: `code`, `message` — **wire change (#171 B5)**, see "UI tree" §10 |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
@@ -1612,12 +1612,18 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    `no_a11y`), `busy` (item 6) or `failed`. The watch is a pure state
    machine (docs/specs/mcp.md "Settling a display"); it reads event types, window ids and the
    loading check's yes or no, and logs the stream, the outcome, `waitedMs` and `events`.
-8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H}`, `k` a
-   row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). The phone finds `k` in
+8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
+   `k` a row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
+   node's label as the Mac last answered it to the connection that asks: the row's `text`, else
+   its `desc`, else the first row under it with either, in reading order (`""` when none has
+   one); absent when the Mac never answered that connection a tree with `k`. The phone finds `k` in
    its latest read of the stream's display, calls `refresh()` on that node and, when it still
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
-   now, computes the covering node as `covered` does (item 9) at the bounds' centre, and — when
-   nothing covers it — injects TOUCH down at the centre and up after `H` ms (or at once),
+   now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
+   same label of the refreshed node (its text, else its description, else the first node under
+   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label),
+   and — when nothing covers it and the label equals `expect` (or `expect` is absent) — injects
+   TOUCH down at the centre and up after `H` ms (or at once),
    stamped like a TOUCH frame from the Mac. It answers
    `{"t":"ui.press","stream":N,"seq":S,"ok":true,"box":[l,t,r,b],"at":[x,y],"role":"Button","text":"…","desc":"…"}`
    with the bounds and point it pressed (display pixels, item 2's input space, three
@@ -1626,8 +1632,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    happen injects nothing and answers
    `{"t":"ui.press","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `gone` (the
    key is not in the latest read, or `refresh()` failed), `not_visible`, `off_screen`,
-   `covered` (with `"coveredBy"`: a key or `"window"`), `no_window`, `busy` or `failed`. A key
-   the phone never issued is `gone`. The phone logs the stream, the outcome and the duration,
+   `covered` (with `"coveredBy"`: a key or `"window"`), `changed` (with `"now"`: the label read
+   now — a list reused the row's node for another item, or the node relabelled itself; #188),
+   `no_window`, `busy` or `failed`. A key the phone never issued is `gone`. The phone logs the stream, the outcome and the duration,
    never the node's text.
 9. **Row and reply fields of #171**, added to item 2's reply:
    - **`loading` (B1).** A row is kept and marked `loading: true` when it is visible to the
@@ -1765,7 +1772,7 @@ The `ui.*` exchanges answer in their own reply with `ok: false` and a `code`, ne
 `error` message: `ui.tree` `no_window`, `not_available`, `busy`, `no_display`, `no_a11y`,
 `failed`; `ui.settle` (**wire change, #171 B1**) `no_window`, `no_display`, `not_available`,
 `busy`, `failed`; `ui.press` (**wire change, #171 B3**) `gone`, `not_visible`, `off_screen`,
-`covered`, `no_window`, `busy`, `failed`; `ui.type` (**wire change, #171 B5**) `no_field`,
+`covered`, `changed`, `no_window`, `busy`, `failed`; `ui.type` (**wire change, #171 B5**) `no_field`,
 `not_supported`, `no_window`, `busy`, `failed` ("UI tree" §3, §7, §8, §10).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before
