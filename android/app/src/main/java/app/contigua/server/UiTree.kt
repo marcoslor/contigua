@@ -40,6 +40,8 @@ object UiTree {
         val enabled: Boolean = true,
         val password: Boolean = false,
         val visibleToUser: Boolean = true,
+        /** Whether the node reports a range (`getRangeInfo()` non-null); false = indeterminate. */
+        val hasRange: Boolean = true,
         val children: List<Node> = emptyList(),
     )
 
@@ -112,6 +114,8 @@ object UiTree {
             )
         }
         out["nodes"] = nodes
+        // MCP-103: the reply says the tree is still loading while any row has it.
+        if (nodes.any { it["loading"] == true }) out["loading"] = true
         if (nodes.isEmpty()) {
             // Prior art is blunt about this: an empty list reads as a blank
             // screen, so say what happened.
@@ -184,8 +188,13 @@ object UiTree {
         if (box.empty) return false
         return node.password || node.clickable || node.editable || node.scrollable ||
             node.checkable || node.selected || node.focused ||
-            label(node.text) != null || label(node.desc) != null
+            label(node.text) != null || label(node.desc) != null ||
+            loading(node)
     }
+
+    /** A loading signal (MCP-103): kept and marked even with no label. */
+    private fun loading(node: Node): Boolean =
+        LoadingSignal.loading(node.role, node.visibleToUser, node.hasRange, node.children.size)
 
     private class Builder(val size: IntSize, val nodes: ArrayList<LinkedHashMap<String, Any?>>) {
         var truncated = false
@@ -254,6 +263,7 @@ object UiTree {
             if (node.focused) row["focus"] = true
             if (!node.enabled) row["disabled"] = true
             if (node.password) row["pwd"] = true
+            if (loading(node)) row["loading"] = true
             return row
         }
 
