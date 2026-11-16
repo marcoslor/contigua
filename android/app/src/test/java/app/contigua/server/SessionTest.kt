@@ -1058,6 +1058,14 @@ class SessionTest {
         assertEquals(true, state["charging"])
     }
 
+    /** MCP-31: the serialised `state` carries `lockSource` (PROTOCOL.md). */
+    @Test
+    fun stateCarriesLockSource() {
+        platform.deviceState = DeviceState(false, 44, true, lockSource = LockSource.KEYGUARD_LISTENER)
+        addAndAuthenticate()
+        assertEquals("keyguard_listener", readUntil("state")["lockSource"])
+    }
+
     @Test
     fun secureStateIsSentOnlyWhileTheMirrorIsOpen() {
         val secure = java.util.concurrent.atomic.AtomicBoolean(false)

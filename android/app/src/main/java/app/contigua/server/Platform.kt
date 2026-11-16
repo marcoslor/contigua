@@ -45,7 +45,22 @@ data class DeviceState(
     /** STREAM_MUSIC's level and its maximum; both null on a phone that cannot read them. */
     val volume: Int? = null,
     val volumeMax: Int? = null,
+    /** Which source gave the current [locked] value (PROTOCOL.md `state.lockSource`). */
+    val lockSource: LockSource? = null,
 )
+
+/**
+ * The source that reported the current `locked` value, named as
+ * `state.lockSource` does (docs/PROTOCOL.md). A change of source alone is a
+ * change, so [DeviceStateTracker] compares this field with the rest.
+ */
+enum class LockSource(val wire: String) {
+    KEYGUARD_LISTENER("keyguard_listener"),
+    BROADCAST("broadcast"),
+    APP_RELAY("app_relay"),
+    INITIAL_READ("initial_read"),
+    ;
+}
 
 /**
  * Display 0's secure-surface state (docs/PROTOCOL.md "Secure screens"). Read at
