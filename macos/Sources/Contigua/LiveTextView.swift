@@ -203,6 +203,45 @@ final class KeyframeSnapshotter {
     }
 }
 
+/// A window's one snapshot decoder (MCP-60).
+final class SnapshotSlot: @unchecked Sendable {
+    struct Token: Hashable { let id: Int }
+    private let lock = NSLock()
+    private var counter = 0
+    private var current: KeyframeSnapshotter?
+
+    func reserve() -> Token {
+        lock.lock(); defer { lock.unlock() }
+        counter += 1
+        return Token(id: counter)
+    }
+
+    @discardableResult
+    func begin(format: CMVideoFormatDescription, after: Int,
+               handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) -> Token {
+        let token = reserve()
+        begin(token, format: format, after: after, handler: handler)
+        return token
+    }
+
+    func begin(_ token: Token, format: CMVideoFormatDescription, after: Int,
+               handler: @escaping (CVPixelBuffer?, FrameStamp?) -> Void) {
+        current?.cancel()
+        let snapshotter = KeyframeSnapshotter()
+        current = snapshotter
+        snapshotter.begin(format: format, after: after, handler: handler)
+    }
+
+    func cancel(_ token: Token) {
+        current?.cancel()
+        current = nil
+    }
+
+    func feed(_ sample: CMSampleBuffer, stamp: FrameStamp?, keyframe: Bool) {
+        current?.feed(sample, stamp: stamp, keyframe: keyframe)
+    }
+}
+
 /// One stream window's Live Text mode: freeze image, analysis overlay and the
 /// captured frame.
 @MainActor

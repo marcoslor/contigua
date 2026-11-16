@@ -56,4 +56,11 @@ final class AgentHoldTests: XCTestCase {
         XCTAssertEqual(state, .released)
         XCTAssertEqual(actions, [])
     }
+
+    // [MCP-22] Held · tick(now < until) → Held, no action.
+    func testATickBeforeTheEndKeepsTheHold() {
+        let (state, actions) = step(.held(until: 115), .tick(now: 114.99))
+        XCTAssertEqual(state, .held(until: 115))
+        XCTAssertEqual(actions, [])
+    }
 }

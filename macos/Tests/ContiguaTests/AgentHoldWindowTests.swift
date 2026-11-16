@@ -31,4 +31,19 @@ final class AgentHoldWindowTests: XCTestCase {
         controller.windowDidMiniaturize(Notification(name: NSWindow.didMiniaturizeNotification))
         XCTAssertFalse(controller.isPaused, "the hold wins over a minimise")
     }
+
+    // [MCP-22] The watchdog's tick at the hold's end re-decides pause by WIN's
+    // rule: a minimised window pauses again.
+    func testTheHoldsEndPausesAMinimisedWindow() throws {
+        let controller = makeController()
+        defer { controller.window?.close() }
+        let start = ProcessInfo.processInfo.systemUptime
+        controller.agentCalled(at: start)
+        controller.windowDidMiniaturize(Notification(name: NSWindow.didMiniaturizeNotification))
+        controller.tickFrameWatchdog(at: start + 14.9)
+        XCTAssertFalse(controller.isPaused, "still held before the end")
+        controller.tickFrameWatchdog(at: start + AgentHold.holdSeconds)
+        XCTAssertTrue(controller.isPaused, "the hold's end pauses a minimised window")
+        XCTAssertEqual(controller.agentHold, .released)
+    }
 }
