@@ -43,7 +43,7 @@ final class ControlsHost {
         try? manager.createDirectory(at: directory, withIntermediateDirectories: true,
                                      attributes: [.posixPermissions: 0o700])
         try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        let server = MCPSocketServer(path: ControlsPaths.socketPath(in: directory)) { [weak self] line in
+        let server = MCPSocketServer(path: ControlsPaths.socketPath(in: directory)) { [weak self] line, _ in
             await self?.handle(line)
         }
         do {

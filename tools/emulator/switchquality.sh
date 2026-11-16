@@ -331,8 +331,8 @@ app_connected() {
 # The Mac app resolves `open_app` against the phone's app list; a fresh session
 # can race the first `apps` reply. Ask for the list until the browser is in it.
 warm_catalog() {
-    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
-import importlib.util, sys, time
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
+import importlib.util, json, sys, time
 shim, profile, browser, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
 module = importlib.util.module_from_spec(spec)
@@ -340,7 +340,10 @@ spec.loader.exec_module(module)
 mcp = module.MCP(shim, profile)
 try:
     for _ in range(30):
-        apps = mcp.text("list_apps").get("apps", [])
+        # MCP-33: before the app list arrives, list_apps fails not_ready
+        # instead of answering an empty list; keep waiting either way.
+        result = mcp.tool("list_apps")
+        apps = [] if result.get("isError") else json.loads(result["content"][0]["text"]).get("apps", [])
         if any(app.get("package") == browser for app in apps):
             sys.exit(0)
         time.sleep(1)
@@ -352,7 +355,7 @@ PY
 
 # open_window — one MCP call, then the client closes; the window stays open.
 open_window() {
-    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$BROWSER" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, json, sys
 shim, profile, browser, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)
@@ -367,7 +370,7 @@ PY
 }
 
 close_window() { # close_window <window>
-    "$PYTHON" - "$SHIM" "$PROFILE" "$1" "$ROOT/macos/scripts/mcp-driver.py" <<'PY'
+    "$PYTHON" - "$SHIM" "$PROFILE" "$1" "$ROOT/macos/scripts/mcp/driver.py" <<'PY'
 import importlib.util, json, sys
 shim, profile, window, driver = sys.argv[1:5]
 spec = importlib.util.spec_from_file_location("pd_mcp_driver", driver)

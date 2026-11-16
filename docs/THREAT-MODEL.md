@@ -128,7 +128,7 @@ Cannot do (mcp, "Threat model"):
 - Write files on the Mac, run shell commands or launch Mac apps.
 - Reach the phone except through the existing paired, encrypted session.
 
-Logging: one line per tool call, name and duration only. No arguments, text,
+Logging: one line per tool call: name, duration, outcome code and window id only. No arguments, text,
 URLs, file names or pixels (mcp, "Gate and visibility").
 
 Every process running as the same user can connect while the setting is on.
