@@ -1592,7 +1592,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    the content changes — `TYPE_WINDOW_CONTENT_CHANGED`, `TYPE_WINDOW_STATE_CHANGED`,
    `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_TEXT_CHANGED`, `TYPE_VIEW_SCROLLED` — whose window is on
    the stream's display (by window id, from the latest `windowsOnAllDisplays` read, refreshed
-   when the watch starts); every other event type is ignored. When no counted event came for
+   when the watch starts); every other event type is ignored. A display listed with no window, or not listed yet, is still opening: it counts as loading at the start and at every check, and its first window is a counted change. When no counted event came for
    `Q` ms it checks the display for a loading signal (item 9's `loading`) and answers only
    when there is none, else watches on and checks again after every later quiet period; at
    `T` ms it answers whatever the state. The reply is
@@ -1604,7 +1604,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    before it on the session's ordered reliable lane have been injected by then. A watch that
    cannot happen answers
    `{"t":"ui.settle","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`,
-   `no_display` (the display went away during the watch), `not_available` (this phone cannot
+   `no_display` (the display had a window and went away during the watch; a stream with no display at the start answers `no_window`), `not_available` (this phone cannot
    listen to accessibility events), `busy` (item 6) or `failed`. The watch is a pure state
    machine (docs/specs/mcp.md "Settling a display"); it reads event types, window ids and the
    loading check's yes or no, and logs the stream, the outcome, `waitedMs` and `events`.

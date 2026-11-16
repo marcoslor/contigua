@@ -34,26 +34,32 @@ object SettleWatch {
         /**
          * Waiting for a quiet period. [lastChange] is the last counted change
          * (or the start); [loading] is what the last check found, cleared by a
-         * change; [check] the number of the last check asked for.
+         * change; [check] the number of the last check asked for; [windowed]
+         * whether the display has had a window (a display with none yet is
+         * still opening, and one the check finds unlisted before then is too).
          */
         data class Watching(
             val quietMs: Long, val timeoutMs: Long, val start: Long, val lastChange: Long,
-            val events: Int, val loading: Boolean, val check: Int,
+            val events: Int, val loading: Boolean, val check: Int, val windowed: Boolean = true,
         ) : State
 
         /** Check [check] is in flight. */
         data class Checking(
             val quietMs: Long, val timeoutMs: Long, val start: Long, val lastChange: Long,
-            val events: Int, val loading: Boolean, val check: Int,
+            val events: Int, val loading: Boolean, val check: Int, val windowed: Boolean = true,
         ) : State
     }
 
     sealed interface Event {
-        data class Start(val quietMs: Long, val timeoutMs: Long, val now: Long) : Event
+        /** [windowed]: the display had a window at the start. */
+        data class Start(val quietMs: Long, val timeoutMs: Long, val now: Long, val windowed: Boolean = true) : Event
         data class A11y(val type: Int, val onDisplay: Boolean, val now: Long) : Event
         data class Tick(val now: Long) : Event
-        data class Loading(val found: Boolean, val check: Int, val now: Long) : Event
-        data object DisplayGone : Event
+        /**
+         * Check [check]'s answer: [found] a loading signal (an empty display
+         * counts), or the display was not [listed] at all.
+         */
+        data class Loading(val found: Boolean, val check: Int, val now: Long, val listed: Boolean = true) : Event
         data object SessionEnd : Event
     }
 
@@ -78,16 +84,19 @@ object SettleWatch {
     fun reduce(state: State, event: Event): Step = when (state) {
         State.Idle -> when (event) {
             is Event.Start -> Step(
-                State.Watching(event.quietMs, event.timeoutMs, event.now, event.now, 0, false, 0),
+                State.Watching(
+                    event.quietMs, event.timeoutMs, event.now, event.now, 0,
+                    loading = !event.windowed, check = 0, windowed = event.windowed,
+                ),
                 listOf(Action.Listen, Action.ScheduleTick(event.now + minOf(event.quietMs, event.timeoutMs))),
             )
-            is Event.A11y, is Event.Tick, is Event.Loading, Event.DisplayGone, Event.SessionEnd ->
+            is Event.A11y, is Event.Tick, is Event.Loading, Event.SessionEnd ->
                 Step(State.Idle, nothing)
         }
 
         is State.Watching -> when (event) {
             is Event.A11y -> if (counts(event)) {
-                Step(state.copy(lastChange = event.now, events = state.events + 1, loading = false), nothing)
+                Step(state.copy(lastChange = event.now, events = state.events + 1, loading = false, windowed = true), nothing)
             } else {
                 Step(state, nothing)
             }
@@ -98,7 +107,7 @@ object SettleWatch {
                     Step(
                         State.Checking(
                             state.quietMs, state.timeoutMs, state.start, state.lastChange,
-                            state.events, state.loading, check,
+                            state.events, state.loading, check, state.windowed,
                         ),
                         listOf(Action.CheckLoading(check), Action.ScheduleTick(state.start + state.timeoutMs)),
                     )
@@ -110,7 +119,6 @@ object SettleWatch {
             }
             // A check a change dropped: ignored.
             is Event.Loading -> Step(state, nothing)
-            Event.DisplayGone -> Step(State.Idle, listOf(Action.StopListening, Action.Reply.NoDisplay))
             Event.SessionEnd -> Step(State.Idle, listOf(Action.StopListening))
             is Event.Start -> Step(state, listOf(Action.Reply.Busy))
         }
@@ -120,7 +128,7 @@ object SettleWatch {
                 Step(
                     State.Watching(
                         state.quietMs, state.timeoutMs, state.start, event.now,
-                        state.events + 1, false, state.check,
+                        state.events + 1, false, state.check, windowed = true,
                     ),
                     listOf(Action.ScheduleTick(minOf(event.now + state.quietMs, state.start + state.timeoutMs))),
                 )
@@ -134,10 +142,12 @@ object SettleWatch {
             }
             is Event.Loading -> when {
                 event.check != state.check -> Step(state, nothing)
-                event.found -> Step(
+                // Gone after it had a window; before its first, it is still opening.
+                !event.listed && state.windowed -> Step(State.Idle, listOf(Action.StopListening, Action.Reply.NoDisplay))
+                event.found || !event.listed -> Step(
                     State.Watching(
                         state.quietMs, state.timeoutMs, state.start, state.lastChange,
-                        state.events, true, state.check,
+                        state.events, true, state.check, state.windowed,
                     ),
                     listOf(Action.ScheduleTick(minOf(event.now + state.quietMs, state.start + state.timeoutMs))),
                 )
@@ -146,7 +156,6 @@ object SettleWatch {
                     listOf(Action.StopListening, Action.Reply.Settled(event.now - state.start, state.events)),
                 )
             }
-            Event.DisplayGone -> Step(State.Idle, listOf(Action.StopListening, Action.Reply.NoDisplay))
             Event.SessionEnd -> Step(State.Idle, listOf(Action.StopListening))
             is Event.Start -> Step(state, listOf(Action.Reply.Busy))
         }
