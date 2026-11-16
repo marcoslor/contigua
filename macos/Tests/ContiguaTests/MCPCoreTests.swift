@@ -339,6 +339,16 @@ final class MCPCoreTests: XCTestCase {
         }
     }
 
+    // [MCP-64] `ui_tree` and `screenshot` with `wait: "settle"` carry `settle`:
+    // both outputSchemas declare it.
+    func testTreeAndScreenshotDeclareSettle_MCP64() throws {
+        for tool: MCPToolName in [.screenshot, .uiTree] {
+            let schema = MCPOutputSchemas.schema(for: tool)
+            let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+            XCTAssertNotNil(properties["settle"], tool.rawValue)
+        }
+    }
+
     // [MCP-20] [MCP-21] Every answer that reflects a window's screen declares
     // `state` and `frame` as required, and the stamp fills them in.
     func testScreenAnswersRequireStateAndFrame() throws {
