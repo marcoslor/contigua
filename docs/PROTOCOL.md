@@ -1504,7 +1504,7 @@ The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of
    runs on, and `uiautomator dump` only reads display 0, so neither can see an app window
    on its own virtual display (ISS-143).
 2. The phone trims the tree before sending it. The reply is
-   `{"t":"ui.tree","stream":N,"seq":S,"ok":true,"display":D,"snapshot":K,"truncated":B,"windows":[…],"nodes":[…]}`:
+   `{"t":"ui.tree","stream":N,"seq":S,"ok":true,"displayId":D,"snapshot":K,"truncated":B,"windows":[…],"nodes":[…]}`:
    - `windows`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
      `system`, `overlay`, `divider`, `magnifier`, or the platform's number), `focused`,
      `active`.
@@ -1519,13 +1519,19 @@ The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of
      checkable), `sel`, `focus`, `disabled`, `pwd`.
    - A node with no text, label, action or state, or with no drawable bounds, is folded
      away and its children take its place; only what a reader or a model can act on is
-     sent. A password node carries no `text` or `desc` at all, only `pwd`.
+     sent. A password node carries no `text` or `desc` at all, only `pwd`. Code points in
+     Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
+     dropped from a label: an icon font draws art there, not a word, and a label made only
+     of them is no label.
    - `ref` is unique within the reply and names nothing outside it: the Mac keeps the
      reply's refs for that stream and resolves `tap`'s `ref` to `at` there. A newer reply
      replaces them, so a ref from an older reply is refused rather than pressed. Refs never
-     cross the wire.
+     cross the wire. A ref protects against a newer *tree*, not against a newer *screen*:
+     an overlay that appears after the read can cover the node, and the tap lands where the
+     node was. The tool says so, and the tap answer names the read it came from.
    - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
-     tree. `snapshot` counts this session's reads from 1.
+     tree. `snapshot` counts this session's reads from 1; `displayId` is the display's own
+     id (a virtual display's is in the sixties on current builds), never a counter.
    - An empty tree keeps `nodes: []` and carries a `note` saying the display has no
      accessible content, so an empty list is never read as a blank screen.
 3. A read that cannot happen answers

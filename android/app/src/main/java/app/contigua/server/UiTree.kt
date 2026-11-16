@@ -86,7 +86,10 @@ object UiTree {
             builder.window(index, window)
         }
         out["ok"] = true
-        out["display"] = display
+        // The display's own id, not a counter: virtual displays are numbered in
+        // the sixties on current Android builds, which reads like a sequence
+        // number when the field is called `display`. `snapshot` is the counter.
+        out["displayId"] = display
         out["snapshot"] = snapshot
         out["truncated"] = builder.truncated
         out["windows"] = windows.mapIndexed { index, window ->
@@ -117,11 +120,31 @@ object UiTree {
     /**
      * Trims one label. Whitespace collapses to one space (an on-screen label is
      * read as one line) and a very long one is cut at [MAX_TEXT].
+     *
+     * Icon fonts draw their icons as text in Unicode's private use area
+     * (U+EF9E, U+EEE8, …): a glyph is art, not a word, so it never reaches the
+     * reader. A label made only of glyphs is no label at all.
      */
     fun label(value: String?): String? {
-        val trimmed = value?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+        val trimmed = value?.let(::withoutPrivateUse)
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            .orEmpty()
         if (trimmed.isEmpty()) return null
         return if (trimmed.length <= MAX_TEXT) trimmed else trimmed.substring(0, MAX_TEXT)
+    }
+
+    /** Drops code points U+E000–U+F8FF and the two supplementary private use areas. */
+    fun withoutPrivateUse(value: String): String {
+        val out = StringBuilder(value.length)
+        var i = 0
+        while (i < value.length) {
+            val cp = value.codePointAt(i)
+            val private = cp in 0xE000..0xF8FF || cp in 0xF0000..0xFFFFD || cp in 0x100000..0x10FFFD
+            if (!private) out.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        return out.toString()
     }
 
     /** `android.widget.Button` becomes `Button`; an unnamed class is `?`. */
