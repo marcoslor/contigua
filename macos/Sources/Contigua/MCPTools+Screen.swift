@@ -15,8 +15,8 @@ extension MCPToolHost {
     /// buffer (the layer stops presenting behind other windows, #165).
     func screenshot(_ id: Int, ref: String?) async throws -> MCPToolResult {
         let window = try requireWindow(id)
-        let size = (Int(window.videoView.videoSize.width.rounded()),
-                    Int(window.videoView.videoSize.height.rounded()))
+        // MCP-50/62/63: the display's pixels, the space of the tree's boxes.
+        let size = pixelSize(of: window)
         let crop = try ref.map {
             try ScreenshotCrop.box(for: controller.uiTreeResolved(ref: $0, stream: window.stream),
                                    ref: $0, window: id, size: size)
@@ -157,7 +157,6 @@ enum Screenshot {
                        encode: @escaping @Sendable (CVPixelBuffer, [Int]?) -> Data? = { FrameGrab.png(from: $0, crop: $1) })
         async throws -> MCPToolResult {
         let state = state()
-        let streamSize = size
         // MCP-61: an offline window can make no picture; say so before asking.
         guard online else { throw MCPToolError.phoneOffline(phone) }
         let start = source.newestSeq
@@ -165,18 +164,20 @@ enum Screenshot {
             throw MCPToolError.noFrame(window: id, state: state)
         }
         let buffer = frame.buffer
+        let frameSize = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
+        // MCP-63: the crop is in display pixels; the frame may be smaller.
+        let frameCrop = crop.map { ScreenshotCrop.frameRect(crop: $0, size: size, frame: frameSize) }
         let encoded = await Task.detached(priority: .userInitiated) { () -> (Data?, Bool) in
-            (encode(buffer, crop), ScreenshotBlank.isBlank(buffer))
+            (encode(buffer, frameCrop), ScreenshotBlank.isBlank(buffer))
         }.value
         guard let png = encoded.0 else { throw MCPToolError.noFrame(window: id, state: state) }
-        let image = FrameGrab.scaledSize(sourceWidth: CVPixelBufferGetWidth(buffer),
-                                         sourceHeight: CVPixelBufferGetHeight(buffer), crop: crop)
+        let image = FrameGrab.scaledSize(sourceWidth: frameSize.0, sourceHeight: frameSize.1, crop: frameCrop)
         var answer: [String: Any] = [
             "window": id,
             "state": state,
             "frame": FrameClock.object(seq: frame.seq, ageMs: frame.ageMs),
             "image": [image.0, image.1],
-            "size": [streamSize.0, streamSize.1],
+            "size": [size.0, size.1],
         ]
         if encoded.1 { answer["blank"] = true }
         if let crop { answer["crop"] = crop }
@@ -199,10 +200,11 @@ enum ScreenshotBlank {
 // MARK: - Ref crop (MCP-63)
 
 enum ScreenshotCrop {
-    /// The window pixels added on each side of a ref's box.
+    /// The display pixels added on each side of a ref's box.
     static let margin = 8
 
-    /// The ref's box plus the margin, clamped to the frame, or the failure the
+    /// The ref's box plus the margin, clamped to `size` (the display pixels
+    /// the tree's boxes are in, MCP-63), or the failure the
     /// ref maps to: `stale_ref` for a ref the latest tree does not name,
     /// `off_screen` for an off-screen node (the tap's own refusals).
     static func box(for resolution: UITreeResolution, ref: String, window: Int,
@@ -217,12 +219,36 @@ enum ScreenshotCrop {
                 min(frameSize.0, box[2] + margin), min(frameSize.1, box[3] + margin)]
     }
 
-    /// The crop in the decoded frame's pixels.
-    static func frameRect(crop: [Int], size: (Int, Int), frame: (Int, Int)) -> [Int] { crop }
+    /// The crop in the decoded frame's pixels: `crop` (display pixels, in a
+    /// display of `size`) scaled by frame/size, widened to whole pixels and
+    /// clamped to the frame.
+    static func frameRect(crop: [Int], size: (Int, Int), frame: (Int, Int)) -> [Int] {
+        guard crop.count == 4, size.0 > 0, size.1 > 0 else { return [0, 0, frame.0, frame.1] }
+        func down(_ v: Int, _ f: Int, _ s: Int) -> Int { min(f, max(0, v * f / s)) }
+        func up(_ v: Int, _ f: Int, _ s: Int) -> Int { min(f, max(0, (v * f + s - 1) / s)) }
+        return [down(crop[0], frame.0, size.0), down(crop[1], frame.1, size.1),
+                up(crop[2], frame.0, size.0), up(crop[3], frame.1, size.1)]
+    }
 }
 
 // MARK: - The window's pixel space (MCP-50, MCP-62)
 
+/// `size: [w, h]` in every answer is the pixel space of `ui_tree`'s `box`:
+/// the phone display's pixels for that window. An app window's virtual display
+/// is made at its stream's size; the Phone Mirror's display is the phone's
+/// screen, larger than its stream (MIRROR-25).
 enum MCPWindowSize {
-    static func pixels(treeSize: [Int]?, mirrorScreen: CGSize?, stream: (Int, Int)) -> (Int, Int) { stream }
+    /// The latest tree's `size` when there is one; for the Phone Mirror the
+    /// phone's screen turned to the stream's orientation; else the stream's.
+    static func pixels(treeSize: [Int]?, mirrorScreen: CGSize?, stream: (Int, Int)) -> (Int, Int) {
+        if let treeSize, treeSize.count == 2, treeSize[0] > 0, treeSize[1] > 0 {
+            return (treeSize[0], treeSize[1])
+        }
+        if let mirrorScreen, mirrorScreen.width > 0, mirrorScreen.height > 0 {
+            let short = Int(min(mirrorScreen.width, mirrorScreen.height).rounded())
+            let long = Int(max(mirrorScreen.width, mirrorScreen.height).rounded())
+            return stream.0 > stream.1 ? (long, short) : (short, long)
+        }
+        return stream
+    }
 }

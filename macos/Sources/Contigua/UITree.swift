@@ -255,6 +255,8 @@ struct UITreeRefs {
     private struct Read {
         let snapshot: Int
         let nodes: [String: Placed]
+        /// The pixel space of the read's boxes (MCP-50, MCP-63).
+        let size: [Int]?
     }
 
     private var reads: [UInt32: Read] = [:]
@@ -276,7 +278,8 @@ struct UITreeRefs {
         for node in tree.nodes {
             nodes[node.ref] = Placed(point: node.at, box: node.box, off: node.off)
         }
-        reads[tree.stream] = Read(snapshot: snapshot, nodes: nodes)
+        reads[tree.stream] = Read(snapshot: snapshot, nodes: nodes,
+                                  size: tree.size?.count == 2 ? tree.size : nil)
     }
 
     /// Forget a window's refs and counter: on close, or when a stream id is
@@ -301,6 +304,9 @@ struct UITreeRefs {
     }
 
     func latestSnapshot(for stream: UInt32) -> Int? { reads[stream]?.snapshot }
+
+    /// The latest read's `size`: the display pixels its boxes are in.
+    func latestSize(for stream: UInt32) -> [Int]? { reads[stream]?.size }
 
     /// `"s13e5"` → 13.
     private static func snapshot(in ref: String) -> Int {
@@ -462,6 +468,11 @@ final class UITreeBroker {
     }
 
     func forget(stream: UInt32) { refs.forget(stream: stream) }
+
+    /// The pixel space of the window's latest tree (MCP-50, MCP-63).
+    func latestSize(stream: UInt32) -> [Int]? {
+        refs.latestSize(for: stream)
+    }
 
     func resolved(ref: String, stream: UInt32) -> UITreeResolution {
         refs.resolved(ref: ref, stream: stream)
