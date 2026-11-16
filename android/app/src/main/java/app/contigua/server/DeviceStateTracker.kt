@@ -27,23 +27,23 @@ internal class DeviceStateTracker(private val emit: (DeviceState) -> Unit) {
         }
     }
 
-    /** A keyguard event: only `locked` changes. */
-    fun onLockChanged(locked: Boolean) =
+    /** A keyguard event: only `locked` and its [source] change. */
+    fun onLockChanged(locked: Boolean, source: LockSource) =
         update(DeviceState(locked, current?.battery ?: 0, current?.charging ?: false, current?.dnd, current?.ringer,
-            current?.screen, current?.secure, current?.volume, current?.volumeMax))
+            current?.screen, current?.secure, current?.volume, current?.volumeMax, source))
 
     /** A battery event: only the battery fields change. */
     fun onBatteryChanged(battery: Int, charging: Boolean) =
         update(DeviceState(current?.locked ?: false, battery, charging, current?.dnd, current?.ringer,
-            current?.screen, current?.secure, current?.volume, current?.volumeMax))
+            current?.screen, current?.secure, current?.volume, current?.volumeMax, current?.lockSource))
 
     /** A display-0 power change: only `screen` changes. */
     fun onScreenChanged(screen: ScreenState?) =
         update(DeviceState(current?.locked ?: false, current?.battery ?: 0, current?.charging ?: false,
-            current?.dnd, current?.ringer, screen, current?.secure, current?.volume, current?.volumeMax))
+            current?.dnd, current?.ringer, screen, current?.secure, current?.volume, current?.volumeMax, current?.lockSource))
 
     /** The display-0 secure surface changed while a phone window is open. */
     fun onSecureChanged(secure: Boolean) =
         update(DeviceState(current?.locked ?: false, current?.battery ?: 0, current?.charging ?: false,
-            current?.dnd, current?.ringer, current?.screen, secure, current?.volume, current?.volumeMax))
+            current?.dnd, current?.ringer, current?.screen, secure, current?.volume, current?.volumeMax, current?.lockSource))
 }
