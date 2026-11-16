@@ -6451,7 +6451,10 @@ check_mcp() {
         return 1
     fi
     clean
-    start_fake || return 1
+    # suite_act switches the phone's settle and close modes through this file
+    # (fakephone.py --mode-file, plan T5).
+    : > "$WORK/fake-mode"
+    FAKE_ARGS="${FAKE_ARGS:-} --mode-file $WORK/fake-mode" start_fake || return 1
     rm -f "$sock"
     launch --connect "127.0.0.1:$PORT" --quit-after 60
     sleep 2
