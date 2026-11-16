@@ -1637,8 +1637,10 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      from a node's identity — its window id and source node id, the pair
      `AccessibilityNodeInfo.equals` compares — to its key. A node seen again in a later read
      keeps its key; a new node gets the next unused one (1, 2, …); a key is never given to
-     another node while the display exists, and the table is dropped once a read no longer
-     finds the display listed. A node met twice in one read gets a second key. At most
+     another node while the display exists. A read drops the table of a display it no longer
+     finds listed (`windowsOnAllDisplays` leaves out a display between two windows), but keeps
+     that display's next key, so its nodes come back with new keys, never old ones. A node met
+     twice in one read gets a second key. At most
      4096 identities are remembered per display; past it the oldest that are not in the latest
      read are forgotten (a forgotten node that returns gets a new key). `k` is unique within a
      reply. The Mac names the row's ref `e<k>` (T10); the key crosses back to the phone only in
