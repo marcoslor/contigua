@@ -21,6 +21,11 @@ extension MCPToolHost {
         return ["window": Int(stream), "package": app.pkg, "label": app.label]
     }
 
+    /// The refusal for `newWindow: true` (MCP-40); nil lets the open go on.
+    nonisolated static func newWindowRefusal(app: String, windowCount: Int, blocker: NewWindowBlocker?) -> MCPToolError? {
+        nil
+    }
+
     func sendLink(_ url: String) throws -> [String: Any] {
         let phone = try IntentsBridge.resolve(nil)
         return ["message": try IntentsBridge.sendLink(url, on: phone)]

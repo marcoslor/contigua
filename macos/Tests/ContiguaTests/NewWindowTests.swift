@@ -60,6 +60,17 @@ final class NewWindowTests: XCTestCase {
         XCTAssertEqual(fixture.openRequests.count, opens, "a disabled item sends nothing")
     }
 
+    /// MCP-40, WIN-36 (#183): an explicit new-window ask for an app with no
+    /// window open opens its first window, as if the flag were absent, even
+    /// for an app that opens one window at a time.
+    func testMCP40NewWindowWithNoWindowOpenOpensTheFirst() {
+        let window = fixture.manager.openAdditional(pkg: MultiWindowFixture.settings.pkg)
+        XCTAssertNotNil(window, "the first window opens")
+        XCTAssertEqual(fixture.manager.appWindows(pkg: MultiWindowFixture.settings.pkg).count, 1)
+        XCTAssertEqual(fixture.openRequests.count, 1)
+        XCTAssertNil(fixture.openRequests.first?["newInstance"], "the first window is a plain open")
+    }
+
     func testAtTheCapItReadsTheCapSentence() {
         fixture.manager.setMaxWindows(2)
         fixture.open(taskLabel: "Docs")
