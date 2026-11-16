@@ -8,7 +8,7 @@
 # Build the APK and the e2e Mac app first, in their own heavy steps.
 #
 # On the one boot: start.sh --no-build, pair the e2e Mac app through the real
-# prompt, then over MCP: open Calculator, open Settings over it, wait out the
+# prompt, then over MCP: open Calculator (else the Clock's Timer keypad), open Settings over it, wait out the
 # agent hold (the covered window pauses), tap 7 by ref and screenshot. The
 # decoded frame is checked with Vision text recognition for a 7 in the
 # display's upper part (pass/fail and counts only: no text is printed), and
@@ -229,6 +229,19 @@ def node(tree, want):
             return row
     return None
 
+def tree_of(client, window, seconds=15):
+    """ui_tree, waiting out not_ready (a display with nothing to read yet, MCP-70)."""
+    deadline = time.time() + seconds
+    while True:
+        reply = client.tool("ui_tree", {"window": window}, timeout=30)
+        if not reply.get("isError"):
+            return reply.get("structuredContent") or {}
+        code = json.loads(reply["content"][0]["text"]).get("error", {}).get("code")
+        if code != "not_ready" or time.time() > deadline:
+            raise RuntimeError("ui_tree: %s" % code)
+        print("[mcpscreen] ui_tree: not_ready, again")
+        time.sleep(1)
+
 client = MCP(shim, profile)
 try:
     client.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -240,14 +253,30 @@ try:
         reply = client.tool("list_apps")
         apps = [] if reply.get("isError") else (reply.get("structuredContent") or {}).get("apps") or []
         time.sleep(0.5 if not apps else 0)
+    # A keypad whose 7 shows near the top of the window: the Calculator, else
+    # the Clock's Timer (its display reads 00h 00m 07s after a 7). The
+    # pocketdeck-api36 image ships no Calculator.
     calc = [a for a in apps if "calculator" in a.get("package", "").lower()]
-    report(bool(calc), "the phone has a Calculator (%d apps, %d matches)" % (len(apps), len(calc)))
-    if not calc:
+    clock = [a for a in apps if "deskclock" in a.get("package", "").lower()]
+    target = calc or clock
+    report(bool(target), "the phone has a Calculator or a Clock (%d apps: calculator %d, clock %d)"
+           % (len(apps), len(calc), len(clock)))
+    if not target:
         sys.exit(1)
-    calc_window = client.text("open_app", {"app": calc[0]["package"]}, timeout=60)["window"]
+    calc_window = client.text("open_app", {"app": target[0]["package"]}, timeout=60)["window"]
+    if not calc:
+        time.sleep(2)
+        tree = tree_of(client, calc_window)
+        tab = node(tree, lambda r: (r.get("text") or r.get("desc") or "").strip().lower() == "timer")
+        report(tab is not None, "the Clock's Timer tab is in the tree by ref")
+        if tab is None:
+            sys.exit(1)
+        client.text("tap", {"window": calc_window, "ref": tab["ref"]})
+        time.sleep(1.5)
+    print("[mcpscreen] keypad app: %s" % ("calculator" if calc else "clock timer"))
     first, path0 = shot(client, calc_window, "before")
     before = sevens(path0)
-    tree = client.text("ui_tree", {"window": calc_window}, timeout=30)
+    tree = tree_of(client, calc_window)
     clear = node(tree, lambda r: (r.get("desc") or r.get("text") or "").lower() in ("clear", "ac", "c", "delete"))
     if before > 0 and clear:
         for _ in range(8):
@@ -260,7 +289,7 @@ try:
     rows = [w for w in client.text("list_windows")["windows"] if w["id"] == calc_window]
     covered_state = rows[0]["state"] if rows else None
     print("[mcpscreen] Calculator window before the tap: state=%s" % covered_state)
-    tree = client.text("ui_tree", {"window": calc_window}, timeout=30)
+    tree = tree_of(client, calc_window)
     seven = node(tree, lambda r: (r.get("text") or r.get("desc") or "").strip() == "7")
     report(seven is not None, "ui_tree names the 7 key by ref (%d rows)" % len(tree.get("nodes") or []))
     if seven is None:
