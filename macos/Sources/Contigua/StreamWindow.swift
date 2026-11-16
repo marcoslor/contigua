@@ -1380,7 +1380,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Occlusion / minimize
 
-    func windowDidMiniaturize(_ notification: Notification) { setPaused(true) }
+    /// A minimised window pauses by StreamPause's rule, which an agent's hold
+    /// overrides (MCP-22).
+    func windowDidMiniaturize(_ notification: Notification) { setPaused(shouldPause) }
     func windowDidDeminiaturize(_ notification: Notification) { setPaused(shouldPause) }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
